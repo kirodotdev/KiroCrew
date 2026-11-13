@@ -28,7 +28,8 @@ vi.mock('../api/client', () => ({
 const catalog = [
   { name: 'reviewer', kiro_agent: 'reviewer', workspace: 'default', memory_store: 'member-reviewer', description: 'My reviewer', source: 'kirocrew', selection_kind: 'member' },
   { name: 'reviewer', kiro_agent: 'reviewer', workspace: 'default', memory_store: 'default', description: 'Shared reviewer', source: 'package', selection_kind: 'template' },
-  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'built-in', source: 'kirocrew', selection_kind: 'member' },
+  // The stock shape the loader seeds: a template, a workspace and a store, nothing else.
+  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: '', source: 'kirocrew', selection_kind: 'member' },
   { name: 'atlas', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'package agent', source: 'package', selection_kind: 'template' },
   { name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'main agent', source: 'kirocrew', selection_kind: 'template' },
   // Made by hand: its own name and its own memory, on a listed template.
@@ -113,6 +114,72 @@ describe('useAgents keeps covered mates out of the picker unless the config allo
       { name: 'shared', kiro_agent: 'shared', memory_store: 'default', selection_kind: 'template' },
     ] as never)
     expect(rows.map(r => r.selection_kind)).toEqual(['template'])
+  })
+
+  describe('a mate on the shared store and a listed template', () => {
+    const template = { name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'main agent', source: 'kirocrew', selection_kind: 'template' }
+    const mate = (name: string, own: Record<string, unknown> = {}) => ({
+      name, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: '', source: 'kirocrew', selection_kind: 'member', ...own,
+    })
+    // An install upgraded from shared memory: three mates set up for their own
+    // work beside the stock `default`, which has nothing of its own. `tracker`
+    // keeps the default workspace and its row carries nothing; its permanent
+    // rules and briefing are on disk, which the server reports as `own_setup`.
+    const upgraded = [
+      template,
+      mate('default', { own_setup: false }),
+      mate('reports', { workspace: 'reports', description: 'Builds the weekly reports', own_setup: false }),
+      mate('review-drafts', { workspace: 'review-drafts' }),
+      mate('tracker', { own_setup: true }),
+    ]
+
+    it('offers the mates with a setup of their own and withholds the stock one', async () => {
+      agentsApi.mockResolvedValue({ agents: upgraded, default_agent: 'kirocrew' } as never)
+      configApi.mockResolvedValue({ default_workspace: 'default' } as never)
+      const { result } = renderHookWithProviders(() => useAgents(0))
+      await waitFor(() => expect(result.current.choices).toHaveLength(4))
+
+      // A template pick runs on the default workspace with no identity or rules,
+      // so it does not reach a mate's own workspace, description or rules.
+      expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual([
+        ['template', 'kirocrew'],
+        ['member', 'reports'],
+        ['member', 'review-drafts'],
+        ['member', 'tracker'],
+      ])
+      expect(result.current.displayChoices.map(c => c.name)).toEqual(['kirocrew', 'reports', 'review-drafts', 'tracker'])
+    })
+
+    it.each([
+      ['workspace', { workspace: 'reports' }],
+      ['model', { model: 'some-model' }],
+      ['reasoning effort', { reasoning_effort: 'high' }],
+      ['display name', { display_name: 'Reports' }],
+      ['triggers', { triggers: 'weekly report' }],
+      ['description', { description: 'Builds the weekly reports' }],
+      ['rules, goals or briefing, as the server reports them', { own_setup: true }],
+    ])('keeps a mate with its own %s', (_label, own) => {
+      const rows = withoutCoveredCrewmates([template, mate('mine', own)] as never)
+      expect(rows.map(r => [r.selection_kind, r.name])).toEqual([['template', 'kirocrew'], ['member', 'mine']])
+    })
+
+    it.each([
+      ['nothing of its own', {}],
+      ['the template\'s own description (a synced template)', { description: 'main agent' }],
+      ['the "auto" model, which pins nothing', { model: 'auto' }],
+      ['blank text only', { description: '  ', triggers: ' ', display_name: '' }],
+      ['no other setup by the server\'s count', { own_setup: false }],
+    ])('withholds a mate with %s', (_label, own) => {
+      const rows = withoutCoveredCrewmates([template, mate('same', own)] as never)
+      expect(rows.map(r => r.selection_kind)).toEqual(['template'])
+    })
+
+    it('reads the workspace a template pick runs on from `default_workspace`', async () => {
+      agentsApi.mockResolvedValue({ agents: [template, mate('default'), mate('on-main', { workspace: 'main' })], default_agent: 'kirocrew' } as never)
+      configApi.mockResolvedValue({ default_workspace: 'main' } as never)
+      const { result } = renderHookWithProviders(() => useAgents(0))
+      await waitFor(() => expect(result.current.choices.map(c => c.name)).toEqual(['kirocrew', 'default']))
+    })
   })
 
   it('keeps a mate whose own-memory binding is not a template pick', () => {

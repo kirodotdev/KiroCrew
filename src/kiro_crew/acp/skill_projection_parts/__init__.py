@@ -6,9 +6,8 @@ the tests patch them there. Each module here owns one responsibility; the facade
 them lowest layer first, and a module imports only the ones before it, never the facade:
 
 * ``side_files`` -- the projection's side files under this data home and the protocol
-  over them: their layout and legacy locations, the alias-name shape, the bounded
-  publication lock, the per-process leases with their liveness scan, and the
-  identity-checked unlinks;
+  over them: their layout, the alias-name shape, the bounded publication lock, the
+  per-process leases with their liveness scan, and the identity-checked unlinks;
 * ``inheritance_overlay`` -- Crew's overlay on Kiro's default-resource inheritance in a
   workspace ``cli.json``: its keys, the settings read, the recorded preference and the
   rollback;
@@ -21,8 +20,8 @@ them lowest layer first, and a module imports only the ones before it, never the
 * ``native_projection`` -- the prepared ``NativeSkillProjection`` and the registry of
   live projections a prune must keep;
 * ``alias_reclaim`` -- reclaiming unused views and their residue (the per-spawn,
-  end-of-projection and boot prunes, the sweeps and the legacy migration) and the
-  read-only censuses the doctor reports;
+  end-of-projection and boot prunes and the sweeps) and the read-only censuses the
+  doctor reports;
 * ``preparation`` -- the spawn-time entry point, ``prepare_native_skill_projection``,
   with its view-count ceiling fallback.
 

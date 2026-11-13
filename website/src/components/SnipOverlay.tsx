@@ -2,6 +2,13 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { normalizeRect, cropCanvas, canvasToFile, type SnipRect } from '../hooks/useScreenSnip'
 
 import { i18nT } from '../i18n/t'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+
+// Escape stays on this overlay's own bubble-phase window listener (below), so
+// a surface that consumes Escape first (voice recording) still keeps it. The
+// trap is wired with Escape off and a stable no-op in its place.
+const NO_ESCAPE = () => {}
+
 interface Props {
   /** Captured full-screen frame to crop. */
   frame: HTMLCanvasElement
@@ -29,6 +36,9 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
   const [rect, setRect] = useState<SnipRect | null>(null)
   const rectRef = useRef<SnipRect | null>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
+  // Focus moves in on open, Tab stays inside, focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
 
   // toDataURL on a full-screen canvas is expensive (~50-100ms); memoize so it
   // runs once per frame, not on every drag-induced re-render.
@@ -106,10 +116,11 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={i18nT('components.snipOverlay.crop_screen_capture')}
-      className="fixed inset-0 z-[200] bg-black/50 flex flex-col items-center justify-center gap-4"
+      className="fixed inset-0 z-[200] bg-black/50 flex flex-col items-center justify-center gap-4 p-safe"
     >
       {/* Freeform pointer-drag crop region (like macOS Cmd+Shift+4). There is no
           ARIA role that models "drag a rectangle to select", and there is no

@@ -6,15 +6,16 @@ interface Rec { domain: string; path: string | null }
 
 /**
  * The blocked-link card lists the host's records and claims nothing about the
- * click. Its title speaks of the host's blocked links, never "this link", and
- * each entry keeps its Destination line. Every entry, a lone one included,
+ * click. Its title speaks of the host (its blocked links, or once `allowed`
+ * the host itself), never "this link", and each entry keeps its Destination
+ * line. Every entry, a lone one included,
  * shows its own address, in record order whichever chip was clicked; no entry
  * is marked and no line says which link was clicked (counts cannot prove a
  * chip and a record are the same URL).
  */
-export function expectCardListsHostRecords(card: HTMLElement, records: readonly Rec[], host: string): void {
+export function expectCardListsHostRecords(card: HTMLElement, records: readonly Rec[], host: string, allowed = false): void {
   const own = records.filter(r => r.domain === host)
-  expect(card.textContent).toContain(i18nT('components.redaction.link_title_host'))
+  expect(card.textContent).toContain(i18nT(allowed ? 'components.redaction.link_title_host_allowed' : 'components.redaction.link_title_host'))
   expect(card.textContent).not.toMatch(/this link/i)
   expect(card.textContent).not.toMatch(/you clicked/i)
   const entries = within(card).getAllByTestId('blocked-link-entry')

@@ -42,7 +42,7 @@ describe('LinkChip', () => {
     expect(container.querySelector('button')).not.toBeNull()
   })
 
-  it('does not let a copy click reach the surrounding message handlers', () => {
+  it('does not let a copy click reach the surrounding message handlers', async () => {
     // The chip renders inside prose whose container delegates clicks for
     // artifact links and path chips; without stopPropagation one click would
     // both copy and navigate.
@@ -61,7 +61,9 @@ describe('LinkChip', () => {
     outer.addEventListener('click', reachedContainer)
 
     render(<LinkChip meta={meta()} href={HREF} />, { container: mount })
-    fireEvent.click(mount.querySelector('button')!)
+    // The copy handler awaits the clipboard write before it sets the "copied"
+    // state, so the click and that update both run inside the act scope.
+    await act(async () => { fireEvent.click(mount.querySelector('button')!) })
 
     expect(reachedContainer).not.toHaveBeenCalled()
     outer.remove()

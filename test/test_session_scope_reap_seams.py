@@ -265,8 +265,7 @@ def test_complete_tracking_snapshot_proceeds(monkeypatch, tmp_path):
     monkeypatch.setattr(r, "_instance_scope_dir", lambda: (tmp_path, ""))
     monkeypatch.setattr(session_pid, "_read_tracked_agent_pids", lambda: ({201}, True))
     monkeypatch.setattr(r, "_cached_gateway_boot_us", lambda: 1)
-    # flake-ok: pre-existing worker-wide rebind of the stdlib time.clock_gettime (r.time is the stdlib module) for one synchronous call, restored at teardown; moved verbatim, tracked for a de-flake pass
-    monkeypatch.setattr(r.time, "clock_gettime", lambda _clock: _NOW)
+    monkeypatch.setattr(r, "time", _ModuleProxy(r.time, clock_gettime=lambda _clock: _NOW))
 
     def fake_reap(*_args, **kwargs):
         seen.update(kwargs)
@@ -282,6 +281,7 @@ def test_complete_tracking_snapshot_proceeds(monkeypatch, tmp_path):
 
 def test_gateway_boot_monotonic_us_matches_real_proc_start():
     before_mono = r.time.clock_gettime(r.time.CLOCK_MONOTONIC)
+    before_boot = r.time.clock_gettime(r.time.CLOCK_BOOTTIME)
     boot_us = r.gateway_boot_monotonic_us()
     after_mono = r.time.clock_gettime(r.time.CLOCK_MONOTONIC)
     after_boot = r.time.clock_gettime(r.time.CLOCK_BOOTTIME)
@@ -291,12 +291,20 @@ def test_gateway_boot_monotonic_us_matches_real_proc_start():
     raw = Path("/proc/self/stat").read_bytes()
     start_ticks = int(raw[raw.rfind(b")") + 1 :].split()[19])
     clk_tck = r.os.sysconf("SC_CLK_TCK")
-    expected_us = int((after_mono - (after_boot - start_ticks / clk_tck)) * 1_000_000)
+    start_s = start_ticks / clk_tck
 
     assert isinstance(boot_us, int)
     assert int(before_mono * 1_000_000) >= boot_us
-    # flake-ok: pre-existing 2 s tolerance between real CLOCK_MONOTONIC and CLOCK_BOOTTIME samples and the kernel's own stat line; moved verbatim, tracked for a de-flake pass
-    assert abs(boot_us - expected_us) < 2_000_000
+    # The reader's boot time is monotonic minus (boot clock minus process start), and
+    # each of its two readings lies between the samples taken on either side of the call.
+    # The kernel reports the start in whole ticks, so the true start lies in
+    # [start_s, start_s + one tick). The bounds are the measured samples, not a tolerance;
+    # the 1e-6 s slack covers the reader's truncation to whole microseconds.
+    lower_s = before_mono - after_boot + start_s
+    upper_s = after_mono - before_boot + start_s + 1 / clk_tck
+    assert (
+        lower_s - 1e-6 <= boot_us / 1_000_000 <= upper_s + 1e-6
+    ), f"boot_us={boot_us} outside the bracket [{lower_s}, {upper_s}] s"
 
 
 def _own_stat(proc_root: Path, raw: bytes) -> None:

@@ -1,14 +1,8 @@
 """AWS Control backup ownership: archive descent, install identity, restore gate.
 
-Covers ``_add_tree`` skipping hard-linked files, the refusal to archive when
-descriptor-pinned traversal is unavailable, ``_install_folders`` reading
-install prefixes, ``list_remote_backups`` and ``classify_key`` deciding archive
-origin, and the install id, kept apart from its display label.
-
-It also pins that ``restore_download`` refuses an archive this install cannot
-prove it uploaded, by local upload record and body fingerprint, unless the
-caller passes ``foreign_ok``, and refuses a staging directory that resolves
-outside app storage. Shared constants come from ``aws_control_backup_helpers.py``.
+Covers ``_add_tree`` skipping hard links, refusal without pinned traversal, archive
+origin via ``classify_key``, and ``restore_download`` refusing an archive this install
+cannot prove it uploaded (record and fingerprint) unless ``foreign_ok`` is passed.
 """
 
 from __future__ import annotations
@@ -29,9 +23,7 @@ from aws_control_backup_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
 
-# ---------------------------------------------------------------------------
 # Hard links — a regular file pointing at someone else's inode
-# ---------------------------------------------------------------------------
 
 
 class TestHardLinkedFilesAreNotArchived:
@@ -98,19 +90,14 @@ class TestHardLinkedFilesAreNotArchived:
         assert count == 2
 
 
-# ---------------------------------------------------------------------------
 # Refusal when the traversal cannot be pinned to descriptors
-# ---------------------------------------------------------------------------
 
 
 class TestRefusalWithoutPinnedTraversal:
     """There is no name-based fallback, and that is the security property.
 
-    A platform without ``openat`` cannot make the link check and the open one
-    operation, so a walk of these agent-writable directories leaves a window in
-    which a directory swapped for a junction to ``~/.aws`` is archived -- and this
-    archive is uploaded unattended. These pin that the code refuses instead of
-    degrading, on every platform, by forcing the capability flag off.
+    Without ``openat`` a directory swapped for a junction to ``~/.aws`` could be
+    archived and uploaded. The capability flag is forced off on every platform.
     """
 
     def test_add_tree_refuses_rather_than_walking_by_name(self, tmp_path):
@@ -170,9 +157,7 @@ class TestRefusalWithoutPinnedTraversal:
         assert calls == []
 
 
-# ---------------------------------------------------------------------------
 # list_remote_backups
-# ---------------------------------------------------------------------------
 
 
 class TestInstallFoldersReasonAboutAbsence:
@@ -296,6 +281,75 @@ class TestListRemoteBackups:
         assert result["others"] == 0
         assert result["installs"][0]["id"] == mine
 
+    def test_the_newest_archives_are_listed_past_the_first_page(self):
+        """Keys sort oldest first and a page holds 500, so page one alone hid the newest."""
+        mine = backup.install_identity()["id"]
+        self.folders = {mine}
+        keys = [f"snapshots/{mine}/2025{i:06d}T000000Z-abc.tar.gz" for i in range(600)]
+        rows = [{"key": key, "modified": key.rsplit("/", 1)[-1][:15]} for key in keys]
+
+        def fake_list(profile, region, bucket, section, sub, token="", *, account):
+            if sub != f"snapshots/{mine}":
+                return {"files": [], "folders": [], "nextToken": ""}
+            if not token:
+                return {"files": rows[:500], "folders": [], "nextToken": "page-2"}
+            assert token == "page-2"
+            return {"files": rows[500:], "folders": [], "nextToken": ""}
+
+        with mock.patch.object(backup.storage, "list_section", side_effect=fake_list):
+            result = backup.list_remote_backups("p", "us-west-2", "bkt", account=ACCOUNT)
+
+        listed = [row["key"] for row in result[backup.KIND_SNAPSHOT]]
+        assert listed[0] == keys[-1]
+        assert listed == list(reversed(keys))[:20]
+
+    def test_a_listing_stopped_at_the_page_cap_says_so(self, monkeypatch):
+        """Past the cap the unread keys are the newest; the answer must not look complete."""
+        mine = backup.install_identity()["id"]
+        self.folders = {mine}
+        monkeypatch.setattr(backup, "_MAX_LISTING_PAGES", 2)
+
+        def fake_list(profile, region, bucket, section, sub, token="", *, account):
+            if sub != f"snapshots/{mine}":
+                return {"files": [], "folders": [], "nextToken": ""}
+            n = int(token or "0")
+            row = {"key": f"{sub}/2025{n:06d}T000000Z-abc.tar.gz", "modified": f"2025{n:06d}"}
+            return {"files": [row], "folders": [], "nextToken": str(n + 1)}
+
+        with mock.patch.object(backup.storage, "list_section", side_effect=fake_list):
+            result = backup.list_remote_backups("p", "us-west-2", "bkt", account=ACCOUNT)
+
+        assert result["archives_truncated"] == [backup.KIND_SNAPSHOT]
+        assert len(result[backup.KIND_SNAPSHOT]) == 2
+
+    def test_a_complete_listing_is_not_marked_truncated(self):
+        mine = backup.install_identity()["id"]
+        self.folders = {mine}
+
+        def fake_list(profile, region, bucket, section, sub, token="", *, account):
+            return {"files": [], "folders": [], "nextToken": ""}
+
+        with mock.patch.object(backup.storage, "list_section", side_effect=fake_list):
+            result = backup.list_remote_backups("p", "us-west-2", "bkt", account=ACCOUNT)
+
+        assert result["archives_truncated"] == []
+
+    def test_a_repeating_listing_token_stops_the_walk(self):
+        mine = backup.install_identity()["id"]
+        self.folders = {mine}
+        calls: list[str] = []
+
+        def fake_list(profile, region, bucket, section, sub, token="", *, account):
+            calls.append(sub)
+            return {"files": [], "folders": [], "nextToken": "same" if "/" in sub else ""}
+
+        with mock.patch.object(backup.storage, "list_section", side_effect=fake_list):
+            backup.list_remote_backups("p", "us-west-2", "bkt", account=ACCOUNT)
+
+        # Per kind: one root page, then this install's prefix twice (first page and
+        # the one that hands the same token back).
+        assert calls.count(f"snapshots/{mine}") == 2
+
     def test_a_legacy_archive_is_never_claimed_as_this_installs(self):
         # Backward compatibility with a bite: pre-namespace archives keep being
         # listed, but as unknown origin. Claiming them would re-create the exact
@@ -408,9 +462,7 @@ class TestListRemoteBackups:
             assert name == candidate
 
 
-# ---------------------------------------------------------------------------
 # install identity — the id that decides, and the label that only displays
-# ---------------------------------------------------------------------------
 
 
 class TestInstallIdentity:
@@ -578,11 +630,8 @@ class TestLabelIsDisplayOnly:
 class TestObjectAuthentication:
     """A recorded key names a PATH; the fingerprint names the BYTES.
 
-    On a drive other installs can write to, a key can be overwritten after this
-    install recorded uploading it. Matching keys alone would then hand that
-    overwrite back as ours with no confirmation, so the verdict is decided on the
-    bytes that actually arrive -- which also leaves no window for an overwrite to
-    land between a check and the transfer.
+    A shared key can be overwritten, so the verdict is decided on the bytes that
+    arrive, leaving no window between check and transfer.
     """
 
     @pytest.fixture(autouse=True)
@@ -703,12 +752,8 @@ class TestClassifyKey:
 class TestSelfOwnershipIsProvenNotInferred:
     """An install id is a folder name, so a bucket writer can create one.
 
-    The drive is shared by design, which puts a co-writer inside the operating
-    envelope rather than outside it. If the prefix alone decided ownership, that
-    co-writer could upload beneath this install's own prefix and the archive would
-    come back classified as ours and restore with no confirmation -- the exact
-    unwarned wrong-machine restore this whole change exists to stop, reintroduced
-    through the mechanism meant to stop it.
+    The drive is shared by design, so a co-writer could upload under this install's
+    prefix and get an unwarned wrong-machine restore.
     """
 
     @pytest.fixture(autouse=True)
@@ -867,9 +912,7 @@ class TestRestoreOwnershipGate:
             assert self._download(key, foreign_ok=True)["path"]
 
 
-# ---------------------------------------------------------------------------
 # restore_download — the resolve-outside-storage guard
-# ---------------------------------------------------------------------------
 
 
 class TestRestoreDownloadResolveGuard:

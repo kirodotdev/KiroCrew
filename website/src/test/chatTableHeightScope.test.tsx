@@ -49,7 +49,7 @@ vi.mock('../pages/chat/TranscriptScrollShell', async importOriginal => {
 
 import VirtualTranscript from '../chat-core/transcript/VirtualTranscript'
 import { HeightCache } from '../hooks/virtualizer/HeightCache'
-import { gcOrphanedStorage, gcSessionStorage } from '../utils/storageGc'
+import { gcOrphanedStorage } from '../utils/storageGc'
 
 // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
 // so the pins read the page and those owners.
@@ -177,16 +177,6 @@ it.each(HOSTS)('%s retains live raw-slot heights across startup GC', host => {
   expect(new HeightCache(scope).peek('row-a')).toBe(120)
 })
 
-it.each(HOSTS)('%s deletes only the exact raw slot, not a prefixed sibling', host => {
-  const scope = productionScope(host, 'chat-1-1')
-  const sibling = productionScope(host, 'chat-1-10')
-  persistHeight(scope)
-  persistHeight(sibling)
-  gcSessionStorage('chat-1-1')
-  expect(localStorage.getItem(`vc_heights_${scope}`)).toBeNull()
-  expect(new HeightCache(sibling).peek('row-a')).toBe(120)
-})
-
 it.each(HOSTS)('%s sweeps only orphaned raw-slot heights', host => {
   const scope = productionScope(host, 'chat-1-1')
   const sibling = productionScope(host, 'chat-1-10')
@@ -203,7 +193,7 @@ it('partitions main, pane, side and embed heights for the same raw slot', () => 
   scopes.forEach((scope, i) => persistHeight(scope, 100 + i))
   expect(gcOrphanedStorage(new Set(['chat-1-1']))).toBe(0)
   scopes.forEach((scope, i) => expect(new HeightCache(scope).peek('row-a')).toBe(100 + i))
-  gcSessionStorage('chat-1-1')
+  expect(gcOrphanedStorage(new Set())).toBe(4)
   scopes.forEach(scope => expect(localStorage.getItem(`vc_heights_${scope}`)).toBeNull())
 })
 

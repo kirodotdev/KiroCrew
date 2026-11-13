@@ -105,9 +105,10 @@ function isDashboardClient(client) {
   }
 }
 
-// How long a push waits for a visible dashboard tab to say it is connected.
-// Short: the answer is a synchronous store read in the page, and on a timeout
-// the banner is shown anyway, so a slow or frozen tab costs at most a duplicate.
+// How long a push waits for a dashboard tab to say it is connected. Ordinary
+// pushes ask visible tabs; re-alerting pushes ask hidden tabs too. Short: the
+// answer is a synchronous store read in the page, and an unanswered probe keeps
+// the banner or re-alert, so a slow or frozen tab costs at most a duplicate.
 const PUSH_PROBE_TIMEOUT_MS = 500
 
 // Ask one dashboard tab whether its live connection is up. A worker's memory does
@@ -153,20 +154,30 @@ self.addEventListener('push', e => {
   // a standalone app window does not render general notes.
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-      const visible = clients.filter(c => isDashboardClient(c) && c.visibilityState === 'visible')
-      return Promise.all(visible.map(askConnected)).then(answers => answers.some(Boolean))
-    }).then(handled => {
+      // A keyed note asks to alert again (`renotify`), because its banner reuses
+      // the tag of the earlier notes under its key and a platform otherwise swaps
+      // a banner still on screen without a sound. Keep that re-alert whenever this
+      // worker shows the banner: a hidden tab cannot be trusted to play a sound,
+      // while a visible connected dashboard suppresses the banner below.
+      const visible = clients.filter(isDashboardClient).filter(c => c.visibilityState === 'visible')
+      return Promise.all(visible.map(askConnected)).then(answers => ({
+        handled: answers.some(connected => connected),
+        renotify: n.renotify === true,
+      }))
+    }).then(({ handled, renotify }) => {
       if (handled) return
       // A hidden tab may already have shown this note (useNativeNotification).
       // n.tag is the gateway's native_notification_tag, the same value that
       // tab used, so this banner replaces it rather than adding a second one.
-      return self.registration.showNotification(n.title, {
+      const options = {
         body: n.body || '',
         tag: n.tag || 'kirocrew-notif',
         data: n.data || { url: n.navigate || '/' },
         icon: '/icon-192.png',
         badge: '/icon-192.png',
-      })
+      }
+      if (renotify) options.renotify = true
+      return self.registration.showNotification(n.title, options)
     })
   )
 })

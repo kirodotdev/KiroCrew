@@ -93,16 +93,9 @@ def _load(path: Path) -> dict:
 async def _sync_one_remote(remote, mcp_env, *, owned: bool = True, marked: bool = True) -> dict:
     """Run api_mcp_sync over one remote server and return its written global entry.
 
-    ``owned`` marks the name as managed by Kiro Crew, which is the regime every caller
-    here exercises: writes to the kiro-global mcp.json are gated on ownership, so
-    an unowned name is deliberately left untouched (see
-    TestGlobalWritesAreOwnershipGated).
-
-    ``marked`` stamps the authorship marker onto whatever this server already has
-    in the global file, so the default regime is "re-syncing an entry we wrote" --
-    the case the sync behaviour tests are about. Pass ``marked=False`` to control
-    the marker from the test body, which the collision and reclamation tests do
-    because the marker's presence is the thing under test there.
+    ``owned`` marks the name as managed by Kiro Crew; global writes are gated on it.
+    ``marked`` stamps the authorship marker on the existing global entry. Pass
+    ``marked=False`` when the marker itself is under test.
     """
     from kiro_crew.dashboard.handlers.mcp import api_mcp_sync
     from kiro_crew.mcp_discovery import SCOPE_KIROCREW
@@ -146,14 +139,9 @@ async def _sync_one_remote(remote, mcp_env, *, owned: bool = True, marked: bool 
 class TestGlobalWritesAreOwnershipGated:
     """Every write to a config surface we do NOT own is gated on ownership.
 
-    Two such surfaces are touched here: the kiro-global ``mcp.json`` (through
-    ``api_mcp_sync``) and the Claude Code ``~/.mcp.json`` sidecar (through
-    ``register_servers_for_cc``). Both are fed by the SAME source --
-    ``discover_servers_to_sync``, which merges every scope -- so a name the user
-    configured only in their own global file arrives exactly like a managed one.
-
-    Parametrized on purpose: a per-site test would let the next write site ship
-    ungated, so this asserts the property across all of them at once.
+    The kiro-global ``mcp.json`` and the Claude Code ``~/.mcp.json`` sidecar are both fed
+    by ``discover_servers_to_sync``, which merges every scope, so a user's own name
+    arrives exactly like a managed one.
     """
 
     @staticmethod
@@ -169,11 +157,8 @@ class TestGlobalWritesAreOwnershipGated:
     async def _kiro_global(self, *, managed: bool, mcp_env, marked: bool | None = None) -> dict:
         """Sync a remote whose url differs from the user's global entry.
 
-        ``marked`` defaults to ``managed``: the managed case represents an entry
-        THIS emitter wrote, so it carries the authorship marker, while the
-        unmanaged case represents one the user typed and carries none. Pass it
-        explicitly to build the third state -- a managed name whose global entry
-        we cannot prove we wrote.
+        ``marked`` defaults to ``managed``. Pass it explicitly for a managed name whose
+        global entry we cannot prove we wrote.
         """
         from kiro_crew.mcp_discovery import McpServerInfo
         from kiro_crew.mcp_provenance import stamp
@@ -230,15 +215,14 @@ class TestGlobalWritesAreOwnershipGated:
         }
 
         # Site 2 -- CC sidecar: our OAuth hints are not written for a name we do
-        # not own. (The wholesale rebuild of the entry itself is pre-existing
-        # behaviour on the base ref, unchanged here.)
+        # not own.
         cc = self._cc_sidecar(managed=False, tmp_path=tmp_path)
         assert "scopes" not in cc
         assert "clientId" not in cc
 
     @pytest.mark.asyncio
     async def test_a_managed_name_still_syncs_at_every_global_write_site(self, mcp_env, tmp_path):
-        """The gate must not disable the re-sync this change exists to deliver."""
+        """The gate must not disable the re-sync of a managed name."""
         entry = await self._kiro_global(managed=True, mcp_env=mcp_env)
         assert entry["url"] == "https://kirocrew.example.com/mcp"
         assert entry["oauthScopes"] == ["kirocrew:scope"]
@@ -280,20 +264,9 @@ class TestGlobalWritesAreOwnershipGated:
 class TestExactNameCollisionIsDecidedByTheMarker:
     """The marker separates "ours, moved" from "the user's, colliding".
 
-    Both of these arrive at the write as the SAME input -- a global entry
-    at url A, that name in the store, and a discovered url B:
-
-    * LEGITIMATE: a managed server whose store url moved A -> B. The global entry
-      at A is our own earlier emit and MUST be rewritten, or the re-sync never
-      propagates and kiro-cli keeps running a url the dashboard does not show.
-    * HARMFUL: the user hand-authored a global server at A whose name collides
-      with a managed one. Rewriting destroys config we did not author.
-
-    No CONTENT test separates them -- the minimal entry ``{"url": ...}`` is
-    exactly what both produce. The difference is authorship, so authorship is now
-    recorded rather than inferred: our writes carry ``x-kirocrew``, and an entry
-    without it is the user's. These tests pin both directions, and that stripping
-    the marker reclaims an entry for good.
+    Both arrive as the same input (global entry at url A, name in the store, discovered
+    url B), and no content check separates them. Our writes carry ``x-kirocrew``; an
+    entry without it is the user's.
     """
 
     @staticmethod
@@ -316,10 +289,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
     @pytest.mark.asyncio
     async def test_a_managed_url_move_propagates(self, mcp_env):
-        """Direction (b): the case that MUST keep working (round-16 contract).
-
-        The entry carries our marker, so the move is provably ours to make.
-        """
+        """A marked entry is ours, so a managed url move rewrites it."""
         from kiro_crew.mcp_provenance import stamp
 
         written = await self._sync_over_global(stamp({"url": "https://a.example.com/mcp"}), mcp_env)
@@ -330,12 +300,10 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
     @pytest.mark.asyncio
     async def test_a_colliding_hand_authored_global_entry_is_preserved(self, mcp_env):
-        """Direction (a): the harm, now prevented.
+        """An unmarked entry colliding with a managed name is kept verbatim.
 
-        Reachability was already bounded -- ``POST /api/mcp/custom`` refuses a
-        name that ``_find_server_spec_anywhere`` finds in ANY scope, the kiro
-        global file included -- but the residual case, a user editing their own
-        global file AFTER the managed entry exists, is what this closes.
+        ``POST /api/mcp/custom`` refuses a name found in any scope, so this is reached
+        when a user edits their global file after the managed entry exists.
         """
         entry = {
             "url": "https://a.example.com/mcp",
@@ -347,15 +315,10 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
     @pytest.mark.asyncio
     async def test_a_non_hint_oauth_subkey_is_not_authorship_evidence(self, mcp_env):
-        """Why "preserve an entry carrying ``issuer``" is still not the fix.
+        """A marked entry carrying ``issuer`` still syncs; the marker decides, not sub-keys.
 
-        A non-hint sub-key looks like a fingerprint -- no writer here emits one.
-        It is still not authorship: a MANAGED entry legitimately carries
-        ``issuer`` once a user adds it, which is why ``apply_kiro_oauth_hints``
-        edits ``oauth`` surgically instead of replacing it. Preserving on that
-        signal would strand every managed server whose ``oauth`` a user has ever
-        touched, so a MARKED entry carrying one must still sync. The marker, not
-        the sub-key, is what decides.
+        A user may add ``issuer`` to a managed entry (``apply_kiro_oauth_hints`` edits
+        ``oauth`` surgically), so treating it as authorship would strand that server.
         """
         from kiro_crew.mcp_provenance import stamp
 
@@ -368,15 +331,10 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 
     @pytest.mark.asyncio
     async def test_an_unmarked_bare_url_collision_is_preserved(self, mcp_env):
-        """The residual case from the base ref, now decided.
+        """An unmarked bare ``{"url": ...}`` entry is the user's and is left alone.
 
-        A minimal ``{"url": ...}`` entry is both what this emitter writes for a
-        managed server carrying no OAuth hints and the smallest thing a user can
-        hand-type. On the base ref the managed url propagated over it, because
-        nothing on disk recorded authorship. The marker records it, so the same
-        bytes now read as the user's and are left alone -- while
-        ``test_a_managed_url_move_propagates`` shows the marked spelling of the
-        same shape still propagating.
+        It is also what we emit for a managed server with no OAuth hints; the marked
+        form still propagates (``test_a_managed_url_move_propagates``).
         """
         written = await self._sync_over_global({"url": "https://a.example.com/mcp"}, mcp_env)
         assert written == {"url": "https://a.example.com/mcp"}
@@ -385,14 +343,9 @@ class TestExactNameCollisionIsDecidedByTheMarker:
     async def test_stripping_the_marker_reclaims_the_entry_for_good(self, mcp_env):
         """Reclamation is durable across syncs, which is what forbids migration.
 
-        The marker promises a user can strip it and we stop rewriting. Stripping
-        it off one of our own entries leaves exactly our emit behind, so the
-        obvious migration for pre-marker entries -- stamp an unmarked entry the
-        sync would not change -- reads this reclaimed entry as legacy and takes it
-        back, after which a later url move rewrites it. The two states are
-        indistinguishable on disk, so no unmarked entry is written at all: legacy
-        entries stay unmanaged (re-established with Disconnect then Connect, which
-        creates stamped) and reclamation holds.
+        A reclaimed entry looks exactly like a pre-marker legacy one, so stamping legacy
+        entries would take reclaimed ones back. Legacy entries stay unmanaged until
+        Disconnect then Connect re-creates them stamped.
         """
         from kiro_crew.mcp_provenance import is_marked, stamp, without_marker
 
@@ -413,11 +366,8 @@ class TestExactNameCollisionIsDecidedByTheMarker:
     async def test_a_marked_entry_does_not_re_write_on_every_sync(self, mcp_env):
         """The marker must not make a settled entry look permanently divergent.
 
-        The rendered agent spec carries no marker while the shared file does, so a
-        divergence check that saw the key would report this server as changed on
-        every pass and re-write the file forever. ``McpServerInfo`` has explicit
-        fields, so an unknown key never reaches it -- this pins that, because the
-        failure mode is silent write amplification rather than a wrong value.
+        The agent spec carries no marker while the shared file does, so a divergence
+        check that saw the key would re-write the file on every pass, silently.
         """
         from kiro_crew.mcp_provenance import is_marked, stamp
 
@@ -429,14 +379,7 @@ class TestExactNameCollisionIsDecidedByTheMarker:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("site", ["kiro_global", "cc_sidecar"])
     async def test_a_marked_managed_url_move_reaches_both_surfaces(self, site, mcp_env, tmp_path):
-        """Both global surfaces re-sync a marked entry, and are asserted together.
-
-        The base ref answered the exact-name shape differently at each: the
-        kiro-global file re-synced, the Claude Code sidecar stayed add-only for
-        remotes because re-syncing needed a record of which entries we wrote.
-        That record now exists, so both surfaces propagate. Pinning them together
-        means a change to either one has to say so.
-        """
+        """Both global surfaces re-sync a marked entry, pinned together so they agree."""
         from kiro_crew.mcp_provenance import stamp
 
         if site == "kiro_global":
@@ -461,12 +404,8 @@ class TestExactNameCollisionIsDecidedByTheMarker:
     def test_an_unmanaged_remote_keeps_its_sidecar_entry(self, tmp_path, monkeypatch):
         """The sidecar is add-only for remotes, so a present entry is untouched.
 
-        ``register_servers_for_cc`` builds each remote entry from scratch, so
-        anything it rewrote would lose the fields it does not reconstruct. It
-        rewrites nothing that is already there: the user's own server, credential
-        header and all, survives a sync verbatim -- even though the entry does
-        diverge from the discovered source and does enter the sync set for the
-        surfaces that can act on it.
+        ``register_servers_for_cc`` rebuilds entries from scratch, so a rewrite would
+        lose fields such as the credential header, even though the entry diverges.
         """
         from kiro_crew import mcp_discovery as md
 
@@ -506,12 +445,8 @@ class TestExactNameCollisionIsDecidedByTheMarker:
     def test_a_managed_remote_re_syncs_to_the_sidecar_only_when_marked(self, tmp_path, monkeypatch):
         """A marked entry re-syncs here; an unmarked one still does not.
 
-        The base ref declined both, because ownership was name-only: "our managed
-        server moved" and "a different server the user named the same" were the
-        same input, and this writer replaces an entry rather than merging into it.
-        The marker separates them, so the divergence that already had to reach the
-        agent config and the kiro-global file now reaches this surface too --
-        unless the entry carries no marker, in which case add-only still holds.
+        This writer replaces an entry rather than merging into it, so only the marker
+        makes "our server moved" safe to rewrite; unmarked entries stay add-only.
         """
         from kiro_crew import mcp_discovery as md
         from kiro_crew.mcp_provenance import stamp, without_marker
@@ -560,12 +495,9 @@ class TestExactNameCollisionIsDecidedByTheMarker:
         assert without_marker(written) == {"url": "https://new.example.net/mcp"}
 
     def test_a_remote_with_no_sidecar_entry_is_still_registered(self, tmp_path):
-        """Add-only is not no-op: a name absent here is registered as base does.
+        """A name absent from the sidecar is registered with its hints, and stamped.
 
-        The hints ride along on this path only, so a first registration still
-        carries the scopes the card asked for -- and the entry is stamped, because
-        we are the ones authoring it. That stamp is what lets the next sync tell
-        this entry apart from one the user typed.
+        The stamp lets the next sync tell this entry apart from one the user typed.
         """
         from kiro_crew.mcp_discovery import McpServerInfo, register_servers_for_cc
         from kiro_crew.mcp_provenance import is_marked, without_marker
@@ -593,11 +525,8 @@ class TestExactNameCollisionIsDecidedByTheMarker:
 class TestAPresentButUnreadableEntryIsNotACreate:
     """A malformed entry occupies the name, so writing over it is not a create.
 
-    Both shared files are hand-edited, so a name can hold a string, a ``null`` or
-    a list. Such a value cannot carry the marker, so by the invariant it is
-    unmarked -- the user's -- and the create branch must not claim it. Absence
-    gets its own signal (``ABSENT``) precisely because ``None`` is a value the
-    user can type.
+    A hand-edited string, ``null`` or list cannot carry the marker, so it is the user's.
+    Absence has its own signal (``ABSENT``) because ``None`` is a value a user can type.
     """
 
     @pytest.mark.asyncio
@@ -1012,12 +941,8 @@ class TestApiMcpSyncToolsUpdate:
     async def test_sync_survives_a_malformed_discovered_header_map(self, mcp_env):
         """A hand-edited non-dict ``headers`` must not abort the whole sync.
 
-        Discovery coerces only a FALSY headers value, so a truthy non-dict (a
-        string, a list) reaches the writer as-is. Such a value carries no usable
-        credential, so it is read as "discovery said nothing" and the on-disk map
-        is preserved -- the same ranking the empty-map case uses. Rejecting the
-        sync instead would let one typo in one entry block every other server's
-        legitimate re-sync.
+        Discovery coerces only a falsy value, so a truthy non-dict reaches the writer; it
+        is read as "discovery said nothing" and the on-disk map is preserved.
         """
         from kiro_crew.mcp_discovery import McpServerInfo
 
@@ -1088,12 +1013,8 @@ class TestApiMcpSyncToolsUpdate:
     async def test_sync_does_not_forward_a_global_only_header_to_a_new_host(self, mcp_env):
         """A header map is scoped to the host it was typed for.
 
-        The overlay above deliberately carries a credential the user typed into
-        their own global file across a sync. That preservation may not survive a
-        change of ``url``: the bearer was issued by -- and for -- the OLD origin,
-        so writing it beside a NEW one turns "we kept your credential" into "we
-        sent your credential somewhere else". Dropping it costs a re-auth, which
-        is recoverable; forwarding it is not.
+        The bearer was issued for the old origin, so on a ``url`` change it is dropped:
+        a re-auth is recoverable, sending the credential to a new host is not.
         """
         from kiro_crew.mcp_discovery import McpServerInfo
 
@@ -1221,11 +1142,8 @@ class TestApiMcpSyncToolsUpdate:
     async def test_sync_preserves_a_header_discovery_cannot_see(self, mcp_env):
         """A header-less discovered remote must NOT erase a configured header.
 
-        Discovery reads the dashboard's own mcp.json. A server of the same name
-        carrying an Authorization header in the user's global
-        ~/.kiro/settings/mcp.json therefore arrives here header-less, and popping
-        on that would destroy the only copy of a credential the user typed --
-        silently, with nothing to restore it from.
+        Discovery reads only the dashboard's mcp.json, so a header in the user's global
+        ~/.kiro/settings/mcp.json arrives header-less; popping it would lose the only copy.
         """
         _, mcp_json = mcp_env
         data = _load(mcp_json)
@@ -1270,13 +1188,10 @@ class TestApiMcpSyncToolsUpdate:
 
     @pytest.mark.asyncio
     async def test_sync_omits_a_malformed_scope_list_instead_of_truncating_it(self, mcp_env):
-        """Row 6 on the sync path: one validation contract, emit and readback.
+        """A malformed scope list is omitted on sync, as on emit, never narrowed.
 
-        A partially-valid list must never be silently narrowed into a different
-        grant. Reading ``["read", 7]`` as ``["read"]`` while the emit path omits
-        the field entirely would make the synced file request access the source
-        never asked for, and the agent spec request none -- two different answers
-        from one line of config.
+        Reading ``["read", 7]`` as ``["read"]`` would grant a different scope than the
+        agent spec, which omits the field.
         """
         _, mcp_json = mcp_env
         data = _load(mcp_json)
@@ -1487,7 +1402,7 @@ class TestSyncSharesTheFileLockWithBridges:
     """The dashboard sync and bridges' app-MCP registration both RMW kirocrew.json.
     They must share ONE file lock; the dashboard's in-process _get_config_lock does
     not coordinate with bridges' cross-process _mcp_lock, so the dashboard paths
-    now acquire _mcp_lock too."""
+    acquire _mcp_lock too."""
 
     def test_both_sync_funcs_hold_the_mcp_file_lock(self) -> None:
         import inspect

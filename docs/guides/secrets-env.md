@@ -40,10 +40,47 @@ At spawn the gateway resolves `secret://MY_MCP_SECRET` from the vault.  If the
 named secret does not exist, the server fails to start rather than launching
 with a missing credential.
 
+### Logins and notes
+
+A vault entry can also be a **login** (username, password, the sites it
+belongs to, notes) or a **note**. Store one with the typed
+body of `POST /api/secrets`:
+
+```jsonc
+{
+  "name": "GITHUB",
+  "type": "login",
+  "fields": {
+    "username": "octocat",
+    "password": "…",
+    "urls": ["https://github.com"]
+  }
+}
+```
+
+Pick a field with `#`:
+
+| Reference | Resolves to |
+|---|---|
+| `secret://GITHUB` | the password (a login's default field) |
+| `secret://GITHUB#username` | the username |
+| `secret://GITHUB#url` | the first stored URL |
+| `secret://MY_NOTE` | a note's text |
+
+A field the item does not have fails the spawn, the same way a missing name
+does. Plain secrets are unchanged: `secret://NAME` on one still means its value,
+and a new name may not contain `#` (one stored earlier still resolves whole).
+`#field` works in an MCP server's environment only; a channel credential in
+`.env` reads `secret://NAME` as a whole name.
+
+To change a login without retyping its password, send the fields you change and
+leave `password` and `notes` out: each keeps its stored value. Send `notes`
+as `""` to clear it; `password` is required and cannot be cleared.
+
 ### Route the server through the gateway
 
 The gateway is the only place a reference is resolved, so **route the server
-through the gateway**: in **Developer → MCP Management**, turn routing on for
+through the gateway**: in **MCP Servers** (MCP Management), turn routing on for
 the server (this adds it to `mcp_gateway.stub_servers`). For the servers the
 default agent mounts (from either `mcp.json` above), an unrouted server with a
 `secret://` value is not started at all, and a warning names the env key —
@@ -51,8 +88,8 @@ rather than starting it with the literal `secret://` text as its credential.
 Routing takes effect at the next gateway start, as any routing change does,
 and the server stays off until then: it counts as routed only once the running
 gateway serves it. Switching the server on in MCP Management, or **Enable
-all**, does not start it before that either. In the MCP servers table under
-**Customize → Connections**, its row reads Outdated and states why: the
+all**, does not start it before that either. In the server table on the
+**MCP Servers** page (`/mcp`), its row reads Outdated and states why: the
 dashboard does not probe it, and the line names the env key that holds the
 `secret://` value. On a platform where the MCP
 gateway does not run, no reference can be resolved: put the credential in the
@@ -101,7 +138,17 @@ A stored Connections OAuth client secret,
 `connections_client_secret`, with `host` set to the provider slug. It is listed
 only once stored. The Secrets routes do not edit it: a write or delete of that
 name returns `409` with code `managed_by_connections`; change it under
-**Settings → OAuth Apps**.
+**Settings → Connections**.
+
+The two WakaTime OAuth read-auth entries appear in the catalog as kind
+`wakatime_oauth`: `WAKATIME_OAUTH_CLIENT_SECRET` and `WAKATIME_OAUTH_TOKENS`.
+They are listed only once stored. The client secret is the one a user pastes
+after creating an app at `wakatime.com/apps`. The tokens entry is written by
+the OAuth flow: one JSON object with the access and refresh credentials, the
+access expiry and the redirect URI. It rotates on refresh and clears on
+disconnect. The Secrets routes do not edit it: a write or delete of that name
+returns `409` with code `managed_by_wakatime_oauth`; remove it with
+`POST /api/wakatime/oauth/disconnect`.
 
 When a stored integration name is one the runtime will not read, the response
 also carries an `unused` list of `{name, reason}` entries. The reasons are
@@ -156,7 +203,7 @@ of the file, delete that plaintext copy once you have verified the migration.
 
 ### Channel tokens and the vault
 
-A channel token saved from the dashboard (Settings > Channels) is stored in the
+A channel token saved from the dashboard (Settings > Messaging Channels) is stored in the
 vault under its key name, and its `.env` line is written as
 `KEY=secret://KEY`. A token already in `.env` as plaintext keeps working as it
 is: every channel reader accepts either form, and a hand-edited
@@ -168,8 +215,9 @@ that its `secret://KEY` line pointed at.
 
 A release that predates this behaviour reads a `KEY=secret://KEY` line as the
 token itself, so after a downgrade the channels saved this way fail to
-authenticate. To go back, re-enter each channel token under Settings > Channels
-on the older release (vault values cannot be read back), or put the plaintext
+authenticate. To go back, re-enter each channel token under Settings > Messaging
+Channels on the older release (named Channels before 2026-09-21; vault values
+cannot be read back), or put the plaintext
 token on its `.env` line by hand before downgrading.
 
 ### Jira uses the vault automatically

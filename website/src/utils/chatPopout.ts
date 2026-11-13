@@ -75,6 +75,11 @@ export const isSelfPopout = controller.isSelfPopout
  * window to the main chat view instead.
  */
 export const returnSelfToMain = controller.returnSelfToMain
+/**
+ * Close THIS popout window after its session is gone: focus the opener and
+ * close; when the close is refused, navigate to `/chat` with no `?sid=`.
+ */
+export const closeSelf = controller.closeSelf
 /** Register THIS window as the live popout for `slot` (responder role). Returns cleanup. */
 export const registerPopout = controller.registerPopout
 /** Test-only: swap the navigation sink (jsdom can't redefine window.location). */

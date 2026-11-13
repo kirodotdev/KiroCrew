@@ -13,7 +13,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
-import { PaneHeader, AwsErrorNotice } from './shared'
+import { PaneHeader, AwsErrorNotice, LoadMoreButton } from './shared'
 import { CliDrawer, ViewModeToggle } from './DrivePageControls'
 import { useDrivePageFiles } from './useDrivePageFiles'
 import { DriveFilesSearchResults, DriveFilesGrid, DriveFilesTable } from './DrivePageFilesViews'
@@ -24,7 +24,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const {
     mode, setMode, path, setPath, share, setShare, uploadError, downloadError, preview, setPreview,
     query, setQuery, newFolder, setNewFolder, creatingFolder, setCreatingFolder, folderError,
-    folderToggleRef, moveTarget, returnFocusToOpener, moveDialogOpenRef, closeMoveDialog,
+    folderToggleRef, folderNameRef, moveTarget, returnFocusToOpener, moveDialogOpenRef, closeMoveDialog, moveToNewFolder,
     closeFolderDisclosure, handOff, deletedHere, fileRef, listQ, folders, files, uploadMut,
     folderCreateMut, onCreateFolder, onPick, dropTarget, moveError, setMoveError, pageError,
     moveMut, moveBusy, searching, dropProps, inertDropProps, download, crumbs,
@@ -89,6 +89,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         {searching ? null : creatingFolder ? (
           <>
             <Input
+              ref={folderNameRef}
               value={newFolder}
               onChange={(e) => setNewFolder(e.target.value)}
               onKeyDown={(e) => {
@@ -283,13 +284,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
 
       {!searching && listQ.hasNextPage && (
         <div className="mt-2">
-          <Btn
-            onClick={() => listQ.fetchNextPage()}
-            disabled={listQ.isFetchingNextPage}
-            data-testid="drive-load-more"
-          >
-            {i18nT('apps.awsControl.console.load_more')}
-          </Btn>
+          {/* Keyed by folder: its press latch belongs to that folder's listing. */}
+          <LoadMoreButton key={path} listQ={listQ} testId="drive-load-more" />
         </div>
       )}
 
@@ -335,6 +331,10 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
             )
           }}
           onClose={closeMoveDialog}
+          // Search hides the toolbar's folder field, so the empty state's
+          // New folder action would open nothing; it is offered only when the
+          // field it hands over to can appear.
+          onNewFolder={searching ? undefined : moveToNewFolder}
         />
       )}
       {preview && (

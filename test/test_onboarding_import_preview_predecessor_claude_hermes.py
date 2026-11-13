@@ -1297,6 +1297,69 @@ class TestPreviewHermes:
             for item in plan["skipped"]
         )
 
+    def test_hermes_profile_cron_uses_its_own_profile_timezone(self, tmp_path: Path) -> None:
+        hermes = tmp_path / "home" / ".hermes"
+        hermes.mkdir(parents=True)
+        (hermes / "config.yaml").write_text("timezone: Europe/London\n", encoding="utf-8")
+        work = hermes / "profiles" / "work"
+        (work / "cron").mkdir(parents=True)
+        (work / "config.yaml").write_text("timezone: Asia/Tokyo\n", encoding="utf-8")
+        (work / "cron" / "jobs.json").write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "name": "tokyo standup",
+                            "prompt": "summarize the standup notes",
+                            "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        plan = _select(
+            _api().preview_import(home=tmp_path / "home", env={}),
+            ("hermes", "schedules"),
+        )
+        _api().apply_import(plan, data_home=tmp_path / "destination")
+        jobs = CronService(base_dir=tmp_path / "destination").list_jobs(include_disabled=True)
+
+        assert [(job.name, job.timezone) for job in jobs] == [("tokyo standup", "Asia/Tokyo")]
+
+    def test_hermes_profile_cron_does_not_borrow_a_sibling_profile_timezone(
+        self, tmp_path: Path
+    ) -> None:
+        profiles = tmp_path / "home" / ".hermes" / "profiles"
+        (profiles / "alpha").mkdir(parents=True)
+        (profiles / "alpha" / "config.yaml").write_text("timezone: Asia/Tokyo\n", encoding="utf-8")
+        (profiles / "beta" / "cron").mkdir(parents=True)
+        (profiles / "beta" / "cron" / "jobs.json").write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "name": "beta cron",
+                            "prompt": "must not take alpha's timezone",
+                            "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        plan = _api().preview_import(home=tmp_path / "home", env={})
+
+        assert "schedules" not in _categories(plan, "hermes")
+        assert any(
+            item["source_id"] == "hermes"
+            and item["category_id"] == "schedules"
+            and item["reason"] == "timezone_required"
+            for item in plan["skipped"]
+        )
+
     def test_hermes_mcp_runtime_state_is_ignored_but_nested_tools_are_rejected(
         self, tmp_path: Path
     ) -> None:

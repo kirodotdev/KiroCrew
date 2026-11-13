@@ -178,9 +178,10 @@ copy, which only the next stage replaces. See the runtime dist resolution notes 
 
 | Env var | Purpose | Default |
 |---------|---------|---------|
-| `KIROCREW_HOME` | Config/data directory override | `~/.kiro/crew` |
+| `KIROCREW_HOME` | Config/data directory override. Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](docs/guides/install.md#folders-beside-the-data-home)) | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Dashboard port override | `5476` |
 | `KIROCREW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
+| `KIROCREW_ALLOWED_LOOPBACK_PORTS` | Extra loopback ports trusted as browser origins (comma-separated), e.g. `3000` for the Vite dev server. Every page served on a listed port can act as you in the dashboard | none |
 
 If you don't need to run production and dev side by side, omit `KIROCREW_PORT` —
 just stop your production gateway first.
@@ -191,8 +192,8 @@ When working on frontend changes, run the Vite dev server alongside the backend
 for instant hot-reload without rebuilding:
 
 ```bash
-# Terminal 1 — start the backend
-KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew gateway
+# Terminal 1: start the backend, trusting the Vite port as a browser origin
+KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 KIROCREW_ALLOWED_LOOPBACK_PORTS=3000 kirocrew gateway
 
 # Terminal 2 — start the frontend dev server (hot-reloads .tsx changes)
 cd website
@@ -213,6 +214,11 @@ KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew token
 - The editable backend must be restarted after Python source changes
 - The frontend hot-reloads automatically — no rebuild for `.tsx`/`.ts`/`.css` changes
 - Always access via `localhost:3000` (Vite) during frontend dev, not `localhost:6777` directly
+- The gateway trusts `localhost:3000` only because `KIROCREW_ALLOWED_LOOPBACK_PORTS=3000` says so. Do
+  not leave that set on a gateway you use while another app serves `:3000`: any page on a trusted
+  port can act as you in the dashboard, terminal included. The variable is inherited by everything
+  that gateway starts, its dashboard terminal included, so a gateway started from there trusts the
+  port too
 - If the backend restarts, you may need a new token (sessions expire with the process)
 
 ## Releasing New Versions
@@ -307,7 +313,13 @@ Three things make agent-assisted contributions land:
 
 Keep the change small and focused on one thing. A large diff that touches many
 areas is harder to review than the same work split into three, and it is the most
-common reason a well-intentioned pull request stalls.
+common reason a well-intentioned pull request stalls. The exception is a change a
+tool made rather than one you decided, such as a formatter run or a trimmed baseline
+file: there is nothing per-file to review and every pull request pays CI's full
+fixed cost, so group these into one pull request per directory. A change that has
+to land all at once, such as a rename, stays in one pull request even when it spans
+directories. Flake fixes are not in this group, so keep each in its own pull request,
+because it unblocks other people's work.
 
 Open an issue first for anything significant, so the approach is agreed before you
 or your agent spend real time on it.
@@ -325,7 +337,11 @@ the one or two commits this repo allows, opening or updating the PR, then pollin
 and the review bots and fixing what they find. An agent that loads it follows the
 same route a maintainer would, which is why the process holds regardless of who or
 what wrote the code. If you are contributing with an agent, point it at that skill
-instead of describing the steps yourself.
+instead of describing the steps yourself. From a fork, `origin` is your fork and the
+skill reads the base from `origin/main`, so bring your fork's `main` level with
+upstream before each run (`gh repo sync <your-username>/KiroCrew`, then
+`git fetch origin`); otherwise its diff, review briefs and squash all measure
+against your fork's older `main`.
 
 One thing the GitHub UI will get wrong for you: if your branch falls behind the
 base while the PR is open, **rebase it, do not merge**. Plain-clicking
@@ -379,13 +395,27 @@ Two things are worth knowing before you start something large.
 disagreement gets resolved, and [MAINTAINERS.md](MAINTAINERS.md) lists the
 people doing it.
 
-Architectural changes get written up as an RFC first, in
-[docs/request-for-change/](docs/request-for-change/), so the design can be
-argued over before anyone writes the code. That applies to changes to a public
-interface, changes other parts of the project would have to build around, and
-anything that would be expensive to reverse. Everything else skips it, and a bug
-fix should never wait on a design document. If you are unsure which side of the
-line your change falls on, open an issue and ask.
+Large changes get written up as an RFC first, in
+[docs/request-for-change/](docs/request-for-change/), as their own pull request,
+so the design can be argued over before anyone writes the code. This is the
+one list of what counts as large; other documents point here. A change is
+large when it does any of these:
+
+- alters a contract other code or people depend on (a public interface,
+  something other parts of the project build around);
+- moves a security, data or trust boundary;
+- is a one-way door: a later pull request cannot simply undo it, such as a
+  persisted data, file or config format on users' machines that would need a
+  migration, a public API or config key others already depend on, or deleting
+  user data. A change a `git revert` fully undoes is a two-way door and does
+  not count, however much work it was;
+- makes a product-shape decision that needs a maintainer's sign-off (a
+  changed default, a removed or replaced user-facing capability).
+
+Everything else is one pull request: if the change makes an RFC or
+other design doc stale, update that doc in the same diff. A bug fix should
+never wait on a design document. If you are unsure which side of the line your
+change falls on, open an issue and ask.
 
 ### CI checks on your PR
 

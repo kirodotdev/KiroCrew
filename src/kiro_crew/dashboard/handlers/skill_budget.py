@@ -17,16 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.skill_usage import SkillUsageLedger
+from kiro_crew.skills_discovery import _within_any
 
 from ._shared import _get_skills
 
@@ -36,18 +39,52 @@ logger = logging.getLogger(__name__)
 _WINDOW_DAYS = 30
 
 
-def _safe_display_name(meta: dict[str, str], key: str) -> str:
-    """The frontmatter ``name``, with credential-shaped text redacted.
+def _redacted(raw: str) -> str:
+    """*raw* with credential-shaped text and exfiltration URLs redacted.
 
-    An auto-skill's frontmatter is written by the agent, so this string is
+    An auto-skill's frontmatter is written by the agent, so its text is
     LLM-authored and reaches the dashboard verbatim. Redacting is cheap and a
-    legitimate skill name never matches these patterns, so the display path pays
-    nothing for the guarantee.
+    legitimate skill name or description never matches these patterns, so the
+    display path pays nothing for the guarantee.
     """
-    raw = meta.get("name", key)
     cleaned, _ = redact_exfiltration_urls(raw)
     cleaned, _ = redact_credentials(cleaned)
     return cleaned
+
+
+def _safe_display_name(meta: dict[str, str], key: str) -> str:
+    """The frontmatter ``name``, redacted (see :func:`_redacted`)."""
+    return _redacted(meta.get("name", key))
+
+
+def _safe_description(meta: dict[str, str]) -> str:
+    """The frontmatter ``description``, redacted; ``""`` when the skill has none.
+
+    The row needs it so a reader can tell what a skill is without leaving the
+    screen; a skill they never added otherwise shows only a name and a number.
+    """
+    return _redacted(meta.get("description", "").strip())
+
+
+def _origin(skills_loader: Any, key: str, skill_file: Path, confine_root: Any) -> str:
+    """Where this skill came from: ``"builtin"``, ``"app"`` or ``"user"``.
+
+    The loader's own ``_is_user_authored`` decides the user's skills from the
+    rest, so the tag never disagrees with it. Of the rest, a skill resolving
+    into ``<data home>/apps`` was registered by an app the user installed, not
+    shipped with Kiro Crew, so it gets its own answer instead of "builtin".
+    """
+    if skills_loader._is_user_authored(
+        {"key": key, "path": str(skill_file), "confine_root": confine_root}
+    ):
+        return "user"
+    try:
+        apps_root = os.path.realpath(config_dir() / "apps")
+    except Exception:  # noqa: BLE001 — an unresolvable data home has no installed apps
+        return "builtin"
+    if _within_any(os.path.realpath(skill_file), (apps_root,)):
+        return "app"
+    return "builtin"
 
 
 def _char_length(skill_file: Path) -> int | None:
@@ -199,6 +236,8 @@ def _compute_budget(
         row: dict[str, Any] = {
             "key": key,
             "name": _safe_display_name(meta, key),
+            "description": _safe_description(meta),
+            "origin": _origin(skills_loader, key, skill_file, confine_by_key.get(key)),
             "size_bytes": size_bytes,
             "deliveries": deliveries,
             "chars": chars,

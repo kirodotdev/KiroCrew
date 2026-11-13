@@ -1,13 +1,8 @@
 """What a turn's entries record: the turn, its bodies, context, steps and tool calls.
 
-It pins the fields the turn-time families write: a turn's ordinals, token counts, cost and
-actor, message bodies and the chunks an oversize body splits into, the request
-configuration, the composed context, model-call steps, tool calls that settle exactly once,
-queued messages, the attempt a rerun of one ordinal carries and what a turn-end closer may
-claim; and it holds every emitted type to the shape its type documents. How a log opens is
-pinned in `test_crew_log_emit.py`; attempt seeding, closer placement, redaction and the
-flag in `test_crew_log_emit_redaction_and_flag.py`; and the writer in
-`test_crew_log_emit_write_path.py`.
+It also holds every emitted type to its documented shape. Log opening is in
+`test_crew_log_emit.py`; attempt seeding, closers, redaction and the flag in
+`test_crew_log_emit_redaction_and_flag.py`; the writer in `test_crew_log_emit_write_path.py`.
 """
 
 from __future__ import annotations
@@ -17,6 +12,7 @@ import math
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     SESSION,
     _body,
@@ -31,7 +27,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import projection as crew_log_projection
 
-# --- a whole turn ----------------------------------------------------------
+# a whole turn
 
 
 def test_one_full_turn_produces_contiguous_seq():
@@ -228,13 +224,9 @@ def test_turn_completed_drops_a_charge_that_is_not_a_finite_positive_number():
 def test_a_provider_that_bills_in_tokens_alone_folds_as_credits_unreported():
     """Writer to fold, for the provider shape the credits guard is for.
 
-    ``TurnUsage`` leaves ``credits`` at 0.0 for a provider that bills in tokens
-    (``claude_code``, ``bedrock``: token counts plus ``cost_usd``), and the runner
-    hands that 0.0 to the closer as-is. Written as a charge, the ``usage`` fold
-    counts every such turn in ``credits_reported`` and the panel's credits tile
-    prints a measured ``0`` beside real token counts -- the same shape as the token
-    defect, on the other field. The fold is given the writer's own output, so this
-    holds the writer to what the panel will show.
+    Token-billing providers (``claude_code``, ``bedrock``) leave ``credits`` at 0.0.
+    Written as a charge, the panel would print a measured ``0`` credits beside real
+    token counts.
     """
     _open_session()
     for turn in (1, 2, 3):
@@ -250,7 +242,7 @@ def test_a_provider_that_bills_in_tokens_alone_folds_as_credits_unreported():
             model="claude",
             provider="claude_code",
         )
-    assert emit.flush()
+    assert_drained()
     usage = crew_log_projection.read_projection(SESSION, "usage").value
     assert usage["turns"]["completed"] == 3
     assert usage["turns"]["tokens_reported"] == 3
@@ -295,18 +287,17 @@ def test_an_unknown_actor_is_recorded_as_other_not_guessed():
 def test_an_app_authored_send_is_not_dispatched_as_a_person():
     """The send API names the app it already identified.
 
-    The actor resolver's fallback is ``user``, so a dispatch site that observes
-    a non-person producer and passes no actor does not leave the field absent --
-    it states that a person typed the message. ``_api_chat`` holds that fact in
-    ``request_app`` (stamped by the app-token auth middleware, which a person
-    cannot write), so the branch that reads it must also hand it on.
+    The actor resolver falls back to ``user``, so a missing actor claims a person typed
+    it. ``request_app`` (set by the app-token middleware) must be handed on.
     """
     import ast
     import inspect
 
     from kiro_crew.dashboard import chat_handlers
 
-    tree = ast.parse(inspect.getsource(chat_handlers.api_chat))
+    # ``api_chat`` wraps the send itself (``_api_chat_send``) to record a Crew Mode
+    # worker steer after it; the actor is stamped where the request is read.
+    tree = ast.parse(inspect.getsource(chat_handlers._api_chat_send))
     kwargs_writes = [
         node
         for node in ast.walk(tree)
@@ -342,7 +333,7 @@ def test_a_tool_call_is_identified_by_id_in_data_and_records_no_arguments():
     }
 
 
-# --- message bodies -------------------------------------------------------
+# message bodies
 
 
 def test_an_observed_class_is_recorded_when_a_link_commits():
@@ -355,7 +346,7 @@ def test_an_observed_class_is_recorded_when_a_link_commits():
     """
     _open_session()
     emit.on_class_observed(SESSION, memory="persistent", channel=True)
-    assert emit.flush()
+    assert_drained()
     entry = _body()[-1]
     assert entry["type"] == "session/class"
     assert entry["data"]["channel"] is True
@@ -372,10 +363,10 @@ def test_a_class_that_has_not_moved_records_nothing():
     """
     _open_session()
     emit.on_class_observed(SESSION, memory="persistent", channel=True)
-    assert emit.flush()
+    assert_drained()
     before = len(_body())
     emit.on_class_observed(SESSION, memory="persistent", channel=True)
-    assert emit.flush()
+    assert_drained()
     assert len(_body()) == before, "a restatement of the same class is not a move"
 
 
@@ -388,14 +379,14 @@ def test_an_observed_class_with_no_memory_mode_records_nothing():
     """
     _open_session()
     emit.on_class_observed(SESSION, memory="", channel=True)
-    assert emit.flush()
+    assert_drained()
     assert [e["type"] for e in _body()].count("session/class") == 0
 
 
 def test_a_received_message_records_its_body_role_and_surface():
     _open_session()
     _typed(1, "what broke?", source="dashboard", role="user")
-    assert emit.flush()
+    assert_drained()
     entry = _body()[-1]
     assert entry["type"] == "message/received"
     assert entry["data"]["text"] == "what broke?"
@@ -410,7 +401,7 @@ def test_a_received_message_is_recorded_even_when_the_turn_is_then_refused():
     _open_session()
     _typed(1, "run it")
     emit.on_turn_refused(SESSION, 1, "not_authorized")
-    assert emit.flush()
+    assert_drained()
     kinds = [e["type"] for e in _body()]
     assert "message/received" in kinds
     assert "turn/refused" in kinds
@@ -427,7 +418,7 @@ def test_a_refused_prompt_expansion_records_the_input_and_the_refusal(reason):
     _open_session()
     emit.on_message_received(SESSION, 1, role="user", text="@secret run it", source="dashboard")
     emit.on_turn_refused(SESSION, 1, reason, "user", depth=0)
-    assert emit.flush()
+    assert_drained()
     received = [e for e in _body() if e["type"] == "message/received"]
     refused = [e for e in _body() if e["type"] == "turn/refused"]
     assert len(received) == 1
@@ -446,7 +437,7 @@ def test_an_accepted_expansion_records_the_input_exactly_once():
     _open_session()
     emit.on_message_received(SESSION, 1, role="user", text="hello", source="dashboard")
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     received = [e for e in _body() if e["type"] == "message/received"]
     assert len(received) == 1
     assert [e["type"] for e in _body() if e["type"] == "turn/refused"] == []
@@ -545,7 +536,7 @@ def test_a_step_less_context_composed_is_written_for_the_first_call(tmp_path):
     emit.on_message_received(SESSION, 1, role="user", text="do it", source="dashboard")
     emit.on_context_composed(SESSION, 1, blocks={"system": 400})
     emit.on_step_started(SESSION, 1)
-    assert emit.flush()
+    assert_drained()
     body = _body()
     kinds = [e["type"] for e in body]
     composed = [e for e in body if e["type"] == "context/composed"]
@@ -562,7 +553,7 @@ def test_attachments_are_identifiers_not_refs():
     # same reason a tool call id lives in data.
     _open_session()
     _typed(1, "see this", attachments=["img-1", "img-2"])
-    assert emit.flush()
+    assert_drained()
     entry = _body()[-1]
     assert entry["data"]["attachments"] == ["img-1", "img-2"]
     assert "attachments_omitted" not in entry["data"]
@@ -572,7 +563,7 @@ def test_attachments_are_identifiers_not_refs():
 def test_no_attachment_key_when_there_are_none():
     _open_session()
     _typed(1, "plain")
-    assert emit.flush()
+    assert_drained()
     assert "attachments" not in _body()[-1]["data"]
 
 
@@ -580,7 +571,7 @@ def test_a_sent_message_records_the_text_and_the_model_call_it_came_from():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_message_sent(SESSION, 1, step=2, text="the log was rotated")
-    assert emit.flush()
+    assert_drained()
     entry = _body()[-1]
     assert entry["type"] == "message/sent"
     assert entry["data"]["text"] == "the log was rotated"
@@ -591,7 +582,7 @@ def test_an_interrupted_reply_says_so_and_a_normal_one_stays_silent():
     _open_session()
     emit.on_message_sent(SESSION, 1, text="half a thou")
     emit.on_message_sent(SESSION, 1, text="all of it", interrupted=True)
-    assert emit.flush()
+    assert_drained()
     sent = [e for e in _body() if e["type"] == "message/sent"]
     assert "interrupted" not in sent[0]["data"]
     assert sent[1]["data"]["interrupted"] is True
@@ -604,7 +595,7 @@ def test_a_body_too_big_for_one_line_is_split_and_cited_in_order():
     huge = "x" * (lg.MAX_ENTRY_BYTES + 1000)
     expected = math.ceil(len(huge) / emit._CHUNK_TEXT_CHARS)
     emit.on_message_sent(SESSION, 4, step=1, text=huge)
-    assert emit.flush()
+    assert_drained()
     body = _body()
     chunks = [e for e in body if e["type"] == "message/chunk"]
     sent = [e for e in body if e["type"] == "message/sent"][-1]
@@ -621,7 +612,7 @@ def test_a_body_that_fits_is_not_split_at_all():
     # rides on one line when the line can hold it.
     _open_session()
     emit.on_message_sent(SESSION, 1, text="x" * (emit._CHUNK_TEXT_CHARS * 2))
-    assert emit.flush()
+    assert_drained()
     assert not [e for e in _body() if e["type"] == "message/chunk"]
     assert _body()[-1]["data"]["text"]
 
@@ -629,7 +620,7 @@ def test_a_body_that_fits_is_not_split_at_all():
 def test_every_split_line_is_inside_the_format_ceiling():
     _open_session()
     emit.on_message_sent(SESSION, 1, text="\u4e2d" * (emit._CHUNK_TEXT_CHARS * 2))
-    assert emit.flush()
+    assert_drained()
     # Non-ASCII is the case the slice size exists for: ensure_ascii turns one
     # character into six bytes, so a slice measured in characters alone would be
     # refused at append time and the body would vanish.
@@ -644,7 +635,7 @@ def test_an_astral_body_still_splits_inside_the_ceiling():
     _open_session()
     body = "\U0001f600" * (emit._CHUNK_TEXT_CHARS + 500)
     emit.on_message_sent(SESSION, 1, text=body)
-    assert emit.flush()
+    assert_drained()
     chunks = [e for e in _body() if e["type"] == "message/chunk"]
     sent = [e for e in _body() if e["type"] == "message/sent"]
     assert chunks, "the body was not split"
@@ -661,7 +652,7 @@ def test_a_lone_surrogate_body_never_raises_into_the_caller():
     _open_session()
     emit.on_message_received(SESSION, 1, text="before \ud800 after")
     emit.on_message_sent(SESSION, 1, text="reply \ud800 here")
-    assert emit.flush()
+    assert_drained()
 
 
 def test_an_oversize_received_body_is_split_like_a_sent_one():
@@ -671,7 +662,7 @@ def test_an_oversize_received_body_is_split_like_a_sent_one():
     _open_session()
     body = "p" * (lg.MAX_ENTRY_BYTES + 1000)
     emit.on_message_received(SESSION, 1, text=body, source="dashboard")
-    assert emit.flush()
+    assert_drained()
     chunks = [e for e in _body() if e["type"] == "message/chunk"]
     got = [e for e in _body() if e["type"] == "message/received"]
     assert chunks, "an oversize received body was not split"
@@ -701,7 +692,7 @@ def test_oversize_attachment_metadata_keeps_the_received_message():
             source="dashboard",
             attachments=attachments,
         )
-    assert emit.flush()
+    assert_drained()
 
     received = [entry for entry in _body() if entry["type"] == "message/received"]
     assert len(received) == len(
@@ -739,7 +730,7 @@ def test_every_body_family_produces_one_body_representation():
     emit.on_message_sent(SESSION, 1, step=1, text=small)
     _typed(2, large)
     emit.on_message_sent(SESSION, 2, step=1, text=large)
-    assert emit.flush()
+    assert_drained()
 
     families = {"message/received", "message/sent"}
     seen: set[str] = set()
@@ -765,7 +756,7 @@ def test_overflow_chunks_carry_a_body_that_would_otherwise_be_lost():
     # alternative is an append refused for size and a body missing from the log.
     _open_session()
     emit.on_message_sent(SESSION, 1, text="y" * (lg.MAX_ENTRY_BYTES + 1000))
-    assert emit.flush()
+    assert_drained()
     assert [e["type"] for e in _body() if e["type"] == "message/chunk"]
 
 
@@ -774,14 +765,14 @@ def test_a_split_chunk_is_marked_ignorable():
     # message/sent that cites them.
     _open_session()
     emit.on_message_sent(SESSION, 1, text="z" * (lg.MAX_ENTRY_BYTES + 1000))
-    assert emit.flush()
+    assert_drained()
     marked = [e for e in _body() if e["type"] == "message/chunk"]
     assert marked
     for entry in marked:
         assert entry["ignorable"] is True
 
 
-# --- streamed deltas ------------------------------------------------------
+# streamed deltas
 
 
 def test_the_request_configuration_is_written_once_and_then_only_on_change():
@@ -793,7 +784,7 @@ def test_the_request_configuration_is_written_once_and_then_only_on_change():
     emit.on_request_configured(
         SESSION, 4, model="claude-sonnet-5", provider="acp", context_window=200000
     )
-    assert emit.flush()
+    assert_drained()
     written = [e for e in _body() if e["type"] == "request/configured"]
     # Three identical turns produce ONE entry; the swap produces the second.
     assert [e["data"]["turn"] for e in written] == [1, 4]
@@ -803,7 +794,7 @@ def test_the_request_configuration_is_written_once_and_then_only_on_change():
 def test_the_system_prompt_is_recorded_as_a_digest_never_as_text():
     _open_session()
     emit.on_request_configured(SESSION, 1, model="m", provider="acp", system="SECRET PROMPT")
-    assert emit.flush()
+    assert_drained()
     data = _body()[-1]["data"]
     assert "SECRET PROMPT" not in json.dumps(data)
     assert len(data["system"]) == 64
@@ -814,7 +805,7 @@ def test_a_changed_system_prompt_alone_is_a_change():
     _open_session()
     emit.on_request_configured(SESSION, 1, model="m", provider="acp", system="one")
     emit.on_request_configured(SESSION, 2, model="m", provider="acp", system="two")
-    assert emit.flush()
+    assert_drained()
     assert len([e for e in _body() if e["type"] == "request/configured"]) == 2
 
 
@@ -824,7 +815,7 @@ def test_the_configuration_carries_no_tool_list_at_all():
     # tools", which is false, so the field is absent instead.
     _open_session()
     emit.on_request_configured(SESSION, 1, model="m", provider="acp", context_window=1)
-    assert emit.flush()
+    assert_drained()
     assert "tools" not in _body()[-1]["data"]
 
 
@@ -832,10 +823,10 @@ def test_a_reopened_session_writes_its_configuration_again():
     _open_session()
     emit.on_request_configured(SESSION, 1, model="m", provider="acp")
     emit.on_session_closed(SESSION, "reset")
-    assert emit.flush()
+    assert_drained()
     _open_session()
     emit.on_request_configured(SESSION, 1, model="m", provider="acp")
-    assert emit.flush()
+    assert_drained()
     assert len([e for e in _body() if e["type"] == "request/configured"]) == 2
 
 
@@ -845,7 +836,7 @@ def test_a_failed_configuration_append_is_retried_not_suppressed(monkeypatch):
     # would be suppressed as unchanged, and the session would carry no record of
     # what it ran as.
     _open_session()
-    assert emit.flush()
+    assert_drained()
     original = lg.CrewLog.append
     failures = {"left": 1}
 
@@ -857,17 +848,17 @@ def test_a_failed_configuration_append_is_retried_not_suppressed(monkeypatch):
 
     monkeypatch.setattr(lg.CrewLog, "append", _fail_once)
     emit.on_request_configured(SESSION, 1, model="m", provider="acp", context_window=7)
-    assert emit.flush()
+    assert_drained()
     assert not [e for e in _body() if e["type"] == "request/configured"]
     # Same configuration, next turn: it must be written, not treated as unchanged.
     emit.on_request_configured(SESSION, 2, model="m", provider="acp", context_window=7)
-    assert emit.flush()
+    assert_drained()
     written = [e for e in _body() if e["type"] == "request/configured"]
     assert len(written) == 1
     assert written[0]["data"]["turn"] == 2
 
 
-# --- composed context -----------------------------------------------------
+# composed context
 
 
 def test_composed_context_itemises_the_blocks_with_estimated_tokens():
@@ -875,7 +866,7 @@ def test_composed_context_itemises_the_blocks_with_estimated_tokens():
     emit.on_context_composed(
         SESSION, 1, step=1, blocks={"lessons": 400, "memory": 800}, total_chars=1200
     )
-    assert emit.flush()
+    assert_drained()
     data = _body()[-1]["data"]
     # Newest-biggest first, characters exact, tokens derived at 4 chars each.
     assert data["sources"] == [
@@ -891,7 +882,7 @@ def test_the_token_count_says_that_it_is_an_estimate():
     # entry admits the number is derived rather than measured.
     _open_session()
     emit.on_context_composed(SESSION, 1, blocks={"memory": 40})
-    assert emit.flush()
+    assert_drained()
     assert _body()[-1]["data"]["tokens_estimated"] is True
 
 
@@ -914,7 +905,7 @@ def test_the_token_count_says_that_it_is_an_estimate():
 def test_a_remainder_source_keeps_a_label_a_reader_can_translate(label, recorded):
     _open_session()
     emit.on_context_composed(SESSION, 1, blocks={label: 100, "lessons": 40})
-    assert emit.flush()
+    assert_drained()
     kinds = [s["kind"] for s in _body()[-1]["data"]["sources"]]
     assert kinds == [recorded, "lessons"]
 
@@ -922,7 +913,7 @@ def test_a_remainder_source_keeps_a_label_a_reader_can_translate(label, recorded
 def test_empty_and_negative_blocks_are_dropped_rather_than_recorded():
     _open_session()
     emit.on_context_composed(SESSION, 1, blocks={"memory": 0, "lessons": -5, "skill_index": 8})
-    assert emit.flush()
+    assert_drained()
     assert [s["kind"] for s in _body()[-1]["data"]["sources"]] == ["skill_index"]
 
 
@@ -931,7 +922,7 @@ def test_no_blocks_writes_nothing():
     before = len(_body())
     emit.on_context_composed(SESSION, 1, blocks={})
     emit.on_context_composed(SESSION, 1, blocks=None)
-    assert emit.flush()
+    assert_drained()
     assert len(_body()) == before
 
 
@@ -944,7 +935,7 @@ def test_budget_cuts_ride_beside_the_blocks_and_pass_the_declaration():
         "background": {"reason": "budget", "sections": ["skills"]},
     }
     emit.on_context_composed(SESSION, 1, blocks={"lessons": 400}, omitted=cut)
-    assert emit.flush()
+    assert_drained()
     data = _body()[-1]["data"]
     assert data["sources"] == [{"kind": "lessons", "chars": 400, "tokens": 100}]
     assert data["omitted"] == cut
@@ -953,11 +944,11 @@ def test_budget_cuts_ride_beside_the_blocks_and_pass_the_declaration():
 def test_a_composition_that_cut_nothing_carries_no_omitted_field():
     _open_session()
     emit.on_context_composed(SESSION, 1, blocks={"lessons": 400}, omitted={})
-    assert emit.flush()
+    assert_drained()
     assert "omitted" not in _body()[-1]["data"]
 
 
-# --- model-call steps -----------------------------------------------------
+# model-call steps
 
 
 def test_a_step_is_one_model_call_and_numbering_restarts_each_turn():
@@ -975,7 +966,7 @@ def test_a_step_records_how_long_the_model_call_took():
     emit.on_turn_started(SESSION, 1, "user")
     step = emit.on_step_started(SESSION, 1)
     emit.on_step_completed(SESSION, 1, step, ms=1234)
-    assert emit.flush()
+    assert_drained()
     done = [e for e in _body() if e["type"] == "step/completed"][-1]
     assert done["data"] == {"turn": 1, "step": step, "ms": 1234}
 
@@ -984,7 +975,7 @@ def test_closing_a_step_that_never_opened_writes_nothing():
     _open_session()
     before = len(_body())
     emit.on_step_completed(SESSION, 1, 0, ms=5)
-    assert emit.flush()
+    assert_drained()
     assert len(_body()) == before
 
 
@@ -996,7 +987,7 @@ def test_a_tool_call_names_the_model_call_that_issued_it():
     emit.on_step_started(SESSION, 1)
     emit.on_tool_called(SESSION, 1, name="b", call_id="c2")
     emit.on_tool_called(SESSION, 1, name="c", call_id="c3")
-    assert emit.flush()
+    assert_drained()
     calls = [e["data"] for e in _body() if e["type"] == "tool/called"]
     # step says WHICH model call; call_index orders the calls within the turn.
     assert [c["step"] for c in calls] == [1, 2, 2]
@@ -1009,7 +1000,7 @@ def test_two_tools_in_one_model_call_share_a_step_but_not_a_position():
     emit.on_step_started(SESSION, 1)
     emit.on_tool_called(SESSION, 1, name="a", call_id="c1")
     emit.on_tool_called(SESSION, 1, name="b", call_id="c2")
-    assert emit.flush()
+    assert_drained()
     calls = [e["data"] for e in _body() if e["type"] == "tool/called"]
     assert {c["step"] for c in calls} == {1}
     assert [c["call_index"] for c in calls] == [1, 2]
@@ -1019,7 +1010,7 @@ def test_a_tool_call_with_no_announced_step_omits_it_rather_than_guessing():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="a", call_id="c1")
-    assert emit.flush()
+    assert_drained()
     data = [e["data"] for e in _body() if e["type"] == "tool/called"][-1]
     assert "step" not in data
     assert data["call_index"] == 1
@@ -1031,13 +1022,13 @@ def test_a_completion_reuses_both_of_its_calls_ordinals():
     emit.on_step_started(SESSION, 1)
     emit.on_tool_called(SESSION, 1, name="a", call_id="c1")
     emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
-    assert emit.flush()
+    assert_drained()
     done = [e["data"] for e in _body() if e["type"] == "tool/completed"][-1]
     assert done["step"] == 1
     assert done["call_index"] == 1
 
 
-# --- a tool call settles exactly once --------------------------------------
+# a tool call settles exactly once
 
 
 def test_a_second_terminal_frame_for_the_same_call_writes_no_second_closer():
@@ -1050,7 +1041,7 @@ def test_a_second_terminal_frame_for_the_same_call_writes_no_second_closer():
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c1")
     emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
     emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
-    assert emit.flush()
+    assert_drained()
     closers = [e for e in _body() if e["type"] == "tool/completed"]
     assert len(closers) == 1
     # The one that landed is the FIRST frame: it kept the remembered identity.
@@ -1064,7 +1055,7 @@ def test_a_terminal_frame_for_a_never_opened_call_still_gets_its_closer():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_completed(SESSION, 1, call_id="never-opened", status="completed")
-    assert emit.flush()
+    assert_drained()
     closers = [e for e in _body() if e["type"] == "tool/completed"]
     assert len(closers) == 1
     data = closers[0]["data"]
@@ -1084,7 +1075,7 @@ def test_a_frame_after_the_group_sweep_closed_the_call_writes_nothing():
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c1")
     assert emit.close_open_tool_calls(SESSION, 1, status="completed") == 1
     emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
-    assert emit.flush()
+    assert_drained()
     closers = [e for e in _body() if e["type"] == "tool/completed"]
     assert len(closers) == 1
     # The sweep's closer, not the late frame's.
@@ -1132,7 +1123,7 @@ def test_settle_once_holds_for_a_terminal_frame_from_either_parser():
     emit.on_turn_started(SESSION, 1, "user")
     _record(parser_a)
     _record(parser_b)
-    assert emit.flush()
+    assert_drained()
     closers = [e for e in _body() if e["type"] == "tool/completed"]
     assert len(closers) == 1, "the two parsers' frames wrote two closers for one call"
 
@@ -1145,11 +1136,11 @@ def test_a_settled_call_can_be_reopened_and_reclosed_in_a_later_turn():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_completed(SESSION, 1, call_id="reused", status="completed")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     assert emit.live_turn(SESSION) == 0, "the landed terminal did not release its turn"
     emit.on_turn_started(SESSION, 2, "user")
     emit.on_tool_completed(SESSION, 2, call_id="reused", status="completed")
-    assert emit.flush()
+    assert_drained()
     closers = [e["data"] for e in _body() if e["type"] == "tool/completed"]
     assert [c["turn"] for c in closers] == [1, 2]
 
@@ -1172,7 +1163,7 @@ def test_the_step_boundary_is_derived_and_may_cover_consecutive_tool_only_calls(
     # A second tool-only model call with no intervening text produces no new
     # step/started: the runner only opens one at a text transition.
     emit.on_tool_called(SESSION, 1, name="read", call_id="c3")
-    assert emit.flush()
+    assert_drained()
     steps = [e for e in _body() if e["type"] == "step/started"]
     assert len(steps) == 1, "a documented limitation: consecutive tool-only calls share a step"
     calls = [e["data"] for e in _body() if e["type"] == "tool/called"]
@@ -1180,7 +1171,7 @@ def test_the_step_boundary_is_derived_and_may_cover_consecutive_tool_only_calls(
     assert [c["call_index"] for c in calls] == [1, 2, 3]
 
 
-# --- tool payload accounting ---------------------------------------------
+# tool payload accounting
 
 
 def test_the_error_flag_is_recorded_as_given_not_derived_from_status():
@@ -1190,13 +1181,13 @@ def test_the_error_flag_is_recorded_as_given_not_derived_from_status():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_completed(SESSION, 1, call_id="c1", status="refused", is_error=True)
     emit.on_tool_completed(SESSION, 1, call_id="c2", status="completed", is_error=False)
-    assert emit.flush()
+    assert_drained()
     done = [e["data"] for e in _body() if e["type"] == "tool/completed"]
     assert done[0]["is_error"] is True
     assert done[1]["is_error"] is False
 
 
-# --- the queue ------------------------------------------------------------
+# the queue
 
 
 def test_a_queued_message_records_its_size_and_place_but_no_turn():
@@ -1204,7 +1195,7 @@ def test_a_queued_message_records_its_size_and_place_but_no_turn():
     # attribute one person's message to another's turn.
     _open_session()
     emit.on_message_queued(SESSION, source="slack", size_bytes=42, queued_seq="q-7")
-    assert emit.flush()
+    assert_drained()
     entry = _body()[-1]
     assert entry["type"] == "message/queued"
     assert entry["data"] == {"source": "slack", "bytes": 42, "queued_seq": "q-7"}
@@ -1215,18 +1206,15 @@ def test_a_queued_message_does_not_record_its_body_twice():
     # The body arrives with message/received when the queue drains.
     _open_session()
     emit.on_message_queued(SESSION, source="dashboard", size_bytes=9, queued_seq="q-1")
-    assert emit.flush()
+    assert_drained()
     assert "text" not in _body()[-1]["data"]
 
 
 def test_a_nested_prompt_turn_keeps_the_author_of_the_turn_that_carried_it():
     """A replacing expansion re-enters the runner, and the actor travels with it.
 
-    An ``@prompt`` mention re-dispatches the turn with the expanded body. The
-    actor resolver's fallback is ``user``, so a re-entry that forwards the
-    directive flags but drops the actor records a person for a turn an app
-    authored -- the same false statement the top-level dispatch was fixed to stop
-    making, one frame deeper.
+    An ``@prompt`` mention re-dispatches the turn; dropping the actor there would fall
+    back to ``user`` and record a person for an app-authored turn.
     """
     import ast
 
@@ -1257,7 +1245,7 @@ def test_a_nested_prompt_turn_keeps_the_author_of_the_turn_that_carried_it():
         )
 
 
-# --- provenance ------------------------------------------------------------
+# provenance
 
 
 def test_a_typed_automation_banner_cannot_attribute_a_turn_to_automation():
@@ -1337,7 +1325,7 @@ def test_a_queue_kind_beats_a_stamped_actor():
     assert _actor_for_queue_items(both) == "cron"
 
 
-# --- attempts at one turn ordinal -----------------------------------------
+# attempts at one turn ordinal
 
 
 def test_rerunning_one_ordinal_increments_the_attempt():
@@ -1347,7 +1335,7 @@ def test_rerunning_one_ordinal_increments_the_attempt():
     _open_session()
     for _ in range(3):
         emit.on_turn_started(SESSION, 7, "user")
-    assert emit.flush()
+    assert_drained()
     starts = [e["data"] for e in _body() if e["type"] == "turn/started"]
     assert [d.get("attempt", 1) for d in starts] == [1, 2, 3]
 
@@ -1356,7 +1344,7 @@ def test_the_first_attempt_carries_no_field():
     # The common case is a turn that was never rerun; it should not pay a field.
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     assert "attempt" not in [e for e in _body() if e["type"] == "turn/started"][-1]["data"]
 
 
@@ -1365,7 +1353,7 @@ def test_attempts_are_counted_per_ordinal_not_per_session():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_turn_started(SESSION, 2, "user")
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     starts = [
         (e["data"]["turn"], e["data"].get("attempt", 1))
         for e in _body()
@@ -1384,13 +1372,13 @@ def test_a_restart_between_two_retries_still_increments():
     _open_session()
     emit.on_turn_started(SESSION, 4, "user")
     emit.on_turn_started(SESSION, 4, "user")
-    assert emit.flush()
+    assert_drained()
     # A new gateway process: caches gone, the file is all that is left.
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew", resumed=True)
-    assert emit.flush()
+    assert_drained()
     emit.on_turn_started(SESSION, 4, "user")
-    assert emit.flush()
+    assert_drained()
     attempts = [e["data"].get("attempt", 1) for e in _body() if e["type"] == "turn/started"]
     assert attempts == [1, 2, 3], f"a restart reset the attempt count: {attempts}"
 
@@ -1398,7 +1386,7 @@ def test_a_restart_between_two_retries_still_increments():
 def test_an_explicit_attempt_overrides_the_count():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user", attempt=9)
-    assert emit.flush()
+    assert_drained()
     assert [e for e in _body() if e["type"] == "turn/started"][-1]["data"]["attempt"] == 9
 
 
@@ -1408,24 +1396,15 @@ def test_an_explicit_attempt_overrides_the_count():
 def test_a_turn_end_closer_does_not_call_an_unfinalised_tool_completed():
     """At turn end nothing observed the tool's outcome.
 
-    The stream may have raised, the process may have died, or the call may simply
-    never have been finalised. `completed` there states a success no site saw, in a
-    file nothing rewrites, so the default is `unknown` -- the same word
-    `repair_interrupted_turn` writes for an unmatched `tool/called`, which is the
-    identical claim reached from the file instead of from memory.
-
-    `is_error` stays absent rather than being taken from the turn's own failure: a
-    turn that raised says so in its own terminal, and stamping the TOOL as errored
-    would be a second unobserved claim.
-
-    Mutation guard: restoring `completed` as the default reddens this.
+    So the default is `unknown`, as `repair_interrupted_turn` writes for an unmatched
+    `tool/called`. `is_error` stays absent: the turn's own terminal reports its failure.
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_write", call_id="c1")
     assert emit.close_open_tool_calls(SESSION, 1) == 1
     emit.on_turn_failed(SESSION, 1, error="RuntimeError")
-    assert emit.flush()
+    assert_drained()
 
     done = [e["data"] for e in _body() if e["type"] == "tool/completed"]
     assert len(done) == 1
@@ -1433,27 +1412,21 @@ def test_a_turn_end_closer_does_not_call_an_unfinalised_tool_completed():
     assert "is_error" not in done[0], "the tool was not observed to fail either"
 
 
-# --- an outputless tool still gets its closer -----------------------------
+# an outputless tool still gets its closer
 
 
 def test_a_tool_that_produced_no_output_is_still_closed():
     """A tool with no output sends no result frame at all.
 
-    So `tool_final` never arrives and the completion path never runs. Its
-    `tool/called` would stay open for the life of the file, and a fold counting
-    open calls would report a turn that never finished using a tool it had in
-    fact finished with.
-
-    `completed` is the caller's claim, not the default: the tool-group boundary
-    passes it because the model went on to produce text, which means the tools it
-    was waiting on finished.
+    So `tool_final` never arrives and its `tool/called` would stay open forever. The
+    tool-group boundary passes `completed` because the model went on to produce text.
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_step_started(SESSION, 1)
     emit.on_tool_called(SESSION, 1, name="fs_write", call_id="c1")
     assert emit.close_open_tool_calls(SESSION, 1, status="completed") == 1
-    assert emit.flush()
+    assert_drained()
     done = [e["data"] for e in _body() if e["type"] == "tool/completed"]
     assert len(done) == 1
     assert done[0]["call_id"] == "c1"
@@ -1473,7 +1446,7 @@ def test_closing_open_calls_leaves_an_already_completed_one_alone():
     emit.on_tool_called(SESSION, 1, name="b", call_id="c2")
     emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed", result="out")
     assert emit.close_open_tool_calls(SESSION, 1) == 1
-    assert emit.flush()
+    assert_drained()
     done = [e["data"] for e in _body() if e["type"] == "tool/completed"]
     assert [d["call_id"] for d in done] == ["c1", "c2"]
     assert done[0]["result_bytes"] == 3
@@ -1485,7 +1458,7 @@ def test_closing_open_calls_is_a_no_op_when_none_are_open():
     emit.on_turn_started(SESSION, 1, "user")
     before = len(_body())
     assert emit.close_open_tool_calls(SESSION, 1) == 0
-    assert emit.flush()
+    assert_drained()
     assert len(_body()) == before
 
 
@@ -1497,7 +1470,7 @@ def test_a_turn_never_completes_with_an_open_call_inside_it():
     emit.on_tool_called(SESSION, 1, name="a", call_id="c1")
     emit.close_open_tool_calls(SESSION, 1)
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     kinds = [e["type"] for e in _body()]
     assert kinds.index("tool/completed") < kinds.index("turn/completed")
 
@@ -1566,7 +1539,7 @@ def test_every_emitted_type_matches_the_documented_shape():
     emit.on_turn_refused(SESSION, 2, "not_authorized")
     emit.on_session_closed(SESSION, "reset")
     emit.on_message_sent(SESSION, 1, step=step, text="o" * (lg.MAX_ENTRY_BYTES + 200))
-    assert emit.flush()
+    assert_drained()
     seen: dict[str, int] = {}
     for entry in _body():
         kind = entry["type"]

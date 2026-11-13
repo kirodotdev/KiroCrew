@@ -12,6 +12,10 @@ vi.mock('../hooks/useNotificationSound', async (importOriginal) => {
 
 const STORAGE_KEY = 'mc-notification-sound'
 
+/** The tone form's own card: both forms share the words "Name", "Play" and
+ *  "Save sound", so every query is scoped to the card it means. */
+const toneCard = () => within(screen.getByRole('region', { name: 'Build from tones' }))
+
 function render(sub: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return rtlRender(
@@ -41,9 +45,9 @@ const fillTones = (tones: Tone[]) => {
 }
 
 const addSound = (name: string, tones: Tone[]) => {
-  fireEvent.change(screen.getByLabelText('Name'), { target: { value: name } })
+  fireEvent.change(toneCard().getByLabelText('Name'), { target: { value: name } })
   fillTones(tones)
-  fireEvent.click(screen.getByRole('button', { name: 'Add sound' }))
+  fireEvent.click(toneCard().getByRole('button', { name: 'Save sound' }))
 }
 
 beforeEach(() => {
@@ -58,7 +62,7 @@ describe('Custom sounds settings', () => {
     addSound('myAlert', [[523, 0, 0.2, 1], [784, 0.2, 0.3, 0.9]])
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!)
     expect(stored.customTones.myAlert).toHaveLength(2)
-    const list = screen.getByRole('list', { name: 'Custom sounds' })
+    const list = screen.getByRole('list', { name: 'Your sounds' })
     expect(within(list).getByText('myAlert')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Play myAlert' }))
     expect(vi.mocked(playPreset).mock.calls[0][0]).toBe(customSoundId('myAlert'))
@@ -81,7 +85,7 @@ describe('Custom sounds settings', () => {
     const row = screen.getByRole('group', { name: 'Tone 1' })
     expect(within(row).getByLabelText('Volume (0-1)').getAttribute('aria-invalid')).toBe('true')
     expect(within(row).getByLabelText('Pitch (Hz)').getAttribute('aria-invalid')).toBeNull()
-    expect((screen.getByRole('button', { name: 'Add sound' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((toneCard().getByRole('button', { name: 'Save sound' }) as HTMLButtonElement).disabled).toBe(true)
     // The hint sits under the row it is about, tied to the bad field.
     const volume = within(row).getByLabelText('Volume (0-1)')
     const hint = document.getElementById(volume.getAttribute('aria-describedby')!)!
@@ -95,13 +99,13 @@ describe('Custom sounds settings', () => {
 
   it('explains an empty name on click, and says what was saved', () => {
     render('custom')
-    const addBtn = screen.getByRole('button', { name: 'Add sound' }) as HTMLButtonElement
+    const addBtn = toneCard().getByRole('button', { name: 'Save sound' }) as HTMLButtonElement
     // Not left off with no reason: the click reports what is missing.
     expect(addBtn.disabled).toBe(false)
     fireEvent.click(addBtn)
     expect(screen.getByText(/Use 1 to 32 letters/)).toBeTruthy()
     // The hint is tied to the Name field and marks it, like a bad tone field.
-    const nameInput = screen.getByLabelText('Name')
+    const nameInput = toneCard().getByLabelText('Name')
     expect(nameInput.getAttribute('aria-invalid')).toBe('true')
     expect(nameInput.className).toContain('border-danger')
     const nameHint = document.getElementById(nameInput.getAttribute('aria-describedby')!)!
@@ -109,13 +113,17 @@ describe('Custom sounds settings', () => {
     expect(nameInput.parentElement!.contains(nameHint)).toBe(true)
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
     addSound('myAlert', [[523, 0, 0.2, 1]])
-    expect(screen.getByRole('status').textContent).toBe('Saved myAlert.')
+    const status = screen.getByRole('status')
+    expect(status.textContent).toContain('Saved myAlert.')
+    // The confirmation names the next step: a sound plays only once a
+    // category is set to it.
+    expect(within(status).getByRole('button', { name: 'Choose where it plays in Per-category sounds' })).toBeTruthy()
   })
 
   it('starts with a tone the user can hear before saving', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: true, volume: 0.5, perCategory: { all: 'chime' } }))
     render('custom')
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    fireEvent.click(toneCard().getByRole('button', { name: 'Play' }))
     const [id, , tones] = vi.mocked(playPreset).mock.calls[0]
     expect(id).toBe(customSoundId('preview'))
     expect(Object.values(tones!)[0]).toEqual([
@@ -137,7 +145,7 @@ describe('Custom sounds settings', () => {
     const s = loadSoundSettings()
     expect(s.customTones).toBeUndefined()
     expect(s.perCategory).toEqual({ all: 'chime', hook: 'ding' })
-    expect(screen.getByText('No custom sounds yet.')).toBeTruthy()
+    expect(screen.getByText('No sounds yet. Add one below from an audio file or from tones.')).toBeTruthy()
 
     // Undo brings back the sound and every category that used it.
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
@@ -304,8 +312,8 @@ describe('Custom sounds settings', () => {
       const alert = screen.getByRole('alert')
       // Shown with the list it is about, not down by the add form. (After a
       // failed delete the list is still there.)
-      expect(screen.getByRole('list', { name: 'Custom sounds' }).parentElement!.contains(alert)).toBe(true)
-      expect(screen.getByLabelText('Name').closest('div')!.parentElement!.contains(alert)).toBe(false)
+      expect(screen.getByRole('list', { name: 'Your sounds' }).parentElement!.contains(alert)).toBe(true)
+      expect(toneCard().getByLabelText('Name').closest('div')!.parentElement!.contains(alert)).toBe(false)
       expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
       full = false
       fireEvent.click(screen.getByRole('button', { name: 'Delete mine' }))

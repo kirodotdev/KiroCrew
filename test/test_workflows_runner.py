@@ -77,6 +77,27 @@ async def test_run_started_first_and_finished_last() -> None:
     assert res.events[-1].type == "run_finished"
 
 
+async def test_backend_reaches_opts_only_when_named() -> None:
+    """A call naming no backend hands agent_fn the opts it always did, so its
+    replay fingerprint is unchanged; a named backend is passed through."""
+    seen: list[dict] = []
+
+    async def agent(prompt: str, opts: dict):
+        seen.append(opts)
+        return "ok"
+
+    script = (
+        'META = {"name": "b"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('a')\n"
+        "    await ctx.agent('b', backend='kas')\n"
+    )
+    res = await _runner(agent_fn=agent).run(script, run_id="wf_be", now=NOW)
+    assert res.ok, res.error
+    assert "backend" not in seen[0]
+    assert seen[1]["backend"] == "kas"
+
+
 async def test_invalid_script_fails_at_validate_stage() -> None:
     bad = "import os\n" + GOOD_SCRIPT
     res = await _runner().run(bad, run_id="wf_3", now=NOW)
@@ -91,6 +112,66 @@ async def test_script_exception_becomes_run_failed_exec() -> None:
     assert res.ok is False
     assert res.events[-1].type == "run_failed"
     assert res.events[-1].data["where"] == "exec"
+
+
+async def test_a_script_base_exception_fails_the_background_run() -> None:
+    from kiro_crew.testing.wait import await_until
+    from kiro_crew.workflows.registry import RunRegistry
+
+    script = (
+        'META = {"name": "boom"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('step 1')\n"
+        "    raise BaseException('script gave up')\n"
+    )
+    registry = RunRegistry()
+    rid = await _runner().run_background(script, registry=registry, run_id="wf_be", now=NOW)
+    handle = registry.get(rid)
+    assert handle is not None and handle.task is not None
+    escaped: BaseException | None = None
+    try:
+        await await_until(handle.task, what="the driver task to end")
+    except BaseException as exc:  # noqa: BLE001 - the driver must not die with it
+        escaped = exc
+    assert escaped is None, f"the driver task died with {escaped!r}"
+    snap = registry.status(rid, include_events=True)
+    assert snap["status"] == "failed", snap["status"]
+    assert snap["events"][-1]["type"] == "run_failed"
+    assert snap["events"][-1]["data"]["where"] == "exec"
+    assert "script gave up" in snap["error"]
+    assert await registry.cancel(rid) is False  # nothing left to cancel
+
+
+async def test_a_cancel_still_cancels_the_background_run() -> None:
+    from kiro_crew.testing.wait import await_until
+    from kiro_crew.workflows.registry import RunRegistry
+
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _hang(prompt: str, opts: dict):
+        started.set()
+        await never.wait()
+        return "never"
+
+    script = (
+        'META = {"name": "slow"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('hang')\n"
+        "    raise BaseException('not reached')\n"
+    )
+    registry = RunRegistry()
+    runner = _runner(agent_fn=_hang)
+    rid = await runner.run_background(script, registry=registry, run_id="wf_cx", now=NOW)
+    await await_until(started, what="the agent call to start")
+    assert await registry.cancel(rid) is True
+    handle = registry.get(rid)
+    assert handle is not None and handle.task is not None
+    with contextlib.suppress(asyncio.CancelledError):
+        await await_until(handle.task, what="the driver task to end")
+    snap = registry.status(rid, include_events=True)
+    assert snap["status"] == "cancelled", snap["status"]
+    assert snap["events"][-1]["type"] == "run_cancelled"
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +201,156 @@ async def test_wall_clock_timeout_kills_runaway() -> None:
     assert res.error == "timeout"
     assert res.events[-1].type == "run_failed"
     assert res.events[-1].data["where"] == "ceiling"
+
+
+async def test_ceiling_names_the_silent_agent_in_flight() -> None:
+    """A run ended at the ceiling while an agent call was still running names
+    that call in the error TEXT (keeping the ``run exceeded`` prefix) and says
+    how long the run had been silent. The ceiling still keeps
+    ``where="ceiling"``. The user-visible surface is the text; no structured
+    ``in_flight`` payload is carried (it had no reader)."""
+    script = (
+        'META = {"name": "silent"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('compose two slides', label='compose')\n"
+        "    return 'never'\n"
+    )
+    never = asyncio.Event()
+
+    async def _hang_agent(prompt: str, opts: dict):
+        await never.wait()  # a silent agent: starts, then sends nothing
+        return "done"
+
+    res = await _runner(  # flake-ok: a tiny real ceiling is the boundary under test
+        agent_fn=_hang_agent, timeout_secs=0.05
+    ).run(script, run_id="wf_silent", now=NOW)
+    assert res.ok is False
+    failed = res.events[-1]
+    assert failed.type == "run_failed"
+    assert failed.data["where"] == "ceiling"
+    # The TEXT keeps the limit and names the stalled agent + the silence.
+    assert failed.data["error"].startswith("run exceeded 0.05s; ")
+    assert 'agent a0 "compose" still running' in failed.data["error"]
+    assert "no event for" in failed.data["error"]
+    # No structured keys on the event payload — only error + where.
+    assert set(failed.data) == {"error", "where"}
+
+
+async def test_ceiling_terminal_error_carries_enriched_text_not_bare_timeout() -> None:
+    """``RunResult.terminal_error`` carries the SAME enriched ceiling text as the
+    ``run_failed`` event (stalled agent + silence), while ``error`` stays the
+    ``"timeout"`` sentinel. A background run forwards ``terminal_error`` to the
+    registry, so the Runs detail / completion summary show the diagnostics, not a
+    bare ``timeout``."""
+    script = (
+        'META = {"name": "silent"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('compose two slides', label='compose')\n"
+        "    return 'never'\n"
+    )
+    never = asyncio.Event()
+
+    async def _hang_agent(prompt: str, opts: dict):
+        await never.wait()
+        return "done"
+
+    res = await _runner(  # flake-ok: a tiny real ceiling is the boundary under test
+        agent_fn=_hang_agent, timeout_secs=0.05
+    ).run(script, run_id="wf_silent_te", now=NOW)
+    assert res.ok is False
+    # Compatibility sentinel is unchanged — status mapping keys off this.
+    assert res.error == "timeout"
+    # The operator-facing terminal error matches the event's enriched text.
+    assert res.terminal_error == res.events[-1].data["error"]
+    assert res.terminal_error.startswith("run exceeded 0.05s; ")
+    assert 'agent a0 "compose" still running' in res.terminal_error
+
+
+async def test_terminal_error_defaults_to_error_when_unset() -> None:
+    """On a non-ceiling terminal path that sets only ``error``, ``terminal_error``
+    defaults to it, so forwarding ``terminal_error`` never drops a plain error."""
+    from kiro_crew.workflows.runner import RunResult
+
+    r = RunResult("wf_x", ok=False, result=None, events=[], error="boom")
+    assert r.terminal_error == "boom"
+    r2 = RunResult("wf_y", ok=True, result="ok", events=[])
+    assert r2.terminal_error is None
+
+
+async def test_ceiling_in_flight_empty_when_no_agent_in_flight() -> None:
+    """A run that hits the ceiling with no agent call in flight (here a hung
+    author step, before any ctx.agent) gets an error text that says ``no agent
+    call in flight`` -- telling a run stuck in its own code apart from a silent
+    agent -- and reports how long it had been silent in that same text."""
+
+    async def _hung_author(intent: str, *, on_progress=None):
+        await asyncio.Event().wait()
+
+    res = await _run_within(
+        _runner(  # flake-ok: a tiny real ceiling is the boundary under test
+            agent_fn=_echo_agent, timeout_secs=0.05
+        ).run("", run_id="wf_empty", now=NOW, intent="x", author_fn=_hung_author)
+    )
+    assert res is not None
+    assert res.ok is False
+    failed = res.events[-1]
+    assert failed.data["where"] == "ceiling"
+    assert failed.data["error"].startswith("run exceeded 0.05s; ")
+    assert "no agent call in flight, no event for" in failed.data["error"]
+    assert set(failed.data) == {"error", "where"}
+
+
+async def test_ceiling_silence_snapshot_predates_cleanup_logs(monkeypatch) -> None:
+    """The ceiling silence is measured AT the ceiling, not after the cancelled
+    script's cleanup runs. A silent agent inside ``try/finally`` whose ``finally``
+    logs would otherwise reset the last-event stamp, making the error claim
+    ``no event for 0.0s`` even though the run was silent the whole time. A frozen
+    clock makes the gap exact: the agent advances it 100s past the agent start
+    before blocking, so a correct snapshot reports ~100s of silence."""
+    from kiro_crew.workflows import runner as runner_mod
+
+    clock = {"now": 1000.0}
+    fake_time = types.SimpleNamespace(**vars(time))  # every other name is the real one
+    fake_time.monotonic = lambda: clock["now"]
+    monkeypatch.setattr(runner_mod, "time", fake_time)
+
+    never = asyncio.Event()
+
+    async def _advance_then_hang(prompt: str, opts: dict):
+        # 100s pass between agent_started and the ceiling with no event, then the
+        # agent goes silent. Advancing before the first await means the ceiling
+        # (timeout_secs=0) still fires on the first wait check.
+        clock["now"] += 100.0
+        await never.wait()
+        return "done"
+
+    # The finally runs during the cancel drain and logs: that log stamps the
+    # last-event time to the current (post-silence) clock, so a snapshot taken
+    # after cleanup would read ~0s. A correct snapshot is taken at the ceiling,
+    # before the finally, and reports the full 100s of silence.
+    script = (
+        'META = {"name": "silent-finally"}\n'
+        "async def workflow(ctx):\n"
+        "    try:\n"
+        "        await ctx.agent('compose', label='compose')\n"
+        "    finally:\n"
+        "        ctx.log('cleanup after the silent agent')\n"
+        "    return 'never'\n"
+    )
+
+    res = await _run_within(
+        _runner(agent_fn=_advance_then_hang, timeout_secs=0).run(
+            script, run_id="wf_finally", now=NOW
+        )
+    )
+    assert res is not None
+    assert res.ok is False
+    failed = res.events[-1]
+    assert failed.data["where"] == "ceiling"
+    # Measured at the ceiling (100s), NOT reset to ~0 by the finally's log.
+    # The silence lives in the TEXT, not a separate structured key.
+    assert 'agent a0 "compose" still running' in failed.data["error"]
+    assert "no event for 100.0s" in failed.data["error"]
 
 
 async def test_timeout_never_leaks_cancellederror() -> None:
@@ -348,6 +579,38 @@ async def test_agent_count_cap_enforced() -> None:
     assert sum(1 for e in res.events if e.type == "agent_started") == 3
 
 
+@pytest.mark.parametrize(
+    ("fan_out", "limits"),
+    [
+        (
+            "await ctx.parallel([lambda: ctx.agent('x') for _ in range(5)])",
+            {"max_agents_per_run": 3},
+        ),
+        (
+            "await ctx.pipeline([1, 2, 3, 4, 5], lambda prev: ctx.agent('x'))",
+            {"max_agents_per_run": 3},
+        ),
+        ("await ctx.parallel([lambda: ctx.agent('x')])", {"budget_total": 0}),
+    ],
+)
+async def test_ceiling_inside_a_fan_out_fails_the_run(fan_out: str, limits: dict) -> None:
+    """A cap or budget hit inside ``parallel``/``pipeline`` ends the run at the ceiling."""
+    script = (
+        'META = {"name": "fan"}\n'
+        "async def workflow(ctx):\n"
+        "    for _ in range(3):\n"
+        f"        {fan_out}\n"
+        "    return 'done'\n"
+    )
+    runner_kw = {k: v for k, v in limits.items() if k != "budget_total"}
+    res = await _runner(**runner_kw).run(
+        script, run_id="wf_6f", now=NOW, budget_total=limits.get("budget_total")
+    )
+    assert res.ok is False
+    assert res.events[-1].type == "run_failed"
+    assert res.events[-1].data["where"] == "ceiling"
+
+
 async def test_failed_agent_resolves_to_none_not_run_failure() -> None:
     async def _boom_agent(prompt: str, opts: dict):
         raise RuntimeError("agent died")
@@ -367,6 +630,28 @@ async def test_failed_agent_resolves_to_none_not_run_failure() -> None:
     # not tell a throttle from a bad prompt from a crashed backend.
     assert finished.data["error"] == "RuntimeError: agent died"
     assert res.agent_errors == {0: "RuntimeError: agent died"}
+
+
+async def test_a_non_string_prompt_reaches_the_agent_and_starts_a_labelled_call() -> None:
+    seen: list = []
+
+    async def _agent(prompt, opts):
+        seen.append(prompt)
+        return f"row {prompt['id']}"
+
+    script = (
+        'META = {"name": "rows"}\n'
+        "async def workflow(ctx):\n"
+        "    return await ctx.agent({'id': 7})\n"
+    )
+    res = await _runner(agent_fn=_agent).run(script, run_id="wf_row", now=NOW)
+    assert res.ok is True, res.error
+    assert res.result == "row 7"
+    assert seen == [{"id": 7}]
+    started = [e for e in res.events if e.type == "agent_started"][0]
+    assert started.data["label"] == "{'id': 7}"
+    finished = [e for e in res.events if e.type == "agent_finished"][0]
+    assert finished.data["ok"] is True
 
 
 # --------------------------------------------------------------------------- #

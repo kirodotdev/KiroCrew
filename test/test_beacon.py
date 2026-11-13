@@ -603,6 +603,38 @@ class TestReasonCodes:
         info = beacon.status("", enabled=True, app_version="1.2.3", acked=True)
         assert info["reason_code"] == "no_endpoint"
 
+    def test_lts_build_never_sends_the_heartbeat(self, _isolated_home, monkeypatch):
+        import kiro_crew.sel as sel_mod
+
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        fake_sel = MagicMock()
+        monkeypatch.setattr(sel_mod, "sel", lambda: fake_sel)
+        calls: list = []
+        monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        assert (info["would_send"], info["reason_code"]) == (False, "governance")
+        # A diagnostic read is not audited; the enforced send is, once.
+        assert fake_sel.log_governance_decision.call_count == 0
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert calls == []
+        rows = [c[1] for c in fake_sel.log_governance_decision.call_args_list]
+        assert [(r["tool_name"], r["scope"], r["outcome"]) for r in rows] == [
+            ("beacon_send", "capabilities.telemetry", "denied")
+        ]
+        assert "LTS edition" in rows[0]["reason"]
+        # The other routes on the same ladder: no Privacy chapter records an ack
+        # there, so each says why it is refused rather than "awaiting the chapter".
+        # The admin's policy turned telemetry on, so no policy pin refuses it.
+        monkeypatch.setattr(beacon, "is_governance_pinned_off", lambda **_k: False)
+        receipt = install_receipt.should_send(enabled=True, official=True, acked=False)
+        assert receipt.code == "governance"
+
+    def test_oss_build_still_sends_the_heartbeat(self, _isolated_home, monkeypatch):
+        calls: list = []
+        monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is True
+        assert len(calls) == 1
+
 
 class TestEnvOptOutProbe:
     """``is_env_opted_out`` backs the dashboard toggle's disabled state.

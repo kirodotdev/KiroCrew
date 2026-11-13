@@ -71,7 +71,7 @@ has a "not measured" value and an unmeasured field never fires.
 | `procs` | daemon `stats.admission.host_budget` (`procs` / `max_procs`) | both tracks | `>= 90 %` of the budget |
 | `start_latency` | `record_start(duration_ms, ...)` hook (session/new, backend initialize) | both tracks | p95 over the window `>= 30 s` |
 | `timeouts` | attributable start timeouts + attributable run failures / finished in window | both tracks | rate `>= DEFAULT_TIMEOUT_RATE` (0.2) |
-| `completion_rate` | successful runs / runs finished in window (needs >= 5 finished) | both tracks | `< 0.5` |
+| `completion_rate` | successful runs / successful plus attributable runs finished in window (needs >= 5; `non_congestion` runs are left out) | both tracks | `< 0.5` |
 | `slow_keys` | distinct PoolKeys with a slow or failing start in the window | both tracks | `>= 2` |
 | `gate_failures` | `SpawnGate` `failure` outcomes (daemon snapshot, or `note_gate_outcome` for an in-process gate) | both tracks; **sufficient alone for the gate** | `>= 2` in window |
 | `gate_slow_inits` | `SpawnGate` snapshot `slow_inits`: successful inits in the daemon's last `SLOW_INIT_WINDOW_SECS` (60) that took `>= SLOW_INIT_FRACTION` (80 %) of their own `initialize_timeout_secs` | both tracks; **sufficient alone for the gate** | `>= gate_slow_inits` (2), so one slow but healthy server does not cut it |
@@ -658,3 +658,50 @@ twice.
 `test_subagent_sizing.py::test_manager_effective_cap_sits_under_the_resolved_ceiling`
 pin the seam from the manager's side; `test/metrics/test_business_counters.py`
 pins the counter's owner and bounded attributes.
+
+## Advisory health telemetry
+
+### Live health telemetry
+
+Each `AdaptiveController` sample now carries the active provider-session
+count, the cron executor's queue depth, per-core CPU pressure, and the
+probe's own observation timestamp. Cheap readers are wired at the gateway
+composition root (`gateway_runtime/admission.py`); they do not create pools or
+sessions merely to measure them. Readings the diag recorder and the process
+gauges already publish (RSS, thread count, fds, the spawn gate's queue) are not
+duplicated here: the sample keeps only what the two hypotheses below read.
+
+`cpu_pressure` is the process's CPU share multiplied by the logical core
+count, so `1.0` is one core saturated whatever the machine size: a GIL-bound
+gateway burning one core of thirty-two reads `1.0`, not `0.03`. The
+`PROCESS_CPU_UTILIZATION` histogram keeps its whole-machine share semantics;
+the two are derived from the same reading.
+
+`adaptive/signals.py` maps those readings onto the closed health signal set
+`HEALTH_ACTIVE_SESSIONS`, `HEALTH_CRON_QUEUE`, `HEALTH_CPU`,
+`HEALTH_LOOP_LAG`, and `HEALTH_SAMPLE_STALE` (`HEALTH_SIGNALS`). Missing
+readings use the non-firing sentinel. A sample is stale once its age exceeds
+`max(15s, 3 x controller_sample_secs)`, derived from the live cadence by
+`HealthThresholds.for_cadence`, so a sixty-second cadence is not reported stale
+between its own ticks. A stale sample suppresses both hypotheses.
+
+The classifier exposes two bounded hypotheses: `cron_collision_suspected`
+(cron queue signal plus CPU or loop-lag contention) and `renderer_suspected`
+(active-sessions signal plus loop lag). `controller.state()` computes sample
+age from its monotonic read time and returns it under `health` with the
+signals and hypotheses, beside the raw readings under `last_sample`.
+`resource_status.adaptive_summary_lines` renders them as the two `Health`
+lines of the `resource_status` tool. The dashboard receives the same `health`
+dict through `adaptive_state()`. No metric is emitted from them. These health
+fields are advisory; they do not resize the execution cap, move the spawn gate,
+or bypass corroborated pressure decisions.
+
+### Measurement gates
+
+Local integration tests prove live field population, state exposure, stale
+sample handling, the rendered lines, and the unchanged AIMD path. Production
+acceptance remains interactive loop-lag p99 < 250 milliseconds, session-start
+queue p90 < 2 seconds, and no cold-wave regression in interactive TTFT p95
+over a representative window. Use the health signals to confirm or reject the
+cron collision and renderer hypotheses before adding any new admission,
+priority, or schedule policy.

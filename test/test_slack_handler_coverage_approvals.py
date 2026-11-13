@@ -1,13 +1,7 @@
 """Slack approval prompts in :mod:`kiro_crew.slack.handler`, from the request to the click.
 
-Pins ``handle_interaction``'s guards and late-trust paths, the claimed region that always
-answers the wire and releases the waiter, dashboard-linked approvals, the approval block
-builder, and ``_request_approval``'s post, resolve and timeout arms, including the in-band
-notice an expired prompt steers before its reject. The commands live in
-``test_slack_handler_coverage.py``, privacy modifiers and linked-thread routing in
-``test_slack_handler_coverage_inbound.py``, status reactions, review drafts and the safe
-update paths in ``test_slack_handler_coverage_delivery.py``, and the small pure helpers in
-``test_slack_handler_coverage_pure_helpers.py``.
+Pins ``handle_interaction``'s guards, the claimed region, dashboard-linked approvals, the
+approval block builder and ``_request_approval``'s post, resolve and timeout arms.
 """
 
 from __future__ import annotations
@@ -170,11 +164,9 @@ class TestHandleInteractionClaimedRegion:
     """A raise between the claim (``_pending_approvals.pop``) and ``set_result``
     must still answer the wire and release the waiter.
 
-    ``_request_approval``'s timeout arm that lost its claim awaits
-    ``pending.future`` unbounded, justified by "every way the click can end
-    resolves this future". These tests pin that invariant for the synchronous
-    bookkeeping between the claim and the resolution (trust bookkeeping, audit,
-    stats), not just the two wire calls the old per-arm handlers covered.
+    The timeout arm that lost its claim awaits ``pending.future`` unbounded, so every
+    raise in the bookkeeping between claim and resolution (trust, audit, stats) must
+    still resolve it.
     """
 
     @pytest.mark.asyncio
@@ -250,30 +242,47 @@ class TestLinkedApprovals:
     @pytest.mark.asyncio
     async def test_click_resolves_dashboard_future(self, slack, owner, monkeypatch):
         state = MagicMock()
-        state.resolve_approval.return_value = True
+        state._slots = {"slot-1": MagicMock()}
+        state.resolve_slot_approval.return_value = True
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", 7, "slot-1", "Run tests"))
+        ts = _reply(
+            await h.post_linked_approval(
+                slack, "C1", "t1", 7, "slot-1", "Run tests", slot_key="slot-1"
+            )
+        )
         out = await h.handle_interaction("C1", ts, h._ACTION_APPROVE, "U1")
         assert out == h._ACTION_APPROVE
-        state.resolve_approval.assert_called_once_with("7", True)
+        state.resolve_slot_approval.assert_called_once_with(
+            state._slots["slot-1"], "7", True, expected_future=None
+        )
         assert f"C1:{ts}" not in h._linked_approvals
 
     @pytest.mark.asyncio
     async def test_reject_click_passes_false(self, slack, owner, monkeypatch):
         state = MagicMock()
-        state.resolve_approval.return_value = False
+        state._slots = {"slot-1": MagicMock()}
+        state.resolve_slot_approval.return_value = False
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", "r9", "slot-1", "Delete prod"))
+        ts = _reply(
+            await h.post_linked_approval(
+                slack, "C1", "t1", "r9", "slot-1", "Delete prod", slot_key="slot-1"
+            )
+        )
         out = await h.handle_interaction("C1", ts, h._ACTION_REJECT, "U1")
         assert out == h._ACTION_REJECT
-        state.resolve_approval.assert_called_once_with("r9", False)
+        state.resolve_slot_approval.assert_called_once_with(
+            state._slots["slot-1"], "r9", False, expected_future=None
+        )
 
     @pytest.mark.asyncio
     async def test_resolve_failure_is_swallowed(self, slack, owner, monkeypatch):
         state = MagicMock()
-        state.resolve_approval.side_effect = RuntimeError("gone")
+        state._slots = {"slot-1": MagicMock()}
+        state.resolve_slot_approval.side_effect = RuntimeError("gone")
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", "r1", "slot-1", "T"))
+        ts = _reply(
+            await h.post_linked_approval(slack, "C1", "t1", "r1", "slot-1", "T", slot_key="slot-1")
+        )
         assert await h.handle_interaction("C1", ts, h._ACTION_APPROVE, "U1") == h._ACTION_APPROVE
 
 

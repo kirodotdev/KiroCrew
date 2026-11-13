@@ -41,6 +41,9 @@ class FakeTransport:
         #: Flipped by a test to stand in for a transient wire failure.
         self.fail = False
         self._n = 0
+        #: Set by ``_pair``: edits forward to the client fake, as the real
+        #: transport forwards to the real client.
+        self.client: "FakeClient | None" = None
 
     async def send_message(self, jid: str, content: str) -> str:
         if self.fail:
@@ -53,6 +56,11 @@ class FakeTransport:
     async def send_image(self, jid: str, data: bytes, caption: str) -> str:
         self.images.append((jid, data, caption))
         return "IMG1"
+
+    async def edit_text(self, jid: str, message_id: str, text: str) -> bool:
+        # The real transport echo-tracks the edit and forwards to the client.
+        assert self.client is not None
+        return await self.client.edit_text(jid, message_id, text)
 
 
 class FakeClient:
@@ -74,8 +82,14 @@ class FakeClient:
         return True
 
 
-def make(unprompted: bool = False, edits_ok: bool = True):
+def _pair(edits_ok: bool = True) -> "tuple[FakeTransport, FakeClient]":
     transport, client = FakeTransport(), FakeClient(edits_ok=edits_ok)
+    transport.client = client
+    return transport, client
+
+
+def make(unprompted: bool = False, edits_ok: bool = True):
+    transport, client = _pair(edits_ok=edits_ok)
     r = WhatsAppRenderer(transport, client, "chat@s.whatsapp.net", CAPS, unprompted=unprompted)
     return r, transport, client
 
@@ -145,6 +159,32 @@ class TestSilenceSentinel:
         r, transport, _ = make(unprompted=True)
         await r.on_turn_start()
         await r.on_text_chunk("Actually, the answer is 42.")
+        await r.on_done()
+        assert len(transport.sent) == 1
+        assert not r.suppressed
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            f"<thinking>the rules say stay quiet</thinking>{SILENCE_SENTINEL}",
+            f"`{SILENCE_SENTINEL}`",
+            f"**{SILENCE_SENTINEL}**",
+            f"~~{SILENCE_SENTINEL}~~",
+            f"{SILENCE_SENTINEL}.",
+        ],
+    )
+    async def test_a_wrapped_sentinel_is_still_silence(self, reply):
+        r, transport, _ = make(unprompted=True)
+        await r.on_turn_start()
+        await r.on_text_chunk(reply)
+        await r.on_done()
+        assert transport.sent == []
+        assert r.suppressed is True
+
+    async def test_an_answer_that_mentions_the_sentinel_is_delivered(self):
+        r, transport, _ = make(unprompted=True)
+        await r.on_turn_start()
+        await r.on_text_chunk(f"I would normally say {SILENCE_SENTINEL} here, but: 42.")
         await r.on_done()
         assert len(transport.sent) == 1
         assert not r.suppressed
@@ -328,7 +368,7 @@ class TestDisplaySafety:
 
         monkeypatch.setattr(module, "plan_uploads_off_loop", fake_plan)
         caps = TransportCapabilities(max_message_chars=4096, max_buttons=0, files_outbound=True)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         # The root only has to pass the absolute-path gate (the plan is faked above);
         # spelled for the host because ``ntpath.isabs("/tmp")`` is False on 3.13.
         r = WhatsAppRenderer(
@@ -340,13 +380,43 @@ class TestDisplaySafety:
         assert transport.images, "the picture should have been sent"
         assert KEY not in shown(transport.images[-1][2])
 
+    async def test_a_failed_image_upload_is_named_with_a_reason(self, monkeypatch):
+        """The "Not sent" line must say why, not end on a bare colon."""
+        from kiro_crew.messaging.outbound_files import OutboundFile
+        from kiro_crew.whatsapp import turn_renderer as module
+        from kiro_crew.whatsapp.files import UploadPlan
+
+        async def fake_plan(text, *, within_root, scratch_root=""):
+            return UploadPlan(
+                text="",
+                files=[OutboundFile(path="/tmp/c.png", data=b"x", alt="", mime="image/png")],
+            )
+
+        monkeypatch.setattr(module, "plan_uploads_off_loop", fake_plan)
+        caps = TransportCapabilities(max_message_chars=4096, max_buttons=0, files_outbound=True)
+        transport, client = _pair()
+
+        async def failed_upload(*_args, **_kwargs):
+            raise RuntimeError("wire error")
+
+        transport.send_image = failed_upload
+        r = WhatsAppRenderer(
+            transport, client, "c@s.whatsapp.net", caps, upload_root=lambda: host_abs("tmp")
+        )
+        await r.on_turn_start()
+        await r.on_text_chunk("here is the chart")
+        await r.on_done()
+        note = transport.sent[-1][1]
+        assert "c.png" in note
+        assert "the upload to WhatsApp failed" in note
+
     async def test_the_prompt_names_the_tool_the_request_asks_about(self):
         """A permission is not always preceded by its own titled tool call, so a
         remembered name can be the PREVIOUS tool's -- and the operator would be
         consenting to something other than what they read. The title and purpose
         are taken as a pair for the same reason.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -361,7 +431,7 @@ class TestDisplaySafety:
         """The tool title is model-authored and reaches the chat with no scan of
         its own -- ``build_approval_prompt`` interpolates it verbatim.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -380,7 +450,7 @@ class TestApprovalPresence:
         operator watches "composing" for the whole five-minute window while the
         agent is in fact waiting on them.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -394,7 +464,7 @@ class TestApprovalPresence:
         prompt and only then awaits the decider -- so the next output event is the
         first news that the wait is over.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -417,7 +487,7 @@ class TestApprovalTimeoutIsSpoken:
     async def test_a_timeout_resolves_the_prompt_in_place(self):
         from kiro_crew.messaging.approval import TIMEOUT_NOTICE
 
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -428,7 +498,7 @@ class TestApprovalTimeoutIsSpoken:
     async def test_a_timeout_posts_the_notice_when_the_edit_is_refused(self):
         from kiro_crew.messaging.approval import TIMEOUT_NOTICE
 
-        transport, client = FakeTransport(), FakeClient(edits_ok=False)
+        transport, client = _pair(edits_ok=False)
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -448,7 +518,7 @@ class TestApprovalTimeoutIsSpoken:
         )
 
         reset_for_tests()
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -522,7 +592,7 @@ class TestNothingIsLostOrLooped:
         reply disappears with nothing raised and nothing logged.
         """
         caps = TransportCapabilities(max_message_chars=60, max_buttons=0)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(transport, client, "c@s.whatsapp.net", caps)
         await r.on_turn_start()
         await r.on_text_chunk("A" * 30)
@@ -563,7 +633,7 @@ class TestNothingIsLostOrLooped:
         stays on screen and the real answer never arrives.
         """
         caps = TransportCapabilities(max_message_chars=60, max_buttons=0)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(transport, client, "c@s.whatsapp.net", caps)
         await r.on_turn_start()
         await r.on_text_chunk("x" * 55 + " [OPTIONS: yes | n")

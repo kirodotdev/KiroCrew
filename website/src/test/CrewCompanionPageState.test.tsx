@@ -13,7 +13,7 @@
  * away with no way to bring it back.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 
 /** Per-test switch: does the companion's backend answer, or not? */
@@ -159,7 +159,7 @@ describe('the live page can turn the companion off', () => {
     await waitFor(() => expect(container.querySelector('.cc-turn-off')).not.toBeNull())
     const turnOff = container.querySelector('.cc-turn-off') as HTMLButtonElement
     expect(turnOff.textContent).toContain(i18nT('apps.crewCompanion.menu.quit'))
-    turnOff.click()
+    await act(async () => { turnOff.click() })
 
     await waitFor(() => expect(posts.some((p) => p.includes('/disable'))).toBe(true))
     await waitFor(() => expect(container.querySelector('.cc-offline')).not.toBeNull())
@@ -171,7 +171,8 @@ describe('the live page can turn the companion off', () => {
     postFailFor.add('/disable')
     const { container } = render(<CrewCompanionPage />)
     await waitFor(() => expect(container.querySelector('.cc-turn-off')).not.toBeNull())
-    ;(container.querySelector('.cc-turn-off') as HTMLButtonElement).click()
+    const turnOff = container.querySelector('.cc-turn-off') as HTMLButtonElement
+    await act(async () => { turnOff.click() })
 
     await waitFor(() => expect(container.textContent ?? '').toContain(FAILURE_REASON))
     expect(container.querySelector('.cc-offline')).toBeNull()

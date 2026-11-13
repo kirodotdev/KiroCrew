@@ -20,7 +20,7 @@
  * singleton, so a separate Provider store would leave the title lookup reading
  * an empty list and the assertions would pass vacuously.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
@@ -33,6 +33,7 @@ import {
   CHAT_COMPLETE_NOTIFY_KEY,
   loadChatCompleteNotify,
   saveChatCompleteNotify,
+  setChatCompleteHostReader,
   shouldNotifyOnChatComplete,
 } from '../hooks/chatCompleteNotify'
 
@@ -157,6 +158,19 @@ describe('chatCompleteNotify preference and predicate', () => {
     setHidden(true)
     expect(shouldNotifyOnChatComplete({ slot: undefined, reconnecting: false })).toBe(false)
     expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: true })).toBe(false)
+  })
+
+  it.each([
+    // [this origin's storage, hub's relayed opt-in, opted in]
+    [null, true, true],
+    [null, false, false],
+    ['0', true, false],
+    ['1', false, true],
+  ] as const)('reads own storage %s with the hub opt-in %s as %s (#20191)', (own, hostOptIn, expected) => {
+    setChatCompleteHostReader(() => hostOptIn)
+    onTestFinished(() => setChatCompleteHostReader(null))
+    if (own !== null) localStorage.setItem(CHAT_COMPLETE_NOTIFY_KEY, own)
+    expect(loadChatCompleteNotify()).toBe(expected)
   })
 
   it('stays silent while the OS permission is undecided or refused', () => {

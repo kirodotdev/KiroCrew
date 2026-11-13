@@ -32,7 +32,7 @@ from job_sdk_helpers import (  # noqa: F401 -- the fixture is requested by name
     sdk_fixture,
 )
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps import job_sdk
 from kiro_crew.apps.job_sdk import (
     CANCELLED,
@@ -54,10 +54,11 @@ from kiro_crew.apps.job_sdk import (
     register_sdk,
     registered_apps,
 )
+from kiro_crew.apps.manager import app_data_dir
+from kiro_crew.config import paths
+from kiro_crew.hooks import safe_read_file_bytes_nolink
 
-# ---------------------------------------------------------------------------
 # 1. register / kinds / is_cancellable
-# ---------------------------------------------------------------------------
 
 
 class TestRegistration:
@@ -79,9 +80,7 @@ class TestRegistration:
             sdk.register("", lambda h: {})
 
 
-# ---------------------------------------------------------------------------
 # 2. start() on an unregistered kind
-# ---------------------------------------------------------------------------
 
 
 class TestStartUnknown:
@@ -90,9 +89,7 @@ class TestStartUnknown:
             sdk.start("ghost")
 
 
-# ---------------------------------------------------------------------------
 # 3. Happy run: reaches done; the runner's return value is not recorded
-# ---------------------------------------------------------------------------
 
 
 class TestHappyRun:
@@ -105,11 +102,10 @@ class TestHappyRun:
         assert run.error == ""
 
     def test_the_runner_gets_its_handle_and_nothing_else(self, sdk: JobSDK) -> None:
-        """P1 has no params channel, so a runner is a one-argument callable.
+        """Started without params, a runner is a one-argument callable.
 
-        Pinned because the signature IS the contract a P2 consumer writes
-        against: reintroducing kwargs is a deliberate P2 change, not something
-        that should be able to drift back in unnoticed.
+        The signature is a contract app code writes against, so extra arguments
+        must not drift in unnoticed.
         """
         seen: list[object] = []
 
@@ -169,9 +165,7 @@ class TestHappyRun:
         }
 
 
-# ---------------------------------------------------------------------------
 # 4. Raising runner -> failed with truncated, recorded error
-# ---------------------------------------------------------------------------
 
 
 class TestFailingRun:
@@ -195,10 +189,24 @@ class TestFailingRun:
         assert run.status == FAILED
         assert len(run.error) == 2000
 
+    def test_a_runner_calling_sys_exit_ends_failed(self, sdk: JobSDK) -> None:
+        """SystemExit is not an Exception: it must still end the record."""
 
-# ---------------------------------------------------------------------------
+        def exits(h, **kw):
+            raise SystemExit()
+
+        sdk.register("exits", exits)
+        run_id = sdk.start("exits", dedupe_key="acct")
+        try:
+            run = _wait_terminal(sdk, run_id)
+        except RuntimeError as exc:  # wait_until's timeout
+            pytest.fail(f"the record never left running: {exc}")
+        assert run.status == FAILED
+        assert run.error == "SystemExit"
+        assert sdk.list_active("exits") == []
+
+
 # 5. Cancellation
-# ---------------------------------------------------------------------------
 
 
 class TestCancellation:
@@ -246,9 +254,7 @@ class TestCancellation:
         assert sdk.cancel(run_id) is False
 
 
-# ---------------------------------------------------------------------------
 # 5a. checkpoint - the progress OBSERVATION and the observed-stop cancel
-# ---------------------------------------------------------------------------
 
 
 class TestCheckpoint:
@@ -357,9 +363,7 @@ class TestCheckpoint:
         assert issubclass(JobCancelled, Exception)
 
 
-# ---------------------------------------------------------------------------
 # 5b. the cancelling snapshot — the read side of "cancel writes nothing"
-# ---------------------------------------------------------------------------
 
 
 class TestCancellingIds:
@@ -438,9 +442,7 @@ class TestCancellingIds:
         assert run.status == DONE
 
 
-# ---------------------------------------------------------------------------
 # 6. dedupe_key
-# ---------------------------------------------------------------------------
 
 
 class TestDedupe:
@@ -473,9 +475,7 @@ class TestDedupe:
         _wait_terminal(sdk, b)
 
 
-# ---------------------------------------------------------------------------
 # 8. get / list_active / list_recent
-# ---------------------------------------------------------------------------
 
 
 class TestReadViews:
@@ -631,9 +631,7 @@ class TestLiveness:
         _wait_terminal(sdk, run_id)
 
 
-# ---------------------------------------------------------------------------
 # 9. JobRun.from_dict / JobStore.read / _path / iter_runs
-# ---------------------------------------------------------------------------
 
 
 class TestSerialization:
@@ -758,9 +756,7 @@ class TestRecordReadSurvivesTheWriterRace:
         assert got is not None and got.error == text
 
 
-# ---------------------------------------------------------------------------
 # 10. reconcile()
-# ---------------------------------------------------------------------------
 
 
 class TestReconcile:
@@ -859,9 +855,7 @@ class TestReconcile:
         _wait_terminal(sdk, run_id)
 
 
-# ---------------------------------------------------------------------------
 # 11. remove_all_async
-# ---------------------------------------------------------------------------
 
 
 class TestRemoveAll:
@@ -905,11 +899,9 @@ class TestRemoveAll:
     def test_remove_all_is_not_resurrected_by_worker(self, sdk: JobSDK) -> None:
         """A worker returning AFTER cleanup must not write its record back.
 
-        Regression pin. JobStore.write mkdirs and writes unconditionally, so it
-        cannot tell a first write from a resurrection; the guarantee comes from
-        remove_all_async marking every live handle discarded BEFORE deleting,
-        and both write paths honouring that mark. Without it this run reappears
-        on disk as `cancelled` and the second remove_all_async returns 1.
+        JobStore.write writes unconditionally, so the guarantee comes from
+        remove_all_async marking every live handle discarded BEFORE deleting, and
+        both write paths honouring that mark.
         """
         started = threading.Event()
         removed_done = threading.Event()
@@ -931,12 +923,9 @@ class TestRemoveAll:
         assert started.wait(5.0)
 
         cleanup = asyncio.run(sdk.remove_all_async())
-        # Only `removed` is asserted here. Whether this worker is still alive
-        # when cleanup returns is a race between its own wait and the join
-        # deadline, so pinning it would make this test flaky for a reason that
-        # has nothing to do with resurrection. TestCleanupDoesNotBlockTheLoop
-        # covers the still-running report deterministically, with a runner that
-        # ignores its cancel signal outright.
+        # Only `removed` is asserted: whether the worker is still alive here
+        # races the join deadline. TestCleanupDoesNotBlockTheLoop covers the
+        # still-running report deterministically.
         assert cleanup.removed == 1
         assert sdk.get(run_id) is None  # deleted at this instant
         removed_done.set()
@@ -944,15 +933,12 @@ class TestRemoveAll:
         assert finally_done.wait(5.0)
         _wait_until(lambda: not any(t.name.startswith("job:") for t in threading.enumerate()))
         time.sleep(0.05)
-        # The record stays deleted, and idempotency still holds -- a resurrected
-        # record would make this second call report 1.
+        # A record written back would make this second call report 1.
         assert sdk.get(run_id) is None
         assert asyncio.run(sdk.remove_all_async()) == CleanupResult(0, 0, 0)
 
 
-# ---------------------------------------------------------------------------
 # 11a. Disable trace — one SEL line per killed run
-# ---------------------------------------------------------------------------
 
 
 class TestDisableTrace:
@@ -1491,10 +1477,71 @@ class TestDisableTrace:
         # `kind` comes off disk, so it is redacted, bounded, and repr-quoted.
         assert killed[0]["resources"] == f"{stale.run_id} kind='work' stale"
 
+    @pytest.mark.parametrize("home_via_link", [False, True])
+    def test_a_protected_app_data_dir_still_traces_each_record_by_kind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home_via_link: bool
+    ) -> None:
+        """The security lists fence aws-control's data dir from agent reads. The
+        disable scan reads the SDK's own store, so that fence must not turn the
+        app's records into ``unreadable`` lines: a stale run keeps its kind and a
+        finished one gets no line. That holds when the operator's own home is a
+        link: the default data home is not resolved, unlike ``KIROCREW_HOME``."""
+        events = self._capture_sel(monkeypatch)
+        if home_via_link:
+            (tmp_path / "home").mkdir()
+            link = tmp_path / "link"
+            make_dir_link(link, tmp_path / "home")
+            monkeypatch.setenv("HOME", str(link))
+            monkeypatch.setattr(Path, "home", classmethod(lambda cls: link))
+            monkeypatch.delenv("KIROCREW_HOME", raising=False)
+            monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
+            monkeypatch.setattr(paths, "_config_dir_memo", None)
+        else:
+            monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        sdk = JobSDK("aws-control", app_data_dir("aws-control"))
+        assert str(sdk.store.dir).startswith(str(tmp_path / ("link" if home_via_link else "home")))
+        stale = JobRun(
+            run_id="b" * 32, app=sdk.app_name, kind="backup", status=RUNNING, origin="foreign"
+        )
+        finished = JobRun(
+            run_id="c" * 32, app=sdk.app_name, kind="backup", status=DONE, origin="foreign"
+        )
+        sdk.store.write(stale)
+        sdk.store.write(finished)
+        # Precondition: the agent-facing read refuses this directory.
+        record = sdk.store.dir / f"{stale.run_id}.json"
+        assert safe_read_file_bytes_nolink(str(record), within_root=str(sdk.store.dir)) is None
 
-# ---------------------------------------------------------------------------
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 2
+        assert [e["resources"] for e in self._killed(events)] == [
+            f"{stale.run_id} kind='backup' stale"
+        ]
+
+    def test_a_jobs_dir_linked_into_a_protected_dir_traces_each_record_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a store that is its own configured path reads past the security
+        lists. An app whose ``jobs`` dir is a link into a protected dir, here
+        aws-control's store, reads none of the records it reaches there."""
+        events = self._capture_sel(monkeypatch)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        protected = JobSDK("aws-control", app_data_dir("aws-control")).store
+        stale = JobRun(
+            run_id="e" * 32, app="aws-control", kind="backup", status=RUNNING, origin="foreign"
+        )
+        protected.write(stale)
+        notes_data = app_data_dir("notes")
+        make_dir_link(notes_data / "jobs", protected.dir)
+        sdk = JobSDK("notes", notes_data)
+
+        asyncio.run(sdk.remove_all_async())
+        assert [e["resources"] for e in self._killed(events)] == [
+            f"{stale.run_id!r} unreadable stale"
+        ]
+
+
 # 12. Process-wide registry
-# ---------------------------------------------------------------------------
 
 
 class TestProcessRegistry:

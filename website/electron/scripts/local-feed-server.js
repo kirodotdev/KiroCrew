@@ -50,10 +50,23 @@ if (!ZIP || !fs.existsSync(ZIP)) {
 
 // Computed once at startup: electron-updater verifies this against the bytes it
 // downloaded and refuses to install on a mismatch (fail-closed).
-const ZIP_BYTES = fs.readFileSync(ZIP);
-const ZIP_SIZE = ZIP_BYTES.length;
-const ZIP_SHA512 = crypto.createHash("sha512").update(ZIP_BYTES).digest("base64");
+//
+// The ZIP is hashed and served as a stream, never held in memory: the OTA lane
+// serves an update padded past 1 GiB, and fs.readFileSync refuses any file over
+// 2 GiB outright.
+const ZIP_SIZE = fs.statSync(ZIP).size;
+let ZIP_SHA512 = "";
 const DOWNLOAD_URL = `http://127.0.0.1:${PORT}/download`;
+
+function hashZip() {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha512");
+    fs.createReadStream(ZIP)
+      .on("data", (chunk) => hash.update(chunk))
+      .on("error", reject)
+      .on("end", () => resolve(hash.digest("base64")));
+  });
+}
 
 function macYaml() {
   return [
@@ -84,8 +97,13 @@ const server = http.createServer((req, res) => {
 
   if (u.pathname === "/download") {
     res.writeHead(200, { "Content-Type": "application/zip", "Content-Length": ZIP_SIZE });
-    res.end(ZIP_BYTES);
-    console.log(`[feed] served update zip (${ZIP_SIZE} bytes)`);
+    const body = fs.createReadStream(ZIP);
+    body.on("error", (err) => {
+      console.error(`[feed] update zip read failed: ${err.message}`);
+      res.destroy(err);
+    });
+    res.on("finish", () => console.log(`[feed] served update zip (${ZIP_SIZE} bytes)`));
+    body.pipe(res);
     return;
   }
 
@@ -111,9 +129,20 @@ const server = http.createServer((req, res) => {
   console.log(`[feed] ${u.pathname} -> 404 (expected /feed/<channel>/latest-mac.yml, .json, or /download)`);
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[feed] listening on http://127.0.0.1:${PORT}`);
-  console.log(`[feed] serving version=${LATEST} from ${ZIP}`);
-  console.log(`[feed]   size=${ZIP_SIZE} sha512(base64)=${ZIP_SHA512.slice(0, 24)}…`);
-  console.log(`[feed] point the app at it: KIROCREW_UPDATE_FEED=http://127.0.0.1:${PORT}/feed`);
-});
+// Listen only once the digest is known, so no client can read a yml with an
+// empty sha512.
+hashZip().then(
+  (digest) => {
+    ZIP_SHA512 = digest;
+    server.listen(PORT, "127.0.0.1", () => {
+      console.log(`[feed] listening on http://127.0.0.1:${PORT}`);
+      console.log(`[feed] serving version=${LATEST} from ${ZIP}`);
+      console.log(`[feed]   size=${ZIP_SIZE} sha512(base64)=${ZIP_SHA512.slice(0, 24)}…`);
+      console.log(`[feed] point the app at it: KIROCREW_UPDATE_FEED=http://127.0.0.1:${PORT}/feed`);
+    });
+  },
+  (err) => {
+    console.error(`ERROR: could not hash ${ZIP}: ${err.message}`);
+    process.exit(1);
+  },
+);

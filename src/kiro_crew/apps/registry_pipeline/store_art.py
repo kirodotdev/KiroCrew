@@ -59,6 +59,7 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _EXTERNAL_REGISTRY_CACHE_TTL,
     _MANIFEST_CACHE_TTL,
     _blob_cache_dir,
+    _installed_manifest_cache_path,
     _manifest_cache_path,
     _read_manifest_cache,
     _write_manifest_cache,
@@ -95,6 +96,7 @@ from kiro_crew.pinned_fs import (
     is_reparse_point,
     open_pinned_descendant_dir,
 )
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -602,7 +604,7 @@ def _read_clone_failure(entry: dict[str, Any]) -> float | None:
     data, _mtime = result
     try:
         recorded = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
     if not isinstance(recorded, dict):
         return None
@@ -777,6 +779,9 @@ def _open_pinned_asset_stat(
     by-path ``OSError`` produced before, so callers record the asset unobtainable
     identically. Every descriptor is closed before returning.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     if not rel_parts:
         return None
     name = rel_parts[-1]
@@ -839,12 +844,7 @@ def _open_pinned_asset_stat(
                     return None
                 if fst.st_size > max_bytes:
                     return None
-                data = os.read(fd, max_bytes + 1)
-                while len(data) <= max_bytes:
-                    chunk = os.read(fd, max_bytes + 1 - len(data))
-                    if not chunk:
-                        break
-                    data += chunk
+                data = bounded_read_fd(fd, max_bytes + 1)
                 if len(data) > max_bytes:
                     return None
                 return data, fst
@@ -1251,7 +1251,7 @@ async def _fetch_owner_tier_store_assets(entry: dict[str, Any], registry_name: s
             # A non-UTF-8 manifest is as unusable as malformed JSON; refuse it here so
             # the failure is a plain skip, not an exception mid-read.
             return False
-        manifest = json.loads(content)
+        manifest = loads_user_json(content)
         if not isinstance(manifest, dict):
             return False
         # Persist before publishing: art copied for a manifest that never reached the
@@ -1553,6 +1553,8 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
     # Rows that are not warm only because their manifest cache aged out; queued
     # after every row whose art is missing (see the ranking below).
     stale: list[dict[str, Any]] = []
+    # Rows of apps installed from this source; queued ahead of everything.
+    installed: list[dict[str, Any]] = []
     overflow = 0
     field_rejects = 0
     examined = 0
@@ -1654,11 +1656,18 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
         # every batch until the budget ran out, and rows further down would never
         # get their art. Index order is kept inside each group, and stale rows still
         # re-warm when the budget allows.
-        if await asyncio.to_thread(_stale_row_art_present, entry):
+        # An app installed from this source goes first of all: the listing reads its
+        # display copy from the installed checkout (cached apart, beside the source
+        # cache), so this clone is the only reader of what its branch now publishes,
+        # and without it the store and the app's update status stay on the installed
+        # version. Few rows are installed, so this does not starve the others.
+        if await asyncio.to_thread(_installed_manifest_cache_path(entry).is_file):
+            installed.append(slim)
+        elif await asyncio.to_thread(_stale_row_art_present, entry):
             stale.append(slim)
         else:
             todo.append(slim)
-    todo.extend(stale)
+    todo = installed + todo + stale
     if field_rejects:
         logger.warning(
             "store art prewarm: registry %r skipped %d row(s) with a non-string or "

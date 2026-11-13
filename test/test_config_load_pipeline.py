@@ -33,6 +33,9 @@ _DECLARED_EXCEPTIONS = {
     ("agent", "sandbox_allow_unsandboxed_exec"): "platform default resolved at load",
     # Passed through the selectable-backend gate, which reads the build's registry.
     ("agent", "member_acp_backend"): "normalized against the selectable backends",
+    # The loader folds the build's default (on in a nightly build only) into the
+    # value; the dataclass default stays false for the schema snapshot.
+    ("agent", "kas_bundle"): "build default resolved at load",
 }
 
 
@@ -68,9 +71,7 @@ def _section_fields() -> list[tuple[str, type]]:
     ]
 
 
-# ---------------------------------------------------------------------------
 # SectionReader: the one place a section default is resolved.
-# ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
@@ -122,10 +123,22 @@ class TestSectionReader:
         # The bounds still apply to that fallback, as they always have.
         assert reader.read("count", sections._safe_int, 5, 9) == 5
 
+    def test_a_stored_value_its_bounds_change_is_logged_once(self, caplog):
+        # A class of its own, so no earlier run has already reported this value.
+        knob = dataclasses.make_dataclass("Knob", [("count", int, 3)])
+        caplog.set_level(logging.WARNING, logger=_LOGGER)
+        clamped = sections.SectionReader(knob, {"count": 50})
+        in_range = sections.SectionReader(knob, {"count": "5"})
+        reads = [
+            each.read("count", sections._safe_int, 1, 9) for each in (clamped, clamped, in_range)
+        ]
+        assert reads == [9, 9, 5]
+        assert [r.getMessage() for r in caplog.records if r.name == _LOGGER] == [
+            "Config: Knob.count = 50 is outside its allowed range; using 9"
+        ]
 
-# ---------------------------------------------------------------------------
+
 # build_config: the document into a config, without the filesystem.
-# ---------------------------------------------------------------------------
 
 
 class TestBuildConfig:
@@ -158,10 +171,21 @@ class TestBuildConfig:
         assert set(_DECLARED_EXCEPTIONS) == {
             ("agent", "sandbox_allow_unsandboxed_exec"),
             ("agent", "member_acp_backend"),
+            ("agent", "kas_bundle"),
         }
         assert set(_DECLARED_EXCEPTIONS) <= {
             (section, f.name) for section, dto in _section_fields() for f in dataclasses.fields(dto)
         }
+
+    @pytest.mark.parametrize(
+        ("stamp", "expected"), [("nightly", True), ("stable", False), ("", False)]
+    )
+    def test_kas_bundle_takes_the_build_default(self, tmp_path, monkeypatch, stamp, expected):
+        from kiro_crew import build_channel
+
+        monkeypatch.setattr(build_channel, "_BAKED_BUILD_CHANNEL", stamp)
+        agent = loader.build_config(_document(tmp_path, {"agent": {}})).agent
+        assert agent.kas_bundle is expected
 
     def test_it_performs_no_config_file_io(self, tmp_path, monkeypatch):
         def refuse(*_args, **_kwargs):
@@ -326,12 +350,31 @@ class TestBuildConfig:
         assert cfg._extra_keys == {"agent": {"no_such_key": 2}}
 
 
-# ---------------------------------------------------------------------------
 # read_config_document: the files (or the cache) into a document.
-# ---------------------------------------------------------------------------
 
 
 class TestReadConfigDocument:
+    @pytest.mark.parametrize("agents", [None, {"kept": {}, "dropped": 1}])
+    def test_dropping_an_agents_value_or_entry_marks_agents_degraded(self, config_home, agents):
+        """The resolver reads a crewmate missing from a degraded roster as unknown, not deleted."""
+        _write(config_home / "config.json", {"agents": agents})
+        cfg = loader.build_config(loader.read_config_document())
+        assert "agents" in cfg.degraded_sections
+        assert "dropped" not in cfg.agents
+        if agents is not None:
+            assert "kept" in cfg.agents
+        # A cache hit reports the same repair.
+        assert "agents" in loader.build_config(loader.read_config_document()).degraded_sections
+
+    def test_a_fixed_roster_is_no_longer_marked_degraded(self, config_home):
+        """The agents mark is per load, so it does not freeze later live applies."""
+        _write(config_home / "config.json", {"agents": {"bot": "reviewer"}})
+        assert "agents" in loader.build_config(loader.read_config_document()).degraded_sections
+        _write(config_home / "config.json", {"agents": {"bot": {"description": "fixed"}}})
+        cfg = loader.build_config(loader.read_config_document())
+        assert "agents" not in cfg.degraded_sections
+        assert "bot" in cfg.agents
+
     def test_no_files_reads_an_unloaded_document_and_creates_nothing(self, config_home):
         doc = loader.read_config_document()
         assert doc.loaded is False
@@ -375,10 +418,73 @@ class TestReadConfigDocument:
         assert second.ticket > first.ticket
         assert len(stats) == 2
 
+    def test_each_disk_read_reports_a_clamped_value_again(self, config_home, caplog):
+        caplog.set_level(logging.WARNING, logger=_LOGGER)
+        _write(config_home / "config.json", {"agent": {"completion_keep_chars": 9999999}})
+        for invalidate in (False, False, True):
+            if invalidate:
+                loader._invalidate_config_cache()
+            cfg = loader.build_config(loader.read_config_document())
+        assert cfg.agent.completion_keep_chars == sections.COMPLETION_KEEP_CHARS_MAX
+        line = (
+            "Config: AgentConfig.completion_keep_chars = 9999999 is outside its allowed range;"
+            f" using {sections.COMPLETION_KEEP_CHARS_MAX}"
+        )
+        assert [r.getMessage() for r in caplog.records if "allowed range" in r.getMessage()] == [
+            line,
+            line,
+        ]
 
-# ---------------------------------------------------------------------------
+    @pytest.mark.parametrize(
+        ("document", "line"),
+        [
+            # A coercer with a clamp of its own, which keeps 0 as "use the default".
+            (
+                {"session": {"compact_wait_secs": 0.01}},
+                "SessionConfig.compact_wait_secs = 0.01 is outside its allowed range; using 60.0",
+            ),
+            # The same, in a crew record.
+            (
+                {"agents": {"helper": {"autocompact_pct": 1}}},
+                "KiroCrewAgentConfig.autocompact_pct = 1 is outside its allowed range;"
+                f" using {sections.AUTOCOMPACT_PCT_MIN}",
+            ),
+            # Each value of a map.
+            (
+                {"agent": {"lane_weights": {"system": 500}}},
+                "AgentConfig.lane_weights = {'system': 500} is outside its allowed range;"
+                " using {'system': 64}",
+            ),
+            # Read with a fallback of its own: an unreadable bucket is 0, not 100.
+            (
+                {"decisions": {"bucket": 500}},
+                "DecisionsConfig.bucket = 500 is outside its allowed range; using 100",
+            ),
+            # A floor that was a max() around the read.
+            (
+                {"mcp_gateway": {"idle_timeout_secs": 1}},
+                "McpGatewayConfig.idle_timeout_secs = 1 is outside its allowed range; using 10",
+            ),
+            # A range the DTO's __post_init__ held.
+            (
+                {"agent": {"max_channels": 9}},
+                "AgentConfig.max_channels = 9 is outside its allowed range; using 5",
+            ),
+        ],
+        ids=["own-coercer", "crew-record", "map-values", "own-fallback", "floor", "post-init"],
+    )
+    def test_a_value_clamped_outside_a_bounded_read_is_reported(
+        self, config_home, caplog, document, line
+    ):
+        caplog.set_level(logging.WARNING, logger=_LOGGER)
+        _write(config_home / "config.json", document)
+        loader.build_config(loader.read_config_document())
+        assert [r.getMessage() for r in caplog.records if "allowed range" in r.getMessage()] == [
+            f"Config: {line}"
+        ]
+
+
 # persist_write_back and the whole load.
-# ---------------------------------------------------------------------------
 
 
 class TestPersistWriteBack:

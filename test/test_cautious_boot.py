@@ -84,7 +84,8 @@ def _create_stacked_dump(dumps_dir: Path, *, age_secs: float = 0.0) -> Path:
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
         "Thread 0x00007f0000000000 (most recent call first):\n"
-        '  File "example.py", line 1 in main\n'
+        '  File "example.py", line 1 in main\n',
+        encoding="utf-8",
     )
     if age_secs:
         old = time.time() - age_secs
@@ -99,7 +100,8 @@ def _create_header_only_dump(dumps_dir: Path) -> Path:
         "# Kiro Crew loop-stall crash dump — opened 20260810T020000Z\n"
         "# PID: 12345\n"
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
-        "\n"
+        "\n",
+        encoding="utf-8",
     )
     return p
 
@@ -261,14 +263,18 @@ class TestInitializeAndPause:
         assert slept == [MAX_DELAY_SECS]
 
     @pytest.mark.asyncio
-    async def test_pause_before_never_raises_into_boot(self, monkeypatch):
+    async def test_pause_before_never_raises_into_boot(self, monkeypatch, caplog):
         """The pause is best-effort: even a pathological sleep failure must not
         propagate into (and abort) gateway startup — asyncio.sleep only raises
         CancelledError in practice, which must propagate; anything else is a
         no-op guarantee provided by reading an immutable decision."""
         cautious_boot._decision = CautiousBootDecision(True, 0.0, "recent dump")
-        # Zero delay: still logs + sleeps(0) — just verify it completes.
-        await pause_before("session restore")
+        # Zero delay: still logs + sleeps(0).
+        with caplog.at_level(logging.INFO, logger=cautious_boot.logger.name):
+            await pause_before("session restore")
+        name = cautious_boot.logger.name
+        messages = [r.getMessage() for r in caplog.records if r.name == name]
+        assert messages == ["cautious boot: pausing 0s before starting session restore"]
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +313,8 @@ def _create_owned_dump(
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
         "Thread 0x00007f0000000000 (most recent call first):\n"
-        '  File "example.py", line 1 in main\n'
+        '  File "example.py", line 1 in main\n',
+        encoding="utf-8",
     )
     return p
 

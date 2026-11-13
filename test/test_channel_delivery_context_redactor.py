@@ -115,7 +115,9 @@ async def test_own_conversation_leg_redacts_with_the_context_grader(_companion):
     state.sessions.get_origin_link.return_value = link
 
     with patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)):
-        ok = await mod._deliver_to_channel(state, "telegram:x", _TEXT, channel_type="telegram")
+        ok, code, detail = await mod._deliver_to_channel(
+            state, "telegram:x", _TEXT, channel_type="telegram"
+        )
 
-    assert ok is True
+    assert (ok, code, detail) == (True, "", "")
     assert transport.sent and all(_SECRET not in part for part in transport.sent)

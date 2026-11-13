@@ -11,7 +11,7 @@ import {
 } from '../hooks/useBottomTerminal'
 
 beforeEach(() => { __resetBottomTerminal(); localStorage.clear() })
-afterEach(() => { __resetBottomTerminal() })
+afterEach(() => { act(() => { __resetBottomTerminal() }) })
 
 describe('terminal capacity recovery', () => {
   it('reveals the last existing tab at capacity and permits a new tab only after one is closed', () => {

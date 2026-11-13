@@ -66,15 +66,16 @@ describe('sidebar disclosure-chevron grammar (#2887)', () => {
     expect(decl).not.toMatch(/style=\{\{/)
   })
 
-  it('all eight disclosure sites render DisclosureChevron', () => {
+  it('all nine disclosure sites render DisclosureChevron', () => {
     const uses = [flat, ...owners.map(([, text]) => text)].flatMap(text => [...text.matchAll(/<DisclosureChevron\b/g)])
     // Older Sessions header, history group headers, hidden-folders reveal,
     // folders filter row, per-container stale-session expander, and the
     // conductor lane's expander on a card that opened other sessions, and the
-    // per-crew group header, and the broadcast panel's custom-criteria toggle.
-    // Adding a ninth disclosure is fine — bump this count in the same commit so
+    // per-crew group header, and the broadcast panel's custom-criteria toggle,
+    // and the fold on a Slack code channel conductor's row (codeChannelCrew.ts).
+    // Adding a tenth disclosure is fine — bump this count in the same commit so
     // the addition is a decision, not drift.
-    expect(uses).toHaveLength(8)
+    expect(uses).toHaveLength(9)
   })
 
   it('no second rotation grammar appears beside the component', () => {

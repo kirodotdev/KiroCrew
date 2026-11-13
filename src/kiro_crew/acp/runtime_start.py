@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.config import live
-from kiro_crew.session_start_sizing import effective_session_start_concurrency
+from kiro_crew.session_start_sizing import (
+    AUTO,
+    cached_session_start_concurrency,
+    effective_session_start_concurrency,
+    is_auto,
+)
 from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
 if TYPE_CHECKING:
@@ -42,6 +47,24 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 # callers. Keep their expensive subprocess spawn + initialize handshakes behind
 # one low process-wide-per-loop bound; worker pools use the same default.
 _COLD_START_MAX_CONCURRENT = 2
+
+
+def _refuse_without_containment() -> None:
+    """Fail closed when Shared Crew's hard-limit mode finds containment missing.
+
+    The backstop under every runtime spawn and ``session/new``, including entry
+    points that never reach the fair admission gate: with
+    ``dashboard.shared_crew.hard_limits`` on and the last containment probe
+    refusing, no runtime starts. An in-memory read; with the mode off, or no
+    probe yet, it does nothing.
+    """
+    try:
+        from kiro_crew.shared_crew.containment import ContainmentUnavailable, hard_mode_refusal
+    except Exception:  # pragma: no cover - import failure never blocks a start
+        return
+    reason = hard_mode_refusal()
+    if reason is not None:
+        raise ContainmentUnavailable(reason)
 
 
 class _ColdStartAdmission:
@@ -66,6 +89,7 @@ class _ColdStartAdmission:
     async def acquire(self, priority: StartPriority) -> float:
         from kiro_crew.acp.runtime import time
 
+        _refuse_without_containment()
         started = time.monotonic()
         await self.semaphore.acquire(priority)
         return (time.monotonic() - started) * 1000.0
@@ -131,9 +155,10 @@ def _cold_start_counts() -> tuple[int, int]:
 # ``auto``: sized once per process from the host by ``session_start_sizing``)
 # session/new requests outstanding per event loop; waiters are ordered by
 # ``StartPriority`` (rule: ``kiro_crew.start_priority``).
-# It is a FIXED semaphore on purpose: the adaptive loop lives in the gatewayd
-# spawn gate and the execution-cap controller, and two adapting loops on one
-# resource oscillate. The same gate serves every harness (kiro-cli, KAS, a
+# It never narrows on purpose: the adaptive loop lives in the gatewayd spawn
+# gate and the execution-cap controller, and two loops adapting one resource
+# both ways oscillate. An ``auto`` gate only widens, when the host reading's
+# memory figure rises after boot. The same gate serves every harness (kiro-cli, KAS, a
 # later Claude host): it wraps ``create_session``, which every backend's
 # session start runs through.
 _SESSION_START_CONCURRENCY_DEFAULT = 2
@@ -217,8 +242,12 @@ class SessionStartGate:
     checkable: ``releases`` counts real releases.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, *, auto: bool = False) -> None:
         self.limit = max(_SESSION_START_CONCURRENCY_FLOOR, int(limit))
+        # Whether the setting this gate was sized from was ``auto``. Fixed here,
+        # as the width's source is: the setting is ``restart=True``, so a later
+        # edit of it neither starts nor stops this gate's widening.
+        self.auto = auto
         self.semaphore = PrioritySemaphore(self.limit)
         self.releases = 0
         # Permits currently held by a StartCollector rather than by a live
@@ -241,9 +270,21 @@ class SessionStartGate:
         """How many permits :class:`StartCollector` instances may hold at once."""
         return max(0, self.limit - _COLLECTOR_PERMIT_HEADROOM)
 
+    def widen_to(self, limit: int) -> None:
+        """Grow to *limit* permits; never shrinks.
+
+        Held permits stay held and queued starts are handed the new ones
+        (``PrioritySemaphore.widen_to``); the collector ceiling follows the limit.
+        Call on the loop that owns the gate.
+        """
+        if limit > self.limit:
+            self.limit = int(limit)
+            self.semaphore.widen_to(self.limit)
+
     async def acquire(self, priority: StartPriority = StartPriority.BACKGROUND) -> "StartPermit":
         from kiro_crew.acp.runtime import time
 
+        _refuse_without_containment()
         started = time.monotonic()
         await self.semaphore.acquire(priority)
         return StartPermit(self, (time.monotonic() - started) * 1000.0, priority)
@@ -314,26 +355,47 @@ _session_start_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Sessi
 _session_start_gates_lock = threading.Lock()
 
 
+def _widen_auto_gate(gate: SessionStartGate) -> None:
+    """Grow an ``auto`` *gate* to the width the cached host reading gives now.
+
+    That reading's memory figure can rise after boot
+    (``session_start_sizing.refresh_host_capacity``), so a gate built while
+    memory was short is not held at that width. Never shrinks. Decided by the
+    mode the gate was built with (``SessionStartGate.auto``), not by the setting
+    as it reads now, so a gate built from an explicit integer is left alone until
+    a restart. No I/O: the cached reading only.
+    """
+    if gate.auto:
+        gate.widen_to(cached_session_start_concurrency(AUTO))
+
+
 async def session_start_gate() -> SessionStartGate:
     """The current loop's gate, sized from config the first time it is asked for.
 
     Config is resolved off-loop (``KiroCrewConfig.load`` is disk I/O) unless the
-    live watcher's snapshot is armed. The size is fixed for the loop's lifetime;
-    ``agent.session_start_concurrency`` is ``restart=True``. The gate is a
-    strong value keyed weakly by loop, so it lives exactly as long as its loop.
+    live watcher's snapshot is armed. An explicit size is fixed for the loop's
+    lifetime (``agent.session_start_concurrency`` is ``restart=True``); an
+    ``auto`` gate is widened on lookup to what the cached host reading gives now
+    (:func:`_widen_auto_gate`). The gate is a strong value keyed weakly by loop,
+    so it lives exactly as long as its loop.
     """
     loop = asyncio.get_running_loop()
     with _session_start_gates_lock:
         gate = _session_start_gates.get(loop)
     if gate is not None:
+        _widen_auto_gate(gate)
         return gate
     snap = live.snapshot()
     limit: int | None = None
+    # Only a gate the armed snapshot says is ``auto`` widens later; one built
+    # with no snapshot keeps the width it resolves here.
+    auto = False
     if snap is not None:
         # An explicit integer is used as is; "auto" needs the host probe (disk
         # I/O), so it falls through to the off-loop resolver below.
         try:
             raw = snap.agent.session_start_concurrency
+            auto = is_auto(raw)
             limit = None if isinstance(raw, str) else int(raw)
         except Exception:
             limit = None
@@ -342,7 +404,7 @@ async def session_start_gate() -> SessionStartGate:
     with _session_start_gates_lock:
         gate = _session_start_gates.get(loop)
         if gate is None:
-            gate = SessionStartGate(limit)
+            gate = SessionStartGate(limit, auto=auto)
             _session_start_gates[loop] = gate
     return gate
 

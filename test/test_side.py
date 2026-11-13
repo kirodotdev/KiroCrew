@@ -41,6 +41,7 @@ from side_helpers import (  # noqa: F401 -- the autouse fixture registers by imp
 )
 
 from kiro_crew import context as context_module
+from kiro_crew.acp.client import AcpError, _raise_acp_error
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers.side import _run_side_turn
 from kiro_crew.dashboard.side_state import SideState
@@ -284,6 +285,65 @@ async def test_side_turn_surfaces_the_actionable_auth_message(tmp_path, monkeypa
     assert errors, broadcasts
     assert "not logged in" in errors[-1]["content"]
     assert "see server logs" not in errors[-1]["content"]
+
+
+_GENERIC_SIDE_FAILURE = "(side conversation failed — see server logs)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "shown"),
+    [
+        (
+            {"code": -32603, "message": "Internal error", "data": "ThrottlingException"},
+            "is throttling requests. Try:",
+        ),
+        (("raw provider text", {"transient": True}), _GENERIC_SIDE_FAILURE),
+        (("Fixed wording.", {"transient": False, "user_worded": True}), "Fixed wording."),
+    ],
+    ids=["worded-throttle", "unworded-transient", "worded-terminal"],
+)
+async def test_side_turn_shows_a_backend_failure_only_when_it_is_worded(
+    tmp_path, monkeypatch, error, shown
+):
+    """A worded backend failure reaches the side panel; an unworded one does not.
+
+    The panel has no other channel, so a throttle that outlasts the retries must
+    show its advice to wait and retry, not "see server logs". Text no formatter
+    branch worded is internal detail and keeps the generic line, transient or not.
+    """
+
+    state = _make_state(tmp_path)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState()
+    parent._side.last_run_id = "run-err"
+
+    async def failing_stream(*_a, **_k):
+        # A fresh error per attempt: the retry ladder raises it four times.
+        if isinstance(error, dict):
+            _raise_acp_error(error)
+        message, flags = error
+        raise AcpError(message, **flags)
+        yield  # pragma: no cover — generator shape only
+
+    client = MagicMock()
+    client.stream = failing_stream
+    client.stream_command = failing_stream
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    state.sessions.release = MagicMock()
+    monkeypatch.setattr("kiro_crew.llm_helpers.transient_retry_delay", lambda *_a: 0.0)
+
+    broadcasts: list[dict] = []
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.broadcast_side_result",
+        lambda state, **kw: broadcasts.append(kw),
+    )
+
+    await _run_side_turn(state, parent, "run-err", _SIDE_QUESTION, is_first_turn=True)
+
+    errors = [b for b in broadcasts if b.get("is_error")]
+    assert errors, broadcasts
+    assert shown in errors[-1]["content"]
 
 
 @pytest.mark.asyncio

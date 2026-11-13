@@ -22,9 +22,16 @@ instead of the one about to refuse.
 The first-touch count needs no gate to be deterministic on the parent: a
 ``_prepare`` worker never consults the cache before it builds, only at publication,
 so N callers always made N ``declared_store`` calls there. The tests that need an
-open to be in flight gate ``declared_store``; every wait on that gate is bounded and
-fails by name, and the gate is always released in a ``finally`` so a failed
-assertion cannot leave a worker thread parked on it.
+open to be in flight gate ``declared_store``, and the gate is always released in a
+``finally`` so a failed assertion cannot leave a worker thread parked on it.
+
+Every wait in this file is bounded by the lost-run bound of
+:mod:`kiro_crew.testing.wait` and fails by name: the worker's wait at the gate, the
+test's wait for a worker to reach it, and every await of a caller or of the shared
+open. A caller's task finishes only when an executor thread does. The bound is the
+loop's own timer, which needs no signal, so an open that never returns fails the
+test with the await it stuck on rather than leaving it to pytest-timeout's
+``SIGALRM``, which a wedged worker process may never act on.
 """
 
 from __future__ import annotations
@@ -38,13 +45,10 @@ from member_memory_helpers import forget_declared_stores, write_member_home
 
 from kiro_crew import context, vector_memory
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, finished
 
 STORE = "member-alice"
 BURST = 5
-#: Ceiling on every wait for a worker thread to reach or leave the gate. A healthy
-#: run passes the gate in milliseconds; the ceiling only turns a hang into a named
-#: failure instead of a pinned executor thread.
-WAIT_SECS = 5.0
 
 
 @pytest.fixture
@@ -75,7 +79,7 @@ def opens(monkeypatch):
     def counting(*args, **kwargs):
         seen["calls"] += 1
         started.set()
-        assert gate.wait(WAIT_SECS), "the test never released the declared_store gate"
+        assert gate.wait(default_timeout()), "the test never released the declared_store gate"
         return real(*args, **kwargs)
 
     monkeypatch.setattr(vector_memory, "declared_store", counting)
@@ -86,15 +90,22 @@ def opens(monkeypatch):
 
 
 async def _open_in_flight(started: threading.Event) -> None:
-    """Wait, bounded, until a worker thread is parked at the gate."""
-    assert await asyncio.to_thread(started.wait, WAIT_SECS), "no open reached declared_store"
+    """Wait, bounded, until a worker thread is parked at the gate.
+
+    Polled on the loop: ``Event.is_set`` neither blocks nor needs the loop's lock,
+    and the wait takes no executor thread beside the opens it is waiting for.
+    """
+    await async_wait_until(started.is_set, describe=lambda: "no open reached declared_store")
 
 
 @pytest.mark.asyncio
 async def test_a_burst_of_first_touches_opens_the_store_once(home, opens):
     seen, _started, _gate = opens
 
-    stores = await asyncio.gather(*(context._build_store_vectors(STORE) for _ in range(BURST)))
+    stores = await finished(
+        asyncio.gather(*(context._build_store_vectors(STORE) for _ in range(BURST))),
+        "the burst's store",
+    )
 
     assert seen["calls"] == 1, f"{seen['calls']} opens for {BURST} concurrent first touches"
     assert all(store is stores[0] for store in stores), "callers received different instances"
@@ -119,8 +130,8 @@ async def test_a_cancelled_caller_does_not_cancel_the_open_under_the_others(home
         gate.set()
 
     with pytest.raises(asyncio.CancelledError):
-        await first
-    store = await second
+        await await_until(first, what="the cancelled caller's cancellation")
+    store = await await_until(second, what="the remaining caller's store")
     assert store is not None
     assert seen["calls"] == 1
     assert context._vector_stores.get(STORE) is store
@@ -140,12 +151,12 @@ async def test_cancelling_every_caller_cancels_the_open_and_publishes_nothing(ho
             caller.cancel()
         for caller in callers:
             with pytest.raises(asyncio.CancelledError):
-                await caller
+                await await_until(caller, what="a cancelled caller's cancellation")
         assert shared.cancelled() or shared.cancelling(), "the open outlived its last caller"
     finally:
         gate.set()
     with pytest.raises(asyncio.CancelledError):
-        await shared
+        await await_until(shared, what="the shared open's cancellation")
 
     assert seen["calls"] == 1
     assert STORE not in context._vector_stores, "a cancelled open published its store"
@@ -177,8 +188,8 @@ async def test_a_caller_arriving_as_the_last_waiter_cancels_starts_a_fresh_open(
         gate.set()
 
     with pytest.raises(asyncio.CancelledError):
-        await first
-    store = await second
+        await await_until(first, what="the last waiter's cancellation")
+    store = await await_until(second, what="the later caller's store from a fresh open")
     assert store is not None
     assert seen["calls"] == 2
     assert context._vector_stores.get(STORE) is store
@@ -207,8 +218,8 @@ async def test_a_release_during_an_open_sends_a_later_caller_to_a_fresh_open(hom
         gate.set()
 
     with pytest.raises(UnknownMemoryStore, match="changed during preparation"):
-        await stale
-    store = await fresh
+        await await_until(stale, what="the outdated open's refusal")
+    store = await await_until(fresh, what="the later caller's store from a fresh open")
     assert store is not None
     assert seen["calls"] == 2
     assert context._vector_stores.get(STORE) is store
@@ -220,8 +231,11 @@ async def test_a_refusal_reaches_every_caller_and_releases_the_entry(home, opens
     seen, _started, _gate = opens
     shutil.rmtree(home / "memory_stores" / STORE)
 
-    results = await asyncio.gather(
-        *(context._build_store_vectors(STORE) for _ in range(BURST)), return_exceptions=True
+    results = await finished(
+        asyncio.gather(
+            *(context._build_store_vectors(STORE) for _ in range(BURST)), return_exceptions=True
+        ),
+        "the burst's refusals",
     )
 
     assert all(isinstance(result, UnknownMemoryStore) for result in results), results
@@ -234,14 +248,17 @@ async def test_a_refusal_reaches_every_caller_and_releases_the_entry(home, opens
 async def test_the_next_first_touch_after_a_release_opens_again(home, opens):
     seen, _started, _gate = opens
 
-    first = await context._build_store_vectors(STORE)
+    first = await finished(context._build_store_vectors(STORE), "the first touch's store")
     assert first is not None and seen["calls"] == 1
     # A release drops the cached handle; the following first touch must open anew
     # rather than hand out the closed instance or a stale in-flight task.
     context.release_cached_memory_store(STORE)
     assert STORE not in context._vector_stores
 
-    again = await asyncio.gather(*(context._build_store_vectors(STORE) for _ in range(BURST)))
+    again = await finished(
+        asyncio.gather(*(context._build_store_vectors(STORE) for _ in range(BURST))),
+        "the store opened after the release",
+    )
 
     assert seen["calls"] == 2
     assert all(store is again[0] for store in again)

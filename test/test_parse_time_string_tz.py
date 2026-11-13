@@ -54,12 +54,16 @@ def test_at_time_respects_different_timezones():
         def now(cls, tz=None):
             return fixed_utc.astimezone(tz) if tz else fixed_utc.replace(tzinfo=None)
 
-    with patch.object(cron_mod, "datetime", _FixedDatetime), \
-         patch.object(cron_mod, "get_local_tz", return_value=("America/Los_Angeles", pacific)):
+    with (
+        patch.object(cron_mod, "datetime", _FixedDatetime),
+        patch.object(cron_mod, "get_local_tz", return_value=("America/Los_Angeles", pacific)),
+    ):
         result_pacific = cron_mod.parse_time_string("23:59")
 
-    with patch.object(cron_mod, "datetime", _FixedDatetime), \
-         patch.object(cron_mod, "get_local_tz", return_value=("America/New_York", eastern)):
+    with (
+        patch.object(cron_mod, "datetime", _FixedDatetime),
+        patch.object(cron_mod, "get_local_tz", return_value=("America/New_York", eastern)),
+    ):
         result_eastern = cron_mod.parse_time_string("23:59")
 
     assert isinstance(result_pacific, float)
@@ -213,3 +217,64 @@ def test_time_just_after_the_spring_forward_gap_keeps_seconds():
         tzinfo=ZoneInfo("America/Los_Angeles"),
     ).timestamp()
     assert result == expected
+
+
+def _pinned_datetime(fixed_utc: datetime) -> type[datetime]:
+    """A ``datetime`` whose ``now`` answers one instant, in whatever zone is asked."""
+
+    class _Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_utc.astimezone(tz) if tz else fixed_utc.replace(tzinfo=None)
+
+    return _Fixed
+
+
+def test_relative_days_and_weeks_keep_the_clock_time_across_a_dst_change():
+    """'in 1 day' is a calendar day in the job's zone, like 'tomorrow'.
+
+    Asked at 00:30 on the night Los Angeles falls back, a day later is 00:30
+    the next night, which is 25 hours on, not 24.
+    """
+    pacific = ZoneInfo("America/Los_Angeles")
+    start = datetime(2026, 11, 1, 0, 30, tzinfo=pacific)
+    with patch.object(cron_mod, "datetime", _pinned_datetime(start.astimezone(ZoneInfo("UTC")))):
+        one_day = cron_mod.parse_time_string("in 1 day", "America/Los_Angeles")
+        one_week = cron_mod.parse_time_string("in 1 week", "America/Los_Angeles")
+
+    assert isinstance(one_day, float) and isinstance(one_week, float)
+    landed = datetime.fromtimestamp(one_day, tz=pacific)
+    assert (landed.month, landed.day, landed.hour, landed.minute) == (11, 2, 0, 30)
+    assert one_day - start.timestamp() == 25 * 3600
+    landed_week = datetime.fromtimestamp(one_week, tz=pacific)
+    assert (landed_week.month, landed_week.day, landed_week.hour) == (11, 8, 0)
+
+
+def test_every_relative_unit_spelling_is_accepted():
+    fixed_utc = datetime(2026, 5, 14, 18, 0, 0, tzinfo=ZoneInfo("UTC"))
+    with patch.object(cron_mod, "datetime", _pinned_datetime(fixed_utc)):
+        days = {
+            text: cron_mod.parse_time_string(text, "UTC")
+            for text in ("in 2 days", "in 1 day", "in 2d", "in 1 week", "in 2 wks", "in 1w")
+        }
+    base = fixed_utc.timestamp()
+    assert days == {
+        "in 2 days": base + 2 * 86400,
+        "in 1 day": base + 86400,
+        "in 2d": base + 2 * 86400,
+        "in 1 week": base + 7 * 86400,
+        "in 2 wks": base + 14 * 86400,
+        "in 1w": base + 7 * 86400,
+    }
+
+    before = time.time()
+    short = {text: cron_mod.parse_time_string(text, "UTC") for text in ("in 90 mins", "in 2 hrs")}
+    assert all(isinstance(value, float) for value in short.values())
+    assert short["in 90 mins"] - before >= 90 * 60
+    assert short["in 2 hrs"] - before >= 2 * 3600
+
+
+def test_a_relative_day_count_past_the_calendar_is_refused():
+    result = cron_mod.parse_time_string("in 99999999999 days", "UTC")
+    assert isinstance(result, str)
+    assert result.startswith("Error:") and "outside the supported date range" in result

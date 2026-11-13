@@ -45,6 +45,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from auto_research_handlers_coverage_helpers import _isolate_fixture  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_autonudge  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_stray_sse_queues  # noqa: F401
@@ -58,6 +59,7 @@ from auto_research_handlers_coverage_helpers import (
     _status,
     _write_finding,
 )
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
 from kiro_crew.testing.wait import async_wait_until
@@ -571,15 +573,38 @@ class TestWatchdogLoop:
         assert "needs_input" in sse.types()
 
     @pytest.mark.asyncio
+    async def test_expired_trust_clears_the_session_policy_children_read(
+        self, _isolate: Path, fast_watchdog, sse
+    ):
+        """Turn admission caches ``_trust`` as the session's ``approval_policy``; the
+        spawn gate and each child's tool approval read that, not the flag."""
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+        cid = _campaign()
+        _running(cid, started_at=time.time() - (h._TRUST_TTL_SECS + 60))
+        slot = SimpleNamespace(key=f"research-{cid}", _trust=True, running=False)
+        policies = {effective_session_key(slot): "auto"}
+        sessions = SimpleNamespace(set_approval_policy=policies.__setitem__)
+        state = SimpleNamespace(_slots={slot.key: slot}, sessions=sessions)
+        assert await _drive_watchdog(
+            {"state": state},
+            lambda: _status(cid) == h.CampaignStatus.NEEDS_INPUT and "needs_input" in sse.types(),
+        )
+        assert policies == {effective_session_key(slot): ""}
+
+    @pytest.mark.asyncio
     async def test_trust_is_reestablished_and_a_paused_loop_rearmed(
         self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
     ):
         from kiro_crew.autonudge import AutoNudgeService
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 
         cid = _campaign()
         _running(cid)
-        slot = SimpleNamespace(_trust=False, running=True)
-        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        slot = SimpleNamespace(key=f"research-{cid}", _trust=False, running=True)
+        policies: dict[str, str] = {}
+        sessions = SimpleNamespace(set_approval_policy=policies.__setitem__)
+        state = SimpleNamespace(_slots={slot.key: slot}, sessions=sessions)
         svc = AutoNudgeService(base_dir=_isolate / "autonudge")
         await svc.start()
         try:
@@ -590,8 +615,44 @@ class TestWatchdogLoop:
             assert svc.get_by_slot(f"research-{cid}") is loop
             assert loop.active is True
             assert slot._trust is True
+            # The spawn gate reads the session policy, not the flag: the re-grant
+            # lands mid-turn on a running slot, so it must store it now.
+            assert policies == {effective_session_key(slot): "auto"}
         finally:
             svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_person_revoke_parks_the_campaign_instead_of_regranting(
+        self, _isolate: Path, fast_watchdog, sse, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Trust the app granted and a person then cleared on the SAME slot stays
+        cleared: the watchdog parks the campaign for re-authorization."""
+        from kiro_crew.apps.builtins.auto_research.campaign import agent_mode
+
+        monkeypatch.setattr(agent_mode, "_held_worker_trust", {})
+        cid = _campaign()
+        _running(cid)
+        slot_key = f"research-{cid}"
+        slot = SimpleNamespace(_trust=False, running=False)
+        agent_mode.grant_worker_trust(None, slot_key, slot)
+        slot._trust = False  # the person's revoke
+        state = SimpleNamespace(_slots={slot_key: slot})
+        assert await _drive_watchdog(
+            {"state": state},
+            lambda: _status(cid) == h.CampaignStatus.NEEDS_INPUT and "needs_input" in sse.types(),
+        )
+        assert slot._trust is False
+        qpath = h._campaign_dir(cid) / "questions.json"
+        assert "turned off" in json.loads(qpath.read_text())["question"]
+        # An answer in the guidance box clears the question and sets RUNNING without
+        # a Resume: the revoke still holds, so the campaign parks again.
+        qpath.unlink()
+        _running(cid)
+        assert await _drive_watchdog(
+            {"state": state},
+            lambda: _status(cid) == h.CampaignStatus.NEEDS_INPUT and qpath.exists(),
+        )
+        assert slot._trust is False
 
     @pytest.mark.asyncio
     async def test_pending_question_pauses_an_attended_campaign(
@@ -907,6 +968,29 @@ class TestGrillExpandEndpoint:
         resp = await h._handle_grill_expand(
             _mk("POST", "grill/expand", app=_app(), body={"question": "too short"})
         )
+        assert resp.status == 400
+        assert _body(resp)["error"] == "Question too short"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "question", [12345, ["a long enough question here"], {"q": "x"}, True], ids=repr
+    )
+    async def test_non_string_question_is_a_coded_400(self, question: object):
+        # Served over HTTP, so a `.strip()` crash is the 500 a client sees.
+        app = as_owner(web.Application())
+        app.router.add_post("/grill/expand", h._handle_grill_expand)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/grill/expand", json={"question": question})
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "question must be a string",
+                "code": "invalid_field_type",
+            }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [{}, {"question": None}, {"question": ""}])
+    async def test_null_or_missing_question_is_still_too_short(self, body: dict):
+        resp = await h._handle_grill_expand(_mk("POST", "grill/expand", app=_app(), body=body))
         assert resp.status == 400
         assert _body(resp)["error"] == "Question too short"
 

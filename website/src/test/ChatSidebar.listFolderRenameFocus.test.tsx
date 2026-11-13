@@ -122,7 +122,7 @@ function FolderBlockRig({
     renameCommit,
     setEditingId,
     setEditScope: () => {},
-    suppressMenuRestoreRef: { current: false },
+    suppressMenuRestore: () => {},
     onMenuCloseAutoFocus: () => {},
 
     // Folder list (no children)
@@ -134,6 +134,8 @@ function FolderBlockRig({
     filterHiddenFolders: new Set<string>(),
     folderNameMatchIds: null,
     foldersWithActiveSubtree: new Set<string>(),
+    pinnedFolderSubtree: new Set<string>(),
+    pinnedFolderAncestors: new Set<string>(),
 
     // Lane state
     listNarrowed: false,

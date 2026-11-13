@@ -330,7 +330,7 @@ def _load_kirocrew_config_strict() -> dict | None:
         text = _mcp._kirocrew_mcp_json().read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     try:
         data = loads_user_json(text)

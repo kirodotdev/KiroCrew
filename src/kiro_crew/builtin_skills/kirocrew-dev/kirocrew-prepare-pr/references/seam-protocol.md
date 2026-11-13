@@ -99,12 +99,14 @@ A span that really carries unrelated defects is answered by the `resolution:` li
 The count above reads only dispositions an author wrote, and many PRs have none. When no
 span is a seam, `pr_findings.py --rounds` and `sweep_check.py` also count PUSHES, read
 from the PR timeline with GET calls (`_review_contract.blocked_push_count`). A push counts
-once, when the head it replaced was blocked: a review lane (Opus, GPT, Design, UX or First
-Principles) ended its latest check run on that head as `failure`, or a CHANGES_REQUESTED
+once, when the head it replaced was blocked: a review lane (Opus, GPT, Design, UX, First
+Principles or Security Scope Review) ended its latest check run on that head as `failure`, or a CHANGES_REQUESTED
 review names that head and its reviewer has not since approved that head or had the review
 dismissed (a comment does not clear it, and another reviewer's request stands). A rebase or a
 red test shard on a green head, a cancelled or timed-out lane, a lane whose newest run on the
-head is green, and a dismissed review count nothing.
+head is green, and a dismissed review count nothing. The GPT lane's push-budget section runs
+this same count (`_review_pushes.py` as a script, from the base commit), so the GPT prompt
+and `--rounds` show one number for a PR.
 
 - 3 pushes: `SEAM REPEAT (pr-level)`, exit 30. Take the first option of the strategy switch
   that holds. The class sweep and `resolution:` line work as for a span.

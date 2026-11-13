@@ -307,6 +307,41 @@ class TestVersionGate:
         assert data["version_match"] is False
         assert data["unavailable"]["version"] == "capability_peer_too_old"
 
+    async def test_a_placeholder_zero_version_reads_as_unknown(self, monkeypatch):
+        """A peer answering ``0`` names no build, so it is reported as unknown, with why."""
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/version": (True, {"version": "0"})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version"] == ""
+        assert data["version_match"] is False
+        assert (data["behind"], data["ahead"]) == (False, False)
+        assert data["unavailable"]["version"] == "capability_malformed_reply"
+
+    async def test_a_non_release_build_id_still_matches_by_equality(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(kiro_crew, "__version__", "build-abc")
+        state = _state(_all_ok(**{"/api/version": (True, {"version": "build-abc"})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert (data["version"], data["version_match"]) == ("build-abc", True)
+        assert "version" not in data["unavailable"]
+
+    @pytest.mark.parametrize(
+        ("peer", "behind", "ahead"),
+        [("0.8.0", True, False), ("0.10.0", False, True), ("0.9.0", False, False)],
+    )
+    async def test_a_mismatch_names_which_side_is_newer(self, monkeypatch, peer, behind, ahead):
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(kiro_crew, "__version__", "0.9.0")
+        state = _state(_all_ok(**{"/api/version": (True, {"version": peer})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert (data["behind"], data["ahead"]) == (behind, ahead)
+
 
 @pytest.mark.asyncio
 class TestPartialDegradation:

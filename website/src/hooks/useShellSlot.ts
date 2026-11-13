@@ -18,8 +18,11 @@ import { useLayoutEffect, useState } from 'react'
  *
  * Returns `null` while `enabled` is false or the slot does not exist, which is
  * the caller's signal to render the fallback in place.
+ *
+ * `rev` re-runs the lookup: a caller that finds the element it holds has left
+ * the document (the shell replaced it) bumps it to latch the current one.
  */
-export function useShellSlot(id: string, enabled: boolean): HTMLElement | null {
+export function useShellSlot(id: string, enabled: boolean, rev = 0): HTMLElement | null {
   const [slot, setSlot] = useState<HTMLElement | null>(
     () => (enabled ? document.getElementById(id) : null),
   )
@@ -34,6 +37,6 @@ export function useShellSlot(id: string, enabled: boolean): HTMLElement | null {
     })
     mo.observe(document.body, { childList: true, subtree: true })
     return () => mo.disconnect()
-  }, [id, enabled])
+  }, [id, enabled, rev])
   return slot
 }

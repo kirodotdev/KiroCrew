@@ -4,41 +4,53 @@
  * `TabBody` renders a terminal, Browser, MCP app, file or working-tree diff,
  * folder, artifact or turn-diff tab: through `FileTabBody` (the editor with the
  * file-browser rail), `HydratingFileTab` (a restored file tab before its first
- * read) or the shared viewers. `McpAppTabBody` and `AppPanelTabBody` render the
- * cross-slot app frames, and `AppPanelTabsErrorNotice` reports a failed app list
- * at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
+ * read, and the file pop-out window's first read) or the shared viewers.
+ * `McpAppTabBody` and `AppPanelTabBody` render the cross-slot app frames, and
+ * `AppPanelTabsErrorNotice` reports a failed app list at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
  * and renders the category views itself; this module never imports it.
  */
-import { useState, useRef, useEffect, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
-import ArtifactPanel from '../../components/ArtifactPanel'
+import ArtifactPanel, { type ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
-import WebPreviewPanel from '../../components/WebPreviewPanel'
+import PreviewTabBody from '../../components/PreviewTabBody'
 import CliPanel from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
+import { pathBasename } from '../../utils/pathBasename'
 import { useQueryClient } from '@tanstack/react-query'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors, useInstalledApps, panelTabDescriptor } from '../../hooks/panelTabRegistry'
+import { isPermissionRefusal } from '../../api/apiError'
 import AppHost from '../../components/AppHost'
 import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import ErrorBoundary from '../../components/ErrorBoundary'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../utils/fileReadQuery'
+import { lazyRetry } from '../../components/lazyRetry'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useAppSelector } from '../../store'
 import { mcpAppKey } from '../../store/chatSlice'
 import McpAppFrame from '../../components/McpAppFrame'
 import { dashboardPreviewTargetFromRef } from '../../utils/dashboardPreview'
+import { DocumentPanelTabs } from './DocumentPanelTabs'
+import { openFilePopout } from '../../utils/filePopout'
 import { i18nT } from '../../i18n/t'
 
-const DashboardPreviewPanel = lazy(() => import('./DashboardPreviewPanel'))
+// A chunk that fails to load shows its notice in the tab, with Try Again, never
+// the route's card over the host page.
+// No hand-off: the side panel's other tabs and the host page can hold unsaved edits.
+const DashboardPreviewPanel = lazyRetry(() => import('./DashboardPreviewPanel'), {
+  layout: 'page',
+  title: () => i18nT('pages.membersPage.dashboard_unavailable'),
+  scope: 'dashboard-preview',
+  askAgent: false,
+})
 
 /** Body renderer for terminal + document tabs. Module-scope (NOT nested inside
  *  SidePanel): a nested component definition would produce a new component
@@ -86,7 +98,9 @@ function AppPanelTabBody({ kind, active, slot }: { kind: string; active: boolean
  */
 function AppPanelTabsErrorNotice() {
   const { isError, error } = useInstalledApps()
-  if (!isError) return null
+  // A caller refused the app list (a relay teammate, `relay_apps_teammate`) has no
+  // contributed tabs, and that is the answer rather than a failure (#32031).
+  if (!isError || isPermissionRefusal(error)) return null
   return (
     <div className="absolute left-0 right-0 top-0 z-10 p-4">
       <ErrorNotice message={errMessage(error)} askAgent />
@@ -132,11 +146,13 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * and file-open host it stays mounted through tree-read failures so its notice,
  * toggle, and Refresh escape hatch remain reachable.
  */
-function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onSubmitComments, connected = true, onRevealConsumed }: {
+function FileTabBody({ tab, active, slot, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onPanelHandle, onSubmitComments, connected = true, onRevealConsumed }: {
   tab: PanelTab
   /** Is this the visible tab? Background file tabs stay mounted, so the panel
    *  needs this to keep its Cmd+F handler off a document the user cannot see. */
   active: boolean
+  /** The panel's chat: the pop-out's chat for a tab that names none of its own. */
+  slot: string
   projectDir?: string
   /** Cross-remount scroll identity (slot + tab id) — see `useScrollMemory`. */
   scrollMemoryKey?: string
@@ -144,15 +160,18 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   /** Disk-originated content (file watch / Refresh): the panel routes it here
    *  so the tab's saved baseline moves with the buffer it just replaced, and the
    *  binary verdict of that read moves with both. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** The header path menu's "Show folder in side panel" target. */
   onFolderOpen?: (p: string) => void
   /** Right-click "Add to context" on a rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
+  /** Receives this tab's close/navigate guard (`null` on unmount), so the tab
+   *  strip's × closes through the same prompts as the panel's own close. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
   onSubmitComments?: (m: string, count?: number) => void | boolean | Promise<void | boolean>
   connected?: boolean
   onRevealConsumed: () => void
@@ -161,16 +180,22 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   const railUsable = !!projectDir && !!onFileOpen
   // The rail re-targets this tab in place, so the panel's own dirty guard has to
   // approve the navigation the way it approves a close.
-  const panelRef = useRef<MarkdownPanelHandle>(null)
+  const panelRef = useRef<MarkdownPanelHandle | null>(null)
+  const tabId = tab.id
+  const setPanelRef = useCallback((handle: MarkdownPanelHandle | null) => {
+    panelRef.current = handle
+    onPanelHandle?.(tabId, handle)
+  }, [onPanelHandle, tabId])
   return (
     <MarkdownPanel
-      ref={panelRef}
+      ref={setPanelRef}
       embedded
       active={active}
       filePath={tab.path || ''}
       content={tab.content || ''}
       binary={tab.binary}
       partial={tab.partial}
+      placeholder={tab.placeholder}
       scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
@@ -186,6 +211,10 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       revealLine={tab.revealLine}
       onRevealConsumed={onRevealConsumed}
       onFolderOpen={onFolderOpen}
+      onFileOpen={onFileOpen ? (p, opts) => onFileOpen(p, opts?.line != null ? { line: opts.line, endLine: opts.endLine } : undefined) : undefined}
+      // A working-tree diff tab is a view of the plain file tab's path; the pop-out
+      // window shows that file, so only the file tab offers it.
+      onPopout={tab.kind === 'file' ? () => openFilePopout(tab.path || '', tab.slot || slot) : undefined}
       railOpen={railUsable && railOpen}
       onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
       browserRail={railUsable ? (
@@ -239,7 +268,12 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
  * this placeholder and that page ask for costs one GET and yields one answer
  * rather than two racing reads of the same file.
  */
-function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void }) {
+export function HydratingFileTab({ path, slot, onDiskContent }: {
+  path: string
+  /** The chat the read is made for (the file pop-out window's); a restored tab passes none. */
+  slot?: string | null
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void
+}) {
   const [error, setError] = useState<string | null>(null)
   const qc = useQueryClient()
   // Held in a ref so a new callback identity from the parent's render does not
@@ -257,13 +291,13 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
         // unmounting stops this consumer without cancelling the shared read.
         const r = await qc.fetchQuery({
           queryKey: fileReadQueryKey(path),
-          queryFn: ({ signal }) => fetchFileRead(path, signal),
+          queryFn: ({ signal }) => fetchFileRead(path, signal, slot),
           staleTime: FILE_READ_STALE_MS,
         })
         if (ac.signal.aborted) return
-        if (r.ok) { applyRef.current(r.text, r.binary, isPartialRead(r)); return }
+        if (r.ok) { applyRef.current(r.text, r.binary, partialReadCause(r)); return }
         if (r.status === 404) {
-          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false)
+          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false, false, true)
           return
         }
         // The same sentence the chip click reports for a failed read: a human
@@ -281,7 +315,7 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
       }
     })()
     return () => ac.abort()
-  }, [path, qc])
+  }, [path, slot, qc])
   if (error !== null) {
     return (
       <div data-testid="file-tab-hydration-failed" className="h-full p-4">
@@ -297,15 +331,17 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
   return <div data-testid="file-tab-hydrating" className="h-full p-4"><ContentSkeleton rows={8} /></div>
 }
 
-function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
+  /** A file, working-tree diff or artifact tab's close guard; see `FileTabBody`. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | ArtifactPanelHandle | null) => void
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
   onRevealConsumed: () => void
@@ -313,7 +349,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** Open a directory as a folder tab: the file tab header's "Show folder in
    *  side panel" row. */
   onFolderOpen?: (p: string) => void
@@ -329,9 +365,12 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   // `app` kind, its body renders from the cross-slot `allAppTabs` list so a chat
   // switch cannot remount its `AppHost`. The tab loop in `SidePanel.tsx` returns null for both.
   const terminalsPending = usePanelTerminalsPending()
+  const tabId = tab.id
+  const setArtifactRef = useCallback((handle: ArtifactPanelHandle | null) => { onPanelHandle?.(tabId, handle) }, [onPanelHandle, tabId])
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
-  if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
+  // The Preview tab: the local dev-server preview, or the agent's browser big.
+  if (tab.kind === 'browser') return <PreviewTabBody sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   // Cross-remount scroll identity for document bodies. Same slot+id key shape
   // as the app-frame list: the tab id is unique within a slot and stable in
@@ -344,13 +383,13 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
     // MarkdownPanel showing the current working-tree diff. Nothing is known
     // about a restored tab until a read lands, so it gets the self-hydrating
     // placeholder rather than an editor over an empty buffer.
-    if (tab.content === undefined) {
-      return <HydratingFileTab path={tab.path || ''} onDiskContent={onDiskContent} />
-    }
-    return (
+    const fileBody = (docActive: boolean) => tab.content === undefined
+      ? <HydratingFileTab path={tab.path || ''} onDiskContent={onDiskContent} />
+      : (
       <FileTabBody
         tab={tab}
-        active={active}
+        active={docActive}
+        slot={slot}
         projectDir={projectDir}
         scrollMemoryKey={scrollMemoryKey}
         onContentChange={onContentChange}
@@ -361,11 +400,16 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         onFolderOpen={onFolderOpen}
         onAddToContext={onAddToContext}
         onClose={onClose}
+        onPanelHandle={onPanelHandle}
         onSubmitComments={onSubmitComments}
         connected={connected}
         onRevealConsumed={onRevealConsumed}
       />
     )
+    // Edition tabs beside the document (`registerDocumentPanelTabs`); a working-tree
+    // diff is a view of the file, not the document, so it gets none.
+    if (tab.kind === 'wtdiff') return fileBody(active)
+    return <DocumentPanelTabs target={{ kind: 'file', path: tab.path || '' }} active={active} slot={slot} revealKey={tab.revealLine?.nonce}>{fileBody}</DocumentPanelTabs>
   }
   if (tab.kind === 'folder') {
     return (
@@ -382,13 +426,13 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   if (tab.kind === 'artifact') {
     // A crewmate's staged dashboard rides the artifact tab (see `dashboardPreviewRef`).
     const previewTarget = dashboardPreviewTargetFromRef(tab.artifactSlug)
-    // A local boundary: a failed chunk load must not reach the route boundary and
-    // unmount the host page (and any unsaved form on it).
-    if (previewTarget) return <ErrorBoundary scope="dashboard-preview" retryOnly><Suspense fallback={null}><DashboardPreviewPanel target={previewTarget} /></Suspense></ErrorBoundary>
+    if (previewTarget) return <DashboardPreviewPanel target={previewTarget} />
     return (
+      <DocumentPanelTabs target={{ kind: 'artifact', slug: tab.artifactSlug || '', artifactKind: tab.artifactKind || 'markdown' }} active={active} slot={slot}>
+      {(docActive: boolean) => (
       <ArtifactPanel
         embedded
-        active={active}
+        active={docActive}
         slug={tab.artifactSlug || ''}
         kind={tab.artifactKind || 'markdown'}
         content={tab.content || ''}
@@ -396,7 +440,10 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         onClose={onClose}
         onSubmitComments={onSubmitComments}
         connected={connected}
+        ref={setArtifactRef}
       />
+      )}
+      </DocumentPanelTabs>
     )
   }
   if (tab.kind === 'diff') {
@@ -415,7 +462,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
             <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={i18nT('pages.chat.sidePanel.open_in_editor_2', { path: tab.path || '' })}>
               {/* Bare filename: the tab title carries '- Diff', which would
                   read redundantly next to the Turn Diff badge here. */}
-              {(tab.path || '').split('/').pop() || tab.title}
+              {pathBasename(tab.path || '') || tab.title}
             </button>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0">{i18nT('pages.chat.sidePanel.turn_diff')}</span>
             {(added > 0 || removed > 0) && <span className="text-[11px] font-mono font-semibold shrink-0">{added > 0 && <span className="text-ok">+{added}</span>}{removed > 0 && <span className="text-danger ml-1.5">-{removed}</span>}</span>}

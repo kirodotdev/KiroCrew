@@ -49,6 +49,7 @@ const OWNER_MODULES = [
   'browserEvents.ts',
   'bundleReload.ts',
   'chatStream.ts',
+  'chunkWatch.ts',
   'composerCards.ts',
   'connection.ts',
   'contextTraceRefresh.ts',
@@ -58,6 +59,7 @@ const OWNER_MODULES = [
   'gatewayConnectivity.ts',
   'idleRowRefresh.ts',
   'reconnectCatchUp.ts',
+  'relayClose.ts',
   'retiredIds.ts',
   'rowDeliveryWatchdog.ts',
   'serverState.ts',
@@ -102,6 +104,8 @@ describe('one public surface', () => {
       'CONTEXT_TRACE_COALESCE_MS',
       'DASHBOARD_FIELDS_FRAME',
       'MEMBER_DASHBOARD_QUERY_PREFIX',
+      'RECONNECT_HEALTHY_MS',
+      'RECONNECT_SNAPSHOT_WAIT_MS',
       'ROW_STALL_MS',
       'ROW_STALL_TICK_MS',
       'SESSION_DASHBOARD_QUERY_PREFIX',
@@ -117,6 +121,7 @@ describe('one public surface', () => {
       'contextTraceKey',
       'crewLogProjectionsKey',
       'emitSlotFocused',
+      'endSplitPaneFocus',
       'fetchingAnyFoldQuery',
       'handleDashboardMoved',
       'healRedactionSwitchAfterReconnect',
@@ -216,7 +221,7 @@ describe('effect order', () => {
     // Exactly two of its own: the silence watchdog, then the mount effect.
     expect(effects).toHaveLength(2)
     expect(effects[0]).toBeGreaterThan(drain)
-    expect(src.slice(effects[0], effects[1])).toContain('silenceWindowMs')
+    expect(src.slice(effects[0], effects[1])).toContain('silenceHostRef.current = {')
     expect(src.slice(effects[1])).toContain('attachFocusRelay(')
   })
 })
@@ -228,7 +233,8 @@ describe('dependency direction', () => {
     'approvals.ts': ['attention.ts', 'retiredIds.ts'],
     'chatStream.ts': ['attention.ts', 'browserEvents.ts'],
     'composerCards.ts': ['attention.ts', 'retiredIds.ts'],
-    'connection.ts': ['gatewayConnectivity.ts'],
+    'connection.ts': ['gatewayConnectivity.ts', 'relayClose.ts'],
+    'foldWatch.ts': ['serverState.ts'],
     'reconnectCatchUp.ts': ['bundleReload.ts', 'gatewayConnectivity.ts', 'serverState.ts'],
     'serverState.ts': ['browserEvents.ts'],
     'slotList.ts': ['idleRowRefresh.ts'],

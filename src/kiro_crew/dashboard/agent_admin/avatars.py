@@ -24,7 +24,10 @@ if TYPE_CHECKING:
         _require_owner,
         _safe_color,
         _sel,
+        agent_route_name,
+        bounded_read,
         data_home,
+        invalid_agent_name_response,
         logger,
         replace_with_retry,
     )
@@ -198,7 +201,7 @@ def _read_avatar_file(path: Path) -> bytes | None:
             logger.warning("refusing non-regular avatar file %s", path.name)
             return None
         with path.open("rb") as fh:
-            data = fh.read(_AVATAR_MAX_BYTES + 1)
+            data = bounded_read(fh, _AVATAR_MAX_BYTES + 1)
     except OSError:
         return None
     if len(data) > _AVATAR_MAX_BYTES:
@@ -365,7 +368,11 @@ async def api_kirocrew_agent_avatar_upload(request: web.Request) -> web.Response
     denied = await _require_owner(request, "agent.avatar_upload")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    route_name = agent_route_name(request)
+    if route_name is None:
+        return invalid_agent_name_response()
+    # A plain ``str`` local, so the ``_stage`` closure below sees it narrowed.
+    name: str = route_name
     if not (request.content_type or "").startswith("multipart/"):
         return web.json_response(
             {"error": "expected multipart/form-data", "code": "not_multipart"}, status=400

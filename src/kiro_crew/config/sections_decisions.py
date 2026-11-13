@@ -193,7 +193,10 @@ class DecisionProviderConfig:
             "Endpoint",
             "Full URL of the evaluation endpoint. Override only to point at a "
             "compatible proxy — the request and response field names are fixed by "
-            "the TypeSafe API, not by this setting.",
+            "the TypeSafe API, not by this setting. "
+            "'sagemaker://<endpoint-name>?region=<region>[&profile=<profile>]' sends "
+            "the same request to an Amazon SageMaker endpoint, signed with this "
+            "machine's AWS credentials instead of an API key (needs boto3).",
         ),
     )
     api_key: str = field(
@@ -397,9 +400,9 @@ class DecisionsConfig:
             # The two must not share a fallback: this number decides how much
             # conversation state leaves the machine, so a hand-edit that fails to
             # parse must fail closed to "nobody", never open to "everybody".
-            bucket=_safe_int(
-                section.get("bucket", DECISION_BUCKET_MAX),
-                DECISION_BUCKET_MIN,
+            bucket=reader.read(
+                "bucket",
+                lambda raw, _default, *bounds: _safe_int(raw, DECISION_BUCKET_MIN, *bounds),
                 DECISION_BUCKET_MIN,
                 DECISION_BUCKET_MAX,
             ),

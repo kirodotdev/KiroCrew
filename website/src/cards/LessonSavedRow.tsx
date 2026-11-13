@@ -11,9 +11,19 @@
  *
  * The link is a plain route change: the composer's unsent draft is kept per
  * slot across navigation (`utils/chatDrafts`), so leaving loses nothing.
+ *
+ * A long rule is truncated to one line, so the full text shows in the shared
+ * `InstantTip` rather than a native `title`: the desktop app's Electron does
+ * not reliably paint `title` tooltips on macOS (electron/electron#49843), and
+ * no browser shows one on keyboard focus. The hint sits on the whole pill, so
+ * hovering anywhere on it, or tabbing to the link, shows it, and Escape closes
+ * it. The link is described by the full text, which also tells several
+ * "Review lessons" links apart for a screen reader.
  */
+import { useId } from 'react'
 import { BookOpen } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { InstantTip, useInstantTip } from '../components/InstantTip'
 import { i18nT } from '../i18n/t'
 
 export interface LessonSavedRef {
@@ -36,19 +46,35 @@ export default function LessonSavedRow({ lesson }: { lesson: LessonSavedRef }) {
     lesson.status === 'updated' ? 'components.lessonSaved.updated' : 'components.lessonSaved.saved',
     { rule: lesson.rule },
   )
+  const { tip, tipHandlers, tipId } = useInstantTip()
+  // The bubble mounts only while open, so the link is described by a copy that
+  // is always in the DOM (`HoverTip` does the same). `hidden`, not `sr-only`:
+  // the visible span already reads the text in place.
+  const descId = useId()
+  const { 'aria-describedby': _bubbleId, ...handlers } = tipHandlers
+  void _bubbleId
   return (
     <div className="flex flex-col items-center" data-testid="lesson-saved-row" data-lesson-status={lesson.status}>
-      <div className="inline-flex max-w-full items-center gap-2.5 rounded-full border border-border bg-bg-elevated px-3 py-1.5 text-[12px] text-muted">
+      <div
+        className="inline-flex max-w-full items-center gap-2.5 rounded-full border border-border bg-bg-elevated px-3 py-1.5 text-[12px] text-muted"
+        data-testid="lesson-saved-pill"
+        {...handlers}
+      >
         <BookOpen size={12} className="lucide-inline shrink-0" aria-hidden="true" />
-        <span className="min-w-0 truncate" title={text} data-testid="lesson-saved-text">{text}</span>
+        <span className="min-w-0 truncate" data-testid="lesson-saved-text">{text}</span>
         <Link
           to={LESSONS_ROUTE}
           className="shrink-0 rounded-full px-1.5 py-0.5 text-accent hover:bg-accent-subtle"
+          aria-describedby={descId}
           data-testid="lesson-saved-review"
         >
           {i18nT('components.lessonSaved.review')}
         </Link>
+        <span id={descId} hidden>{text}</span>
       </div>
+      <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] whitespace-normal break-words">
+        {text}
+      </InstantTip>
     </div>
   )
 }

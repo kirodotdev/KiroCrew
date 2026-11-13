@@ -22,8 +22,9 @@ is a ranking heuristic, not durable state. A *shutdown* is not a crash, though:
 the gateway's exit paths call ``flush_all_for_shutdown`` before ``os._exit``
 and, through a pre-exec stop, before an in-place restart's ``os.execv`` (both
 skip atexit), so the hits accepted inside the last debounce window reach disk. The file is best-effort
-throughout: a missing / corrupt file yields an empty ledger and is self-healed
-on next flush.
+throughout: a missing / corrupt file (not JSON, not UTF-8, or nested past the
+recursion limit) yields an empty ledger and is self-healed on next flush, and an
+entry the load cannot read is skipped.
 """
 
 from __future__ import annotations
@@ -309,13 +310,18 @@ class SkillUsageLedger:
             raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return
+        except UnicodeDecodeError as exc:
+            # A ValueError, not an OSError: without this arm it escapes the
+            # constructor and the loader turns the ledger off for good.
+            logger.warning("skill-usage: ignoring corrupt %s: %s", self._path, exc)
+            return
         except OSError as exc:
             logger.warning("skill-usage: could not read %s: %s", self._path, exc)
             return
         try:
             data = json.loads(raw)
             keys = data.get("keys", {}) if isinstance(data, dict) else {}
-        except (ValueError, AttributeError, TypeError) as exc:
+        except (ValueError, AttributeError, TypeError, RecursionError) as exc:
             logger.warning("skill-usage: ignoring corrupt %s: %s", self._path, exc)
             return
         now = time.time()
@@ -328,7 +334,10 @@ class SkillUsageLedger:
                 try:
                     ls = float(rec.get("last_seen", 0.0) or 0.0)
                     h = int(rec.get("hits", 0) or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
+                    # OverflowError: a hit count of Infinity (``1e400`` parses
+                    # to it), which no int holds. The entry is skipped like any
+                    # other bad one, so one bad row cannot turn the ledger off.
                     continue
                 if not math.isfinite(ls) or now - ls > _MAX_AGE_SECS:
                     # TTL-stale, or a time no TTL can expire (NaN, Infinity).

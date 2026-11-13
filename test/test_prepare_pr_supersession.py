@@ -99,8 +99,11 @@ def _clean(head: str = HEAD) -> str:
     )
 
 
-def _history_run(bodies: list[tuple[str, str]], rc: int = 0):
-    """A fake ``run`` answering the edit-history query with ``(editedAt, body)``."""
+def _history_run(bodies: list[tuple[str, str | dict]], rc: int = 0):
+    """A fake ``run`` answering the edit-history query with ``(editedAt, body)``.
+
+    A dict ``body`` is the node's own fields, which is how a deleted revision reads.
+    """
 
     def fake(args: list[str]) -> tuple[int, str, str]:
         assert args[:3] == ["gh", "api", "graphql"], args
@@ -115,8 +118,8 @@ def _history_run(bodies: list[tuple[str, str]], rc: int = 0):
                         "nodes": [
                             {
                                 "editedAt": at,
-                                "diff": body,
                                 "editor": {"login": "github-actions"},
+                                **(body if isinstance(body, dict) else {"diff": body}),
                             }
                             for at, body in bodies
                         ],
@@ -1891,3 +1894,83 @@ def test_the_readiness_gate_reads_the_override_record_end_to_end(capsys, monkeyp
     cleared = gate([_override_record(), slot])
     assert cleared["ok"] is True, cleared
     assert cleared["blocking_dropped"] == [], cleared
+
+
+# ---- A body GitHub lost from the history -------------------------------------
+# GitHub documents two ways a body leaves a comment's history: a deleted revision
+# keeps its entry and time but not its body, and at 100 entries the edits between
+# the original and the newest 99 are gone. Either may have been this head's block.
+
+LOST_AT = "2026-09-26T04:30:00Z"
+# A history at the cap, newest first: a minute apart, every one a clean verdict
+# for this head, so the original is at 03:20 and the oldest kept edit at 03:21.
+FULL = [
+    ("2026-09-26T{:02d}:{:02d}:00Z".format(*divmod(minute, 60)), _clean())
+    for minute in range(299, 199, -1)
+]
+
+
+def _gpt_lane(history: list, *records: dict) -> dict:
+    """GPT's slot, presenting a clean verdict for this head, over ``history``."""
+    comments = [*records, _comment("codex-ai-review", _clean())]
+    return _contract().superseded_verdicts(comments, HEAD, BINDINGS, _history_run(history))
+
+
+def _gpt_override(created_at: str = OVERRIDDEN_AT) -> dict:
+    return _override_record(target="gpt", created_at=created_at)
+
+
+@pytest.mark.parametrize("tombstone", [{"diff": None}, {"diff": "", "deletedAt": LOST_AT}])
+def test_a_deleted_revision_reads_as_a_dropped_block_until_this_heads_override(
+    tombstone: dict,
+) -> None:
+    history = [
+        ("2026-09-26T05:00:00Z", _clean()),
+        (LOST_AT, tombstone),
+        ("2026-09-26T04:00:00Z", _clean()),
+    ]
+    out = _gpt_lane(history)
+    assert out["ok"] is True and out["blocking_dropped"] == ["GPT"], out
+    assert out["lanes"][0]["cause"] == "lost-body", out
+    assert _gpt_lane(history, _gpt_override())["blocking_dropped"] == []
+    # Dated at its own entry, so a record from before the loss did not see it.
+    early = _gpt_override("2026-09-26T04:15:00Z")
+    assert _gpt_lane(history, early)["blocking_dropped"] == ["GPT"]
+
+
+def test_a_history_at_the_cap_reads_its_gap_as_a_dropped_block() -> None:
+    out = _gpt_lane(FULL)
+    assert out["blocking_dropped"] == ["GPT"], out
+    assert out["lanes"][0]["cause"] == "lost-body", out
+    assert _gpt_lane(FULL, _gpt_override())["blocking_dropped"] == []
+    # Dated at the oldest kept edit, not at the original before it.
+    early = _gpt_override("2026-09-26T03:20:30Z")
+    assert _gpt_lane(FULL, early)["blocking_dropped"] == ["GPT"]
+    # One entry short of the cap, nothing can have been removed.
+    assert _gpt_lane(FULL[:99])["blocking_dropped"] == []
+
+
+def test_a_loss_before_another_heads_verdict_does_not_redden_this_head() -> None:
+    other = ("2026-09-26T04:45:00Z", _clean(OTHER_HEAD))
+    history = [
+        ("2026-09-26T05:00:00Z", _clean()),
+        other,
+        (LOST_AT, {"diff": None}),
+        ("2026-09-26T04:00:00Z", _blocking(OTHER_HEAD)),
+    ]
+    assert _gpt_lane(history)["blocking_dropped"] == []
+    # The excusal's own bookkeeping leaves no entry, older ones included.
+    entries = _contract().fetch_comment_edit_history("IC_x", "GPT", HEAD, _history_run(history))
+    assert all("other_head" not in e for e in entries), entries
+    # The cap's gap sits after the original, so the oldest kept edit follows it.
+    older = [(at, _clean(OTHER_HEAD)) for at, _body in FULL[98:]]
+    assert _gpt_lane(FULL[:98] + older)["blocking_dropped"] == []
+    # A body stamped for this head as well is not another head's verdict.
+    history[1] = (other[0], other[1] + _clean())
+    assert _gpt_lane(history)["blocking_dropped"] == ["GPT"]
+
+
+def test_a_comment_that_was_never_edited_still_passes() -> None:
+    out = _gpt_lane([])
+    assert out["ok"] is True and out["blocking_dropped"] == [], out
+    assert out["lanes"][0]["cause"] == "", out

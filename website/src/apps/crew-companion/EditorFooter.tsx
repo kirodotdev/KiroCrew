@@ -3,6 +3,7 @@
  */
 import React from 'react'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import type { CSSProperties } from 'react'
 import { slotLabel } from './slotLabel'
 
@@ -36,7 +37,7 @@ export const EditorFooter: React.FC<Props> = ({ missingStates, canSave, saving, 
     <div style={S.footer}>
       {missingStates.length > 0 && (
         <span style={{ fontSize: 11, color: 'var(--danger)', flex: 1 }}>
-          {i18nT('apps.crewCompanion.editor.missing', { slots: missingStates.map((s) => slotLabel(s)).join(', ') })}
+          {i18nT('apps.crewCompanion.editor.missing', { slots: fmtList(missingStates.map((s) => slotLabel(s))) })}
         </span>
       )}
       <div style={{ flex: missingStates.length > 0 ? undefined : 1 }} />

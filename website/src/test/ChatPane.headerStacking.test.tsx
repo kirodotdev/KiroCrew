@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -38,7 +38,8 @@ vi.mock('../api/client', () => ({
 }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
+const roster = vi.hoisted(() => ({ displayAgents: undefined as { name: string; session_color?: string }[] | undefined }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], displayAgents: roster.displayAgents, defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 
@@ -47,7 +48,9 @@ Object.defineProperty(window, 'matchMedia', {
   value: vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
 })
 
+import { api } from '../api/client'
 import ChatPane from '../components/ChatPane'
+import { ThemeProvider } from '../hooks/useTheme'
 
 const SLOT = 'chat-1-stacking'
 
@@ -55,13 +58,13 @@ const SLOT = 'chat-1-stacking'
  *  and the mobile workspace panel (z-[47]) in pages/chat/page/. */
 const SHELL_OVERLAY_FLOOR = 46
 
-function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
+function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}, slot: Record<string, unknown> = {}) {
   const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: SLOT, title: 'Stacking pane', messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: '2026-09-01T00:00:00Z' }],
+        slots: [{ key: SLOT, title: 'Stacking pane', messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: '2026-09-01T00:00:00Z', ...slot }],
         slotsLoaded: true,
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -73,9 +76,11 @@ function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
+        <ThemeProvider>
         <MemoryRouter>
           <ChatPane slotKey={SLOT} {...props} />
         </MemoryRouter>
+        </ThemeProvider>
       </QueryClientProvider>
     </Provider>,
   )
@@ -88,8 +93,11 @@ function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
  * draws), on mobile it renders the toggle inline. Any other pane, and a pane
  * outside split view, starts its row at its own inset. */
 describe('ChatPane focus dim', () => {
-  it('never mounts the dim overlay outside split view', () => {
+  it('never mounts the dim overlay outside split view', async () => {
     const { container } = mount()
+    // The pane reads its slot on mount. Waiting on that read lets the update it
+    // schedules land inside the wait instead of after the test.
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
     expect(container.querySelector('[data-pane-dim]')).toBeNull()
   })
 
@@ -128,5 +136,41 @@ describe('ChatPane title row leading edge', () => {
     // Ahead of the title, so it reads as the row's first element.
     expect(control.compareDocumentPosition(row(container).querySelector('.truncate') as Element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(row(container).querySelector('[data-pane-leading-divider]')).toBeNull()
+  })
+})
+
+describe('ChatPane title row session colour', () => {
+  const row = (container: HTMLElement) => container.querySelector('[data-pane-title-row]') as HTMLElement
+  const dot = (container: HTMLElement) => container.querySelector('[data-testid="chat-pane-status-dot"]') as HTMLElement
+
+  it('keeps the neutral header and status dot for an uncoloured session', () => {
+    const { container } = mount()
+    expect(row(container).className).not.toContain('chat-header-colored')
+    expect(dot(container).className).toContain('bg-accent')
+  })
+
+  it('tints the header and adds a session dot beside an unchanged status dot', () => {
+    const { container } = mount({}, { color_hex: '#e11d48' })
+    expect(row(container).className).toContain('chat-header-colored')
+    expect(row(container).style.getPropertyValue('--session-color')).toBe('#e11d48')
+    expect(dot(container).className).toContain('bg-accent')
+    expect(dot(container).className).not.toContain('chat-header-dot')
+    expect(container.querySelector('[data-testid="chat-pane-session-dot"]')).not.toBeNull()
+  })
+
+  it('has no session dot for an uncoloured session', () => {
+    const { container } = mount()
+    expect(container.querySelector('[data-testid="chat-pane-session-dot"]')).toBeNull()
+  })
+
+  it('keeps the agent colour while the scoped roster is empty after a scope switch', () => {
+    roster.displayAgents = [{ name: 'tinted', session_color: '#2563eb' }]
+    try {
+      const { container } = mount({}, { agent: 'tinted' })
+      expect(row(container).className).toContain('chat-header-colored')
+      expect(row(container).style.getPropertyValue('--session-color')).toBe('#2563eb')
+    } finally {
+      roster.displayAgents = undefined
+    }
   })
 })

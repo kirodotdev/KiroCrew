@@ -76,12 +76,12 @@ class TestEveryStoreTouchingHandlerIsGuarded:
             r"(token_store\(\)|run_store\(\)|_get_hook_store|_mutate_hook_store|"
             r"_webhooks_snapshot|_delete_hook_context)"
         )
-        # One deliberate exemption: the externally reachable route answers store
+        # One deliberate exemption: the externally reachable routes answer store
         # failure with a NEUTRAL `webhooks_unavailable` 503 instead of the
         # dashboard's diagnostic `store_unavailable`, because an outside caller
-        # should not learn that the operator's store needs repair. Its store
+        # should not learn that the operator's store needs repair. Their store
         # touches are individually guarded, so nothing escapes as a 500.
-        exempt = {"api_hooks_agent"}
+        exempt = {"api_hooks_agent", "api_hooks_agent_status"}
 
         handlers = list(pattern.finditer(source))
         unguarded = []

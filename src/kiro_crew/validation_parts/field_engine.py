@@ -12,6 +12,7 @@ module never imports that facade.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,7 +81,9 @@ class FieldSpec:
     max_len: int = 0  # 0 = no limit
     min_val: float | None = None  # for numeric fields
     max_val: float | None = None
-    allowed: frozenset[str] | None = None  # enum allow-list
+    # Enum allow-list. A zero-argument callable is resolved on every validation,
+    # for a vocabulary that grows after import (boot-time plugin registration).
+    allowed: frozenset[str] | Callable[[], frozenset[str]] | None = None
     pattern: re.Pattern[str] | None = None  # regex pattern
     default: Any = None
     item_type: type | tuple[type, ...] | None = None  # type: ignore[valid-type]  # for list fields: expected type(s) of each element
@@ -104,6 +107,18 @@ class FieldSpec:
     # applied outcome the model reads back, the SEL audit row, the persisted
     # stop reason — says so without any layer having to plumb a second flag.
     clamp_to_max: bool = False
+    # Opt-in, for a string (or string-item list) field whose OWN validator is
+    # the authority on the value's exact spelling and must see the caller's raw
+    # text. The default field pass runs every string through
+    # :func:`sanitize_string`, which trims edge whitespace (a trailing newline
+    # among it) before a ``custom_validator`` runs. A tag needs the raw text:
+    # the store validates a raw tag through ``normalize_tag`` and REFUSES a
+    # newline-ending tag, so the gate must judge the same raw string for the two
+    # paths to agree. Setting this leaves the item untouched so the custom
+    # validator sees exactly what the caller sent, matching the store.
+    # ``normalize_tag`` NFC-normalizes and refuses hidden characters itself, so
+    # that work lives in the one shared rule rather than in this field pass.
+    item_no_sanitize: bool = False
 
 
 @dataclass
@@ -302,7 +317,8 @@ def validate_field(value: Any, spec: FieldSpec) -> Any:
 
     # String validation
     if isinstance(value, str):
-        value = sanitize_string(value)
+        if not spec.item_no_sanitize:
+            value = sanitize_string(value)
         if not value and spec.required:
             raise ValidationError(spec.name, "required (empty after sanitization)")
         if spec.max_len and len(value) > spec.max_len:
@@ -318,8 +334,9 @@ def validate_field(value: Any, spec: FieldSpec) -> Any:
                     f"exceeds max length {spec.max_len} "
                     f"(got {len(value)}, trim {len(value) - spec.max_len} chars)",
                 )
-        if spec.allowed and value not in spec.allowed:
-            raise ValidationError(spec.name, f"must be one of: {', '.join(sorted(spec.allowed))}")
+        allowed = spec.allowed() if callable(spec.allowed) else spec.allowed
+        if allowed and value not in allowed:
+            raise ValidationError(spec.name, f"must be one of: {', '.join(sorted(allowed))}")
         if spec.pattern and value and not spec.pattern.match(value):
             raise ValidationError(spec.name, "invalid format")
 
@@ -352,7 +369,8 @@ def validate_field(value: Any, spec: FieldSpec) -> Any:
                         raise ValidationError(f"{spec.name}[{i}].{exc.field}", exc.message) from exc
                     continue
                 if isinstance(item, str):
-                    item = sanitize_string(item)
+                    if not spec.item_no_sanitize:
+                        item = sanitize_string(item)
                     value[i] = item
                     if spec.item_max_len and len(item) > spec.item_max_len:
                         raise ValidationError(

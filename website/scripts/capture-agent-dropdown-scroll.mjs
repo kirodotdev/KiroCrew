@@ -60,11 +60,8 @@ try {
   await stubDashboardApi(page, {
     slots: [{ key: SLOT, messages: 0, running: false, agent: AGENTS[0].name, mode: '' }],
     extra,
+    localStorageEntries: { 'mc-active-slot': SLOT, 'mc-lang': 'en' },
   })
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-lang', 'en')
-  }, SLOT)
   // Classic (non-overlay) scrollbars so every scroll container is visible in the shot.
   await page.addInitScript(() => {
     const style = document.createElement('style')

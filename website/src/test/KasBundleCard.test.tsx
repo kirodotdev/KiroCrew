@@ -20,10 +20,11 @@
  *   with the switch off, muted again while a save waits for a restart.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { api, type KasBundleStatus } from '../api/client'
 import { KAS_BUNDLE_CONFIG_KEY, KasBundleCard } from '../pages/developer/KasBundleCard'
+import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -160,6 +161,31 @@ describe('KasBundleCard', () => {
     expect(screen.getByTestId('restart-badge')).toBeInTheDocument()
   })
 
+  it('keeps the switch focusable and refuses a second press while its own save runs', async () => {
+    // A native disabled takes the pressed switch out of the tab order, dropping a
+    // keyboard user to the page while the save runs. aria-disabled plus a guard
+    // keep the tab stop and still refuse a second press.
+    kasBundleStatus.mockResolvedValue(INSTALLED)
+    let release: () => void = () => undefined
+    patchConfig.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({}) }))
+    renderWithProviders(<KasBundleCard />)
+    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    const sw = toggle()
+    sw.focus()
+    fireEvent.click(sw)
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true))
+    // Focusable and announced busy while the write runs, not taken out of the order.
+    expect(sw).toHaveAttribute('aria-disabled', 'true')
+    expect(sw).toHaveAttribute('aria-busy', 'true')
+    expect(sw).toHaveAttribute('tabindex', '0')
+    expect(sw).toHaveFocus()
+    // A second press is ignored, so only the first save ran.
+    fireEvent.click(sw)
+    expect(patchConfig.mock.calls.filter(c => c[0] === 'agent.kas_bundle')).toHaveLength(1)
+    act(() => { release() })
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-busy'))
+  })
+
   it('always lets an enabled switch be turned off, even with nothing installed', async () => {
     // A broken or removed install must never trap anyone on this route.
     kasBundleStatus.mockResolvedValue({ ...BASE, enabled: true })
@@ -208,6 +234,22 @@ describe('KasBundleCard', () => {
     fireEvent.click(screen.getByTestId('kas-bundle-retry'))
     await screen.findByText('KAS engine 0.66.33 (installed by you)')
     expect(kasBundleStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps Retry and drops the alert for a read that failed while the gateway was down, then re-reads it on reconnect (#32966)', async () => {
+    kasBundleStatus.mockRejectedValueOnce(new Error('Failed to fetch'))
+    kasBundleStatus.mockResolvedValue(INSTALLED)
+    setGatewayConnected(false)
+    try {
+      renderWithProviders(<KasBundleCard />)
+      await screen.findByTestId('kas-bundle-retry')
+      expect(screen.queryByText('Could not read the KAS engine status.')).toBeNull()
+      act(() => { setGatewayConnected(true) })
+      await screen.findByText('KAS engine 0.66.33 (installed by you)')
+      expect(kasBundleStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      __resetGatewayConnectedForTests()
+    }
   })
 
   it("renders the server's remedy when the last install failed", async () => {

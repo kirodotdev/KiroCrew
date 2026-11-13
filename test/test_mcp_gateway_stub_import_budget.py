@@ -3,21 +3,13 @@
 The stub is the most replicated process Kiro Crew runs, one per session per MCP
 server, so whatever it loads is paid for once per stub on the host.
 
-The bound here is on the STEADY STATE -- the module set a stub holds once it has
-built its Register payload and its log label, which is the state it bridges in
-and sits at. Bounding the module set right after ``import`` is the wrong
-test, and a change that saves nothing passes it: Python never unloads a module,
-so one the stub imports two calls later costs exactly as much as one its body
-imports. The import-time figure is not the figure that describes memory at rest.
+The bound is on the steady state, after the Register payload and log label are built:
+Python never unloads a module, so one imported two calls later costs the same as one
+the module body imports.
 
-The bound is a NAMED SET, not a byte figure. Resident set depends on the
-interpreter build, the libc allocator and what else the host is doing, so a
-number pinned here would either be loose enough to let a regression through or
-tight enough to fail on somebody else's machine. A module name is exact.
-
-Every check runs in a FRESH interpreter. Other tests in this suite import these
-modules, so an in-process assertion would answer about the session rather than
-about the stub.
+The bound is a named module set, not a byte figure, because resident size varies by
+interpreter, allocator and host. Every check runs in a fresh interpreter, since other
+tests in this suite import these modules.
 """
 
 from __future__ import annotations
@@ -99,13 +91,9 @@ def _run_probe(
 ) -> subprocess.CompletedProcess:
     """Run ``code`` in a fresh interpreter against this checkout's ``src``.
 
-    ``session_key`` picks which rung of the caller identity the probe exercises.
-    With it, ``CallerContext.from_env`` answers from the environment (rung 1),
-    which is what a claimed session does. Without it, resolution falls through
-    to the warm-pool pid mapping (rung 4) -- a real path, taken by every stub a
-    pre-spawned kiro-cli starts before its session is claimed, and one that
-    reads ``config_dir``. Both must satisfy the bound, and only running both
-    says so.
+    With ``session_key``, ``CallerContext.from_env`` answers from the environment
+    (rung 1, a claimed session). Without it, resolution falls to the warm-pool pid
+    mapping (rung 4), which a pre-claim stub takes and which reads ``config_dir``.
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
@@ -130,15 +118,10 @@ def _run_probe(
 def test_bridging_stub_holds_none_of_the_heavy_modules(tmp_path, session_key):
     """After the Register payload and the log label, none of them is resident.
 
-    This is the regression bound. It drives the same calls ``_amain`` makes
-    before it connects, so a heavy import moved out of the module body and into
-    one of them does not pass.
-
-    Run on BOTH identity rungs. The warm-pool case is not a variation for its
-    own sake: a stub with no session key yet resolves its caller through the pid
-    mapping, which reads ``config_dir``, and taking that from ``config.loader``
-    rather than the ``config.paths`` leaf that defines it put the whole config
-    package back into every pre-claim stub.
+    It drives the calls ``_amain`` makes before it connects, so a heavy import moved
+    into one of them does not pass. The warm-pool rung matters: it reads
+    ``config_dir``, and taking that from ``config.loader`` instead of the
+    ``config.paths`` leaf pulls the whole config package into every pre-claim stub.
     """
     code = (
         "import json, sys\n"
@@ -239,11 +222,8 @@ def test_env_var_still_beats_the_flag(tmp_path):
 def test_absent_or_unusable_flag_resolves_the_old_way(tmp_path, bad):
     """An overlay without a usable ceiling still honours the config key.
 
-    This is the compatibility path, and it is about correctness rather than
-    tidiness: answering a missing flag with the bare default would silently
-    ignore a ``read_buffer_limit_bytes`` an operator had set, until something
-    happened to rewrite the overlay. ``16`` stands for a value under the 1024
-    floor, which the resolver rejects the same way it always has.
+    The bare default would silently ignore an operator's ``read_buffer_limit_bytes``
+    until the overlay is rewritten. ``16`` is under the 1024 floor and is rejected.
     """
     argv = [a for a in STUB_ARGV if a not in ("--read-limit", str(FLAG_CEILING))]
     if bad:
@@ -284,12 +264,8 @@ def _fingerprint(limit: int) -> dict:
 def test_raising_the_ceiling_alone_invalidates_the_overlay_cache():
     """The ceiling is baked into the overlay, so it is a fingerprint input.
 
-    ``rewrite_agents`` skips the rewrite loop when the fingerprint matches, so a
-    ceiling that was written onto every stub's argv but left out of it would
-    leave the overlays untouched after the operator raised
-    ``mcp_gateway.read_buffer_limit_bytes``: a restart would reuse the cached
-    overlay and every stub would keep taking the previous ceiling, with nothing
-    saying so until some unrelated input happened to change.
+    ``rewrite_agents`` skips the rewrite when the fingerprint matches, so without it
+    a raised ``mcp_gateway.read_buffer_limit_bytes`` would keep the cached overlays.
     """
     low, high = _fingerprint(64 * 1024 * 1024), _fingerprint(128 * 1024 * 1024)
 
@@ -325,10 +301,9 @@ def test_one_rewrite_pass_writes_one_ceiling(tmp_path):
 def test_the_module_body_defaults_the_ceiling_without_reading_config(tmp_path):
     """Before anything adopts a flag, the three bounds hold the shipped default.
 
-    The module body must not resolve the ceiling -- that is the config read this
-    change exists to remove -- so it starts from the stdlib leaf's constant and
-    ``_adopt_read_ceiling`` replaces it. These are plain module globals, which
-    is also the seam ``test_stub_reconnect_queued_calls.py`` overrides.
+    The module body must not read config, so it starts from the leaf's constant and
+    ``_adopt_read_ceiling`` replaces it. ``test_stub_reconnect_queued_calls.py``
+    overrides these globals.
     """
     code = (
         "import sys\n"
@@ -366,12 +341,9 @@ def test_a_lowered_ceiling_does_not_tighten_the_retention_floor(tmp_path):
 def test_execution_context_does_not_load_validation():
     """``execution_context`` takes one integer from a leaf, not a graph.
 
-    It sits on the identity path every stub walks at startup
-    (``CallerContext.from_env`` -> ``member_memory_auth``), and importing
-    ``validation`` for ``MAX_SHORT_STRING`` reached ``artifact_store``,
-    ``computer_use``, ``config.sections``, ``monitoring`` and ``project_scope``
-    -- and ``security`` behind it. Checked in a fresh interpreter because the
-    suite has all of those loaded.
+    It is on every stub's startup identity path (``CallerContext.from_env`` ->
+    ``member_memory_auth``), and ``validation`` pulls ``artifact_store``,
+    ``security`` and more. Fresh interpreter because the suite has those loaded.
     """
     import subprocess
 

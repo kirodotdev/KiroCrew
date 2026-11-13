@@ -1,6 +1,7 @@
 """What this install follows and what it shows about releases.
 
-``POST /api/update/auto`` (the auto-update policy), ``POST /api/update/channel``
+``POST /api/update/auto`` (the auto-update policy) and its ``GET`` (the
+config.local.json pin on it), ``POST /api/update/channel``
 (the release lane), ``POST /api/update/revalidate`` (a terminal update's request to
 re-check), and the bundled changelog and release list.
 
@@ -24,12 +25,16 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
     config_path,
-    overlay_pins,
     update_config_locked,
 )
+from kiro_crew.config.overlay_owners import SOURCE_POLICY, OverlayPin, overlay_pin
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.updates_check import _do_update_check, _invalidate_update_check
+from kiro_crew.dashboard.handlers.updates_check import (
+    _do_update_check,
+    _invalidate_update_check,
+    last_checked_at,
+)
 from kiro_crew.dashboard.handlers.updates_step_up import _audit_update_event
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _display_local_version,
@@ -73,15 +78,18 @@ async def api_update_auto(request: web.Request) -> web.Response:
     # config.json here would change NOTHING (the overlay deep-merges over it),
     # and a success response would show the switch flipped while the next load
     # snaps it back.
-    if await asyncio.to_thread(overlay_pins, "auto_update"):
+    pin = await asyncio.to_thread(overlay_pin, "auto_update")
+    if pin.pinned:
+        # Each pin field spelled out rather than spread, so the body stays a dict
+        # literal whose ``code`` the error-code contract can read.
+        fields = pin.fields()
         return web.json_response(
             {
-                "error": (
-                    "auto_update is set in config.local.json, which overrides this "
-                    "switch — change or remove it there"
-                ),
+                "error": _overlay_refusal(pin),
                 "code": "auto_update_overlay_owned",
-                "overlay_override": True,
+                "overlay_override": fields["overlay_override"],
+                "overlay_source": fields["overlay_source"],
+                "overlay_policy": fields["overlay_policy"],
             },
             status=409,
         )
@@ -128,7 +136,7 @@ async def api_update_auto(request: web.Request) -> web.Response:
     # deep-merges over the file this endpoint wrote, so reporting ``enabled``
     # would promise a state the next load does not produce.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
+    pin_fields = (await asyncio.to_thread(overlay_pin, "auto_update")).fields()
     # Any refresh frame invalidates the SPA's config query, so a second open tab
     # stops showing the old switch position instead of waiting for an unrelated
     # frame to arrive. Best-effort by design: the write is already committed, so
@@ -141,9 +149,42 @@ async def api_update_auto(request: web.Request) -> web.Response:
             "ok": True,
             "auto_update": cfg.auto_update,
             "requested": enabled,
-            "overlay_override": overlay_override,
+            **pin_fields,
         }
     )
+
+
+def _overlay_refusal(pin: OverlayPin) -> str:
+    """Why the switch cannot change ``auto_update``, in the words the pin's source needs.
+
+    A policy pin gives no removal advice: its owner writes the entry back, so the
+    detail line it supplied is the remedy.
+    """
+    if pin.source == SOURCE_POLICY and pin.policy is not None:
+        reason = (
+            f"{pin.policy.label} holds auto_update in config.local.json, so this "
+            "switch cannot change it"
+        )
+        return f"{reason}. {pin.policy.detail}" if pin.policy.detail else reason
+    return (
+        "auto_update is set in config.local.json, which overrides this "
+        "switch — change or remove it there"
+    )
+
+
+async def api_update_auto_pin(request: web.Request) -> web.Response:
+    """GET /api/update/auto: whether config.local.json pins ``auto_update``, and whose pin it is.
+
+    The switch reads this when it loads, so a pinned install shows the switch
+    held with its note instead of an editable one whose first click is refused
+    (``auto_update_overlay_owned`` above). ``overlay_source`` says whether the
+    entry is the person's own or a policy an edition registered an owner for
+    (:mod:`kiro_crew.config.overlay_owners`), so the note can name the policy
+    instead of advising a removal the edition undoes. Read-only and a single file
+    read: the full check (``GET /api/update/check``) carries the same fields, but
+    it runs the update check, which a page load must not.
+    """
+    return web.json_response((await asyncio.to_thread(overlay_pin, "auto_update")).fields())
 
 
 def _changelog_path() -> Path | None:
@@ -258,7 +299,7 @@ async def api_update_channel(request: web.Request) -> web.Response:
     unattended, unconsented version jump.
 
     **Not a governance bypass.** A channel the policy requires (``updates.channel``,
-    or ``stable`` in an enterprise build with no pin; ``update_layout``
+    or ``lts`` in an LTS build, whatever it pins; ``update_layout``
     ``policy_release_channel``) wins on read, so a switch to any other channel is
     refused below with ``locked_by_policy`` rather than stored. When the pins
     define a command provider the endpoint refuses outright — the provider's
@@ -322,7 +363,7 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
 
-    # The policy's channel (stable in an enterprise build with no pin) wins on
+    # The policy's channel (lts in an LTS build, RFC D11) wins on
     # read, so a file write naming another channel would be ignored.
     from kiro_crew.edition_locks import LOCKED_BY_POLICY
     from kiro_crew.platform.update_layout import policy_release_channel
@@ -374,8 +415,10 @@ async def api_update_channel(request: web.Request) -> web.Response:
         {
             "ok": True,
             **_update_info,
+            # The re-check's stamp, as on GET /api/update/check.
+            "last_checked_at": last_checked_at(),
             "auto_update": cfg.auto_update,
-            "overlay_override": await asyncio.to_thread(overlay_pins, "auto_update"),
+            **(await asyncio.to_thread(overlay_pin, "auto_update")).fields(),
             # AFTER the spread, deliberately. When a check was already in flight
             # `_do_update_check` returns early and the cache still holds the
             # invalidated ``channel: ""`` / ``update_command: ""``; letting those
@@ -428,8 +471,11 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     ``request.remote`` is empty; the secret check is unchanged on both.
     """
     from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
+    from kiro_crew.dashboard.origin import is_ssm_request
 
-    if not is_loopback(request.remote or "") and not _unix_peer_is_self(request):
+    if is_ssm_request(request) or (
+        not is_loopback(request.remote or "") and not _unix_peer_is_self(request)
+    ):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="non-loopback"
         )

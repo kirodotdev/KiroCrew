@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry_checked
 from kiro_crew.imaging import (
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
@@ -630,9 +631,15 @@ def apply_repair(
         backup_path = path.with_suffix(path.suffix + ".pre-image-repair.bak")
         _write_backup_exclusively(path, backup_path)
 
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
-    fd_owned = True
+    fd: int | None = None
+    tmp_name: str | None = None
+    fd_owned = False
     try:
+        # Allocated INSIDE the try: when the temp itself cannot be created
+        # (ENOSPC on inodes, EMFILE, EACCES) the backup written above must still
+        # be cleaned up below, or a retry meets BackupExistsError.
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+        fd_owned = True
         # Lock the temp down BEFORE any content and before the write-mode open.
         # mkstemp is already 0o600 on POSIX, but on Windows the temp inherits the
         # session directory's DACL -- and os.replace carries the TEMP's
@@ -649,13 +656,25 @@ def apply_repair(
             handle.flush()
             os.fsync(handle.fileno())
         # Last possible moment: everything expensive is already done, so this
-        # leaves only the stat-to-rename gap instead of the whole write.
-        _refuse_if_moved(path, expect)
-        os.replace(tmp_name, path)
+        # leaves only the stat-to-rename gap instead of the whole write. Run
+        # before every retried attempt, not once: an append that lands while a
+        # scanner holds the temp must stop the repair, not be overwritten.
+        replace_with_retry_checked(tmp_name, path, lambda: _refuse_if_moved(path, expect))
     except BaseException:
-        if fd_owned:
+        if fd_owned and fd is not None:
             os.close(fd)
-        Path(tmp_name).unlink(missing_ok=True)
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
+        # A failed replacement must not turn the retryable error into a
+        # permanent BackupExistsError.  Keep the sidecar when we cannot prove
+        # that this call left the original transcript intact.
+        if backup_path is not None and expect is not None:
+            try:
+                _refuse_if_moved(path, expect)
+            except (OSError, TranscriptMovedError):
+                pass
+            else:
+                backup_path.unlink(missing_ok=True)
         raise
     return backup_path
 

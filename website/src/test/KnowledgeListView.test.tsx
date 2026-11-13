@@ -308,4 +308,31 @@ describe('Knowledge List View — filter dropdowns', () => {
     await waitFor(() => expect(lastCall('/source-counts')).toContain('namespace=work'))
     expect(filterTrigger('Filter by namespace')).toHaveTextContent('work (7)')
   })
+
+  it('a date order and an added-day range list items flat, by the day they were added', async () => {
+    mockKnowledgeApi.mockImplementation((path: string) => {
+      if (!String(path).startsWith('/items')) return defaultApi(path)
+      const dated = { ...item('d1', 's1', 'dated hit'), created_at: '2026-10-05T09:00:00', updated_at: '2026-11-02T09:00:00' }
+      return Promise.resolve({ items: [dated], total: 1 })
+    })
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await screen.findByText('PersonalKnowledgeBase')
+
+    await pick('Sort order', 'Oldest first')
+    fireEvent.change(screen.getByLabelText('Earliest date added'), { target: { value: '2026-10-01' } })
+    fireEvent.change(screen.getByLabelText('Latest date added'), { target: { value: '2026-10-31' } })
+
+    // One list across sources, not per-source rows, with the order and range sent upstream.
+    await waitFor(() => {
+      const last = lastCall('/items')
+      expect(last).toContain('sort=oldest')
+      expect(last).toContain('added_from=2026-10-01')
+      expect(last).toContain('added_to=2026-10-31')
+      expect(last).not.toContain('source_id=')
+    })
+    expect(await screen.findByText('dated hit')).toBeInTheDocument()
+    expect(screen.queryByText('PersonalKnowledgeBase')).not.toBeInTheDocument()
+    // The card shows the day the list is ordered by, not the later update.
+    expect(screen.getByText('Oct 5, 2026')).toBeInTheDocument()
+  })
 })

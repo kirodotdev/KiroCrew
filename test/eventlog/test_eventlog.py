@@ -531,6 +531,8 @@ def test_service_broadcast_never_raises(tmp_path, monkeypatch):
     svc.ensure("carol", "Carol")
     # Must not raise out of append.
     svc.append("carol", types.SLOT_OPENED, {"slot_key": "member-carol"})
+    # The failed push costs the frame only: the event was still folded.
+    assert svc.snapshot("carol")["values"][types.PROJ_DRIVING]["open"] == ["member-carol"]
 
 
 def test_service_ensure_is_idempotent(tmp_path, monkeypatch):

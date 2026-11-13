@@ -67,8 +67,14 @@ function posixOwnerExecFile(state) {
       callback(null, state.held ? "4242\n" : "", "");
       return;
     }
+    if (file === "/bin/launchctl" && args[0] === "print" && state.launchdJobs) {
+      // One launchd domain listing; every domain answers with the same jobs.
+      const rows = state.launchdJobs.map((pid) => `\t\t${pid}\t0\tcom.example.job${pid}`).join("\n");
+      callback(null, `${args[1]} = {\n\tservices = {\n${rows}\n\t}\n}\n`, "");
+      return;
+    }
     if (file === "/bin/ps") {
-      callback(null, args.includes("ppid=") ? "500\n" : `${OWN_GATEWAY_COMMAND}\n`, "");
+      callback(null, args.includes("ppid=") ? `${state.ppid ?? "500"}\n` : `${OWN_GATEWAY_COMMAND}\n`, "");
       return;
     }
     callback(new Error(`unexpected command: ${file}`));
@@ -100,11 +106,12 @@ function conflictHarness({
   state,
   quits,
   onPrompt,
+  otherEdition,
 }) {
   const { shown, dialog } = scriptedDialog(responses, onPrompt);
   const httpState = {
     status: 200,
-    body: JSON.stringify({ ok: true, app: "kirocrew", version: otherVersion }),
+    body: JSON.stringify({ ok: true, app: "kirocrew", version: otherVersion, edition: otherEdition }),
   };
   const harnessResult = harness({
     dialog,
@@ -117,6 +124,8 @@ function conflictHarness({
       arch: "x64",
       env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
       resourcesPath: "/virtual/resources",
+      // launchdJobPids reads the user's launchd domains by uid.
+      getuid: () => 501,
       // Signal-0 liveness only. Returning normally says "still alive"; throwing
       // without EPERM says "gone", which is what pidAlive reads.
       kill() {
@@ -173,6 +182,73 @@ for (const [label, ownVersion, otherVersion, otherDisplay, otherApp] of [
     assert.deepStrictEqual(quits, []);
   });
 }
+
+test("a service-managed gateway of the other edition is never adopted: the user is asked to stop it", async () => {
+  // An oss shell (this test's baked edition) and an LTS gateway run by the
+  // service manager (parent pid 1). Reusing it would put one edition's app on
+  // the other edition's backend; quitting an app would not stop it.
+  const quits = [];
+  const { supervisor, logs, spawnCalls, shown } = conflictHarness({
+    platform: "linux",
+    ownVersion: PROD_VERSION,
+    otherVersion: PROD_VERSION,
+    otherEdition: "lts",
+    responses: [1],
+    state: { held: true, ppid: "1", quitAttempts: [] },
+    quits,
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(shown.length, 1);
+  assert.deepStrictEqual(shown[0].buttons, ["I stopped it — Retry", "Cancel"]);
+  assert.ok(shown[0].detail.startsWith("Stop the Kiro Crew LTS gateway, then choose “I stopped it — Retry”."));
+  assert.ok(shown[0].detail.includes("Run this command in Terminal:\nkirocrew stop --port 5476"));
+  assert.ok(shown[0].detail.includes("If it starts again by itself, stop the service that restarts it."));
+  assert.ok(!shown[0].detail.includes("background service"), "one noun: the gateway");
+  assert.ok(logs.some((line) => line.includes("KiroCrew LTS's gateway with no app window (service)"))); // brand-ok -- app name
+  assert.strictEqual(spawnCalls.length, 0);
+});
+
+// macOS reads any PPID-1 gateway as "service". Only a launchd job is a service
+// and gets the stop-it prompt; an orphan (no launchd job) is offered the orphan
+// stop, which ends it for the user (orphanedHolderPid).
+test("darwin: a launchd-job gateway of the other edition gets the stop-it prompt", async () => {
+  const { supervisor, spawnCalls, shown } = conflictHarness({
+    platform: "darwin",
+    ownVersion: PROD_VERSION,
+    otherVersion: PROD_VERSION,
+    otherEdition: "lts",
+    responses: [1],
+    state: { held: true, ppid: "1", launchdJobs: [4242], quitAttempts: [] },
+    quits: [],
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(shown.length, 1);
+  assert.ok(shown[0].detail.startsWith("Stop the Kiro Crew LTS gateway, then choose"), shown[0].detail);
+  assert.ok(shown[0].detail.includes("Run this command in Terminal:\nkirocrew stop --port 5476"));
+  assert.ok(shown[0].detail.includes("stop the service that restarts it"));
+  assert.deepStrictEqual(shown[0].buttons, ["I stopped it — Retry", "Cancel"]);
+  assert.strictEqual(spawnCalls.length, 0);
+});
+
+test("darwin: an orphaned gateway of the other edition is offered the orphan stop", async () => {
+  const { supervisor, spawnCalls, shown } = conflictHarness({
+    platform: "darwin",
+    ownVersion: PROD_VERSION,
+    otherVersion: PROD_VERSION,
+    otherEdition: "lts",
+    responses: [1],
+    state: { held: true, ppid: "1", launchdJobs: [999], quitAttempts: [] },
+    quits: [],
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(shown.length, 1);
+  assert.deepStrictEqual(shown[0].buttons, ["Stop and continue", "Cancel"]);
+  assert.ok(shown[0].detail.includes("kirocrew stop --port 5476"));
+  assert.strictEqual(spawnCalls.length, 0);
+});
 
 test("win32 Retry while the port is still held re-prompts, then aborts", async () => {
   mock.timers.enable({ apis: ["setTimeout", "Date"] });
@@ -527,3 +603,26 @@ for (const [label, reply] of [
     assert.deepStrictEqual(quits, [], "the launch ends on its error, not on a cancelled backoff");
   });
 }
+
+test("a windowless gateway's retry round and limit read differently from round 1", async () => {
+  const { createFamilyTakeover } = require("../runtime/gateway/family-takeover");
+  const shown = [];
+  const takeover = createFamilyTakeover({
+    dialog: { showMessageBox: async (o) => { shown.push(o); return { response: 0 }; } },
+    execFile: () => {},
+    processObj: { platform: "linux" },
+    port: 5476,
+    log: () => {},
+    sendStatus: () => {},
+    snapshotGatewayPortPids: async () => [4242],
+    waitForPortFree: async () => false,
+    waitForIncumbentExit: async () => {},
+  });
+  const result = await takeover.resolveFamilyConflict({ otherFamily: "lts", otherVersion: "0.13.0", holder: "orphan" });
+  assert.strictEqual(result, "abort");
+  assert.strictEqual(shown.length, 4);
+  assert.ok(shown[0].message.includes("is already running"));
+  assert.strictEqual(shown[1].message, "Kiro Crew LTS is still running.");
+  assert.ok(shown[3].detail.startsWith("Kiro Crew LTS kept running, so this launch stopped."));
+  assert.ok(!shown[3].detail.includes("cancelled"));
+});

@@ -4,8 +4,8 @@ The bounded line writer every frame to a backend's stdin goes through, the pendi
 record that maps a gateway-minted id back to the stub that asked, :class:`BackendGone`, the
 stub-id prefixes that mark a request as the gateway's own, the server-error code, the caller
 and tenant ``_meta`` blocks the gateway strips from and injects into every forwarded frame
-(its trust boundary), and the log-safe rendering of the identifiers and error text a server
-sends back.
+(its trust boundary), the log-safe rendering of the identifiers and error text a server
+sends back, and the bounded ring of the last stderr lines it writes.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from kiro_crew.mcp_caller import (
@@ -24,6 +24,7 @@ from kiro_crew.mcp_caller import (
     build_tenant_meta,
 )
 from kiro_crew.security import redact
+from kiro_crew.security.pem_scan import HEADER_PREFIX as _PEM_HEADER_PREFIX
 
 #: Stub-uuid prefix for a gateway-internal ``tools/list`` asked on a backend's
 #: own behalf (see :meth:`Backend.probe_tool_surface`).
@@ -144,6 +145,13 @@ class _PendingRequest:
     # ``_REHANDSHAKE_STUB_SENTINEL``): the ``attempt_id`` it was sent under, a
     # log join key read by no decision. Empty for every other request.
     attempt_id: str = ""
+    # Identity server only: a release of this subscribe's URI for its caller
+    # fell due while it was in flight (the caller's last routed stub left, or
+    # the release sentinel's grant went unwanted) and was left to its verdict
+    # (``Backend._hold_identity_release``). A grant that routes the stub
+    # discharges it; any other verdict releases, unless a stub of the caller
+    # is routed by then or another same-caller subscribe inherits it.
+    release_owed: bool = False
 
 
 # Named by the path callers import it from, as ``BackendGone`` is.
@@ -296,6 +304,62 @@ def _collapse_nonprintable(value: str) -> str:
     return " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())
 
 
+#: How many of a backend's last stderr lines are kept, and the bound on each kept
+#: line, for the warning that names a death the backend reached on its own. A
+#: traceback ends in its verdict, so the end of the stream is what is kept.
+_STDERR_TAIL_LINES = 20
+_STDERR_TAIL_LINE_MAX = 500
+
+#: The literal a PEM block's END line carries; ``_PEM_HEADER_PREFIX`` opens one.
+_PEM_END_PREFIX = "-----END "
+
+#: Kept once in place of every line of a PEM block, from its header through its
+#: END line.
+_STDERR_PEM_WITHHELD = "PEM block withheld"
+
+
+def _keep_stderr_line(tail: list[str], text: str, redacted: str, in_pem_block: bool) -> bool:
+    """Keep one stderr line in ``tail``, the last ``_STDERR_TAIL_LINES``, and
+    return whether a PEM block is still open after it.
+
+    ``text`` is the line as the server wrote it and ``redacted`` the same line
+    redacted on its own. The tail keeps ``text``, so the warning's
+    ``agent_sdk.published_stderr_tail`` judges what the server wrote: a line
+    redacted on its own loses the context, such as a PEM header, that the
+    joined tail needs to recognise a secret spread over several lines.
+
+    A PEM block is kept as one ``_STDERR_PEM_WITHHELD`` line, from the line that
+    opens it through the line that closes it, so no line of its body enters the
+    tail, even once the ring has dropped its header. A block that never closes
+    withholds the rest of the stream.
+
+    The PEM test and the redactor read the whole line; only then is any other
+    line made one printable line and cut to ``_STDERR_TAIL_LINE_MAX``, which
+    bounds the ring however long a line on the pipe is. When the cut or the
+    collapse removes what the redactor found in the whole line, the line is kept
+    in its redacted spelling, so no fragment of that secret is left at the cut.
+    One residual: a secret wrapped from the cut-off end of an overlong line onto
+    the next line is judged without the part the cut removed. A blank line is
+    not kept, so blank lines cannot push out what the server said.
+    """
+    opened = text.rfind(_PEM_HEADER_PREFIX)
+    closed = text.rfind(_PEM_END_PREFIX)
+    if in_pem_block or opened != -1:
+        line = "" if in_pem_block else _STDERR_PEM_WITHHELD
+        # The later of the two markers on the line decides; a line with neither
+        # is inside the open block.
+        still_open = in_pem_block if opened == closed == -1 else opened > closed
+    else:
+        line = _collapse_nonprintable(text)[:_STDERR_TAIL_LINE_MAX]
+        if redacted != text and redact(line) == line:
+            line = _collapse_nonprintable(redacted)[:_STDERR_TAIL_LINE_MAX]
+        still_open = False
+    if line:
+        tail.append(line)
+        del tail[:-_STDERR_TAIL_LINES]
+    return still_open
+
+
 def _log_safe_identifier(value: str, fallback: str = "?") -> str:
     """Make a caller/server-supplied identifier safe to interpolate into a log
     line.
@@ -311,6 +375,27 @@ def _log_safe_identifier(value: str, fallback: str = "?") -> str:
     if len(cleaned) > _MCP_IDENT_LOG_MAX:
         cleaned = cleaned[: _MCP_IDENT_LOG_MAX - 1] + "\u2026"
     return cleaned or fallback
+
+
+def _carry_tool_call_id(caller: CallerContext, msg: dict[str, Any]) -> CallerContext:
+    """Return ``caller`` carrying the request's harness ACP ``toolCallId``.
+
+    kiro-cli sends that id as the ``tools/call`` ``_meta.progressToken``. The
+    gateway promotes it onto the caller so :func:`build_caller_meta` emits it in
+    the gateway-authored block, giving an identity-aware backend the SAME id the
+    approval gate keyed its grant by. Returns ``caller`` unchanged when the
+    request carried no token, so the backend's own progressToken fallback still
+    applies.
+    """
+    params = msg.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return caller
+    call_id = str(token)
+    if not call_id:
+        return caller
+    return replace(caller, tool_call_id=call_id)
 
 
 def _inject_caller_meta(msg: dict[str, Any], caller: CallerContext) -> dict[str, Any]:

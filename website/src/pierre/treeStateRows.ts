@@ -21,6 +21,15 @@
  *    folders together) left it none, or the server stopped reading before it
  *    reached the folder -- the server names these in `truncatedDirectories`.
  *
+ * A folder that is a separate git repository (a submodule or a nested clone,
+ * named in `nestedRepoDirectories`) gets NO state row either. The project's own
+ * listing names it as one entry and cannot see inside it, so the server lists
+ * it on its own when it is opened; that listing is a local directory read that
+ * lands within a frame or two, too fast for a status line to say anything
+ * useful. Until it arrives the folder is a row of its own with nothing beneath
+ * it (never "Empty folder", which would be false); once loaded, the folder has
+ * children (or is genuinely empty) and is no longer named.
+ *
  * A folder the server could not read (`unreadableDirectories`) gets NO state
  * row: that value is the outcome of a failed read, and an error is
  * reported to the user only through `ErrorNotice` with the agent hand-off (the
@@ -73,6 +82,7 @@ export interface TreeStateRowPayload {
   hiddenOnlyDirectories?: readonly string[]
   unreadableDirectories?: readonly string[]
   linkedDirectories?: readonly string[]
+  nestedRepoDirectories?: readonly string[]
 }
 
 const parentOf = (path: string): string => {
@@ -150,6 +160,7 @@ export function planTreeStateRows(tree: TreeStateRowPayload, labels: TreeStateRo
   const unreadable = new Set(tree.unreadableDirectories ?? [])
   const hiddenOnly = new Set(tree.hiddenOnlyDirectories ?? [])
   const linked = new Set(tree.linkedDirectories ?? [])
+  const nestedRepos = new Set(tree.nestedRepoDirectories ?? [])
   const segments = {
     empty: stateRowSegment(labels.empty),
     'hidden-only': stateRowSegment(labels['hidden-only']),
@@ -164,6 +175,10 @@ export function planTreeStateRows(tree: TreeStateRowPayload, labels: TreeStateRo
     // Never read, so nothing beneath it is known: no row makes a claim, and
     // the failure itself is the notice's to report (see the header).
     if (unreadable.has(dir)) continue
+    // A nested repository is listed on its own when opened, near-instantly, so
+    // it gets no row (see the header). Truncation still wins: a payload that
+    // names a folder as cut is shown as cut, as before.
+    if (nestedRepos.has(dir) && !truncated.has(dir)) continue
     // Truncation is checked first: a folder that lost its files to the cap is
     // not empty, and the server never lists a folder with files as hidden-only;
     // a link is never walked, so it is neither truncated nor hidden-only. The

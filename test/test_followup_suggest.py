@@ -444,6 +444,41 @@ class TestFollowupEndpoint:
         state.deliver_ws_owners.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["plain", "broken_gitfile", "inside_a_repo"])
+    async def test_a_project_that_is_no_repository_root_gets_a_warning(self, tmp_path, shape):
+        """The card offers 'Start in new chat' instead of a worktree whenever the
+        project is not a git work-tree root, and the caller (through it, the model)
+        hears that from this response as it does for an unscoped slot."""
+        project = tmp_path / "project"
+        if shape == "inside_a_repo":
+            (tmp_path / ".git").mkdir()
+        project.mkdir()
+        if shape == "broken_gitfile":
+            (project / ".git").write_text(f"gitdir: {tmp_path / 'gone' / '.git'}\n")
+        slot = _ChatSlot("test")
+        slot.project = str(project)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/followup", json={"items": [_item()]})
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["ok"] is True
+        assert "not a git repository root" in body["warning"]
+        assert "Start in new chat" in body["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_repository_root_project_gets_no_warning(self, tmp_path):
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        slot = _ChatSlot("test")
+        slot.project = str(project)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/followup", json={"items": [_item()]})
+            body = await resp.json()
+        assert "warning" not in body
+
+    @pytest.mark.asyncio
     async def test_json_array_body_rejected(self):
         slot = _ChatSlot("test")
         state = _mock_state(slot)

@@ -6,6 +6,7 @@ import ast
 import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from source_corpus import iter_source_texts
@@ -168,6 +169,93 @@ class TestRecentHistoryCache:
         results = store.search("nonexistent_term_xyz")
         assert results == []
 
+    def test_search_finds_line_added_to_file_on_disk(self, tmp_path):
+        """A line written straight into preferences.md on disk is found.
+
+        The store only updates the FTS index from its own writers, so an edit made
+        directly to the file (an editor, a sync tool, another process) bypasses the
+        index. search() reconciles the on-disk markdown before reading the index,
+        so the new line is found the same as one saved through the store.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_preferences("# Preferences\n\n- Likes tea\n")
+        store.rebuild_index()
+        assert store.search("quokkablossom") == []
+        # Append directly on disk, NOT through the store -- index is untouched.
+        prefs = tmp_path / "memory" / "preferences.md"
+        with prefs.open("a", encoding="utf-8") as f:
+            f.write("- Second p119 snack: quokkablossom tea\n")
+        results = store.search("quokkablossom")
+        assert len(results) >= 1
+        assert "quokkablossom" in results[0]["snippet"].lower()
+
+    def test_search_finds_history_file_edited_on_disk(self, tmp_path):
+        """An out-of-band edit to a history file is reconciled too."""
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.append_history("first entry")
+        store.rebuild_index()
+        assert store.search("quokkablossom") == []
+        history_files = sorted((tmp_path / "memory" / "history").glob("*.md"))
+        assert history_files
+        with history_files[0].open("a", encoding="utf-8") as f:
+            f.write("\nlater: quokkablossom sighting\n")
+        results = store.search("quokkablossom")
+        assert len(results) >= 1
+        assert "quokkablossom" in results[0]["snippet"].lower()
+
+    def test_search_does_not_thrash_on_crlf_vs_lf(self, tmp_path):
+        """A CRLF file matching the LF index is not re-flagged on every search.
+
+        The index stores LF content, while the size-capped reader keeps a file's
+        CRLF bytes. Comparing them raw marks every file drifted on every search,
+        so the drift scan folds both to one newline shape first. A file that is
+        unchanged apart from its line endings must therefore leave the stale set
+        empty.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        history_dir = tmp_path / "memory" / "history"
+        crlf_file = history_dir / "2099-02-02.md"
+        # Write CRLF bytes directly; rebuild_index reads with universal newlines
+        # and stores the LF form, so disk is CRLF and the index row is LF.
+        crlf_file.write_bytes(b"- note: zebracrossing habits\r\n")
+        store.rebuild_index()
+        # The drift scan itself must not flag the file: comparing raw CRLF to the
+        # LF row would mark it stale every search (the catch-up then redraws it,
+        # so the thrash is invisible after search() returns -- assert on the scan).
+        store._mark_ondisk_drift_stale()
+        assert str(crlf_file) not in store._index_stale, (
+            "a CRLF file matching the LF index was wrongly marked stale: " f"{store._index_stale}"
+        )
+
+    def test_search_skips_oversized_ondisk_history_file(self, tmp_path):
+        """Reconciliation reads through the size cap, so a huge file is skipped.
+
+        The history dir is agent-writable; reading a planted oversized file whole
+        into memory on every search could exhaust memory and let the OS kill the
+        gateway. The drift scan and catch-up use the size-capped reader, so a
+        file over the read cap is refused and never read whole or indexed, and
+        the search still returns normally. A sparse file is used so the test
+        costs no real disk; the uncapped reader would still read it whole.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.rebuild_index()
+        history_dir = tmp_path / "memory" / "history"
+        oversized = history_dir / "2099-01-01.md"
+        # Just over the 50 MiB read cap, written sparsely: the token lives at the
+        # start, then a hole makes the file exceed the cap without using disk.
+        over_cap = 50 * 1024 * 1024 + 1024
+        with oversized.open("wb") as f:
+            f.write(b"quokkablossom\n")
+            f.truncate(over_cap)
+        # Search must not read the oversized file whole or index its content;
+        # the planted token is therefore not found and the search returns.
+        results = store.search("quokkablossom")
+        assert results == []
+
     def test_rebuild_index(self, tmp_path):
         store = MemoryStore(workspace=tmp_path)
         store.init()
@@ -177,15 +265,26 @@ class TestRecentHistoryCache:
         # preferences + projects + at least 1 history file
         assert count >= 3
 
+    def test_rebuild_index_reports_zero_when_the_index_cannot_open(self, tmp_path):
+        """A failed rebuild must not report every source file as indexed."""
+        unopenable = tmp_path / "index-is-a-directory"
+        unopenable.mkdir()
+        store = MemoryStore(workspace=tmp_path, index_db=unopenable)
+        store.init()
+        store.append_history("entry one")
+        count = store.rebuild_index()
+        assert store.index_row_count() is None
+        assert count == 0, f"rebuild_index reported {count} files indexed, none were"
+
     def test_write_projects_no_double_header(self, tmp_path):
-        """BUG 6 regression: write_projects shouldn't double-wrap header."""
+        """write_projects does not double-wrap the header."""
         store = MemoryStore(workspace=tmp_path)
         store.write_projects("# Active Projects\n\nKiroCrew agent")
         content = store.read_projects()
         assert content.count("# Active Projects") == 1
 
     def test_write_indexes_projects(self, tmp_path):
-        """BUG 1 regression: legacy write() should update FTS index."""
+        """Legacy write() updates the FTS index."""
         store = MemoryStore(workspace=tmp_path)
         store.init()
         store.write("# Memory\n\nlobster facts")
@@ -243,12 +342,8 @@ class TestRecentHistoryCache:
 class TestActiveProjectsHeader:
     """One normalizer owns the "Active Projects" header contract.
 
-    Three copies of the normalize-or-wrap branch grew separately: two in
-    ``MemoryStore`` (the plain write and the validated one) and one in the
-    dashboard handler that validates the document before handing it over. The
-    copies live in different packages, so a change to one would leave the
-    validated and unvalidated write paths disagreeing about the header with no
-    test positioned to notice.
+    ``MemoryStore``'s plain and validated writes and the dashboard handler all use it,
+    so the write paths cannot disagree about the header.
     """
 
     def test_content_without_the_header_gains_one(self):
@@ -268,11 +363,8 @@ class TestActiveProjectsHeader:
     def test_the_two_branches_trim_asymmetrically(self):
         """Preserved, not tidied: only the already-headed branch strips.
 
-        The pre-consolidation copies wrote ``content.strip()`` when the header was
-        already present but interpolated the RAW content when it was not, so
-        leading and trailing whitespace survives in exactly one of the two
-        branches. Trimming both would be a behaviour change riding along with a
-        refactor.
+        A headed document is written as ``content.strip()``; an unheaded one is wrapped
+        RAW, so its outer whitespace survives. Trimming both would change behaviour.
         """
         from kiro_crew.memory import normalize_projects_document
 
@@ -331,11 +423,10 @@ class TestRecallSearchFallback:
         assert store.search("pathonlyquartz", match_any=True) == []
 
     def test_natural_question_reaches_an_old_decision_sharing_two_terms(self, tmp_path):
-        """The old first turn showed an older day's first line unconditionally.
+        """A natural question reaches an older day's line through two shared terms.
 
-        A natural question about it carries far more task terms than that one
-        line shares, so majority coverage alone loses it. Two shared terms admit
-        the line; a document sharing a single word still does not.
+        The question carries far more terms than that line shares, so majority coverage
+        alone loses it. A document sharing a single word is still not admitted.
         """
         store = MemoryStore(workspace=tmp_path)
         store.write_projects("# Active Projects\nQuartzscope dashboard colors")
@@ -361,14 +452,10 @@ class TestRecallSearchFallback:
 class TestNonUtf8Tolerance:
     """A stray non-UTF-8 byte in a memory file must not raise the reader.
 
-    The PURE readers (``read_recent_history``, ``rebuild_index``) skip a
-    corrupt file instead of raising ``UnicodeDecodeError`` — they never write
-    their result back, so dropping an undecodable file is safe. The
+    The PURE readers (``read_recent_history``, ``rebuild_index``) skip the file. The
     read-modify-write readers (``read_preferences``, ``read_projects``,
-    ``append_history``) keep a strict decode: their value feeds a whole-file
-    rewrite, so an undecodable file raises there and is left intact and
-    recoverable rather than round-tripped lossily. No existing read path
-    changes — only the decode failure is caught.
+    ``append_history``) keep a strict decode, so a whole-file rewrite never round-trips
+    the bytes lossily.
     """
 
     # An invalid UTF-8 lead byte (0xff never appears in valid UTF-8).
@@ -468,6 +555,87 @@ class TestNonUtf8Tolerance:
         assert "CLEAN_ENTRY" in out
         assert "proj" not in out  # the corrupt projects section is skipped
         assert "good line" not in out  # the corrupt preferences file is skipped
+
+
+def _index_titles(index: str) -> list[str]:
+    """The title of every ``- <label>: <title>`` slot, in index order."""
+    return [line.split(": ", 1)[1] for line in index.splitlines() if line.startswith("- ")]
+
+
+class TestActivityIndexHistoryStamps:
+    """History slots name entries, never the writer's day header or time stamp."""
+
+    # The real writer's %Z under an abbreviation, a mixed-case one ("ChST"), a
+    # numeric offset ("+14") and a half-hour zone.
+    @pytest.mark.parametrize(
+        "zone", ["UTC", "Pacific/Guam", "Pacific/Kiritimati", "America/St_Johns"]
+    )
+    def test_appended_entries_are_the_only_history_slots(self, tmp_path, local_tz, zone):
+        local_tz(zone)
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        for name in ("Alphaquartz", "Betaquartz", "Gammaquartz"):
+            store.append_history(f"{name} entry")
+        assert _index_titles(store.activity_index()) == [
+            "Gammaquartz entry",
+            "Betaquartz entry",
+            "Alphaquartz entry",
+        ]
+
+    # Stamp tails written under other configurations: an empty %Z and English
+    # Windows names, including the "UTC-11" style ones that do not end in "Time".
+    @pytest.mark.parametrize(
+        "zone_name",
+        ["", "Pacific Standard Time", "W. Europe Standard Time", "UTC-11", "UTC+13"],
+    )
+    def test_stamp_tails_are_not_slots_but_titled_headings_are(self, tmp_path, zone_name):
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        day = store._today_history_file()
+        day.write_text(
+            f"# {day.stem}\n\n#### 21:43 {zone_name}\nDeltaquartz entry\n"
+            "\n#### 10:00 deploy chat\nAgreed to review the checklist.\n",
+            encoding="utf-8",
+        )
+        assert _index_titles(store.activity_index()) == [
+            "Agreed to review the checklist.",
+            "#### 10:00 deploy chat",
+            "Deltaquartz entry",
+        ]
+
+    # Localized Windows zone names, which %Z prints from the host's time.tzname.
+    @pytest.mark.parametrize(
+        "host_zones",
+        [
+            ("Mitteleuropäische Zeit", "Mitteleuropäische Sommerzeit"),
+            ("RTZ 2 (зима)", "RTZ 2 (лето)"),
+            ("中国标准时间", "中国夏令时"),
+            ("東京 (標準時)", "東京 (夏時間)"),
+        ],
+        ids=["german", "russian", "chinese", "japanese"],
+    )
+    def test_host_zone_name_stamps_are_not_slots(self, tmp_path, monkeypatch, host_zones):
+        # Rebinds the recognizer module's own `time` name, so nothing else in the
+        # worker sees the fake zones.
+        monkeypatch.setattr(
+            "kiro_crew.memory_history_stamps.time", SimpleNamespace(tzname=host_zones)
+        )
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        day = store._today_history_file()
+        standard, daylight = host_zones
+        day.write_text(
+            f"# {day.stem}\n\n#### 09:15 {standard}\nEpsilonquartz entry\n"
+            f"\n#### 21:43 {daylight}\nZetaquartz entry\n"
+            "\n#### 10:00 deploy chat\nAgreed to review the checklist.\n",
+            encoding="utf-8",
+        )
+        assert _index_titles(store.activity_index()) == [
+            "Agreed to review the checklist.",
+            "#### 10:00 deploy chat",
+            "Zetaquartz entry",
+            "Epsilonquartz entry",
+        ]
 
 
 class TestUnreadableActivityTolerance:
@@ -739,11 +907,8 @@ class TestHistoryDecayWording:
 class TestNamedV1StoreUnderFencedTree:
     """A NAMED V1 store's markdown lives under the fenced ``memory_stores`` tree.
 
-    ``safe_read_file_bytes_nolink`` refuses any path ``is_sensitive_path``
-    fences, so a named store's own day files would read as empty through it.
-    The store therefore takes the descriptor-pinned reader for its admitted
-    files; these tests pin that the fence leaves a named store readable while
-    a planted link or hardlink at a day name is still refused.
+    ``safe_read_file_bytes_nolink`` refuses fenced paths, so the store uses the
+    descriptor-pinned reader. The store stays readable; a planted link is still refused.
     """
 
     NAME = "work"
@@ -832,11 +997,8 @@ class TestNamedV1StoreUnderFencedTree:
     def test_linked_day_is_refused_by_the_descriptor_open_alone(self, tmp_path, monkeypatch):
         """With the lstat leaf check neutralized, the descriptor path still refuses the link.
 
-        On POSIX the planted day is a file symlink and the ``O_NOFOLLOW`` open
-        refuses it. On Windows :func:`plant_day_link` plants a directory junction
-        instead, and the following ``stat`` reports a directory, so the
-        non-regular check refuses it before any open. Either way the target's
-        bytes never reach the history.
+        POSIX: ``O_NOFOLLOW`` refuses the symlink. Windows: :func:`plant_day_link` plants
+        a junction, which the non-regular check refuses before any open.
         """
         from datetime import date, timedelta
 
@@ -861,12 +1023,8 @@ class TestNamedV1StoreUnderFencedTree:
     def _stub_second_link(monkeypatch, planted) -> None:
         """Make ``os.fstat`` report ``st_nlink == 2`` for the inode at *planted*.
 
-        ``_guarded_entry`` reads the link count only from the descriptor it
-        opens (``os.fstat`` in ``_read_entry_bytes`` and in
-        ``safe_read_file_bytes_nolink``); the by-name ``stat`` calls around the
-        read check only the file type, mtime and size. Matching on
-        ``(st_dev, st_ino)`` pins the stub to that one inode, so every other
-        file the reader opens keeps its real link count.
+        ``_guarded_entry`` reads the link count only via ``os.fstat``. Matching on
+        ``(st_dev, st_ino)`` leaves every other file's real link count.
         """
         import os
 
@@ -895,11 +1053,8 @@ class TestNamedV1StoreUnderFencedTree:
     def test_hardlinked_day_is_refused_under_the_fence(self, tmp_path, monkeypatch, shape):
         """A second name for an outside inode at a day name is refused by its link count.
 
-        ``real_hardlink`` uses ``os.link``; where the filesystem or platform
-        refuses one, it falls through to the ``stubbed_link_count`` shape so the
-        assertion never skips. That shape writes the secret as a regular day file
-        and stubs the descriptor's ``st_nlink`` to 2, which is the exact reading
-        the guarded reader refuses.
+        Where ``os.link`` is refused, ``real_hardlink`` falls back to the
+        ``stubbed_link_count`` shape (``st_nlink`` of 2), so the assertion never skips.
         """
         import os
         from datetime import date, timedelta
@@ -952,12 +1107,8 @@ class TestNamedV1StoreUnderFencedTree:
 class TestAtomicWriteTextPublishesOnce:
     """``MemoryStore._atomic_write_text`` is ONE unconditional publish.
 
-    It is the direct-write path for ``init``'s seeding and the validated
-    private-profile write. Routing a single logical write through the seam's
-    ``write`` more than once doubles every atomic publish (two temp files, two
-    renames) and, for a remote-backed provider, two network round trips — so
-    the count of underlying writes is the property, not merely that the call
-    returns.
+    A second seam ``write`` per logical write doubles temp files, renames and, for a
+    remote provider, round trips, so the write count is the property.
     """
 
     def test_a_single_atomic_write_calls_the_seam_write_exactly_once(self, tmp_path):
@@ -980,12 +1131,8 @@ class TestAtomicWriteTextPublishesOnce:
 class TestContextBuildSurvivesLinkedRoot:
     """A linked memory root must not crash the every-turn context build.
 
-    Pre-seam ``read_preferences``/``read_projects`` ran no link gate and simply
-    read the target; the seam routes them through ``read_text``, whose link
-    refusal now raises ``OSError``. ``get_context`` and ``rebuild_index`` catch
-    only ``UnicodeDecodeError``, so a linked root turned every context build and
-    index rebuild into a hard crash. The refusal is kept (a linked root is never
-    read through), but the section it guards must DEGRADE, not abort the build.
+    ``read_text`` refuses a linked root with ``OSError``. The refusal stays, but the
+    section it guards must DEGRADE rather than abort ``get_context`` or ``rebuild_index``.
     """
 
     def _linked_root_store(self, tmp_path) -> MemoryStore:
@@ -1035,14 +1182,9 @@ class TestContextBuildSurvivesLinkedRoot:
     ):
         """The exact wipe the ``refused`` flag exists to prevent.
 
-        A refused root that ALSO enumerates empty is the dangerous shape: the
-        ungated ``exists()`` answered False for both anchors and the gated
-        ``glob`` answered ``[]``, so ``_indexable`` never ran and ``refused``
-        stayed False -- the ``DELETE FROM memory_fts`` then committed an empty
-        index. The fix routes the two anchors through the GATED read, which
-        raises on the refused root before enumeration matters, so ``refused`` is
-        set and the existing index is kept. This test drives the empty-enumeration
-        path the earlier test (files still present) never reached.
+        A refused root that also enumerates empty never runs ``_indexable``, so only the
+        GATED anchor reads set ``refused``; otherwise ``DELETE FROM memory_fts`` commits
+        an empty index.
         """
         store = MemoryStore(workspace=tmp_path)
         store.init()
@@ -1142,11 +1284,8 @@ class TestIndexCatchesUpAfterAFailedUpdate:
     ):
         """The catch-up reads a file and commits its row under the writers' own lock.
 
-        Two stores on one workspace stand in for the gateway and a second process
-        (``kirocrew consolidate``). Inside the gateway's catch-up, between its read
-        and its commit, the test checks whether the writers' directory lock is free.
-        If it is, another process's newer save can land there, and the catch-up then
-        commits the older text over it, so the newer text is never found.
+        Two stores stand in for the gateway and ``kirocrew consolidate``. A free lock
+        between read and commit would let the catch-up commit older text over a newer save.
         """
         import os
         from pathlib import Path

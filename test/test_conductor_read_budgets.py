@@ -168,15 +168,9 @@ _FIELD_LIST_READS = ("read_instance", "_mistake_book", "_instance_history", "_cu
 async def test_the_field_list_pays_one_queue_wait_for_all_its_reads(monkeypatch):
     """The five reads after the gate run inside ONE worker job.
 
-    Each sequential ``asyncio.to_thread`` hop queues on the shared executor, so on a
-    saturated gateway the read paid the queue's wait five times over work that takes
-    milliseconds. The gate is replaced here because its hops are its own and are not
-    what this pins; every read below it runs for real against a shipped page. A
-    crewmate that adopted nothing is shown a page only when a shipped one is named for
-    it, so the crewmate here is ``kirocrew-conductor``, whose board is that page.
-
-    Mutation guards: give any read its own hop again and the count is two; move one
-    onto the event loop and its thread is the loop's.
+    Each ``asyncio.to_thread`` hop queues on the shared executor, so separate hops pay
+    a saturated queue's wait five times. ``kirocrew-conductor`` is used because it has
+    a shipped page, so every read runs for real.
     """
     monkeypatch.setenv(crew_log_emit.CREW_LOG_ENV, "1")
     crew_log_emit.reset_caches()

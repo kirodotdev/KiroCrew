@@ -22,10 +22,34 @@ from datetime import datetime
 from typing import TYPE_CHECKING, AbstractSet
 from uuid import uuid4
 
+from kiro_crew.knowledge.store_parts.source_rows import _ACCOUNT_BOUND_SOURCE_TYPE
+
 if TYPE_CHECKING:
     from kiro_crew.knowledge.store import KnowledgeStore
 
 logger = logging.getLogger("kiro_crew.knowledge.store")
+
+
+class LiveSourceHoldsNoItems(ValueError):
+    """An item would come to name an account-bound source.
+
+    Raised by :meth:`KnowledgeStore.add_item` and
+    :meth:`KnowledgeStore.add_source_location_in_txn` before the write. A
+    ``bedrock_kb`` row is queried live and holds no items, and ``export_all``
+    relies on that when it leaves the row out of a bundle: an item naming a
+    source the bundle does not carry is refused by ``import_bundle`` as a
+    malformed bundle, and the whole bundle rolls back.
+    The rule lives here, with the writer, because every path that lands an
+    item under a source funnels through these two methods -- the agent's
+    ingest-text route, a folder or upload ingest, and the dedup path that
+    attaches an existing item to a second holder -- and a source id is
+    readable by any authenticated caller off the sources list.
+    """
+
+
+# Named by the path callers import it from: a traceback renders a raised class as
+# ``module.qualname``, so this module's name must not reach it.
+LiveSourceHoldsNoItems.__module__ = "kiro_crew.knowledge.store"
 
 
 # The per-document state tables, each with the status that means "this row owns a
@@ -58,49 +82,31 @@ _DOC_STATE_KEY_COL: dict[str, str] = {
 # Which column on each state table holds a hash in the SAME DOMAIN as
 # ``items.content_hash``, for lookups that have to relate a state row to items.
 #
-# Two different quantities are both called a content hash, and they are not
-# interchangeable:
-#
-# * ``folder_file_state.content_hash`` is sha256 over the file's RAW BYTES. It
-#   answers "has this file changed on disk?" and is compared before any
-#   extraction runs -- deriving it from extracted text would force an extraction
-#   pass on every scan, which is the cost the mtime/hash gate exists to avoid.
-#   The pre-ingest duplicate gate is in the same domain for the same reason: it
-#   also runs before extraction.
+# * ``folder_file_state.content_hash`` is sha256 over the file's RAW BYTES, so
+#   the change gate can run before extraction.
 # * ``items.content_hash`` is sha256 over the EXTRACTED TEXT.
 #
-# For .md/.txt the two coincide, so a cross-domain comparison appears to work.
-# For anything the reader transforms -- PDF, DOCX, HTML -- they differ and the
-# comparison silently matches nothing, which is how ownership bookkeeping came to
-# be inert for exactly those documents. Folder rows therefore carry the text hash
-# separately, in ``text_hash``; the aggregate tables already store a text hash in
-# ``content_hash`` and need no second column.
+# They coincide for .md/.txt but not for PDF, DOCX or HTML, where a
+# cross-domain comparison silently matches nothing. Folder rows therefore carry
+# the text hash in ``text_hash``; the aggregate tables already store a text
+# hash in ``content_hash``.
 _OWNERSHIP_HASH_COL: dict[str, str] = {
     "folder_file_state": "COALESCE(NULLIF(text_hash, ''), content_hash)",
     "artifact_item_state": "content_hash",
     "agent_item_state": "content_hash",
 }
-# Folder rows COALESCE so a legacy row -- written before ``text_hash`` existed, and
-# deliberately never backfilled -- keeps behaving exactly as it does today: for the
-# plaintext files whose two hashes are equal its ownership lookups still match, which
-# they would stop doing if the new column were consulted alone. A rescan populates
-# ``text_hash`` and the row becomes correct for transformed documents too.
+# Folder rows COALESCE so a row without ``text_hash`` (never backfilled) still
+# matches for plaintext files; a rescan fills ``text_hash``.
 
 
 def agent_owned_item_ids(self: KnowledgeStore, source_id: str) -> set[str] | None:
     """Every item id a live ``agent_item_state`` row names for a source.
 
-    A row left by a refused write owns an empty group and names nothing,
-    which is correct: its items were adopted by the winner's row and are
-    named THERE. Returns ``None`` -- "cannot tell" -- if ANY row's
-    ``item_ids`` is unreadable: the owned set would then be missing items
-    that are genuinely owned, and a caller treating those as residue would
-    delete owned content. A stale item is recoverable; a wrongly-deleted one
-    is not, so every caller stands its sweep/cleanup down on ``None``.
-
-    The single source of this derivation. The residue sweep and
-    ``agent_source.clear_ingesting`` both read it from here rather than each
-    spelling the same query, JSON parse and unreadable-group fail-safe.
+    A row left by a refused write names nothing; the winner's row names its
+    items. Returns ``None`` -- "cannot tell" -- if ANY row's ``item_ids`` is
+    unreadable, and callers (the residue sweep,
+    ``agent_source.clear_ingesting``) stand down: a stale item is
+    recoverable, a wrongly-deleted one is not.
     """
     ids_owned: set[str] = set()
     for row in self.db.execute(
@@ -121,24 +127,16 @@ def agent_owned_item_ids(self: KnowledgeStore, source_id: str) -> set[str] | Non
 def _adopt_reassigned_item(self: KnowledgeStore, item_id: str, new_source_id: str) -> None:
     """Let the new owner's state row know it owns *item_id*.
 
-    Reassignment moves ``items.source_id``, but a state row's ``item_ids`` is the
-    only list its own delete path consults. A recipient that owns an item its row
-    never names cannot delete it: removing that document drops an empty group and
-    the content stays searchable, which is the strand this whole model exists to
-    prevent. So the row that describes this content adopts the item.
+    Reassignment moves ``items.source_id``, but a row's delete path consults
+    only its own ``item_ids``; an item the row never names would stay
+    searchable after the document is removed.
 
-    Matched on ``content_hash`` because that is what identifies the document
-    independently of which source holds it. Appends rather than replaces, so a
-    multi-item group (a chunked file) is not truncated to one, and clears any
-    deferral marker: a row that owns an item is not deferring to anyone.
+    Matched on ``content_hash``. Appends, so a chunked group is not
+    truncated, and clears any deferral marker.
 
-    A hash is only an identifier while it picks out ONE row. Two distinct
-    documents in one source may legitimately hold identical text, and writing the
-    item into both would put one physical item in two groups -- then removing
-    either document deletes it and takes the other's indexed content with it. So
-    an ambiguous hash adopts nothing: an un-adopted row leaves a stale claim,
-    which is visible and recoverable, whereas a cross-wired group destroys
-    content on the next delete.
+    An ambiguous hash (two documents in the source with identical text)
+    adopts nothing: a stale claim is recoverable, while one item in two
+    groups is destroyed by either document's delete.
     """
     row = self.db.execute("SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
     content_hash = row["content_hash"] if row else None
@@ -185,29 +183,19 @@ def detach_source_location_by_hash(
 ) -> int:
     """Drop this source's CLAIM on a document it has no copy of.
 
-    The counterpart to :meth:`_adopt_reassigned_item`. A source that lost a dedup
-    holds no items for that document -- its state row is 'deduped' with an empty
-    group -- yet it IS still a location of the winner's items, which is what keeps
-    the document reachable if the winner goes away. When the losing copy is
-    genuinely removed (its file deleted from that folder), the claim has to go too,
-    or the source stays a candidate to inherit a document it does not have and the
-    content resurfaces there as searchable text with no file behind it.
+    The counterpart to :meth:`_adopt_reassigned_item`. A dedup loser holds no
+    items ('deduped', empty group) but is still a location of the winner's.
+    When its copy is removed, the claim must go too, or it could inherit the
+    document and resurface text with no file behind it.
 
-    Identified by ``content_hash`` because that is the only handle such a row has:
-    it owns no item ids, and the winner's ids must never be written into it -- a
-    row naming another source's items becomes a second document over one physical
-    item set, which self-collapses and deletes the survivor.
+    Identified by ``content_hash``, the only handle such a row has; the
+    winner's ids must never be written into it. Only location rows are
+    removed. Returns the number of claims dropped.
 
-    Only the location rows are removed. The items belong to the winner and are
-    left untouched. Returns the number of claims dropped.
-
-    Like adoption, this acts only when the hash picks out ONE document here. If a
-    second document in this source holds identical text, the claim is shared and
-    dropping it would strand that other document when the winner goes away. On
-    ambiguity the claim is kept: a stale claim can resurface content that exists
-    elsewhere, which is recoverable, while a released one destroys a document.
-    ``exclude_folder_paths`` omits rows the current sweep will remove from the
-    claimant count; those rows cannot back a surviving shared claim.
+    Acts only when the hash picks out ONE document here; on ambiguity the
+    claim is kept (a stale claim is recoverable, a released shared one is
+    not). ``exclude_folder_paths`` omits rows the current sweep will remove
+    from the claimant count.
     """
     if not content_hash:
         return 0
@@ -256,25 +244,14 @@ def release_stale_claim(
 ) -> int:
     """Release a claim made for content this source does not have.
 
-    A source that lost a dedup owns no items but IS a location of the winner's,
-    and that claim is specific to the content it was made for. When the source's
-    copy is EDITED, the claim becomes a claim on the wrong document: deleting the
-    holder would then hand this source the superseded text, which stays searchable
-    with nothing behind it.
+    A dedup loser's claim is specific to its content; once its copy is EDITED,
+    deleting the holder would hand it the superseded text. Shared by the
+    folder, artifact and agent ingest paths. Fires only when the row owned
+    NOTHING and the hash moved. Returns claims dropped.
 
-    The rule lives here rather than at each ingest path because all three paths
-    (folder file, artifact, agent document) can be edited and all three would
-    otherwise have to re-derive it. Only fires when the row owned NOTHING -- a row
-    with a live group replaces its own items through the normal delete-and-reingest
-    path -- and only when the hash actually moved. Returns claims dropped.
-
-    Two domains are in play and both are needed. *prev_hash*/*new_hash* decide
-    whether the file CHANGED, which is a question about the bytes on disk. The
-    detach then has to name a document in the ITEM domain, which is what
-    *prev_text_hash* carries for folder rows. Callers whose ``content_hash`` is
-    already a text hash (artifacts, agent documents) pass nothing and the
-    fallback uses *prev_hash* unchanged. A legacy folder row with no text hash
-    also falls back, and matches nothing exactly as it does today.
+    *prev_hash*/*new_hash* decide whether the bytes changed; the detach needs
+    an ITEM-domain hash, which *prev_text_hash* carries for folder rows.
+    Artifacts and agent documents already store a text hash and pass nothing.
     """
     if prev_item_ids or not prev_hash or prev_hash == new_hash:
         return 0
@@ -288,30 +265,17 @@ def surviving_group_in_txn(self: KnowledgeStore, table: str, source_id: str, key
     event loop: this issues sync sqlite reads whose result is only meaningful
     under that lock.
 
-    Exists because the terminal write for a document the pre-ingest gate
-    REFUSED cannot predict its own group. The gate commits before returning,
-    so a concurrent ``delete_source_cascade`` on the holder can land in
-    between: it reassigns the surviving item to this source and
-    :meth:`_adopt_reassigned_item` names it in this very row. Writing an empty
-    group afterwards -- which "the gate refused, so this document owns
-    nothing" predicts -- erases that, leaving the last copy owned by the
-    source but named by no row: unreachable by the delete path, and
-    undeletable.
+    A REFUSED document's terminal write cannot assume an empty group: between
+    the gate's commit and this write, a ``delete_source_cascade`` on the
+    holder may reassign the surviving item here and
+    :meth:`_adopt_reassigned_item` name it in this row. An empty write would
+    leave that last copy named by no row, and undeletable.
 
-    Row-scoped, never by content hash. Two documents in one source may
-    legitimately hold identical text, so a hash-scoped read hands this row the
-    OTHER document's items; both rows then name one physical item and deleting
-    either destroys it. ``_adopt_reassigned_item`` refuses an ambiguous hash
-    for that reason and this must not reintroduce it.
+    Row-scoped, never by content hash, so another document with identical
+    text never shares its items. Filtered to ids still under this source.
 
-    Filtered to ids that still exist under this source, because the row is
-    still carrying the group the gate just deleted. What survives is an
-    adoption that landed here.
-
-    An unreadable ``item_ids`` RAISES rather than reporting an empty group: the
-    caller writes whatever comes back as the row's terminal state, so mapping
-    corruption to "owns nothing" would overwrite a recoverable value and
-    orphan every item it named.
+    An unreadable ``item_ids`` RAISES: the caller writes the result as the
+    terminal state, so "owns nothing" would orphan every item it named.
     """
     key_col = _DOC_STATE_KEY_COL[table]
     row = self.db.execute(
@@ -369,6 +333,10 @@ def add_source_location_in_txn(
     explicit ``BEGIN IMMEDIATE`` would END that transaction early and hand a
     concurrent writer the very gap the caller took the lock to close.
     """
+    # A location is the other way an item comes to name a source: the
+    # dedup path attaches an existing item to the ingesting source here
+    # instead of inserting a copy.
+    self._refuse_live_source(source_id)
     lid = str(uuid4())
     now = datetime.now().isoformat()
     self.db.execute(
@@ -384,8 +352,10 @@ def sources_holding_item(
 ) -> list[str]:
     """Ids of EXISTING sources that hold *item_id*, optionally excluding one.
 
-    The reference count deletion consults: an item is destroyed only when this
-    comes back empty. Joins ``sources`` so a location row left pointing at an
+    The holder count dedup reads. The deletion paths consult
+    :meth:`_reassignment_candidates` instead, which narrows this to the holders
+    that may take ownership; an item is destroyed only when that comes back
+    empty. Joins ``sources`` so a location row left pointing at an
     already-deleted source cannot keep a dead item alive.
     """
     sql = (
@@ -397,6 +367,44 @@ def sources_holding_item(
         sql += " AND sl.source_id != ?"
         params.append(exclude_source_id)
     return [r["source_id"] for r in self.db.execute(sql, params).fetchall()]
+
+
+def _refuse_live_source(self: KnowledgeStore, source_id) -> None:
+    """Raise :class:`LiveSourceHoldsNoItems` if *source_id* names an
+    account-bound source; a ``None`` source and an unknown id pass (the
+    latter is the foreign key's business). One primary-key read."""
+    if source_id is None:
+        return
+    row = self.db.execute("SELECT source_type FROM sources WHERE id = ?", (source_id,)).fetchone()
+    if row is not None and row["source_type"] == _ACCOUNT_BOUND_SOURCE_TYPE:
+        raise LiveSourceHoldsNoItems(
+            f"source {source_id} is a live-retrieval source and holds no items"
+        )
+
+
+def _reassignment_candidates(
+    self: KnowledgeStore, item_id: str, losing_source_id: str
+) -> list[str]:
+    """The holders of *item_id* that may take ownership when *losing_source_id*
+    is deleted: :meth:`sources_holding_item` minus the account-bound types.
+
+    A live-retrieval source never holds items (:meth:`_refuse_live_source`
+    guards every writer), so a location row naming one under a local item can
+    only come from a direct write to ``knowledge.db``. Reassigning the item to
+    that row's source would file a local document under a source that
+    :meth:`export_all` leaves out of every bundle, along with everything that
+    names it -- the document would survive in the live store and vanish from
+    the backup. An item whose only other holders are account-bound therefore
+    goes with its owner, as if no other holder existed; the planted location
+    row goes with it.
+    """
+    rows = self.db.execute(
+        "SELECT sl.source_id FROM source_locations sl "
+        "JOIN sources s ON s.id = sl.source_id "
+        "WHERE sl.item_id = ? AND sl.source_id != ? AND s.source_type <> ?",
+        (item_id, losing_source_id, _ACCOUNT_BOUND_SOURCE_TYPE),
+    ).fetchall()
+    return [r["source_id"] for r in rows]
 
 
 def reassign_item_source(self: KnowledgeStore, item_id: str, new_source_id: str) -> None:

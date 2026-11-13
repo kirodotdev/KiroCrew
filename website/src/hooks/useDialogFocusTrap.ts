@@ -4,7 +4,7 @@
 // An aria-modal dialog that lets focus wander behind the overlay would let
 // keyboard users activate obscured controls, so every dialog needs the same
 // three pieces. They live here rather than being re-implemented per dialog.
-import { useEffect, useLayoutEffect, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { useDocumentImeLatch } from './useImeGuard'
 import { useLocalCrewHidden } from '../components/overlayRoot'
 
@@ -12,6 +12,23 @@ import { useLocalCrewHidden } from '../components/overlayRoot'
 export const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
   'textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+
+/**
+ * Mount order of every trap whose Tab handling is armed. Only the newest
+ * MOUNTED one moves focus on Tab.
+ *
+ * `enabled` covers a dialog that knows it opened an inner one. This covers the
+ * one that does not: the image viewer opens from a document-level event, over
+ * whichever Modal holds the markdown. Two armed traps would each pull focus
+ * back inside themselves on every Tab, so focus could never leave the newer
+ * dialog's first control. The order is the mount order, not the arm order, so
+ * an outer dialog re-arming on a re-render does not jump back in front.
+ * Escape is not gated here: its owners already consume it in order (see
+ * `handleEscape`).
+ */
+let nextTrapOrder = 0
+const armedTabTraps = new Set<number>()
+const newestArmedTrap = (): number => Math.max(-1, ...armedTabTraps)
 
 /**
  * Wire a dialog element for modal keyboard use.
@@ -34,7 +51,7 @@ export const FOCUSABLE =
  * entry, restoration, and Tab trapping.
  *
  * `restoreFocus` gates ONLY the return half: focus still moves into the dialog
- * on mount, but nothing is captured or restored on unmount. Pass `false` from a
+ * on mount, but nothing is restored on unmount. Pass `false` from a
  * trigger-anchored popover whose host already moves focus back itself, for two
  * reasons this hook cannot decide from the inside:
  *
@@ -77,12 +94,22 @@ export function useDialogFocusTrap(
   // mid-entrance (translated off-screen), so that scroll lands on the page
   // BEHIND it and the workspace visibly twitches as the animation settles; on
   // close the same happens to whatever regains focus.
+  //
+  // The restore target is what holds focus when this effect runs, unless that
+  // is inside the dialog already (React applies a child's `autoFocus` in the
+  // commit, before any effect): then it is what held focus at the first
+  // render. The effect-time read stays first because a dialog closing in the
+  // same commit hands focus back to its own opener before this effect runs.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null)
   useEffect(() => {
-    const restoreTo = restoreFocus ? (document.activeElement as HTMLElement | null) : null
-    const first = containerRef.current?.querySelector<HTMLElement>(FOCUSABLE)
+    const active = document.activeElement as HTMLElement | null
+    const target = containerRef.current?.contains(active) ? opener : active
+    const restoreTo = restoreFocus ? target : null
+    const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
+      .find((el) => el.tabIndex >= 0)
     ;(first ?? containerRef.current)?.focus({ preventScroll: true })
     return () => restoreTo?.focus?.({ preventScroll: true })
-  }, [containerRef, restoreFocus])
+  }, [containerRef, restoreFocus, opener])
 
   // IME guard for the Tab-cycles-focus path. This listener receives NATIVE
   // KeyboardEvents (window capture), which `useImeGuard`'s synthetic-only
@@ -97,11 +124,18 @@ export function useDialogFocusTrap(
   const imeLatch = useDocumentImeLatch(enabled)
   const crewHidden = useLocalCrewHidden()
 
+  // This trap's place in `armedTabTraps`, fixed at mount. Declared before the
+  // key effect so it is set when that effect first arms.
+  const mountOrderRef = useRef(0)
+  useLayoutEffect(() => { mountOrderRef.current = ++nextTrapOrder }, [])
+
   // A layout effect, so Escape and the Tab trap are armed in the same commit
   // that mounts the dialog: a passive effect can run a task later, and a key
   // pressed in that gap was dropped (see Modal's Escape listener).
   useLayoutEffect(() => {
     if (!enabled || crewHidden) return
+    const order = mountOrderRef.current
+    armedTabTraps.add(order)
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && handleEscape) {
         // An Escape the IME owns must not dismiss the dialog: the user is
@@ -118,8 +152,14 @@ export function useDialogFocusTrap(
       }
       const container = containerRef.current
       if (e.key !== 'Tab' || !container) return
+      // A newer trap owns Tab (see `armedTabTraps`).
+      if (newestArmedTrap() !== order) return
+      // Only real Tab stops count: a roving-tabindex group (RadioChipGroup)
+      // leaves its unchecked options as `tabIndex = -1` buttons, which match
+      // FOCUSABLE but are never reached by Tab, so one of them as `lastEl`
+      // would stop the trap from ever wrapping.
       const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE))
-        .filter((el) => el.offsetParent !== null)
+        .filter((el) => el.offsetParent !== null && el.tabIndex >= 0)
       if (!items.length) return
       const firstEl = items[0]
       const lastEl = items[items.length - 1]
@@ -142,6 +182,9 @@ export function useDialogFocusTrap(
       ;(wrapsBackward ? lastEl : firstEl).focus()
     }
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      armedTabTraps.delete(order)
+    }
   }, [containerRef, onEscape, enabled, handleEscape, imeLatch, crewHidden])
 }

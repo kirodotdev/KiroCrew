@@ -5,7 +5,12 @@ daemon's environment and spawns only a launch the operator approved
 (:mod:`~kiro_crew.mcp_gateway.launch_approval`). The declared-env projection reads
 the rewriter's ``0600`` sidecar and forwards only what is coherent with the PoolKey
 and approved. One acquisition reads ONE approval snapshot, carried into each
-worker thread by :data:`_LAUNCH_APPROVAL_SNAPSHOT`.
+worker thread by :data:`_LAUNCH_APPROVAL_SNAPSHOT`. On an owned daemon, a Kiro
+Crew control-plane backend waits for the port its gateway announces
+(:func:`_await_owner_port`), is bound to it (:func:`bind_control_plane_to_owner`),
+and is not reused once the port changes (:func:`bound_to_owner_port`). An unowned
+daemon, or an owned one that cannot read the announcing sender's pid, binds it
+from the daemon's environment instead.
 """
 
 from __future__ import annotations
@@ -14,23 +19,39 @@ import asyncio
 import json
 import os
 import shlex
+import threading
+import time
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Collection, Optional
+from typing import TYPE_CHECKING, Any, Callable, Collection, Optional, TypeGuard
 
+from kiro_crew import ssh_auth_sock_consent
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.env import _SPEC_ENV_DENIED_PREFIXES
+from kiro_crew.mcp_gateway import agent_socket
+from kiro_crew.mcp_gateway import backend as _backend
 from kiro_crew.mcp_gateway import launch_approval
+from kiro_crew.mcp_gateway.admission import (
+    QUEUED_KEEPALIVE_SECS,
+    Admission,
+    OnQueued,
+    QueuePosition,
+)
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, non_secret_env
-from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env, is_credential_env_key
+from kiro_crew.mcp_gateway.manager import (
+    BACKEND_WORK_DIR_ENV,
+    _scrub_sensitive_env,
+    is_credential_env_key,
+)
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.mcp_gateway.rewriter import env_sidecar_dir, env_sidecar_name, resolve_overlay_dir
 from kiro_crew.sandbox import without_python_env
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
+    from kiro_crew.mcp_gateway.backend import Backend
 else:
     from kiro_crew.mcp_gateway.daemon import facade
 
@@ -462,6 +483,290 @@ def _launch_approved_from_snapshot(
     )
 
 
+#: Control-plane server names whose wait, refusal or environment binding for an
+#: unknown owner port was already logged at WARNING (see
+#: :func:`_note_owner_port_unknown`). Process lifetime: the daemon is one gateway
+#: generation's.
+_OWNER_PORT_DECLINES_WARNED: set[str] = set()
+
+
+class OwnerPortUnproven(RuntimeError):
+    """A pooled control-plane backend cannot be spawned: the owner's port is unknown.
+
+    Raised by :func:`bind_control_plane_to_owner` on an owned daemon that has
+    accepted no ``owner-port`` announce and has not switched to environment binding,
+    and by :func:`_await_owner_port` when an acquisition's wait budget runs out
+    before one arrives. An unowned daemon, or an owned one that cannot verify an
+    announce, never raises it: it binds from its environment. It is a ``capacity``
+    failure (``admission_protocol._CAPACITY_FAILURES``), because it describes this
+    moment and not the target: the stub is refused with ``retry_after_secs`` and
+    is never told to exec the server itself. That exec would run the server inside
+    the session's sandbox, where the Codex masks hide ``run/`` and ``trust/``, and
+    every gateway tool of that session would fail.
+    """
+
+
+def _is_port_number(value: object) -> TypeGuard[int]:
+    """A TCP port number: an ``int`` in 1..65535. A ``bool`` is not one."""
+    return type(value) is int and 0 < value < 65536
+
+
+def _binds_from_environment() -> bool:
+    """Whether a control-plane backend with no owner port binds from the environment.
+
+    True on an unowned daemon, which accepts no announce, and on an owned daemon
+    that cannot verify one (``gatewayd._OWNER_PORT_UNVERIFIABLE``). That flag is
+    set at start on a platform with no peer-pid mechanism
+    (``socketsec.PEER_IDENTITY_SUPPORTED`` is False), and also by the first
+    ``owner-port`` frame whose sender pid cannot be read, on any platform. Both
+    bind as before the
+    announce existed, with the environment the resolver built left unchanged. The
+    gateway's per-port credential check still fails a wrong port closed.
+    """
+    return facade._OWNER_PID <= 0 or facade._OWNER_PORT_UNVERIFIABLE
+
+
+def _owner_port_pending(server_name: str) -> bool:
+    """Whether a pooled *server_name* backend has to wait for the owner's port.
+
+    True for Kiro Crew's own control-plane servers while an owned daemon has no
+    port yet and has not switched to environment binding: the backends
+    :func:`bind_control_plane_to_owner` would refuse.
+    """
+    return (
+        server_name in CONTROL_PLANE_BACKENDS
+        and facade._OWNER_PORT <= 0
+        and not _binds_from_environment()
+    )
+
+
+def _owner_label() -> str:
+    """Who is expected to announce the port, for log and refusal text on an owned daemon."""
+    return f"owner pid {facade._OWNER_PID}"
+
+
+def bound_to_owner_port(backend: "Backend") -> bool:
+    """Whether *backend* may serve a frame under the current owner port.
+
+    True for every backend but a Kiro Crew control-plane one spawned for a port
+    other than :data:`~kiro_crew.mcp_gateway.gatewayd._OWNER_PORT`. The owner
+    announces a new port when its listener moves (an in-app restart under
+    ``--port auto`` keeps the daemon), and a backend bound to the old one dials
+    a closed listener. ``control._apply_owner_port`` retires those through
+    :meth:`~kiro_crew.mcp_gateway.pool.BackendPool.drain_matching_to_bluegreen`,
+    and the acquire path passes this check to ``get_or_create`` so a spawn that
+    was bound before the change and lands after it is not handed out either. The
+    acquire path also checks a private spawn with it, and the connection handler
+    checks the backend it holds before each forward. A backend bound from the
+    daemon's environment records owner port 0, so it passes while the port is 0
+    and fails once a verified announce sets one.
+    """
+    return (
+        backend.pool_key.server_name not in CONTROL_PLANE_BACKENDS
+        or backend.owner_port == facade._OWNER_PORT
+    )
+
+
+def _note_owner_port_unknown(server_name: str, message: str, *args: object) -> None:
+    """Log at WARNING the first time per server, and at DEBUG after that.
+
+    The first wait is what an operator needs to see. A line on every acquisition
+    would bury the gateway log, and each refusal is audited per connection
+    anyway (``_audit_pool_rejected``).
+    """
+    first = server_name not in _OWNER_PORT_DECLINES_WARNED
+    _OWNER_PORT_DECLINES_WARNED.add(server_name)
+    (logger.warning if first else logger.debug)(message, *args)
+
+
+def bind_control_plane_to_owner(env: dict[str, str], server_name: str = "") -> int:
+    """Point a pooled control-plane backend at the gateway that owns this daemon.
+
+    A control-plane backend (``kirocrew-core``, ``kirocrew-dashboard``, ...) reads
+    the session's tool policy and posts back to the gateway on the port
+    :func:`kiro_crew.port_resolution.resolve_client_port_src` resolves, using the
+    credential published for that port. The port therefore decides which
+    INSTANCE the backend authenticates against.
+
+    The daemon's own environment cannot be trusted to name that instance. The
+    gateway starts this daemon during boot, BEFORE its dashboard binds and
+    exports ``KIROCREW_BOUND_PORT`` (``service_boot`` runs ``_init_mcp_gateway``
+    ahead of ``_init_dashboard``), so the daemon never inherits the bound port.
+    It does inherit any ``KIROCREW_PORT`` the gateway's own shell carried, which
+    the client chain reads first. A gateway launched from another gateway's agent
+    shell then hands every pooled backend THAT gateway's port: the backend dials
+    it with this home's credential, and every call fails ``internal_auth_mismatch``
+    when the other gateway is up, or the policy read fails ``resolution_failed``
+    (``URLError``) when it is not.
+
+    Neither port variable in that environment is evidence. ``KIROCREW_PORT`` may
+    be the other gateway's, and so may ``KIROCREW_BOUND_PORT``: an agent shell of
+    gateway A carries A's export, a gateway started from it inherits it, and that
+    gateway's daemon is spawned before its own export replaces it.
+
+    The port comes from the gateway instead. Once its listener is bound, the
+    gateway that owns this daemon, or that owner's exec successor, sends it the
+    port over the control socket (the ``owner-port`` frame,
+    ``control._apply_owner_port``), and
+    a daemon it respawns after the bind gets it on argv (``--owner-port``). The
+    daemon keeps it as ``gatewayd._OWNER_PORT``. With it the backend's
+    ``KIROCREW_BOUND_PORT`` is SET to that port, whatever was inherited, and an
+    inherited ``KIROCREW_PORT`` naming any other port is dropped: the same
+    correction the ACP launcher applies to its own children.
+
+    An owned daemon whose host reports peer pids guesses nothing before the
+    announce. With no port it raises :class:`OwnerPortUnproven`, whatever the
+    environment carries: an inherited port may be another instance's, and with
+    none the client chain still picks one (a lone live marker, else the default
+    port) that may be a sibling gateway on this data home. A backend spawned on
+    that guess would stay pinned to it for its whole life.
+
+    Two daemons have no port that they can verify, and they bind from the
+    environment as before the announce existed. An unowned daemon refuses every
+    announce and ignores ``--owner-port``: with no owner, no sender can prove the
+    port is its own. An owned daemon that cannot read a sender's pid cannot check
+    the sender (``gatewayd._OWNER_PORT_UNVERIFIABLE``). That flag is set at start
+    on a platform with no peer-pid mechanism, and by the first frame whose pid
+    cannot be read on any platform. For both, *env* stays
+    exactly as the resolver built it, which is main's binding, and the bound port
+    is 0. Nothing is dropped: the environment branch is reached only while no
+    owner port is known, so an inherited ``KIROCREW_BOUND_PORT`` is never known to
+    be this gateway's export and cannot prove an inherited ``KIROCREW_PORT``
+    foreign. A verified port, once one is set, always wins over the second case. The
+    credential each call sends is still read per port and the gateway still
+    verifies it, so a wrong port can only fail closed.
+
+    Mutates *env* when an owner port is known, and returns the port it bound, 0
+    for an environment binding.
+    """
+    from kiro_crew.port_resolution import drop_foreign_inherited_port
+
+    port = facade._OWNER_PORT
+    if port <= 0:
+        if _binds_from_environment():
+            _note_owner_port_unknown(
+                server_name,
+                "mcp-gateway: pooled control-plane backend %r is bound from the "
+                "daemon's environment because %s; the gateway's per-port "
+                "credential check still fails a wrong port closed",
+                server_name,
+                (
+                    "the daemon has no owner (it was started without --owner-pid)"
+                    if facade._OWNER_PID <= 0
+                    else "no owner-port announce can be verified: this host reports "
+                    "no peer pid, or a sender's pid could not be read"
+                ),
+            )
+            # Main's binding: *env* stays as the resolver built it. No owner port
+            # is known here, so no inherited bound port is proven to be ours.
+            return 0
+        # No announce yet. ``_acquire_backend`` waits for one before it resolves
+        # a control-plane target (:func:`_await_owner_port`), so this is reached
+        # only by a resolver call that skipped that wait. Refused, never guessed:
+        # see the docstring.
+        raise OwnerPortUnproven(f"{server_name!r}: {_owner_label()} has not announced its port")
+    env["KIROCREW_BOUND_PORT"] = str(port)
+    drop_foreign_inherited_port(env)
+    return port
+
+
+async def _await_owner_port(
+    pool_key: PoolKey,
+    *,
+    admission: Optional[Admission],
+    deadline: Optional[float],
+    on_queued: Optional[OnQueued],
+    keepalive_secs: float = QUEUED_KEEPALIVE_SECS,
+) -> None:
+    """Hold a pooled control-plane acquisition until the owner announces its port.
+
+    Returns at once for every other acquisition (:func:`_owner_port_pending`).
+    The daemon starts before its owner's listener binds, so a stub that connects
+    in that window waits here, on the loop, before the off-loop target
+    resolution: no resolver thread is held. The wait follows the spawn gate's
+    rules. *deadline* is the same monotonic deadline the gate gets (the stub's
+    negotiated budget, less the refusal margin), ``None`` waits without a bound,
+    and *on_queued* sends a ``queued`` keepalive every *keepalive_secs* (the
+    gate's :data:`~kiro_crew.mcp_gateway.admission.QUEUED_KEEPALIVE_SECS`), which
+    renews a queue-aware stub's silence timer. ``position`` 0 in that frame means "not
+    in the gate yet".
+
+    An unowned daemon never waits: it refuses every announce and binds from its
+    environment (:func:`bind_control_plane_to_owner`). An owned daemon on a
+    platform whose socket layer reports no peer pid
+    (``socketsec.PEER_IDENTITY_SUPPORTED`` is False) never waits either.
+    ``run_gatewayd`` sets ``gatewayd._OWNER_PORT_UNVERIFIABLE`` before anything
+    can connect, and the acquisition binds from the environment too. On any
+    other platform the wait also ends when the first ``owner-port`` frame whose
+    sender pid cannot be read sets that flag, and the acquisition then binds
+    from the environment.
+
+    Raises :class:`OwnerPortUnproven` when the deadline passes first. That is a
+    ``capacity`` refusal, so the stub answers its session with a typed error and
+    does not exec the server itself. The wait, and not the refusal, is what a
+    normal boot meets: a stub serves that error for the rest of its life.
+    """
+    server_name = pool_key.server_name
+    if not _owner_port_pending(server_name):
+        return
+    _note_owner_port_unknown(
+        server_name,
+        "mcp-gateway: pooled control-plane backend %r waits for %s to announce the "
+        "port it serves; a stub whose wait budget runs out first is refused with "
+        "class capacity",
+        server_name,
+        _owner_label(),
+    )
+    event = facade._owner_port_event()
+    started = time.monotonic()
+    while _owner_port_pending(server_name):
+        now = time.monotonic()
+        remaining = None if deadline is None else deadline - now
+        if remaining is not None and remaining <= 0:
+            raise OwnerPortUnproven(
+                f"{server_name!r}: {_owner_label()} announced no port "
+                f"within {now - started:.0f}s"
+            )
+        tick = keepalive_secs if remaining is None else min(keepalive_secs, remaining)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=tick)
+        except asyncio.TimeoutError:
+            # No keepalive on the tick that spent the budget: the refusal is next.
+            spent = deadline is not None and time.monotonic() >= deadline
+            if on_queued is not None and not spent and _owner_port_pending(server_name):
+                await on_queued(
+                    QueuePosition(
+                        position=0,
+                        capacity=admission.gate.capacity if admission is not None else 0,
+                        in_flight=admission.gate.in_flight if admission is not None else 0,
+                        waited_secs=time.monotonic() - started,
+                    )
+                )
+
+
+def _backend_work_dir() -> Optional[str]:
+    """The directory every resolved backend runs in, or ``None`` when it cannot be named.
+
+    It is the gateway's own default work dir, ``workspace_root()/_default``: the
+    one ``--work-dir`` the rewriter writes into every stub it generates. The
+    daemon names it itself rather than reading it from the PoolKey, because
+    ``PoolKey.work_dir`` comes from a stub's register frame, and any same-user
+    process on the socket can send a frame. The launch approval covers command,
+    arguments and env only, so a cwd taken from the frame would let a caller run
+    an approved launch from a directory it chose, and an interpreter that loads
+    code from its cwd would run that caller's code.
+
+    One resolution, :func:`backend._default_work_dir`, shared with
+    :func:`backend._restore_default_work_dir`, so the directory the daemon spawns
+    in is the one it is willing to recreate. It is the directory the gateway
+    pinned in this process's env at spawn (``manager.BACKEND_WORK_DIR_ENV``), the
+    one its rewrite wrote into every stub. When it cannot be named,
+    :func:`env_target_resolver` falls back to the frame's directory, as before.
+    """
+    default = _backend._default_work_dir()
+    return None if default is None else str(default)
+
+
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
     """Look up ``KIROCREW_MCP_TARGET_<SERVER>`` in the process env and return the
     spawn tuple, or ``None`` if no mapping is set.
@@ -513,7 +818,24 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
             pool_key.server_name,
         )
         return None
+    # The cwd is the daemon's own when it can be named: see
+    # ``_backend_work_dir``. A frame naming another directory still gets its
+    # backend, in the gateway's directory, and the mismatch is logged because no
+    # stub the rewriter wrote sends one. When the gateway's directory cannot be
+    # named, the spawn goes ahead in the frame's directory, as before.
+    work_dir = _backend_work_dir()
+    if work_dir is None:
+        work_dir = pool_key.work_dir
+    elif os.path.normcase(pool_key.work_dir) != os.path.normcase(work_dir):
+        logger.warning(
+            "mcp-gateway: %r registered work dir %r; spawning in %r instead",
+            pool_key.server_name,
+            pool_key.work_dir,
+            work_dir,
+        )
     env = _scrub_sensitive_env(dict(os.environ))
+    # The daemon's own setting; the backend gets the directory as its cwd instead.
+    env.pop(BACKEND_WORK_DIR_ENV, None)
     # A reserved control plane receives the session token only after every
     # launcher-injection namespace is gone. Third-party backends never receive
     # that token and keep settings outside the four Python interpreter roots
@@ -522,6 +844,10 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
         for key in tuple(env):
             if any(key.upper().startswith(prefix) for prefix in _SPEC_ENV_DENIED_PREFIXES):
                 env.pop(key, None)
+        # On an owned daemon with no port yet, raises OwnerPortUnproven (a
+        # capacity refusal) rather than returning None: None is the "no target"
+        # answer, and that one tells the stub to exec the server itself.
+        bind_control_plane_to_owner(env, pool_key.server_name)
     else:
         env = without_python_env(env)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from
@@ -531,7 +857,7 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # wrong — it would tell the server it belongs to whichever channel happened
     # to spawn it first. The channel is delivered PER CALL instead, in
     # _meta.kirocrew.caller (see _inject_caller_meta).
-    return command, args, env, pool_key.work_dir
+    return command, args, env, work_dir
 
 
 def _resolve_once_home() -> str:
@@ -578,6 +904,81 @@ def resolve_once_resolver(inner: TargetResolver) -> TargetResolver:
             os.path.basename(command),
         )
         return resolved_command, resolved_args, env, work_dir
+
+    return _resolver
+
+
+def agent_socket_resolver(inner: TargetResolver, socket_path: str) -> TargetResolver:
+    """Wrap *inner* so a backend the operator named gets the gateway's agent socket.
+
+    *socket_path* is the ``SSH_AUTH_SOCK`` the supervising gateway was started
+    with. It is added to a COPY of the env *inner* returned -- after the scrub
+    there -- only when every check below holds, and each is made again on every
+    resolve:
+
+    * *inner* resolved a launch: an unapproved launch is ``None`` and stays so,
+      so this can never widen what may spawn;
+    * the exact server name is in ``ssh_auth_sock_consent.json``
+      (``mcp_gateway_backends``), read now, so a removed name stops at once;
+    * the name is not a control-plane backend under any spelling gatewayd
+      resolves to one;
+    * ``agent_socket.agent_socket_refusal`` finds nothing wrong with the path.
+
+    It covers every launch of the server, pooled or connection-private. gatewayd
+    resolves and approves a launch by the name's normalized form (``my-server``
+    and ``my_server`` are one), so a grant reaches every launch the operator
+    approved under that form. Anything else passes the target through
+    untouched. Each change in the decision for a server is logged and audited
+    once; it applies to every launch of that server from then on.
+    """
+    control_plane_stems = {launch_approval.target_stem(n) for n in CONTROL_PLANE_BACKENDS}
+    last_decision: dict[str, tuple[str, str]] = {}
+    decision_lock = threading.Lock()
+
+    def _decided(server_name: str, outcome: str, reason: str = "") -> None:
+        # Recorded under the lock so the audit trail's order is the decisions' order.
+        with decision_lock:
+            if last_decision.get(server_name) == (outcome, reason):
+                return
+            last_decision[server_name] = (outcome, reason)
+            if outcome == "allowed":
+                logger.info(
+                    "mcp-gateway: launches of %r get the gateway's ssh-agent socket", server_name
+                )
+            else:
+                logger.warning(
+                    "mcp-gateway: launches of %r get no ssh-agent socket: %s", server_name, reason
+                )
+            facade._audit_agent_socket_decision(server_name, outcome, reason)
+
+    def _resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
+        target = inner(pool_key)
+        if target is None:
+            return None
+        name = pool_key.server_name
+        try:
+            granted = name in ssh_auth_sock_consent.mcp_gateway_backends_granted()
+        except Exception:
+            logger.debug("ssh-agent backend grant unreadable; offering no socket", exc_info=True)
+            granted = False
+        if not granted:
+            if last_decision.get(name, ("", ""))[0] == "allowed":
+                _decided(name, "denied", "no longer named in the operator's consent")
+            return target
+        if launch_approval.target_stem(name) in control_plane_stems:
+            _decided(name, "denied", "a control-plane backend never receives it")
+            return target
+        try:
+            refusal = agent_socket.agent_socket_refusal(socket_path)
+        except Exception:
+            logger.debug("agent socket check failed", exc_info=True)
+            refusal = "the socket could not be checked"
+        if refusal is not None:
+            _decided(name, "denied", refusal)
+            return target
+        _decided(name, "allowed")
+        command, args, env, work_dir = target
+        return command, args, {**env, "SSH_AUTH_SOCK": socket_path}, work_dir
 
     return _resolver
 

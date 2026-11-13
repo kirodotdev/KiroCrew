@@ -197,7 +197,9 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
               <RefreshCw size={12} className={flow.pending ? 'animate-spin' : ''} />
               {flow.progress
                 ? i18nT('apps.issueRadar.welcomeCarousel.connecting_n_of_total', { n: flow.progress.done + 1, total: flow.progress.total })
-                : targetCount > 1 ? `Connect ${targetCount}` : 'Connect'}
+                : targetCount > 1
+                  ? i18nT('apps.issueRadar.welcomeCarousel.connect_count', { count: targetCount })
+                  : i18nT('apps.issueRadar.welcomeCarousel.connect')}
             </button>
           )}
           {isConnectSlide && !flow.provider && <div className="min-w-[84px]" />}

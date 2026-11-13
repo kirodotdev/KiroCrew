@@ -111,6 +111,8 @@ from kiro_crew.vector_memory_lifecycle import (  # noqa: F401
     _migrate_v2,
 )
 from kiro_crew.vector_memory_member import (  # noqa: F401
+    _member_consolidation_confidence,
+    _member_consolidation_metadata,
     _member_identity,
     _member_store,
     consolidation_source_digest,
@@ -132,7 +134,11 @@ from kiro_crew.vector_memory_runtime import migration as _migration
 from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
+from kiro_crew.vector_memory_runtime import (  # noqa: F401
+    semantic_scoring_patch as _semantic_scoring_patch,
+)
 from kiro_crew.vector_memory_runtime import store_bookkeeping as _store_bookkeeping
+from kiro_crew.vector_memory_runtime import term_index as _term_index  # noqa: F401
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
     _EmbeddingVector,
     _RecallQuery,
@@ -241,9 +247,11 @@ _FAISS_FILE = "memory.faiss"
 _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.ALLOWLIST,
     SemanticRejectCode.CONFIDENCE,
+    SemanticRejectCode.CONSOLIDATION_VALUE_SIZE,
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
     SemanticRejectCode.VALUE_EMPTY,
+    SemanticRejectCode.WORK_STATE,
 }
 
 _SECURITY_REJECT_CODES = {
@@ -288,7 +296,58 @@ _EPISODIC_SCORING_MAX_BYTES = 64 * 1024 * 1024
 # its resident snapshot is bounded independently. Above this ceiling retrieval
 # preserves the existing per-call SQLite read rather than retaining unbounded
 # user data in the gateway process.
+#
+# This is the FLOOR of the scaled cap below, not a fixed cap. The per-call scan
+# the overflow path falls back to re-stems the whole population in pure Python on
+# every recall, holding the GIL that every turn's context build needs, so on a
+# large store that fallback serializes turn builds against each other and against
+# consolidation writes. A large store holds the resident set and keeps the term
+# index instead — but only on a host with the memory to spare, so the effective
+# cap scales with available memory (``_semantic_scoring_max_bytes``).
 _SEMANTIC_SCORING_MAX_BYTES = 64 * 1024 * 1024
+# How far above the floor the scaled cap may reach. The hard ceiling is
+# ``_SEMANTIC_SCORING_CEILING_MULTIPLE * _SEMANTIC_SCORING_MAX_BYTES``, computed
+# from the floor at call time so it tracks the floor rather than being a second
+# fixed number that could drift from it: 16 x 64 MiB = 1 GiB. A store's resident
+# scoring set is bounded user data (keys + values + embeddings); past ~1 GiB the
+# memory spent to avoid the per-call scan is not a good trade even on a large
+# host, and an unbounded cap lets one store's set dominate the gateway's RSS.
+# 1 GiB holds a large store (a 54k-row 1024-d store's ~266 MB set) with headroom.
+_SEMANTIC_SCORING_CEILING_MULTIPLE = 16
+# Fraction of currently-available memory the resident semantic scoring set may
+# occupy. 1/16 keeps the set a small slice of free memory: a ~266 MB set is
+# admitted once a host has ~4.3 GB free, and the 1 GiB ceiling is reached at
+# ~16 GB free. A small host keeps the 64 MiB floor and never loads a resident
+# set it cannot hold.
+_SEMANTIC_SCORING_AVAIL_FRACTION = 1 / 16
+
+
+def _semantic_scoring_max_bytes() -> int:
+    """Memory-scaled ceiling on the resident semantic scoring set, in bytes.
+
+    ``clamp(floor, fraction * available, CEILING_MULTIPLE * floor)``, where the
+    floor is ``_SEMANTIC_SCORING_MAX_BYTES`` read at call time (so pinning that
+    constant moves both the floor and the derived ceiling). The probe is the same
+    cgroup-clamped available-memory reader the dynamic sub-agent cap uses, so a
+    container's limit binds. FAIL SAFE: when available memory cannot be read
+    (probe returns <= 0, or raises), the 64 MiB floor is kept, so a host whose
+    memory is unmeasurable never loads a resident set larger than the floor.
+    """
+    floor = _SEMANTIC_SCORING_MAX_BYTES
+    ceiling = _SEMANTIC_SCORING_CEILING_MULTIPLE * floor
+    try:
+        from kiro_crew.subagent import _available_memory_gb
+
+        available_gb = _available_memory_gb()
+    except Exception:  # pragma: no cover - defensive; the probe must never raise here
+        return floor
+    if available_gb <= 0:  # unreadable probe -> fail safe to the floor
+        return floor
+    available_bytes = available_gb * 1024 * 1024 * 1024
+    scaled = int(available_bytes * _SEMANTIC_SCORING_AVAIL_FRACTION)
+    return max(floor, min(scaled, ceiling))
+
+
 # Conservative ceiling on bound parameters in one statement. sqlite's own limit is
 # 32,766 on the bundled build but only 999 on hosts still on a pre-3.32 library,
 # and there is no cheap way to read it on every supported runtime, so batched id
@@ -531,6 +590,8 @@ class VectorMemoryStore:
         self._episodic_max = episodic_max
         self._episodic_limit = episodic_limit
         self._embedding_dim = embedding_dim
+        self._session_affinity: float = 0.0
+        self._recency_boost: float = 0.0
         # Per-tag episodic recency decay (memory.decay_rates). Sanitized once
         # here — clamped, non-numeric entries warned about and dropped — so the
         # per-row resolver (_decay_rate_for) only ever sees clean floats. The
@@ -544,6 +605,8 @@ class VectorMemoryStore:
         if extra_prefixes:
             self._prefixes.extend(extra_prefixes)
         self._db: sqlite3.Connection | None = None
+        # Whether _db's own close is kept from deleting the -wal (sqlite_wal.keep_wal_on_close).
+        self._wal_kept_on_close = False
         # POSIX permits replacing an open SQLite file. Private V2 stores hold a
         # shared lock outside the swappable store directory for the full
         # connection lifetime so startup restore can refuse rather than move a
@@ -608,6 +671,10 @@ class VectorMemoryStore:
         # in-process generation and cross-process SQLite version remain current.
         self._semantic_scoring: _SemanticScoringSet | None = None
         self._semantic_scoring_generation = 0
+        # One rebuild of the resident set at a time; taken before ``_db_lock``, never inside it.
+        self._semantic_scoring_build_lock = threading.Lock()
+        # Keys patched into the resident set while their transaction was still open.
+        self._semantic_scoring_pending: set[str] = set()
         self._semantic_scoring_supported = True
         self._semantic_scoring_refused: tuple[int, int] | None = None
         # Promotion keys already refused: the refusal is deterministic, so warn once per store
@@ -706,6 +773,7 @@ class VectorMemoryStore:
     # ── bound from vector_memory_runtime/lesson_write.py ──
     write_lesson = _lesson_write.write_lesson
     embed_lesson = _lesson_write.embed_lesson
+    update_lesson_applies = _lesson_write.update_lesson_applies
 
     # ── bound from vector_memory_runtime/bulk_ingest.py ──
     migrate_from_markdown = _bulk_ingest.migrate_from_markdown
@@ -778,6 +846,9 @@ class VectorMemoryStore:
         # The resident episodic scoring set carries the decay rates it was built
         # with, so a rate change makes it stale even though no row moved.
         self._invalidate_episodic_scoring()
+        # Opt-in session affinity and recency boost for V2 episodic ranking.
+        self._session_affinity = float(getattr(memory_cfg, "session_affinity", 0.0))
+        self._recency_boost = float(getattr(memory_cfg, "recency_boost", 0.0))
 
     def _bind_lineage(self, lineage: str) -> None:
         """Set the lineage and every statement fragment derived from it.
@@ -1103,10 +1174,25 @@ class VectorMemoryStore:
         return _semantic.get_preferences_context(self, query_text, cap)
 
     def get_semantic_context(
-        self, query_text: str = "", cap: int = 1500, *, facts_only: bool = False
+        self,
+        query_text: str = "",
+        cap: int = 1500,
+        *,
+        facts_only: bool = False,
+        relevance_rule: str = "off",
     ) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval."""
-        return _semantic.get_semantic_context(self, query_text, cap, facts_only=facts_only)
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        args: dict[str, object] = {"query_text": query_text, "cap": cap, "facts_only": facts_only}
+        if relevance_rule != "off":
+            args["relevance_rule"] = relevance_rule
+        pooled = _recall_pool.offload(self, "semantic", args)
+        if pooled is not None:
+            return pooled
+        return _semantic.get_semantic_context(
+            self, query_text, cap, facts_only=facts_only, relevance_rule=relevance_rule
+        )
 
     def _semantic_candidates_v2(
         self, query_text: str, *, recall_query: _RecallQuery | None = None
@@ -1158,6 +1244,9 @@ class VectorMemoryStore:
         relevance_filter: bool = False,
         *,
         recall_query: _RecallQuery | None = None,
+        conversation_id: str = "",
+        session_affinity: float = 0.0,
+        recency_boost: float = 0.0,
     ) -> list[dict]:
         """Search episodic memories by vector similarity with decay scoring."""
         return _episodic_search.search_episodic(
@@ -1169,6 +1258,9 @@ class VectorMemoryStore:
             tag_filter,
             relevance_filter,
             recall_query=recall_query,
+            conversation_id=conversation_id,
+            session_affinity=session_affinity,
+            recency_boost=recency_boost,
         )
 
     def _search_episodic_v2(
@@ -1179,10 +1271,22 @@ class VectorMemoryStore:
         mmr: bool,
         tag_filter: list[str] | None,
         relevance_filter: bool,
+        conversation_id: str = "",
+        session_affinity: float = 0.0,
+        recency_boost: float = 0.0,
     ) -> list[dict]:
         """Fuse both evidence sources before admission and the result budget."""
         return _episodic_search.search_episodic_v2(
-            self, query_embedding, query_text, limit, mmr, tag_filter, relevance_filter
+            self,
+            query_embedding,
+            query_text,
+            limit,
+            mmr,
+            tag_filter,
+            relevance_filter,
+            conversation_id=conversation_id,
+            session_affinity=session_affinity,
+            recency_boost=recency_boost,
         )
 
     def _sqlite_vector_search(
@@ -1242,6 +1346,19 @@ class VectorMemoryStore:
         cap: int = 3000,
     ) -> str:
         """Format episodic search results for prompt injection."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self,
+            "episodic",
+            {
+                "query_embedding": None if query_embedding is None else list(query_embedding),
+                "query_text": query_text,
+                "cap": cap,
+            },
+        )
+        if pooled is not None:
+            return pooled
         return _episodic_search.get_episodic_context(self, query_embedding, query_text, cap)
 
     # ── Facets: reading a carve back out ──
@@ -1344,8 +1461,31 @@ class VectorMemoryStore:
         hard_cap: int = 0,
         directive_budget: int = 0,
         experience_budget: int = 0,
+        authority_order: str = "off",
+        lesson_fold: str = "off",
+        relevance_rule: str = "off",
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        if _recall_pool.pool_enabled():
+            job_args = _recall_pool.lessons_args(
+                self,
+                query_text,
+                cap,
+                project_dir,
+                recall_query,
+                background,
+                hard_cap,
+                directive_budget,
+                experience_budget,
+                authority_order,
+                lesson_fold,
+                relevance_rule,
+            )
+            pooled = _recall_pool.offload(self, "lessons", job_args)
+            if pooled is not None:
+                return pooled
         return _lessons.get_lessons_context(
             self,
             query_text,
@@ -1356,6 +1496,9 @@ class VectorMemoryStore:
             hard_cap=hard_cap,
             directive_budget=directive_budget,
             experience_budget=experience_budget,
+            authority_order=authority_order,
+            lesson_fold=lesson_fold,
+            relevance_rule=relevance_rule,
         )
 
     def turn_lessons(
@@ -1393,9 +1536,11 @@ class VectorMemoryStore:
         """Order *entries* by hybrid relevance to *query_text*, most relevant first."""
         return _lessons.rank_lessons(self, entries, query_text, recall_query=recall_query)
 
-    def _any_lesson_overlap(self, entries: list[tuple[dict, str]], query_text: str) -> bool:
+    def _any_lesson_overlap(
+        self, entries: list[tuple[dict, str]], query_text: str, *, significant: bool = False
+    ) -> bool:
         """Whether ANY entry shares a stemmed word with *query_text*."""
-        return _lessons.any_lesson_overlap(self, entries, query_text)
+        return _lessons.any_lesson_overlap(self, entries, query_text, significant=significant)
 
     @staticmethod
     def _stored_similarity_scorer(
@@ -1638,9 +1783,19 @@ class VectorMemoryStore:
         cap: int = 3000,
         project_dir: str | Path | None = None,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
+        conversation_id: str = "",
     ) -> dict:
         """Compute once; discard mixed-space results and retry keyword-only once."""
-        return _recall.recall(self, query_text, cap=cap, project_dir=project_dir, keep=keep)
+        return _recall.recall(
+            self,
+            query_text,
+            cap=cap,
+            project_dir=project_dir,
+            keep=keep,
+            conversation_id=conversation_id,
+            session_affinity=self._session_affinity,
+            recency_boost=self._recency_boost,
+        )
 
     def _recall_once(
         self,
@@ -1650,8 +1805,19 @@ class VectorMemoryStore:
         project_dir: str | Path | None,
         query: _RecallQuery,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
+        conversation_id: str = "",
+        session_affinity: float = 0.0,
+        recency_boost: float = 0.0,
     ) -> dict:
         """Bounded on-demand member context with the evidence actually selected."""
         return _recall.recall_once(
-            self, query_text, cap=cap, project_dir=project_dir, query=query, keep=keep
+            self,
+            query_text,
+            cap=cap,
+            project_dir=project_dir,
+            query=query,
+            keep=keep,
+            conversation_id=conversation_id,
+            session_affinity=session_affinity,
+            recency_boost=recency_boost,
         )

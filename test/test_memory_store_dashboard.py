@@ -1,38 +1,19 @@
 """Store-scoped memory editing over HTTP: the gate, the fall-through, the boundary.
 
-``?store=`` lets one dashboard request address a memory store the caller was never
-bound to. That is a genuinely new reach, and four separate things have to hold for
-it to be safe. This module pins each one at the surface a browser and an agent
-actually reach, because three of the four fail in the PERMISSIVE direction and none
-of them is visible in a successful response body:
+``?store=`` reaches a store the caller was never bound to. Four rules, most failing
+PERMISSIVELY with a clean response body:
 
-* **The parameter's PRESENCE is the gate.** A request carrying it is asking the
-  operator's question, so it takes ``require_owner_dashboard_request``. Gating on
-  presence rather than on "the name differs from my binding" is what keeps
-  ``?store=default`` -- the operator's own global memory -- from being waved through
-  for an unbound caller.
-* **The gate excludes an agent because an agent has no identity to present.** That
-  is a CROSS-MODULE property: ``token_auth_middleware`` publishes ``request["user"]``
-  on its cookie/query-token path and NEVER on its ``X-Internal-Secret`` branch, so
-  ``is_owner_dashboard_request`` answers False for kiro-cli, the MCP servers and
-  subagents. :class:`TestTheGateExcludesAnAgentBecauseItHasNoIdentity` pins it
-  directly: if an identity is ever published on that branch, the whole parameter
-  opens to every agent and nothing else in the tree would report it.
-* **An undeclared name REFUSES rather than degrades.** ``resolve_store_path``
-  deliberately degrades an unknown name onto the default store, which here would
-  render the operator's own memory under a label no store carries -- and the request
-  would look like it worked. So the 404 assertions also assert that the default
-  store's own contents are absent from the refusal.
-* **A store's writes never reach another store.** The isolation is the file
-  boundary, so every store path in this module is composed by production's own
-  resolvers rather than by a mapping the test invented.
+* The parameter's PRESENCE is the gate (``require_owner_dashboard_request``), so
+  ``?store=default`` is gated too.
+* An agent is excluded because ``token_auth_middleware``'s ``X-Internal-Secret`` branch
+  publishes no ``request["user"]``.
+* An undeclared name REFUSES with 404; ``resolve_store_path`` alone would degrade it
+  onto the default store.
+* A store's writes never reach another store; paths come from production's resolvers.
 
-Two operational notes. Every test pins ``KIROCREW_HOME`` under its own ``tmp_path``
-before anything resolves a path, and :class:`_Env` asserts that pin held -- this
-file plants a deliberately corrupt database and drives a restore, and both are
-harmless only because the home is a scratch directory. Nothing here calls
-``monkeypatch.undo()``: it reverts the whole fixture stack including that pin, which
-is how a corrupt-file write once landed on a real 36 MB store.
+Every test pins ``KIROCREW_HOME`` under ``tmp_path`` (asserted by :class:`_Env`), since
+this file plants a corrupt database and drives a restore. Never call
+``monkeypatch.undo()``: it reverts that pin too.
 """
 
 from __future__ import annotations
@@ -195,14 +176,9 @@ class _Env:
     async def _ensure_store(self, store: str) -> VectorMemoryStore | None:
         """Stand in for ``ContextBuilder.ensure_store``, over the store's REAL file.
 
-        The name -> file mapping is production's ``owned_store_path``, not a dict
-        this module invented: the isolation under test IS the file boundary, so a
-        stub that mapped two names to two objects of its own would prove only that
-        its own mapping has two entries. The real builder is bypassed because it
-        publishes into a process-global cache and pulls in the embedding stack.
-
-        This is also the one place ``unavailable`` is honoured, so a test can make a
-        silo's tier refuse to stand up without losing the ability to seed its file.
+        Paths come from production's ``owned_store_path``: the isolation under test IS
+        the file boundary. The real builder uses a process-global cache. ``unavailable``
+        is honoured only here, so a silo can refuse to stand up yet still be seeded.
         """
         if store in self.unavailable:
             return None
@@ -236,11 +212,8 @@ class _Env:
     ) -> Path:
         """Write into *store*'s vector file, then CLOSE it.
 
-        For the global store, and for the routes that resolve a store's PATH without
-        opening it (the store list, the backup and restore pair). Closing matters
-        twice: the store list's probe opens read-only, which cannot create the
-        ``-shm`` sibling a WAL database needs, and the restore's rename of an open
-        file fails on Windows.
+        Closing matters: the store list's read-only probe cannot create the WAL ``-shm``
+        sibling, and the restore's rename of an open file fails on Windows.
         """
         path = resolve_store_path(store)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,11 +305,8 @@ def _request(
 ) -> web.Request:
     """A request in one of exactly two authenticated shapes.
 
-    Without *owner* the request carries NO ``user`` and NO ``app`` claim, which is
-    precisely what ``token_auth_middleware``'s ``X-Internal-Secret`` branch leaves
-    behind -- so the default shape drives the agent case rather than a synthetic
-    one. With it, the two claims the cookie path publishes: an identity plus an
-    EMPTY app claim, since a present non-empty one is an app token.
+    Without *owner*: no ``user`` and no ``app`` claim, as the ``X-Internal-Secret``
+    branch leaves it (the agent case). With it: an identity plus an EMPTY app claim.
     """
     app = web.Application()
     app["state"] = state
@@ -468,14 +438,9 @@ class TestNamingAStoreTakesTheOwnerGate:
 class TestTheGateExcludesAnAgentBecauseItHasNoIdentity:
     """``X-Internal-Secret`` grants access and publishes NO ``request["user"]``.
 
-    This is the most important test in the file, and it is the one whose subject
-    lives in another module. ``require_owner_dashboard_request`` excludes an agent
-    POSITIVELY -- it requires an identity the agent has none of -- rather than by
-    asking "is this not an agent". That only holds while
-    ``token_auth_middleware``'s internal-secret branch keeps handing the request
-    straight to the handler without naming a caller. If an identity is ever
-    published there, every agent gains ``?store=`` and nothing else in the tree
-    reports it, so the branch is driven here directly.
+    ``require_owner_dashboard_request`` excludes an agent only by requiring an identity.
+    If that branch ever published one, every agent would gain ``?store=``, so the branch
+    is driven here directly.
     """
 
     SECRET = "test-internal-secret"
@@ -602,19 +567,9 @@ class TestTheGateExcludesAnAgentBecauseItHasNoIdentity:
 class TestAnAbsentParameterDoesNotFollowTheSessionKeyHeader:
     """No ``?store=`` => the GLOBAL store, and ``X-Session-Key`` cannot redirect it.
 
-    This class pins an authorization boundary, not a convenience. ``_read_session_key``
-    reads ``X-Session-Key`` on the CALLER'S WORD -- it is unverified on TCP -- and
-    ``store_of_session`` then reads whatever store that session recorded, with no check
-    that the session belongs to the caller. So if an absent parameter resolved the
-    binding, any holder of a non-owner dashboard token (an allowlisted Slack user who
-    ran ``!dashboard``, or an app token scoped to the path) could read and write a
-    crew's silo just by naming a session key bound to it, and the owner gate would
-    never run, because the gate fires only on a PRESENT parameter.
-
-    Every one of these routes served the global store unconditionally before store
-    scoping existed, so answering the global store here is also what keeps the
-    operator's own memory exactly where it was. Facet pages and counts follow the
-    same rule: a session header carries no authority to choose a silo.
+    An authorization boundary: ``X-Session-Key`` is unverified on TCP, and the owner
+    gate fires only on a PRESENT parameter. Following the header would let any
+    non-owner token holder read and write a crew's silo. Facet pages and counts too.
     """
 
     @pytest.mark.asyncio
@@ -733,10 +688,7 @@ class TestAnUndeclaredStoreIsRefusedNotDegraded:
     """404 ``unknown_memory_store``, with the default store's contents ABSENT.
 
     ``resolve_store_path`` degrades an unknown name onto the default store, so the
-    failure this guards against is not an exception -- it is a 200 carrying the
-    operator's own memory under a label no store carries. Each assertion therefore
-    pins the status AND the absence of the global store's own content, which is what
-    would appear if the refusal became a degrade.
+    failure would be a 200 with the operator's memory. Status and absence are both pinned.
     """
 
     @pytest.mark.asyncio

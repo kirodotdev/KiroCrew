@@ -82,11 +82,8 @@ class TestANewArchiveIsBoundedBeforeSuccessAndPrune:
     def test_every_archive_reader_applies_the_bound(self):
         """Every path that opens an archive applies the same bound.
 
-        Counting occurrences of the name would count its own ``def`` line, so a
-        threshold of N silently passes with N-1 real callers. Assert instead
-        that each function that opens an archive contains the call: creating a
-        bundle, restoring one, and producing the redacted outbound copy. A new
-        archive reader that skips the bound has to be added here to stay green.
+        Checked per reader, not by counting occurrences: a count includes the ``def``
+        line, so N-1 real callers would pass a threshold of N.
         """
         import inspect
 

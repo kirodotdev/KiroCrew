@@ -82,8 +82,7 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
   const [params, setParams] = useSearchParams()
   const planeStateRef = useRef<PlaneState>({})
 
-  // Read the plane from ?plane= query param, matching the DeveloperPage ?tab=
-  // convention. Fall back to 'sessions' when absent or invalid.
+  // Read the plane from ?plane= query param. Fall back to 'sessions' when absent or invalid.
   const rawPlane = params.get('plane')
   const plane: SystemPlane = rawPlane && VALID_PLANES.has(rawPlane) ? (rawPlane as SystemPlane) : 'sessions'
 

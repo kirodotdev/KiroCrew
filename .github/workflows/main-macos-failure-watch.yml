@@ -41,12 +41,13 @@ name: Main macOS Failure Watch
 #
 # WHY FAILURE *AND* TIMED_OUT, BUT NOT CANCELLED: a run that hit its
 # workflow-level clock is as invisible as a red one. `cancelled` is NOT a
-# failure here: with MERGE_QUEUE_ENABLED unset, `ci.yml` and `build.yml` key
-# their push runs on the ref and a later push evicts the pending one by design.
+# failure here: on every push the merge queue did not land, `ci.yml` and
+# `build.yml` key their push runs on the ref and a later push evicts the
+# pending one by design.
 #
-# WHY ONLY macOS JOBS COUNT: with the queue on, the push path runs nothing else,
-# so any red IS a mac red. With the queue off, the push runs the full matrix and
-# a Linux or Windows red there was already seen (or will be) on the PR and the
+# WHY ONLY macOS JOBS COUNT: on a push the merge queue landed, the push path
+# runs nothing else, so any red IS a mac red. Any other push runs the full
+# matrix, and a Linux or Windows red there was already seen (or will be) on the PR and the
 # merge group. A job counts as a macOS leg by the runner label it asked for
 # (`macos-*`), not by its display name, so a renamed job stays watched.
 #
@@ -111,7 +112,13 @@ concurrency:
 jobs:
   page:
     name: Page the author of a red macOS leg on main
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. Named by its runner
+    # LABEL, not by `group:`: the group belongs to the kirodotdev organization,
+    # so a fork running its own copy cannot reach it and would wait forever for
+    # a runner. The `||` leg keeps a fork on the hosted image. Still a VM with
+    # no checkout and no source execution -- see the step list below.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: >-
       github.event.workflow_run.event == 'push' &&

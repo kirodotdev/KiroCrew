@@ -225,17 +225,9 @@ class TestDictionaryRoutes:
     ):
         """``"\\ud800"`` is legal JSON but has no UTF-8 encoding.
 
-        Sent as raw bytes rather than through ``json=``: the client's own encoder
-        would refuse it, while a real HTTP client puts the escape on the wire and
-        the SERVER's ``json.loads`` is what materializes the surrogate.
-
-        The status was already 400 before the fix — ``UnicodeEncodeError`` is a
-        ``ValueError``, so the write blew up into the handler's own 400 branch and
-        wore a codec message. What that hid is the ordering: ``add_term`` had
-        already replaced the terms on the PROCESS-WIDE dictionary
-        (``domain.session._dictionary``, which every transcript line is corrected
-        against at ``session.py``'s ``_dictionary.correct``) and only then failed to
-        write, leaving live corrections running against a term no file holds.
+        Sent as raw bytes: the client's own encoder would refuse it. A 400 status
+        alone proves nothing; the trap is that the process-wide dictionary
+        (``domain.session._dictionary``) must not change when the file write fails.
         """
         async with client_for(app) as client:
             resp = await client.post(
@@ -451,6 +443,27 @@ class TestAgentRoutes:
             # Only the agent just enabled — the defaults are NOT re-added.
             assert (await resp.json())["agents_enabled"] == ["note-taker"]
 
+    @pytest.mark.asyncio
+    async def test_a_start_without_a_roster_runs_the_one_the_meeting_holds(
+        self, app, root, fake_sessions
+    ):
+        """An absent ``agents_enabled`` keeps the roster the meeting already holds in
+        its metadata, and the kickoff reads it from there. The outputs and the live
+        queues were built from the configured defaults instead, so a restart of a
+        meeting that had every optional agent switched off seeded their output files
+        and sent them transcript."""
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={})
+            first = await client.post(f"{BASE}/meetings/standup/start", json={"agents_enabled": []})
+            assert first.status == 200
+            again = await client.post(f"{BASE}/meetings/standup/start", json={"restart": True})
+            assert again.status == 200
+            live = _common.ACTIVE.get("standup")
+            assert live is not None and set(live.agents) == {k.TASK_EXTRACTOR_ID}
+        meta = store.read_meeting_meta("standup", root)
+        assert meta is not None and meta["agents_enabled"] == []
+        assert meta["outputs"] == {}
+
     def _default_output_names(self, root: Path) -> set[str]:
         """Output filenames the default roster would seed."""
         config = store.read_config(root)
@@ -494,12 +507,8 @@ class TestAgentRoutes:
     async def test_an_illegal_status_transition_is_refused(self, app, fake_sessions):
         """The dashboard greys these out; the SERVER has to refuse them.
 
-        The endpoint accepted any member of `VALID_STATUSES`, so an authenticated
-        `POST status=idle` against an ACTIVE meeting persisted "idle" while the live
-        session stayed installed — transcription stopped feeding a meeting the UI
-        still showed as running, and starting another answered 409 because `ACTIVE`
-        was still held. A state reachable through the API that the UI can neither
-        produce nor explain.
+        Persisting "idle" on an ACTIVE meeting would leave its live session installed,
+        a state the UI can neither produce nor explain.
         """
         async with client_for(app) as client:
             await _start(client)
@@ -787,23 +796,24 @@ class TestAgentRoutes:
                 await release_flush.wait()
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
-            stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
-            await await_until(flush_entered)
+            # The app's cleanup hook flushes again, so a flush left parked hangs teardown.
+            try:
+                stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
+                await await_until(flush_entered)
 
-            dispatch = await await_until(
-                asyncio.ensure_future(
-                    client.post(
-                        f"{BASE}/meetings/standup/dispatch",
-                        json={"text": "too late"},
+                dispatch = await await_until(
+                    asyncio.ensure_future(
+                        client.post(
+                            f"{BASE}/meetings/standup/dispatch",
+                            json={"text": "too late"},
+                        )
                     )
-                ),
-                timeout=1,
-            )
-            assert dispatch.status == 409
-            assert (await dispatch.json())["code"] == "no_active_meeting"
-
-            release_flush.set()
-            assert (await stop_request).status == 200
+                )
+                assert dispatch.status == 409
+                assert (await dispatch.json())["code"] == "no_active_meeting"
+            finally:
+                release_flush.set()
+            assert (await await_until(stop_request)).status == 200
 
         assert _common.ACTIVE.get() is None
 
@@ -1032,11 +1042,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
     async def test_speech_mid_init_is_buffered_and_delivered_in_order(
         self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
     ):
-        """The core regression: three lines spoken during init reach the agents.
-
-        RED on origin/main — each dispatch answers 409 ``no_active_meeting`` and the
-        lines never enter a queue at all.
-        """
+        """Three lines spoken during init reach the agents, not a 409 ``no_active_meeting``."""
         async with client_for(app) as client:
             start, release = await self._start_paused_in_init(client, monkeypatch)
 

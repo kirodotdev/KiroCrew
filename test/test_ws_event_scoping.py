@@ -768,6 +768,11 @@ class TestAuditDedup:
                 )
             # Only one audit emitted for the (app, event_type, reason) tuple.
             assert m.return_value.log_api_access.call_count == 1
+        from kiro_crew.dashboard import ws_event_scope
+
+        # The window keeps the four suppressed denies for the next record to report.
+        key = ("mochi-pet", "notification", "notification_scope_denied")
+        assert ws_event_scope._sel_last_audit[key][1] == 4
 
     def test_different_reasons_audited_independently(self):
         self._clear_cache()
@@ -786,6 +791,12 @@ class TestAuditDedup:
                 app="mochi-pet", allowed_events=_allowed(), state=state,
             )
             assert m.return_value.log_api_access.call_count == 2
+        from kiro_crew.dashboard import ws_event_scope
+
+        assert set(ws_event_scope._sel_last_audit) == {
+            ("mochi-pet", "notification", "notification_scope_denied"),
+            ("mochi-pet", "totally_made_up_event", "unknown_event"),
+        }
 
 
 # ---------------------------------------------------------------------------

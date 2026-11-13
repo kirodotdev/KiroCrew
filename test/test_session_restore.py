@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -14,7 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
-from kiro_crew.dashboard.chat import restore_recent_sessions
+from kiro_crew.dashboard.chat import restore_recent_sessions, restore_recent_sessions_async
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 
@@ -49,6 +50,20 @@ def _write_session(
     for m in messages:
         lines.append(json.dumps(m))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _race_on_tail_read_too(monkeypatch, log, hook) -> None:
+    """Fire a race *hook* on the tail read as well as the full transcript read.
+
+    The startup restore builds a person's own recent tab as a sidebar row, which
+    reads only the transcript's tail, so a race injected on the full read alone
+    would never fire there.
+    """
+
+    def _tail(key, limit):
+        return hook(key)[-limit:]
+
+    monkeypatch.setattr(log, "read_messages_chained_tail", _tail)
 
 
 def _make_config_app(tmp_path):
@@ -139,6 +154,49 @@ class TestRestoreRecentSessions:
         restore_recent_sessions(state, window_minutes=60)
         assert state._slots["trusted"]._trust is False
         assert state._slots["trusted"]._trust_reads is False
+
+    @pytest.mark.parametrize("driver", ["inline", "async"])
+    def test_a_session_that_fails_to_restore_does_not_stop_the_rest(
+        self, driver, tmp_path, monkeypatch
+    ):
+        """A malformed session (a non-string title, a malformed row) is rolled
+        back, slot and the restricted marker it added, and every other recent
+        session restores. A marker that was there before the build stays.
+
+        The async driver restores a tab as a sidebar row whose rows load on
+        first read, so a malformed row surfaces there instead: the row fails
+        closed, stays pending, and every read retries."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        hi = {"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}
+        _write_session(tmp_path, "dashboard_badtitle", [hi], meta={"title": 42})
+        _write_session(
+            tmp_path,
+            "dashboard_badrow",
+            [{**hi, "variants": 5}],
+            meta={"title": "Bad row", "memory_mode": "temporary"},
+        )
+        _write_session(tmp_path, "dashboard_good", [hi], meta={"title": "Good"})
+        state = _make_state(tmp_path)
+        state._restricted_keys.add("dashboard:badtitle")
+        if driver == "inline":
+            restored = restore_recent_sessions(state, window_minutes=60)
+        else:
+            restored = asyncio.run(restore_recent_sessions_async(state, window_minutes=60))
+        assert state._slots["good"].title == "Good"
+        assert "badtitle" not in state._slots
+        assert "dashboard:badtitle" in state._restricted_keys
+        if driver == "inline":
+            assert restored == 1
+            assert "badrow" not in state._slots
+            assert "dashboard:badrow" not in state._restricted_keys
+            return
+        assert restored == 2
+        row = state._slots["badrow"]
+        assert row.window_pending is True
+        for _ in range(2):
+            with pytest.raises(Exception):
+                row.messages
+            assert row.window_pending is True
 
     def test_skips_old_sessions(self, tmp_path, monkeypatch):
         """Sessions older than the window are not restored."""
@@ -234,11 +292,9 @@ class TestRestoreRecentSessions:
     def test_restore_computes_the_durable_prefix_count_from_disk(self, tmp_path, monkeypatch):
         """A trimmed prefix holding transient-role lines splits the two counters.
 
-        ``_disk_older_count`` counts every on-disk line older than the window
-        (the frozen prefix the save model preserves); the durable counter must
-        count only the rows a durable read returns, and must be RECOMPUTED from
-        the messages on disk — a slot restored by an older build has no durable
-        counter persisted anywhere to trust.
+        ``_disk_older_count`` counts every on-disk line older than the window; the
+        durable counter counts only rows a durable read returns, recomputed from
+        disk because no durable counter is persisted anywhere to trust.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         messages = [
@@ -357,10 +413,8 @@ class TestRestoreRecentSessions:
     def test_redacts_credentials_in_restored_messages(self, tmp_path, monkeypatch):
         """LLM-sourced content is redacted before it can reach a client.
 
-        Redaction moved from load time to display time: the restore now loads
-        stored bytes as-is and every EMIT site cleans them. The security property
-        is unchanged (a credential must never reach a client) but the enforcement
-        point moved, so this asserts the emit path rather than the slot contents.
+        The restore loads stored bytes as-is and every emit site redacts them, so this
+        asserts the emit path rather than the slot contents.
         See test_display_time_redaction.py for the per-site coverage.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -543,7 +597,6 @@ class TestDashboardConfigAPI:
 
     @pytest.mark.asyncio
     async def test_put_invalid_json(self, tmp_path, monkeypatch):
-        """PUT with invalid JSON returns 400."""
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         with patch("kiro_crew.sel.sel") as mock_sel:
@@ -874,15 +927,11 @@ class TestRehydrateSlotFromHistory:
         assert existing.title == "Original Title"
 
     def test_rehydrates_slot_with_metadata_and_messages(self, tmp_path, monkeypatch):
-        """Rehydrate restores title, agent, model, memory_mode and message history
-        from the persisted JSONL — not just an empty shell.
+        """Rehydrate restores title, agent, model, memory_mode and message history.
 
-        Pin the config provider so the assertion is deterministic: rehydration
-        canonicalizes the stored model per-provider via
-        ``model_registry.canonicalize_for_provider`` (so a raw provider id like
-        ``claude-opus-4.7`` maps back to the canonical dropdown key for CC). On
-        a kiro provider it is a no-op; this test must not read the ambient
-        on-disk config, or it passes or fails depending on the dev machine.
+        The provider is pinned because rehydration canonicalizes the model via
+        ``model_registry.canonicalize_for_provider``; the ambient on-disk config
+        would make the result depend on the dev machine.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -1013,13 +1062,10 @@ class TestRehydrateSlotFromHistory:
 
 
 class TestAsyncRehydrateSlotFromHistory:
-    """The async twin used by app backends resolving a cold worker slot on the
-    request path. Same result as the sync helper, but the transcript read happens
-    in a worker thread: a multi-megabyte session file read on the event loop
-    stalls chat, WebSockets and the heartbeat for every connected client.
+    """The async twin reads the transcript in a worker thread, off the event loop.
 
-    The slot mutation deliberately stays on the loop — ``slot.append`` sets an
-    ``asyncio.Event``, which is not safe to touch from another thread.
+    The slot mutation stays on the loop: ``slot.append`` sets an ``asyncio.Event``,
+    which is not safe to touch from another thread.
     """
 
     @pytest.mark.asyncio
@@ -1135,13 +1181,10 @@ class TestAsyncRehydrateSlotFromHistory:
 class TestPartialRehydrateRollsBack:
     """A raise partway through populating a slot must leave NOTHING registered.
 
-    ``_rehydrate_slot_from_history`` registers the slot via ``get_or_create_slot`` before
-    any of its fallible work (title redaction, model canonicalization, the message
-    replay). A failure after that must not leave a half-populated slot in
-    ``state._slots`` -- and every rehydrate entry point short-circuits on
-    ``slot_name in state._slots``, so the next caller received the partial slot as
-    a complete restore with ``_disk_older_count`` still 0, after which a save
-    rewrote the frozen on-disk prefix it had never loaded.
+    ``_rehydrate_slot_from_history`` registers the slot before its fallible work, and
+    every rehydrate entry point short-circuits on ``slot_name in state._slots``. A
+    partial slot left behind would pass as complete, and a save would then rewrite the
+    on-disk prefix it never loaded.
     """
 
     def _boom(self, *_a, **_k):
@@ -1196,14 +1239,9 @@ class TestPartialRehydrateRollsBack:
     def test_a_preexisting_restricted_key_is_never_discarded(self, tmp_path, monkeypatch):
         """The rollback must undo only what its own call added.
 
-        A restricted key can outlive the slot it was recorded for, so a failed
-        restore must leave one it found in place. Discarding it would let a later
-        get_or_create_slot (default memory_mode 'persistent') treat an ephemeral
-        session as a normal one.
-
-        The slot half needs no equivalent test: _rehydrate_slot_from_history
-        returns early when the slot already exists, so its body only ever runs
-        for a slot the call created itself.
+        A restricted key can outlive its slot, so a failed restore leaves one it found.
+        Discarding it would let a later get_or_create_slot (default 'persistent') treat
+        an ephemeral session as a normal one.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard import chat_persistence
@@ -1233,12 +1271,9 @@ class TestPartialRehydrateRollsBack:
     ):
         """The rollback lives at the creation site, so EVERY caller gets it.
 
-        The failure is raised once the metadata line is fully applied -- after the
-        ephemeral line has recorded its restricted key -- so the rollback has both
-        halves to undo. A failing tab must leave no slot and no restricted key
-        behind whichever driver restored it, while the healthy tab beside it still
-        restores. A rollback living only in one driver would leave the others
-        holding the partial slot.
+        The failure is raised after the restricted key is recorded, so both halves need
+        undoing. Whichever driver restores it, a failing tab leaves no slot and no
+        restricted key, and the healthy tab beside it still restores.
         """
         from kiro_crew.dashboard import chat_persistence
         from kiro_crew.dashboard.slot_persistence import metadata_codec
@@ -1292,15 +1327,10 @@ class TestPartialRehydrateRollsBack:
 
 # ── restore_recent_sessions_async: the reads must leave the loop ──
 #
-# This driver is the slower of the two startup restores: it calls list_sessions()
-# (a glob + stat + first-line read of EVERY session file) and then per selected
-# session a get_metadata plus a chained transcript walk — measured at 13.6s for
-# 76 sessions, all of it on the event loop between per-session yields. The yield
-# bounded one session's share; it did not stop a single large transcript from
-# stalling the stall-watchdog heartbeat. So every read is hoisted into
-# asyncio.to_thread and only the slot build stays on the loop, which is
-# mandatory: slot creation broadcasts through asyncio.Queue.put_nowait /
-# Event.set, neither of which is thread-safe.
+# Every file read (list_sessions, get_metadata, the transcript walk) runs in
+# asyncio.to_thread so one large transcript cannot stall the heartbeat. The slot
+# build stays on the loop: it uses asyncio.Queue.put_nowait / Event.set, which are
+# not thread-safe.
 
 
 class TestAsyncRestoreRecentSessionsOffLoop:
@@ -1473,13 +1503,9 @@ class TestAsyncRestoreRecentSessionsOffLoop:
     ):
         """Post-hop re-check: the pre-hop ``_slots`` answer is seconds stale.
 
-        Offloading the reads opened a window that did not exist before — the
-        check and the apply cease to be atomic once the reads move off the loop. If a resume, a
-        nudge or the user opening the tab publishes the slot while its transcript
-        loads, ``_apply_recent_session`` -> ``get_or_create_slot`` returns that
-        LIVE slot and the replay appends the on-disk messages a second time, then
-        persists the duplicates. Flagged as blocking by GPT 5.6 review and by
-        Design review on the first CI round.
+        With the reads off the loop, check and apply are not atomic. If something
+        publishes the slot while its transcript loads, ``get_or_create_slot`` returns
+        that live slot and the replay would append and persist duplicate messages.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import restore_recent_sessions_async
@@ -1511,6 +1537,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return real_chained(key)
 
         monkeypatch.setattr(log, "read_messages_chained", _publish_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _publish_then_read)
 
         restored = await restore_recent_sessions_async(state, window_minutes=60)
 
@@ -1524,11 +1551,9 @@ class TestAsyncRestoreRecentSessionsOffLoop:
     async def test_a_tab_closed_during_the_read_is_not_resurrected(self, tmp_path, monkeypatch):
         """✕ clicked mid-read must win over the metadata snapshot.
 
-        The close pops the slot and records a tombstone synchronously, but
-        persists the ``closed`` flag only after its own awaits — so the metadata
-        read before the click still says open. Rebuilding from it would re-create
-        a dismissed tab and then fire a nudge turn into it. Mirrors the guard
-        ``rehydrate_slot_from_history_async`` applies after its own hop.
+        The close records a tombstone synchronously but persists ``closed`` only after
+        its awaits, so metadata read before the click still says open. Rebuilding from
+        it would re-create a dismissed tab and fire a nudge turn into it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard import channel_slots
@@ -1551,6 +1576,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return real_chained(key)
 
         monkeypatch.setattr(log, "read_messages_chained", _close_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _close_then_read)
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 0
         assert "dismissed" not in state._slots, "resurrected a tab the user closed"
@@ -1575,17 +1601,10 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         (tmp_path / "dashboard_reopened.jsonl").touch()
 
         state = _make_state(tmp_path)
-        # Stamp the tombstone under a pinned, explicitly OLDER clock rather than
-        # separating it from the driver's own ``started = time.time()`` with a
-        # real sleep. On Windows/CPython <= 3.12 (what CI pins) ``time.sleep``
-        # wakes off a high-resolution timer while ``time.time()`` still steps in
-        # ~15.6ms ticks, so a 10ms gap can leave both readings EQUAL; the guard
-        # is the inclusive ``when >= started``, so the older close would then
-        # block the reopen and this negative control would accuse ``>= started``
-        # of the very defect it exists to rule out. 60s is far inside
-        # ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600s) and ``slot_closed_since`` does
-        # not apply the TTL, so the tombstone still EXISTS when the guard runs —
-        # the assertion stays about the comparison, not about aging out.
+        # Pin an older clock instead of sleeping: on Windows ``time.time()`` steps in
+        # ~15.6ms ticks, so a short sleep can leave both readings equal and the
+        # inclusive ``when >= started`` would block the reopen. 60s is well inside
+        # ``_CLOSE_TOMBSTONE_TTL_SECS``, so the tombstone still exists.
         closed_at = time.time() - 60.0
         with monkeypatch.context() as mp:
             mp.setattr("time.time", lambda: closed_at)
@@ -1624,6 +1643,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return msgs
 
         monkeypatch.setattr(log, "read_messages_chained", _delete_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _delete_then_read)
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 0
         assert "doomed" not in state._slots, (
@@ -1660,11 +1680,9 @@ class TestAsyncRestoreRecentSessionsOffLoop:
     ):
         """An empty metadata line must skip, not build a phantom slot.
 
-        ``list_sessions()`` is a snapshot taken one thread hop earlier, so a
-        session deleted in that gap still appears in the list while its metadata
-        reads back ``{}``. An empty dict sails past every filter (folder, pin,
-        closed, cutoff all read falsy) and must not reach ``get_or_create_slot`` —
-        registering a phantom slot whose flush RECREATES the deleted transcript.
+        A session deleted after ``list_sessions()`` reads back ``{}``, which passes
+        every filter. Reaching ``get_or_create_slot`` would register a phantom slot
+        whose flush recreates the deleted transcript.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import restore_recent_sessions_async
@@ -1711,22 +1729,11 @@ class TestAsyncRestoreRecentSessionsOffLoop:
     async def test_restore_drains_its_tab_id_backfills_before_returning(
         self, tmp_path, monkeypatch
     ):
-        """A tab-id backfill is an ``os.replace`` of a session file. If restore
-        leaves it in flight (the fire-and-forget off-loop helper), it can still
-        be mid-replace when a caller reads the same transcript on the loop right
-        after restore — on Windows that ``open()`` is a sharing violation
-        (``PermissionError``) the on-loop read cannot wait out, so it re-raises.
-        The async recent-session driver must COMMIT its own backfills before it
-        returns, the way the open-slot driver does.
+        """The async recent-session driver commits its tab-id backfills before returning.
 
-        The seeded transcripts carry no ``tab_id``, so every restored tab mints
-        one and schedules a backfill. This asserts the driver's contract: it
-        does NOT hand those backfills to the fire-and-forget off-loop helper, and
-        once it RETURNS the backfilled ``tab_id`` is already durable on every
-        restored tab — nothing left mid-replace to race a reader.
-
-        Fails on the base: there the backfill goes through
-        ``update_metadata_off_loop`` and is still in flight at return.
+        A backfill is an ``os.replace``; one still in flight when a caller reads the
+        transcript raises ``PermissionError`` on Windows. The seeded transcripts carry
+        no ``tab_id``, so every restored tab schedules a backfill.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard import chat_persistence
@@ -1777,17 +1784,11 @@ class TestAsyncRestoreRecentSessionsOffLoop:
     async def test_drained_backfill_does_not_recreate_a_session_deleted_mid_restore(
         self, tmp_path, monkeypatch
     ):
-        """Deferring the tab-id backfills to the end of the restore pass widens
-        the window in which a ``DELETE /api/sessions/{key}`` can land. The drain
-        must go through ``update_metadata_if(require_existing=True)``, which
-        re-checks existence UNDER the write lock, so a session unlinked during
-        that window is left deleted instead of being resurrected as a
-        metadata-only transcript the next recent-session restore would reopen as
-        an empty tab.
+        """A session deleted before the backfill drain stays deleted.
 
-        We model the delete by unlinking one restored transcript as its slot is
-        applied — after it is queued for backfill but before the end-of-loop
-        drain runs. The drained backfill for that key must NOT recreate the file.
+        The drain uses ``update_metadata_if(require_existing=True)``, which re-checks
+        existence under the write lock. The delete is modelled by unlinking one
+        transcript after it is queued for backfill but before the drain runs.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard import chat_persistence

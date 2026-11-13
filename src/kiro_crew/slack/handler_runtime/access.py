@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _dashboard_state,
         _orch_cfg,
         _owner_id,
+        _removes_in_flight,
         _tracking_channels,
         apply_config_duration,
         clear_trusted_sessions,
@@ -212,8 +213,12 @@ def enable_yolo_with_ttl(ttl_secs: int) -> None:
 
 
 def is_yolo_mode() -> bool:
-    """Return whether YOLO mode is currently active."""
-    return safety_override().is_active()
+    """Return whether YOLO mode is currently active for Slack.
+
+    ``gateway --approval yolo``'s grant is the dashboard's only (``is_cli_launch``).
+    """
+    so = safety_override()
+    return so.is_active() and so.is_cli_launch is not True
 
 
 def is_slack_session_trusted(session_key: str) -> bool:
@@ -271,5 +276,7 @@ def is_open_channel(channel_id: str) -> bool:
 
 
 def is_tracked_channel(channel_id: str) -> bool:
-    """Check if *channel_id* is in the tracking set."""
-    return bool(channel_id and channel_id in _tracking_channels)
+    """Check if *channel_id* is in the tracking set and no remove of it is still saving."""
+    return bool(
+        channel_id and channel_id in _tracking_channels and channel_id not in _removes_in_flight
+    )

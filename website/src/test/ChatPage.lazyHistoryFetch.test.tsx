@@ -15,7 +15,7 @@
  *     exactly once;
  *  3. further typing does not re-fetch (the seed ref latches).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -183,9 +183,12 @@ describe('ChatPage lazy history fetch (#765)', () => {
     await waitFor(() => expect(apiMocks.sessions).toHaveBeenCalledTimes(1))
 
     // A second keystroke (new debounce cycle) must not re-fetch: the seed
-    // latches once armed.
+    // latches once armed. The clock is faked only now, after the last real-timer
+    // wait, so the debounce fires inside act() and the 400ms window still passes.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     fireEvent.click(screen.getByTestId('type-query'))
-    await new Promise(r => setTimeout(r, 400))
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
     expect(apiMocks.sessions).toHaveBeenCalledTimes(1)
   })
 })

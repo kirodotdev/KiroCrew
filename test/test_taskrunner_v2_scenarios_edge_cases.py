@@ -319,7 +319,7 @@ class TestScenarioReplanNewStepsFailThenSecondReplan:
 
         decompose_count = 0
 
-        async def _mock_decompose(spec, wd="", tid=""):
+        async def _mock_decompose(spec, wd="", tid="", agent=""):
             nonlocal decompose_count
             decompose_count += 1
             if decompose_count == 1:
@@ -373,7 +373,7 @@ class TestScenarioTokenBudgetDuringReplan:
         )
         run.tasks = [step1, failed]
 
-        async def _mock_decompose(spec, wd="", tid=""):
+        async def _mock_decompose(spec, wd="", tid="", agent=""):
             return [
                 Step(index=1, title="R1", description="d"),
                 Step(index=1, title="R2", description="d"),
@@ -652,8 +652,11 @@ class TestScenarioGitCommitNoChanges:
             mock_git.commit_step = AsyncMock(return_value="")  # no changes
             mock_git.revert_step = AsyncMock()
 
-            await runner._execute_single_task(run, step, "hk")
+            passed = await runner._execute_single_task(run, step, "hk")
 
+        # The failed review re-ran the step once, and the re-run passed it.
+        assert passed is True
+        assert exec_count == 2
         # revert should NOT have been called (nothing was committed)
         mock_git.revert_step.assert_not_called()
 
@@ -789,7 +792,7 @@ class TestScenarioReplanSuccessCompletesTask:
 
         exec_count = 0
 
-        async def _decompose(spec_text, work_dir="", task_id=""):
+        async def _decompose(spec_text, work_dir="", task_id="", agent=""):
             return [Step(index=1, title="Task ", description="d")]
 
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)

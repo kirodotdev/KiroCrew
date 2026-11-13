@@ -38,10 +38,11 @@ vi.mock('@pierre/diffs/react', async () => {
 })
 
 vi.mock('../pierre/PierreImpl', async () => {
-  const { activeWorkerPool, contentCacheKey } = await vi.importActual<typeof import('../pierre/PierreImpl')>('../pierre/PierreImpl')
+  const { activeWorkerPool, contentCacheKey, usePierreThemes } = await vi.importActual<typeof import('../pierre/PierreImpl')>('../pierre/PierreImpl')
   return {
     activeWorkerPool,
     contentCacheKey,
+    usePierreThemes,
     PierreShell: ({ children, generation }: { children?: ReactNode; generation: number }) => <div key={generation}>{children}</div>,
     usePierreWorkerPool: () => ({ phase: 'ready', generation: 1, pool: {} }),
     useRegisterEditorSurface: () => {},

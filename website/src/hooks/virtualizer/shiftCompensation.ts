@@ -17,6 +17,7 @@ import { useCallback, useLayoutEffect, useRef, useState, type MutableRefObject, 
 import { captureAnchorCandsFrom, captureTopAnchorFrom, rowTopFrom } from './anchorGeometry'
 import { heightAnchorClampedToCeiling, heightAnchorStillUsable, shiftCompensationAllowed } from './FollowController'
 import { planHeightRetirement, type HeightIndex } from './HeightIndex'
+import { readingPositionHeld } from '../../utils/panelSlide'
 import type { WindowRange } from './WindowCalculator'
 import type { FollowState, Pinning } from './followPolicy'
 import type { ReadingPositionEntry } from './readingPosition'
@@ -857,6 +858,9 @@ export function useShiftCompensation<T>(ctx: {
     // A restore owns the position while its gate is up (see the shift-consume
     // effect): repricing rows above the fold shifts the reader to stay still,
     // which fights an absolute placement rather than preserving it.
+    // A side panel's slide anchor holds this reader itself (utils/panelSlide):
+    // one mechanism corrects at a time.
+    if (readingPositionHeld(el)) return false
     if (shiftCompensationAllowed({ stick: stickRef.current, settleMeasuring: settleMeasuringRef.current }) && Math.abs(aboveFoldReprice) > 0.5) {
       writeScrollTop(el, el.scrollTop + aboveFoldReprice, 'auto', 'pin', 'abovefold')
       return true

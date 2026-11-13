@@ -1,21 +1,12 @@
-"""``kiro_crew.acp.client`` and ``kiro_crew.acp.runtime`` stay the ACP patch seams after the split.
+"""``kiro_crew.acp.client`` and ``kiro_crew.acp.runtime`` stay the ACP patch seams.
 
-The module-level code moved out of the two transports lives in its owner modules:
-``transport_framing``, ``transport_errors``, ``runtime_models``, ``runtime_process_tree``,
-``runtime_start``, the launch tail ``launch``, and the per-process host adapters under
-``harness`` (``claude``, ``opencode``, ``goose``, ``pi``, ``deepseek``). Each facade keeps
-every moved name readable under its old path. A
-name the facade's own code reads, and that nothing patches through it, is an ordinary
-import; every other moved name is FORWARDED, so a patch through the facade lands on
-the owner, where the owner's own callers read it. The modules the moved helpers probe
-with stay bound on the facade their code came from, and each helper imports them from
-that facade when it runs, so a test that rebinds one there still reaches the helper.
+Names owned by ``transport_*``, ``runtime_*``, ``launch`` and ``harness.*`` stay readable
+on each facade. A name nothing patches through the facade is a plain import; the rest
+are FORWARDED so a facade patch lands on the owner. Probe modules stay bound on the
+facade and are imported from it at call time.
 
-The seam rows patch ONE name on a facade with a stub that raises ``_Reached`` and then
-drive an owner function that must read that name. ``_Reached`` derives from
-``BaseException`` on purpose: several of these helpers are best-effort and swallow
-``Exception``, and a stub such a handler could swallow would let a patch that MISSED
-read as one that landed.
+The seam rows patch one name with a stub raising ``_Reached``, a ``BaseException`` so a
+best-effort ``except Exception`` cannot hide a missed patch.
 """
 
 from __future__ import annotations
@@ -725,20 +716,27 @@ _DARWIN = SimpleNamespace(platform="darwin")
 #: reads it, helper, arguments)``. Each helper reads the name from the facade its code
 #: came from, so the row fails if the helper ever binds its own copy again.
 _MODULE_SEAMS: list[tuple[str, str, dict[str, object], str, tuple[object, ...]]] = [
+    # The walk asks ``walk_observes_descendants`` for its platform, the one place
+    # that says whether a descendant can be seen, so that is the reader here.
+    ("kiro_crew.acp.client", "platform_compat", {}, "walk_observes_descendants", ()),
+    ("kiro_crew.acp.client", "sys", {"platform_compat": _POSIX}, "_direct_children", (1,)),
+    (
+        "kiro_crew.acp.client",
+        "subprocess_mod",
+        {"platform_compat": _POSIX, "sys": _DARWIN},
+        "_direct_children",
+        (1,),
+    ),
     *[
         row
-        for helper, ps in (
-            ("_direct_children", _POSIX),
-            ("_get_start_time", _POSIX_PS),
-            ("_read_basename", _POSIX_PS),
-        )
+        for helper in ("_get_start_time", "_read_basename")
         for row in (
             ("kiro_crew.acp.client", "platform_compat", {}, helper, (1,)),
             ("kiro_crew.acp.client", "sys", {"platform_compat": _POSIX}, helper, (1,)),
             (
                 "kiro_crew.acp.client",
                 "subprocess_mod",
-                {"platform_compat": ps, "sys": _DARWIN},
+                {"platform_compat": _POSIX_PS, "sys": _DARWIN},
                 helper,
                 (1,),
             ),
@@ -814,6 +812,8 @@ def test_a_module_rebound_on_the_facade_reaches_the_moved_helper(
             monkeypatch.setattr(runtime_process_tree, callee, inert)
     # A cached process table would answer before the helper probes anything.
     monkeypatch.setattr(runtime_process_tree, "_ps_table_cache", None)
+    # The children-file branch follows the steered ``sys``, not the host kernel.
+    monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", True)
     for other, value in steer.items():
         monkeypatch.setattr(module, other, value)
     label = f"{facade}.{name}"
@@ -1336,13 +1336,18 @@ def test_the_facade_import_scan_reads_every_spelling() -> None:
 #: Every function in an owner that imports from a facade: what it reads there, and
 #: from which facade -- always the one its code came from.
 _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
-    **{
-        ("kiro_crew.acp.runtime_process_tree", helper): (
-            "kiro_crew.acp.client",
-            ("Path", "platform_compat", "subprocess_mod", "sys"),
-        )
-        for helper in ("_direct_children", "_read_basename")
-    },
+    ("kiro_crew.acp.runtime_process_tree", "walk_observes_descendants"): (
+        "kiro_crew.acp.client",
+        ("platform_compat",),
+    ),
+    ("kiro_crew.acp.runtime_process_tree", "_direct_children"): (
+        "kiro_crew.acp.client",
+        ("Path", "subprocess_mod", "sys"),
+    ),
+    ("kiro_crew.acp.runtime_process_tree", "_read_basename"): (
+        "kiro_crew.acp.client",
+        ("Path", "platform_compat", "subprocess_mod", "sys"),
+    ),
     ("kiro_crew.acp.runtime_process_tree", "_get_start_time"): (
         "kiro_crew.acp.client",
         ("platform_compat", "subprocess_mod", "sys"),
@@ -1429,6 +1434,15 @@ def test_an_owner_reads_a_facade_only_for_the_listed_seams() -> None:
     assert found == _SEAM_IMPORTS
 
 
+#: A helper split out of a moved one reads the binding that one read, so its origin is
+#: the helper it came out of: ``walk_observes_descendants`` is the platform test
+#: ``_direct_children`` made itself. The read lives in the new helper alone:
+#: ``_SEAM_IMPORTS`` lists ``platform_compat`` for it and not for ``_direct_children``.
+_SPLIT_FROM: dict[tuple[str, str], str] = {
+    ("kiro_crew.acp.runtime_process_tree", "walk_observes_descendants"): "_direct_children",
+}
+
+
 @pytest.mark.parametrize(("site", "seam"), list(_SEAM_IMPORTS.items()), ids=repr)
 def test_each_seam_is_a_binding_of_the_facade_the_helper_came_from(
     site: tuple[str, str], seam: tuple[str, tuple[str, ...]]
@@ -1440,7 +1454,7 @@ def test_each_seam_is_a_binding_of_the_facade_the_helper_came_from(
     came_from_the_facade = _MOVED[facade].get(owner, ()) + _MOVED_METHODS.get(facade, {}).get(
         owner, ()
     )
-    assert function.split(".", 1)[0] in came_from_the_facade
+    assert _SPLIT_FROM.get(site, function.split(".", 1)[0]) in came_from_the_facade
     module = _FACADES[facade]
     for name in names:
         assert name in vars(module) and name not in module._EXPORTS, name
@@ -1482,12 +1496,9 @@ def test_each_function_that_reads_a_load_time_binding_imports_it_from_the_facade
 def test_the_owners_depend_on_each_other_one_way() -> None:
     """The owners form layers, read downward only.
 
-    ``transport_errors`` reads the model catalog. The launch tail reads the error
-    family and the stdout bound. Each per-process host reads the launch helpers and
-    the error family, and the DeepSeek host shares pi's sealed artifact directory.
-    Nothing reads a host adapter except another host, and no owner reads back up.
-    Both import spellings are read -- ``from <owner> import name`` and ``from
-    <package> import <owner>`` -- so an edge cannot hide behind the second.
+    Only a host reads a host adapter (DeepSeek shares pi's artifact directory), and no
+    owner reads back up. Both ``from <owner> import name`` and ``from <package> import
+    <owner>`` are read.
     """
     edges: set[tuple[str, str]] = set()
     for owner in _OWNERS.values():
@@ -1809,18 +1820,10 @@ def test_the_launch_capture_patches_no_moved_name() -> None:
     assert names and names.isdisjoint(moved)
 
 
-#: Names a test patches through a facade that the facade AND an owner both bind, each
-#: importing its own: such a patch reaches only the facade's own code, which a mirrored
-#: facade's write also reaches in the owner modules that code moved to. Every entry is
-#: patched for code of the facade's own family -- the client's stderr drain and session
-#: init (``logger``), ``AcpClient.send_command`` (``redact_exfiltration_urls``), the
-#: runtime's response bound and descendant snapshot -- or for the launch the driver
-#: starts: each driver hands the launch tail its OWN sandbox wrap, scrub and scratch
-#: module (``_launch_tools``), so those patches reach the launch they drive, while a
-#: host's routing read-back wraps and scrubs with its adapter module's binding, which
-#: that host's tests patch there. ``launch`` on the runtime is the runtime's own call of
-#: the tail, which a test wraps to observe the runtime's steps. A new entry is a
-#: decision that the patch needs no forwarding.
+#: Names both a facade and an owner bind, patched only for the facade's own code: the
+#: client's ``logger``, ``redact_exfiltration_urls``, the runtime's response bound and
+#: snapshot, or the launch each driver starts (``_launch_tools``). A host's read-back uses
+#: its adapter's binding. A new entry is a decision that the patch needs no forwarding.
 _SHARED_BINDINGS_PATCHED: frozenset[tuple[str, str]] = frozenset(
     {
         ("kiro_crew.acp.client", "logger"),

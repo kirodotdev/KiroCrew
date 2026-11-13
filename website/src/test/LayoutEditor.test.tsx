@@ -13,7 +13,10 @@
  * tested there.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen, fireEvent, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import LayoutEditor from '../components/crew/layout/LayoutEditor'
 import { trackIndexAtFraction } from '../components/crew/layout/LayoutEditor'
 import LayoutEditorHarnessPage from '../pages/LayoutEditorHarnessPage'
@@ -53,6 +56,32 @@ describe('LayoutEditor (core)', () => {
     expect(onChange).toHaveBeenCalledTimes(1)
     const next: GridSpec = onChange.mock.calls[0][0]
     expect(next.items.map((i) => i.id)).toEqual(['a'])
+  })
+
+  it.each(['{Enter}', ' '])('removes a pane from the keyboard (%s) on its close button', async (key) => {
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+    render(<LayoutEditor spec={baseSpec()} onChange={onChange} />)
+    const close = screen.getByLabelText('Remove Side panel')
+    close.focus()
+    await user.keyboard(key)
+    // The close button used to sit inside the drag handle, whose key handler
+    // cancelled Space before the button saw it.
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const next: GridSpec = onChange.mock.calls[0][0]
+    expect(next.items.map((i) => i.id)).toEqual(['a'])
+    // The close button must not sit inside another control.
+    expect(close.parentElement?.closest('button, [role="button"]')).toBeNull()
+  })
+
+  it('does not move the pane on an arrow key pressed on its close button', async () => {
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+    render(<LayoutEditor spec={baseSpec()} onChange={onChange} />)
+    screen.getByLabelText('Remove Side panel').focus()
+    // (1,1) below sidePanel 'b' is free, so the handle would move it here.
+    await user.keyboard('{ArrowDown}')
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it('does not shrink columns below the occupied edge (stepper min)', () => {
@@ -155,6 +184,16 @@ describe('LayoutEditor (core)', () => {
     fireEvent.keyDown(bar, { key: 'ArrowRight' })
     fireEvent.keyDown(bar, { key: 'ArrowUp' })
     expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps the bar\'s grab cursor on its role="button" drag handle', () => {
+    // The handle matches index.css's base `[role="button"]:not(:disabled) { cursor:
+    // pointer }` and covers the whole bar, so without a cursor of its own the bar
+    // shows a click pointer. jsdom applies no cascade: asserted on the stylesheet.
+    render(<LayoutEditor spec={baseSpec()} onChange={() => {}} />)
+    expect(screen.getByLabelText('Move Side panel').getAttribute('role')).toBe('button')
+    const css = readFileSync(resolve(__dirname, '../components/crew/layout/layoutEditor.css'), 'utf8')
+    expect(css).toMatch(/^\.le-bar-handle \{[^}]*\bcursor: inherit;/m)
   })
 })
 

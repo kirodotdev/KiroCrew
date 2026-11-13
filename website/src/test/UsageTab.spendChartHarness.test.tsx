@@ -5,13 +5,14 @@
  * once a loaded config names a credits-billing harness, read positively.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import type { NormalizedUsage } from '../providers'
 import UsageTab from '../pages/overview/UsageTab'
+import { namedCeiling } from './namedCeiling'
 
 const { fetchUsage, kirocrewConfig, usageSeries } = vi.hoisted(() => ({
   fetchUsage: vi.fn(),
@@ -35,7 +36,7 @@ function report(): NormalizedUsage {
     billing: { plan: 'Plan', unit: 'credits', used: 10, limit: 100, percentUsed: 10 },
     sessions: {
       total: 3, today: period, thisWeek: period, thisMonth: period,
-      avgMsgsPerSession: 4, refusedTranscripts: 0, dailyHistory: [],
+      avgMsgsPerSession: 4, refusedTranscripts: 0, unreadableSessionDirs: 0, dailyHistory: [],
     },
   }
 }
@@ -68,6 +69,11 @@ function ConfigProbe() {
   return data === undefined ? null : <span data-testid="cfg-loaded" />
 }
 
+// The chart mounts only after the config and usage reads resolve, then its
+// own series read resolves: a chain of three queries, longer than findBy's
+// default ceiling on a busy coverage runner.
+const chartChain = () => namedCeiling('CONFIG_USAGE_THEN_SERIES_CHART', 5000)
+
 function mount() {
   return render(
     <QueryClientProvider client={client}>
@@ -88,21 +94,72 @@ describe('UsageTab spend chart harness gate', () => {
 
     mount()
 
-    expect(await screen.findByText('Spend over time (credits)')).toBeInTheDocument()
-    await screen.findByTestId('usage-series-chart')
-    expect(usageSeries).toHaveBeenCalledWith('channel')
+    expect(await screen.findByText('Spend over time (credits)', {}, chartChain())).toBeInTheDocument()
+    await screen.findByTestId('usage-series-chart', {}, chartChain())
+    expect(usageSeries).toHaveBeenCalledWith('channel', 'credits')
   })
 
-  it('mounts no credits chart for a harness that bills in tokens or dollars, and never asks for the series', async () => {
+  it('mounts a dollar chart, and no credits chart, for a harness that bills in dollars (#35249)', async () => {
     kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'claude' } })
 
     mount()
 
-    await screen.findByText('Session Activity (30 days)')
+    expect(await screen.findByText('Spend over time (USD)', {}, chartChain())).toBeInTheDocument()
+    await screen.findByTestId('usage-series-chart', {}, chartChain())
     expect(screen.queryByText('Spend over time (credits)')).toBeNull()
-    await screen.findByTestId('cfg-loaded')
-    expect(screen.queryByText('Spend over time (credits)')).toBeNull()
-    expect(usageSeries).not.toHaveBeenCalled()
+    expect(usageSeries).toHaveBeenCalledWith('channel', 'cost')
+    expect(usageSeries).not.toHaveBeenCalledWith('channel', 'credits')
+    // The axis ticks read in dollars too, not as bare numbers.
+    const chart = await screen.findByTestId('usage-series-chart', {}, chartChain())
+    expect(within(chart).getByText('$0')).toBeInTheDocument()
+  })
+
+  it('keeps cents on the dollar axis, so a few cents of spend never reads as zero', async () => {
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'claude' } })
+    usageSeries.mockResolvedValue({
+      dates: ['2026-10-02'],
+      metric: 'cost',
+      series: [{ key: 'dashboard', kind: 'bucket', values: [0.0231], total: 0.0231 }],
+      total: 0.0231,
+      truncated: false,
+      dropped_rows: 0,
+      complete_from: null,
+    })
+
+    mount()
+
+    const chart = await screen.findByTestId('usage-series-chart', {}, chartChain())
+    expect(await within(chart).findByText('$0.02', {}, chartChain())).toBeInTheDocument()
+  })
+
+  it('never draws the credits series under dollar ticks when the harness switches to one billed in dollars', async () => {
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' } })
+    usageSeries.mockResolvedValue({
+      dates: ['2026-10-02'],
+      series: [{ key: 'dashboard', kind: 'bucket', values: [100], total: 100 }],
+      total: 100,
+      truncated: false,
+      dropped_rows: 0,
+      complete_from: null,
+    })
+    mount()
+    expect(await screen.findByText('Spend over time (credits)', {}, chartChain())).toBeInTheDocument()
+    await within(await screen.findByTestId('usage-series-chart', {}, chartChain())).findByText('100', {}, chartChain())
+
+    // The cost series stays in flight while the switch renders.
+    let release!: (v: unknown) => void
+    usageSeries.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    act(() => client.setQueryData(['kirocrewConfig'], { agent: { acp_backend: 'claude' } }))
+    expect(await screen.findByText('Spend over time (USD)', {}, chartChain())).toBeInTheDocument()
+    await waitFor(() => expect(usageSeries).toHaveBeenCalledWith('channel', 'cost'), chartChain())
+
+    expect(screen.queryByText('$100')).toBeNull()
+    expect(screen.queryByText('$100.00')).toBeNull()
+    act(() => release({
+      dates: ['2026-10-02'], metric: 'cost',
+      series: [{ key: 'dashboard', kind: 'bucket', values: [2], total: 2 }],
+      total: 2, truncated: false, dropped_rows: 0, complete_from: null,
+    }))
   })
 
   it('says so where the card would stand when the config read fails, holds the notice through a retry, and mounts the card once a read succeeds', async () => {
@@ -123,7 +180,7 @@ describe('UsageTab spend chart harness gate', () => {
 
     act(() => release({ agent: { acp_backend: 'kiro' } }))
 
-    expect(await screen.findByText('Spend over time (credits)')).toBeInTheDocument()
+    expect(await screen.findByText('Spend over time (credits)', {}, chartChain())).toBeInTheDocument()
     expect(screen.queryByTestId('usage-series-harness-unread')).toBeNull()
     expect(kirocrewConfig).toHaveBeenCalledTimes(2)
   })
@@ -140,6 +197,32 @@ describe('UsageTab spend chart harness gate', () => {
 
     answer({ agent: { acp_backend: 'kiro' } })
     await screen.findByTestId('cfg-loaded')
-    expect(await screen.findByText('Spend over time (credits)')).toBeInTheDocument()
+    expect(await screen.findByText('Spend over time (credits)', {}, chartChain())).toBeInTheDocument()
+  })
+})
+
+describe('UsageTab harness-unread Try again', () => {
+  it('keeps the pressed button in the tab order while the config re-reads (#32868)', async () => {
+    kirocrewConfig.mockRejectedValue(new Error('config unavailable'))
+    mount()
+    const retry = await screen.findByRole('button', { name: 'Try again' })
+
+    let release!: (cfg: unknown) => void
+    kirocrewConfig.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(client.getQueryState(['kirocrewConfig'])?.fetchStatus).toBe('fetching'))
+
+    expect(retry).toBeInTheDocument()
+    expect(retry).toHaveFocus()
+    expect(retry).not.toBeDisabled()
+    expect(retry).toHaveAttribute('aria-disabled', 'true')
+    // Sighted users see the retry start: the label says so while it reads.
+    expect(retry).toHaveTextContent('Retrying…')
+    fireEvent.click(retry)
+    expect(kirocrewConfig).toHaveBeenCalledTimes(2)
+
+    act(() => release({ agent: { acp_backend: 'kiro' } }))
+    expect(await screen.findByText('Spend over time (credits)', {}, chartChain())).toBeInTheDocument()
   })
 })

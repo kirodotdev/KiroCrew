@@ -10,12 +10,17 @@ installed; and the data-home leaf the bundle lives in is sealed read-only.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
+import logging
 import os
+import socket
 import stat
 import tarfile
+import time
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -237,8 +242,31 @@ class TestManifest:
     def test_fetch_from_a_malformed_url_is_a_refusal_not_a_traceback(self):
         """urllib raises ValueError for a url it cannot parse; the operator typed it, so
         the answer is the installer's one error type, which the CLI prints and exits."""
-        with pytest.raises(kas_bundle.KasBundleError, match="could not fetch"):
+        with pytest.raises(kas_bundle.KasBundleError, match="could not download the KAS engine"):
             kas_bundle.fetch_manifest("https://[mirror", version="0.66.33")
+
+    @pytest.mark.parametrize(
+        "reason, cause",
+        [
+            (
+                ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"),
+                "connection refused",
+            ),
+            (socket.gaierror("Name or service not known"), "the host name could not be resolved"),
+            (TimeoutError("timed out"), "timed out"),
+        ],
+    )
+    def test_an_unreachable_host_is_named_with_the_cause_in_plain_words(self, reason, cause):
+        """urllib's ``<urlopen error [Errno 111] Connection refused>`` is Python
+        internals; the installer prints this message as the whole failure."""
+
+        class _Opener:
+            def open(self, url, timeout):
+                raise urllib.error.URLError(reason)
+
+        with pytest.raises(kas_bundle.KasBundleError) as info:
+            kas_bundle.fetch_manifest("https://h.test", version="0.66.33", opener=_Opener())
+        assert str(info.value) == f"could not download the KAS engine from https://h.test: {cause}"
 
     def test_fetch_pinned_version_must_match_the_document(self, source_dir):
         class _Resp(io.BytesIO):
@@ -355,6 +383,70 @@ class TestInstall:
         assert winner_marker.read_text() == "won"
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is not None
         assert [p.name for p in root.iterdir() if p.name.startswith(".staging-")] == []
+
+    def test_a_forced_install_over_an_engine_in_use_is_a_named_refusal(
+        self, source_dir, tmp_path, monkeypatch
+    ):
+        """Windows refuses to move aside a directory a running node.exe holds open;
+        --force over it is an install error naming the cause, and the installed
+        engine and its record stay as they were."""
+        root = tmp_path / "root"
+        installed = _install(source_dir, root)
+        marker = installed.root / "in-use"
+        marker.write_text("held")
+        real_rename = os.rename
+
+        def rename_refusing_the_live_engine(src, dst):
+            if Path(src) == installed.root:
+                raise PermissionError(13, "Access is denied", str(src))
+            return real_rename(src, dst)
+
+        monkeypatch.setattr(kas_bundle.os, "rename", rename_refusing_the_live_engine)
+        with pytest.raises(
+            kas_bundle.KasBundleError, match="could not be replaced.*Access is denied.*retry"
+        ):
+            _install(source_dir, root, force=True)
+        assert marker.read_text() == "held"
+        assert kas_bundle.installed_bundle(root=root, version="0.66.33") is not None
+        assert [p.name for p in root.iterdir() if p.name.startswith(".staging-")] == []
+
+    def test_the_next_install_removes_only_a_stale_install_staging_tree(
+        self, source_dir, tmp_path, caplog
+    ):
+        """An install ended by ``os._exit`` or an outside kill leaves its staging
+        tree; the next install removes it once nothing in it is an hour old, and
+        keeps one still being written, a retired engine, lipo's work tree and a link."""
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        old = time.time() - 2 * 3600
+
+        def staging_tree(path: Path, *, stale_archive: bool) -> None:
+            archive = path / "downloads" / "engine.tgz"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"x")
+            for entry in ([archive] if stale_archive else []) + [archive.parent, path]:
+                os.utime(entry, (old, old))
+
+        staging_tree(root / ".staging-1.2.3-orphan1", stale_archive=True)
+        staging_tree(root / ".staging-1.2.3-writing", stale_archive=False)
+        staging_tree(root / ".staging-retired-abc", stale_archive=True)
+        staging_tree(root / ".staging-lipo-abc", stale_archive=True)
+        staging_tree(outside, stale_archive=True)
+        link = root / ".staging-9-link"
+        link.symlink_to(outside, target_is_directory=True)
+        os.utime(link, (old, old), follow_symlinks=False)
+
+        _install(source_dir, root)
+
+        assert sorted(p.name for p in root.iterdir() if p.name.startswith(".staging-")) == [
+            ".staging-1.2.3-writing",
+            ".staging-9-link",
+            ".staging-lipo-abc",
+            ".staging-retired-abc",
+        ]
+        assert (outside / "downloads" / "engine.tgz").is_file()
+        # The link is skipped, not walked through and refused by rmtree.
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_a_zstd_engine_archive_installs_like_the_published_one(
         self, source_dir, tmp_path, monkeypatch
@@ -579,16 +671,48 @@ class TestSpawnRoute:
         assert plan.stderr_label == KAS_BUNDLE_SPAWN_LABEL
 
     @pytest.mark.asyncio
-    async def test_bundle_on_with_nothing_installed_refuses_and_names_the_install(self, tmp_path):
-        """A refusal, not a fallback to the relay: the operator chose the route, and a
-        silent relay spawn would make a kiro-cli problem look like a bundle one."""
+    async def test_bundle_on_with_nothing_installed_installs_the_pin_then_spawns_it(
+        self, source_dir, tmp_path
+    ):
+        """A missing engine is installed by the spawn itself, in the gateway, and the
+        spawn then runs what was laid down. Never a fallback to the relay."""
+        installed = _install(source_dir, tmp_path / "root")
+        calls = []
+
+        def fake_install_pinned(base_url, *, on_progress=None, root=None):
+            calls.append(base_url)
+            return installed
+
         with (
             patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=True),
             patch.object(kas_bundle, "installed_bundle", return_value=None),
-            patch.object(kas_bundle, "kas_engines_root", return_value=tmp_path),
+            patch.object(kas_bundle, "install_pinned", side_effect=fake_install_pinned),
         ):
-            with pytest.raises(AcpRuntimeError, match="kirocrew kas install"):
+            plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
+        assert len(calls) == 1
+        assert plan.argv == build_kas_bundle_argv(
+            str(installed.node_bin), str(installed.acp_server)
+        )
+        assert plan.host_auth is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_install_refuses_with_the_cause_and_the_retry_command(self, tmp_path):
+        """Offline: the refusal names the route, the cause and how to retry."""
+
+        def offline(*a, **k):
+            raise kas_bundle.KasBundleError("could not fetch https://h.test/kas: no route to host")
+
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=True),
+            patch.object(kas_bundle, "installed_bundle", return_value=None),
+            patch.object(kas_bundle, "install_pinned", side_effect=offline),
+        ):
+            with pytest.raises(AcpRuntimeError) as caught:
                 await KasHarness().resolve_spawn(_ctx(tmp_path))
+        text = str(caught.value)
+        assert "Kiro Crew's own engine" in text
+        assert "no route to host" in text
+        assert "`kirocrew kas install`" in text
 
     @pytest.mark.asyncio
     async def test_bundle_off_keeps_the_relay(self, tmp_path):
@@ -639,7 +763,7 @@ class TestTheLeafIsSealed:
     def test_engines_is_read_only_in_the_sandbox_and_fenced_at_the_tool_gate(self):
         """A sandboxed KAS process must read and execute the engine; nothing in a
         sandbox may rewrite the code the next session runs. Same disposition as
-        ``playwright-cli``, and the same precreate + no-follow pins so an absent
+        ``browser-harness``, and the same precreate + no-follow pins so an absent
         directory on a fresh install is not a name the agent gets to create."""
         from kiro_crew import sandbox, security
 
@@ -742,7 +866,8 @@ class TestThePin:
             raise kas_bundle.KasBundleError("stop here")
 
         monkeypatch.setattr(kas_bundle, "fetch_manifest", fake_fetch)
-        with pytest.raises(kas_bundle.KasBundleError, match="stop here"):
+        # The host check that runs first never reads the runner's own libc.
+        with _patch_glibc(None), pytest.raises(kas_bundle.KasBundleError, match="stop here"):
             kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
         assert seen == {
             "version": kas_bundle.KAS_PIN_VERSION,
@@ -806,14 +931,34 @@ class TestOldGlibcRefusal:
     def test_old_glibc_refuses_before_download_naming_the_reason(self, source_dir, tmp_path):
         root = tmp_path / "root"
         with _patch_glibc((2, 26)):
-            with pytest.raises(kas_bundle.KasBundleError) as exc:
+            with pytest.raises(kas_bundle.KasHostUnsupported) as exc:
                 _install(source_dir, root)
+        # A host that cannot run the engine is its own class, so callers can
+        # leave out "retry" advice; it is still a KasBundleError for the rest.
+        assert isinstance(exc.value, kas_bundle.KasBundleError)
         msg = str(exc.value)
         assert "2.26" in msg and "2.28" in msg and "onnxruntime" in msg
         # Nothing downloaded, extracted or published.
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is None
         assert kas_bundle.installed_versions(root=root) == []
         assert not any(root.glob("**/downloads")) if root.exists() else True
+
+    def test_install_pinned_refuses_an_old_glibc_host_before_the_manifest(
+        self, tmp_path, monkeypatch
+    ):
+        """The gateway's install path checks the host before any fetch: a host that
+        can never run the engine is refused with that cause even offline, and a
+        spawn, cron or subagent that asks again costs no network round trip."""
+        monkeypatch.setattr(kas_bundle.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(kas_bundle.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(
+            kas_bundle,
+            "fetch_manifest",
+            lambda *a, **k: pytest.fail("fetched the manifest on a host that cannot run it"),
+        )
+        with _patch_glibc((2, 26)):
+            with pytest.raises(kas_bundle.KasHostUnsupported, match=r"glibc \(2\.26\)"):
+                kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
 
     def test_modern_glibc_installs_as_before(self, source_dir, tmp_path):
         root = tmp_path / "root"
@@ -832,7 +977,10 @@ class TestOldGlibcRefusal:
         # The refusal is Linux-only; a non-Linux host never reads glibc.
         with _patch_glibc((2, 26)) as reader:
             kas_bundle._require_loadable_glibc("Darwin", "arm64")
-        reader.assert_not_called()
+            reader.assert_not_called()
+            # The same old glibc on Linux is refused, so the Darwin pass is the OS gate.
+            with pytest.raises(kas_bundle.KasBundleError, match="2.26"):
+                kas_bundle._require_loadable_glibc("Linux", "x86_64")
 
 
 # ── the copy an app ships: one universal Node, trimmed to what runs ─────────────

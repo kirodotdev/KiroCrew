@@ -487,7 +487,7 @@ class TestProcessStartTime:
 
     @pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc contract")
     def test_linux_reports_stat_field_22(self):
-        stat_text = Path(f"/proc/{os.getpid()}/stat").read_text()
+        stat_text = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
         expected = stat_text.rsplit(")", 1)[1].split()[19]
         assert pc.process_start_time(os.getpid()) == expected
 
@@ -599,17 +599,15 @@ class TestOwnProcessStartTime:
     after an in-process provider rebuild stitch into one stream.
     """
 
-    # flake-ok: no test in this class calls monkeypatch.undo(), so the shared monkeypatch cannot lift this pin
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this class calls monkeypatch.undo()
-    def _cold_cache(self, monkeypatch):
+    def _cold_cache(self, _floor_monkeypatch):
         """Start every test on a cold cache and restore the global after.
 
         Without this, whichever test runs first fills the module global for
         the rest of the worker session, making the first-read assertions
         order-dependent.
         """
-        monkeypatch.setattr(pc, "_OWN_START_TIME", None)
+        _floor_monkeypatch.setattr(pc, "_OWN_START_TIME", None)
 
     def test_matches_the_identity_token_and_is_stable(self):
         token = pc.own_process_start_time()

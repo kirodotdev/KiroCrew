@@ -1,8 +1,9 @@
 """``dashboard.browser_local_origins``: the operator's loopback exception.
 
-The native ``browser`` tool refuses every non-public ``navigate`` target. This
+The ``browser`` tool refuses every non-public ``navigate`` target. This
 setting lets the operator name exact loopback ``host:port`` origins (a Vite dev
-server) the built-in panel may open anyway. These tests pin both halves:
+server) the agent's browser may open anyway, and the Preview tab shows. These
+tests pin both halves:
 
 * the coercer keeps only ``localhost`` / ``127.0.0.1`` / ``[::1]`` with an
   explicit port, so no entry can widen the gate past one loopback port;
@@ -26,10 +27,8 @@ GATEWAY_PORT = 5476
 @pytest.fixture(autouse=True)
 def _tool_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     mp = _floor_monkeypatch
-    mp.setattr(mod, "_browsing_available", lambda: True)
     mp.setattr(mod.mcp_core, "_session_key_header_error", lambda sk: None)
     mp.setattr(mod.mcp_core, "_vet_browse_governance", lambda s: None)
-    mp.setattr(mod, "_use_builtin_browser", lambda: True)
     mp.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
     mp.setattr(mod.mcp_core, "_api_port", lambda: GATEWAY_PORT)
 
@@ -148,9 +147,9 @@ def test_matcher_with_empty_allowlist_refuses_loopback() -> None:
 
 
 def _recording_post(calls: list[str]):
-    def _fake(bus_key: str, op: str, args: dict, session_header: str, timeout_ms: int):
+    def _fake(session_key: str, op: str, args: dict, session_header: str, timeout_s: float):
         calls.append(args.get("url"))
-        return 200, {"ok": True, "result": "ok"}
+        return 200, {"ok": True, "result": {"ok": True, "url": args.get("url"), "title": "Dev"}}
 
     return _fake
 
@@ -185,8 +184,9 @@ def test_tool_still_refuses_unlisted_and_gateway(monkeypatch: pytest.MonkeyPatch
 
     assert out.startswith("Error: the browser tool only opens public http(s) URLs")
     assert "dashboard.browser_local_origins" in out
-    # No Settings control exists for the list, so the refusal must hand the
-    # agent the exact command the user runs to add an origin.
+    # The refusal names the Settings control AND the exact command, so the agent
+    # can hand the user either route to add an origin without guessing.
+    assert "Settings -> Browser -> Local preview origins" in out
     assert "`kirocrew config set dashboard.browser_local_origins '[\"localhost:5173\"]'`" in out
 
 

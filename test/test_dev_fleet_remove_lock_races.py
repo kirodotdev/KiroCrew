@@ -14,8 +14,8 @@ For each race the tests:
   1. Verify the production fix blocks the race (the fix is present → refuse).
   2. Prove the test FAILS without the fix by temporarily undoing the guard and
      re-running the key assertion (the fix is absent → the race proceeds
-     undetected).  Each test uses a ``_verify_fails_without_fix`` helper to
-     keep the proof deterministic and self-contained.
+     undetected).  Each ``*__fails_without_fix`` test keeps that proof
+     deterministic and self-contained.
 
 All infrastructure is injected: no real git, no subprocess, no network.
 """

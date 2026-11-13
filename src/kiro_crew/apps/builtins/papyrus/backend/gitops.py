@@ -21,6 +21,7 @@ push commits back. Every git invocation here follows the same three rules as
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import logging
 import os
@@ -34,7 +35,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import procio, store
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, rename_with_retry
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.git_config_hooks import (
     ConfigHookScanError,
@@ -346,7 +347,8 @@ async def _git(
     """Run ``git <args>`` in *cwd* off the event loop.
 
     Returns ``(returncode, stdout, stderr)``. A timeout kills the process tree
-    and surfaces as :class:`GitError` rather than a silent empty result.
+    and surfaces as :class:`GitError` rather than a silent empty result. On
+    cancel the tree is killed too, then the cancel propagates.
     """
     # Attribute-driven programs are disabled by a file, not by `-c` — see
     # `_pin_attributes_sync` for why the override list cannot cover them.
@@ -510,6 +512,13 @@ async def _git(
                 logger.warning("papyrus: git did not exit after SIGKILL")
         _audit(args[0] if args else "run", str(cwd), "failure", error="timeout")
         raise GitError(f"git {args[0] if args else ''} timed out") from exc
+    except asyncio.CancelledError:
+        # The child runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except FileNotFoundError as exc:
         _audit(args[0] if args else "run", str(cwd), "failure", error="git not found")
         raise GitError("git is not installed on this host") from exc
@@ -547,7 +556,7 @@ def _publish_clone(staging: Path, destination: Path) -> str:
     this clone made.
     """
     with store.config_lock(destination):
-        os.rename(staging, destination)
+        rename_with_retry(staging, destination)
         return store.project_generation(destination)
 
 
@@ -565,8 +574,10 @@ async def clone(url: str, destination: Path) -> str:
     error, and its cleanup then deleted the WINNER's freshly-cloned checkout — turning
     a duplicate-request 500 into data loss for the request that succeeded.
 
-    The rename is ``os.rename``, which fails rather than merging if the destination
-    appeared meanwhile, so the loser reports a conflict and the winner keeps its tree.
+    The rename is :func:`rename_with_retry` (``os.rename``, retried over a brief Windows
+    hold on a file in the fresh checkout), which fails rather than merging if the
+    destination appeared meanwhile, so the loser reports a conflict and the winner keeps
+    its tree. Any other rename failure is reported as a failed move, not as a conflict.
 
     The generation (:func:`.store.project_generation`) is read in the same locked
     step as the rename, so a caller can later tell whether the folder still holds
@@ -595,7 +606,10 @@ async def clone(url: str, destination: Path) -> str:
         return await asyncio.to_thread(_publish_clone, staging, destination)
     except OSError as exc:
         await _remove_tree(staging)
-        raise GitError("a project with that name already exists", output=str(exc))
+        # An occupied destination raises EEXIST or ENOTEMPTY, depending on the OS.
+        if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+            raise GitError("a project with that name already exists", output=str(exc))
+        raise GitError("could not move the clone into place; retry the clone", output=str(exc))
 
 
 async def _remove_tree(path: Path) -> None:

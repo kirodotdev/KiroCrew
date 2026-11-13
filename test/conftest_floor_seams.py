@@ -59,6 +59,21 @@ def _isolate_xdg_config_home(_xdg_config_root, _floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_kiro_cli_sign_in_store(_xdg_config_root, _floor_monkeypatch):
+    """Point the shared sign-in resolver's kiro-cli store at a path that is not there.
+
+    ``lts_sign_in._kiro_cli_store`` resolves kiro-cli's real store under the
+    real home, so without this every test of the resolver -- and of anything that
+    asks it, such as the KAS spawn owner -- would read the developer's own kiro-cli
+    sign-in. A test that wants a kiro-cli sign-in points this at its own store.
+    """
+    _floor_monkeypatch.setattr(
+        "kiro_crew.lts_sign_in._kiro_cli_store",
+        lambda: _xdg_config_root / "no-kiro-cli" / "data.sqlite3",
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_launchd_paths(_xdg_config_root, _floor_monkeypatch):
     """Pin the launchd install paths, which ``$XDG_CONFIG_HOME`` cannot reach.
 
@@ -368,6 +383,9 @@ def _no_model_download(_floor_monkeypatch, _isolation_dirs):
     # lock file into the repo root, plus a background reader thread that outlives the
     # test. Tests that exercise telemetry delete this var themselves (test/metrics/).
     monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+    # A developer's ambient DO_NOT_TRACK would outrank every per-test opt-in
+    # (off wins), so tests that turn recording on would fail only on their machine.
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
 
 
 @pytest.fixture(autouse=True)

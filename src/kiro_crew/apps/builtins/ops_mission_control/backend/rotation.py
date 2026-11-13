@@ -762,7 +762,7 @@ def protected_cron_names() -> frozenset[str]:
     return frozenset(crons_for_tier(TIER_ALWAYS))
 
 
-async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
+async def apply_tiers(shift: ShiftStatus, cron_service: Any, *, watching: bool) -> dict[str, Any]:
     """Arm/disarm this app's crons to match the tier map, server-side.
 
     Why this exists rather than the agent issuing ``cron_pause``/``cron_resume``:
@@ -784,6 +784,11 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     ``cron_service`` is duck-typed (``list_jobs_async`` + ``raise_if_store_unreadable``
     + ``enable_job_async``) so tests pass a fake. Returns a summary of what changed, so
     a caller can stay silent when nothing did.
+
+    ``watching`` is False when no signal source is configured. The ``on_shift`` jobs then
+    stay paused whatever the shift says: ``dispatch`` would only learn, one model turn every
+    two minutes, that nothing is being watched. The built-in rotation and action fallbacks
+    always report configured, so they cannot answer this question.
     """
     if cron_service is None:
         return {"ok": False, "code": "cron_service_unavailable", "changed": []}
@@ -805,7 +810,7 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     #   maintenance. If the primary tier should arm its cron too, that is its own change
     #   with its own measurement.
     desired: dict[str, bool] = {
-        cron_name: states[TIER_ON_SHIFT] for cron_name in crons_for_tier(TIER_ON_SHIFT)
+        cron_name: states[TIER_ON_SHIFT] and watching for cron_name in crons_for_tier(TIER_ON_SHIFT)
     }
 
     # `list_jobs_async`, NOT `list_jobs` wrapped in `to_thread`. `list_jobs` is documented
@@ -908,11 +913,12 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
         "rules_detail": rule_dicts,
         "primary": is_primary(),
         "modes_available": [MODE_OBSERVE, MODE_PROPOSE, MODE_ACT],
-        # The whole team, when a committed schedule is the rotation source. `who` alone
+        # The team behind the rotation: a committed `rotation.yaml`, else incident.io's
+        # configured schedules (`source` says which; see `_roster_safely`). `who` alone
         # cannot tell an operator whether this instance is idle because a teammate holds
-        # the pager or because the file is broken — and a silently-idle instance is the
-        # failure mode a shared schedule introduces. Empty dict when no schedule is in
-        # use, so the UI simply renders nothing rather than an empty team.
+        # the pager or because the setup is broken — and a silently-idle instance is the
+        # failure mode a rotation introduces. Empty dict when neither has a roster, so the
+        # UI simply renders nothing rather than an empty team.
         "roster": _roster_safely(),
         # How fast the heartbeat claims, and how long it lets work sit before releasing it.
         # On this response because it is already the payload Settings reads for `mode` and
@@ -937,20 +943,27 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
 
 
 def _roster_safely() -> dict[str, Any]:
-    """The schedule-file roster, or ``{}``. Never raises.
+    """The rotation roster for the board, or ``{}``. Never raises.
 
     Read through a guarded call because ``describe`` backs the dashboard's main poll: a
     malformed schedule a teammate pushed must not 500 the board. The rotation ITSELF
     already degrades safely; this protects the display path too.
+
+    A committed ``rotation.yaml`` wins when present: it is the TEAM's schedule, the one the
+    shared ledger and leader election read, so it is what "on-call team" means on that
+    install. Otherwise incident.io's roster of this operator's shifts, when that provider
+    has an identity to build it around. Each carries a ``source`` so the card can tell them
+    apart.
     """
     try:
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
+            incidentio,
             schedule_file,
         )
 
-        if not schedule_file.schedule_path().exists():
-            return {}
-        return schedule_file.roster()
+        if schedule_file.schedule_path().exists():
+            return schedule_file.roster()
+        return incidentio.roster()
     except Exception:  # noqa: BLE001 — a display extra must never break the board
         logger.debug("ops-mission-control: roster unavailable", exc_info=True)
         return {}

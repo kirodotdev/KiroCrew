@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import governance_capability_checks
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -101,15 +102,7 @@ def _rows_for(fake: MagicMock, scope: str) -> list[dict]:
 # ── The catalog row ───────────────────────────────────────────────────────
 
 
-class TestScopeCatalog:
-    def test_row_is_registered_as_a_default_on_capability(self) -> None:
-        from kiro_crew.platform.governance import CAPABILITY, SCOPE_CATALOG
-
-        spec = SCOPE_CATALOG[_SCOPE]
-        assert spec.kind == CAPABILITY
-        # A policy that governs some OTHER capabilities.* row must not silently
-        # withdraw a menu entry it never mentioned.
-        assert spec.capability_default is True
+class TestScopeCatalog(governance_capability_checks.RowIsRegisteredAsADefaultOnCapability):
 
     def test_a_policy_can_actually_express_the_pin(self) -> None:
         from kiro_crew.platform.governance import CapabilityGate, parse_policy

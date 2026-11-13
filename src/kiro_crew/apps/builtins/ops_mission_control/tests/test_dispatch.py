@@ -786,7 +786,7 @@ class TestCloudWatchAdapterShape(_HomeIsolated):
 
         self._write_config({"providers": {"cloudwatch": {"enabled": True}}})
         with mock.patch.object(cloudwatch, "_boto3_client", return_value=None):
-            with self.assertRaises(Exception):
+            with self.assertRaises(RuntimeError):
                 await cloudwatch.CloudWatchSignalSource().poll()
 
             # ...and the cycle around it still completes, reporting the source as failed

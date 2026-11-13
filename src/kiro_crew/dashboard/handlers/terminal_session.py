@@ -9,12 +9,16 @@ family that holds the name.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from kiro_crew.config.loader import config_path, read_config_text
+from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served by the terminal facade
+    config_local_path,
+    config_path,
+    read_config_text,
+    read_merged_config_files,
+)
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -160,6 +164,11 @@ def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
 
 
 def _get_config(request: web.Request) -> dict:
+    """The ``dashboard.terminal`` object for a route handler; see ``_read_terminal_config``."""
+    return _read_terminal_config()
+
+
+def _read_terminal_config() -> dict:
     """The ``dashboard.terminal`` object, or ``{}`` for anything malformed.
 
     Every level is type-checked rather than chained, and the read fails CLOSED to
@@ -173,12 +182,8 @@ def _get_config(request: web.Request) -> dict:
     nested reads already follow: a malformed value means "nothing configured",
     which is also what an absent key means.
     """
-    try:
-        data = json.loads(read_config_text(config_path()))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    # config.local.json is an overlay whose keys win, as the loader merges it.
+    data = read_merged_config_files(config_path(), config_local_path())
     dashboard = data.get("dashboard")
     if not isinstance(dashboard, dict):
         return {}
@@ -191,13 +196,45 @@ def _is_enabled(request: web.Request) -> bool:
     {"dashboard": {"terminal": {"enabled": false}}}
     Cached for 30s to avoid disk I/O per request.
     """
+    # The policy is read every call: a refusal installed inside the cache window binds now.
+    if _policy_refuses_terminal():
+        return False
     now = time.monotonic()
     if now - _enabled_cache[1] < 30:
         return _enabled_cache[0]
-    result = bool(_get_config(request).get("enabled", True))
+    result = _terminal_enabled(_get_config(request))
     _enabled_cache[0] = result
     _enabled_cache[1] = now
     return result
+
+
+def _terminal_enabled(cfg: dict) -> bool:
+    """Whether a ``dashboard.terminal`` object leaves the panel on (the default).
+
+    A security policy whose ``boot.allow_terminal`` is stated and not a JSON
+    ``true`` turns it off whatever the config says.
+    """
+    if _policy_refuses_terminal():
+        return False
+    return bool(cfg.get("enabled", True))
+
+
+def _policy_refuses_terminal() -> bool:
+    """Whether the active security policy refuses the dashboard terminal.
+
+    A policy that leaves ``allow_terminal`` out has no opinion (``None``). A
+    lookup that fails reads as a refusal: this gate fails closed.
+    """
+    # Deferred import: this package never imports the platform package at module load.
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    def _read() -> bool:
+        boot = getattr(current_context().governance, "boot", None)
+        return boot is not None and boot.allow_terminal is False
+
+    return safe_context_call(
+        _read, fallback=True, log_message="security policy read failed; terminal refused"
+    )
 
 
 _enabled_cache: list = [True, 0.0]  # [value, timestamp]

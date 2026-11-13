@@ -347,3 +347,35 @@ def test_host_surface_preserves_base_parameter_only_shadowing(body: str, unavail
     if unavailable:
         assert len(errors) == 1
         assert "ctx.get is not available" in errors[0]
+
+
+@pytest.mark.parametrize("signature", ["ctx", "ctx, /"], ids=["ordinary", "positional-only"])
+def test_host_surface_reads_a_positional_only_entrypoint_context(signature: str) -> None:
+    source = _script("await ctx.send_message('channel', 'message')", signature=signature)
+    assert validate(source).ok  # Port availability is host-specific.
+    errors = check_ctx_surface(source, CORE_CTX_SURFACE)
+    assert len(errors) == 1
+    assert "ctx.send_message" in errors[0]
+    assert check_ctx_surface(source, CORE_CTX_SURFACE | {"send_message"}) == []
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_an_unwired_port_on_a_positional_only_entrypoint() -> None:
+    calls: list[str] = []
+
+    async def agent(prompt: str, opts: dict):
+        calls.append(prompt)
+        return "unexpected"
+
+    source = _script(
+        "await ctx.agent('must not dispatch before validation')\n"
+        "await ctx.send_message('channel', 'message')",
+        signature="ctx, /",
+    )
+    result = await WorkflowRunner(agent_fn=agent, audit=lambda *_: None).run(
+        source, run_id="posonly-unwired", now=NOW
+    )
+    assert not result.ok
+    assert result.events[-1].data["where"] == "validate"
+    assert calls == []
+    assert "ctx.send_message" in result.error

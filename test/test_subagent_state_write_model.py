@@ -1,57 +1,24 @@
-"""``state.json`` stays a WHOLE-FILE rewrite, and this gate is that policy's teeth.
+"""``state.json`` stays a whole-file rewrite, and this gate enforces that policy.
 
-THE POLICY. ``state.json`` is a run's artifact and evidence record, not a
-coordination primitive. Scheduling's source of truth is the durable task queue,
-which carries its own generation fencing. So the write model for ``state.json``
-stays the whole-file rewrite it already is: no revision counter, no
-compare-and-swap retry loop, no per-field or append-merge format. A second
-coordination protocol one layer below the one that already exists buys ordering
-this file does not need, and costs a format every reader must agree on -- the
-state reader, the tombstone pruner, the keep scan, orphan recovery and the
-legacy-record migration.
+``state.json`` is a run's evidence record, not a coordination primitive: the durable task
+queue owns scheduling with its own generation fencing. So no revision counter, CAS loop or
+per-field format, which every reader (state reader, tombstone pruner, keep scan, orphan
+recovery, legacy migration) would have to agree on.
 
-WHAT KEEPS THE WHOLE-FILE REWRITE SAFE. One invariant:
+The invariant: every whole-file write happens at a known site, and each site that can run
+on the event loop carries its own fence. Two interleaved rewrites can roll back fields
+neither writer touched. Off-loop callers share the per-agent lock; the loop cannot wait on
+it (that would block the gateway loop on a pool thread's fsync), so on-loop sites fence
+themselves. Moving a writer off the loop lets it inherit the lock, so the census should
+only shrink.
 
-    Every whole-file ``state.json`` write happens at a KNOWN site, and each site
-    that can run on the event loop carries its own fence.
+"Is it on the loop" is not statically answerable, so rule one pins the site set with
+per-site call counts. Rule two (no write directly in a coroutine body) is decidable and has
+no allowlist. ``asyncio.to_thread(update_state, ...)`` passes the writer as a bare Name and
+has its own gate; ``write_finished_result`` (its ``state_writer``) is listed below.
 
-The rewrite is a read, then a blocking fsync-and-rename, then nothing -- so two
-writers on one agent interleave, and the later one restores a snapshot that
-predates the other's write. Losing the other writer's fields is the visible
-half; rolling back fields NEITHER writer touched is the damaging half. Off-loop
-callers are serialized by the per-agent lock, which closes the class for them.
-On the loop that lock cannot be waited on, because parking the gateway's only
-loop behind a pool thread's fsync is the blocking-call class the repo forbids.
-So an on-loop site carries its own fence instead, and a new site with none is
-the defect this gate refuses to let land.
-
-THE ASYMMETRY CLOSES BY MOVING WRITERS OFF THE LOOP, not by changing the file
-format. A writer that leaves the loop needs no fence of its own: it inherits the
-lock. That is the direction of travel, which is why the census below should
-shrink and never grow.
-
-WHY THE CENSUS IS THE SITES AND NOT "IS IT ON THE LOOP". Every write site today
-sits in a synchronous function that a coroutine calls, so no amount of
-``async def`` inspection can see it: asking "is this on the loop" is not
-statically answerable, while "is this a write site" is exactly answerable. So
-rule one pins the site set with its per-site call count, and a new write
-anywhere fails -- forcing its author to say which fence it carries and whether
-it runs on the loop. Rule two is the sharper case that IS statically decidable:
-a write sitting DIRECTLY in a coroutine body. There are none, and that is a
-measurement, not a wish, so rule two has no allowlist at all.
-
-SCOPE BOUNDARY. ``asyncio.to_thread(update_state, ...)`` passes the writer as a
-bare Name rather than calling it, so the sanctioned off-loop helper is not a site
-here; that route has its own gate, which keeps every off-loop writer on the
-drained helper. ``write_finished_result`` is the one other worker that route
-hands a writer to (as ``state_writer``), so its merge is listed below and a
-direct call to it from a coroutine is caught like any other write.
-
-ONE RECORDING PLACE. An exception is recorded in the census and nowhere else, so
-the fence and the site sit together where the policy lives. The detector matches a
-writer by NAME, so an unrelated object carrying a same-named method reads as a
-site; the remedy there is to rename that symbol or record it, not to add a second
-way of spelling an exception.
+Exceptions are recorded only in the census. The detector matches by name, so for an
+unrelated same-named method, rename it or record it.
 """
 
 from __future__ import annotations
@@ -80,20 +47,20 @@ _STATE_FILE = "state.json"
 #: enclosing function's identity; it is scanned on its own by the top-level walk.
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
-#: THE CENSUS. Every whole-file ``state.json`` write site, with how many calls it
-#: holds and the fence that makes it safe. Keyed by ``(module, function, call)``
-#: and pinned by COUNT, so a second write added inside an already-listed function
-#: fails too.
-#:
-#: This list is expected to SHRINK. Moving a site off the loop lets it inherit
-#: the per-agent lock; a new entry is a new path into a file three fences already
-#: guard, and calls for the policy above to be revisited rather than one more
-#: line here.
-#:
-#: The fence text is prose, and this gate does not re-derive it. A site that
-#: moves on or off the loop keeps the same key, so the commit that moves it
-#: updates or deletes its row here.
+#: The census: every whole-file ``state.json`` write site, its call count and its fence.
+#: Keyed by ``(module, function, call)`` and pinned by count, so a second write inside a
+#: listed function fails too. It should shrink; the fence text is prose the gate does not
+#: re-derive, so a commit that moves a site on or off the loop updates its row.
 _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
+    (
+        "kiro_crew/shared_crew/tailscale_invite_store.py",
+        "set_display",
+        "update_state",
+    ): (
+        1,
+        "not a subagent state.json: the Shared Crew store's own update_state "
+        "rewrites invites.json, serialized by that store's _LOCK",
+    ),
     (
         "kiro_crew/execution_context.py",
         "bind_session_execution",
@@ -187,13 +154,9 @@ def _call_label(
 ) -> str | None:
     """Return the write-site label for *call*, or None when it is not one.
 
-    An attribute call (``persistence.update_state(...)``) matches on the
-    attribute: the object it hangs off is not statically knowable and the same
-    whole-file rewrite is reached either way.
-
-    For ``_atomic_write`` the filename is usually built a statement earlier
-    (``p = dir / "state.json"`` then ``_atomic_write(p, state)``), so the literal
-    counts anywhere in the ENCLOSING function, not only in the call itself.
+    An attribute call matches on the attribute, since the object is not statically
+    knowable. For ``_atomic_write`` the ``"state.json"`` literal may sit anywhere in the
+    enclosing function, since the path is usually built a statement earlier.
     """
     fn = call.func
     if isinstance(fn, ast.Name):

@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const downloadBlob = vi.fn()
 const downloadUrl = vi.fn()
+let inWebView = false
 vi.mock('./download', () => ({
   downloadBlob: (...args: unknown[]) => downloadBlob(...args),
   downloadUrl: (...args: unknown[]) => downloadUrl(...args),
+  isAndroidWebView: () => inWebView,
 }))
 
 import { downloadFileToDisk } from './fileReadUrl'
@@ -19,6 +21,7 @@ describe('downloadFileToDisk', () => {
   beforeEach(() => {
     downloadBlob.mockReset()
     downloadUrl.mockReset()
+    inWebView = false
   })
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -31,6 +34,16 @@ describe('downloadFileToDisk', () => {
     expect(downloadBlob).toHaveBeenCalledOnce()
     expect(downloadBlob.mock.calls[0][1]).toBe('notes.txt')
     expect(downloadUrl).not.toHaveBeenCalled()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('in an Android in-app browser a small file also downloads from its URL, not a blob', async () => {
+    inWebView = true
+    vi.stubGlobal('fetch', vi.fn(async () => answer(200, 1)))
+    const onError = vi.fn()
+    await downloadFileToDisk('/home/u/notes.txt', onError)
+    expect(downloadUrl).toHaveBeenCalledWith('/api/file-download?path=%2Fhome%2Fu%2Fnotes.txt', 'notes.txt')
+    expect(downloadBlob).not.toHaveBeenCalled()
     expect(onError).not.toHaveBeenCalled()
   })
 

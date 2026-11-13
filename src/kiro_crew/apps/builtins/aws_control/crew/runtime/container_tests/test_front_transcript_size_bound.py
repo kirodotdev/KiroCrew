@@ -84,10 +84,10 @@ def test_an_object_declaring_itself_too_large_is_refused_before_reading(tmp_path
         def __init__(self) -> None:
             self.body = _Body(b"a" * 16)
 
-        def get_object(self, Bucket: str, Key: str):  # noqa: N803 - botocore's own casing
+        def get_object(self, **_kw):
             return {"ContentLength": t.MAX_TRANSCRIPT_BYTES + 1, "Body": self.body}
 
-    reader = t.S3TranscriptReader("bkt")
+    reader = t.S3TranscriptReader("bkt", expected_owner="111122223333")
     client = _Client()
     reader._client = client
 
@@ -100,10 +100,10 @@ def test_a_lying_header_does_not_get_past_the_streaming_ceiling() -> None:
     """A header is a claim by the source, so the read enforces the bound itself."""
 
     class _Client:
-        def get_object(self, Bucket: str, Key: str):  # noqa: N803 - botocore's own casing
+        def get_object(self, **_kw):
             return {"ContentLength": 10, "Body": _Body(b"a" * (t.MAX_TRANSCRIPT_BYTES + 1))}
 
-    reader = t.S3TranscriptReader("bkt")
+    reader = t.S3TranscriptReader("bkt", expected_owner="111122223333")
     reader._client = _Client()
 
     with pytest.raises(t.TranscriptTooLarge, match="exceeds"):

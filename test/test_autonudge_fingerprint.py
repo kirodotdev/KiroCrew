@@ -364,13 +364,10 @@ class TestTheGoalTokenIsRotatedOnEveryLoad:
             svc.stop()
 
     def test_a_persisted_token_that_is_not_generator_shaped_is_re_minted(self, tmp_path) -> None:
-        """GPT 5.6 (BLOCKING, security): the fingerprint routed around the egress scrub.
+        """The fingerprint must not route around the egress scrub.
 
-        ``goal_token`` is served verbatim as ``message_fingerprint``, and the load path only
-        minted one when the field was EMPTY -- so a credential-shaped value hand-written or
-        migrated into the store reached every REST and websocket client untouched, past the
-        scrub this change exists to add. ADDRESSING_FIELDS are exempt, and this field was
-        effectively a third one nobody declared.
+        ``goal_token`` is served verbatim as ``message_fingerprint``, so a credential-shaped
+        value hand-written into the store would reach every REST and websocket client.
         """
         planted = "AKIAIOSFODNN7EXAMPLE"
         (tmp_path / "autonudge.json").write_text(
@@ -405,17 +402,11 @@ class TestTheGoalTokenIsRotatedOnEveryLoad:
             svc.stop()
 
     def test_a_valid_token_is_rotated_on_every_load(self, tmp_path) -> None:
-        """INVERTED: a valid token surviving the load unchanged is the defect, not the rule.
+        """A token from before the restart is not honoured after the load.
 
-        GPT 5.6 blocked on that: while the process is down a human can hand-edit the goal
-        in the store without touching its token, so a fingerprint issued BEFORE the restart
-        still authorised overwriting the edit. The token is an authorisation, and nothing
-        this service can read tells it the file was untouched, so it stops honouring one it
-        did not issue this load. The cost is a 409 on the first baselined save after a
-        restart, which is a refetch, not a lost write.
-
-        Rotated IN MEMORY only: the comparison reads ``loop.goal_token``, so forcing a
-        rewrite per boot would buy nothing and break the clean-load-no-rewrite invariant.
+        A human can hand-edit the goal while the process is down, so a pre-restart token
+        would authorise overwriting the edit; the cost is one 409 and a refetch. Rotated
+        IN MEMORY only, to keep the clean-load-no-rewrite invariant.
         """
         good = "0123456789abcdef0123456789abcdef"
         (tmp_path / "autonudge.json").write_text(
@@ -452,12 +443,10 @@ class TestTheGoalTokenIsRotatedOnEveryLoad:
 
     @pytest.mark.asyncio
     async def test_a_pre_restart_token_cannot_overwrite_a_hand_edited_goal(self, tmp_path) -> None:
-        """GPT 5.6 (BLOCKING): the restart + hand-edit interleaving, end to end.
+        """The restart + hand-edit interleaving, end to end.
 
-        A client reads the goal and holds its token. The service stops. A human edits the
-        goal in the store file and leaves the token alone -- nothing else could, since the
-        token is opaque. On restart the client's stale token must not authorise the
-        write, or the human's edit is silently replaced.
+        A client holds a token, the service stops, a human edits the goal but not the
+        opaque token. After restart the stale token must not authorise the write.
         """
         store = tmp_path / "autonudge.json"
         issued = "0123456789abcdef0123456789abcdef"

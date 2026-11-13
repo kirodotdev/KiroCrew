@@ -1,13 +1,8 @@
 """Registration ratchet for the ``kirocrew-panel`` MCP server.
 
-The property this file exists to pin: a default agent pays NOTHING for this
-capability. Not a tool-list entry, not a line of context, not a spawned backend.
-It is an assignable set that a long-running agent's own spec names, and every
-other agent must be unable to tell it exists.
-
-Modelled on ``test_mcp_dashboard_registration.py`` — the same registries have to
-agree, and the same silence has to hold for an agent that was never granted the
-set.
+A default agent pays nothing for this capability: no tool-list entry, no context, no
+backend. Only an agent whose own spec names the set may see it. Modelled on
+``test_mcp_dashboard_registration.py``.
 """
 
 from __future__ import annotations
@@ -57,41 +52,25 @@ class TestRegistryParity:
     def test_it_carries_no_auto_approve(self) -> None:
         """An autoApproved MCP tool never reaches ``hooks.on_tool_call``.
 
-        That is where the deny floor, the sensitive-path check and the
-        governance ceiling live. This tool's input derives from text the agent
-        read unattended, so a blanket local approval must never be minted here;
-        an agent that needs a prompt-free write names the individual verbs in
-        its own spec, which is the deliberate, narrower path.
+        That hook holds the deny floor and governance ceiling, and this tool's input comes
+        from text read unattended. An agent wanting prompt-free writes names verbs itself.
         """
         assert "autoApprove" not in agent._MANAGED_MCP_SERVERS[PANEL_SERVER]
 
 
 class TestTheDeclarationSurfacesBeyondTheRegistries:
-    """The surfaces this file's first version MISSED, pinned so the next one cannot.
+    """Declaration surfaces beyond the seven registries in ``TestRegistryParity``.
 
-    ``TestRegistryParity`` above pinned seven registries and reported "7 of 7,
-    set-equality holds" -- and the change still shipped with four other
-    declaration surfaces empty, each caught by a suite nobody thought to run.
-    Registering a managed server is not seven edits, it is eleven, and a
-    completeness claim that measures only the seven is the thing that went wrong.
-
-    So each test here asserts a DERIVED property ("this module has a
-    classification") rather than a literal, which is what makes it fire for the
-    NEXT server instead of only documenting this one.
+    Each test asserts a derived property rather than a literal, so it fires for the
+    next managed server too.
     """
 
     def test_every_managed_server_appears_in_the_architecture_spec(self) -> None:
         """AGENTS.md requires same-commit spec updates, and this is the check for it.
 
-        ``docs/architecture/mcp.md`` carries the server/tool table an operator reads
-        to learn what a managed server IS; ``mcp-shareability.md`` reasons about the
-        managed set by name. Both went stale when this server was added -- only the
-        feature-map row was touched -- and no suite noticed, because a prose table is
-        exactly the surface no registry parity test covers.
-
-        Derived from ``_MANAGED_MCP_SERVERS`` rather than checking for
-        ``kirocrew-panel``, so the NEXT server fails here instead of shipping the
-        same omission a third time.
+        ``docs/architecture/mcp.md`` and ``mcp-shareability.md`` name each managed server
+        in prose, which no registry parity test covers. Derived from
+        ``_MANAGED_MCP_SERVERS``.
         """
         from pathlib import Path
 
@@ -113,11 +92,8 @@ class TestTheDeclarationSurfacesBeyondTheRegistries:
     def test_the_shareability_spec_does_not_undercount_the_managed_set(self) -> None:
         """A spec that counts the set in prose goes stale silently.
 
-        ``mcp-shareability.md`` states how many managed servers advertise the
-        caller-identity block. The sentence was written when there were four and
-        stayed at four -- a wrong statement about a security property, in the
-        document that reasons about it. Asserted as: no number word BELOW the real
-        count may qualify "managed servers".
+        ``mcp-shareability.md`` counts the servers advertising the caller-identity block,
+        so no number word below the real count may qualify "managed servers".
         """
         import re
         from pathlib import Path
@@ -144,11 +120,8 @@ class TestTheDeclarationSurfacesBeyondTheRegistries:
     def test_the_schema_registry_is_visible_in_the_posture_report(self) -> None:
         """A validated tool invisible in the posture report reads as unvalidated.
 
-        ``validation`` gained ``MCP_PANEL_SCHEMAS`` and
-        ``security_posture._SCHEMA_REGISTRY_NAMES`` did not, so the tools were
-        gated but absent from the report an operator reads to see what is gated.
-        Derived from ``validation``'s own registries, so a NEW ``MCP_*_SCHEMAS``
-        fails here too.
+        Every ``MCP_*_SCHEMAS`` in ``validation`` must be listed in
+        ``security_posture._SCHEMA_REGISTRY_NAMES``.
         """
         from kiro_crew import security_posture, validation
 
@@ -191,14 +164,8 @@ class TestTheDeclarationSurfacesBeyondTheRegistries:
     def test_every_fenced_crew_path_has_a_sandbox_disposition(self) -> None:
         """A tool-gate fence is not a control on its own.
 
-        The tool gate stops the agent's FILE TOOLS from writing a path; any spawned
-        shell bypasses it entirely unless the OS sandbox also has a disposition for
-        that path. Asserted against whichever tier fences the leaf rather than one
-        named tier, because the two tiers answer different questions: the
-        read-plus-write floor refuses the read as well, and a path whose read is
-        legitimate belongs on the write-only tier. Which tier a leaf sits on is that
-        leaf's argument to make; having a sandbox disposition is not optional either
-        way, which is what this pins.
+        The tool gate stops only file tools; a spawned shell bypasses it unless the OS
+        sandbox also fences the path. Either tier (read-plus-write or write-only) counts.
         """
         from kiro_crew import agent_panel, sandbox, security
 
@@ -291,23 +258,11 @@ class TestWhatThisSetGrants:
     it actually needs.
     """
 
-    #: Widened for contract v3's part 6, which puts the dynamic dashboard's agent
-    #: surface on THIS server rather than a new one. That is the right call under
-    #: this class's own rule and worth saying why: a dashboard field is published
-    #: crew state read in the crewmate's own drawer, which is exactly the class
-    #: ``panel_publish`` already is. The two new tools derive their target from the
-    #: vetted caller like their siblings, write only that caller's own crew log,
-    #: and need no gate this set does not already have -- so putting them in a
-    #: server of their own would ask the user to grant the same thing twice.
-    #: Widened again for the page's own four. They pass this class's rule for the
-    #: reason ``agent._MEMBER_PANEL_GRANTS`` records beside the grant: the target is
-    #: the calling crewmate's own page, derived from the vetted caller like every
-    #: sibling here, ``dashboard_preview`` records nothing at all, and ``apply``
-    #: takes no argument so it cannot be pointed at a page nobody looked at. A
-    #: server of their own would ask the user to grant the same thing twice.
-    #: ``dashboard_snapshot`` joins as a read of the same page: it draws the calling
-    #: crewmate's own page in force over the values its tab already shows, and changes
-    #: nothing on the page.
+    #: The dashboard tools live here, not on a new server: each targets only the
+    #: vetted caller's own crew log or page, like ``panel_publish``, and needs no
+    #: extra gate, so a separate server would ask the user to grant the same thing
+    #: twice. ``apply`` takes no argument; ``dashboard_preview`` and
+    #: ``dashboard_snapshot`` change nothing.
     GRANTED_TOOLS = {
         "panel_publish",
         "panel_templates",

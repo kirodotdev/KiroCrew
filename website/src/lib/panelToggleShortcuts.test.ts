@@ -39,6 +39,14 @@ describe('defaults', () => {
     expect(DEFAULT_PANEL_TOGGLE_BINDINGS['left-sidebar']).toBeNull()
   })
 
+  /* No free chord exists for these (#13396): Alt+` is chat-mru, and VS Code's
+     Cmd+Shift+[ / ] sits beside the chat bracket chords, so the user picks one. */
+  it('ships the terminal tab commands unbound', () => {
+    for (const id of ['terminal-close', 'terminal-prev', 'terminal-next'] as const) {
+      expect(DEFAULT_PANEL_TOGGLE_BINDINGS[id]).toBeNull()
+    }
+  })
+
   /* The terminal commands ship VS Code's chords, literal Control on every
      platform: Ctrl+` toggles, Ctrl+Shift+` adds a terminal. Each spends one shell
      keystroke (both skip the shell by design), so this assertion pins WHICH ones:
@@ -88,18 +96,20 @@ describe('defaults', () => {
   })
 
   it('covers exactly the known panel command ids', () => {
-    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new'])
+    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'side-terminal', 'terminal', 'terminal-close', 'terminal-new', 'terminal-next', 'terminal-prev'])
   })
 
   /* Mirrors VS Code's `terminal.integrated.commandsToSkipShell`: only the commands
      that must survive terminal focus are listed, and everything else is conceded
      to the PTY. The terminal toggle qualifies because opening that panel focuses
      its own shell — conceding there makes the chord one-way; new-terminal is
-     pressed from inside a shell to get a second one. */
-  it('lets ONLY the two terminal commands skip the shell', () => {
-    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal', 'terminal-new'])
+     pressed from inside a shell to get a second one. The side-panel terminal
+     toggle joins for the toggle's reason, and the tab commands because a shell
+     is where the user is when they want the next tab. */
+  it('lets ONLY the terminal commands skip the shell', () => {
+    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal', 'terminal-new', 'terminal-close', 'terminal-prev', 'terminal-next', 'side-terminal'])
     for (const id of PANEL_TOGGLE_IDS) {
-      if (!id.startsWith('terminal')) expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
+      if (!id.endsWith('terminal') && !id.startsWith('terminal')) expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
     }
   })
 })

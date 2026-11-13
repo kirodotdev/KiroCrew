@@ -68,9 +68,9 @@ export default function AgentPillBar({
   //       index-keyed row holding focus unmounts. Focus falls to <body>, from
   //       where Tab escapes the still-open menu and the Escape branch below is
   //       unreachable (it is bound to the menu element, not the document).
-  //   (b) a successful 'Add a link' CLOSES the menu from the host with focus
-  //       still inside it, orphaning focus on <body> rather than returning it
-  //       to the paperclip the way an explicit Escape does.
+  //   (b) the host CLOSES the menu while focus is still inside it, orphaning
+  //       focus on <body> rather than returning it to the paperclip the way an
+  //       explicit Escape does.
   // A plain effect, NOT the mochi-ContextMenu restore-on-unmount shape: this
   // component stays mounted across both paths, so there is no unmount to hang
   // the restore on — the prop change IS the event.
@@ -140,6 +140,7 @@ export default function AgentPillBar({
             key={agent.id}
             primary={enabled}
             onClick={() => onToggleAgent(agent.id, !enabled)}
+            aria-pressed={enabled}
             title={title}
             className={`rounded-full ${enabled ? '' : 'opacity-60 hover:opacity-100'}`}
           >
@@ -147,6 +148,7 @@ export default function AgentPillBar({
             {agent.name}
             {enabled && !muted && status === 'active' && (
               <span
+                role="img"
                 className="w-1.5 h-1.5 rounded-full bg-ok animate-pulse"
                 aria-label={i18nT('apps.meetings.pillBar.listening')}
               />
@@ -261,7 +263,11 @@ export default function AgentPillBar({
                 <button
                   type="button"
                   role="menuitem"
-                  onClick={onAddAttachment}
+                  onClick={() => {
+                    // The dialog restores focus here after the menu closes.
+                    attachBtnRef.current?.focus({ preventScroll: true })
+                    onAddAttachment()
+                  }}
                   className="w-full text-left px-2 py-1 text-[13px] text-accent hover:bg-bg-hover rounded cursor-pointer bg-transparent border-none"
                 >
                   <Plus className="lucide-inline" />

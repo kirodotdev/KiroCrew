@@ -250,20 +250,47 @@ class TestLegacyCustomPackContinuity:
         src = _legacy_pack(tmp_path / "src" / "pack", _LEGACY_A)
 
         result: dict[str, object] = {}
+        done = threading.Event()
 
         def _install() -> None:
-            result["out"] = th_mod._do_install("local", {"path": str(src)})
+            try:
+                result["out"] = th_mod._do_install("local", {"path": str(src)})
+            finally:
+                done.set()
 
-        lock = th_mod._theme_install_lock("custom")
-        # flake-ok: pre-existing unbounded acquire of the module-global per-slug install lock, moved verbatim; tracked for a de-flake pass
-        lock.acquire()
+        real_lock_for = th_mod._theme_install_lock
+        reached = threading.Event()
+
+        class _SignalledLock:
+            """The real legacy lock, reporting when the install starts to wait for it."""
+
+            def __init__(self, inner: threading.Lock) -> None:
+                self._inner = inner
+
+            def __enter__(self) -> bool:
+                reached.set()
+                return self._inner.__enter__()
+
+            def __exit__(self, *exc: object) -> None:
+                self._inner.__exit__(*exc)
+
+        def _signalled_lock_for(slug: str) -> "threading.Lock | _SignalledLock":
+            real = real_lock_for(slug)
+            return _SignalledLock(real) if slug == "custom" else real
+
+        lock = real_lock_for("custom")
+        assert lock.acquire(timeout=30.0), "the legacy install lock was not free within 30 s"
+        monkeypatch.setattr(th_mod, "_theme_install_lock", _signalled_lock_for)
         worker = threading.Thread(target=_install, daemon=True)
         worker.start()
         try:
-            # Cannot reach its decision while the lock is held.
-            # flake-ok: pre-existing 2 s join that expires while the lock is held, before the still-blocked check, moved verbatim; tracked for a de-flake pass
-            worker.join(timeout=2.0)
-            assert worker.is_alive() and "out" not in result
+            # The install is at the legacy lock before the window starts, so the
+            # window below measures it blocked there, not still staging the source.
+            assert reached.wait(timeout=30.0), "the install never asked for the legacy lock"
+            # Cannot reach its decision while the lock is held: the install
+            # stays blocked for the whole 2 s window and reports nothing.
+            assert not done.wait(timeout=2.0), "install finished while the legacy lock was held"
+            assert "out" not in result
             # Stand in for a concurrent install that promoted a DIFFERENT pack.
             shutil.rmtree(legacy)
             _legacy_pack(tv_mod._installed_theme_dir("custom"), _LEGACY_B)

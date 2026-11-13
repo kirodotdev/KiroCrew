@@ -11,7 +11,7 @@
  * registry documents (`appOnly`, `hiddenFromNav`, `previewFlag`, `pinnable`)
  * means exactly what `registry.ts` says it means.
  */
-import { PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 
 /** Sidebar group bucket; `registry.ts` re-exports it as `SurfaceGroup`. */
 export type SurfaceGroup = 'Main' | 'Apps' | 'Platform' | 'Bottom'
@@ -49,8 +49,8 @@ export const BUILTIN_SURFACE_NAV = {
     group: surfaceMachineValue('Main'), slotMode: '',
   },
   members: {
-    navId: 'members', route: '/members', label: surfaceMachineValue('Mates'), labelKey: 'nav.crew_members',
-    group: surfaceMachineValue('Main'), slotMode: 'member', previewFlag: PREVIEW_CREW,
+    navId: 'members', route: '/members', label: surfaceMachineValue('Bots'), labelKey: 'nav.crew_members',
+    group: surfaceMachineValue('Main'), slotMode: 'member',
   },
   notifications: {
     navId: 'notifications', route: '/notifications', label: surfaceMachineValue('Notifications'),
@@ -96,7 +96,7 @@ export const BUILTIN_SURFACE_NAV = {
 export const CAPABILITY_SUB_ITEM_NAV: readonly { tab: string; labelKey: string; label: string }[] = [
   { tab: 'crews', labelKey: 'pages.capabilitiesPage.crews_label', label: surfaceMachineValue('Crews') },
   { tab: 'skills', labelKey: 'pages.capabilitiesPage.skills_label', label: surfaceMachineValue('Skills') },
-  { tab: 'mcp', labelKey: 'pages.capabilitiesPage.connections_label', label: surfaceMachineValue('Connections') },
+  { tab: 'mcp-servers', labelKey: 'nav.mcp_servers', label: surfaceMachineValue('MCP Servers') },
   { tab: 'knowledge', labelKey: 'pages.capabilitiesPage.knowledge_label', label: surfaceMachineValue('Knowledge') },
   { tab: 'prompts', labelKey: 'pages.capabilitiesPage.prompts_label', label: surfaceMachineValue('Prompts') },
   { tab: 'steering', labelKey: 'pages.capabilitiesPage.steering_label', label: surfaceMachineValue('Steering files') },

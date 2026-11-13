@@ -4,8 +4,10 @@ Persists browser push subscriptions so the delivery sink can fan a
 notification out to every registered endpoint. Mirrors the concurrency and
 durability discipline of ``notifications/settings.py``: a module lock
 serializes writers, readers are lock-free because every mutation rebinds the
-in-memory dict wholesale, and a corrupt file degrades to empty rather than
-taking down the gateway.
+in-memory dict wholesale, and a corrupt file reads as empty rather than taking
+down the gateway. A save never replaces a file it could not read: one that is
+not usable JSON is moved to ``subscriptions.json.corrupt-<utc>`` first, and one
+whose read fails is left alone and the save raises.
 
 Stored in ``~/.kiro/crew/web-push/subscriptions.json`` keyed by the subscription
 endpoint (globally unique, and what 404/410 pruning keys off)::
@@ -23,7 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -32,6 +36,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.link_unfurl import UnfurlRejected, vet_unfurl_url
 from kiro_crew.platform_owner_compat import make_owner_only_dir
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,10 @@ def _store_path() -> Path:
 
 class PushSubscriptionError(ValueError):
     """A subscription payload is missing the endpoint or key material."""
+
+
+class PushStoreUnreadable(OSError):
+    """The subscriptions file is there but could not be read, so a save would replace it unread."""
 
 
 def _reject_internal_endpoint(endpoint: str) -> None:
@@ -119,6 +128,59 @@ def _has_push_shape(entry: dict[str, Any]) -> bool:
     )
 
 
+def _read_strict(path: Path) -> dict[str, dict[str, Any]]:
+    """The stored subscriptions; ``{}`` only when the file is absent.
+
+    One leading UTF-8 byte-order mark reads normally. A failed read raises
+    ``OSError``; a file that is not a JSON object with a ``subscriptions``
+    object raises ``ValueError`` (or ``RecursionError`` for nesting past the
+    interpreter's limit), so a writer can tell "read, and empty" from "not read".
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    data = loads_user_json(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name} is a JSON {type(data).__name__}, not an object")
+    raw = data.get("subscriptions", {})
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} 'subscriptions' is not an object")
+    return {
+        ep: dict(entry)
+        for ep, entry in raw.items()
+        if isinstance(entry, dict) and _has_push_shape(entry)
+    }
+
+
+def _move_unreadable_aside(path: Path, reason: object) -> None:
+    """Rename *path* to ``<name>.corrupt-<UTC stamp>`` so the save after it keeps its bytes.
+
+    Called under :data:`_lock`. A rename that fails raises
+    :class:`PushStoreUnreadable` and nothing is written.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    suffix = 1
+    while os.path.lexists(target):
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        os.rename(path, target)
+    except FileNotFoundError:
+        return  # Gone since the read: there is nothing left to keep.
+    except OSError as exc:
+        raise PushStoreUnreadable(
+            f"{path} could not be read ({reason}) or moved aside ({exc}); not saving over it"
+        ) from exc
+    logger.warning(
+        "%s could not be read (%s); kept its contents at %s and saved the new subscriptions",
+        path,
+        reason,
+        target.name,
+    )
+
+
 class PushSubscriptionStore:
     """Load/store browser push subscriptions. One instance per gateway."""
 
@@ -128,6 +190,9 @@ class PushSubscriptionStore:
         # and every caller reaches the store from a worker thread.
         self._subs: dict[str, dict[str, Any]] = {}
         self._loaded = False
+        # Whether ``_subs`` matches the file. False after a read that failed, so
+        # ``add`` reads again before it writes instead of saving over the file.
+        self._in_sync = False
 
     def _ensure_loaded(self) -> None:
         """Read the persisted subscriptions once, on the first call that needs them."""
@@ -139,7 +204,7 @@ class PushSubscriptionStore:
                 self._loaded = True
 
     def _load(self) -> None:
-        """Read the persisted subscriptions; a corrupt file degrades to empty.
+        """Read the persisted subscriptions; a corrupt file reads as empty.
 
         No DNS here. The address rule is enforced where it matters, at connect
         time, by the delivery resolver (``web_push.PublicAddressResolver``), so
@@ -148,18 +213,36 @@ class PushSubscriptionStore:
         """
         path = _store_path()
         try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                raw = data.get("subscriptions", {})
-                if isinstance(raw, dict):
-                    self._subs = {
-                        ep: dict(entry)
-                        for ep, entry in raw.items()
-                        if isinstance(entry, dict) and _has_push_shape(entry)
-                    }
+            self._subs = _read_strict(path)
+            self._in_sync = True
         except Exception:
             logger.warning("Failed to load %s; starting empty", path, exc_info=True)
             self._subs = {}
+            self._in_sync = False
+
+    def _rebase_before_write(self) -> None:
+        """Make ``_subs`` match the file before the first write after a failed load.
+
+        Called under :data:`_lock`. A read that succeeds now rebases memory on
+        the file. A file that still is not usable JSON is moved aside
+        (:func:`_move_unreadable_aside`) and the write starts empty. A read that
+        fails again raises :class:`PushStoreUnreadable`: the bytes may be a good
+        store, so the file stays as it is and nothing is written.
+        """
+        if self._in_sync:
+            return
+        path = _store_path()
+        try:
+            subs = _read_strict(path)
+        except OSError as exc:
+            raise PushStoreUnreadable(
+                f"{path} could not be read ({exc}); not saving over it"
+            ) from exc
+        except (ValueError, RecursionError) as exc:
+            _move_unreadable_aside(path, exc)
+            subs = {}
+        self._subs = subs
+        self._in_sync = True
 
     def all(self) -> list[dict[str, Any]]:
         """Snapshot of every stored subscription (lock-free once loaded)."""
@@ -176,6 +259,7 @@ class PushSubscriptionStore:
         endpoint, entry = _validate(subscription)
         self._ensure_loaded()
         with _lock:
+            self._rebase_before_write()
             candidate = dict(self._subs)
             candidate[endpoint] = entry
             # Owner-only: each entry holds a device's auth + p256dh secret.

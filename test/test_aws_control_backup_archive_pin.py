@@ -1,24 +1,12 @@
 """The backup archive binds its bytes to one descriptor: what it CHECKS is what it UPLOADS.
 
-``test_aws_control_backup.py`` covers the two push paths with ``put_file`` mocked
-out, so nothing there sees which file the upload would actually have opened. That
-is the question these tests ask. The archive is staged in a directory a same-UID
-process can write, so a NAME resolved once per step -- the entry-set fingerprint,
-the size, the AWS CLI ``--body``, the body fingerprint -- is a separate answer per
-step, and a process that replaces the file between two of them makes the upload
-carry bytes nothing checked, with no recall once the object is sent.
+The archive is staged where a same-UID process can write, so each step that resolves
+the name could see a different file. ``_open_pinned_archive_fd`` opens it once and
+size, fingerprints and upload body all read that descriptor, on every platform.
 
-The archive is opened ONCE through a checked descriptor
-(``_open_pinned_archive_fd``: ``O_NOFOLLOW`` + ``S_ISREG`` + ``st_nlink == 1`` +
-owner, with a Windows deny-write open) and the size, both fingerprints and the
-upload body are read from THAT descriptor, so no step re-resolves the name. The
-same inode pin is used on every platform the backup runs on -- Linux, macOS, the
-BSDs, Windows.
-
-So the whole-run tests here go through the REAL ``storage.put_file`` and stub the
-subprocess chokepoint, reading the body the way the CLI child would. A swap
-performed in the window immediately before that child resolves the body is what
-separates a name-based upload from a descriptor-bound one.
+These tests go through the real ``storage.put_file`` and stub the subprocess
+chokepoint; a swap just before the CLI child resolves the body is what separates a
+name-based upload from a descriptor-bound one.
 """
 
 from __future__ import annotations
@@ -274,13 +262,10 @@ def _tar_member_prefixes(body: bytes) -> set[str]:
 
 
 class TestPutFileBodySource:
-    """What ``put_file`` sends: the name for a bare-path body, the descriptor for a
-    handed-over ``body_fd``.
+    """``put_file`` sends the name for a bare path and the descriptor for ``body_fd``.
 
-    The substitution refusals for the backup archive live on
-    ``_open_pinned_archive_fd`` (``TestOpenPinnedArchiveFd``), which is where the
-    archive callers pin the descriptor before handing it to ``put_file``. The bare
-    path holds the body only by the name and is not covered here.
+    Substitution refusals live in ``TestOpenPinnedArchiveFd``, where callers pin the
+    descriptor.
     """
 
     @pytest.fixture(autouse=True)
@@ -510,12 +495,9 @@ class TestBackupRunsWithoutASealedMemfd:
 class TestStagingRootIsPinnedBeforeMkdtemp:
     """``pinned_staging`` pins the staging ROOT before ``mkdtemp`` names a child.
 
-    ``mkdtemp(dir=str(staging_root()))`` re-resolves the root by name. If the
-    root is swapped for a link (or, on Windows, a reparse point to a remote
-    share) between validation and this call, the child -- and the outbound
-    access ``mkdtemp`` triggers -- lands under the planted target. Pinning the
-    root first refuses a link at its name and blocks its rename for the scope,
-    so the ordering is the whole guarantee and is what this pins.
+    ``mkdtemp`` re-resolves the root by name, so a root swapped for a link or a
+    Windows reparse point would put the child under the planted target. The ordering
+    is the guarantee.
     """
 
     def test_the_root_is_pinned_before_the_child_is_created(self, tmp_path, monkeypatch):
@@ -560,6 +542,6 @@ class TestStagingRootIsPinnedBeforeMkdtemp:
             pytest.skip("creating a symlink needs privilege on this host")
         monkeypatch.setattr(storage, "staging_root", lambda: link_root)
 
-        with pytest.raises(Exception):
+        with pytest.raises(OSError):
             with storage.pinned_staging("probe-"):
                 pass

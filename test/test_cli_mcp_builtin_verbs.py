@@ -119,14 +119,10 @@ class TestDispatch:
         assert calls == ["mochi"]
 
     def test_moduleless_dispatch_exits_with_clean_message(self, monkeypatch, tmp_path, capsys):
-        """End-to-end pin of the contract: if a module-less verb ever
-        reaches dispatch (predicate stubbed True so the parser registers it),
-        the shared helper refuses with a one-line stderr message and exit 1 —
-        never a raw ModuleNotFoundError traceback.
+        """A module-less verb that reaches dispatch exits 1 with a one-line message.
 
-        Note: the real import attempt executes the builtin's parent package
-        (its ``__init__``), permanently populating ``sys.modules`` for this
-        worker — harmless for the probe test, which snapshots inside itself."""
+        The real import runs the parent package's ``__init__`` and fills ``sys.modules``
+        for this worker; the probe test snapshots inside itself, so that is harmless."""
         name = _moduleless_builtins()[0]
         monkeypatch.setattr(cli, "_builtin_mcp_server_available", lambda _bname: True)
         with pytest.raises(SystemExit) as excinfo:

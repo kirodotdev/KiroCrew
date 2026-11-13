@@ -12,12 +12,13 @@
  * a viewport-bounded column wide enough for a real release's section, which does
  * not change width when the full changelog is opened.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 import { renderWithProviders } from './helpers'
 import type { RootState } from '../store'
 import App from '../App'
+import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -162,6 +163,46 @@ describe('changelog modal labeling', () => {
     expect(screen.queryByTestId('changelog-stale-notice')).toBeNull()
   })
 
+  it('takes focus on open, keeps Tab inside, and closes on Escape with focus restored', async () => {
+    // The modal opens on mount, so whatever holds focus then is what it hands
+    // focus back to. Without one, the only place left is <body>.
+    const opener = document.createElement('button')
+    opener.textContent = 'opener'
+    document.body.appendChild(opener)
+    opener.focus()
+    onTestFinished(() => opener.remove())
+    renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
+    const dialog = await screen.findByTestId('changelog-modal')
+    // Focus moves in once the dialog's effects have run.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+
+    const items = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE))
+    const first = items[0]
+    const last = items[items.length - 1]
+    expect(first).not.toBe(last)
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+
+    // A page shortcut typed inside the dialog stays inside it, so no second
+    // overlay (the command palette) opens to fight the trap for focus.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      fireEvent.keyDown(last, { key: 'k', ctrlKey: true })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+
+    fireEvent.keyDown(last, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('changelog-modal')).toBeNull())
+    // Focus goes back to what held it before, not lost with the unmounted dialog.
+    expect(document.activeElement).toBe(opener)
+  })
+
   it('is sized for a real release and keeps its width when the full changelog opens', async () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
 
@@ -185,5 +226,43 @@ describe('changelog modal labeling', () => {
     await waitFor(() => expect(dialog).toHaveClass('max-w-3xl'))
     expect(dialog).not.toHaveClass('max-w-md')
     expect(dialog).not.toHaveClass('max-w-2xl')
+  })
+
+  it('fetches the full changelog once on a double click, so a hidden one stays hidden', async () => {
+    const { api } = await import('../api/client')
+    const changelogMock = vi.mocked(api.changelog)
+    renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
+    await screen.findByTestId('changelog-modal')
+    const before = changelogMock.mock.calls.length
+
+    let answer: (v: { content: string }) => void = () => {}
+    changelogMock.mockImplementationOnce(() => new Promise(r => { answer = r }))
+    const toggle = screen.getByText(i18nT('app.view_full_changelog'))
+    fireEvent.click(toggle)
+    fireEvent.click(toggle)
+    expect(changelogMock.mock.calls.length - before).toBe(1)
+
+    answer({ content: CHANGELOG })
+    await screen.findByTestId('changelog-full')
+    fireEvent.click(screen.getByText(i18nT('app.hide_full_changelog')))
+    await waitFor(() => expect(screen.queryByTestId('changelog-full')).toBeNull())
+    // No second fetch went out, so none is left to reopen it.
+    expect(changelogMock.mock.calls.length - before).toBe(1)
+  })
+
+  it('says so when the full changelog fails to load, and clears it on a working retry', async () => {
+    const { api } = await import('../api/client')
+    const changelogMock = vi.mocked(api.changelog)
+    renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
+    await screen.findByTestId('changelog-modal')
+
+    changelogMock.mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(screen.getByText(i18nT('app.view_full_changelog')))
+    expect(await screen.findByTestId('changelog-full-error')).toHaveTextContent(i18nT('app.couldn_t_load_full_changelog'))
+    expect(screen.queryByTestId('changelog-full')).toBeNull()
+
+    fireEvent.click(screen.getByText(i18nT('app.view_full_changelog')))
+    await screen.findByTestId('changelog-full')
+    expect(screen.queryByTestId('changelog-full-error')).toBeNull()
   })
 })

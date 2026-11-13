@@ -41,6 +41,10 @@ export const selectSidebarWorkflowActive = createSelector(
       // no slot — the same exclusion runBelongsToSlot encodes.
       if (r.status !== 'running' || !r.sessionKey) continue
       const key = normalizeRunSessionKey(r.sessionKey)
+      // A bare `dashboard_` / `dashboard:` normalizes to '', the same key a
+      // peer row looks itself up with (it has no local key). It names no
+      // session, so it must not light up every peer row.
+      if (!key) continue
       const cur = active[key]
       if (cur) cur.count += 1
       else active[key] = { count: 1, name: r.name || r.run_id, phase: r.phase || '' }

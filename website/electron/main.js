@@ -23,6 +23,7 @@ const launchLog = createLaunchLog({
 });
 
 const { findConfiguredDashboardPort } = require("./data-home");
+const { onQuitForUpdate } = require("./close-action");
 const { defaultedPort } = require("./gateway-auth-hint");
 const {
   classifyBundleLocation,
@@ -31,6 +32,7 @@ const {
   describeLocation,
 } = require("./bundle-location");
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
+const { themeSplashUrl } = require("./theme-splash");
 const {
   fallbackLocalPort,
   isSelectablePort,
@@ -40,11 +42,20 @@ const {
 } = require("./host-config");
 const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
+const { STORE_FILE_MODE, tightenStoreFileMode } = require("./store-file-mode");
 const { resolveHome } = require("./home-dir");
 const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
+const { EDITION_LTS, readBakedEdition } = require("./edition");
 const { describeSingletonLock } = require("./singleton-lock");
+const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
+const { describeChromiumSandboxOff, showChromiumSandboxNotice } = require("./chromium-sandbox-notice");
+const { findKirocrewBin } = require("./find-bin");
+const { resolveLinuxInstall, readExternallyManaged, runStartupApply } = require("./auto-update");
+const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
+const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
+const { watchSessionLock } = require("./session-lock");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
@@ -53,14 +64,17 @@ const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { initMochi, shutdownMochi } = require("./mochi/index");
-const { borrowSessionToken } = require("./mochi-session-token");
+const { borrowSessionToken, sessionCookieHeader } = require("./mochi-session-token");
+const { createAppWindowHost } = require("./app-window-host");
 const { clearCacheOnUpgrade } = require("./upgrade-cache");
 const {
   initCrewCompanion,
   shutdownCrewCompanion,
   suspendCrewCompanion,
   resumeCrewCompanion,
+  hostsDashboard,
 } = require("./crew-companion/index");
+const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
 // An update install stops the gateway and quits the app. Close the Crew
 // Companion overlay at dispatch so it does not float orphaned over the vanished
@@ -68,13 +82,22 @@ const {
 // gateway is restored. suspend/resume keep the companion's loop and IPC handlers
 // intact, so the failure path needs no re-init. Both are best-effort — a
 // companion teardown must never block an update or its recovery.
+// The same holds for the windows apps declare through the desktop window host.
 function closeCrewCompanionForUpdate() {
   try { suspendCrewCompanion(); } catch { /* best effort */ }
+  try { appWindowHost?.suspend(); } catch { /* best effort */ }
 }
 function reopenCrewCompanionAfterUpdate() {
   try { resumeCrewCompanion(); } catch { /* best effort */ }
+  try { appWindowHost?.resume(); } catch { /* best effort */ }
 }
+/** The desktop windows and shortcuts apps declare in their manifest; see app-window-host.js. */
+let appWindowHost = null;
 const { createGatewaySupervisor } = require("./gateway-supervisor");
+const {
+  createShellBundleWatch,
+  promptRestartForPrunedBundle,
+} = require("./shell-bundle-watch");
 const { createWindowLifecycle } = require("./window-lifecycle");
 const { createIpcRegistrar } = require("./ipc-registrar");
 const { createDownloadExpectations } = require("./download-expectations");
@@ -111,6 +134,8 @@ const renameSeedCarriedSettings = seedRenamedStore(app.getPath("userData"), {
 const isFreshInstall = !storeFileExistedBeforeBoot && !renameSeedCarriedSettings;
 
 const store = new Store({
+  // Owner-only on every save; see store-file-mode.js.
+  configFileMode: STORE_FILE_MODE,
   defaults: {
     remoteHost: "",
     kirocrewBinPath: DEFAULT_REMOTE_BIN,
@@ -125,12 +150,15 @@ const store = new Store({
     runLocalGateway: true,
     // "background" or "quit". See close-action.js.
     closeAction: "background",
+    // Only false hides it, and only while the close button quits. See tray-icon.js.
+    showTrayIcon: true,
     linuxFrameless: null,
     // Written by gpu-crash-fallback.js when the GPU process dies at startup;
     // read before Chromium initializes on the next launch.
     gpuSoftwareFallback: null,
   },
 });
+tightenStoreFileMode(store.path, { log: (message) => glog("store mode: " + message) });
 
 // Opt the summon hotkey OUT for FRESH installs only. Before this, a null/unset
 // globalHotkey auto-bound the platform default (Cmd+Shift+K on macOS, which is
@@ -201,17 +229,23 @@ function resolvePort() {
 const PORT = resolvePort();
 const BACKEND_URL = "http://localhost:" + PORT;
 
+// The LTS edition is a side-by-side app like nightly (packaging/build-desktop.sh
+// "KiroCrew LTS"), so its own name and app ID keep it apart from production. // brand-ok
+const IS_LTS_BUILD = readBakedEdition() === EDITION_LTS;
 app.name = identityFamily(app.getVersion()) === "nightly"
   ? "Kiro Crew Nightly"
-  : "Kiro Crew";
+  : IS_LTS_BUILD ? "Kiro Crew LTS" : "Kiro Crew";
 
-// Windows groups and pins the live window by this ID. Nightly must remain
-// side-by-side with stable, matching the packaged app IDs.
+// Windows groups and pins the live window by this ID. Nightly and LTS must
+// remain side-by-side with stable, matching the packaged app IDs.
 if (process.platform === "win32") {
   const appUserModelId = identityFamily(app.getVersion()) === "nightly"
     ? "com.amazon.kiro.crew.nightly"
     : "com.amazon.kiro.crew";
-  app.setAppUserModelId(appUserModelId);
+  // LTS: the production ID plus ".lts", the packaged win.appId build-desktop.sh
+  // derives from package.json build.appId (electron-builder strips `build` from
+  // the packaged package.json, so it cannot be read here).
+  app.setAppUserModelId(IS_LTS_BUILD ? `${appUserModelId}.lts` : appUserModelId);
 }
 
 function gatewayLogPath() {
@@ -265,6 +299,35 @@ function readInternalSecret(gatewayUrl) {
 let isQuitting = false;
 let desktopMetricsRecorder = null;
 let windows = null;
+// The kirocrew:// deep-link handler (armed by the single-instance winner below).
+let deepLinks = null;
+
+/** The main window's dashboard view webContents, or null while there is none. */
+function mainDashboardContents() {
+  const win = windows && windows.getMainWindow();
+  if (!win || win.isDestroyed() || !win._mcView) return null;
+  const wc = win._mcView.webContents;
+  return wc && !wc.isDestroyed() ? wc : null;
+}
+
+/**
+ * Deliver a resolved kirocrew:// route to the main window, the one connected
+ * to this machine's gateway, which is where a slot key names a session. An
+ * empty route only raises it. A session route is sent only while the view
+ * serves the gateway's origin -- the Crew Companion's own routing check -- and
+ * the window is raised only then, so an undeliverable link moves nothing and
+ * stays held.
+ */
+function deliverDeepLink(route) {
+  if (!windows) return false;
+  if (!route) return windows.showMainWindow({ focus: true });
+  const wc = mainDashboardContents();
+  if (!wc || !hostsDashboard(wc, BACKEND_URL)) return false;
+  windows.showMainWindow({ focus: true });
+  wc.send("navigate", route);
+  return true;
+}
+
 // Whether a dashboard document has finished loading in this run, owned by the
 // GPU-crash fallback (the single-instance winner arms it below). The dead-
 // renderer dialog reads it to tell a renderer that never started from one
@@ -333,6 +396,14 @@ const requestQuit = () => {
   app.quit();
 };
 
+// An update install closes every window BEFORE it emits before-quit, so the
+// flag has to be set here as well or the main window hides to tray instead of
+// closing and the install never reaches ShipIt (#29449, see close-action.js).
+onQuitForUpdate(electron.autoUpdater, () => {
+  if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
+  isQuitting = true;
+});
+
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.
 if (!app.requestSingleInstanceLock()) {
@@ -381,7 +452,9 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
-  // Chromium reads GPU switches during initialization, so the opt-in policy
+  // Chromium reads GPU switches during initialization, so the GPU policy (opt-in
+  // via KIROCREW_DISABLE_GPU / --disable-gpu, auto on a Windows RDP session,
+  // forced on by KIROCREW_DISABLE_GPU=0 / --enable-gpu)
   // must run inside the lock-winner branch and before app ready. Reading the
   // winning process's env/argv also avoids pretending a second-instance argv
   // handoff can repair the renderer that already launched.
@@ -400,7 +473,7 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
-  // Same timing constraint as the opt-in above: a persisted software-rendering
+  // Same timing constraint as the GPU policy above: a persisted software-rendering
   // decision has to reach Chromium before it initializes. Also arms the
   // `child-process-gone` listener that makes that decision, so a GPU process
   // that dies before the dashboard loads relaunches the app once in software
@@ -415,15 +488,52 @@ if (!app.requestSingleInstanceLock()) {
   });
   dashboardLoaded = gpuFallback.dashboardLoaded;
 
-  app.on("second-instance", () => {
-    // Relaunch is explicit intent to see the existing window. The window owner
-    // cancels a pending fullscreen/tray hide before restore/show/focus.
+  // kirocrew:// deep links: bare `kirocrew://` raises the window and
+  // `kirocrew://chat?sid=<slot>` opens that session. A session link is held
+  // until the dashboard document reports `navigate-ready` (its `navigate`
+  // listener is mounted), so a link that LAUNCHED the app is applied once the
+  // SPA can take it. Registered here, before `whenReady`, because macOS
+  // delivers a launching URL through `open-url` during startup and drops it
+  // when no listener is attached.
+  deepLinks = createDeepLinkHandler({ deliver: deliverDeepLink, log: glog });
+  installDeepLinks({ app, handler: deepLinks, log: glog });
+  installNavigateReady({
+    app,
+    ipcMain,
+    handler: deepLinks,
+    isDashboardContents: (contents) => Boolean(contents) && contents === mainDashboardContents(),
+  });
+  // On Windows and Linux the URL that launched THIS instance is in its own
+  // argv; `second-instance` fires only for later launches. macOS argv carries
+  // no URL, so this finds nothing there.
+  deepLinks.handleArgv(process.argv);
+
+  app.on("second-instance", (_event, argv) => {
+    // On Windows and Linux a kirocrew:// link launches a second copy with the
+    // URL in argv; route to it. Otherwise a relaunch is explicit intent to see
+    // the existing window. The window owner cancels a pending fullscreen/tray
+    // hide before restore/show/focus.
+    if (deepLinks && deepLinks.handleArgv(argv)) return;
     windows?.showMainWindow({ focus: true });
   });
 }
 
 // Factories are created at module load, before any renderer can change settings.
 // In particular, the supervisor snapshots runLocalGateway once for this launch.
+// The shell-bundle watch is declared first because the supervisor reports
+// stale-bundle respawns to it, and it reads the supervisor's update handoff.
+const shellBundleWatch = createShellBundleWatch({
+  // Electron's unpatched fs: the patched one can answer for a deleted app.asar
+  // from its archive cache.
+  fs: require("original-fs"),
+  path,
+  processObj: process,
+  isPackaged: app.isPackaged,
+  isQuitting: () => isQuitting,
+  isUpdating: () => gateway.isInstallingUpdate(),
+  log: glog,
+  onPruned: () => promptRestartForPrunedBundle({ dialog, requestQuit, log: glog }),
+});
 const gateway = createGatewaySupervisor({
   app,
   store,
@@ -455,6 +565,9 @@ const gateway = createGatewaySupervisor({
   // process pins the answer into the successor's environment, so the port it
   // watches is the port the successor takes.
   predictLocalPort: () => fallbackLocalPort(store, glog),
+  // The respawned backend can be healthy while this app's own bundle is gone.
+  onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
+  currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
 });
 
 // Shared single-use registry of downloads the renderer explicitly asked for.
@@ -494,6 +607,8 @@ const ipcRegistrar = createIpcRegistrar({
   crashScan: scanCrashArtifacts,
   downloadExpectations,
   readInternalSecret,
+  fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
+  cookieHeader: sessionCookieHeader,
 });
 
 /**
@@ -620,6 +735,14 @@ app.whenReady().then(async () => {
     glog("power: could not watch for resume: " + (error && error.message));
   }
 
+  // A dictation left running when the person locks the screen keeps the
+  // microphone open in an empty room; the dashboard stops it on this message.
+  try {
+    watchSessionLock(electron.powerMonitor, () => electron.BaseWindow.getAllWindows(), glog);
+  } catch (error) {
+    glog("power: could not watch for screen lock: " + (error && error.message));
+  }
+
   // Chromium has opened `--log-file` by now, so this is the moment the live log's
   // mode can be asserted rather than assumed. The pre-create in
   // `initNativeLogging` only holds if Chromium opened the inode it created; if it
@@ -658,13 +781,98 @@ app.whenReady().then(async () => {
     }
   }
 
+  // An update the user armed whose quit-time apply was interrupted or failed is
+  // finished HERE: before the gateway spawns and before any window opens, so the
+  // gateway and the app are never on different versions. On success the app
+  // relaunches once into the new bundle and this launch ends; on failure the
+  // installed version starts and the updater shows the error.
+  const startupApply = await runStartupApply({
+    app,
+    store,
+    resourcesPath: process.resourcesPath,
+    log: { info: glog, error: (m, e) => glog(m + (e ? " " + ((e && e.stack) || e) : "")) },
+    // A gateway from this bundle that outlived the quit holds the arm back.
+    probeGateway: createStartupGatewayProbe({
+      isCurrentBundleGateway: () => gateway.isCurrentBundleGateway(),
+      probePortBinding: () => gateway.probePrimaryPortBinding(),
+      probeLockHolder: () => gateway.probePrimaryLockHolder(),
+      stopCommand: `kirocrew stop --port ${PORT}`,
+    }),
+    Notification: electron.Notification,
+  });
+  if (startupApply.outcome === "relaunching") return;
+
   await offerRelocationIfUnupdatable();
 
   // Security and every non-update bridge are installed before the first
   // dashboard or untrusted browser WebContents can be created.
   ipcRegistrar.registerShell();
-  windows.createTray();
+  windows.syncTray();
   const mainWindow = windows.createMainWindow();
+
+  // An AppImage whose AppRun added --no-sandbox says why and how to fix it.
+  // Shown before the gateway boot, not awaited, so a gateway that never
+  // answers still leaves the explanation on screen.
+  try {
+    showChromiumSandboxNotice({
+      notice: describeChromiumSandboxOff({
+        platform: process.platform,
+        env: process.env,
+        argv: process.argv,
+        readSysctl: (file) => fs.readFileSync(file, "utf8"),
+        cliBin: findKirocrewBin(fs, os, path, process.resourcesPath, __dirname),
+      }),
+      dialog,
+      clipboard: electron.clipboard,
+      openExternal: (url) => shell.openExternal(url),
+      store,
+      window: mainWindow,
+    }).catch((e) => glog(`chromium-sandbox-notice: failed: ${e && e.message}`));
+  } catch (e) {
+    glog(`chromium-sandbox-notice: skipped: ${e && e.message}`);
+  }
+
+  // Linux AppImage desktop integration. It creates the first launcher and then
+  // reconciles only files whose hashes still match bytes Kiro Crew wrote. The
+  // reconciliation itself (synchronous filesystem work plus one packaged
+  // helper process per fingerprint, publish, and cleanup step) runs on a worker
+  // thread; the main thread only evaluates the plan and receives the result,
+  // and no thread is started on a non-AppImage install. The promise never
+  // rejects by contract; the catch below is the last fence for a defect in it.
+  try {
+    startLinuxDesktopIntegration({
+      env: process.env,
+      installKind: resolveLinuxInstall({
+        env: process.env,
+        resourcesPath: process.resourcesPath,
+      }).kind,
+      version: app.getVersion(),
+      stateDir: app.getPath("userData"),
+      uid: typeof process.geteuid === "function" ? process.geteuid() : null,
+      resourcesPath: process.resourcesPath,
+      log: (m) => { try { glog(`desktop-integration: ${m}`); } catch { /* ignore */ } },
+    }).catch((e) => {
+      try { glog(`desktop-integration: failed: ${e && e.message}`); } catch { /* ignore */ }
+    });
+  } catch (e) {
+    try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+  }
+
+  // macOS Toolbox (side-by-side) integration (#33896): the running bundle is the
+  // newest version, so register it with LaunchServices now, making the next cold
+  // launch from the Dock/Spotlight/Finder open THIS version instead of an old
+  // bundle the previous update left on disk. Best-effort and fail-soft: a no-op
+  // off macOS and for a self-updating / Applications install, and never blocks.
+  try {
+    const managed = !!readExternallyManaged({ resourcesPath: process.resourcesPath });
+    reregisterBundleIfManaged({
+      managed,
+      resourcesPath: process.resourcesPath,
+      log: (m) => { try { glog(`launch-services: ${m}`); } catch { /* ignore */ } },
+    });
+  } catch (e) {
+    try { glog(`launch-services: skipped: ${e && e.message}`); } catch { /* ignore */ }
+  }
 
   // The global accelerator needs an existing main window. The updater needs
   // that same window for notifications, but MUST be fully registered before
@@ -674,6 +882,9 @@ app.whenReady().then(async () => {
 
   await gateway.start();
   await gateway.connect(mainWindow);
+  // Armed for every launch mode, including a service-managed or adopted
+  // gateway, whose backend never reports a stale bundle to this process.
+  shellBundleWatch.start();
   // The gateway now answers and the dashboard is loading. After an upgrade, drop
   // the old build's cached copies and connect again: a fresh navigation replaces
   // the pending one, where a reload would replay the uncommitted splash.
@@ -709,6 +920,19 @@ app.whenReady().then(async () => {
   } catch (error) {
     glog("crew-companion: init failed — " + (error && error.message));
   }
+  try {
+    appWindowHost = createAppWindowHost({
+      electron,
+      backendUrl: BACKEND_URL,
+      fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
+      cookieHeader: sessionCookieHeader,
+      preloadPath: path.join(__dirname, "app-window-preload.js"),
+      log: glog,
+    });
+    appWindowHost.start();
+  } catch (error) {
+    glog("app-window-host: init failed — " + (error && error.message));
+  }
 
   // Preserve the historical registration point: activation starts being
   // handled only after boot and optional companion initialization finish.
@@ -719,6 +943,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  shellBundleWatch.stop();
   // Flush the final metrics window before gateway teardown begins.
   try {
     desktopMetricsRecorder?.stop();
@@ -731,6 +956,11 @@ app.on("before-quit", () => {
   shutdownMochi();
   try {
     shutdownCrewCompanion();
+  } catch {
+    // Best effort during quit.
+  }
+  try {
+    appWindowHost?.stop();
   } catch {
     // Best effort during quit.
   }

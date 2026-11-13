@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
-from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
+from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 
 logger = logging.getLogger("kiro_crew.discord.renderer")
@@ -104,14 +104,19 @@ class DiscordApprovalDecider:
         :meth:`discard_session` must leave it alone. Pass it whenever the prompt
         outlives its own turn -- the window then closes at the decision, at the
         wait's timeout, or at a ``retire``, and nowhere else.
+
+        A reservation another event loop left behind is no reservation at all
+        (:func:`~kiro_crew.messaging.approval.adoptable_reservation`): it is
+        replaced, so the wait blocks on a future this loop can resolve.
         """
         nonce = new_approval_nonce()
         cls._NONCES[key] = nonce
         if detached:
             cls._DETACHED.add(key)
-        reserved = cls._REGISTRY.get(key)
+        loop = asyncio.get_running_loop()
+        reserved = adoptable_reservation(cls._REGISTRY.get(key), loop)
         if reserved is None or reserved.done():
-            cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
+            cls._REGISTRY[key] = loop.create_future()
             cls._UNDELIVERED.discard(key)
         return nonce
 
@@ -126,9 +131,8 @@ class DiscordApprovalDecider:
 
         For a caller with somewhere else to fall through to, so no wait of its own
         runs on this key. A caller whose driver WILL await the decider wants
-        :meth:`refuse_undelivered` instead: dropping the reservation there only
-        means the wait opens a fresh window and spends the whole timeout on a
-        prompt nobody can see.
+        :meth:`refuse_undelivered` instead, which leaves a press that already
+        landed standing.
         """
         cls._NONCES.pop(key, None)
         cls._REGISTRY.pop(key, None)
@@ -139,11 +143,8 @@ class DiscordApprovalDecider:
     def refuse_undelivered(cls, key: str) -> None:
         """Record a denial for a prompt that never reached the channel.
 
-        The prompt is unanswerable, so the only safe verdict is a refusal -- and
-        recording it on the reservation the driver is about to adopt is what makes
-        that refusal immediate. The alternative, dropping the reservation, reaches
-        the same verdict only after the wait has spent the full decision window on
-        a prompt nobody can see, and reports that elapsed wait as an expiry.
+        The prompt is unanswerable, so the only safe verdict is a refusal, recorded
+        on the reservation the driver is about to adopt so that it denies at once.
 
         Leaves the maps alone: the adopting ``__call__`` clears both when it
         consumes the decision, which keeps one owner for that cleanup. A key with
@@ -193,8 +194,20 @@ class DiscordApprovalDecider:
         # and this wait starting, in which case the reservation holds the user's
         # decision and there is nothing left to await. Minting a fresh future
         # here would discard that decision and deny when the window elapsed.
-        reserved = DiscordApprovalDecider._REGISTRY.get(k)
-        if reserved is not None and reserved.done():
+        # An entry from another event loop is not adopted: awaiting it raises
+        # instead of deciding, and a verdict on it belongs to an ended turn.
+        loop = asyncio.get_running_loop()
+        reserved = adoptable_reservation(DiscordApprovalDecider._REGISTRY.get(k), loop)
+        if reserved is None:
+            # Nothing reserved means no prompt went out: a muted conversation's
+            # SilentRenderer drops it. Deny now rather than wait the window for
+            # a question nobody was asked, and hold a loop bound here as an
+            # expiry would.
+            DiscordApprovalDecider.retire(k)
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+            self._notify_stalled()
+            return False
+        if reserved.done():
             if reserved.cancelled() or reserved.exception() is not None:
                 # A torn-down reservation, not a decision. Open a fresh window
                 # rather than read it as consent or as a refusal.
@@ -215,9 +228,7 @@ class DiscordApprovalDecider:
                     # turn-end sweep for the life of the process, so the next
                     # request reusing it is swept by nothing.
                     DiscordApprovalDecider._DETACHED.discard(k)
-        fut: "asyncio.Future[bool]" = (
-            reserved if reserved is not None else asyncio.get_running_loop().create_future()
-        )
+        fut: "asyncio.Future[bool]" = reserved if reserved is not None else loop.create_future()
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
             answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
@@ -233,21 +244,7 @@ class DiscordApprovalDecider:
             # Recorded for the driver, which steers the cause into the turn
             # before it rejects, so the model hears "expired" not "denied".
             self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
-            # Nobody pressed a button for the whole window, so a monitoring loop
-            # bound to this session cannot act either -- record it so the loop
-            # stops on its next wake instead of spending the rest of its cycle
-            # cap being denied. Inert for a session with no loop
-            # (``notify_approval_stalled`` resolves by binding key), and
-            # best-effort: a monitoring convenience must never change how this
-            # turn's denial is reported.
-            try:
-                from kiro_crew.autonudge import get_instance as _autonudge_get
-
-                _autonudge = _autonudge_get()
-                if _autonudge is not None:
-                    _autonudge.notify_approval_stalled(self._session_key)
-            except Exception:
-                logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
+            self._notify_stalled()
             return False  # deny-by-default on timeout
         finally:
             DiscordApprovalDecider._UNDELIVERED.discard(k)
@@ -256,6 +253,23 @@ class DiscordApprovalDecider:
             # the (now stale) buttons can never resolve a future request.
             DiscordApprovalDecider._NONCES.pop(k, None)
             DiscordApprovalDecider._DETACHED.discard(k)
+
+    def _notify_stalled(self) -> None:
+        """Nobody can press for this session, so a monitoring loop bound to it
+        cannot act either -- record it so the loop stops on its next wake instead
+        of spending the rest of its cycle cap being denied. Inert for a session
+        with no loop (``notify_approval_stalled`` resolves by binding key), and
+        best-effort: a monitoring convenience must never change how this turn's
+        denial is reported.
+        """
+        try:
+            from kiro_crew.autonudge import get_instance as _autonudge_get
+
+            _autonudge = _autonudge_get()
+            if _autonudge is not None:
+                _autonudge.notify_approval_stalled(self._session_key)
+        except Exception:
+            logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
 
     @classmethod
     def resolve_global(cls, key: str, approved: bool, *, nonce: str = "") -> bool:

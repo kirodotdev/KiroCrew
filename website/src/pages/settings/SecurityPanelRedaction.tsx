@@ -110,7 +110,7 @@ function CredentialRedactionCard() {
         <div data-testid="credential-redaction-row" className="flex flex-col gap-1.5 border border-border rounded-md px-3 py-2">
           <SettingsToggle
             label={i18nT('pages.settings.securityPanel.credential_redaction_toggle')}
-            description={i18nT('pages.settings.securityPanel.credential_redaction_toggle_help')}
+            description={i18nT('pages.settings.securityPanel.credential_redaction_toggle_help_summary')} hint={i18nT('pages.settings.securityPanel.credential_redaction_toggle_help')}
             checked={view.enabled}
             disabled={busy}
             onChange={enabled => set.mutate(enabled)}

@@ -36,7 +36,6 @@
     {"id": "python-audit", "needle": "scripts/check_python_audit.py", "reason": "queries a vulnerability database over the network"},
     {"id": "npm-audit", "needle": "scripts/check_npm_audit.py", "reason": "queries a vulnerability database over the network"},
     {"id": "feed-advance", "needle": "scripts/check_feed_advance.py", "reason": "runs against release artifacts"},
-    {"id": "merge-queue-ruleset", "needle": "scripts/check_merge_queue_ruleset.py", "reason": "reads repository settings through the GitHub API"},
-    {"id": "playwright-cli-banner", "needle": "scripts/check_playwright_cli_banner.py", "reason": "needs the Playwright CLI installed"}
+    {"id": "merge-queue-ruleset", "needle": "scripts/check_merge_queue_ruleset.py", "reason": "reads repository settings through the GitHub API"}
   ]
 }

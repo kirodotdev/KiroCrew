@@ -355,7 +355,15 @@ rather than inventing a justification for it.
    default where it was; a fix that restores behaviour a spec, test or
    issue already pins; a new flag defaulted OFF that nobody gets
    without choosing; a new capability added beside the old one with
-   the old one still the default. If you have to argue that an item
+   the old one still the default; a behaviour fix or tuning that stays
+   inside a shape a non-draft base RFC already covers, even when the
+   same diff edits that RFC's (or another design doc's) wording to
+   match. A same-PR doc update beside a non-large change is the
+   expected form, not an RFC "shipped beside the change", and is never
+   on its own a reason to BLOCK or to ask for a separate RFC pull
+   request. The repository's list of large changes that go RFC-first
+   lives in CONTRIBUTING.md; this lens gates only its product-shape
+   case. If you have to argue that an item
    is product shape, it is not this exit.
 
 ANTI-NOISE BAR (this lane fails by becoming a "justify yourself" bot
@@ -521,6 +529,15 @@ item that does not earn its place and why, in one breath. For PASS,
 exactly the line `Nothing to check.`, or in a few words why nothing
 blocks. Never explain why every item earns its place; a reviewer that
 argues the author's case is not reviewing.
+
+Then, ONLY when a premise your verdict rests on could not be read
+(another OS, a vendored tool), a blank line (without it the loop reads
+this line as part of the REASON) and ONE plain line, under ~20 words,
+counted in the ~180:
+`Not checked: <the premise you could not read>`
+Not a finding: the gate never reads it, and it never restates a Note or
+a Blocker. When BLOCK case (a) fires, the premise is a Blocker, not this
+line.
 
 ### Notes
 <ONLY when at least one inventory item is NOT tagged `justified` and is

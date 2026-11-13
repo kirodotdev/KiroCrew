@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from email.utils import formatdate
 
 import pytest
@@ -274,6 +275,27 @@ class TestHttpAdapter:
         # Milliseconds are normalised to seconds.
         assert http.parse_reset_epoch(str(int((NOW + 5) * 1000))) == pytest.approx(NOW + 5)
 
+    def test_a_retry_header_too_large_to_use_keeps_the_status_retry(self) -> None:
+        huge = "9" * 400
+        assert http.parse_retry_after(huge, NOW) is None
+        assert http.parse_reset_epoch(huge) is None
+        assert http.parse_reset_epoch("inf") is None
+        # Finite, but no wait anyone can serve: a 309-digit value is about 1e308.
+        assert http.parse_retry_after("9" * 308, NOW) is None
+        assert http.parse_reset_epoch("1e300") is None
+        assert http.delay_retry_at("9" * 400, NOW) is None
+        # An ordinary long wait is still honoured exactly.
+        assert http.parse_retry_after("7200", NOW) == pytest.approx(NOW + 7200)
+        text = HttpErr("HTTP 503 retry-after: " + huge, status=503, url="https://h.example/x")
+        assert http.retry_at_from(text, NOW) is None
+        assert acp_provider._retry_at_in_text("throttled, retry-after: " + huge, NOW) is None
+        for status, headers in ((503, {"Retry-After": huge}), (429, {"X-RateLimit-Reset": huge})):
+            sig = classify_exception(
+                HttpErr("x", status=status, headers=headers, url="https://h.example/x")
+            )
+            assert sig is not None and sig.retryable, (status, sig)
+            assert sig.retry_at is None or math.isfinite(sig.retry_at), sig
+
 
 # ── ACP / provider adapter ───────────────────────────────────────────────────
 
@@ -347,6 +369,22 @@ class TestAcpProviderAdapter:
         )
         assert sig is not None and sig.kind == KIND_RATE_LIMITED
         assert acp_provider.classify_raw_error("not a dict") is None
+
+    @pytest.mark.parametrize("backend", ["strands", "goose", "deepseek"])
+    @pytest.mark.parametrize("data", ["HTTP 401 unauthorized", "not logged in"])
+    def test_a_signed_out_frame_is_auth_failed_whatever_the_harness_wording(
+        self, backend: str, data: str
+    ) -> None:
+        """These harnesses' signed-out text names no 401 or expiry, so only the frame tag can."""
+        from kiro_crew.acp import client as acp_client
+
+        with pytest.raises(AcpError) as caught:
+            acp_client._raise_acp_error(
+                {"code": -32603, "message": "x", "data": data}, None, backend=backend
+            )
+        assert caught.value.auth_required is False
+        sig = classify_exception(caught.value)
+        assert sig is not None and sig.kind == KIND_AUTH_FAILED
 
     def test_non_acp_exception_is_ignored(self) -> None:
         assert acp_provider.classify(ValueError("ThrottlingException"), "") is None

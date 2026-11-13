@@ -765,6 +765,25 @@ async def _worktree_remove_locked(
                                     "ok": False,
                                     "error": f"pod home reclaim failed: {detail}",
                                 }
+                        else:
+                            # ``orphan_homes`` leaves out a HOME something still uses. On
+                            # systemd that can be a gateway started outside the unit and
+                            # serving from THIS checkout, which must not be removed under it.
+                            from kiro_crew.pod import home_liveness
+
+                            home = cfg.pod_root / name
+                            if await loop.run_in_executor(
+                                subprocess_executor(),
+                                lambda: home.is_dir() and not home_liveness.unused([home]),
+                            ):
+                                return {
+                                    "ok": False,
+                                    "error": (
+                                        f"refusing removal: the HOME of pod {name!r} is still "
+                                        "in use outside its unit (a gateway started by hand?); "
+                                        "stop it, then retry"
+                                    ),
+                                }
                 except Exception as exc:
                     return {
                         "ok": False,

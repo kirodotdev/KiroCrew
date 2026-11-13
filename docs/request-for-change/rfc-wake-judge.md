@@ -461,7 +461,8 @@ brief is what carries the screening and the lane is what authorizes it.
   questions and required to
   answer in one JSON object with exactly the question ids, each value a
   probability. The parser is as strict as `_from_wire`: any extra key, missing
-  id, non-finite number or prose → invalid answer → FALLBACK. The LLM lane is
+  id, non-finite number or prose → invalid answer → FALLBACK. A raised call is
+  asked once more inside the same budget before that FALLBACK. The LLM lane is
   what makes the interface real for people without a Jev key; it is slower
   (seconds) and costs a small model call, still far below a main-session turn.
   No judge-specific agent template ships: it would differ from `kirocrew-lite`

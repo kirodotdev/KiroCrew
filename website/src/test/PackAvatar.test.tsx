@@ -366,7 +366,7 @@ describe('PackAvatar failure reporting', () => {
     render(<PackAvatar id="aurora" state="idle" size={40} onError={onError} />)
 
     const img = (await screen.findByTestId('pack-avatar-svg')).querySelector('img')!
-    img.dispatchEvent(new Event('error'))
+    act(() => { img.dispatchEvent(new Event('error')) })
     await waitFor(() => expect(onError).toHaveBeenCalled())
   })
 })
@@ -395,12 +395,12 @@ describe('PackAvatar animation is bounded by visibility', () => {
     await screen.findByTestId('pack-avatar-sprite')
 
     const observer = ManualObserver.instances.at(-1)!
-    observer.fire(true)
+    act(() => observer.fire(true))
     await waitFor(() =>
       expect(screen.getByTestId('sprite-stub').getAttribute('data-playing')).toBe('true'),
     )
 
-    observer.fire(false)
+    act(() => observer.fire(false))
     await waitFor(() =>
       expect(screen.getByTestId('sprite-stub').getAttribute('data-playing')).toBe('false'),
     )
@@ -471,7 +471,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
     render(<PackAvatar id="aurora" state="working" size={40} fallback={<i data-testid="fallback" />} />)
     await screen.findByTestId('lottie-stub', undefined, metaThenWholeRead())
     const first = ManualObserver.instances.at(-1)!
-    first.fire(true)
+    act(() => first.fire(true))
     await waitFor(() =>
       expect(screen.getByTestId('pack-avatar-lottie').getAttribute('data-pack-playing')).toBe('true'),
     )
@@ -485,9 +485,9 @@ describe('PackAvatar animation is bounded by visibility', () => {
     const box = await screen.findByTestId('pack-avatar-lottie', undefined, metaThenWholeRead())
     const second = ManualObserver.instances.at(-1)!
     expect(second).not.toBe(first)
-    second.fire(false)
+    act(() => second.fire(false))
     await waitFor(() => expect(box.getAttribute('data-pack-playing')).toBe('false'))
-    second.fire(true)
+    act(() => second.fire(true))
     await waitFor(() => expect(box.getAttribute('data-pack-playing')).toBe('true'))
   })
 
@@ -523,5 +523,36 @@ describe('PackAvatar animation is bounded by visibility', () => {
     render(<PackAvatar id="aurora" state="working" size={40} />)
     const box = await screen.findByTestId('pack-avatar-lottie')
     expect(box.getAttribute('data-pack-playing')).toBe('true')
+  })
+})
+
+/** Issue #28531. The ghost face is an `<img>`, which Tailwind's preflight makes
+ *  `display: block`, so a ring around it is exactly as tall as the face. An
+ *  `inline-block` box instead sits on a text baseline, and its parent's line box
+ *  adds the font's descender below it, which turns a `ring-2` around the face
+ *  into a tall pill. jsdom does no layout, so the box's own display is the
+ *  observable fact: it must be `block`, like the ghost's. */
+describe('PackAvatar box matches the ghost face box', () => {
+  it.each([
+    ['svg', { animations: { idle: { content: '<svg/>', format: 'svg' } } }],
+    ['lottie', { animations: { idle: { content: '{"v":1}', format: 'lottie' } } }],
+    ['sprite', { animations: { idle: { content: 'base64', format: 'sprite' } }, sprite: { frameWidth: 16, frameHeight: 16 } }],
+  ])('draws the %s art in a block box, not on a text baseline', async (format, served) => {
+    detail.mockResolvedValue(served)
+    render(<PackAvatar id="aurora" state="idle" size={22} />)
+
+    const box = await screen.findByTestId(`pack-avatar-${format}`, undefined, metaThenWholeRead())
+    expect(box.style.display).toBe('block')
+    expect(box.style.width).toBe('22px')
+    expect(box.style.height).toBe('22px')
+  })
+
+  it('holds the pending skeleton in a block box too', () => {
+    // A read that never lands keeps the skeleton up for the whole test.
+    detail.mockReturnValue(new Promise(() => {}))
+    render(<PackAvatar id="aurora" state="idle" size={22} />)
+
+    const box = screen.getByTestId('pack-avatar-pending')
+    expect(box.style.display).toBe('block')
   })
 })

@@ -47,7 +47,21 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
     raising form): this reads the file directly, so a hand-edited or
     future-schema value must migrate the row as unstated rather than abort.
     """
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines: list[str | None] = list(path.read_text(encoding="utf-8").splitlines())
+    except UnicodeDecodeError:
+        # One bad byte costs only its own line, like a line that does not parse;
+        # a file that decodes reads exactly as before.
+        lines = []
+        for raw in path.read_bytes().splitlines():
+            try:
+                lines.append(raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                lines.append(None)
+    for line in lines:
+        if line is None:
+            yield SKIP
+            continue
         line = line.strip()
         if not line:
             continue
@@ -64,7 +78,9 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
                 continue
             applies = authored_lesson_applies(data.get("applies"))
             category = data.get("category", "knowledge")
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, RecursionError):
+            # RecursionError: a line nested past the interpreter's limit does not
+            # decode either, and would otherwise abort the whole migration.
             yield SKIP
             continue
         yield rule, category, negative, raw_scope, applies
@@ -157,10 +173,16 @@ def cluster_episodes(rows: list, min_sim: float) -> dict[int, list[dict]]:
     np = vector_memory.np
     clusters: dict[int, list[dict]] = {}
     for i, row in enumerate(rows):
+        if len(row["embedding"]) % 4:
+            # Not a whole number of float32s, so it cannot be decoded: no cluster.
+            continue
         vec_i = np.frombuffer(row["embedding"], dtype=np.float32)
         found_cluster = False
         for cluster_id, members in clusters.items():
             vec_c = np.frombuffer(members[0]["embedding"], dtype=np.float32)
+            if vec_c.shape != vec_i.shape:
+                # Vectors of two widths are not comparable, so this one does not join.
+                continue
             sim = float(np.dot(vec_i, vec_c))
             if sim > min_sim:
                 members.append(dict(row))

@@ -6,12 +6,13 @@ play, and they are loaded by two different mechanisms:
 
 * ``~/.kiro/steering/**/*.md`` — **global** (``user`` source).  kiro-cli loads
   these for every session, and the dashboard's own CC-backend injection
-  (:func:`kiro_crew.context._load_steering_resources`) globs the agent
-  config's ``file://.kiro/steering/**/*.md`` resource against ``$HOME``, which
-  resolves to exactly this directory.
+  (:func:`kiro_crew.context._load_steering_resources`) adds this directory
+  the way kiro-cli inherits it.
 * ``<project>/.kiro/steering/**/*.md`` — **workspace** (``workspace`` source).
   kiro-cli loads these because the session subprocess runs with the slot's
-  project directory as its cwd.
+  project directory as its cwd; the CC-backend injection anchors the agent
+  config's relative ``file://.kiro/steering/**/*.md`` resource at that
+  project for the same result.
 
 These endpoints back the Steering tab under Agent Capabilities, surfacing which
 steering documents are in effect.
@@ -23,7 +24,9 @@ A LEAF symlink is listed and readable — read-only — when its resolved target
 passes the session loader's admission gate against the source's LINK trust
 base (:func:`kiro_crew.context.steering_target_admissible`: ``$HOME`` for
 ``user``, the steering root itself for ``workspace`` — ``_link_trust_base``);
-it never resolves for write.
+it never resolves for write. A leaf symlink whose target lies OUTSIDE that
+base is listed by name only (``readable: False``): kiro-cli still loads it, but
+the dashboard never reads or names its target.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import logging
 import os
 import re
 import stat
+import string
 from pathlib import Path
 from typing import Any
 
@@ -46,17 +50,20 @@ from kiro_crew.atomic_write import (
     pinned_parent_replace_supported,
 )
 from kiro_crew.context import steering_target_admissible
+from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
+from kiro_crew.slugs import slug_hash_fallback
 
 from ._shared import (
     _is_restricted_session,
     _read_session_key,
     active_project_dir,
     active_project_state,
+    body_not_object_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,8 +134,16 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {os.unlink, os.stat}.is
 )
 
 # Filenames are user-visible document names: word chars, dash, dot, space and
-# nested folders.  Anything else is rewritten on create (see _safe_rel_name).
+# nested folders.  Anything else is rewritten on create, and a segment the
+# rewrite leaves with no ASCII letter or digit becomes a stable hash of what was
+# typed (see _safe_rel_name).
 _NAME_ALLOWED = re.compile(r"[^A-Za-z0-9._/ -]")
+#: A segment keeping one of these after the rewrite stays readable; one keeping
+#: none falls back to a hash of what was typed (see _hashed_segment).
+_ASCII_ALNUM = frozenset(string.ascii_letters + string.digits)
+#: Separator of the parts of a steering name (``team/style.md``): the API takes
+#: "/" on every OS, and the name is resolved under its root with ``Path`` later.
+_STEERING_NAME_SEP = "/"
 
 #: Byte budget for the relative name ``<...>.md`` a create writes, mirroring
 #: prompts/skills (``MAX_PROMPT_NAME_BYTES``). ``_safe_rel_name`` screens the
@@ -138,9 +153,17 @@ _NAME_ALLOWED = re.compile(r"[^A-Za-z0-9._/ -]")
 #: (260) -- surfaced there as a bare ``FileNotFoundError`` from ``CreateFileW``,
 #: an uncoded 500 indistinguishable from a real write failure. Bounding the whole
 #: name before the write (nesting ``a/b/c`` blows the limit on short segments
-#: too) turns that into a coded 400 on every host, with no dependence on which
-#: errno or winerror a given platform happens to raise.
+#: too) turns a long NAME into a coded 400 on every host. A name inside the bound
+#: can still make a joined path the host refuses -- a deep project folder on a
+#: Windows host without long paths -- and :func:`_create_path_too_long` maps that
+#: refusal onto the same coded 400 after the write is tried.
 MAX_STEERING_NAME_BYTES = 200
+
+#: Module-level so a test can take the Windows by-name branch on any host.
+_IS_WINDOWS = os.name == "nt"
+#: ``ERROR_PATH_NOT_FOUND``: what ``CreateDirectoryW`` answers for a directory
+#: path past ``MAX_PATH`` on a host without long-path support.
+_WINERROR_PATH_NOT_FOUND = 3
 
 
 def _sel():
@@ -288,7 +311,9 @@ def _head_meta(path: Path, within_root: Path, cap: int = 2048) -> dict[str, str]
         _audit_unread("api_steering_list", "steering", "error", {"path": str(path)})
         return _empty_meta()
     truncated = len(raw) > cap
-    head = raw[:cap].decode("utf-8", errors="replace")
+    # utf-8-sig drops one leading byte-order mark, which would otherwise hide the
+    # column-0 frontmatter fence and list a manual document as always.
+    head = raw[:cap].decode("utf-8-sig", errors="replace")
     fields, body = split_frontmatter(head, STEERING_LOADER)
     if not fields and body == head:
         # ``split_frontmatter`` already returns the text AFTER a fence that
@@ -329,9 +354,11 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
     Returns ``{"files": [...], "roots": [...], "project": "<display path>"}``.
     Each file entry: ``{key, name, rel, source, path, size, description,
     inclusion, inclusion_declared, file_match_pattern, linked, editable,
-    target}`` where ``key`` is ``"<source>/<rel>"``. ``linked`` marks a leaf
-    symlink admitted read-only; ``target`` carries its resolved display path
+    readable, target}`` where ``key`` is ``"<source>/<rel>"``. ``linked``
+    marks a leaf symlink; ``target`` carries its resolved display path
     (``""`` otherwise) and ``editable`` is False exactly for linked entries.
+    ``readable`` is False for a link whose target is outside the link trust
+    base: it is listed by name only, and its key does not resolve for read.
     """
     files: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
@@ -386,6 +413,20 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 # so the entry is not editable.
                 link_base = _link_trust_base(source, root, base_resolved)
                 if not steering_target_admissible(resolved, link_base):
+                    # kiro-cli follows a leaf link wherever it points, so a
+                    # target outside the link trust base still loads. List the
+                    # name so the tab does not under-report, but never open,
+                    # read or name the target: past the path resolution above,
+                    # the decision comes from the resolved path string alone,
+                    # and the entry carries no target, size or head metadata.
+                    # Listing does show that the target exists (a dangling
+                    # link stays hidden). A sensitive target stays
+                    # hidden, as does anything inside the base that failed the
+                    # gate (a directory, a sensitive file).
+                    if _target_outside(resolved, link_base) and not is_sensitive_path(
+                        str(resolved)
+                    ):
+                        files.append(_unshown_link_entry(source, root, entry))
                     continue
             elif not resolved.is_file() or is_sensitive_path(str(resolved)):
                 continue
@@ -417,6 +458,7 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
                 "linked": linked,
                 "editable": not linked,
+                "readable": True,
                 "target": _redact_meta(_display_path(resolved)) if linked else "",
             })
     return {
@@ -461,6 +503,47 @@ def _link_trust_base(source: str, root: Path, base_resolved: Path) -> Path:
     return base_resolved if source == "user" else root
 
 
+def _target_outside(resolved: Path, link_base: Path) -> bool:
+    """True iff *resolved* lies outside *link_base*, judged from the path alone.
+
+    No ``stat`` of *resolved*: the caller lists such a link without opening
+    its target. A link to the base directory itself is not outside it, and an
+    unresolvable base answers False, so both stay hidden.
+    """
+    try:
+        base_real = link_base.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return resolved != base_real and not str(resolved).startswith(str(base_real) + os.sep)
+
+
+def _unshown_link_entry(source: str, root: Path, entry: Path) -> dict[str, Any]:
+    """Listing entry for a leaf link whose target is outside its trust base.
+
+    The name is listed so the tab matches what kiro-cli loads, but nothing
+    about the target travels: no path, size or head metadata, and
+    ``readable`` is False because the read path refuses the key.
+    """
+    rel = entry.relative_to(root).as_posix()
+    meta = _empty_meta()
+    return {
+        "key": f"{source}/{rel}",
+        "name": entry.name,
+        "rel": rel,
+        "source": source,
+        "path": _redact_meta(_display_path(entry)),
+        "size": 0,
+        "description": meta["description"],
+        "inclusion": meta["inclusion"],
+        "inclusion_declared": meta["inclusion_declared"],
+        "file_match_pattern": meta["file_match_pattern"],
+        "linked": True,
+        "editable": False,
+        "readable": False,
+        "target": "",
+    }
+
+
 def _deepest_existing(path: Path) -> Path | None:
     """Walk up until an existing directory is found (bounded by the fs root)."""
     probe = path
@@ -487,6 +570,12 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
         probe_resolved = probe.resolve(strict=True)
     except OSError:
         return False
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe_resolved = strip_extended_length_prefix(probe_resolved)
+    base_resolved = strip_extended_length_prefix(base_resolved)
     return probe_resolved == base_resolved or base_resolved in probe_resolved.parents
 
 
@@ -559,16 +648,41 @@ def resolve_steering_file(
     return resolved
 
 
+def _hashed_segment(clean: str, original: str) -> str:
+    """Return *clean*, or a stable hash of *original* when the rewrite erased it.
+
+    A segment written wholly outside :data:`_NAME_ALLOWED` (``编码规范``) rewrites
+    to dashes only, so every such name of one length would derive the same file.
+    A segment that keeps an ASCII letter or digit, or that the rewrite left
+    untouched, stays as it is.
+    """
+    if clean == original or any(c in _ASCII_ALNUM for c in clean):
+        return clean
+    return slug_hash_fallback(original, "steering")
+
+
 def _safe_rel_name(raw: str) -> str:
     """Normalize a user-supplied steering filename to a safe relative path."""
-    name = _NAME_ALLOWED.sub("-", raw.strip()).strip("/").strip()
-    name = re.sub(r"/+", "/", name)
-    name = "/".join(seg for seg in name.split("/") if seg not in ("", ".", ".."))
-    if not name:
+    original = raw.strip()
+    clean = _NAME_ALLOWED.sub("-", original)
+    # The rewrite is one character for one and never yields "/", so *clean* and
+    # *original* share their length and slash positions: slicing and splitting
+    # both the same way pairs each written segment with the text it came from.
+    start = len(clean) - len(clean.lstrip(_STEERING_NAME_SEP).lstrip())
+    end = len(clean.rstrip(_STEERING_NAME_SEP).rstrip())
+    clean_segs = clean[start:end].split(_STEERING_NAME_SEP)
+    original_segs = original[start:end].split(_STEERING_NAME_SEP)
+    pairs = [(seg, orig) for seg, orig in zip(clean_segs, original_segs) if seg not in ("", ".", "..")]
+    if not pairs:
         return ""
-    if not name.endswith(".md"):
-        name = f"{name}.md"
-    return name
+    segments = [_hashed_segment(seg, orig) for seg, orig in pairs[:-1]]
+    # The last segment is judged by its stem, so ``编码规范`` and ``编码规范.md``
+    # name the same file; its ``.md`` is always written back.
+    last, last_orig = pairs[-1]
+    if last.endswith(".md"):
+        last, last_orig = last[:-3], last_orig[:-3]
+    segments.append(f"{_hashed_segment(last, last_orig) if last else ''}.md")
+    return _STEERING_NAME_SEP.join(segments)
 
 
 def _blocked(request: web.Request, operation: str) -> web.Response | None:
@@ -582,9 +696,23 @@ def _blocked(request: web.Request, operation: str) -> web.Response | None:
             resources="restricted_session_block",
         )
         return web.json_response(
-            {"error": "restricted session cannot modify steering files"}, status=403
+            {
+                "error": "restricted session cannot modify steering files",
+                "code": "restricted_session",
+            },
+            status=403,
         )
     return None
+
+
+def _not_found() -> web.Response:
+    """The one 404 every steering verb answers.
+
+    A key that never resolved and a read the descriptor gate withheld share
+    this body on purpose, so the reply is no oracle for which files the gate
+    protects. One helper keeps the two from drifting apart.
+    """
+    return web.json_response({"error": "not found", "code": "steering_not_found"}, status=404)
 
 
 # ── Blocking filesystem transactions (run on the discovery pool) ──
@@ -662,7 +790,35 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
         return "", display, f"toolarge:>{STEERING_FILE_MAX_BYTES}"
     if data is None:
         return "", display, "readfailed"
-    return data.decode("utf-8", errors="replace"), display, None
+    # utf-8-sig: the editor gets the text without a leading byte-order mark, so a
+    # mode edit finds the column-0 fence and a save writes the file without it.
+    return data.decode("utf-8-sig", errors="replace"), display, None
+
+
+def _create_path_too_long(exc: OSError) -> bool:
+    """True when a create's *exc* is the host refusing the joined path for its length.
+
+    The shared :func:`_is_path_too_long_error` covers ``ENAMETOOLONG`` and the
+    Windows codes that name the length. On Windows the by-name create also sees a
+    too-long path as a plain ``FileNotFoundError``: ``os.open`` is the CRT
+    ``_wopen``, which sets no ``winerror``, and ``mkdir`` answers
+    ``ERROR_PATH_NOT_FOUND``. ``Path.mkdir(parents=True)`` has already made every
+    parent it could, and ``os.open`` runs after that mkdir, so when the failing
+    path's parent is a directory a missing parent is not the cause and the length
+    is. Any other code keeps the generic ``writefailed`` answer.
+    """
+    if _is_path_too_long_error(exc):
+        return True
+    if not _IS_WINDOWS or not isinstance(exc, FileNotFoundError):
+        return False
+    if getattr(exc, "winerror", None) not in (None, _WINERROR_PATH_NOT_FOUND):
+        return False
+    if not exc.filename:
+        return False
+    try:
+        return Path(os.fsdecode(exc.filename)).parent.is_dir()
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
@@ -684,6 +840,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
         except FileExistsError:
             return "exists", display
         except OSError as exc:
+            if _create_path_too_long(exc):
+                return "pathtoolong", display
             logger.warning("steering create failed: %s", type(exc).__name__)
             return "writefailed", display
         return None, display
@@ -712,6 +870,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
         # rather than distinguishing a linked-root token here.
         return "writefailed", display
     except OSError as exc:
+        if _create_path_too_long(exc):
+            return "pathtoolong", display
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
     try:
@@ -726,6 +886,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
     except FileExistsError:
         return "exists", display
     except OSError as exc:
+        if _create_path_too_long(exc):
+            return "pathtoolong", display
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
     finally:
@@ -820,6 +982,7 @@ def _update_file_blocking(target: Path, content: str) -> str | None:
             newline="",
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,
+            preserve_windows_dacl=True,
         )
     except OSError as exc:
         logger.warning("steering update failed: %s", type(exc).__name__)
@@ -1014,18 +1177,26 @@ async def api_steering_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     project_dir, project_state = active_project_state(state, _read_session_key(request))
     source = str(body.get("source") or ("workspace" if project_dir else "user"))
     if source not in STEERING_SOURCES:
-        return web.json_response({"error": "invalid source"}, status=400)
+        return web.json_response({"error": "invalid source", "code": "invalid_source"}, status=400)
     if source == "workspace" and project_dir is None:
         # Refuse rather than write to a guess. ``reason`` lets the dialog say
         # which fix applies — bind a project, or close the chat that disagrees —
@@ -1048,12 +1219,12 @@ async def api_steering_create(request: web.Request) -> web.Response:
         )
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if len(rel.encode("utf-8")) > MAX_STEERING_NAME_BYTES:
-        # Bound the name before the write: the host would otherwise refuse the
-        # joined path for its length and the blanket OSError handling below would
-        # answer an uncoded 500. A coded 400 lets the dashboard tell the user to
-        # shorten the name.
+        # Bound the name before the write: the host would otherwise refuse a
+        # long name, and a coded 400 lets the dashboard tell the user to shorten
+        # it. A shorter name the host still refuses for the joined path's length
+        # is mapped onto the same 400 after the create below.
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.create",
@@ -1075,12 +1246,34 @@ async def api_steering_create(request: web.Request) -> web.Response:
     key = f"{source}/{rel}"
     target = await _offload(_resolve_blocking, key, project_dir, True)
     if target is None:
-        return web.json_response({"error": "invalid steering path"}, status=400)
+        return web.json_response(
+            {"error": "invalid steering path", "code": "invalid_steering_path"}, status=400
+        )
     err, display = await _offload(_create_file_blocking, target, content)
     if err == "exists":
-        return web.json_response({"error": f"'{rel}' already exists"}, status=409)
+        return web.json_response(
+            {"error": f"'{rel}' already exists", "code": "steering_exists"}, status=409
+        )
+    if err == "pathtoolong":
+        # The name passed its own bound, but joined onto this project's folder the
+        # host refused the path for its length. Same coded 400 and audit as the
+        # bound above, so the dashboard can tell the user to shorten the name.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="steering.create",
+            outcome="denied",
+            source="dashboard",
+            resources=key,
+        )
+        return web.json_response(
+            {
+                "error": "steering name is too long for its destination path",
+                "code": "name_too_long",
+            },
+            status=400,
+        )
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.create",
@@ -1185,7 +1378,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
             _audit("too_large")
             size = err.split(":", 1)[1]
             return web.json_response(
-                {"error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})"},
+                {
+                    "error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})",
+                    "code": "file_too_large",
+                },
                 status=413,
             )
         if err is not None:
@@ -1199,7 +1395,7 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 _audit_unread("api_steering_read", "steering", "error", {"key": key})
             else:
                 _audit("not_found")
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         _audit("ok")
         # Content is returned verbatim, NOT credential-redacted, and that is
         # deliberate: this response populates the editor and is written straight
@@ -1236,12 +1432,14 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 return stale
         target = await _offload(_resolve_blocking, key, project_dir, False)
         if target is None:
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         err = await _offload(_delete_file_blocking, target)
         if err == "notfound":
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         if err is not None:
-            return web.json_response({"error": "delete failed"}, status=500)
+            return web.json_response(
+                {"error": "delete failed", "code": "delete_failed"}, status=500
+            )
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.delete",
@@ -1271,26 +1469,34 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     try:
         content = _apply_declaration(content, body)
     except _DeclarationError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     target = await _offload(_resolve_blocking, key, project_dir, False)
     if target is None:
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     err = await _offload(_update_file_blocking, target, content)
     if err == "notfound":
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.update",

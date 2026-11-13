@@ -263,7 +263,7 @@ def build_governance_policy_snapshot() -> dict:
             # would be a permanently-ungoverned duplicate row.
             if scope in _SCOPE_ALIASES:
                 continue
-            # The policy level as ``resolve`` enforces it: in an enterprise build an
+            # The policy level as ``resolve`` enforces it: in an LTS build an
             # unnamed scope reports the built-in baseline, not "ungoverned".
             policy_control = policy_level_control(ceiling, scope)
             profile_control = profile.get(scope) if profile is not None else None

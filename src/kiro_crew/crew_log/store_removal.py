@@ -97,79 +97,41 @@ def remove_unit(
 ) -> str:
     """Remove one unit's crew log entirely. Returns one of the ``REMOVE_*`` statuses.
 
-    The ONE spelling of deletion in this package, called by the retention sweep
-    and by each permanent-delete funnel that reaches it -- a session's, and the
-    dashboard's crew-member route -- for the reason the work crew log's
-    ``purge_matching`` docstring gives: two callers deleting the same tree two
-    ways is two chances to get the order wrong, and the order is the whole
-    correctness argument.
+    The ONE spelling of deletion in this package (retention sweep and every
+    permanent-delete funnel), because the order below is the correctness argument.
 
-    **Ownership first.** Removal goes THROUGH the lease, taken non-blocking and
-    ``sole`` so it is shared with nothing: ownership is what stands between this
-    and unlinking the segments a live writer is appending to. ``sole`` is not a
-    detail -- the lease is refcounted per process, so a plain claim against a
-    unit this process is already writing would SUCCEED by joining that count and
-    prove nothing (see :func:`lease.acquire`). Either kind of contention answers
-    ``owned``: this pass does nothing, and nothing is written either, so a unit
-    whose writer outlives the sweep is simply collected by a later one.
+    **Ownership first.** The lease is taken non-blocking and ``sole``: it is
+    refcounted per process, so a plain claim on a unit this process is writing would
+    join that count and prove nothing (see :func:`lease.acquire`). Any contention
+    answers ``owned`` and writes nothing; a later sweep collects the unit.
 
-    **Then the caller re-decides, INSIDE the hold.** *guard* is REQUIRED and is
-    called as ``guard(directory)`` once ownership is held; the unit is removed
-    only if it answers true. The lease alone is not enough, and the gap is the
-    same one ``purge_matching`` documents: a selection made outside it is a
-    SNAPSHOT, and ownership deliberately ends BETWEEN turns, so a session can be
-    revived, append, finish its turn and release the lease in the window between
-    the decision and the delete -- after which the removal would take a live
-    conversation's log while contending with nobody. Re-reading under the hold is
-    what makes the decision current, which is why the guard is a callback rather
-    than a filter the caller applies first, and why there is no default that
-    skips the re-decision. A caller whose precondition is not a property of the
-    file passes ``lambda _dir: True`` and says at the call site what does decide.
+    **Then the caller re-decides, INSIDE the hold.** *guard* is REQUIRED and called as
+    ``guard(directory)`` once ownership is held; the unit goes only if it answers true.
+    A selection made outside the lease is a snapshot, and a session can revive, append
+    and release the lease between that decision and the delete. A caller whose
+    precondition is not a property of the file passes ``lambda _dir: True`` and says at
+    the call site what does decide.
 
-    **A caller with a companion file OUTSIDE the unit passes ``in_hold``, and it
-    runs while this lease is still held, BEFORE anything here is destroyed.** Some of
-    a unit's meaning lives outside its directory -- a member's pre-log activity source
-    is the case -- and a caller that removed such a file after this function RETURNED
-    would do it in the window between the release here and its own next line, where
-    another PROCESS can create the unit afresh and fold that source back in. The lease
-    is taken ``sole`` and so cannot be shared, which is why the caller cannot simply
-    hold it itself; a hook inside the hold closes that window without a second
-    spelling of deletion. Optional, so a caller with nothing outside the unit passes
-    nothing and is unaffected.
+    **``in_hold`` runs while the lease is held, BEFORE anything is destroyed.** It is
+    for a companion file OUTSIDE the unit (a member's pre-log activity source): removed
+    after this returns, another process could recreate the unit and fold that source
+    back in. A false answer stops with ``failed`` and nothing touched, because the gate
+    that keeps the companion unread (a fold marker) can live inside this unit; removing
+    the unit while the companion survives would make it readable again.
 
-    It runs FIRST, and a false answer stops the removal with ``failed`` and nothing
-    here touched. The gate that stops such a companion being read again can live
-    inside THIS unit -- a fold marker does -- so a unit destroyed while its companion
-    survives is not a partial success but an armed one: the survivor becomes readable
-    again with its gate gone, and nothing revisits the unit to notice. In this order a
-    refusal leaves both in place and both still gated, and the unit stays
-    identifiable for a later pass to aim at again.
+    **Then order, with IDENTITY LAST.** Segments (they carry the header) first, the
+    per-append lock file next, then other entries, never following a link. The
+    ``.lease`` file goes LAST and only by its holder: unlinked earlier, a second remover
+    could lock a fresh inode and unlink the same files concurrently. Windows refuses an
+    in-hold unlink and gets it after release, which is safe there because it fails
+    while any handle is open (see :func:`session_ledger.unlink_lock_in_hold`).
 
-    **Then order, with IDENTITY LAST.** Segments carry the header, so they are the
-    history and they go first; the per-append lock file next; then any other
-    entry, none of them followed if it is a link. The ``.lease`` file is removed
-    LAST and only by its holder, which is what keeps ``lease``'s inode check a
-    fact about this code: while it exists, the lease path names the file whose
-    lock proves ownership, and a lease unlinked before the segments would let a
-    second remover take a lock on a fresh inode and unlink the same files
-    concurrently. Windows refuses an in-hold unlink and gets it after release
-    instead, which is safe there precisely because it fails while any handle is
-    open -- the same asymmetry :func:`session_ledger.unlink_lock_in_hold`
-    documents, so that function is reused rather than copied.
+    **Nothing is written to a crew log that is about to go** -- no tombstone.
+    ``Ref.resolve`` already reports ``gone`` for a pointer into a unit with no crew log.
 
-    **Nothing is written to a crew log that is about to go.** No "pruned" entry, no
-    tombstone: removal is not rotation and not a format change, and a reader
-    holding a citation into the unit already has its answer from
-    ``Ref.resolve``, which reports ``gone`` for a pointer into a unit that has no
-    crew log at all.
-
-    Failures are COUNTED, not ignored, and reported for what they are. A unit
-    that could not be fully removed answers ``failed`` rather than being reported
-    as collected, and stays addressable so the next pass can aim at it again --
-    but ``failed`` does not promise its history survived. Segments go first, so
-    the ordinary partial removal is history already gone with something else left
-    standing; the log line says which of the two happened rather than claiming
-    the segments were kept.
+    Failures are counted: a unit not fully removed answers ``failed`` and stays
+    addressable for the next pass. ``failed`` does not promise its history survived;
+    segments go first, so the log line says which part was left standing.
     """
     require_kind(kind)
     # The name as WRITTEN, checked before the resolution below follows it.

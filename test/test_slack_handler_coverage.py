@@ -172,6 +172,16 @@ class TestYoloCommand:
         await _slash("!yolo renew", slack, sessions)
         assert "renewed" in _texts(slack)
 
+    @pytest.mark.asyncio
+    async def test_the_cli_grant_is_not_slacks_to_renew(self, slack, sessions, owner):
+        """``gateway --approval yolo``'s grant reads as off in Slack, so renew refuses it."""
+        from kiro_crew import safety_override as so
+
+        assert so.safety_override().activate_declared("cli").active is True
+        await _slash("!yolo renew", slack, sessions)
+        assert "not active" in _texts(slack)
+        assert so.safety_override().is_cli_launch is True
+
 
 # ──────────────────────────────────────────────────────────────────────
 # !stop
@@ -292,11 +302,19 @@ class TestAgentCommand:
     @pytest.mark.parametrize(
         ("command", "expected"),
         [
-            pytest.param("!agent", "Current agent", id="test_bare_agent_reports_current"),
-            pytest.param("!agent a b", "Usage:", id="test_too_many_args_shows_usage"),
+            pytest.param(
+                "!agent", "Current agent", id="agent_reply-test_bare_agent_reports_current"
+            ),
+            pytest.param("!agent a b", "Usage:", id="agent_reply-test_too_many_args_shows_usage"),
+            pytest.param(
+                "!ta", "No thread agent set.", id="thread_agent_reply-test_bare_ta_without_override"
+            ),
+            pytest.param(
+                "!ta nope", "Unknown agent", id="thread_agent_reply-test_unknown_thread_agent"
+            ),
         ],
     )
-    async def test_agent_reply(self, slack, sessions, owner, agents_dir, command, expected):
+    async def test_agent_command_reply(self, slack, sessions, owner, agents_dir, command, expected):
         await _slash(command, slack, sessions)
         assert expected in _texts(slack)
 
@@ -334,18 +352,6 @@ class TestAgentCommand:
 
 
 class TestThreadAgentCommand:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            pytest.param("!ta", "No thread agent set.", id="test_bare_ta_without_override"),
-            pytest.param("!ta nope", "Unknown agent", id="test_unknown_thread_agent"),
-        ],
-    )
-    async def test_thread_agent_reply(self, slack, sessions, owner, agents_dir, command, expected):
-        await _slash(command, slack, sessions)
-        assert expected in _texts(slack)
-
     @pytest.mark.asyncio
     async def test_bare_ta_with_override(self, slack, sessions, owner, agents_dir):
         h._thread_agents["t1"] = "demo"
@@ -426,19 +432,32 @@ class TestMiscSlashCommands:
         ("command", "expected"),
         [
             pytest.param(
-                "!dashboard 5furlongs", "Usage:", id="test_dashboard_rejects_bad_duration"
+                "!dashboard 5furlongs",
+                "Usage:",
+                id="misc_command_reply-test_dashboard_rejects_bad_duration",
             ),
             pytest.param(
                 "!link-to-dashboard",
                 "Dashboard not available.",
-                id="test_link_to_dashboard_without_dashboard",
+                id="misc_command_reply-test_link_to_dashboard_without_dashboard",
             ),
             pytest.param(
-                "!title", "Usage: `!title <text>`", id="test_title_without_text_shows_usage"
+                "!title",
+                "Usage: `!title <text>`",
+                id="misc_command_reply-test_title_without_text_shows_usage",
+            ),
+            pytest.param("!channel", "activation", id="channel_reply-test_status"),
+            pytest.param(
+                "!channel sometimes", "Invalid mode", id="channel_reply-test_invalid_mode"
+            ),
+            pytest.param(
+                "!channel agent",
+                "Usage: `!channel agent",
+                id="channel_reply-test_agent_subcommand_needs_argument",
             ),
         ],
     )
-    async def test_misc_command_reply(self, slack, sessions, owner, command, expected):
+    async def test_command_reply(self, slack, sessions, owner, command, expected):
         await _slash(command, slack, sessions)
         assert expected in _texts(slack)
 
@@ -515,6 +534,15 @@ class TestMiscSlashCommands:
         log.set_title.assert_called_once_with("t1", "Release notes")
 
     @pytest.mark.asyncio
+    async def test_title_reads_slack_markup_before_cutting(self, slack, sessions, owner):
+        log = MagicMock()
+        link = "<https://github.com/kirodotdev/KiroCrew/issues/21964|github.com/kirodotdev/KiroCrew/issues/21964>"
+        await _slash(f"!title {'x' * 50} {link}", slack, sessions, log=log)
+        titles = [a for a in slack.actions if a[0] == "set_thread_title"]
+        assert titles[0][1]["title"] == f"{'x' * 50} kirodotdev/KiroCrew#21964"
+        log.set_title.assert_called_once_with("t1", f"{'x' * 50} kirodotdev/KiroCrew#21964")
+
+    @pytest.mark.asyncio
     async def test_title_survives_log_failure(self, slack, sessions, owner):
         log = MagicMock()
         log.set_title.side_effect = OSError("nope")
@@ -530,23 +558,6 @@ class TestChannelCommand:
     async def test_non_owner_denied(self, slack, sessions, owner):
         await _slash("!channel always", slack, sessions, user="UZZZ")
         assert "Only the bot owner" in _texts(slack)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            pytest.param("!channel", "activation", id="test_status"),
-            pytest.param("!channel sometimes", "Invalid mode", id="test_invalid_mode"),
-            pytest.param(
-                "!channel agent",
-                "Usage: `!channel agent",
-                id="test_agent_subcommand_needs_argument",
-            ),
-        ],
-    )
-    async def test_channel_reply(self, slack, sessions, owner, command, expected):
-        await _slash(command, slack, sessions)
-        assert expected in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_valid_mode_persists(self, slack, sessions, owner):
@@ -1251,6 +1262,17 @@ class TestCompactCommand:
         sessions.has_session.return_value = has_session
         await h._handle_compact_command(slack, sessions, "C1", "t1", "msg1", "t1")
         assert expected in _texts(slack)
+
+    @pytest.mark.asyncio
+    async def test_flagged_session_says_the_account_changed(self, slack, sessions):
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        sessions.try_acquire = AsyncMock(return_value=False)
+        sessions.has_session.return_value = True
+        sessions.is_retiring.return_value = True
+        await h._handle_compact_command(slack, sessions, "C1", "t1", "msg1", "t1")
+        assert _texts(slack) == mc.COMPACT_ACCOUNT_CHANGED_TEXT
+        sessions.release.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_acquired_but_no_provider(self, slack, sessions):

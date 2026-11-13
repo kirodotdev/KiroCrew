@@ -8,7 +8,9 @@ import { withDeadline } from '../../lib/withDeadline'
 import type { ClientTransport } from './transport'
 import type {
   RemoteDirListing,
+  RemoteEnvironmentHealth,
   RemoteFileContent,
+  RemoteGitResult,
   SessionEnvironmentsCheck,
   SessionEnvironmentWorkspace,
   SlotEnvironment,
@@ -29,6 +31,24 @@ export interface SlotTurnTimeout {
   max: number
 }
 
+/** One row of `GET /api/chat/slots/{slot}/steering`. `reaches` is `harness` or
+ *  `briefing` where another loader decides by its own rules. */
+export interface ChatSteeringFile {
+  name: string
+  path: string
+  source: 'global' | 'project' | 'folder' | 'agent'
+  /** `unknown` for a linked file the listing could not read. */
+  applies: 'always' | 'manual' | 'auto' | 'fileMatch' | 'unknown'
+  reaches: 'yes' | 'no' | 'harness' | 'briefing'
+  reason: string
+}
+
+/** What `GET /api/chat/slots/{slot}/steering` answers. */
+export interface ChatSteering {
+  provider: string
+  files: ChatSteeringFile[]
+}
+
 /** What `GET /api/chat/slots/follow-default` answers. */
 export interface FollowDefaultCount {
   count: number
@@ -38,24 +58,42 @@ export interface FollowDefaultCount {
   titles: string[]
 }
 
-export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
+export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch, jSlotEnvironment }: ClientTransport) {
   const selection = {
-    models: () => fetch('/api/models').then(j),
+    /** The configured backend's model list, or `backend`'s own (config spelling: `kiro`, `claude`, ...). */
+    models: (backend?: string) =>
+      fetch(backend === undefined ? '/api/models' : '/api/models?backend=' + encodeURIComponent(backend)).then(j),
+    /** One harness's own model list (`?backend=` in the config spelling: `kiro`,
+     *  `kas`, `claude`, ...), for a picker that pins a crewmate to that harness. */
+    harnessModels: (backend: string) =>
+      fetch('/api/models?backend=' + encodeURIComponent(backend)).then(j) as Promise<
+        { model_name: string; display_name?: string; description?: string }[]
+      >,
     chatSlotSelectionCapabilities: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
         known: boolean
         backend?: string
-        effort_supported?: boolean
+        /** `null` before a session reports, where only a live session on its harness can say. */
+        effort_supported?: boolean | null
         effort_levels?: string[]
         model_effort_pair_ids?: boolean
+        /** Present when this session's harness lists other models than the configured backend. */
+        models_backend?: string
+        /** The session's ultracode switch; present only while its harness advertises one. */
+        ultracode?: boolean
       }>,
+    /** The steering files this chat receives, read-only (`handlers/chat_steering.py`). */
+    chatSlotSteering: (slot: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/steering').then(j) as Promise<ChatSteering>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the
     // weakest initiator would otherwise decide whether the promise is bounded.
-    slashCommands: (signal?: AbortSignal) =>
+    /** `slot` adds what that chat's own session advertised (claude's project
+     *  and user commands and skills). */
+    slashCommands: (signal?: AbortSignal, slot?: string) =>
       withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
-        fetch('/api/slash-commands', { signal: s }).then(j)),
+        fetch('/api/slash-commands' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), { signal: s }).then(j)),
     /** `kind` names the namespace the user picked from. Omitted, the backend
      *  keeps its legacy name-first resolution; stated, a same-name template and
      *  member are told apart and an unresolvable choice is refused (409) rather
@@ -73,9 +111,12 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     chatSlotModel: (slot: string, model: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string; deferred?: boolean }>,
     /** This slot's auto-compact threshold override (null = follows a default:
-     *  `agent_pct` when the session's agent declares one, else `global_pct`). */
+     *  `agent_pct` when the session's agent declares one, else `global_pct`).
+     *  `harness_managed` names the backend when the session compacts on its
+     *  own (KAS); there the global threshold is left to the backend, and an
+     *  override or agent default compacts sooner. */
     chatSlotAutocompact: (slot: string) =>
-      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; min: number; max: number }>,
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; harness_managed?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
     setChatSlotAutocompact: (slot: string, pct: number | null) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact', { pct }).then(j) as Promise<{ ok?: boolean; pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null }>,
@@ -102,17 +143,27 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Turn the live session's ultracode switch on or off; answers the value it reads back. */
+    chatSlotUltracode: (slot: string, enabled: boolean) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/ultracode', { enabled }).then(j) as Promise<{ ok: boolean; ultracode: boolean }>,
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>
-      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(j) as Promise<SlotEnvironment>,
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(jSlotEnvironment) as Promise<SlotEnvironment>,
     /** Read-only view of a REMOTE session's workspace: list a directory or read a
      *  file, relative to the profile's working directory. Owner-only. */
     chatSlotEnvironmentList: (slot: string, path: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=list&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteDirListing>,
     chatSlotEnvironmentRead: (slot: string, path: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=read&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteFileContent>,
-    /** Read-only readiness check: Coder sign-in and each profile's template. */
+    /** State and machine metrics of a remote session's workspace (never starts it). */
+    chatSlotEnvironmentHealth: (slot: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/health').then(j) as Promise<RemoteEnvironmentHealth>,
+    /** Read-only git view of a remote session's workspace root. `from` is a
+     *  renamed file's old path, so its diff reads the HEAD side there. */
+    chatSlotEnvironmentGit: (slot: string, op: 'git_status' | 'git_log' | 'git_diff', path = '.', from?: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=' + op + '&path=' + encodeURIComponent(path) + (from ? '&from=' + encodeURIComponent(from) : '')).then(j) as Promise<RemoteGitResult>,
+    /** Read-only readiness check: Coder sign-in, each profile's template, git logins. */
     sessionEnvironmentsCheck: () =>
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,
     sessionEnvironmentsWorkspaces: () =>

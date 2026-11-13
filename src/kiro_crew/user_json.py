@@ -19,6 +19,7 @@ The module imports nothing from the package, so any layer can use it.
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 from pathlib import Path
@@ -28,6 +29,53 @@ logger = logging.getLogger(__name__)
 
 #: The decoded form of the UTF-8 byte-order mark.
 _BOM_CHAR = "\ufeff"
+
+#: Wide byte-order marks a Windows editor leaves on a redirected file (PowerShell
+#: 5.1's ``>`` and ``Out-File`` default to UTF-16LE with a mark). Longest first: a
+#: UTF-32LE mark (FF FE 00 00) begins with the UTF-16LE one, so the UTF-16 check
+#: must come after it. This is the one table both the default-backend readers and
+#: the kiro-cli settings read (``acp.session_mcp``) consult, so the cause they name
+#: the user cannot drift apart. ``user_json`` imports nothing from the package, so
+#: ``acp`` can import this.
+_WIDE_BOMS = (
+    (codecs.BOM_UTF32_LE, "UTF-32"),
+    (codecs.BOM_UTF32_BE, "UTF-32"),
+    (codecs.BOM_UTF16_LE, "UTF-16"),
+    (codecs.BOM_UTF16_BE, "UTF-16"),
+)
+
+
+def wide_bom_reason(raw: bytes) -> str | None:
+    """The fixed repair reason when *raw* is UTF-16 or marked UTF-32 text, else ``None``.
+
+    A Windows editor that saves a config as UTF-16/UTF-32 (PowerShell 5.1's ``>``)
+    leaves a file the UTF-8 readers cannot decode, so they skip it. The bytes carry
+    exactly the cause, so this returns the same actionable reason the kiro-cli path
+    uses — words a user can act on — rather than letting the opaque ``'utf-8' codec
+    can't decode`` message be the only signal. The reason is fixed text plus a short
+    encoding family name, never any content from the file. A file opening with a
+    UTF-16/UTF-32 mark is named, and so is UTF-16 saved without one
+    (:func:`_unmarked_utf16`).
+    """
+    for bom, family in _WIDE_BOMS:
+        if raw.startswith(bom):
+            return f"it is saved as {family}; re-save it as UTF-8"
+    if _unmarked_utf16(raw):
+        return "it is saved as UTF-16; re-save it as UTF-8"
+    return None
+
+
+def _unmarked_utf16(raw: bytes) -> bool:
+    """Whether *raw* opens like UTF-16 text saved without a byte-order mark.
+
+    A config document opens with ASCII characters (``{``, whitespace, ``/``), and
+    UTF-16 pairs each with a NUL byte: after it little-endian (``{\\0"\\0``),
+    before it big-endian (``\\0{\\0"``). A NUL as the first byte, or right after
+    the first character, is not JSON or JSONC, so a file read as UTF-8 never
+    opens this way and only an already unreadable file is named.
+    """
+    nul = [byte == 0 for byte in raw[:4]]
+    return nul in ([False, True, False, True], [True, False, True, False])
 
 
 def strip_utf8_bom(text: str) -> str:
@@ -202,7 +250,19 @@ def load_user_json_object(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        data = loads_user_jsonc(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+    except OSError as exc:
+        logger.warning("Ignoring invalid %s: %s", path, exc)
+        return {}
+    # A UTF-16/UTF-32 file (a Windows redirect's default) cannot be decoded as
+    # UTF-8, so it is skipped either way. Name the cause first, in the words the
+    # kiro-cli path uses, instead of the opaque ``'utf-8' codec can't decode``.
+    reason = wide_bom_reason(raw)
+    if reason is not None:
+        logger.warning("Ignoring %s: %s", path, reason)
+        return {}
+    try:
+        data = loads_user_jsonc(raw.decode("utf-8"))
     except (ValueError, OSError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
         return {}

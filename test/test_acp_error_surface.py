@@ -56,6 +56,19 @@ _PROMPT_BUSY = {
     "data": "Prompt already in progress",
 }
 
+# goose's answer to a `session/prompt` sent while its own run is still live, as
+# reported (the user saw it rendered "Invalid params: <data>"). The same shape
+# goose uses for its other -32602 answers ("no active run to steer").
+_GOOSE_ACTIVE_RUN = {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": (
+        "session already has active run "
+        "`run_63917c4b-a210-47ee-8c41-112231a29ddb`; "
+        "use _goose/unstable/session/steer"
+    ),
+}
+
 # kiro-cli >= 2.16 rewording of the capacity rejection, which names NO model.
 # A representative capacity-rejection frame, with the request id value
 # swapped. Before its own pattern existed this fell
@@ -226,13 +239,9 @@ class TestNoRawDictInUserFacingError:
     async def test_prompt_busy_guidance_names_no_unknown_command(self, driver):
         """The busy branch must not name `!restart` either.
 
-        Same defect class as the malformed-request branch, in the same
-        surface-blind formatter: `!restart` is a Slack-only bang alias, it is
-        owner-gated even there, and it restarts the GATEWAY rather than the
-        session -- so on every other surface it is an inert instruction. It was
-        also unnecessary, because the handlers reset and re-queue on
-        AcpPromptBusy on their own. Asserted as an absence, and paired with a
-        positive check that the recovery advice survived.
+        `!restart` is a Slack-only, owner-gated alias that restarts the gateway, and the
+        handlers re-queue on AcpPromptBusy themselves. Paired with a check that the
+        recovery advice survives.
         """
         msg = str(await driver(_PROMPT_BUSY))
 
@@ -249,11 +258,8 @@ class TestNoRawDictInUserFacingError:
 class TestEntitlementReachesTheHandlePath:
     """The shared-runtime path must feed the entitlement discriminator too.
 
-    ``_model_is_unentitled`` is wired into the three ``AcpClient`` raise sites,
-    but ``AcpSessionHandle`` is the path every dashboard
-    chat actually takes, so without passing its advertised ids the entitlement
-    split stays inert exactly where users hit it: a free-tier rejection would
-    still read as a capacity blip and still burn the retry ladder.
+    Every dashboard chat goes through ``AcpSessionHandle``; without its advertised ids a
+    free-tier rejection reads as a capacity blip and burns the retry ladder.
     """
 
     @pytest.mark.asyncio
@@ -296,12 +302,8 @@ class TestEntitlementReachesTheHandlePath:
 class TestNamelessCapacityWording:
     """kiro-cli >= 2.16's nameless capacity rejection must stay retryable.
 
-    The rewording dropped the model name from "The model 'X' is not
-    available", so ``_RE_MODEL_UNAVAILABLE`` does not match and the error
-    fell through to the unknown-shape branch: passthrough text (fine) with a
-    TERMINAL verdict (not fine). A cron hit exactly this during a backend
-    capacity blip — the run before and after both succeeded — and failed
-    without spending a single retry attempt.
+    The wording has no model name, so ``_RE_MODEL_UNAVAILABLE`` misses it; the
+    unknown-shape branch would mark it terminal and skip every retry.
     """
 
     @pytest.mark.asyncio
@@ -443,22 +445,51 @@ class TestRunnerPromptBusyIsStructural:
         assert eligible
 
 
+class TestGooseActiveRunIsPromptBusy:
+    """goose's busy answer takes the same reset-and-requeue path as kiro-cli's.
+
+    goose refuses a `session/prompt` while its own run is live. Before this was
+    recognised the frame raised a bare AcpError, so the runner's retry gate
+    missed it and every auto-recovery re-prompt hit the same refusal.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_handle_path_raises_prompt_busy(self, driver):
+        exc = await driver(_GOOSE_ACTIVE_RUN)
+        assert isinstance(exc, AcpPromptBusy)
+        assert "still processing a previous request" in str(exc)
+
+    def test_client_path_raises_prompt_busy(self):
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        with pytest.raises(AcpPromptBusy):
+            _raise_acp_error(_GOOSE_ACTIVE_RUN, backend="goose")
+
+    def test_busy_text_only_in_message_still_classifies(self):
+        """The classifier also reads `message`, as it does for kiro-cli's text."""
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        frame = {"code": -32602, "message": f"Invalid params: {_GOOSE_ACTIVE_RUN['data']}"}
+        with pytest.raises(AcpPromptBusy):
+            _raise_acp_error(frame, backend="goose")
+
+    def test_steer_refusal_is_not_prompt_busy(self):
+        """goose's "no active run to steer" means the opposite: nothing is running."""
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        frame = {"code": -32602, "message": "Invalid params", "data": "no active run to steer"}
+        with pytest.raises(AcpError) as ei:
+            _raise_acp_error(frame, backend="goose")
+        assert not isinstance(ei.value, AcpPromptBusy)
+
+
 class TestTransientMarkerCoupling:
     """``llm_helpers`` string fallback must recognise the formatted wording.
 
-    ``acp_error_is_transient`` prefers the structured ``.transient`` flag, but
-    unattended callers (``stream_and_collect``) and history-restored messages
-    still fall back to substring matching against ``_TRANSIENT_MARKERS``, whose
-    entries quote ``_format_acp_error``'s prose verbatim. Rewording a branch
-    without updating that tuple makes a retryable failure look terminal — which
-    is exactly the hazard when a reword changes "on Bedrock" to "on the backend"
-    and leaves the marker behind.
-
-    Scope note: this pins the OUTCOME (formatted transients classify), not any
-    single marker. The capacity branch is matched twice over — by
-    "is unavailable on the backend" and incidentally by "throttl" in its own
-    "capacity throttle" clause — so dropping either one alone does not fail
-    here. That redundancy is deliberate belt-and-braces.
+    ``stream_and_collect`` and restored messages match ``_TRANSIENT_MARKERS``, which quote
+    ``_format_acp_error``'s prose, so a reword must update both. Pins the outcome: the
+    capacity branch matches two markers, so dropping one does not fail.
     """
 
     @pytest.mark.parametrize(
@@ -664,10 +695,7 @@ class TestMalformedRequestReachesTheHandlePath:
     """The shared-runtime path must surface the structural-rejection guidance
     and carry a terminal verdict, mirroring TestNoRawDictInUserFacingError.
 
-    "Improperly formed request" is a DETERMINISTIC structural rejection: the
-    identical payload cannot succeed on retry, so both handle raise sites must
-    format it into repair guidance (never the raw dict) and mark it
-    non-retryable so it is not re-sent in a loop.
+    The same payload cannot succeed on retry, so it must not be re-sent in a loop.
     """
 
     @pytest.mark.asyncio
@@ -690,19 +718,9 @@ class TestMalformedRequestReachesTheHandlePath:
     async def test_malformed_request_guidance_names_no_unknown_command(self, driver):
         """Every command the guidance names must exist on the reader's surface.
 
-        This error is TERMINAL, so a channel dispatcher hands the formatted
-        string straight to the user (telegram's ``_user_safe_failure_reason``
-        surfaces a user-worded, non-retryable error). The formatter does not know which
-        surface will render it, so it may name only commands spelled the same
-        everywhere. ``/chat new`` was not one: it exists nowhere in the product
-        (``/new`` on Telegram and Discord, a new tab on the dashboard), so the
-        one actionable instruction a stuck user received was inert -- and on a
-        session this broken the non-command is forwarded as a prompt and
-        re-fails with this same error.
-
-        Asserted as an absence rather than by re-stating the sentence, so the
-        test constrains the CLASS of mistake (a fabricated command) instead of
-        pinning wording a later copy edit is entitled to change.
+        The terminal text reaches users on any surface, so it may name only commands
+        spelled the same everywhere; ``/chat new`` exists nowhere. Asserted as an absence
+        so copy edits stay free.
         """
         msg = str(await driver(_MALFORMED_REQUEST))
 
@@ -722,12 +740,8 @@ class TestMalformedRequestReachesTheHandlePath:
     async def test_malformed_request_is_tagged_structural_terminal(self, driver):
         """The exception carries the narrower structural fact, not just terminal.
 
-        ``transient is False`` is the retry-layer verdict; ``structural_terminal``
-        is the stronger fact that the payload's SHAPE was rejected, so a NEW
-        context cannot help either. A self-driving caller (the auto-nudge loop)
-        reads this to STOP re-firing the same context rather than merely decline
-        an in-turn retry -- the two verdicts are distinct because a spent usage
-        limit is also terminal yet a fresh context there CAN succeed.
+        ``structural_terminal`` tells the auto-nudge loop to stop re-firing the context; a
+        spent usage limit is terminal too, but a fresh context can succeed there.
         """
         assert (await driver(_MALFORMED_REQUEST)).structural_terminal is True
 
@@ -769,15 +783,8 @@ class TestMalformedRequestReachesTheHandlePath:
 class TestOversizedRequestReachesTheHandlePath:
     """kiro-cli's own oversized-request refusal is structural, like a malformed one.
 
-    The refusal is deterministic in the payload's SIZE: kiro-cli emits it only
-    after deciding no compaction round can make the request fit, without
-    compacting, and the failed message is never appended to the native history,
-    so the state after the failure is identical to the state before it. A
-    self-driving loop that re-sends the same context therefore reproduces it on
-    every cycle -- the exact property ``structural_terminal`` exists to name --
-    and before this class existed the sentence fell through to the unknown-shape
-    branch with an incidental terminal verdict and NO structural tag, so the
-    auto-nudge loop kept firing the doomed context until ``max_cycles``.
+    kiro-cli refuses without compacting and leaves history unchanged, so re-sending the
+    same context fails every cycle; ``structural_terminal`` stops the auto-nudge loop.
     """
 
     @pytest.mark.asyncio
@@ -853,15 +860,9 @@ _CLOUD_CREDENTIAL_ERROR = {
 class TestCloudCredentialErrorNamesAFreshProcess:
     """A stale-credential answer must route the backend into a reload, not a retry.
 
-    The backend PROCESS answered, so nothing marks it dead and the dead-provider
-    eviction never fires -- but its credential cache is stale, so every retry on
-    this same process draws the identical answer while a fresh process loads
-    fresh credentials. ``_raise_acp_error`` therefore tags the frame
-    (``credential_reload``) from the structured ``data.errorKind``, and
-    ``acp_error_is_session_not_found`` routes the tag down the same
-    reset-and-reload-once path a dropped session takes. The tag is deliberately
-    NOT ``auth_required``: that tag offers the Kiro sign-in card, which would
-    sign in the wrong identity for a harness that loads its own credentials.
+    The live process has stale credentials, so ``credential_reload`` (from
+    ``data.errorKind``) routes to the reset-and-reload path. Not ``auth_required``: its
+    Kiro sign-in card would sign in the wrong identity.
     """
 
     @pytest.mark.asyncio

@@ -1357,7 +1357,7 @@ describe('TerminalKeyBar', () => {
       await userEvent.click(btn) // stage 2: selectAll
       expect(selectAll).toHaveBeenCalledTimes(1)
 
-      clearSelection() // e.g. a successful Copy cleared the selection
+      act(() => { clearSelection() }) // e.g. a successful Copy cleared the selection
       await userEvent.click(btn) // next tap restarts at stage 1, from the bottom
       expect(selectLines).toHaveBeenLastCalledWith(1, 1)
     })

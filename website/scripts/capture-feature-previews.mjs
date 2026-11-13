@@ -88,15 +88,6 @@ for (const theme of ['light', 'dark']) {
     await shoot(page, path.join(out, `webhooks-page-${theme}.png`))
     await ctx.close()
   }
-  // Crew Members: the page is the flag's only door (Crew Mode, the second
-  // door this flag used to open, retired — see `utils/previewFlags.ts`).
-  {
-    const { ctx, page } = await session(browser, theme, ['mc-preview-crew'])
-    await page.goto(`${base}/members`, { waitUntil: 'load' })
-    await settle(page)
-    await shoot(page, path.join(out, `crew-members-${theme}.png`))
-    await ctx.close()
-  }
 }
 
 await browser.close()

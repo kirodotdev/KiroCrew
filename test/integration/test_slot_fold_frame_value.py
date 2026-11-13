@@ -19,6 +19,7 @@ import time
 
 import aiohttp
 import pytest
+from crew_log_drain import assert_drained
 from integration.conftest import GatewayBoot
 
 from kiro_crew.crew_log import eager, emit
@@ -33,7 +34,7 @@ def _record_work_item() -> None:
     emit.on_session_opened(
         _SESSION, agent="kirocrew", slot=_SLOT, model="opus", cwd="/w", owner="owner"
     )
-    assert emit.flush()
+    assert_drained()
     emit._write(
         _SESSION,
         "work/recorded",
@@ -47,7 +48,7 @@ def _record_work_item() -> None:
         },
         src="gateway",
     )
-    assert emit.flush()
+    assert_drained()
     assert eager.drain(timeout=10.0)
 
 

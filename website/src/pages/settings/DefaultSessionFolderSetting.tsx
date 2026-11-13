@@ -75,8 +75,7 @@ export function DefaultSessionFolderSetting({ disabled }: { disabled?: boolean }
     <>
       <SettingsSelect
         label={i18nT('pages.settings.chatPanel.default_session_folder')}
-        description={i18nT('pages.settings.chatPanel.default_session_folder_desc')}
-        hint={i18nT('pages.settings.chatPanel.default_session_folder_hint')}
+        hint={i18nT('pages.settings.chatPanel.default_session_folder_desc_tip')}
         value={folderId}
         options={options}
         optionLabels={labels}

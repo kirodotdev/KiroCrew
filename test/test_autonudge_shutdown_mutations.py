@@ -723,11 +723,8 @@ async def test_MUTATION_a_detached_lease_persist_does_not_hold_a_lock_waiting_tr
 ):
     """A ``_persist_soon`` under the callback's lease is not this transaction's write.
 
-    The gate schedules the detached persist and the callback reaches ``remove()``
-    with no yield between, so that write lands only once the transaction waits for
-    its lock. Counting it as the transaction's own holds the cancelled caller for
-    the whole post-cancellation window. The transaction's token stays at zero, the
-    caller leaves at once, and the registered child completes the removal.
+    That write lands only once ``remove()`` waits for its lock, so it must not hold the
+    cancelled caller: the token stays at zero and the registered child finishes.
     """
     service = AutoNudgeService(base_dir=tmp_path / "home")
     await service.start()

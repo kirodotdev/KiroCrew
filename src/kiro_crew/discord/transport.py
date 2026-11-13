@@ -29,7 +29,7 @@ from kiro_crew.discord.client import (
     SendPermission,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
-from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -73,6 +73,9 @@ class DiscordInboundMessage(InboundMessage):
     """
 
     message_id: str = ""
+    # Id of the message this one replies to, or "". With the channel id it names a
+    # bridged approval note a reply answers (notifications bridge, B4g).
+    reply_to_message_id: str = ""
 
 
 # A dispatch callback consumes a normalized, already-authorized message and
@@ -315,6 +318,26 @@ class DiscordTransport(MessagingTransport):
             caption=caption or None,
         )
         return str(mid or "")
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets: it uploads into any conversation it answers."""
+        from kiro_crew.discord.renderer import _UPLOAD_LIMITS
+
+        return _UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image through the renderer's own multipart call.
+
+        Not :meth:`send_document`: that pins the real basename for a name
+        ``file_send`` already gated, while this name comes from LLM-authored
+        reply text and gets the sanitized one, as on the renderer path.
+        """
+        mid = await self._client.send_message_with_files(thread_id or conversation_id, "", [file])
+        return bool(mid)
 
     async def resolve_conversation(self, user_id: str) -> str:
         # Proactive sends need a DM channel; the client's create_dm_channel
@@ -703,6 +726,7 @@ class DiscordTransport(MessagingTransport):
             text=inbound.text,
             thread_id=thread_id,
             message_id=inbound.message_id,
+            reply_to_message_id=inbound.reply_to_message_id,
             attachments=list(inbound.attachments),
         )
         if not self.authorize(msg):

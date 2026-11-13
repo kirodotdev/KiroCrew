@@ -210,7 +210,6 @@ class TestSlackRenderer:
     def _renderer(self) -> tuple[SlackRenderer, _RecSlack]:
         rec = _RecSlack()
         r = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
-        r._now = lambda: 1e9  # every chunk is past the edit throttle
         return r, rec
 
     def test_stream_never_carries_a_split_tag(self) -> None:
@@ -249,6 +248,11 @@ class TestSlackRenderer:
         # final answer from the accumulated text.
         async def scenario() -> None:
             r, rec = self._renderer()
+
+            async def _no_surface() -> None:
+                return None
+
+            r._ensure_stream = _no_surface  # type: ignore[method-assign]
             r._accumulated = f"Report\n{DELIVER}"
             await r.on_done()
             posted = [kw["text"] for name, kw in rec.calls if name == "post_message"]

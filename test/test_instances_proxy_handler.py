@@ -40,11 +40,8 @@ class TestProxyHandlerPolicy:
     ):
         """A browser that drops mid-stream must not produce a SECOND write.
 
-        The pump caught `ConnectionResetError` and then fell through to
-        `write_eof()` on the very transport that had just refused a write — the
-        second exception escaped the handler and crashed the request. The
-        handler now returns from the except block, so exactly one write is
-        attempted after the reset: none.
+        After `ConnectionResetError` the handler returns; a `write_eof()` on the dead
+        transport would raise again and crash the request.
         """
         from kiro_crew.dashboard.handlers_instances import api_instances_proxy
 
@@ -260,11 +257,8 @@ class TestProxyHandlerPolicy:
     def test_encoded_traversal_cannot_reach_the_control_plane(self, raw):
         """Every encoding depth resolves to the SAME refusal.
 
-        The denylist shape this replaced inspected a half-decoded string while
-        the peer resolved the fully-decoded one, so `%252e%252e` arrived as
-        `%2e%2e`, matched no rule, and normalized back into `api/instances`.
-        Decoding to a fixed point before vetting is what closes the class —
-        so this is parametrized over depth rather than pinned to one payload.
+        The path is decoded to a fixed point before vetting, since the peer resolves the
+        fully-decoded form (`%252e%252e` -> `..`). Parametrized over depth for that reason.
         """
         from kiro_crew.dashboard.handlers_instances import _proxy_canonical_path
 

@@ -26,13 +26,14 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_session_manager import open_session, real_sessions
 
 from kiro_crew.acp.client import AcpProcessDied
 
 PARENT_KEY = "C123:ts.death"
 
 
-def _gateway_with_on_done():
+def _gateway_with_on_done(sessions=None):
     """Return ``(orchestrator, on_done)`` with the real nested retry loop wired.
 
     The harness helpers come from ``test_slack_gateway`` rather than a local
@@ -47,7 +48,7 @@ def _gateway_with_on_done():
     )
 
     orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-    orch.sessions = _mock_sessions()
+    orch.sessions = _mock_sessions() if sessions is None else sessions
     orch.ctx_builder = _mock_context_builder()
     orch.ctx_builder.hooks = MagicMock()
     orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -108,7 +109,8 @@ class TestGatewayAcpProcessDiedInjection:
         process died". A second call, or any other reason, means the arm was
         bypassed rather than exercised.
         """
-        orch, on_done = _gateway_with_on_done()
+        orch, on_done = _gateway_with_on_done(real_sessions())
+        await open_session(orch.sessions, PARENT_KEY)
         info = _finished_subagent()
 
         with patch(
@@ -118,7 +120,7 @@ class TestGatewayAcpProcessDiedInjection:
         ):
             await on_done(info)
 
-        orch.sessions.reset.assert_awaited_once_with(PARENT_KEY)
+        assert not orch.sessions.has_session(PARENT_KEY)
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason="ACP process died"
         )

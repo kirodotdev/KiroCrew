@@ -32,14 +32,17 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.appearance_packs.ids import DEFAULT_PACK, safe_pack_id
+from kiro_crew.appearance_packs.ids import DEFAULT_PACK, pack_id_key, safe_pack_id
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
-from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
+from kiro_crew.owner_only_files import restrict_file_to_owner_soft
+from kiro_crew.platform_compat import is_link_or_junction, remove_with_retry
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +136,14 @@ def _safe_id(raw: Any) -> str | None:
     return ident
 
 
+class ColourMapsUnreadableError(OSError):
+    """The colour file could not be read or set aside, so a save would replace it.
+
+    An ``OSError``, so every caller's existing write-failure path applies: a
+    recolour rolls back and the route answers 503.
+    """
+
+
 class AppearanceStore:
     """Reads and writes one appearance-pack library.
 
@@ -152,6 +163,9 @@ class AppearanceStore:
         #: keeps its name: renaming it would leave every already-recoloured pack
         #: reading as un-recoloured, silently losing the user's colour choices.
         self._colour_path = Path(data_dir) / "crew-companion-colours.json"
+        #: Why the colour file on disk could not be read, while it still sits
+        #: there unread. ``None`` when a save is free to replace the file.
+        self._colour_write_blocked: str | None = None
 
     # ── setup ───────────────────────────────────────────────────────────────
 
@@ -162,16 +176,73 @@ class AppearanceStore:
         except OSError as exc:
             logger.warning("appearance-packs: cannot create packs dir: %s", exc)
         self._recover_orphaned_backups()
+        # A corrupt colour file costs the user their recolouring, not their art, so
+        # carrying on with defaults beats refusing to start. Carrying on never costs
+        # the file either: see _load_colour_maps.
+        with self._colour_lock:
+            self._colour_maps = self._load_colour_maps()
+
+    def _load_colour_maps(self) -> dict[str, dict[str, str]]:
+        """The saved colour maps, keeping a file that cannot be used out of a save's way.
+
+        One leading UTF-8 byte-order mark reads normally. A file that is not JSON
+        or not a JSON object is moved to ``<name>.corrupt-<utc>`` with a warning, so
+        the next save cannot write one pack's colours over every other pack's. When
+        the read itself fails, or that move does, the file stays where it is and
+        every colour save raises :class:`ColourMapsUnreadableError` until a later
+        ``load`` reads it.
+        """
+        self._colour_write_blocked = None
+        path = self._colour_path
         try:
-            if self._colour_path.exists():
-                raw = json.loads(self._colour_path.read_text("utf-8"))
-                if isinstance(raw, dict):
-                    with self._colour_lock:
-                        self._colour_maps = {k: v for k, v in raw.items() if isinstance(v, dict)}
-        except (OSError, ValueError) as exc:
-            # A corrupt colour file costs the user their recolouring, not their art,
-            # so carrying on with defaults beats refusing to start.
-            logger.warning("appearance-packs: colour maps unreadable: %s", exc)
+            data = read_bytes_with_retry(path)
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            # A failed read says nothing about the bytes, which may hold every
+            # pack's colours: the file is kept and saves are refused instead.
+            self._colour_write_blocked = f"could not be read ({exc})"
+            logger.warning(
+                "appearance-packs: colour maps %s could not be read (%s); using defaults"
+                " and not saving over them",
+                path,
+                exc,
+            )
+            return {}
+        try:
+            raw = loads_user_json(data.decode("utf-8"))
+        except ValueError as exc:
+            self._set_colours_aside(exc)
+            return {}
+        if not isinstance(raw, dict):
+            self._set_colours_aside("not a JSON object")
+            return {}
+        return {k: v for k, v in raw.items() if isinstance(v, dict)}
+
+    def _set_colours_aside(self, reason: object) -> None:
+        """Move an unusable colour file to ``<name>.corrupt-<utc>``; refuse saves if that fails."""
+        path = self._colour_path
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        aside = path.with_name(f"{path.name}.corrupt-{stamp}")
+        try:
+            replace_with_retry(path, aside)
+        except OSError as exc:
+            self._colour_write_blocked = f"could not be used ({reason}) or moved aside ({exc})"
+            logger.warning(
+                "appearance-packs: colour maps %s could not be used (%s) or moved aside"
+                " (%s); using defaults and not saving over them",
+                path,
+                reason,
+                exc,
+            )
+            return
+        logger.warning(
+            "appearance-packs: colour maps %s could not be used (%s); moved them to %s"
+            " and using defaults",
+            path,
+            reason,
+            aside.name,
+        )
 
     def _recover_orphaned_backups(self) -> None:
         """Restore a pack stranded as ``<name>.old.<transaction>`` by an interrupted save.
@@ -470,7 +541,14 @@ class AppearanceStore:
                 return False
             if not resolved.is_dir():
                 return False
-            shutil.rmtree(resolved)
+            # Where rmtree walks by path anyway (Windows, where a held file can stop it), walk the
+            # pack here with ``manifest.json`` last, so a pack a hold interrupts stays listed.
+            hint = "Close the program using that file, then delete the pack again"
+            if not shutil.rmtree.avoids_symlink_attacks:
+                for child in resolved.iterdir():
+                    if child.name.casefold() != "manifest.json":
+                        remove_with_retry(child, retry_hint=hint)
+            remove_with_retry(resolved, retry_hint=hint)
         except OSError as exc:
             logger.warning("appearance-packs: pack delete failed: %s", exc)
             return False
@@ -560,7 +638,7 @@ class AppearanceStore:
                 shutil.rmtree(staging)
             staging.mkdir(parents=True)
             (staging / "manifest.json").write_text(manifest_text, "utf-8")
-            seen_casefolded: set[str] = set()
+            seen_keys: set[str] = set()
             for name, content in files.items():
                 safe = _safe_filename(name)
                 if safe is None or not isinstance(content, str):
@@ -573,17 +651,20 @@ class AppearanceStore:
                     logger.warning("appearance-packs: unsafe pack filename: %r", name)
                     shutil.rmtree(staging, ignore_errors=True)
                     return False
-                if safe.casefold() in seen_casefolded:
+                if pack_id_key(safe) in seen_keys:
                     # Two names differing only in case (`idle.svg` / `IDLE.SVG`)
                     # are distinct dict keys but ONE file on the case-insensitive
                     # filesystems macOS and Windows default to — the second
                     # write silently replaced the first while the import
-                    # reported success. Same all-or-nothing rule as above: a
-                    # save that would lose one file's art refuses entirely.
+                    # reported success. macOS also folds the NFC and NFD
+                    # spellings of one name, which casefold alone does not, so
+                    # the key is `pack_id_key` (NFC, then casefold). Same
+                    # all-or-nothing rule as above: a save that would lose one
+                    # file's art refuses entirely.
                     logger.warning("appearance-packs: case-colliding pack filename: %r", name)
                     shutil.rmtree(staging, ignore_errors=True)
                     return False
-                seen_casefolded.add(safe.casefold())
+                seen_keys.add(pack_id_key(safe))
                 if safe.lower() == "manifest.json":
                     # RESERVED: the manifest is generated above from the
                     # validated payload. A pack file with this name overwrites
@@ -822,7 +903,7 @@ class AppearanceStore:
                 return None
             if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
                 return None
-            raw = json.loads(path.read_text("utf-8"))
+            raw = loads_user_json(path.read_text("utf-8"))
             return raw if isinstance(raw, dict) else None
         except (OSError, ValueError):
             return None
@@ -888,15 +969,18 @@ class AppearanceStore:
         wrapper maps the raised OSError to 503 store_write_failed (same
         contract as the reminder store).
         """
+        if self._colour_write_blocked is not None:
+            raise ColourMapsUnreadableError(
+                f"colour maps {self._colour_path} {self._colour_write_blocked};"
+                " not saving over them"
+            )
         transaction = _new_transaction()
         tmp = self._colour_path.with_suffix(f".json.tmp.{transaction}")
         try:
             tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")
-            # chmod_safe, not os.chmod: docs/system-specs/common/platform-compat.md
-            # mandates the platform_compat shim, which is a no-op where POSIX
-            # modes mean nothing (Windows) instead of raising or silently
-            # misleading.
-            chmod_safe(tmp, 0o600)
+            # 0600 on POSIX, an owner-only DACL on Windows (chmod_safe would
+            # be a no-op there); the rename keeps it.
+            restrict_file_to_owner_soft(tmp)
             replace_with_retry(tmp, self._colour_path)
         finally:
             try:

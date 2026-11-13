@@ -15,8 +15,8 @@ Instance fields written: ``_dead_reason``, ``_init_deadline_task``, ``_init_firs
 ``_pending_requests``, ``_upstream_init_frame``, ``attempt_id``, ``reports_inflight``,
 ``supports_caller_identity``.
 
-Instance fields read: ``_inbox_lock``, ``_init_done_event``, ``_stub_inboxes``,
-``initialize_timeout_secs``, ``pool_key``, ``stdin``.
+Instance fields read: ``_gateway_ending``, ``_inbox_lock``, ``_init_done_event``,
+``_stub_inboxes``, ``initialize_timeout_secs``, ``pool_key``, ``process``, ``stdin``.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
-from kiro_crew import platform_compat
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_caller import CALLER_CAPABILITY_KEY, INFLIGHT_CAPABILITY_KEY
 from kiro_crew.mcp_gateway import lifecycle_log
@@ -50,36 +49,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.mcp_gateway.backend")
 
 
-# Default handshake deadline. Real MCP backends reply to ``initialize``
-# within tens of milliseconds; 10s is generous slack for a cold-spawning
-# backend on a loaded host.
+# Default handshake deadline: the shipped value of
+# ``mcp_gateway.initialize_timeout_secs``. A warm backend answers ``initialize``
+# in a few seconds at most; the effective deadline is never below
+# ``_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS``.
 _DEFAULT_INITIALIZE_TIMEOUT_SECS = 10.0
 
-# Windows cold-start floor for the first-``initialize`` deadline. On Windows the
-# backend's cold start (interpreter + import graph on a filesystem with no POSIX
-# page cache, and process creation that is itself heavier than fork/exec)
-# routinely overruns a 10s budget and then completes on the next spawn, so a
-# too-tight deadline reaps a backend that was about to answer and respawns it --
-# a spawn -> reaped-at-deadline -> respawn loop in which tools never finish
-# listing. The 10s default was measured against POSIX cold starts; raising only
-# the Windows floor leaves every POSIX host and any explicit operator value that
-# already clears the floor untouched. See ``_effective_initialize_timeout_secs``.
-_WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS = 30.0
+# Cold-start floor for the first-``initialize`` deadline, on every platform.
+# Right after the gateway daemon starts (a restart or an upgrade), every session
+# re-requests its backends together, so several interpreters cold-start at once
+# on a host that is busy with the restart itself. A backend whose warm handshake
+# takes about 3s then takes 13-15s, overruns a 10s budget, is reaped while it is
+# about to answer, and fails the session's turn. On Windows a single cold start
+# can overrun 10s on its own (no POSIX page cache, heavier process creation),
+# which is where this floor first applied. 30s covers the observed burst with
+# room to spare; a hung backend still fails, only 20s later. See
+# ``_effective_initialize_timeout_secs``.
+_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS = 30.0
+
+#: The start of the reason ``_init_deadline`` fails a backend with; the stub
+#: hands it to its host as ``backend init failed: <reason>``. A KAS session reads
+#: it back off the server's failed status entry
+#: (``acp.mcp_reattempt.is_start_timeout_failure``) to re-attempt a managed server
+#: that only ran out of time, so both sides spell it from this one constant.
+INITIALIZE_DEADLINE_REASON = "initialize did not complete within"
 
 
 def _effective_initialize_timeout_secs(configured: float) -> float:
-    """Apply the Windows cold-start floor to a configured initialize deadline.
+    """Apply the cold-start floor to a configured initialize deadline.
 
-    POSIX hosts, and any Windows host whose configured value already clears the
-    floor, get ``configured`` back unchanged -- an operator who deliberately
-    raised the deadline is never lowered. Only a Windows host left on (or below)
-    the POSIX-measured default is lifted to
-    ``_WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS``, so a slow cold start is given
+    A configured value that already clears the floor comes back unchanged -- an
+    operator who deliberately raised the deadline is never lowered. A value at
+    (or below) the shipped default is lifted to
+    ``_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS``, so a slow cold start is given
     room to finish its handshake rather than being reaped and respawned.
     """
-    if platform_compat.IS_WINDOWS:
-        return max(float(configured), _WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS)
-    return float(configured)
+    return max(float(configured), _INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS)
 
 
 # JSON-RPC initialize id the gateway uses on behalf of the first stub.
@@ -312,10 +317,21 @@ async def _init_deadline(self: Backend, timeout: float) -> None:
     # only a still-in-flight window is this timer's to close.
     if self._init_state != "in_flight":
         return
-    reason = f"initialize did not complete within {timeout:g}s"
-    self._dead_reason = self._dead_reason or reason
-    with contextlib.suppress(Exception):
-        await self._fail_init(reason, log_event="initialize_timed_out", log_reason="deadline")
+    if (
+        self.process.returncode is not None
+        and self._dead_reason is None
+        and not self._gateway_ending
+    ):
+        # The server died inside the handshake while a helper it spawned holds
+        # its stdout open, so the pump never ended: the backend's own death,
+        # named, and every queued stub answered, as for any other.
+        with contextlib.suppress(Exception):
+            await self._report_backend_exit(f"exit rc={self.process.returncode}")
+    else:
+        reason = f"{INITIALIZE_DEADLINE_REASON} {timeout:g}s"
+        self._dead_reason = self._dead_reason or reason
+        with contextlib.suppress(Exception):
+            await self._fail_init(reason, log_event="initialize_timed_out", log_reason="deadline")
     with contextlib.suppress(Exception):
         await self.shutdown()
 
@@ -404,6 +420,15 @@ async def prime_initialize(
     try:
         await asyncio.wait_for(self._init_done_event.wait(), timeout=timeout)
     except asyncio.TimeoutError as exc:
+        if (
+            self.process.returncode is not None
+            and self._dead_reason is None
+            and not self._gateway_ending
+        ):
+            # Dead, not wedged: the server died inside the handshake while a
+            # helper it spawned holds its stdout open, as in ``_init_deadline``.
+            with contextlib.suppress(Exception):
+                await self._report_backend_exit(f"exit rc={self.process.returncode}")
         self._dead_reason = self._dead_reason or "initialize timed out on respawn"
         # The backend answered neither the handshake nor EOF within the
         # window: it is wedged (process alive, initialize never completing).
@@ -548,7 +573,14 @@ async def _on_upstream_initialize(self: Backend, response: dict[str, Any]) -> No
     queued stubs with an explicit error response. Without this a stub
     that registered during the in-flight window would hang forever
     waiting for a cached-initialize that never arrives.
+
+    A reply that lands after the handshake already failed (the deadline
+    fired, or the backend died) is dropped: ``"failed"`` is terminal, and
+    reading it as ``"ready"`` would serve later stubs from a reaped process.
     """
+    if self._init_state == "failed":
+        logger.info("backend pid=%s ignored initialize reply after the handshake failed", self.pid)
+        return
     try:
         result, self.supports_caller_identity = _parse_initialize_response(response)
     except ValueError as exc:

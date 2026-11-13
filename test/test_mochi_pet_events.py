@@ -568,7 +568,9 @@ class TestManifestDeclaresEveryPublishedEvent:
 
     def test_every_published_event_is_declared(self) -> None:
         root = self._pkg_root()
-        declared = set(json.loads((root / "app.json").read_text())["permissions"]["events"])
+        declared = set(
+            json.loads((root / "app.json").read_text(encoding="utf-8"))["permissions"]["events"]
+        )
         published, unresolved = self._published_names(root)
 
         assert not unresolved, (
@@ -590,7 +592,9 @@ class TestManifestDeclaresEveryPublishedEvent:
         for by making the list look maintained.
         """
         root = self._pkg_root()
-        declared = set(json.loads((root / "app.json").read_text())["permissions"]["events"])
+        declared = set(
+            json.loads((root / "app.json").read_text(encoding="utf-8"))["permissions"]["events"]
+        )
         published, _ = self._published_names(root)
         assert not declared - published, (
             f"declared in permissions.events but never published: "

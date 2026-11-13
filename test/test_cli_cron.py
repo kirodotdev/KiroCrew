@@ -15,6 +15,7 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 from kiro_crew.cli_commands import _cron
+from kiro_crew.cron import CronService
 
 
 def _add_job_kwargs(**overrides):
@@ -45,6 +46,7 @@ def _add_job_kwargs(**overrides):
         timeout=0,
         timeout_secs=0,
         auto_pause_after_failures=None,
+        alert_after_failures=None,
     )
     kwargs.update(overrides)
     return kwargs
@@ -304,12 +306,46 @@ class TestCronCli:
                 channel="   ",
                 approval_mode=None,
             )
-            _cron(args)
-            out = capsys.readouterr().out
-            assert "at least one field" in out
+            # Nothing to write is a refusal: exit 1 on stderr, like a bad channel.
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+            assert exc.value.code == 1
+            out, err = capsys.readouterr()
+            assert err == "Provide at least one field to update\n"
+            assert out == ""
+            mock_svc.update_job.assert_not_called()
+
+    def test_bare_cron_prints_usage_without_building_the_service(self, capsys):
+        # CronService creates cron-history/ on a fresh data home.
+        with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
+            _cron(argparse.Namespace(cron_action=None))
+        mock_svc_cls.assert_not_called()
+        assert capsys.readouterr().out.startswith("Usage: kirocrew cron {")
+
+    def test_cron_update_bad_channel_exits_1_on_stderr(self, tmp_path, capsys):
+        """A refused channel writes nothing and must not read as a success to a script."""
+        with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
+            mock_svc = mock_svc_cls.return_value
+            args = argparse.Namespace(
+                cron_action="update",
+                job_id="job1",
+                name=None,
+                message=None,
+                every_secs=None,
+                cron_expr=None,
+                channel="!!",
+                approval_mode=None,
+            )
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+            assert exc.value.code == 1
+            out, err = capsys.readouterr()
+            assert "invalid channel ID format" in err
+            assert out == ""
+            mock_svc.update_job.assert_not_called()
 
     def test_cron_update_every_and_cron_exclusive(self, tmp_path, capsys):
-        with patch("kiro_crew.cli_commands.CronService"):
+        with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
             args = argparse.Namespace(
                 cron_action="update",
                 job_id="job1",
@@ -320,9 +356,13 @@ class TestCronCli:
                 channel=None,
                 approval_mode=None,
             )
-            _cron(args)
-            out = capsys.readouterr().out
-            assert "not both" in out
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+            assert exc.value.code == 1
+            out, err = capsys.readouterr()
+            assert err == "Provide --every or --cron, not both\n"
+            assert out == ""
+            mock_svc_cls.return_value.update_job.assert_not_called()
 
     def test_cron_update_not_found(self, tmp_path, capsys):
         with (
@@ -341,8 +381,13 @@ class TestCronCli:
                 channel=None,
                 approval_mode="auto",
             )
-            _cron(args)
-            assert "nonexist" in capsys.readouterr().out
+            # A missing job exits 1 on stderr, like remove/pause/resume/trigger.
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+            assert exc.value.code == 1
+            out = capsys.readouterr()
+            assert out.out == ""
+            assert out.err == "Job not found: nonexist\n"
             mock_sel.return_value.log_api_access.assert_called_once_with(
                 caller="cli",
                 operation="cron.update",
@@ -461,15 +506,10 @@ class TestCronCli:
             assert mock_job.agent_id == ""
             mock_svc._save.assert_not_called()
 
-    def test_cron_add_agent_whitespace_stripped(self, tmp_path):
+    def test_cron_add_agent_whitespace_stripped(self, tmp_path, monkeypatch):
         """Whitespace-only --agent is treated as omitted (no agent_id set)."""
-        with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            mock_svc = mock_svc_cls.return_value
-            mock_job = self._make_add_job_mock(job_id="ag4", every_secs=300)
-            mock_svc.add_job.return_value = mock_job
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        with patch("kiro_crew.cli_commands.sel"):
             args = argparse.Namespace(
                 cron_action="add",
                 name="basic",
@@ -481,8 +521,8 @@ class TestCronCli:
                 agent="   ",
             )
             _cron(args)
-            assert mock_svc.add_job.call_args.kwargs["agent_id"] == ""
-            mock_svc._save.assert_not_called()
+        (job,) = CronService(base_dir=tmp_path).list_jobs(include_disabled=True)
+        assert (job.name, job.agent_id) == ("basic", "")
 
     def test_cron_update_with_agent(self, tmp_path, capsys):
         """--agent on `cron update` passes agent_id kwarg to update_job."""
@@ -545,20 +585,16 @@ class TestCronCli:
             assert audit["resources"] == "job_id=abc123 fields=agent_id agent=default"
         assert capsys.readouterr().out == "Updated job: abc123 (existing)\n"
 
-    def test_cron_update_agent_omitted_skipped(self, tmp_path, capsys):
-        """When --agent is omitted (None), agent_id is not in update_job kwargs."""
-        with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            mock_svc = mock_svc_cls.return_value
-            mock_job = MagicMock()
-            mock_job.id = "abc123"
-            mock_job.name = "existing"
-            mock_svc.update_job.return_value = mock_job
+    def test_cron_update_agent_omitted_skipped(self, tmp_path, capsys, monkeypatch):
+        """When --agent is omitted (None), the job's agent is left as it was."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        existing = CronService(base_dir=tmp_path).add_job(
+            name="existing", message="hi", every_secs=300, agent_id="oncall-agent"
+        )
+        with patch("kiro_crew.cli_commands.sel"):
             args = argparse.Namespace(
                 cron_action="update",
-                job_id="abc123",
+                job_id=existing.id,
                 name="renamed",
                 message=None,
                 every_secs=None,
@@ -568,8 +604,9 @@ class TestCronCli:
                 agent=None,
             )
             _cron(args)
-            mock_svc.update_job.assert_called_once_with("abc123", name="renamed")
-            assert "agent_id" not in mock_svc.update_job.call_args.kwargs
+        (job,) = CronService(base_dir=tmp_path).list_jobs(include_disabled=True)
+        assert (job.name, job.agent_id) == ("renamed", "oncall-agent")
+        assert capsys.readouterr().out == f"Updated job: {existing.id} (renamed)\n"
 
     def test_cron_add_invalid_agent_name_rejected(self, tmp_path, capsys):
         """Bad-format --agent on add is rejected with sys.exit(1) before any add_job call."""
@@ -753,7 +790,9 @@ class TestCronCli:
             mock_sel.return_value.log_api_access.assert_not_called()
         assert capsys.readouterr().out == "Removed job: abc123\n"
 
-    def test_cron_remove_not_found_audits_not_found(self):
+    def test_cron_remove_not_found_exits_1_on_stderr(self, capsys):
+        # A miss must fail like pause/resume do, or `cron remove x && next`
+        # runs `next` after nothing was removed.
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel") as mock_sel,
@@ -761,9 +800,14 @@ class TestCronCli:
             mock_svc = mock_svc_cls.return_value
             mock_svc.remove_job.return_value = False
             args = argparse.Namespace(cron_action="remove", job_id="ghost")
-            _cron(args)
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
             mock_svc.remove_job.assert_called_once_with("ghost", actor="cli", source="cli")
             mock_sel.return_value.log_api_access.assert_not_called()
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Job not found: ghost\n"
 
     def test_cron_remove_succeeds_when_audit_raises(self, capsys):
         # The first sel() of a process constructs the log and can raise; the
@@ -781,3 +825,112 @@ class TestCronCli:
             assert "Removed job: abc123" in out.out
             assert out.err == ""
             mock_sel.assert_not_called()
+
+
+class TestCronUpdateJobSettings:
+    """``cron update`` changes the settings ``cron add`` takes, in place, on the same job id."""
+
+    @pytest.fixture()
+    def svc(self, tmp_path, monkeypatch):
+        from kiro_crew import cli_commands
+        from kiro_crew.config.loader import config_dir
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        config_dir().mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(cli_commands, "sel", MagicMock())
+        return CronService(base_dir=config_dir())
+
+    @staticmethod
+    def _update(*argv: str) -> None:
+        """Parse ``cron update ARGV`` with the real cron parser, then run it on the store.
+
+        Not through ``cli.main``: that also sets up process-wide logging, which would
+        outlive this test's captured stderr.
+        """
+        from kiro_crew import cli_commands
+        from kiro_crew.cli_parser_agent import register_cron_parser
+
+        root = argparse.ArgumentParser(prog="kirocrew")
+        register_cron_parser(root.add_subparsers(dest="command"))
+        cli_commands._cron_dispatch(root.parse_args(["cron", "update", *argv]))
+
+    @staticmethod
+    def _stored():
+        """The one job as the store file holds it, read by a fresh service."""
+        from kiro_crew.config.loader import config_dir
+
+        (job,) = CronService(base_dir=config_dir()).list_jobs(include_disabled=True)
+        return job
+
+    def test_each_flag_changes_its_setting_and_keeps_the_job(self, svc, capsys):
+        job_id = svc.add_job("standup", "post it", cron_expr="0 9 * * *").id
+        self._update(
+            job_id,
+            "--model",
+            "test-model-x",
+            "--timezone",
+            "America/New_York",
+            "--no-persistent-session",
+            "--minimal-context",
+            "--hide-in-chat",
+            "--silent",
+        )
+        job = self._stored()
+        assert job.id == job_id
+        assert (job.name, job.message, job.schedule.cron_expr) == (
+            "standup",
+            "post it",
+            "0 9 * * *",
+        )
+        assert job.model == "test-model-x"
+        assert job.timezone == "America/New_York"
+        assert job.persistent_session is False
+        assert job.minimal_context is True
+        assert job.hide_in_chat is True
+        assert job.silent is True
+        assert capsys.readouterr().out == f"Updated job: {job_id} (standup)\n"
+
+    def test_empty_values_and_no_forms_clear_and_restore(self, svc):
+        job_id = svc.add_job(
+            "standup",
+            "post it",
+            cron_expr="0 9 * * *",
+            model="test-model-x",
+            timezone="Europe/Paris",
+            persistent_session=False,
+            minimal_context=True,
+            hide_in_chat=True,
+            silent=True,
+        ).id
+        self._update(
+            job_id,
+            "--model",
+            "",
+            "--timezone",
+            "",
+            "--persistent-session",
+            "--no-minimal-context",
+            "--no-hide-in-chat",
+            "--no-silent",
+        )
+        job = self._stored()
+        assert (job.model, job.timezone) == ("", "")
+        assert (job.persistent_session, job.minimal_context) == (True, False)
+        assert (job.hide_in_chat, job.silent) == (False, False)
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["--model", "bad model"], "Error: invalid model format"),
+            (["--timezone", "Mars/Olympus"], "Error: Invalid timezone: 'Mars/Olympus'"),
+        ],
+        ids=["model", "timezone"],
+    )
+    def test_a_refused_value_exits_1_and_writes_nothing(self, svc, capsys, argv, expected):
+        job_id = svc.add_job("standup", "post it", cron_expr="0 9 * * *", model="test-model-x").id
+        before = self._stored()
+        with pytest.raises(SystemExit) as exc:
+            self._update(job_id, *argv)
+        assert exc.value.code == 1
+        assert capsys.readouterr().err.startswith(expected)
+        assert self._stored() == before

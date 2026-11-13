@@ -14,17 +14,20 @@ New refusal paths for a save belong here.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from enum import Enum
+from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
-from kiro_crew.history import METADATA_LINE_CORRUPT
+from kiro_crew.history import METADATA_LINE_CORRUPT, transcript_lock_stems
 
 if TYPE_CHECKING:
     import asyncio
     from pathlib import Path
 
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+    from kiro_crew.dashboard.transcript_binding import TranscriptBinding
     from kiro_crew.history import ConversationLog
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
@@ -35,6 +38,195 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
 # event-loop mutations. A handful suffices — the only racing mutation is the
 # rare >10000-message trim; retries just re-read until the two reads agree.
 _FLUSH_SNAPSHOT_RETRIES = 4
+
+
+class HeaderUnconfirmed(OSError):
+    """An append-safe write refused: the header's privacy contract is unverified.
+
+    Raised by the append fallbacks when :func:`tighten_line_for_appends` answers
+    ``None`` -- the header could not be read, or still reads looser than the
+    slot's retained mode -- so the rows are NOT appended. An ``OSError`` because
+    every caller's refusal arm is the one that already handles an unreadable
+    header on the same path: the drain reports the rows and the close fails,
+    the gate keeps the window owed and the drain retries.
+    """
+
+    def __init__(self, history_key: str) -> None:
+        super().__init__(
+            f"the privacy contract of {history_key} could not be confirmed; "
+            "no row is appended under it"
+        )
+
+
+def append_window_rows(
+    conv_log: ConversationLog,
+    slot: _ChatSlot,
+    history_key: str,
+    window: list[dict],
+    *,
+    live_session: str,
+) -> int:
+    """Land *window*'s rows onto *history_key* append-safely; return how many were new.
+
+    The ONE replay the two append-safe fallbacks share -- the hand-over drain of
+    a popped slot whose truncation lost its key, and the commit gate's refusal of
+    that same write -- so the rows reach disk through the full save's own
+    preparation and never through a second pipeline. In order, under the lock
+    the caller already holds: the header is settled first
+    (``tighten_line_for_appends`` -- the slot's retained privacy mode created or
+    ratcheted onto the line, confirmed by re-read; an unconfirmed header raises
+    :class:`HeaderUnconfirmed` and nothing is appended), then each row is built
+    by ``_build_message_entry`` exactly as the full save builds it (transient
+    roles dropped, redaction, inline images persisted under this transcript's
+    ``(dir, stem)``), and appended through ``append_if_absent`` with the built
+    entry travelling whole, judged against the live file AND the rotation
+    archives so a window reaching past the rotation cut re-lands none of its
+    archived rows.
+
+    *window* is the caller's already-filtered snapshot: the note-authorization
+    filter (``drop_notes_authorized_elsewhere``) runs where the full save runs
+    it, before this call, so a note stamped for another session never reaches
+    it. Caller holds ``_locked(history_key)`` (or ``atomic_appends``).
+    """
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    if (
+        cp._metadata_line.tighten_line_for_appends(
+            conv_log, slot, history_key, live_session=live_session
+        )
+        is None
+    ):
+        raise HeaderUnconfirmed(history_key)
+    path = conv_log._path(history_key)
+    attachments = (path.parent, path.stem)
+    appended = 0
+    for m in window:
+        e = cp._build_message_entry(m, attachments=attachments)
+        if e is None:
+            continue
+        if conv_log.append_if_absent(
+            history_key,
+            str(e.get("role", "")),
+            str(e.get("content", "")),
+            cls=str(e.get("cls", "") or ""),
+            mid=cp.row_mid(e),
+            entry=e,
+            include_rotated=True,
+        ):
+            appended += 1
+    return appended
+
+
+def _same_transcript(observed_key: str, current_key: str) -> bool:
+    """Whether two session keys name the same transcript file.
+
+    Raw string equality is too strict: ``slack_<ts>``, ``slack:<ts>`` and the
+    bare ``<ts>`` all fold onto one file, and an unbound channel slot is
+    observed under the stem spelling and bound to the canonical one later. The
+    lock stems are the symmetric identity the delete path itself locks under,
+    so a shared stem means a shared file.
+    """
+    if observed_key == current_key:
+        return True
+    return bool(set(transcript_lock_stems(observed_key)) & set(transcript_lock_stems(current_key)))
+
+
+def _observed_file_evidence(
+    path_fn,
+    meta_fn,
+    meta_state_fn,
+    observed_key: str,
+    known: str,
+    *,
+    for_save: bool,
+) -> SessionDeleteEvidence:
+    """What the OBSERVED file (``observed_key``) says about a delete.
+
+    Reached only when the slot's write target has drifted to a DIFFERENT file
+    than the one it observed its identity from (a key mismatch). The target file
+    is not the evidence then — the observed file is. Stat A instead:
+
+    * A is GONE (``FileNotFoundError``) — A was permanently deleted; the verdict
+      is ``deleted``, the drifting save refused.
+    * any other ``stat`` failure — A's existence is unverifiable. A save raises
+      so its dirty retry stays armed; a lock-free copy probe answers
+      ``unverifiable``, which the protective probe maps to a refused copy.
+    * A exists and its ``created_at`` differs from the observed ``known`` — A was
+      deleted and recreated; ``deleted``. Compared only when ``known`` was
+      recorded, so a legacy observation (no ``created_at``) keeps the fail-open
+      behavior.
+    * A exists with the same identity — the drift to B is legitimate;
+      ``present``, the save proceeds.
+    * A has a corrupt metadata line — no retry can recover its identity, so the
+      established corrupt-line behavior proceeds (``present``). A transiently
+      unreadable line raises for a save and is ``unverifiable`` for a copy probe.
+    * A returns an empty identity — stat it again. A delete can land between the
+      lock-free copy probe's first stat and metadata read; a drifted save holds
+      A's and B's lock stems across both reads and the target commit.
+
+    With ``for_save`` every unverifiable arm raises, so a save only ever sees
+    ``deleted`` or ``present`` (or ``unobserved`` on a store with no path
+    resolver). ``path_fn`` resolves a key to its path; ``meta_fn`` is
+    ``get_metadata_status`` and ``meta_state_fn`` is ``metadata_line_state``
+    (``None`` on an alternate store without the respective resolver).
+    """
+    if path_fn is None:
+        return "unobserved"
+    try:
+        # Resolving the path probes the filesystem too (the legacy-alias
+        # fallback calls ``exists()``), so its I/O errors take the same
+        # fail-closed arms as the stat.
+        observed_path = path_fn(observed_key)
+        observed_path.stat()
+    except FileNotFoundError:
+        return "deleted"
+    except OSError:
+        if for_save:
+            raise
+        return "unverifiable"
+    if meta_fn is None:
+        return "present"
+    try:
+        current_meta, readable = meta_fn(observed_key)
+    except Exception as exc:
+        if for_save:
+            raise OSError(
+                f"history metadata for observed session {observed_key} is "
+                "transiently unreadable; save deferred for retry"
+            ) from exc
+        return "unverifiable"
+    if not readable:
+        try:
+            state = meta_state_fn(observed_key) if meta_state_fn is not None else None
+        except Exception as exc:
+            if for_save:
+                raise OSError(
+                    f"history metadata state for observed session {observed_key} "
+                    "is unavailable; save deferred for retry"
+                ) from exc
+            return "unverifiable"
+        if state == METADATA_LINE_CORRUPT:
+            return "present"
+        if for_save:
+            raise OSError(
+                f"history metadata for observed session {observed_key} is "
+                "transiently unreadable; save deferred for retry"
+            )
+        return "unverifiable"
+    current = str((current_meta or {}).get("created_at") or "")
+    if not current:
+        try:
+            observed_path.stat()
+        except FileNotFoundError:
+            return "deleted"
+        except OSError:
+            if for_save:
+                raise
+            return "unverifiable"
+        return "present"
+    if known and current != known:
+        return "deleted"
+    return "present"
 
 
 def _stable_durable_queue(slot: _ChatSlot) -> tuple[list[dict], int]:
@@ -135,7 +327,9 @@ def session_transcript_remains(state: DashboardState, slot: _ChatSlot) -> bool:
     That probe answers "may I republish this slot's content", and collapses three
     outcomes into ``True``: the file is GONE, the file belongs to a NEW
     incarnation, and existence is UNVERIFIABLE. Collapsing them is right there,
-    because all three refuse the copy.
+    because all three refuse the copy. :func:`session_delete_witness` keeps the
+    third apart for a caller that has already written and must know whether its
+    write went with the session.
 
     A caller that has already written a transcript and is now refusing needs the
     distinction, because it decides what it may TRUTHFULLY say. Only "gone" lets
@@ -165,6 +359,146 @@ def session_transcript_remains(state: DashboardState, slot: _ChatSlot) -> bool:
     return True
 
 
+#: What the delete probes could learn about a slot's session file.
+#:
+#: ``unobserved``   -- the slot never observed its file (fresh slot, no log, no
+#:                     path resolver): there is nothing a delete could contradict.
+#: ``deleted``      -- definitive: the file is missing, or its readable metadata
+#:                     line carries a ``created_at`` that contradicts the identity
+#:                     this slot recorded (a fresh incarnation after the delete).
+#: ``present``      -- the file is there and its readable line is consistent with
+#:                     the identity (legacy metadata that records none included).
+#: ``unverifiable`` -- a ``stat`` failure other than missing, or a metadata read
+#:                     that failed or was unreadable: existence or identity could
+#:                     not be checked either way.
+SessionDeleteEvidence = Literal["unobserved", "deleted", "present", "unverifiable"]
+
+
+def _session_delete_evidence(state: DashboardState, slot: _ChatSlot) -> SessionDeleteEvidence:
+    """The one delete witness both probes read; each maps the verdict to its own bool.
+
+    Evidence rule: the slot must have OBSERVED its file on disk
+    (``_disk_meta_created_at`` non-empty, or the ``_disk_meta_observed`` bit for
+    legacy metadata that records no ``created_at`` -- both recorded at the
+    hydrate sites and at committed saves, nowhere else), so a fresh slot is
+    never "deleted". Identity alone is the gate -- the window counters take no
+    part (fork/transfer set ``_resumed_count`` optimistically after a
+    best-effort save that may have failed, and a restored zero-message session
+    has all-zero counters). Witnesses, in order: a missing file; an on-disk
+    ``created_at`` that differs from the recorded one. Status form for the
+    metadata read, so a transient failure does not blank the comparison.
+
+    An EMPTY ``created_at`` is re-stated before it is trusted: this probe is
+    lock-free, so a delete can land between its stat and its metadata read, and
+    ``get_metadata_status`` reports a file that has just vanished as a GENUINE
+    ``({}, True)`` -- by its own contract not an unreadable answer -- which
+    would blank the comparison and read a session that is gone as present. The
+    re-stat tells the two empties apart: gone is the missing-file witness, still
+    there is legacy metadata. The save's own guard needs no equivalent: it reads
+    the metadata and stats the path inside ``_locked``, the lock
+    ``delete_session`` unlinks under, so no delete can interleave there.
+
+    Lock-free: a permanent delete never un-happens, so ``deleted`` is stable; a
+    ``present`` can race a delete landing right after, which is the same
+    residual as a delete landing right after the caller's own action completed.
+    Identities are compared only when one was RECORDED: a legacy observation
+    cannot tell "the same legacy file, stamped since by a sibling's save" from
+    a fresh incarnation.
+    """
+    if not state.conversation_log:
+        return "unobserved"
+    known = str(getattr(slot, "_disk_meta_created_at", "") or "")
+    if not known and not bool(getattr(slot, "_disk_meta_observed", False)):
+        return "unobserved"
+    path_fn = getattr(state.conversation_log, "_path", None)
+    meta_fn = getattr(state.conversation_log, "get_metadata_status", None)
+    # The identity was observed under ONE transcript key. If the slot's write
+    # target has since drifted to a DIFFERENT key (a cron-born slot whose
+    # ``linked_session_key`` lapsed, so ``slot_history_key`` falls back to the
+    # ``dashboard:`` spelling and resolves a different file), the observation
+    # describes a file other than the one this probe is looking at. Comparing its
+    # ``created_at`` against the other file's would read "different file" as
+    # "deleted and recreated". But answering "present" outright would lose a
+    # race in the other direction: if the user permanently deleted the OBSERVED
+    # file and only then did the key drift, the slot still holds that file's rows
+    # and the caller would republish them under the current key. So on a mismatch
+    # witness the OBSERVED file instead of the current target: gone or recreated
+    # means the observed session was deleted; still there with the same identity
+    # means the drift is legitimate and the copy proceeds. Gated on a recorded
+    # key, so slots hydrated before this field existed keep the prior behavior.
+    observed_key = str(getattr(slot, "_disk_meta_key", "") or "")
+    if observed_key and not _same_transcript(observed_key, slot_history_key(slot)):
+        return _observed_file_evidence(
+            path_fn,
+            meta_fn,
+            getattr(state.conversation_log, "metadata_line_state", None),
+            observed_key,
+            known,
+            for_save=False,
+        )
+    if path_fn is None:
+        # A log without a path resolver (stub/alternate store) cannot witness a
+        # delete.
+        return "unobserved"
+    try:
+        path_fn(slot_history_key(slot)).stat()
+    except FileNotFoundError:
+        return "deleted"
+    except OSError:
+        return "unverifiable"
+    if meta_fn is None:
+        return "present"
+    try:
+        current_meta, readable = meta_fn(slot_history_key(slot))
+    except Exception:
+        return "unverifiable"
+    if not readable:
+        return "unverifiable"
+    current = str((current_meta or {}).get("created_at") or "")
+    if not current:
+        try:
+            path_fn(slot_history_key(slot)).stat()
+        except FileNotFoundError:
+            return "deleted"
+        except OSError:
+            return "unverifiable"
+        return "present"
+    if known and current != known:
+        return "deleted"
+    return "present"
+
+
+class DeleteWitness(Enum):
+    """What :func:`session_delete_witness` can tell about a slot's transcript."""
+
+    PRESENT = "present"
+    DELETED = "deleted"
+    UNVERIFIABLE = "unverifiable"
+
+
+def session_delete_witness(state: DashboardState, slot: _ChatSlot) -> DeleteWitness:
+    """Whether this slot's session was permanently deleted out from under it.
+
+    :func:`_session_delete_evidence` as three answers, which
+    :func:`session_was_deleted` collapses for republishers. A caller that has
+    already WRITTEN into the transcript and is now deciding what to say needs
+    ``deleted`` and ``unverifiable`` apart, because only ``DELETED`` means its
+    write went with the session. Merge-back is that caller: its card is in the
+    parent's durable hold before it asks, and the hold writer never merges into a
+    metadata line whose identity is not the one its slot observed, so after a
+    committed write only a delete proven since says the card is lost. An
+    unverifiable read is no evidence of one, and answering "deleted" for it would
+    deny a merge that landed. ``present`` and ``unobserved`` are ``PRESENT``: a
+    slot that never observed its file cannot witness a delete.
+    """
+    evidence = _session_delete_evidence(state, slot)
+    if evidence == "deleted":
+        return DeleteWitness.DELETED
+    if evidence == "unverifiable":
+        return DeleteWitness.UNVERIFIABLE
+    return DeleteWitness.PRESENT
+
+
 def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     """True when this slot's session was permanently deleted out from under it.
 
@@ -174,102 +508,34 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     ``False`` return: the periodic 5s flush can hit the guard first and clear
     ``_dirty``, after which those callers skip their own flush arm entirely and
     would copy from the in-memory window. This probe answers directly, however
-    the flush ordering fell out. Same evidence rule: the slot must have
-    OBSERVED its file on disk (``_disk_meta_created_at`` non-empty, or the
-    ``_disk_meta_observed`` bit for legacy metadata that records no
-    ``created_at`` — both recorded
-    at the hydrate sites and at committed saves, nowhere else), so a fresh
-    slot is never "deleted". Witnesses, in order: a missing file
-    (``FileNotFoundError``; any other ``stat`` failure also refuses — the
-    file's existence is unverifiable, same fail-closed rule as the metadata
-    read), and an on-disk ``created_at`` that differs from the observed one (a
-    fresh incarnation created after the delete). An UNREADABLE metadata line
-    returns True — identity unverifiable, so the copy is refused (fork 409 /
-    transfer ``SnapshotUnstable``, both retryable) rather than republishing.
-    An EMPTY ``created_at`` is re-stated before it is trusted: being lock-free,
-    this probe can have the delete land between its stat and its metadata read,
-    and a file that has just vanished reads back as a genuine ``({}, True)``,
-    so the empty answer alone cannot tell "legacy metadata" (fails open) from
-    "deleted a moment ago" (must refuse).
-    Lock-free: a permanent delete never un-happens, so a True is stable; a
-    False can race a delete landing right after, which is the same residual
-    as a delete landing right after the copy itself completed.
+    the flush ordering fell out.
+
+    The protective mapping of :func:`_session_delete_evidence`, read through
+    :func:`session_delete_witness`: ``deleted`` is True, and so is
+    ``unverifiable`` -- identity or existence that cannot be
+    checked refuses the copy (fork 409 / transfer ``SnapshotUnstable``, both
+    retryable) rather than republishing what may be a deleted conversation
+    from the surviving in-memory window. ``present`` and ``unobserved`` are
+    False.
     """
-    if not state.conversation_log:
-        return False
-    # Same evidence rule as the guard: the slot must have OBSERVED its file on
-    # disk, and ``_disk_meta_created_at`` is that observation (recorded at the
-    # hydrate sites and at committed saves, nowhere else). Identity alone is
-    # the gate — the window counters take no part (fork/transfer set
-    # ``_resumed_count`` optimistically after a best-effort save that may have
-    # failed, and a restored zero-message session has all-zero counters).
-    known = str(getattr(slot, "_disk_meta_created_at", "") or "")
-    # Same widening as the guard: legacy metadata records no ``created_at``,
-    # so the observation BIT carries the evidence there — the missing-file
-    # stat below is the legacy delete witness, while the identity comparison
-    # at the tail still requires the recorded ``known``.
-    if not known and not bool(getattr(slot, "_disk_meta_observed", False)):
-        return False
-    path_fn = getattr(state.conversation_log, "_path", None)
-    if path_fn is None:
-        # A log without a path resolver (stub/alternate store) cannot witness a
-        # delete — same fail-open-is-fail-safe rule as the OSError arm below.
-        return False
-    try:
-        path_fn(slot_history_key(slot)).stat()
-    except FileNotFoundError:
-        return True
-    except OSError:
-        # Any other stat failure fails CLOSED, like the metadata read below:
-        # the file's existence cannot be verified, so the copy is refused
-        # (retryably) rather than republishing what may be a deleted
-        # conversation from the surviving in-memory window.
-        return True
-    # The file exists but may be a fresh incarnation created by another writer
-    # AFTER the delete (e.g. a channel/cron append) — same identity rule as the
-    # save's own guard: the observed ``created_at`` differing from the
-    # on-disk one means this slot's session was deleted and the file belongs
-    # to a new one. Status form for the same reason as the guard: a transient
-    # metadata read failure must not blank the comparison. UNREADABLE fails
-    # CLOSED here too — the copy is refused (fork 409 / transfer
-    # SnapshotUnstable, both retryable) rather than republishing content whose
-    # identity cannot be verified.
-    meta_fn = getattr(state.conversation_log, "get_metadata_status", None)
-    if meta_fn is not None:
-        try:
-            current_meta, readable = meta_fn(slot_history_key(slot))
-        except Exception:
-            return True  # cannot verify identity — refuse the copy
-        if not readable:
-            return True
-        current = str((current_meta or {}).get("created_at") or "")
-        if not current:
-            # An empty ``created_at`` is ambiguous, and this probe is
-            # deliberately lock-free, so the delete can land BETWEEN the stat
-            # above and this read: ``get_metadata_status`` reports a file that
-            # has just vanished as ``({}, True)`` -- by its own contract a
-            # GENUINE empty answer, not an unreadable one -- which would blank
-            # the comparison below and answer "not deleted" for a session that
-            # is gone. Re-stat to tell the two empties apart. The save's own
-            # guard needs no equivalent: it reads the metadata and stats the
-            # path inside ``_locked``, the lock ``delete_session`` unlinks
-            # under, so no delete can interleave between its two reads.
-            try:
-                path_fn(slot_history_key(slot)).stat()
-            except OSError:
-                # Gone (``FileNotFoundError``) is the delete witness; any other
-                # stat failure leaves existence unverifiable. Both refuse the
-                # copy, exactly as the first stat's arms do.
-                return True
-            # Still there, so the empty ``created_at`` is a genuine legacy-
-            # metadata answer, which fails OPEN by the documented rule.
-            return False
-        # Compare identities only when one was RECORDED (same rule as the
-        # guard): a legacy observation cannot tell "the same legacy file,
-        # stamped since by a sibling's save" from a fresh incarnation.
-        if known and current != known:
-            return True
-    return False
+    return session_delete_witness(state, slot) is not DeleteWitness.PRESENT
+
+
+def session_deletion_confirmed(state: DashboardState, slot: _ChatSlot) -> bool:
+    """True only on DEFINITIVE delete evidence; anything unverifiable is False.
+
+    The destructive mapping of :func:`_session_delete_evidence`, the mirror of
+    :func:`session_was_deleted`'s. Fork and the transfer export refuse a COPY
+    on True, so an unverifiable probe (a transient stat or metadata failure)
+    safely answers True there -- the copy is retryable. The close/cleanup
+    archive arms DISCARD a popped slot's unsaved tail on True, so the same
+    unverifiable probe must answer False and route them to their restore/retry
+    handling instead: only ``deleted`` -- a missing file, or readable metadata
+    whose ``created_at`` contradicts the identity this slot recorded -- is
+    evidence a delete actually happened. ``present``, ``unobserved`` and
+    ``unverifiable`` are all False.
+    """
+    return _session_delete_evidence(state, slot) == "deleted"
 
 
 def register_guarded_history_write(slot: _ChatSlot, save: "asyncio.Future[bool]") -> None:
@@ -394,8 +660,12 @@ def paired_window_snapshot(
     return window, queue_snapshot, queue_candidates, disk_older
 
 
-def routing_snapshot(slot: _ChatSlot) -> tuple[str, str]:
-    """``(live_session, history_key)``, both taken from ONE observation of the routing."""
+def routing_snapshot(slot: _ChatSlot) -> tuple[str, str, TranscriptBinding]:
+    """``(live_session, history_key, binding)``, all from ONE observation of the routing.
+
+    *binding* is ``slot._binding`` as of that same observation (see
+    ``metadata_line.autocompact_fold``).
+    """
     # Authorization and the write target must come from ONE observation of the
     # routing. Both keys derive from ``slot.linked_session_key``, which the event
     # loop rebinds with no running gate, so reading it per row -- or again when
@@ -409,9 +679,10 @@ def routing_snapshot(slot: _ChatSlot) -> tuple[str, str]:
         routing = getattr(slot, "linked_session_key", "")
         live_session = effective_session_key(slot)
         history_key = slot_history_key(slot)
+        binding = slot._binding
         if getattr(slot, "linked_session_key", "") == routing:
             break
-    return live_session, history_key
+    return live_session, history_key, binding
 
 
 def drop_notes_authorized_elsewhere(
@@ -455,6 +726,74 @@ def drop_notes_authorized_elsewhere(
             live_session,
         )
     return window
+
+
+@dataclass(frozen=True, eq=False)
+class AppliedSwap:
+    """A committed Regenerate swap that memory does not show yet.
+
+    The replace write commits in a worker thread; the event loop removes the
+    retired rows and gives the reply its variants only when the await returns.
+    Until then ``slot.messages`` still holds the pre-swap window, so a save
+    taking its snapshot in that stretch needs this record to write the window
+    the swap committed.
+    """
+
+    retired: tuple[dict, ...]
+    reply: dict
+    swapped: dict
+
+
+def swap_basis(slot: _ChatSlot) -> tuple[int, AppliedSwap | None]:
+    """What a save must read BEFORE it copies the window, so the check under the
+    transcript lock can tell whether a swap committed after the copy."""
+    return slot._window_swap_epoch, slot._window_swap_applying
+
+
+def publish_swap(slot: _ChatSlot, swap: AppliedSwap) -> None:
+    """Record a committed swap. Call it under the transcript lock, as the
+    replace write's ``after_commit_under_lock`` hook, so every save that takes
+    the lock after the commit sees it. The record is assigned before the epoch
+    moves: a save that reads the new epoch also reads the record."""
+    slot._window_swap_applying = swap
+    slot._window_swap_epoch += 1
+
+
+def finish_swap(slot: _ChatSlot) -> None:
+    """Memory now shows the swap (on the event loop, after the await): a window
+    copied from here on is the post-swap window and needs no correction."""
+    slot._window_swap_applying = None
+
+
+def snapshot_predates_swap(slot: _ChatSlot, basis: tuple[int, AppliedSwap | None]) -> bool:
+    """Whether a window copied at *basis* may hold rows a committed swap retired.
+
+    True when a swap committed after the copy (the epoch moved), or when the
+    copy or the present falls in a swap's commit-to-memory stretch.
+    """
+    epoch, applying = basis
+    return (
+        epoch != slot._window_swap_epoch
+        or applying is not None
+        or slot._window_swap_applying is not None
+    )
+
+
+def apply_committed_swap(window: list[dict], swap: AppliedSwap | None) -> list[dict]:
+    """*window*, copied from memory, as *swap* committed it: retired rows out,
+    the reply carrying its variants. Unchanged when *swap* is ``None``.
+    Matched by identity: a window copy is a shallow copy of the live rows.
+
+    *swap* is the record read BEFORE the window was copied: the event loop can
+    apply the swap to memory and clear the slot's record while the copy is
+    taken, so re-reading the record afterwards could find it gone and leave a
+    pre-swap copy uncorrected. Applying the captured record to a copy that
+    already shows the swap changes nothing.
+    """
+    if swap is None:
+        return window
+    retired = {id(row) for row in swap.retired}
+    return [swap.swapped if row is swap.reply else row for row in window if id(row) not in retired]
 
 
 def read_line_for_save(
@@ -529,8 +868,12 @@ def delete_won(
     meta_readable: bool,
     line_corrupt: bool,
     history_key: str,
+    conv_log: "ConversationLog",
 ) -> bool:
     """Whether a permanent delete won the race this save lost; logged when it did.
+
+    ``conv_log`` is required: the drift witness stats the OBSERVED file through
+    it, so a caller that omitted it would silently skip that witness.
 
     Called under the transcript lock. Raises ``OSError`` when the file exists but
     its identity cannot be read, so the save stays owed instead of writing over an
@@ -580,6 +923,56 @@ def delete_won(
     # "no identity recorded" gap. The missing-file witness needs only
     # the observation; the identity COMPARISON below still needs the
     # recorded ``created_at``.
+    # The identity was observed under one transcript key. If this save's write
+    # target (``history_key``) is a DIFFERENT key than the one observed, the
+    # observation describes another file: a cron-born slot whose
+    # ``linked_session_key`` lapsed now routes to the ``dashboard:`` fallback,
+    # a legitimately-existing file with its own ``created_at``. Reading that
+    # file's identity as a delete-recreate of the observed one would skip every
+    # save of a live session. But returning "not deleted" outright loses the
+    # opposite race: if the user permanently deleted the OBSERVED file and only
+    # then did the key drift, the slot still holds that file's rows and this save
+    # would merge them into the drifted target, resurrecting deleted content. So
+    # on a mismatch witness the OBSERVED file: gone or recreated means its
+    # session was deleted and the save is refused; still there with the same
+    # identity means the drift is legitimate and the save proceeds. Gated on a
+    # recorded key, so slots hydrated before this field existed keep the prior
+    # behavior; a genuine delete-and-recreate is the SAME key with a new
+    # ``created_at``, still caught below.
+    _observed_key = getattr(slot, "_disk_meta_key", "") or ""
+    if _observed_key and not _same_transcript(_observed_key, history_key):
+        _path_fn = getattr(conv_log, "_path", None)
+        _meta_fn = getattr(conv_log, "get_metadata_status", None)
+        if (
+            _observed_file_evidence(
+                _path_fn,
+                _meta_fn,
+                getattr(conv_log, "metadata_line_state", None),
+                _observed_key,
+                str(_known or ""),
+                for_save=True,
+            )
+            != "deleted"
+        ):
+            # The save proceeds against the drifted target, but the
+            # frozen-prefix cache describes the OBSERVED file: its fast path
+            # keys on mtime/size only, so a target whose stat happens to match
+            # would skip reading the target and drop its rows. Drop the cache
+            # so the merge reads the file it is about to overwrite.
+            slot._frozen_prefix_cache = None
+            return False
+        # The observed file is gone or recreated: the write target drifted away
+        # from a session the user permanently deleted. Log at WARNING so the
+        # refused merge into the drifted target is visible: this line is the
+        # only operator signal that it happened.
+        logger.warning(
+            "Skipping history save for %s (slot=%s): write target drifted from "
+            "deleted session %s; refusing to merge its rows into the new target",
+            history_key,
+            slot.key,
+            _observed_key,
+        )
+        return True
     if _known or slot._disk_meta_observed:
         try:
             path.stat()

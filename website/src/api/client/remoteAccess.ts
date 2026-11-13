@@ -41,6 +41,7 @@ export interface TailnetStatusData {
  * `handlers/tailnet_mobile._derive_step`) so this list is rendered, never
  * re-computed here — one owner for the state machine.
  *
+ * - `policy_off` — an LTS build whose policy does not turn tailnet on. Dead end.
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
  * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
  *   — the ways there is no usable tailnet name, kept apart because each is a
@@ -59,6 +60,7 @@ export interface TailnetStatusData {
  * - `ready` — published and trusted.
  */
 export type TailnetMobileStep =
+  | 'policy_off'
   | 'pinned'
   | 'untrusted_cli'
   | 'install'
@@ -135,7 +137,20 @@ export interface TailnetMobileQr {
   link_window_secs: number
 }
 
-export function createRemoteAccessEndpoints({ get, post, j }: ClientTransport) {
+/**
+ * GET/PUT /api/remote-control: personal Remote Control, whose one control is
+ * `tunnel.relay_enabled`. `requested` is what config asks for. `locked` says this
+ * build ignores the setting (an LTS build's tunnel lock), so no restart connects.
+ * `running` says the relay client is connected now, so other devices can reach this
+ * Crew. The dashboard can only turn it off; turning it on is the terminal command.
+ */
+export interface RemoteControlState {
+  requested: boolean
+  locked: boolean
+  running: boolean
+}
+
+export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTransport) {
   const mobileAccess = {
     // `sessionKey` MUST carry the active slot's key (`dashboard:<slot>`) when one
     // is active: the server's restricted-session guard reads X-Session-Key, and
@@ -146,6 +161,9 @@ export function createRemoteAccessEndpoints({ get, post, j }: ClientTransport) {
       post('/api/auth/mobile-link', undefined, sessionKey).then(j) as Promise<{
       url: string
       expires_in: number
+      /** The same link as a PNG data URI QR code, rendered server-side. Absent
+       *  when the encode failed: the link alone still works. A credential. */
+      image?: string
     }>,
     // Phone-connection methods available on this deployment under the current
     // governance ceiling (CPP mobile_connect seam). Descriptor-only: minting the
@@ -173,6 +191,10 @@ export function createRemoteAccessEndpoints({ get, post, j }: ClientTransport) {
     // it instead of the shared `dashboard:ui` placeholder.
     tailnetMobileQr: (sessionKey?: string) =>
       post('/api/tailnet/mobile/qr', {}, sessionKey).then(j) as Promise<TailnetMobileQr>,
+    remoteControl: () => get('/api/remote-control').then(j) as Promise<RemoteControlState>,
+    /** One-click off writes an explicit `false`, so it stays off across a restart. */
+    turnOffRemoteControl: () =>
+      put('/api/remote-control', { enabled: false }).then(j) as Promise<RemoteControlState>,
   }
 
   return { mobileAccess }

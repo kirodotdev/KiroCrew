@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 
 /**
  * `inlineToolbarWhileFits` (#19608): the Crewmates DM composer is ONE row --
@@ -16,6 +17,15 @@ import ChatInput from '../components/ChatInput'
  * staged file, a quote, the default-off host -- while the wrap boundary itself
  * is the capture harness's (`capture-crew-composer-one-row.mjs`).
  */
+
+/** A DM composer whose voice slice says it is recording (or not), with no
+ *  dictation panel: the voice props reach ChatInput through the Composer
+ *  root's slice, which the override stands in for. */
+const recordingComposer = (recording: boolean) => (
+  <ComposerVoiceSliceOverride inputProps={{ voiceRecording: recording, onVoiceToggle: vi.fn() }}>
+    <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />
+  </ComposerVoiceSliceOverride>
+)
 
 const wrapper = () => screen.getByTestId('input-wrapper')
 const inline = () => wrapper().getAttribute('data-inline-toolbar') === 'true'
@@ -75,7 +85,9 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     const ta = screen.getByRole('textbox')
     fireEvent.focus(ta)
     expect(inline()).toBe(false)
-    expect(screen.getByTestId('list-indent-hint').className).toContain('text-[12px]')
+    const hint = screen.getByTestId('list-indent-hint')
+    expect(hint.className).not.toContain('sr-only')
+    expect(hint.parentElement?.className).toContain('text-[12px]')
   })
 
   it('opens to two rows while a file is staged: the file strip has no place on one line', () => {
@@ -95,6 +107,23 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     renderWithProviders(<ChatInput value="see attached" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits holdSend uploading onUploadFiles={vi.fn()} />)
     expect(screen.getByTestId('composer-send-held')).toBeInTheDocument()
     expect(inline()).toBe(false)
+  })
+
+  // Without the dictation panel (setting off, no WebGL2, or reduced motion) a
+  // recording draws the voice bar's Recording strip; on the single row it would
+  // sit beside the text and squeeze both.
+  it('opens to two rows while recording draws the Recording strip', () => {
+    renderWithProviders(recordingComposer(true))
+    expect(screen.getByText('Recording')).toBeInTheDocument()
+    expect(inline()).toBe(false)
+  })
+
+  it('returns to one row once the recording ends', () => {
+    const { rerender } = renderWithProviders(recordingComposer(true))
+    expect(inline()).toBe(false)
+    rerender(recordingComposer(false))
+    expect(screen.queryByText('Recording')).toBeNull()
+    expect(inline()).toBe(true)
   })
 
   it('opens to two rows while a quote is staged', () => {
@@ -148,14 +177,67 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
 
   // The sizer around the box is what animates the change of shape; it wears
   // the same corner the box does so the clip during the slide is rounded too.
-  it('wraps the box in a bottom-aligned sizer that shares its corner', () => {
+  // It clips with `overflow: clip`, not `hidden`: a `hidden` box can still be
+  // scrolled, and while the sizer is shorter than the box it has just grown,
+  // the caret sits in the clipped top band. WebKit then scrolls the sizer to
+  // bring the caret into view (-8px, -26px, back to 0: a visible jump at the
+  // one-row -> two-row wrap). A `clip` box has no scroll position to move.
+  it('wraps the box in a bottom-aligned sizer that shares its corner and cannot be scrolled', () => {
     renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
     const sizer = screen.getByTestId('composer-sizer')
     expect(sizer.contains(wrapper())).toBe(true)
     expect(sizer.className).toContain('justify-end')
     expect(sizer.className).toContain('rounded-[23px]')
-    expect(sizer.className).toContain('overflow-hidden')
+    expect(sizer.className).toContain('overflow-clip')
+    expect(sizer.className).not.toContain('overflow-hidden')
     // The inner box must not shrink to a pinned sizer, or its measure never moves.
     expect(wrapper().className).toContain('shrink-0')
+  })
+})
+
+// The one-row -> two-row flip changes the textarea's WIDTH (the single row's
+// column becomes the full box), so the autosize width observer re-measures the
+// height. Writing that height inside the observer's own callback resizes the
+// element it watches, so the engine owes it a second delivery in the same
+// frame: WebKit logs "ResizeObserver loop completed with undelivered
+// notifications" on every flip. The write belongs on the next frame.
+describe('ChatInput inlineToolbarWhileFits: the width observer at the shape flip', () => {
+  it('writes the textarea height on the frame after a width change, never inside the observer callback', () => {
+    const observers: { cb: ResizeObserverCallback; targets: Element[]; self: ResizeObserver }[] = []
+    vi.stubGlobal('ResizeObserver', class {
+      private targets: Element[] = []
+      constructor(cb: ResizeObserverCallback) { observers.push({ cb, targets: this.targets, self: this as unknown as ResizeObserver }) }
+      observe(target: Element) { this.targets.push(target) }
+      unobserve() {}
+      disconnect() {}
+    })
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    // Frames run only when the test says so, so "inside the callback" and
+    // "on the next frame" are two separate, observable moments.
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { frames.push(cb); return frames.length })
+    onTestFinished(() => raf.mockRestore())
+    // The off-screen measuring twin reports this content height.
+    let contentHeight = 0
+    const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockImplementation(() => contentHeight)
+    onTestFinished(() => scrollHeight.mockRestore())
+
+    renderWithProviders(<ChatInput value="a draft that is about to wrap" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(ta.style.height).toBe('44px')
+    const watchers = observers.filter(o => o.targets.includes(ta))
+    expect(watchers.length).toBeGreaterThan(0)
+
+    // The flip: the column widens and the draft now needs a taller box.
+    let width = 0
+    Object.defineProperty(ta, 'clientWidth', { configurable: true, get: () => width })
+    width = 320
+    contentHeight = 68
+    frames.splice(0)
+    for (const o of watchers) o.cb([{ target: ta } as unknown as ResizeObserverEntry], o.self)
+    expect(ta.style.height).toBe('44px')
+
+    for (const frame of frames.splice(0)) frame(0)
+    expect(ta.style.height).toBe('68px')
   })
 })

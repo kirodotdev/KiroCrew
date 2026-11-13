@@ -11,6 +11,7 @@
 import { lazy, type ComponentType } from 'react'
 import { reportSeamCollision } from './seamCollision'
 import { isValidAppId } from './appIdentity'
+import { FILE_EXPLORER_PATH_PARAM } from './file-explorer/deepLink'
 
 export type LazyComponent = React.LazyExoticComponent<ComponentType<Record<string, never>>>
 
@@ -30,6 +31,13 @@ export interface BuiltinAppEntry {
    * holding state no other reader can find.
    */
   readonly appId: string
+  /**
+   * The query parameter this page reads an absolute path from, for a page that
+   * opens a path handed to it in its URL (`<route>?<param>=<path>`). A surface
+   * showing a file offers "Open in <app>" for such a page through
+   * `apps/pathOpener.ts`. Absent for a page that opens no path.
+   */
+  readonly opensPathParam?: string
 }
 
 /**
@@ -52,10 +60,10 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, BuiltinAppEntry> = {
   '/auto-improvement': { component: lazy(() => import('./auto-improvement/AutoImprovementPage')), appId: 'auto-improvement' },
   '/auto-research': { component: lazy(() => import('./auto-research/ResearchLabPage')), appId: 'auto-research' },
   '/aws-control': { component: lazy(() => import('./aws-control/AwsControlPage')), appId: 'aws-control' },
-  '/file-explorer': { component: lazy(() => import('./file-explorer/FileExplorerPage')), appId: 'file-explorer' },
+  '/file-explorer': { component: lazy(() => import('./file-explorer/FileExplorerPage')), appId: 'file-explorer', opensPathParam: FILE_EXPLORER_PATH_PARAM },
   '/code-review-sage': { component: lazy(() => import('./code-review-sage/CodeReviewSagePage')), appId: 'code-review-sage' },
   '/workflows': { component: lazy(() => import('./workflows/WorkflowsPage')), appId: 'workflows' },
-  '/dev-fleet': { component: lazy(() => import('../pages/DevFleetPage')), appId: 'dev-fleet' },
+  '/dev-fleet': { component: lazy(() => import('./dev-fleet/DevFleetPage')), appId: 'dev-fleet' },
   '/issue-radar': { component: lazy(() => import('./issue-radar/IssueRadarPage')), appId: 'issue-radar' },
   '/meetings': { component: lazy(() => import('./meetings/MeetingsPage')), appId: 'meetings' },
   '/papyrus': { component: lazy(() => import('./papyrus/PapyrusPage')), appId: 'papyrus' },

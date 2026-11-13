@@ -124,9 +124,10 @@ async function main() {
    * Pin the locale to English.
    *
    * The harness's init script CLEARS localStorage on every navigation, so
-   * writing the key and reloading loses it again. Init scripts run in
-   * registration order, so this one is registered after the harness's first
-   * navigation and therefore runs after its clear on the reload.
+   * writing the key and reloading loses it again. This one is registered after
+   * the harness's first navigation so it runs after that clear on the reload,
+   * which holds only while Chromium runs init scripts in registration order:
+   * Playwright does not define that order.
    */
   let localePinned = false
   async function loadInEnglish(theme) {

@@ -37,6 +37,7 @@ from kiro_crew.messaging.renderer import display_safe
 from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_CANCELLED,
     COMPACT_OUTCOME_COMPACTED,
+    COMPACT_OUTCOME_COMPACTED_IDLE,
     COMPACT_OUTCOME_RECYCLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
     COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
@@ -45,6 +46,7 @@ from kiro_crew.session_compaction import (
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
     from kiro_crew.messaging.transport import MessagingTransport
+    from kiro_crew.session_rss_rebound import RssHold
 
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
@@ -119,6 +121,21 @@ def _record_crew_log_class(state: Any, slot: Any) -> None:
 
 
 _AUTO_COMPACT_NOTICE = "🔄 Auto-compacted at {pct:.0f}%."
+
+
+#: ``session.idle_compaction`` compacted a quiet chat. Says so, because the user who
+#: returns sees the context meter dropped with no turn of theirs to explain it.
+_AUTO_COMPACT_IDLE_NOTICE = (
+    "🔄 Compacted at {pct:.0f}% while this chat was idle, before its prompt cache expired."
+)
+
+
+#: A failed idle compaction, or one that reported no status. The session is kept
+#: and only the cooldown is armed, so the threshold failure notice's retry advice
+#: does not apply to it.
+_AUTO_COMPACT_IDLE_FAILED_NOTICE = (
+    "⚠ Compaction while this chat was idle didn't succeed; nothing was changed."
+)
 
 
 #: The notice for the arm that REPLACES the session instead of summarizing it. A
@@ -232,6 +249,28 @@ def stuck_turn_notice(parked_secs: float) -> str:
     return _STUCK_TURN_NOTICE.format(minutes=max(1, int(parked_secs // 60)))
 
 
+#: Shown once when the RSS recycle stops recycling a chat whose fresh processes
+#: keep climbing straight back over the ceiling. Names the setting and its value,
+#: because raising it (or starting a smaller chat) is the only thing that ends
+#: the loop, and the gateway log that says so is not something a user reads.
+#: Led by ⚠️ because that is a lead glyph the dashboard card strips (NoticeCard's
+#: LEAD_EMOJI_RE) and draws as its warn icon: the user has a setting to change.
+_RSS_HOLD_NOTICE = (
+    "⚠️ The watchdog stopped recycling this session: it was recycled {recycles} "
+    "times in a row and each fresh process went straight back to about {rss} MB, "
+    "above session.watchdog_rss_max_mb ({ceiling} MB). It keeps running for up to "
+    "a day unless it passes {limit} MB. Raise Watchdog RSS Limit in Settings above "
+    "that, or start a new chat."
+)
+
+
+def rss_hold_notice(hold: RssHold) -> str:
+    """Render the RSS hold notice from the figures the cleanup sweep held at."""
+    return _RSS_HOLD_NOTICE.format(
+        recycles=hold.recycles, rss=hold.rss_mb, ceiling=hold.ceiling_mb, limit=hold.limit_mb
+    )
+
+
 def register_channel_transport(self: DashboardState, transport: "MessagingTransport") -> None:
     """Register a live channel transport for cross-surface mirror delivery.
 
@@ -320,12 +359,16 @@ def wire_session_compact_callback(self: DashboardState) -> None:
             template = _AUTO_COMPACT_WAITING_NOTICE
         elif outcome == COMPACT_OUTCOME_CANCELLED:
             template = _AUTO_COMPACT_CANCELLED_NOTICE
+        elif not success and outcome == COMPACT_OUTCOME_COMPACTED_IDLE:
+            template = _AUTO_COMPACT_IDLE_FAILED_NOTICE
         elif not success:
             template = _AUTO_COMPACT_FAILED_NOTICE
         elif outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
             template = _AUTO_RESTART_UNCOMPACTABLE_NOTICE
         elif outcome == COMPACT_OUTCOME_RECYCLED:
             template = _AUTO_RECYCLE_NOTICE
+        elif outcome == COMPACT_OUTCOME_COMPACTED_IDLE:
+            template = _AUTO_COMPACT_IDLE_NOTICE
         else:
             template = _AUTO_COMPACT_NOTICE
         message = template.format(pct=pct)
@@ -440,6 +483,71 @@ def wire_session_bind_listener(self: DashboardState) -> None:
         self.note_crew_log_class(slot)
 
     self.sessions.set_bind_listener(_on_bind)
+
+
+def wire_session_release_listener(self: DashboardState) -> None:
+    """Land a waiting model pick, and push a linked tab's row, when a turn lease ends.
+
+    The picker defers a pick that arrives mid-turn, and ``session_set_model``
+    queues one for the target's next turn; both were landed only at a DASHBOARD
+    turn boundary. A turn a channel (Slack, Discord, Telegram, Teams) or a cron
+    run drives passes none, so the live session kept the old model while the
+    picker showed the new one. Every surface ends a turn with
+    ``SessionManager.release``, which is the one transport-neutral point this
+    observer hangs on: the channel-neutral messaging layer stays untouched.
+
+    The observer itself only filters and schedules. It runs synchronously inside
+    ``release``, possibly off the loop thread, so the landing hops to the loop
+    captured here at wire time, the same way the unbind notice does. Slots with
+    nothing waiting cost one attribute read each; most releases match none.
+
+    A tab linked to the released session reads its lease as running with no
+    task of its own (``_ChatSlot.linked_turn_running``), so nothing else pushes
+    its row back when a cron run, an injected completion or a pick landing ends.
+    """
+    # circular import: session_control imports dashboard modules at module level.
+    from kiro_crew.dashboard.session_control import (
+        channel_pick_waits_on,
+        landing_holds_lease,
+        schedule_channel_pick_landing,
+    )
+
+    loop = asyncio.get_event_loop()
+
+    def _land(key: str) -> None:
+        for slot in list(self._slots.values()):
+            if slot.running:
+                # The slot's own dashboard turn, reserved or running, lands its pick
+                # at its own boundary.
+                continue
+            try:
+                waits = channel_pick_waits_on(self, slot, key)
+            except Exception:
+                logger.debug("Model pick probe failed for slot %s", slot.key, exc_info=True)
+                continue
+            if waits:
+                schedule_channel_pick_landing(self, slot)
+
+    def _on_release(key: str) -> None:
+        fold = self.sessions._fold_key
+        if not loop.is_closed() and any(
+            s.linked_session_key and fold(s.linked_session_key) == key
+            for s in list(self._slots.values())
+        ):
+            loop.call_soon_threadsafe(self.push_slots_update)
+        if landing_holds_lease(key):
+            # The landing's own lease ending: that is not a turn boundary.
+            return
+        if not any(
+            s._deferred_model_switch_key or s._pending_model_pick is not None
+            for s in list(self._slots.values())
+        ):
+            return
+        if loop.is_closed():
+            return
+        loop.call_soon_threadsafe(_land, key)
+
+    self.sessions.on_session_released = _on_release
 
 
 def wire_session_unbind_listener(self: DashboardState) -> None:
@@ -577,7 +685,8 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
     """Register the dashboard's recycle-notification callback.
 
     Fired when the watchdog recycles a session (e.g. RSS threshold). Posts a
-    notice into the slot so the user understands why their session reset.
+    notice into the slot so the user understands why their session reset. Also
+    subscribes the stuck-turn hook and the RSS hold, which post their own notices.
     """
 
     async def _on_recycled(key: str, *, reason: str) -> None:
@@ -675,3 +784,73 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             )
 
     self.sessions.on_stuck_turn = _on_stuck_turn
+
+    def _on_leftover_memory(key: str, message: str) -> None:
+        """Tell whoever watches *key* that leftover processes hold its memory mid-turn.
+
+        Same delivery as the stuck-turn notice: the session's own transcript, once
+        per turn (the RSS tick decides that). ``notice`` marks the borrowed
+        ``compaction`` tag, so the row reads as a status, not a turn's result.
+        """
+        from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+        slot_key = dashboard_slot_key(key)
+        slot = self.get_slot(slot_key) if slot_key else None
+        if slot is None:
+            return
+        try:
+            # The turn is streaming, so finalize its text so far as a segment
+            # first, as a crewmate send does: otherwise the chunks above this
+            # row are stranded when the segment flushes below it. The reply goes
+            # on, so it is not marked cut off.
+            cut = getattr(slot, "_steer_segment_cut", None)
+            if callable(cut):
+                cut(interrupted=False)
+                # The cut persists quietly; tell the browser the streaming row is
+                # finished, so the notice lands as a row of its own.
+                self.broadcast_ws("chat_segment", {"slot": slot.key})
+            slot.append(
+                "assistant",
+                message,
+                "msg msg-a",
+                meta={"kind": "compaction", "notice": "leftover_memory"},
+            )
+        except Exception:
+            logging.getLogger("kiro_crew.dashboard.state").exception(
+                "Failed to append leftover-memory notice to slot %s", slot_key
+            )
+
+    self.sessions.on_leftover_memory = _on_leftover_memory
+
+    def _on_rss_hold(key: str, hold: RssHold) -> None:
+        """Tell the chat the watchdog stopped recycling it, and which setting to raise.
+
+        Sync like ``_on_stuck_turn``, and posted only into a tab with a
+        conversation, like the recycle notice it follows.
+        """
+        from kiro_crew.dashboard.chat_handlers import _has_conversation
+        from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+        slot_key = dashboard_slot_key(key)
+        if not slot_key:
+            return
+        slot = self.get_slot(slot_key)
+        if slot is None:
+            return
+        try:
+            # kind="compaction" with its own `notice` token, as the recycle
+            # notice does, so the [OPTIONS:] scan and `is_turn_interrupted`
+            # both look through it.
+            if _has_conversation(slot):
+                slot.append(
+                    "assistant",
+                    rss_hold_notice(hold),
+                    "msg msg-a",
+                    meta={"kind": "compaction", "notice": "rss_hold"},
+                )
+        except Exception:
+            logging.getLogger("kiro_crew.dashboard.state").exception(
+                "Failed to append RSS hold notice to slot %s", slot_key
+            )
+
+    self.sessions.on_rss_hold = _on_rss_hold

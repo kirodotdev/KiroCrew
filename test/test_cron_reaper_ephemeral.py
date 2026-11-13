@@ -1,20 +1,13 @@
 """Tests for the reaper handling ephemeral (stateless) cron sessions.
 
-follow-up: when persistent_session=False, the active session key
-is f"cron:{job.id}:{run_id}" (unique per run), not f"cron:{job.id}".
-The reaper must use the actual active key when calling sessions.reset()
-and when logging SEL audit events — otherwise it targets a non-existent
-session and fails to kill the hung child process.
+With persistent_session=False the active key is f"cron:{job.id}:{run_id}", so the
+reaper must reset and audit that key, not f"cron:{job.id}", or the hung child lives.
 
-The reaper fix: CronService tracks every distinct exact live session key per job via
-idempotent ``register_active_session_key(job_id, key)`` and whole-key
-``clear_active_session_key(job_id, key)`` after a successful reset. Each key is
-attributed to the run (the ``_RunClaim``) that registered it: a reap or cancel of
-that run ends every key it registered, newest first (``_run_session_keys``), and
-leaves an older run's key -- a session retained for pending subagents -- alone. A
-key registered under no claim belongs to whichever run is ended next. The
-gateway's _cron_callback is responsible for these calls. _force_reap falls back
-to the stable key for persistent jobs that have not registered.
+CronService tracks each live key per job (``register_active_session_key`` /
+``clear_active_session_key``) under the ``_RunClaim`` that registered it. Ending a
+run ends its keys newest first (``_run_session_keys``) and leaves an older run's
+key, kept for pending subagents, alone; an unclaimed key goes with the next run
+ended. _force_reap falls back to the stable key for unregistered persistent jobs.
 """
 
 from __future__ import annotations
@@ -165,22 +158,11 @@ class TestReaperUsesActiveSessionKey:
 class TestCronCallbackDeferredResetPreservesActiveKey:
     """_cron_callback must not clear the active session key when reset is deferred.
 
-    When session reset is deferred because subagents are still running,
-    clearing the active session key in the finally block would leave the
-    ephemeral session alive with no registration, so a reaper firing during the
-    deferred window targets the stable key f"cron:{job.id}" and misses the
-    actual ephemeral session f"cron:{job.id}:{run_id}", failing to kill
-    the hung child.
+    Clearing during a deferred reset leaves the ephemeral session live but
+    unregistered, so a reaper would target the stable key and miss the hung child.
 
-    So it clears only on the non-deferred branch; _subagent_done clears
-    after the real reset completes.
-
-    This test inspects the gateway source to pin the ordering invariant:
-    `clear_active_session_key` must not appear between `if has_pending or
-    has_injecting:` and the `else:` branch. That guarantees the clear is
-    either inside `else` (reset happened) or inside `_subagent_done`
-    (deferred reset finally completed), never in a path that leaves an
-    ephemeral session live without registration.
+    Source check: `clear_active_session_key` must not appear between `if has_pending
+    or has_injecting:` and its `else:`; it belongs in `else` or `_subagent_done`.
     """
 
     def test_clear_not_called_in_deferred_branch_source(self):
@@ -209,14 +191,9 @@ class TestCronCallbackDeferredResetPreservesActiveKey:
         """Behavioural invariant: when the deferred path is taken, the key
         stays registered; when _subagent_done finishes the reset, it clears.
 
-        We exercise CronService directly here rather than the full gateway
-        callback — the gateway tests live in test_cron_approval_mode.py and
-        don't make the active-key behaviour easy to observe without adding
-        a lot of mock plumbing. The reaper's contract (if registered →
-        reaper targets it) is already pinned by
-        test_reaper_kills_ephemeral_session above, so the only thing left
-        to pin is that the service's clear API is idempotent + retroactively
-        safe when _subagent_done calls it after the real reset.
+        Driven on CronService directly; test_reaper_kills_ephemeral_session pins the
+        reaper side, so this pins that the clear API is idempotent and safe when
+        _subagent_done calls it after the real reset.
         """
         svc = CronService()
 

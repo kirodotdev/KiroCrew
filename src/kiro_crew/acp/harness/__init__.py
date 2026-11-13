@@ -38,8 +38,10 @@ from kiro_crew.acp.harness.deepseek import DeepseekLaunch
 from kiro_crew.acp.harness.goose import GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
+from kiro_crew.acp.harness.mimocode import MimoCodeLaunch
 from kiro_crew.acp.harness.opencode import OpencodeLaunch
 from kiro_crew.acp.harness.pi import PiLaunch
+from kiro_crew.acp.harness.strands import StrandsLaunch
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -48,8 +50,10 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 __all__ = [
@@ -62,6 +66,7 @@ __all__ = [
     "KasHarness",
     "KiroHarness",
     "LaunchAdapter",
+    "MimoCodeLaunch",
     "NotificationAliases",
     "OpencodeLaunch",
     "PiLaunch",
@@ -71,6 +76,7 @@ __all__ = [
     "SessionExtras",
     "SpawnContext",
     "SpawnPlan",
+    "StrandsLaunch",
     "TeardownPolicy",
     "harness_for",
     "process_adapter_for",
@@ -118,6 +124,8 @@ _PROCESS_ADAPTERS: dict[str, type[ProcessAdapter]] = {
     ACP_BACKEND_PI: PiLaunch,
     ACP_BACKEND_DEEPSEEK: DeepseekLaunch,
     ACP_BACKEND_COPILOT: CopilotLaunch,
+    ACP_BACKEND_STRANDS: StrandsLaunch,
+    ACP_BACKEND_MIMOCODE: MimoCodeLaunch,
 }
 
 

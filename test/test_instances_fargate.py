@@ -461,7 +461,9 @@ class _State:
 class TestConnectHandler:
     def _enable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": True}}))
+        (tmp_path / "config.json").write_text(
+            json.dumps({"instances": {"enabled": True}}), encoding="utf-8"
+        )
         from kiro_crew.config import loader
 
         loader._invalidate_config_cache()

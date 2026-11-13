@@ -9,7 +9,6 @@ nonce that refuses a stale button.
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,6 +26,7 @@ from kiro_crew.messaging.renderer import (
     session_provenance_tag,
 )
 from kiro_crew.telegram import renderer as telegram_renderer
+from kiro_crew.telegram import renderer_live
 from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
@@ -36,7 +36,10 @@ from kiro_crew.telegram.renderer import (
     _seal_table_fallback,
     _strip_steering,
 )
+from kiro_crew.telegram.renderer_display import _utf16_len
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class TestRenderer:
@@ -355,10 +358,18 @@ class TestRenderer:
         assert cli.rich_sent, "rich send happened"
         assert cli.rich_silent == [True], "the replacement is silent"
 
-    def test_a_table_that_never_streamed_still_notifies(self) -> None:
+    def test_a_table_that_never_streamed_still_notifies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # No bubble streamed -> no earlier ping, so the rich send is the user's
         # ONLY notification. Suppressing it here would deliver the answer
         # silently and the reply would go unnoticed.
+        # The live frame throttles in renderer_live, which reads its own ``time``, so
+        # the frozen clock goes on that module (and on the facade the renderer reads
+        # through): "edited just now" then holds however slow the host is.
+        clock = ManualClock()
+        clock.install(monkeypatch, renderer_live)
+        clock.install(monkeypatch, telegram_renderer)
         cli = FakeClient()
         r = TelegramRenderer(cli, 72, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
 
@@ -366,8 +377,7 @@ class TestRenderer:
             await r.on_turn_start()
             # Throttle out the live frame -- the "segment never streamed"
             # case named in _seal_current's docstring.
-            # flake-ok: pre-existing real-clock stamp that throttles out the live frame, moved verbatim; tracked for a de-flake pass
-            r._last_edit = time.monotonic()
+            r._last_edit = clock.monotonic()
             await r.on_text_chunk("| a | b |\n| --- | --- |\n| 1 | 2 |")
             assert r._stream_mid is None, "precondition: nothing streamed"
             await r._seal_current()
@@ -504,6 +514,27 @@ class TestRenderer:
             "```"
         ), f"synthetic closer retained in streaming tail: {tail[-40:]!r}"
 
+    def test_an_emoji_dense_reply_fits_telegrams_utf16_cap(self) -> None:
+        # Telegram caps a message in UTF-16 units, where each astral emoji costs two.
+        # Budgeting in code points sealed 3999 characters that are 4799 units.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text="🟢 ok\n" * 900),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        landed = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        assert landed and max(_utf16_len(t) for t in landed) <= 4096
+
+    def test_a_degraded_emoji_table_row_is_cut_to_the_utf16_cap(self) -> None:
+        # One indivisible row reaches the splitter's floor, whose offender check
+        # must measure the same unit as the cap or the row ships whole.
+        r = TelegramRenderer(FakeClient(), 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        table = "| a | b |\n|---|---|\n| x | " + "🟢" * 2100 + " |\n| y | z |"
+        chunks = r._degraded_table_chunks(table)
+        cap = r._rendered_limit()
+        assert max(_utf16_len(_seal_table_fallback(c)) for c in chunks) <= cap
+
     def test_rotation_preserves_a_real_closing_fence(self) -> None:
         # Control for the above: when the source fence IS closed, the tail must
         # keep its genuine closer.
@@ -516,6 +547,21 @@ class TestRenderer:
         )
         assert closed_src.count("```") % 2 == 0
         r._buf = [closed_src]
+        asyncio.run(r._rotate_on_length())
+        assert "".join(r._buf).rstrip().endswith("```")
+
+    def test_rotation_keeps_a_real_closer_beside_an_inline_backtick_run(self) -> None:
+        # An inline ``` in prose makes the backtick count odd while every fence is
+        # closed, so a parity test would strip the genuine closer from the tail.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        src = (
+            "Wrap code in ``` fences.\n\n```python\n"
+            + "\n".join(f'    z{i} = a["k{i}"] & b<c>' for i in range(150))
+            + "\n```"
+        )
+        assert src.count("```") % 2 == 1, "fixture must carry an odd count"
+        r._buf = [src]
         asyncio.run(r._rotate_on_length())
         assert "".join(r._buf).rstrip().endswith("```")
 
@@ -741,6 +787,29 @@ class TestRenderer:
         assert len(markups) == 1
         labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
+
+    def test_options_only_keyboard_is_sent_when_the_placeholder_edit_fails(self) -> None:
+        # The live bubble can be gone (deleted by the user) or uneditable (the edit
+        # budget). The keyboard must then arrive in a new message, as the text seal
+        # already does, rather than be lost with the failed edit.
+        cli = FakeClient()
+        cli.edit_ok = False  # type: ignore[attr-defined]
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TOOL_CALL, tool_call_id="t", title="fs_read"))
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="[OPTIONS: A | B]"))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+
+        asyncio.run(_go())
+        frame_mid = next(mid for mid, _, m in cli.edits if m)
+        sent_markups = [m for _, m in cli.sent if m]
+        assert len(sent_markups) == 1
+        labels = [b["text"] for row in sent_markups[0]["inline_keyboard"] for b in row]
+        assert labels == ["A", "B"]
+        # The stale tool frame is replaced, not left above the new message.
+        assert cli.deleted == [frame_mid]
 
     def test_complete_options_straddling_length_cut_stays_intact(self) -> None:
         # Codex finding: a COMPLETE trailing [OPTIONS: A | B] whose text
@@ -1181,18 +1250,51 @@ class TestRenderer:
         assert asyncio.run(_go()) == 0
 
 
+class TestLinkEmphasis:
+    """Emphasis formats a link's text, never the URL inside its href."""
+
+    def test_underscore_italic_in_a_url_stays_in_the_url(self) -> None:
+        out = _md_to_telegram_html("[docs](https://e.com/_x_/y)")
+        assert out == '<a href="https://e.com/_x_/y">docs</a>'
+
+    def test_underscore_bold_in_a_url_stays_in_the_url(self) -> None:
+        out = _md_to_telegram_html("[docs](https://e.com/__x__/y)")
+        assert out == '<a href="https://e.com/__x__/y">docs</a>'
+
+    def test_star_italic_in_a_url_stays_in_the_url(self) -> None:
+        out = _md_to_telegram_html("**[docs](https://e.com/*x*)**")
+        assert out == '<b><a href="https://e.com/*x*">docs</a></b>'
+
+    def test_emphasis_in_the_link_text_is_still_formatted(self) -> None:
+        out = _md_to_telegram_html("see [*new* docs](https://e.com/a_b_c) _now_")
+        assert out == 'see <a href="https://e.com/a_b_c"><i>new</i> docs</a> <i>now</i>'
+
+    def test_emphasis_around_a_link_still_wraps_it(self) -> None:
+        out = _md_to_telegram_html("_see [docs](https://e.com/a)_")
+        assert out == '<i>see <a href="https://e.com/a">docs</a></i>'
+
+
+async def _until_decider_waits(task: "asyncio.Future[bool]", key: str) -> None:
+    """Wait until the decider has claimed *key* and is parked on its future.
+
+    The decider adds the key to ``_AWAITED`` in the same step that suspends it on the
+    decision, so a press made after this returns lands on a wait that is running.
+    """
+    await async_wait_until(
+        lambda: key in TelegramApprovalDecider._AWAITED,
+        describe=lambda: f"{task!r}; awaited keys {sorted(TelegramApprovalDecider._AWAITED)}",
+    )
+
+
 class TestApprovalDecider:
     def test_resolve_pending(self) -> None:
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
             TelegramApprovalDecider.arm("telegram:1:0:rq7", "n1")
             task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq7")))
-            # flake-ok: pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+            await _until_decider_waits(task, "telegram:1:0:rq7")
             TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", True, nonce="n1")
-            # flake-ok: pre-existing unbounded await of the decider task, moved verbatim; tracked for a de-flake pass
-            return await task
+            return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is True
 
@@ -1210,9 +1312,7 @@ class TestApprovalDecider:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
             TelegramApprovalDecider.arm("telegram:1:0:rq7", "fresh")
             task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq7")))
-            # flake-ok: pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+            await _until_decider_waits(task, "telegram:1:0:rq7")
             stale = TelegramApprovalDecider.resolve_global(
                 "telegram:1:0:rq7", True, nonce="from-a-previous-run"
             )
@@ -1220,8 +1320,7 @@ class TestApprovalDecider:
             # The prompt is still waiting: the stale press neither approved nor
             # consumed it.
             TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", False, nonce="fresh")
-            # flake-ok: pre-existing unbounded await of the decider task, moved verbatim; tracked for a de-flake pass
-            return await task
+            return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False
 
@@ -1230,13 +1329,8 @@ class TestApprovalDecider:
 
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
-            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
-            # flake-ok: pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
             assert TelegramApprovalDecider.resolve_global("telegram:1:0:rq8", True) is False
-            TelegramApprovalDecider._REGISTRY["telegram:1:0:rq8"].set_result(False)
-            # flake-ok: pre-existing unbounded await of the decider task, moved verbatim; tracked for a de-flake pass
-            return await task
+            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
+            return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False

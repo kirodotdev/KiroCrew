@@ -19,8 +19,10 @@ from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import (
+    _read_installed_manifest_cache,
     _read_manifest_cache,
     _read_manifest_negative_cache,
+    _write_installed_manifest_cache,
     _write_manifest_cache,
     _write_manifest_negative_cache,
 )
@@ -32,6 +34,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _communicate_with_timeout,
     _git_fetch_branch,
     _git_fetch_commit,
+    _mkdtemp_settled,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
@@ -50,13 +53,20 @@ from kiro_crew.apps.registry_pipeline.sources import (
     is_clone_host_trusted,
 )
 from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
-from kiro_crew.apps.registry_pipeline.subprocess_env import anonymous_git_env, minimal_env
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+    anonymous_git_env,
+    minimal_env,
+)
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
     wrap_argv,
     wrap_argv_async,
 )
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -71,6 +81,7 @@ async def _fetch_app_manifest(
     owner_designated: bool = False,
     commit: str = "",
     allow_remote: bool = True,
+    provenance: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -105,6 +116,11 @@ async def _fetch_app_manifest(
     is still read, and a miss returns None without cloning. The listing passes
     False while a failed-fetch marker is fresh, so an app that is already
     installed keeps its manifest while the remote stays off.
+
+    *provenance*: when given, ``provenance["source"]`` is set to ``"installed"``
+    if the answer came from step 1. That copy is the INSTALLED tree, not what the
+    branch publishes now, so a caller that caches the answer as the source's
+    manifest needs to know (``_resolve_manifest``).
     """
 
     def _read_manifest_text(path: Path) -> str | None:
@@ -122,6 +138,9 @@ async def _fetch_app_manifest(
         return None
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # Try persistent clone first (already installed).
     #
@@ -164,9 +183,16 @@ async def _fetch_app_manifest(
             and fresh_enough
         ):
             try:
-                return json.loads(local_content)
+                local_manifest_data = loads_user_json(local_content)
             except json.JSONDecodeError:
                 pass
+            else:
+                # A local manifest that is not a JSON object is read like an
+                # unparseable one: fall through to the fresh clone below.
+                if isinstance(local_manifest_data, dict):
+                    if provenance is not None:
+                        provenance["source"] = "installed"
+                    return local_manifest_data
 
     if not allow_remote:
         return None
@@ -186,11 +212,9 @@ async def _fetch_app_manifest(
         )
         return None
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-manifest-")
+        tmp_root = await _mkdtemp_settled("kirocrew-manifest-")
         # Credential posture for the manifest fetch. Default: anonymous+strict
         # (confused-deputy defense — see anonymous_git_env). Same-repo
         # carve-out: when owner_designated is True the clone URL is the
@@ -239,7 +263,7 @@ async def _fetch_app_manifest(
                     str(err),
                 )
                 return None
-        elif credentialed_transport:
+        elif isolate_transport:
             # A credentialed `git clone` performs both the network fetch and the
             # checkout in one process. The checkout may launch an inherited filter
             # selected by the fetched `.gitattributes`, which would inherit the
@@ -284,7 +308,9 @@ async def _fetch_app_manifest(
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            transport_env = _git_transport_env(credential_target, git_url, clone_env)
+            transport_env = _git_network_env(
+                _git_transport_env(credential_target, git_url, clone_env), git_url
+            )
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -316,7 +342,9 @@ async def _fetch_app_manifest(
         content = await asyncio.to_thread(_read_manifest_text, manifest_dir / "app.json")
         if content is None:
             return None
-        return json.loads(content)
+        data = loads_user_json(content)
+        # A manifest that is not a JSON object (``["x"]``, ``"str"``) is no manifest.
+        return data if isinstance(data, dict) else None
     except (asyncio.TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.debug(
             "Failed to fetch app.json from %s: %s",
@@ -350,6 +378,10 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     cached = await asyncio.to_thread(_read_manifest_cache, entry)
     if cached:
         return _merge_manifest(entry, cached)
+    # Then the installed checkout's copy, cached apart (see the write below).
+    installed = await asyncio.to_thread(_read_installed_manifest_cache, entry)
+    if installed:
+        return _merge_manifest(entry, installed)
 
     # The same switch that keeps the catalog documents off the network keeps
     # the listing's clone off it too: a seed row with no cached manifest
@@ -375,6 +407,7 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     # fetch (the confused-deputy defense does not apply to the owner's own URL).
     owner_target = await asyncio.to_thread(_owner_designated_repo_target, entry)
     fetch_kwargs: dict[str, Any] = {"allow_remote": False} if negative_cached else {}
+    provenance: dict[str, str] = {}
     manifest = await _fetch_app_manifest(
         repo,
         branch,
@@ -382,10 +415,23 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         app_name=name,
         git_url=owner_target or git_url,
         owner_designated=bool(owner_target),
+        provenance=provenance,
         **fetch_kwargs,
     )
     if manifest:
-        await asyncio.to_thread(_write_manifest_cache, entry, manifest)
+        # The installed checkout's app.json is cached APART from this source's
+        # manifest. It names the INSTALLED version, while the source cache is what
+        # the listing's ``version``, the update status and the prewarm's warm check
+        # read as what the source publishes: stored there, it made an installed app
+        # read as current for the cache's life, and kept the owner-tier prewarm, the
+        # only credentialed reader of the branch tip, from renewing it. The source
+        # cache is read first above, so a tip the prewarm fetched wins.
+        writer = (
+            _write_installed_manifest_cache
+            if provenance.get("source") == "installed"
+            else _write_manifest_cache
+        )
+        await asyncio.to_thread(writer, entry, manifest)
         return _merge_manifest(entry, manifest)
 
     if negative_cached:
@@ -516,6 +562,12 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Platform config from app.json
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
+
+    # Store-page links, checked here because this manifest is untrusted content.
+    if "links" in manifest:
+        links = sanitize_links(manifest["links"], app_name=str(entry.get("name", "")))
+        if links:
+            result["links"] = links
 
     # Icon — convert a manifest-relative path to a blob proxy URL, joined under
     # the entry's ``subdirectory`` (the directory app.json was read from) so the

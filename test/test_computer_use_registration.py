@@ -1191,7 +1191,9 @@ class TestSpecEmissionGate:
 
         from kiro_crew.dashboard.handlers import computer_use as handler
 
-        src = inspect.getsource(handler.api_computer_use_config_save)
+        save_src = inspect.getsource(handler.api_computer_use_config_save)
+        assert "await apply_enable_change(request)" in save_src
+        src = inspect.getsource(handler.apply_enable_change)
         rebuild_call = re.search(r"to_thread\(\s*rebuild_agent_spec\b", src)
         rebuild_at = rebuild_call.start() if rebuild_call else -1
         reset_at = src.find("_reset_all_sessions")
@@ -1413,9 +1415,8 @@ class TestDataHomePin:
     def test_a_default_install_emits_no_env_at_all(self, tmp_path, monkeypatch):
         """The emitted spec must be byte-for-byte unchanged where there is no override.
 
-        An empty ``env`` is a launch-behaviour no-op but a real diff in the file, and
-        ``_prune_empty`` treats present-but-empty as equivalent — so emitting one
-        would churn every existing user's ``kirocrew.json`` for nothing.
+        An empty ``env`` is a launch-behaviour no-op but a real diff in the file, so
+        emitting one would churn every existing user's ``kirocrew.json`` for nothing.
         """
         servers = self._entries(monkeypatch, None, tmp_path)
         for name in _MANAGED:

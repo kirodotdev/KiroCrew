@@ -47,6 +47,37 @@ describe('planTreeStateRows', () => {
     expect(plan.folders.has('locked')).toBe(false)
   })
 
+  it('gives a separate repository no row: it is listed on its own when opened, and is never called empty', () => {
+    // A submodule or nested clone is a childless folder row in the project's
+    // listing (`nestedRepoDirectories`). Its own listing loads near-instantly,
+    // so it gets no status line -- and in particular not "Empty folder", which
+    // an unnamed childless folder (`libs/other`) still gets.
+    const plan = planTreeStateRows(
+      {
+        paths: ['src/a.ts'],
+        directories: ['libs', 'libs/sub', 'libs/other'],
+        nestedRepoDirectories: ['libs/sub'],
+      },
+      LABELS,
+    )
+    expect([...plan.paths]).toEqual([`libs/other/Empty folder${M}`])
+    expect(plan.folders.has('libs/sub')).toBe(false)
+    expect(plan.folders.has('libs')).toBe(false)
+  })
+
+  it('gives a nested repository that is also cut the truncated row, and one with children none', () => {
+    const plan = planTreeStateRows(
+      {
+        paths: ['libs/sub/a.ts'],
+        directories: ['libs/sub', 'libs/cut'],
+        truncatedDirectories: ['libs/cut'],
+        nestedRepoDirectories: ['libs/sub', 'libs/cut'],
+      },
+      LABELS,
+    )
+    expect([...plan.paths]).toEqual([`libs/cut/Not shown${M}`])
+  })
+
   it('says a link to another folder is not followed, and leaves the folder holding it without a row', () => {
     // A symlink to a directory is a visible entry the server lists as a row of
     // its own (`linkedDirectories`) but never walks into: the link gets the

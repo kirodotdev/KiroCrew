@@ -35,8 +35,6 @@ from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.dashboard.handlers import agent_panel_record, member_dashboard
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
-pytestmark = pytest.mark.asyncio
-
 RECORD_PATH = "/api/agent-panel/dashboard/record"
 JOB_ID = "stock-poll"
 CRON_KEY = f"cron:{JOB_ID}"
@@ -109,6 +107,7 @@ def _custom_fold() -> dict[str, Any]:
 # ----------------------------------------------------------------- who may write
 
 
+@pytest.mark.asyncio
 async def test_the_door_needs_the_internal_secret(bound_cron):
     async with _client(internal=False) as c:
         resp = await _post(c, {"type": "stock_check", "data": {"price": 1}})
@@ -116,6 +115,7 @@ async def test_the_door_needs_the_internal_secret(bound_cron):
         assert (await resp.json())["code"] == "internal_secret_required"
 
 
+@pytest.mark.asyncio
 async def test_the_door_closes_with_the_crew_panel_switch(bound_cron, monkeypatch):
     """A record is a dashboard value, so the switch that withdraws the dashboard
     surface withdraws this door with it."""
@@ -126,6 +126,7 @@ async def test_the_door_closes_with_the_crew_panel_switch(bound_cron, monkeypatc
         assert (await resp.json())["code"] == "crew_panel_disabled"
 
 
+@pytest.mark.asyncio
 async def test_an_app_token_caller_is_turned_away_like_every_member_route(bound_cron):
     """The 404 the member routes give an app identity, BEFORE any identity is read:
     an installed app's own grant is a separate decision and is not made here."""
@@ -142,6 +143,7 @@ async def test_an_app_token_caller_is_turned_away_like_every_member_route(bound_
         assert resp.status == 404, await resp.text()
 
 
+@pytest.mark.asyncio
 async def test_a_caller_that_is_not_an_attested_cron_is_refused(bound_cron, monkeypatch):
     _scope_is(monkeypatch, _shared.MemberScope("dashboard:chat-1", True, "", None))
     async with _client() as c:
@@ -152,6 +154,7 @@ async def test_a_caller_that_is_not_an_attested_cron_is_refused(bound_cron, monk
         assert (await resp.json())["code"] == "caller_not_cron"
 
 
+@pytest.mark.asyncio
 async def test_an_unverified_cron_key_is_refused(bound_cron, monkeypatch):
     """A header that merely asserts ``cron:<id>`` resolves to nothing: the scope says
     the transport could not vouch for it."""
@@ -162,6 +165,7 @@ async def test_an_unverified_cron_key_is_refused(bound_cron, monkeypatch):
         assert (await resp.json())["code"] == "caller_not_cron"
 
 
+@pytest.mark.asyncio
 async def test_a_cron_bound_to_no_crewmate_is_refused(bound_cron, monkeypatch):
     _scope_is(monkeypatch, _shared.MemberScope(CRON_KEY, True, "", _execution(None)))
     async with _client() as c:
@@ -172,11 +176,12 @@ async def test_a_cron_bound_to_no_crewmate_is_refused(bound_cron, monkeypatch):
         assert "bind the job" in body["error"]
 
 
+@pytest.mark.asyncio
 async def test_a_member_the_config_no_longer_holds_is_a_409(bound_cron, monkeypatch):
     from kiro_crew import execution_context
 
     def _gone(_cfg, _member_id):
-        raise RuntimeError("member identity is missing or ambiguous")
+        raise execution_context._unavailable("member identity is missing or ambiguous")
 
     monkeypatch.setattr(execution_context, "member_config_for_id", _gone)
     async with _client() as c:
@@ -188,6 +193,7 @@ async def test_a_member_the_config_no_longer_holds_is_a_409(bound_cron, monkeypa
 # ------------------------------------------------------------ what a record may be
 
 
+@pytest.mark.asyncio
 async def test_a_body_that_is_not_json_is_refused(bound_cron):
     async with _client() as c:
         resp = await c.post(RECORD_PATH, data=b"not json", headers=_headers())
@@ -195,6 +201,7 @@ async def test_a_body_that_is_not_json_is_refused(bound_cron):
         assert (await resp.json())["code"] == "invalid_json"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body, code",
     [
@@ -230,6 +237,7 @@ async def test_a_malformed_record_is_refused_before_anything_is_appended(
     assert appended == []
 
 
+@pytest.mark.asyncio
 async def test_a_record_over_the_byte_ceiling_is_refused(bound_cron):
     async with _client() as c:
         resp = await _post(c, {"type": "stock_check", "data": {"blob": "n" * 9000}})
@@ -237,6 +245,7 @@ async def test_a_record_over_the_byte_ceiling_is_refused(bound_cron):
         assert (await resp.json())["code"] == "record_too_large"
 
 
+@pytest.mark.asyncio
 async def test_a_record_nested_too_deep_is_refused(bound_cron):
     deep: dict[str, Any] = {"v": 1}
     for _ in range(9):
@@ -247,6 +256,7 @@ async def test_a_record_nested_too_deep_is_refused(bound_cron):
         assert (await resp.json())["code"] == "record_too_deep"
 
 
+@pytest.mark.asyncio
 async def test_a_record_nested_a_thousand_deep_is_a_400_not_a_crash(bound_cron):
     """Parser-valid JSON can nest far past the ceiling. The depth walk stops at the
     ceiling, so the route answers the documented refusal rather than raising
@@ -260,6 +270,7 @@ async def test_a_record_nested_a_thousand_deep_is_a_400_not_a_crash(bound_cron):
         assert (await resp.json())["code"] == "record_too_deep"
 
 
+@pytest.mark.asyncio
 async def test_a_lone_surrogate_in_a_record_is_a_refusal_not_a_crash(bound_cron):
     """A JSON-escaped lone surrogate parses and serializes but cannot be encoded as
     UTF-8; the size check answers "does not fit" rather than raising."""
@@ -274,6 +285,7 @@ async def test_a_lone_surrogate_in_a_record_is_a_refusal_not_a_crash(bound_cron)
         assert (await resp.json())["code"] == "record_too_large"
 
 
+@pytest.mark.asyncio
 async def test_a_record_at_the_depth_ceiling_is_taken(bound_cron):
     deep: dict[str, Any] = {"v": 1}
     for _ in range(7):
@@ -283,6 +295,7 @@ async def test_a_record_at_the_depth_ceiling_is_taken(bound_cron):
         assert resp.status == 200, await resp.text()
 
 
+@pytest.mark.asyncio
 async def test_the_quota_refuses_the_record_past_the_window(bound_cron, monkeypatch):
     """Counted at the door, so a wedged script is bounded whatever it sends; a refused
     record is answered 429 and never queued."""
@@ -300,6 +313,7 @@ async def test_the_quota_refuses_the_record_past_the_window(bound_cron, monkeypa
     assert len(appended) == agent_panel_record.RECORD_QUOTA_PER_MINUTE
 
 
+@pytest.mark.asyncio
 async def test_a_refused_record_costs_a_quota_slot_too(bound_cron, monkeypatch):
     """The quota is counted BEFORE the body is read, so a script retrying a bad payload
     in a loop is throttled to 429 rather than parsed and scrubbed once per retry."""
@@ -317,6 +331,7 @@ async def test_a_refused_record_costs_a_quota_slot_too(bound_cron, monkeypatch):
     assert appended == []
 
 
+@pytest.mark.asyncio
 async def test_a_type_that_looks_like_a_credential_is_refused_not_stored(bound_cron):
     """The grammar admits a token-shaped name; a type is a key the door cannot scrub, so
     one the scrubber would change is refused rather than persisted or echoed."""
@@ -374,6 +389,7 @@ def test_colliding_keys_are_suffixed_in_linear_time():
     assert len(scrubbed) == 50 and not any(secret in key for key in scrubbed)
 
 
+@pytest.mark.asyncio
 async def test_a_record_over_the_ceiling_is_refused_before_it_is_scrubbed(bound_cron, monkeypatch):
     """The raw record is measured before the scrub walks it, so an oversize payload never
     reaches the regex pass."""
@@ -404,6 +420,7 @@ def test_the_quota_window_slides():
 # ------------------------------------------------- the append, and what it stamps
 
 
+@pytest.mark.asyncio
 async def test_a_record_lands_stamped_by_the_gateway_and_folds_for_the_page(bound_cron):
     """The round trip the feature is: the script sends type and data, the gateway stamps
     writer and member, and the ``custom`` fold answers ``latest.<type>`` with all of it."""
@@ -429,6 +446,7 @@ async def test_a_record_lands_stamped_by_the_gateway_and_folds_for_the_page(boun
     assert folded["wrote"] == 1
 
 
+@pytest.mark.asyncio
 async def test_the_body_cannot_set_who_wrote_it_or_for_whom(bound_cron):
     """``writer``, ``member``, ``crew_key`` and ``src`` in the body are IGNORED: the
     entry carries the gateway's reading of the caller and nothing the script said."""
@@ -451,6 +469,7 @@ async def test_the_body_cannot_set_who_wrote_it_or_for_whom(bound_cron):
     assert row["crew_key"] == agent_panel.crew_key(CREW)
 
 
+@pytest.mark.asyncio
 async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cron):
     """``ScriptContext`` redacts before it posts, but it is one caller and not the gate:
     a script posting through ``ctx._post`` sends whatever it holds. The DOOR scrubs
@@ -483,6 +502,7 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
     assert row["data"]["rows"][1] == 7 and row["data"]["n"] == 1
 
 
+@pytest.mark.asyncio
 async def test_a_value_with_two_tokens_loses_both_at_the_door(bound_cron):
     """The keyed judgement runs on the CLEANED value: a header value carrying an access
     key the bare scrub catches AND a bearer only its key reveals keeps neither."""
@@ -500,6 +520,7 @@ async def test_a_value_with_two_tokens_loses_both_at_the_door(bound_cron):
     assert "abcdefghijklmnopqrstuvwxyz0123" not in json.dumps(row["data"])
 
 
+@pytest.mark.asyncio
 async def test_a_record_that_only_fits_before_scrubbing_is_judged_on_what_lands(bound_cron):
     """The size is measured on the scrubbed record, the bytes the fold re-measures."""
     from kiro_crew.dashboard.handlers import agent_panel_record as door
@@ -524,6 +545,7 @@ async def test_a_record_that_only_fits_before_scrubbing_is_judged_on_what_lands(
     assert seen == [{"small": 1}]
 
 
+@pytest.mark.asyncio
 async def test_the_latest_record_per_type_wins_and_other_types_stay(bound_cron):
     async with _client() as c:
         for price, kind in ((1, "stock_check"), (2, "stock_check"), (9, "weather")):
@@ -549,6 +571,7 @@ def test_every_accepted_record_type_is_a_bindable_fold_path_segment():
         assert not fold.custom_type_name_ok(name), name
 
 
+@pytest.mark.asyncio
 async def test_the_fold_is_in_the_type_catalog_a_page_binds_from(bound_cron):
     """``dashboard_types`` lists ``custom`` with ``latest`` as an open-keyed map, and the
     seq it has been folded through advances once a record lands."""
@@ -567,6 +590,7 @@ async def test_the_fold_is_in_the_type_catalog_a_page_binds_from(bound_cron):
     assert reached["custom"] is not None and reached["custom"] >= 1
 
 
+@pytest.mark.asyncio
 async def test_a_crewmate_whose_thread_never_ran_has_no_log_to_append_to(bound_cron, monkeypatch):
     monkeypatch.setattr(member_dashboard, "_newest_unit", lambda _slot: "")
     async with _client() as c:
@@ -577,6 +601,7 @@ async def test_a_crewmate_whose_thread_never_ran_has_no_log_to_append_to(bound_c
         assert "open its chat" in body["error"]
 
 
+@pytest.mark.asyncio
 async def test_an_entry_over_the_logs_line_ceiling_is_not_reported_as_stored(
     bound_cron, monkeypatch
 ):
@@ -587,6 +612,7 @@ async def test_an_entry_over_the_logs_line_ceiling_is_not_reported_as_stored(
         assert (await resp.json())["code"] == "record_too_large"
 
 
+@pytest.mark.asyncio
 async def test_an_append_that_does_not_land_is_reported_as_failed(bound_cron, monkeypatch):
     monkeypatch.setattr(crew_log_emit, "on_dashboard_custom", lambda *_a, **_k: False)
     app = _mounted()
@@ -597,6 +623,7 @@ async def test_an_append_that_does_not_land_is_reported_as_failed(bound_cron, mo
         assert not app["state"].broadcasts, "a record that did not land must push nothing"
 
 
+@pytest.mark.asyncio
 async def test_a_record_with_the_crew_log_off_is_refused_not_shrugged(bound_cron, monkeypatch):
     monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
     async with _client() as c:
@@ -634,7 +661,13 @@ def test_the_fold_skips_a_planted_or_damaged_line(data):
 
     state = fold._custom_start()
     fold._custom_step(state, _entry(data))
-    assert fold._custom_render(state) == {"latest": {}, "types_omitted": 0, "wrote": 0}
+    assert fold._custom_render(state) == {
+        "latest": {},
+        "types_omitted": 0,
+        "wrote": 0,
+        "failures": [],
+        "failures_omitted": 0,
+    }
 
 
 def test_the_fold_skips_a_planted_line_nested_a_thousand_deep_without_raising():
@@ -667,3 +700,238 @@ def test_the_fold_bounds_the_types_it_keeps_and_counts_what_it_evicts():
     assert rendered["types_omitted"] == 3
     assert "t0" not in rendered["latest"] and f"t{CUSTOM_TYPE_LIMIT + 2}" in rendered["latest"]
     assert all("order" not in row for row in rendered["latest"].values())
+
+
+# ------------------------------------------- staleness and failed runs (A3)
+#
+# Nearby inputs covered here: a cron that lands a record and then fails, a cron that
+# never lands one, a refused append (quota_exceeded) as the failed run's error, a
+# record exactly at its declared max age, and a declared age out of range.
+
+
+def _failed(writer: str, error: str, seq: int, time_ms: int = 1_760_000_060_000):
+    from kiro_crew.crew_log.schema import Entry
+
+    return Entry(
+        type="dashboard/custom_failed",
+        seq=seq,
+        time=time_ms,
+        src="gateway",
+        data={"writer": writer, "error": error, "member": SLUG},
+    )
+
+
+def test_a_declared_max_age_renders_stale_after_from_the_entry_time():
+    """``stale_after`` is the LOG's time plus the script's promise, to the millisecond:
+    a record read exactly at ``stale_after`` is still current (stale is strictly after),
+    and the body never names the time."""
+    from datetime import datetime, timedelta
+
+    from kiro_crew.crew_log import projection_dashboard as fold
+
+    state = fold._custom_start()
+    fold._custom_step(
+        state,
+        _entry({"type": "ok", "data": {"v": 1}, "writer": "cron:x", "max_age_s": 600}),
+    )
+    row = fold._custom_render(state)["latest"]["ok"]
+    assert row["max_age_s"] == 600
+    at = datetime.fromisoformat(row["at"])
+    assert datetime.fromisoformat(row["stale_after"]) - at == timedelta(seconds=600)
+    assert "failed_at" not in row
+
+
+@pytest.mark.parametrize("bad", [59, 30 * 24 * 3600 + 1, True, "600", 600.5, -1])
+def test_a_max_age_out_of_range_on_disk_is_dropped_and_the_record_kept(bad):
+    from kiro_crew.crew_log import projection_dashboard as fold
+
+    state = fold._custom_start()
+    fold._custom_step(
+        state, _entry({"type": "ok", "data": {"v": 1}, "writer": "cron:x", "max_age_s": bad})
+    )
+    row = fold._custom_render(state)["latest"]["ok"]
+    assert row["data"] == {"v": 1}
+    assert "stale_after" not in row and "max_age_s" not in row
+
+
+def test_a_record_then_a_failed_run_marks_the_record_until_the_next_record():
+    """Cron OK, then failing: the last good record stays, marked failed, so the page
+    can stop presenting it as current; the writer's next record clears the mark."""
+    from kiro_crew.crew_log import projection_dashboard as fold
+
+    state = fold._custom_start()
+    fold._custom_step(state, _entry({"type": "ok", "data": {"v": 1}, "writer": "cron:x"}, 1))
+    fold._custom_step(state, _entry({"type": "other", "data": {"v": 2}, "writer": "cron:y"}, 2))
+    quota = "crew_log_append() failed: this cron job has sent 30 records in the last minute"
+    fold._custom_step(state, _failed("cron:x", quota, 3))
+    rendered = fold._custom_render(state)
+    row = rendered["latest"]["ok"]
+    assert row["data"] == {"v": 1}
+    assert row["failed_at"].endswith("+00:00") and row["last_error"] == quota
+    assert "failed_at" not in rendered["latest"]["other"], "another writer is not marked"
+    assert rendered["failures"] == [{"writer": "cron:x", "at": row["failed_at"], "error": quota}]
+
+    fold._custom_step(state, _entry({"type": "ok", "data": {"v": 3}, "writer": "cron:x"}, 4))
+    rendered = fold._custom_render(state)
+    row = rendered["latest"]["ok"]
+    assert row["data"] == {"v": 3} and "failed_at" not in row and "last_error" not in row
+    assert rendered["failures"] == [], "a recovered job is no longer listed as failing"
+
+
+def test_a_cron_that_never_lands_a_record_is_still_listed():
+    """Cron never succeeding: nothing in ``latest``, and ``failures`` says who failed."""
+    from kiro_crew.crew_log import projection_dashboard as fold
+
+    state = fold._custom_start()
+    fold._custom_step(state, _failed("cron:x", "RuntimeError: boom", 1))
+    fold._custom_step(state, _failed("cron:x", "RuntimeError: boom again", 2))
+    rendered = fold._custom_render(state)
+    assert rendered["latest"] == {} and rendered["wrote"] == 0
+    assert [(f["writer"], f["error"]) for f in rendered["failures"]] == [
+        ("cron:x", "RuntimeError: boom again")
+    ]
+
+
+def test_a_failure_naming_no_writer_is_skipped_and_failures_are_bounded():
+    from kiro_crew.crew_log import projection_dashboard as fold
+    from kiro_crew.crew_log.entry_types import CUSTOM_ERROR_LIMIT, CUSTOM_FAILURE_LIMIT
+
+    state = fold._custom_start()
+    fold._custom_step(state, _failed("", "x", 1))
+    assert fold._custom_render(state)["failures"] == []
+    for index in range(CUSTOM_FAILURE_LIMIT + 2):
+        fold._custom_step(state, _failed(f"cron:j{index}", "e" * 999, index + 2))
+    rendered = fold._custom_render(state)
+    failures = rendered["failures"]
+    assert len(failures) == CUSTOM_FAILURE_LIMIT
+    assert rendered["failures_omitted"] == 2, "the bound says how many it dropped"
+    assert failures[0]["writer"] == f"cron:j{CUSTOM_FAILURE_LIMIT + 1}"
+    assert all(len(f["error"]) <= CUSTOM_ERROR_LIMIT for f in failures)
+
+
+@pytest.mark.asyncio
+async def test_the_door_lands_a_declared_max_age(bound_cron):
+    async with _client() as c:
+        resp = await _post(c, {"type": "stock_check", "data": {"p": 1}, "max_age_s": 120})
+        assert resp.status == 200, await resp.text()
+    row = _custom_fold()["latest"]["stock_check"]
+    assert row["max_age_s"] == 120 and row["stale_after"].endswith("+00:00")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, 59, 30 * 24 * 3600 + 1, True, "120", 1.5])
+async def test_the_door_refuses_a_max_age_it_cannot_honour(bound_cron, bad):
+    async with _client() as c:
+        resp = await _post(c, {"type": "stock_check", "data": {"p": 1}, "max_age_s": bad})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "bad_max_age"
+
+
+def test_the_scheduler_records_a_bound_crons_failed_run_and_the_fold_marks_it(bound_cron):
+    """``record_cron_failure`` stamps the writer from the job id it was handed, scrubs
+    the error, and the entry folds onto that writer's record."""
+    from kiro_crew.dashboard.handlers.agent_panel_record import record_cron_failure
+
+    secret = "AKIA" + "1234567890123456"
+    assert off_loop(
+        crew_log_emit.on_dashboard_custom,
+        bound_cron,
+        {"type": "stock_check", "data": {"p": 1}, "writer": CRON_KEY, "member": SLUG},
+    )
+    assert off_loop(record_cron_failure, JOB_ID, MEMBER_ID, f"RuntimeError: key {secret}")
+    folded = _custom_fold()
+    row = folded["latest"]["stock_check"]
+    assert row["failed_at"] and secret not in row["last_error"]
+    assert folded["failures"][0]["writer"] == CRON_KEY
+
+
+def test_a_failure_with_no_crew_log_or_no_member_records_nothing(bound_cron, monkeypatch):
+    """Best-effort: a crewmate whose chat never ran (crew_log_unavailable) or a job
+    bound to no crewmate answers False and raises nothing."""
+    from kiro_crew.dashboard.handlers.agent_panel_record import record_cron_failure
+
+    assert record_cron_failure(JOB_ID, "", "boom") is False
+    monkeypatch.setattr(member_dashboard, "_newest_unit", lambda _slot: "")
+    assert record_cron_failure(JOB_ID, MEMBER_ID, "boom") is False
+    monkeypatch.setattr(members_mod, "crew_panel_enabled", lambda: False)
+    assert record_cron_failure(JOB_ID, MEMBER_ID, "boom") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("member_id", "recorded"), [(MEMBER_ID, True), ("", False)])
+async def test_the_cron_callback_records_only_a_bound_scripts_failed_run(
+    monkeypatch, member_id, recorded
+):
+    from kiro_crew.dashboard.handlers import agent_panel_record as door
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(door, "record_cron_failure", lambda *a: calls.append(a) or True)
+    job = SimpleNamespace(
+        id=JOB_ID, name="poll", member_id=member_id, last_status="error", last_error="boom"
+    )
+    await GatewayOrchestrator._record_bound_script_failure(SimpleNamespace(), job)
+    assert calls == ([(JOB_ID, MEMBER_ID, "boom")] if recorded else [])
+
+
+def test_the_cron_callback_skips_a_run_that_never_started():
+    """The overlap guard, closed admission and a starved pool set ``last_status`` to
+    error with ``run_never_started``; the job did not fail, so nothing is recorded."""
+    import inspect
+
+    from kiro_crew.slack.gateway_runtime import cron_fire
+
+    source = inspect.getsource(cron_fire._init_cron)
+    hook = source.index("await self._record_bound_script_failure(job)")
+    guard = source.rindex("if ", 0, hook)
+    assert "run_never_started" in source[guard:hook], source[guard:hook]
+
+
+def test_failures_rank_by_slot_order_not_by_a_units_seq():
+    """A slot folds every unit it ran under and each unit's seq starts again, so a
+    failure from the live unit (low seq) is still the newest and is never evicted
+    ahead of an older unit's."""
+    from kiro_crew.crew_log import projection_dashboard as fold
+    from kiro_crew.crew_log.entry_types import CUSTOM_FAILURE_LIMIT
+
+    state = fold._custom_start()
+    for index in range(CUSTOM_FAILURE_LIMIT):
+        fold._custom_step(state, _failed(f"cron:old{index}", "old", 100 + index))
+    fold._custom_step(state, _failed("cron:new", "new", 2))
+    fold._custom_step(state, _failed("cron:newer", "newer", 3))
+    failures = fold._custom_render(state)["failures"]
+    assert [f["writer"] for f in failures[:2]] == ["cron:newer", "cron:new"]
+    writers = {f["writer"] for f in failures}
+    assert "cron:old0" not in writers and "cron:old1" not in writers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("never_started", "recorded"), [(False, True), (True, False)])
+async def test_a_timed_out_bound_script_lands_a_failure_entry(bound_cron, never_started, recorded):
+    """A deadline cancels the run inside ``_cron_run_script``, so the callback's own
+    recorder never runs; the service's timeout alert records it instead. A run that
+    never started is still skipped."""
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    alerts: list[str] = []
+
+    async def _alert(_job, detail, **_kw):
+        alerts.append(detail)
+
+    gateway = SimpleNamespace(_alert_cron_failure=_alert)
+    gateway._record_bound_script_failure = lambda job: (
+        GatewayOrchestrator._record_bound_script_failure(gateway, job)
+    )
+    job = SimpleNamespace(
+        id=JOB_ID,
+        name="poll",
+        script="poll.py:run",
+        member_id=MEMBER_ID,
+        last_status="error",
+        last_error="Timed out after 60s",
+        run_never_started=never_started,
+    )
+    await GatewayOrchestrator._alert_cron_timeout(gateway, job, "Timed out after 60s")
+    assert alerts == ["Timed out after 60s"], "the alert itself is unchanged"
+    failures = _custom_fold()["failures"]
+    assert ([f["writer"] for f in failures] == [CRON_KEY]) is recorded, failures

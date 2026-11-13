@@ -1,8 +1,9 @@
 """Document text extraction for .docx, .pdf, and .pptx files.
 
 Uses stdlib zipfile plus a hardened XML parser (defusedxml) for .docx and
-.pptx since these are ZIP archives containing XML.  PDF extraction uses
-a best-effort binary text scan (no third-party deps required).
+.pptx since these are ZIP archives containing XML.  PDF extraction runs
+pdfplumber in the memory-bounded extractor child (``kiro_crew.pdf_extract``),
+the same path file-grep and knowledge ingest use.
 
 The XML comes from user-supplied uploads, so parsing goes through
 defusedxml rather than the stdlib xml.etree parser: the stdlib one resolves
@@ -20,8 +21,8 @@ import logging
 import os
 import posixpath
 import re
+import time
 import zipfile
-import zlib
 from pathlib import Path
 from typing import IO
 
@@ -34,6 +35,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — exercised via monkeypatch
     _xml_fromstring = None  # type: ignore[assignment]
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.zip_vet import (
@@ -48,7 +50,11 @@ logger = logging.getLogger(__name__)
 # ── Size limits ──
 
 _MAX_ZIP_ENTRY = 50 * 1024 * 1024  # 50 MB per ZIP entry (decompressed)
-_MAX_DECOMPRESS = 50 * 1024 * 1024  # 50 MB for zlib decompression
+# PDF bounds for the extractor child when the caller passes no max_chars. The
+# child's own memory and CPU ceilings bound a Flate bomb; these bound the text
+# returned and the wall time. Same numbers as knowledge ingest.
+_PDF_MAX_CHARS = 4_000_000
+_PDF_WALL_SECS = 120.0
 # Inventory bound for OOXML containers. The per-entry cap above bounds what one
 # member can expand to; this bounds how MANY members an archive declares — and
 # ZipFile's construction allocates from the declared central-directory size
@@ -94,7 +100,7 @@ def extract_text(
 
     *max_chars*, when given, bounds the AGGREGATE extracted text: parsing
     stops as soon as at least that many characters have been collected (the
-    result may slightly overshoot, callers truncate to their exact cap).
+    result may overshoot, callers truncate to their exact cap).
     Without it a multi-part container (e.g. a .pptx with thousands of
     slides, each under the per-entry decompression cap) could accumulate
     unbounded text in memory. Callers that only need a preview should pass
@@ -105,8 +111,7 @@ def extract_text(
     the file first pass the same handle so the bytes parsed are exactly the
     bytes measured (no stat→open TOCTOU window). *path* is still used for
     sensitive-path screening, format detection and logging. PDF extraction
-    is byte-scan based and still reads *path*; no current fileobj caller
-    requests PDFs.
+    still opens *path*; no current fileobj caller requests PDFs.
     """
     fmt = _admit(path, mimetype, filename, operation="extract_text")
     if not fmt:
@@ -117,7 +122,7 @@ def extract_text(
         if fmt == "pptx":
             return _extract_pptx(path, max_chars=max_chars, fileobj=fileobj)
         if fmt == "pdf":
-            return _extract_pdf(path)
+            return _extract_pdf(path, max_chars=max_chars)
     except Exception:
         logger.warning("Failed to extract text from %s", path, exc_info=True)
     return ""
@@ -186,20 +191,6 @@ def _admit(path: str, mimetype: str, filename: str, *, operation: str) -> str:
     return fmt
 
 
-# ── Decompression safety ──
-
-
-def _safe_decompress(data: bytes, max_size: int | None = None) -> bytes:
-    """Decompress zlib data with an output size limit to prevent zip bombs."""
-    if max_size is None:
-        max_size = _MAX_DECOMPRESS
-    dobj = zlib.decompressobj()
-    result = dobj.decompress(data, max_size)
-    if dobj.unconsumed_tail:
-        raise ValueError("decompressed stream exceeds size limit")
-    return result
-
-
 def _vet_archive_inventory(path: str, fileobj: IO[bytes] | None = None) -> bool:
     """Preflight an OOXML container's declared inventory before opening it.
 
@@ -256,7 +247,7 @@ def _read_zip_entry(
     if max_size is None:
         max_size = _MAX_ZIP_ENTRY
     with zf.open(name) as f:
-        data = f.read(max_size + 1)
+        data = bounded_read(f, max_size + 1)
         if len(data) > max_size:
             logger.warning("ZIP entry too large (actual): %s", name)
             return None
@@ -265,50 +256,23 @@ def _read_zip_entry(
 
 # ── DOCX parser (Office Open XML) ──
 
-_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-
 
 def _extract_docx(
     path: str, max_chars: int | None = None, fileobj: IO[bytes] | None = None,
 ) -> str:
-    """Extract text from a .docx file (ZIP containing word/document.xml).
+    """Extract text from a .docx file: the structured preview's walk, flattened.
 
     Must only be called from extract_text() which enforces is_sensitive_path().
     """
-    assert _xml_fromstring is not None  # extract_text() gates the None case
+    # circular import: doc_blocks imports this module's archive helpers.
+    from kiro_crew.doc_blocks import docx_text
+
     if is_sensitive_path(path):
         return ""
     if not _vet_archive_inventory(path, fileobj):
         return ""
-    paragraphs: list[str] = []
-    collected = 0
     with zipfile.ZipFile(fileobj if fileobj is not None else path, "r") as zf:
-        if "word/document.xml" not in zf.namelist():
-            return ""
-        data = _read_zip_entry(zf, "word/document.xml")
-        if data is None:
-            return ""
-        root = _xml_fromstring(data)
-        for para in root.iter(f"{_W_NS}p"):
-            texts: list[str] = []
-            for t_elem in para.iter(f"{_W_NS}t"):
-                if t_elem.text:
-                    texts.append(t_elem.text)
-            if texts:
-                joined = "".join(texts)
-                if paragraphs:
-                    # Count the "\n" separator only BETWEEN paragraphs, so
-                    # `collected` tracks len("\n".join(paragraphs)) exactly.
-                    # Charging the first paragraph a separator too let a
-                    # cap-sized opening paragraph stop extraction while the
-                    # caller's length check read the result as un-truncated,
-                    # silently dropping the rest of the document.
-                    collected += 1
-                paragraphs.append(joined)
-                collected += len(joined)
-                if max_chars is not None and collected >= max_chars:
-                    break
-    return "\n".join(paragraphs)
+        return docx_text(zf, max_chars)
 
 
 # ── PPTX parser (Office Open XML) ──
@@ -424,54 +388,33 @@ def _extract_pptx_slides(
     return slides
 
 
-# ── PDF parser (best-effort binary text extraction) ──
-
-# Matches text between BT (begin text) and ET (end text) PDF operators,
-# then extracts parenthesized string literals.  This is a rough heuristic
-# that works for many simple PDFs but won't handle CIDFont encodings or
-# compressed streams.
-_PDF_TEXT_RE = re.compile(rb"\(([^)]*)\)")
+# ── PDF parser ──
 
 
-def _extract_pdf(path: str) -> str:
-    """Best-effort text extraction from a PDF using binary scanning.
+def _extract_pdf(path: str, max_chars: int | None = None) -> str:
+    """Page text of a PDF, read by pdfplumber in the bounded extractor child.
+
+    pdfplumber walks the page content streams and decodes strings through each
+    font's /ToUnicode map, so subset / CID fonts (Chrome, LibreOffice, Word)
+    come back as text and font programs or images are never read as text. Any
+    extractor failure (unparseable file, missing pdfplumber, memory / CPU /
+    wall-clock ceiling) returns "" so the caller reports "could not extract".
 
     Must only be called from extract_text() which enforces is_sensitive_path().
     """
     if is_sensitive_path(path):
         return ""
-    raw = Path(path).read_bytes()
-    # Try to decompress FlateDecode streams first
-    chunks: list[bytes] = []
-    # Scan for stream..endstream blocks and try zlib decompression
-    stream_re = re.compile(rb"stream\r?\n(.*?)endstream", re.DOTALL)
-    for m in stream_re.finditer(raw):
-        try:
-            decompressed = _safe_decompress(m.group(1))
-            chunks.append(decompressed)
-        except (zlib.error, OSError):
-            # Not valid zlib — might be an uncompressed text stream
-            chunks.append(m.group(1))
-        except ValueError:
-            # Size limit exceeded — skip entirely (zip bomb defense)
-            logger.warning("PDF stream exceeded decompression limit in %s", path)
-    if not chunks:
-        chunks = [raw]
-    # Extract parenthesized text strings from all chunks
-    text_parts: list[str] = []
-    for chunk in chunks:
-        for m in _PDF_TEXT_RE.finditer(chunk):
-            try:
-                decoded = m.group(1).decode("utf-8", errors="replace")
-                # Skip very short fragments that are likely operators
-                if len(decoded) > 1:
-                    text_parts.append(decoded)
-            except Exception:
-                pass
-    if not text_parts:
+    # Imported here: the sandbox stack it pulls in is needed only when a PDF
+    # is actually parsed, and this module sits on the gateway's import path.
+    from kiro_crew.pdf_extract import extract_pdf_segments
+
+    with open(path, "rb") as fh:
+        outcome = extract_pdf_segments(
+            fh,
+            max_chars=max_chars or _PDF_MAX_CHARS,
+            deadline=time.monotonic() + _PDF_WALL_SECS,
+        )
+    if outcome.failure is not None:
+        logger.warning("PDF text extraction failed for %s: %s", path, outcome.failure)
         return ""
-    # Join and clean up
-    result = " ".join(text_parts)
-    # Collapse multiple spaces
-    result = re.sub(r" {2,}", " ", result)
-    return result.strip()
+    return "\n".join(text for _label, text in outcome.segments).strip()

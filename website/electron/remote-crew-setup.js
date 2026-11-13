@@ -43,16 +43,24 @@ function remoteCrewAction({ localGatewayOff = false, remoteHost = "" } = {}) {
  * refused, otherwise what the store holds for this port. A refused save writes
  * nothing, so the store cannot supply them.
  *
+ * A source that never stated a tunnel choice (a crew being added, or one an
+ * older version saved before the option existed) opens on `tunnelByDefault`.
+ * With the local gateway off nothing else opens a forward to the crew, so a
+ * form that opens unticked saves a crew this app can never reach.
+ *
  * @param {{host?: unknown, binPath?: unknown, remotePort?: unknown, remotePath?: unknown, manageTunnel?: unknown}} source
+ * @param {{tunnelByDefault?: boolean}} [options]
  * @returns {{host: string, binPath: string, remotePort: string, remotePath: string, manageTunnel: boolean}}
  */
-function remoteCrewDraft(source = {}) {
+function remoteCrewDraft(source = {}, { tunnelByDefault = false } = {}) {
   return {
     host: String(source.host || ""),
     binPath: String(source.binPath || ""),
     remotePort: String(source.remotePort || ""),
     remotePath: String(source.remotePath || ""),
-    manageTunnel: source.manageTunnel === true,
+    manageTunnel: typeof source.manageTunnel === "boolean"
+      ? source.manageTunnel
+      : tunnelByDefault === true,
   };
 }
 
@@ -92,22 +100,37 @@ function parseRemoteCrewFields(title) {
  * @returns {{saved: boolean, error: string|null}}
  */
 function saveRemoteCrewConfig(store, port, fields = {}) {
+  const error = remoteCrewFieldsError(port, fields);
+  if (error) return { saved: false, error };
   const host = String(fields.host || "").trim();
-  if (!host) return { saved: false, error: MISSING_HOST_ERROR };
-  // A port the per-port lookup cannot key on reads a tunnelled crew as a
-  // gateway on this machine, after which the host-presence heartbeat sends this
-  // machine's secret over the tunnel. Refuse the write rather than create it.
-  if (!isSelectablePort(Number(port))) {
-    return { saved: false, error: unselectablePortError(port) };
-  }
   const binPath = String(fields.binPath || "").trim() || DEFAULT_REMOTE_BIN;
   const remotePort = String(fields.remotePort || "").trim();
   const remotePath = String(fields.remotePath || "").trim();
-  const error = validateRemoteSettings(host, binPath, remotePort, remotePath);
-  if (error) return { saved: false, error };
   const manageTunnel = fields.manageTunnel === true;
   setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePath, manageTunnel });
   return { saved: true, error: null };
+}
+
+/**
+ * Why `saveRemoteCrewConfig` would refuse these fields for `port`, or null when
+ * it would write them. Writes nothing, so a caller that must undo something
+ * before the write can learn first whether the write will happen.
+ *
+ * @param {number|string} port
+ * @param {{host?: unknown, binPath?: unknown, remotePort?: unknown, remotePath?: unknown}} fields
+ * @returns {string|null}
+ */
+function remoteCrewFieldsError(port, fields = {}) {
+  const host = String(fields.host || "").trim();
+  if (!host) return MISSING_HOST_ERROR;
+  // A port the per-port lookup cannot key on reads a tunnelled crew as a
+  // gateway on this machine, after which the host-presence heartbeat sends this
+  // machine's secret over the tunnel. Refuse the write rather than create it.
+  if (!isSelectablePort(Number(port))) return unselectablePortError(port);
+  const binPath = String(fields.binPath || "").trim() || DEFAULT_REMOTE_BIN;
+  const remotePort = String(fields.remotePort || "").trim();
+  const remotePath = String(fields.remotePath || "").trim();
+  return validateRemoteSettings(host, binPath, remotePort, remotePath);
 }
 
 /** The label both remote-crew forms show on the managed-tunnel option. */
@@ -118,7 +141,8 @@ function tunnelOptionHint(port) {
   return (
     "Kiro Crew opens this tunnel itself and reopens it after sleep or a dropped connection. " +
     "Your SSH host must sign in without a password prompt (a key or agent). " +
-    `Leave unchecked only if something else, such as a VPN or kubectl port-forward, must keep carrying port ${port}.`
+    `Leave unchecked if something else, such as a VPN or kubectl port-forward, carries port ${port}. ` +
+    `With the local gateway off, if nothing answers port ${port} when Kiro Crew starts, it opens this tunnel anyway until you quit.`
   );
 }
 
@@ -128,6 +152,7 @@ module.exports = {
   parseRemoteCrewFields,
   remoteCrewAction,
   remoteCrewDraft,
+  remoteCrewFieldsError,
   saveRemoteCrewConfig,
   tunnelOptionHint,
 };

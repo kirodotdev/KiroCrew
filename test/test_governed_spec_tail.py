@@ -44,12 +44,11 @@ _PACKAGE = Path(auto_approve.__file__).resolve().parent
 #: ``_refresh_dynamic_fields`` ``includeMcpJson`` pin) rather than a derived one.
 _PRIMARY_SPEC_WRITER = "default_spec_commit.py"
 
-#: ``(module, function)`` writers outside the tail by design. The shared-template
-#: pass re-filters a user's own template in place: it runs the two grant passes
-#: (``fork_refresh._apply_governance_passes``) and leaves the user's ``mcp.json``
-#: merge and KAS block as written, so the full tail would rewrite fields it does not
-#: own.
-_USER_TEMPLATE_WRITERS = frozenset({("fork_refresh.py", "_govern_json_spec")})
+#: ``(module, function)`` writers outside the tail by design. None: the shared-template
+#: pass never writes a spec Kiro Crew does not own
+#: (``fork_refresh.require_shared_template_within_ceiling`` refuses a kiro-cli start on
+#: one the ceiling would narrow instead).
+_USER_TEMPLATE_WRITERS: frozenset[tuple[str, str]] = frozenset()
 
 
 @pytest.fixture(autouse=True)
@@ -345,15 +344,37 @@ def test_inherit_narrowing_never_writes_a_block_kas_refuses_past_the_rule_cap(
     assert _accepted_by_kas(config["permissions"])
 
 
-def test_inherit_narrowing_never_writes_a_block_kas_refuses_past_the_pattern_cap(
+def test_inherit_narrowing_keeps_a_derived_allow_past_the_pattern_cap_kas_now_splits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A long ``match`` is split on the way to KAS, so the block keeps it."""
     from kiro_crew.acp.kas_permissions import _MAX_PATTERNS_PER_RULE
     from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
     wide = {
         "capability": "mcp",
         "match": [f"s{i}/*" for i in range(_MAX_PATTERNS_PER_RULE + 1)],
+        "effect": "allow",
+    }
+    monkeypatch.setattr(acp_driver, "derived_agent_permissions", lambda *a: {"rules": [wide]})
+    config = {**_overridden_template(), "permissions": {"rules": [_DENY_FETCH]}}
+    auto_approve.govern_spec(
+        config, agent_filename="x.json", source="t", kas_policy="inherit_narrowing"
+    )
+    assert config["permissions"] == {"rules": [_DENY_FETCH, wide]}
+    assert _accepted_by_kas(config["permissions"])
+
+
+def test_inherit_narrowing_counts_a_long_derived_match_as_the_rules_it_is_sent_as(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule bound counts a long ``match`` as the rules it is sent as."""
+    from kiro_crew.acp.kas_permissions import _MAX_PATTERNS_PER_RULE, _MAX_RULES
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    wide = {
+        "capability": "mcp",
+        "match": [f"s{i}/*" for i in range(_MAX_PATTERNS_PER_RULE * _MAX_RULES)],
         "effect": "allow",
     }
     monkeypatch.setattr(acp_driver, "derived_agent_permissions", lambda *a: {"rules": [wide]})
@@ -513,6 +534,40 @@ def test_the_tail_is_idempotent() -> None:
     once = json.loads(json.dumps(config))
     auto_approve.govern_spec(config, agent_filename="x.json", source="t")
     assert config == once
+
+
+# -- a kept autoApprove verb is never written into allowedTools -------------------
+
+_GRANT = "@builder-mcp/ReadInternalWebsites"
+
+
+@pytest.mark.parametrize("honour", [True, False])
+def test_the_tail_writes_no_grant_for_an_auto_approve_verb(
+    monkeypatch: pytest.MonkeyPatch, honour: bool
+) -> None:
+    """kiro-cli has no ``autoApprove`` field, so the kept verbs are granted in the
+    skill view it runs, rebuilt at every spawn. The tail adds none to the spec and
+    takes none away: a grant on file would outlive the verb that backs it, and one
+    the owner wrote in ``allowedTools`` is theirs whatever the opt-in says."""
+    from kiro_crew.config import live
+
+    cfg = KiroCrewConfig()
+    cfg.mcp.honour_auto_approve = honour
+    monkeypatch.setattr(live, "snapshot", lambda: cfg)
+    own = "@builder-mcp/OwnersOwn"
+    config = {
+        "tools": ["@builder-mcp"],
+        "allowedTools": [own],
+        "mcpServers": {
+            "builder-mcp": {
+                "command": "/opt/builder-mcp",
+                "autoApprove": ["ReadInternalWebsites", "OwnersOwn"],
+            }
+        },
+    }
+    auto_approve.govern_spec(config, agent_filename="x.json", source="t")
+    assert ("autoApprove" in config["mcpServers"]["builder-mcp"]) is honour
+    assert config["allowedTools"] == [own]
 
 
 # -- the fork refresh is a caller too ---------------------------------------------

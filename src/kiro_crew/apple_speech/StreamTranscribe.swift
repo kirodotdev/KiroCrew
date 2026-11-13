@@ -196,8 +196,6 @@ struct StreamTranscribe {
         }
 
         let requested = Locale(identifier: localeID)
-        let installed = await SpeechTranscriber.installedLocales
-        let supported = await SpeechTranscriber.supportedLocales
 
         func match(_ pool: [Locale]) -> Locale? {
             let want = requested.identifier(.bcp47).lowercased()
@@ -210,9 +208,50 @@ struct StreamTranscribe {
             return pool.first { $0.language.languageCode?.identifier.lowercased() == lang }
         }
 
-        guard match(supported) != nil else { die("locale \(localeID) is not supported") }
-        guard let effective = match(installed) else {
-            die("locale \(localeID) has no installed model; run the batch helper with --install")
+        // Gate on the inventory of the module that will actually be BUILT. The two
+        // transcribers keep separate asset inventories: a host commonly has
+        // SpeechTranscriber models for many locales but a DictationTranscriber model
+        // only for en-US. Checking one module's list and building the other passes
+        // the guard for a locale the built module has no model for, and the session
+        // then fails in `bestAvailableAudioFormat` with no transcript.
+        let speechInstalled = await SpeechTranscriber.installedLocales
+        let speechSupported = await SpeechTranscriber.supportedLocales
+        let effective: Locale
+        if moduleKind == "dictation" {
+            let dictationInstalled = await DictationTranscriber.installedLocales
+            if let hit = match(dictationInstalled) {
+                effective = hit
+            } else if let hit = match(speechInstalled) {
+                // No dictation model, but the general speech model is installed:
+                // stream with it rather than fail. It finalizes less eagerly than
+                // dictation, but a slower transcript beats none.
+                note(
+                    "no dictation model for \(localeID); falling back to the speech module "
+                        + "(\(hit.identifier(.bcp47)))")
+                moduleKind = "speech"
+                effective = hit
+            } else {
+                let dictationSupported = await DictationTranscriber.supportedLocales
+                guard match(dictationSupported) != nil || match(speechSupported) != nil else {
+                    die("locale \(localeID) is not supported by on-device speech recognition")
+                }
+                die(
+                    "no on-device speech model is installed for locale \(localeID); "
+                        + "add the language under System Settings > Keyboard > Dictation, "
+                        + "or record once with voice Streaming turned off, "
+                        + "which downloads the model")
+            }
+        } else {
+            guard match(speechSupported) != nil else {
+                die("locale \(localeID) is not supported by on-device speech recognition")
+            }
+            guard let hit = match(speechInstalled) else {
+                die(
+                    "no on-device speech model is installed for locale \(localeID); "
+                        + "record once with voice Streaming turned off, "
+                        + "which downloads the model")
+            }
+            effective = hit
         }
 
         // `.volatileResults` makes the module CAPABLE of pre-utterance hypotheses.
@@ -278,7 +317,12 @@ struct StreamTranscribe {
             let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: [module])
         else {
-            die("no compatible audio format for locale \(effective.identifier(.bcp47))")
+            // Reached when the built module has no usable model for the locale even
+            // though its inventory listed it (for example, assets mid-update). Name
+            // the model, not the audio, because the audio is never the cause.
+            die(
+                "the on-device \(moduleKind) model for locale \(effective.identifier(.bcp47)) "
+                    + "is not ready (no compatible audio format)")
         }
 
         guard

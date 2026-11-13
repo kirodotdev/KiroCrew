@@ -1,17 +1,8 @@
 """A write that supersedes a stored lesson names it and leaves a durable record.
 
-This file pins the store side of a dedup supersede. A write whose rule contains a
-stored lesson still deletes it, and ``write_lesson`` names every rule it removed in
-``superseded``, NOT-clause included, and names none when it removed nothing. A
-verbatim re-add of the removed rule is declined, a rewording that shares few
-significant words coexists with the narrower rule, removing the narrower rule first
-restores the general one exactly, and the keyword arithmetic shows why the store
-reports the collapse instead of preventing it. The delete event carries only the
-winner's row id and the reason, the tombstone reads ``superseded`` and the revision
-``supersede``, the supersede logs at WARNING, a text-shaped reason is refused, and a
-supersede rolls back when its attribution event fails while a plain forget keeps its
-own status and survives a failed audit insert. How the CLI, the ``/api/lessons``
-route and the ``learn_add`` tool show the removed rules lives in
+This file pins the store side of a dedup supersede: what ``write_lesson`` reports in
+``superseded``, which recoveries work, and the durable delete record. How the CLI,
+the ``/api/lessons`` route and the ``learn_add`` tool show the removed rules lives in
 ``test_lesson_write_outcome_surfaces.py``.
 """
 
@@ -29,25 +20,11 @@ from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore
 
 
 class TestASupersedingWriteNamesWhatItRemoved:
-    """The store deletes a stored lesson the submitted rule contains, and said nothing.
+    """A write that deletes a stored lesson its rule contains names that lesson.
 
-    From the issue: teach "never force push to a shared branch", then teach "when a
-    release is in progress, never force push to a shared branch, and tell the release
-    manager first". The second rule's text CONTAINS the first, so the substring rule
-    tombstones the general lesson. Reporting a plain ``inserted`` with ``reason=None``
-    tells the user the save succeeded while leaving no rule at all against force
-    pushing outside a release.
-
-    Deleting is deliberate (``write_lesson``'s docstring: "longer wins" / "newer
-    replaces older"), and these tests do NOT assert it stops. They assert the write
-    NAMES the rule it destroyed, which is the only recoverable trace: the row is
-    tombstoned, so it is gone from ``get_lessons``, ``learn_list`` and the injected
-    lessons block.
-
-    POSITIVE CONTROL for these tests: they fail on unpatched ``main``, where
-    ``LessonWriteResult`` has no ``superseded`` field at all -- ``result.superseded``
-    raises ``AttributeError``. That is a fail for the right reason (the field does not
-    exist), and it is distinct from a fail on the wording of a message.
+    Deleting is deliberate ("longer wins"), so these tests do not assert it stops.
+    The name is the only recoverable trace: the tombstoned row is gone from
+    ``get_lessons``, ``learn_list`` and the injected lessons block.
     """
 
     GENERAL = "never force push to a shared branch"
@@ -57,12 +34,10 @@ class TestASupersedingWriteNamesWhatItRemoved:
     )
 
     def test_the_general_rule_is_still_deleted(self, tmp_path):
-        """Pinned deliberately: the fix REPORTS the supersede, it does not prevent it.
+        """The supersede is REPORTED, not prevented.
 
-        Without this, a later change could "fix" the issue by loosening the
-        containment test, and the tests below would still pass while the dedup rule
-        that keeps the store from filling with near-identical lessons had quietly
-        stopped saying no. This is the assertion that makes that visible.
+        Loosening the containment test would pass the tests below while the store
+        filled with near-identical lessons.
         """
         store = _store(tmp_path)
         try:
@@ -90,10 +65,8 @@ class TestASupersedingWriteNamesWhatItRemoved:
     def test_a_write_that_supersedes_nothing_reports_nothing(self, tmp_path):
         """The field must not be a warning that fires on every write.
 
-        A surface renders it with a bare ``if``, so a non-empty value on an ordinary
-        insert would put a data-loss warning in front of the user for a write that
-        lost nothing -- and a warning that always fires is read as noise, which is how
-        a real one gets ignored.
+        A surface renders it with a bare ``if``, so a non-empty value would show a
+        data-loss warning for a write that lost nothing.
         """
         store = _store(tmp_path)
         try:
@@ -107,13 +80,8 @@ class TestASupersedingWriteNamesWhatItRemoved:
     def test_one_write_names_every_rule_it_removed_not_just_the_first(self, tmp_path):
         """The delete branch ``continue``s, so a single call can tombstone several rows.
 
-        A count would be a smaller lie than silence but still a lie: the user cannot
-        restore a rule the report does not name.
-
-        The two stored rules are deliberately unrelated to each other -- they share no
-        significant word, so neither supersedes the other and both are live when the
-        third write arrives. A chain of progressively longer rules could not set this
-        up, because each write already collapses the one before it.
+        The two stored rules share no significant word, so both are live when the third
+        write arrives; a chain of longer rules would collapse each one as it went.
         """
         store = _store(tmp_path)
         try:
@@ -130,10 +98,8 @@ class TestASupersedingWriteNamesWhatItRemoved:
     def test_the_refuse_direction_is_unchanged_and_deletes_nothing(self, tmp_path):
         """The OTHER direction of the same test must keep refusing.
 
-        Submitting a rule CONTAINED IN a stored one is genuinely covered by it, so it
-        is declined without mutating anything. Loosening the containment test to save
-        the general lesson would have changed this too -- accumulating a near-identical
-        row for every re-phrasing. It is pinned here so that cannot happen quietly.
+        A rule CONTAINED IN a stored one is covered by it, so it is declined without
+        mutating anything.
         """
         store = _store(tmp_path)
         try:
@@ -150,12 +116,8 @@ class TestASupersedingWriteNamesWhatItRemoved:
     def test_the_report_keeps_the_not_clause_of_the_rule_it_removed(self, tmp_path):
         """A report that drops the clause hands back a rule the user cannot restore.
 
-        Dedup compares rules through ``_lesson_embed_text``, which returns the ``rule``
-        field ALONE so the comparison basis matches the embedding space. Reporting on
-        that same rendering silently dropped the NOT-clause -- so the clause, which
-        carries the sharpest part of the guidance, became unrecoverable at the exact
-        moment the row was tombstoned. The report uses the display rendering instead;
-        the comparisons still use the embed one, so no dedup decision moves.
+        Dedup compares through ``_lesson_embed_text``, which returns the ``rule`` field
+        ALONE. The report uses the display rendering, so the NOT-clause survives.
         """
         store = _store(tmp_path)
         try:
@@ -186,10 +148,8 @@ class TestASupersedingWriteNamesWhatItRemoved:
     def test_the_advice_it_prints_describes_a_recovery_the_policy_permits(self, tmp_path):
         """The warning's purpose is restorability, so its advice must actually work.
 
-        Measured, because the wording was weaker than this before: a VERBATIM re-add of
-        the superseded rule is declined by the substring branch (the narrower rule now
-        contains it), so telling the user only to "re-add it" would send them into a
-        refusal. Two recoveries do work, and both are what the text now names.
+        A VERBATIM re-add is declined by the substring branch (the narrower rule
+        contains it), so "re-add it" alone would lead to a refusal.
         """
         store = _store(tmp_path)
         try:
@@ -230,18 +190,10 @@ class TestASupersedingWriteNamesWhatItRemoved:
             store.close()
 
     def test_removing_only_the_substring_branch_would_not_have_saved_the_lesson(self):
-        """Why the fix reports instead of preventing: the collapse is over-determined.
+        """Why the store reports instead of preventing: the collapse is over-determined.
 
-        Verbatim containment at word boundaries makes the stored rule's keyword set a
-        SUBSET of the submitted rule's, so the topic-overlap rule three lines below
-        scores 100% and deletes the same row anyway. Deleting the substring branch
-        alone therefore changes nothing a user would notice -- the general lesson is
-        still gone, just via the next rule down. Preventing the collapse means editing
-        all three dedup rules, which is the design call the issue reserved for
-        maintainers.
-
-        Computed from the store's own keyword helper so it cannot drift from the
-        arithmetic the branch actually performs.
+        Containment makes the stored keyword set a SUBSET of the submitted one, so the
+        topic-overlap rule scores 100% and deletes the same row anyway.
         """
         keywords = VectorMemoryStore._lesson_keywords
         general = keywords(self.GENERAL.lower())
@@ -282,12 +234,8 @@ class _EventInsertFailingConn:
 class TestSupersedeRecordIsDurableAndAttributable:
     """A dedup supersede must leave a durable, attributable on-disk trace.
 
-    A ``learn_add`` that supersedes a lesson records which lesson it deleted in the
-    tombstone itself, not only in the tool reply and a log line -- so a call that
-    returns ``timed out`` while committing can still be traced to what was retired.
-    These pin that the tombstone carries the winner and reason, that the deletion is
-    logged at a level a default install records to disk, and that an ordinary forget
-    is unaffected.
+    The tombstone itself names the winner and reason, so a call that returns
+    ``timed out`` while committing can still be traced to what was retired.
     """
 
     # Two rules that share >=50% of the larger keyword set without either
@@ -361,9 +309,8 @@ class TestSupersedeRecordIsDurableAndAttributable:
     ) -> None:
         """The supersede line logs at WARNING, not INFO.
 
-        A default install's file handler records WARNING+ only, so an INFO-level
-        supersede would leave no on-disk trace of a data deletion. Capture at WARNING
-        (not DEBUG) so the assertion FAILS if the level is reverted to INFO.
+        A default install's file handler records WARNING+ only. Captured at WARNING,
+        not DEBUG, so an INFO line would not be seen.
         """
         import logging
 
@@ -383,9 +330,7 @@ class TestSupersedeRecordIsDurableAndAttributable:
     def test_an_explicit_forget_is_unchanged_by_the_supersede_path(self, tmp_path) -> None:
         """The non-supersede delete_semantic path still records forgotten/None.
 
-        Exercises the ``else`` arms of the new ternaries: a plain forget must keep
-        status 'forgotten', operation 'forget' (never 'supersede'), and a null audit
-        new_value.
+        Status 'forgotten', operation 'forget' (never 'supersede'), null audit new_value.
         """
         from kiro_crew import memory_record_metadata as meta
         from kiro_crew.vector_memory import _lesson_key
@@ -418,9 +363,7 @@ class TestSupersedeRecordIsDurableAndAttributable:
     def test_the_durable_record_carries_only_identities_not_rule_text(self, tmp_path) -> None:
         """The audit new_value is exactly {superseded_by, reason} and nothing else.
 
-        Stronger than a bare 'linting'/'formatting' absence check: it asserts the
-        full parsed shape, so any future change that widened the payload to include
-        rule text (or any third key) would fail here.
+        The full parsed shape is asserted, so a third key or rule text would fail.
         """
         import json
 
@@ -438,9 +381,8 @@ class TestSupersedeRecordIsDurableAndAttributable:
     def test_a_text_shaped_supersede_reason_is_refused_at_the_sink(self, tmp_path) -> None:
         """The 'identities only' invariant is structural, not just contractual.
 
-        A reason carrying a newline or long free text (e.g. a future caller
-        splicing rule text into it) is refused at delete_semantic rather than
-        written to the disk-persisted audit row.
+        A reason with a newline or long free text is refused at delete_semantic rather
+        than written to the disk-persisted audit row.
         """
         from kiro_crew.vector_memory import _lesson_key
 

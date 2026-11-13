@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { useState } from 'react'
 import { flushSync } from 'react-dom'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import SessionAutomationPopover from '../components/SessionAutomationPopover'
 import {
   normalizeAutomationRecord,
@@ -204,6 +204,32 @@ describe('SessionAutomationPopover', () => {
 
     expect(screen.queryByText('Next cycle not yet scheduled')).toBeNull()
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
+  })
+
+  it('puts the countdown on the composer goal button title, not its name, and refreshes it on hover (#30329)', () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    vi.setSystemTime(1_899_999_875_000)
+    const { rerenderAutomation } = renderPopover(activeLegacyLoop)
+    rerenderAutomation(activeLegacyLoop, 'chat-1', false)
+
+    const trigger = screen.getByRole('button', { name: 'Goal active (cycle 2/24)' })
+    expect(trigger.getAttribute('title')).toMatch(/^Goal active \(cycle 2\/24\) · Next cycle in .*2.*m.*5.*s/)
+
+    vi.setSystemTime(1_899_999_935_000)
+    fireEvent.mouseEnter(trigger)
+    expect(trigger.getAttribute('title')).toMatch(/Next cycle in .*1.*m.*5.*s/)
+  })
+
+  it.each([
+    ['an approval hold', { approvalStalled: true }],
+    ['a person wait', { waitingOnPerson: true }],
+  ])('leaves the countdown off the composer goal button title during %s', (_hold, held) => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    vi.setSystemTime(1_899_999_880_000)
+    renderPopover({ ...activeLegacyLoop, nextDueAt: 1_899_999_000, ...held })
+    expect(screen.getByRole('button', { name: 'Goal active (cycle 2/24)' })).toHaveAttribute('title', 'Goal active (cycle 2/24)')
   })
 
   it.each([
@@ -471,6 +497,53 @@ describe('SessionAutomationPopover', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Start monitor' }))
 
+    expect(await screen.findByText('Enter a supported pull request URL.')).toBeInTheDocument()
+  })
+
+  it('edits a contributed-kind target without the built-in client parser', async () => {
+    // A monitor of a kind an edition registered at boot has no client-side
+    // target parser; its edited target must be sent trimmed for the backend's
+    // own validation, not refused client-side as an unsupported URL.
+    ;(api.monitorUpdate as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, monitor: {} })
+    const contributed: StructuredMonitor = {
+      ...activeMonitor,
+      monitorKind: 'salesforce_pull_request',
+      target: 'https://review.example.test/reviews/1',
+    }
+    renderPopover(contributed)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Pull request URL' }), {
+      target: { value: '  https://review.example.test/reviews/2  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(api.monitorUpdate).toHaveBeenCalledWith(
+      'monitor-1',
+      expect.objectContaining({ target: 'https://review.example.test/reviews/2' }),
+    ))
+    // The built-in "unsupported URL" refusal never fired for the contributed kind.
+    expect(screen.queryByText('Enter a supported pull request URL.')).not.toBeInTheDocument()
+  })
+
+  it('surfaces a backend refusal of a contributed-kind target through the error path', async () => {
+    ;(api.monitorUpdate as ReturnType<typeof vi.fn>).mockRejectedValue(new ApiError(
+      400,
+      'Bad Request',
+      JSON.stringify({ code: 'invalid_pull_request_url', error: 'target is not allowed' }),
+    ))
+    const contributed: StructuredMonitor = {
+      ...activeMonitor,
+      monitorKind: 'salesforce_pull_request',
+      target: 'https://review.example.test/reviews/1',
+    }
+    renderPopover(contributed)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Pull request URL' }), {
+      target: { value: 'https://review.example.test/not-a-review' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(api.monitorUpdate).toHaveBeenCalled())
     expect(await screen.findByText('Enter a supported pull request URL.')).toBeInTheDocument()
   })
 

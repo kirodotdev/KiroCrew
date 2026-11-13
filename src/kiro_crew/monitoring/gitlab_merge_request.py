@@ -20,6 +20,8 @@ from kiro_crew.monitoring.pull_request import (
     PullRequestProviderError,
     build_pull_request_probe_result,
     classify_provider_error_text,
+    comment_body_digest,
+    comment_body_fingerprint,
     opaque_provider_check_identity,
     provider_error_result,
     provider_failure_result,
@@ -34,6 +36,12 @@ _TIMEOUT_SECS = 30.0
 _MAX_OUTPUT_BYTES = 1024 * 1024
 _PAGE_SIZE = 100
 _MAX_PROVIDER_ITEMS = _PAGE_SIZE * 2
+# The notes read gets its own, larger page budget, matching the GitHub and Bitbucket
+# comment reads (10 pages). GitLab writes a system note for every push, approval and
+# label change, so a long-running MR passes the two-page discussions budget with few
+# real comments; on that budget its digest would stay empty (fail-closed) for good.
+_COMMENT_MAX_PAGES = 10
+_MAX_COMMENT_ITEMS = _PAGE_SIZE * _COMMENT_MAX_PAGES
 _CANONICAL_STATES = {"opened": "open", "merged": "merged", "closed": "closed"}
 # Terminal means "no supplemental read can change the verdict", which is every
 # mapped state except the open one. Deriving it keeps the two from drifting.
@@ -107,16 +115,21 @@ class GitLabMergeRequestProvider:
                 pipelines: list[object] = []
                 discussions: list[object] = []
                 discussions_complete = True
+                notes: list[object] = []
+                notes_complete = True
             else:
                 head_pipeline = mr.get("head_pipeline")
                 pipelines = [] if head_pipeline is None else [_object(head_pipeline)]
                 discussions, discussions_complete = _collection(fetch("discussions"))
+                notes, notes_complete = _read_comments(fetch)
             facts = _facts(
                 target,
                 mr,
                 pipelines,
                 discussions,
+                notes,
                 discussions_complete=discussions_complete,
+                notes_complete=notes_complete,
             )
         except PullRequestProviderError as exc:
             return provider_failure_result(exc)
@@ -165,39 +178,50 @@ class GitLabMergeRequestProvider:
             return GitLabMergeRequestProvider._get_glab_page(target, root)
         if resource == "discussions":
             collection = f"{root}/discussions"
+        elif resource == "comments":
+            # MR notes are the surface a review bot's verdict comment lives on,
+            # the GitLab analogue of GitHub's PR-level issue comments. Same page
+            # size as discussions, with the comment reads' own page budget.
+            return GitLabMergeRequestProvider._fetch_collection_pages(
+                target, f"{root}/notes", max_pages=_COMMENT_MAX_PAGES
+            )
         else:
             raise ValueError("unsupported GitLab monitor resource")
-        first = _list(
-            GitLabMergeRequestProvider._get_glab_page(
-                target,
-                (
-                    f"{collection}&per_page={_PAGE_SIZE}&page=1"
-                    if "?" in collection
-                    else f"{collection}?per_page={_PAGE_SIZE}&page=1"
-                ),
+        return GitLabMergeRequestProvider._fetch_collection_pages(target, collection)
+
+    @staticmethod
+    def _fetch_collection_pages(
+        target: GitLabMergeRequestTarget,
+        collection: str,
+        *,
+        max_pages: int = 2,
+    ) -> _Collection:
+        """Walk one list endpoint under the shared page size and *max_pages*.
+
+        A short page ends the walk complete. After *max_pages* full pages one more
+        page is read only to learn whether anything is left; its items are never
+        retained, so the retained set is bounded at ``max_pages * _PAGE_SIZE``
+        whatever the collection's true size (each page also capped at
+        ``_MAX_OUTPUT_BYTES``). One walk for discussions and notes alike keeps their
+        paging from drifting apart; only the budget differs.
+        """
+
+        def page(number: int) -> list[object]:
+            separator = "&" if "?" in collection else "?"
+            return _list(
+                GitLabMergeRequestProvider._get_glab_page(
+                    target,
+                    f"{collection}{separator}per_page={_PAGE_SIZE}&page={number}",
+                )
             )
-        )
-        if len(first) < _PAGE_SIZE:
-            return _Collection(first, True)
-        second = _list(
-            GitLabMergeRequestProvider._get_glab_page(
-                target,
-                (
-                    f"{collection}&per_page={_PAGE_SIZE}&page=2"
-                    if "?" in collection
-                    else f"{collection}?per_page={_PAGE_SIZE}&page=2"
-                ),
-            )
-        )
-        if len(second) < _PAGE_SIZE:
-            return _Collection([*first, *second], True)
-        third = _list(
-            GitLabMergeRequestProvider._get_glab_page(
-                target,
-                f"{collection}?per_page={_PAGE_SIZE}&page=3",
-            )
-        )
-        return _Collection([*first, *second], not third)
+
+        kept: list[object] = []
+        for number in range(1, max_pages + 1):
+            items = page(number)
+            kept.extend(items)
+            if len(items) < _PAGE_SIZE:
+                return _Collection(kept, True)
+        return _Collection(kept, not page(max_pages + 1))
 
     @staticmethod
     def _get_glab_page(target: GitLabMergeRequestTarget, endpoint: str) -> object:
@@ -223,8 +247,10 @@ def _facts(
     mr: Mapping[str, Any],
     pipelines: list[object],
     discussions: list[object],
+    notes: list[object],
     *,
     discussions_complete: bool = True,
+    notes_complete: bool = True,
 ) -> PullRequestFacts:
     raw_state = str(mr["state"]).lower()
     state = _CANONICAL_STATES.get(raw_state, "unknown")
@@ -233,7 +259,15 @@ def _facts(
     merge_status = detailed_merge_status or legacy_merge_status
     if detailed_merge_status == "mergeable":
         mergeability = "mergeable"
-    elif merge_status in {"conflict", "conflicts", "cannot_be_merged"}:
+    elif mr.get("has_conflicts") is True or merge_status in {
+        "conflict",
+        "conflicts",
+        "cannot_be_merged",
+    }:
+        # ``detailed_merge_status`` names one blocker, and GitLab lists the
+        # approval, pipeline and discussion checks before the conflict check, so a
+        # conflicting MR that also lacks approval reads ``not_approved``.
+        # ``has_conflicts`` still says it conflicts.
         mergeability = "conflicting"
     elif merge_status == "need_rebase":
         mergeability = "behind"
@@ -285,11 +319,11 @@ def _facts(
     unresolved = 0
     for discussion_raw in discussions[:_MAX_PROVIDER_ITEMS]:
         discussion = _object(discussion_raw)
-        notes = _list(discussion.get("notes", []))
+        discussion_notes = _list(discussion.get("notes", []))
         if any(
             _object(note_raw).get("resolvable") is True
             and _object(note_raw).get("resolved") is not True
-            for note_raw in notes
+            for note_raw in discussion_notes
         ):
             unresolved += 1
     return PullRequestFacts(
@@ -304,7 +338,85 @@ def _facts(
         unresolved_review_threads=unresolved,
         review_threads_complete=discussions_complete,
         checks_complete=current_head_pipeline,
+        pr_comment_body_digest=_comment_body_digest(notes, notes_complete),
     )
+
+
+def _comment_body_digest(notes: list[object], notes_complete: bool) -> str:
+    """Digest the MR's human note bodies, or "" when the read was incomplete.
+
+    MR notes are GitLab's PR-level comments -- the surface a review bot rewrites
+    its verdict on in place, with ``created_at`` frozen, so only a digest over
+    the bodies sees that change. Mirrors the GitHub adapter: each body is reduced
+    to a fixed-width fingerprint at the point of retention through the shared
+    helper, and the aggregate digest is built the same way, so the two providers'
+    digests cannot drift.
+
+    Inline review notes are EXCLUDED too: a ``DiffNote`` (or any note carrying a
+    ``position``) is a comment on a diff line, the GitLab analogue of a GitHub
+    review-thread comment, which the GitHub adapter never digests. Those threads
+    reach the watch only as the unresolved-thread count, so an inline reply does
+    not wake on GitLab when it would not on GitHub.
+
+    ``system: true`` notes are EXCLUDED. GitLab emits a system note for its own
+    activity -- "approved this merge request", "added N commits", "changed the
+    description", label and milestone edits -- none of which is a review remark a
+    human or bot wrote, and all of which move on routine churn a comment-body
+    wake must not fire on. The resolvable review remarks that carry a verdict are
+    user notes (``system: false``), so dropping system notes keeps exactly the
+    bodies this wake exists for.
+
+    Fail-closed: an incomplete read yields "" so no condition is emitted and a
+    page that keeps failing cannot wake the owner forever. A malformed note is
+    treated as an incomplete read for the same reason, mirroring the GitHub page
+    reader that marks a page incomplete on a malformed comment.
+    """
+    if not notes_complete:
+        return ""
+    fingerprints: list[str] = []
+    for note_raw in notes[:_MAX_COMMENT_ITEMS]:
+        if not isinstance(note_raw, Mapping):
+            return ""
+        if note_raw.get("system") is True:
+            continue
+        if note_raw.get("type") == "DiffNote" or note_raw.get("position") is not None:
+            continue
+        body = note_raw.get("body")
+        if not isinstance(body, str):
+            return ""
+        if not body:
+            continue
+        fingerprints.append(comment_body_fingerprint(body))
+    return comment_body_digest(fingerprints)
+
+
+def _read_comments(fetch: Callable[[str], object]) -> tuple[list[object], bool]:
+    """Read the MR notes, isolating any failure to the comment digest alone.
+
+    A failed, timed-out or malformed comment read must NOT fail the whole probe:
+    the comment-body digest is a per-condition wake signal with no bearing on
+    review-readiness, so a refused read drops the digest and nothing else. This
+    mirrors the GitHub adapter, where a comment-read failure yields "" and never a
+    provider error. Every failure class ``_get_glab_page`` or ``_collection`` can
+    raise is caught here and reported as an INCOMPLETE read, which ``_facts`` turns
+    into an empty digest (fail-closed), so a page that keeps failing cannot wake
+    the owner forever.
+    """
+    try:
+        return _collection(fetch("comments"))
+    except (
+        PullRequestProviderError,
+        # The CLI runner raises this for per-call faults too (pipes that do not
+        # close, non-UTF-8 output); left to the probe it is a SETUP error, which
+        # stops the whole watch over a comment read the MR verdict never needed.
+        SetupError,
+        subprocess.TimeoutExpired,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return [], False
 
 
 def _object(value: object) -> Mapping[str, Any]:

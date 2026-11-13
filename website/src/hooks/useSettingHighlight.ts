@@ -1,25 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import { setSettingsDeepLinkTarget } from '../components/settings'
 import { i18nT } from '../i18n/t'
 import { inUntrustedContent } from '../guide/guideMarkers'
 import type { SettingEntry } from '../components/commandPalette/settingsTypes'
-
-/**
- * Deep-link target for the "Crewmates" card in Settings → Developer →
- * Feature Previews — the switch that reveals the `/members` page.
- *
- * The sidebar's create-menu "Crewmates" entry navigates here while the
- * page is still preview-gated, so the user lands on the switch that holds the
- * page rather than on a toast about it. Same shape and same reason as
- * {@link SETTINGS_DEFAULT_MODEL_ID} below: registry ids derive from the
- * LABEL, so a rename would silently break an inlined string, and
- * `ChatSidebar.createMenu.test.tsx` asserts this one resolves in
- * SETTINGS_REGISTRY. Declared above `LEGACY_ID_EXACT` because that table
- * maps the card's previous id onto it.
- */
-export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.mates'
 
 /**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
@@ -48,16 +33,11 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
-  // The Feature Previews crew card was relabeled from "Crew Members and Crew
-  // Mode" to "Crew Members" when Crew Mode retired, then to "Crewmates" to match
-  // the page title (`pages.membersPage.title`), then to "Mates" with the page;
-  // the flag and the card are the same ones throughout, only the label (and so
-  // the derived id) changed. Every prior id lands on the current one.
-  'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
-  'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
-  'developer.crewmates': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
   // The reply-threads switch sits under the same page title and moved with it.
-  'developer.reply-threads-on-crewmate-chat-messages': 'developer.reply-threads-on-mate-chat-messages',
+  'developer.reply-threads-on-crewmate-chat-messages': 'developer.reply-threads-on-bot-chat-messages',
+  // "Mate" was renamed "Bot", shifting both derived ids again.
+  'developer.reply-threads-on-mate-chat-messages': 'developer.reply-threads-on-bot-chat-messages',
+  'developer.agent-harness-per-mate': 'developer.agent-harness-per-bot',
   // The peer-session card ("Remote instance sessions", then "Remote crew
   // sessions") folded into "Chat on a crew": one switch now holds both halves.
   'developer.remote-instance-sessions': 'developer.chat-on-a-crew',
@@ -67,6 +47,17 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // labelled by what it does.
   'about.auto-update-on-restart': 'about.install-app-updates-automatically',
   'about.update-notifications': 'about.update-the-gateway-automatically',
+  // WeChat's access select took WhatsApp's "agent" wording in place of "bot".
+  'channels.who-can-message-the-bot-wechat': 'channels.who-can-message-the-agent-wechat',
+  // The six Google products' OAuth apps became one Google entry.
+  'connections.oauth-client-gmail': 'connections.oauth-client-google',
+  'connections.oauth-client-google-drive': 'connections.oauth-client-google',
+  'connections.oauth-client-google-calendar': 'connections.oauth-client-google',
+  'connections.oauth-client-google-sheets': 'connections.oauth-client-google',
+  'connections.oauth-client-google-docs': 'connections.oauth-client-google',
+  'connections.oauth-client-google-slides': 'connections.oauth-client-google',
+  // The banner switch is labelled by when it fires.
+  'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
@@ -162,10 +153,18 @@ export const KIRO_SIGN_IN_HIGHLIGHT_ANCHOR = 'kiro-sign-in'
  *  (`KiroCrewCfgTab`), the one control that changes which crewmate a new
  *  session starts as. The Crewmates roster's `default` badge links here. */
 export const DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR = 'default-crewmate'
+/** `data-setting-key` of the Sandbox select on Developer → Config
+ *  (`KiroCrewCfgTab`), keyed on the config path it writes. Settings → Session
+ *  Environments links here when the strict tier withholds git logins. */
+export const AGENT_SANDBOX_HIGHLIGHT_ANCHOR = 'agent.sandbox'
 /** Anchors whose card mounts AFTER its page: the sign-in card waits on the
- *  backend probe, the Default crewmate row on the config query. A `key:` link
- *  to one of these waits for the element instead of stripping the param. */
-const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR])
+ *  backend probe, the Default crewmate and Sandbox rows on the config query. A
+ *  `key:` link to one of these waits for the element instead of stripping the param. */
+const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([
+  KIRO_SIGN_IN_HIGHLIGHT_ANCHOR,
+  DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR,
+  AGENT_SANDBOX_HIGHLIGHT_ANCHOR,
+])
 
 
 /**
@@ -192,11 +191,40 @@ const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([KIRO_SIGN_IN_HIGHLIGHT_
  * is fed to `querySelector`/`matches`, never rendered — so this is where the
  * selector literals live, exempted by callee in `eslint.i18n.config.js`.
  */
-function settingAnchorSelector(
+export function settingAnchorSelector(
   attr: 'data-setting-id' | 'data-setting-key' | 'data-setting-label',
   value: string,
 ): string {
   return `[${attr}="${CSS.escape(value)}"]`
+}
+
+/** How long the outline shows before it fades, and how long the fade takes. */
+const HIGHLIGHT_HOLD_MS = 2000
+const HIGHLIGHT_FADE_MS = 300
+
+function clearHighlightStyles(el: HTMLElement): void {
+  el.style.outline = ''
+  el.style.outlineOffset = ''
+  el.style.borderRadius = ''
+  el.style.transition = ''
+}
+
+/** Outline *el* for a moment, tracking its fade in *pending*. A second flash of
+ *  the same element restarts the hold instead of letting the first flash's fade
+ *  cut it short. */
+function flashSetting(pending: Map<HTMLElement, ReturnType<typeof setTimeout>>, el: HTMLElement): void {
+  clearTimeout(pending.get(el))
+  el.style.outline = '2px solid var(--accent)'
+  el.style.outlineOffset = '4px'
+  el.style.borderRadius = '8px'
+  el.style.transition = 'outline-color 0.3s ease'
+  pending.set(el, setTimeout(() => {
+    el.style.outlineColor = 'transparent'
+    pending.set(el, setTimeout(() => {
+      pending.delete(el)
+      clearHighlightStyles(el)
+    }, HIGHLIGHT_FADE_MS))
+  }, HIGHLIGHT_HOLD_MS))
 }
 
 /**
@@ -205,14 +233,28 @@ function settingAnchorSelector(
  *   page that also mounts this hook while REDIRECTING legacy links to Settings
  *   passes a route check here, so it does not read the Settings-bound
  *   highlight, find no anchor, and strip it before SettingsPage ever mounts.
- *   (DeveloperPage mounts this hook for the default-crewmate deep link on its
- *   Config tab, and gates it off so that its legacy `agent-backend` redirect
- *   forwards `highlight` to Settings untouched.)
  */
 export function useSettingHighlight(owns: boolean = true): void {
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const rawHighlightId = params.get('highlight')
+
+  /* The pending fade of each outlined element. Kept outside the probe effect on
+   * purpose: that effect re-runs as soon as it strips `?highlight`, so its own
+   * cleanup would cancel every fade the moment the outline appeared. */
+  const fades = useRef(new Map<HTMLElement, ReturnType<typeof setTimeout>>())
+
+  // On unmount, cancel every pending fade and take the outline down now.
+  useEffect(() => {
+    const pending = fades.current
+    return () => {
+      for (const [el, timer] of pending) {
+        clearTimeout(timer)
+        clearHighlightStyles(el)
+      }
+      pending.clear()
+    }
+  }, [])
 
   // Resolve key: prefix to a registry id via configKey lookup
   let highlightId: string | null = null
@@ -286,20 +328,7 @@ export function useSettingHighlight(owns: boolean = true): void {
           if (!el) return false
           observer?.disconnect()
           el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-          el.style.outline = '2px solid var(--accent)'
-          el.style.outlineOffset = '4px'
-          el.style.borderRadius = '8px'
-          el.style.transition = 'outline-color 0.3s ease'
-
-          setTimeout(() => {
-            el.style.outlineColor = 'transparent'
-            setTimeout(() => {
-              el.style.outline = ''
-              el.style.outlineOffset = ''
-              el.style.borderRadius = ''
-              el.style.transition = ''
-            }, 300)
-          }, 2000)
+          flashSetting(fades.current, el)
 
           setParams(prev => {
             const next = new URLSearchParams(prev)
@@ -347,21 +376,7 @@ export function useSettingHighlight(owns: boolean = true): void {
       if (el) {
         el.scrollIntoView({ block: 'center', behavior: 'smooth' })
         // Apply a temporary ring highlight using existing Tailwind tokens
-        const htmlEl = el as HTMLElement
-        htmlEl.style.outline = '2px solid var(--accent)'
-        htmlEl.style.outlineOffset = '4px'
-        htmlEl.style.borderRadius = '8px'
-        htmlEl.style.transition = 'outline-color 0.3s ease'
-
-        setTimeout(() => {
-          htmlEl.style.outlineColor = 'transparent'
-          setTimeout(() => {
-            htmlEl.style.outline = ''
-            htmlEl.style.outlineOffset = ''
-            htmlEl.style.borderRadius = ''
-            htmlEl.style.transition = ''
-          }, 300)
-        }, 2000)
+        flashSetting(fades.current, el as HTMLElement)
       }
 
       // Strip the highlight param

@@ -17,7 +17,7 @@
 // tips/dashboard) assert the conversion of each call site; the mechanism
 // itself is pinned here against a minimal two-path harness.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import React, { useState } from 'react'
 
@@ -114,12 +114,12 @@ describe('useOptimisticConfigPaths — contract', () => {
     await waitFor(() => expect(screen.getByTestId('a')).toHaveTextContent('a1'))
 
     // A fails while B is still in flight: A rolls back, B must not move.
-    dA.reject(new Error('boom'))
+    await act(async () => { dA.reject(new Error('boom')) })
     await waitFor(() => expect(screen.getByTestId('a')).toHaveTextContent('a0'))
     expect(screen.getByTestId('b')).toHaveTextContent('b1')
     expect(screen.getByTestId('errA')).toHaveTextContent('save of a failed')
     expect(onFailureA).toHaveBeenCalledTimes(1)
-    dB.resolve({})
+    await act(async () => { dB.resolve({}) })
   })
 
   it("a superseded save's slow success neither clears the newer pending nor writes the cache", async () => {

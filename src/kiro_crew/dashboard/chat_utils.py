@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import _facade_mirror
 from kiro_crew.context_blocks import attributable_user_chars
-from kiro_crew.dashboard.chat_utils_display import redact_display_content
+from kiro_crew.dashboard.chat_utils_display import _carry_row_mid, redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -49,7 +49,7 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: English fallback below, read verbatim by non-dashboard consumers (channel
 #: mirrors, SSE, an older frontend); the dashboard ignores it and renders
 #: localized copy keyed on this token instead
-#: (``website/src/pages/chat/transientNotice.ts``). A structured token rather
+#: (``website/src/pages/chat/gatewayNotice.ts``). A structured token rather
 #: than prose-matching so the wording can change on either side without the
 #: other silently falling back to raw English -- the drift class
 #: ``test_recovery_marker_parity.py`` exists for. Both sides are still
@@ -57,15 +57,24 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+#: The same pending link when the provider answered with a throttle: the
+#: network is fine, so the row names the throttle instead of the connection.
+TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
+TRANSIENT_NOTICE_THROTTLE_RESUMING = "transient_throttle_resuming"
 TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
+#: The terminal row of a throttle ladder that ends without a re-send.
+TRANSIENT_NOTICE_THROTTLE_GIVE_UP = "transient_throttle_give_up"
 
 #: English fallback text for the rows above. Plain language on purpose: the
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
+TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ The model provider is throttling requests — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
+TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ The model provider is throttling requests — please try again."
 
 
 # Per-turn compaction-failure backoff. See
@@ -164,6 +173,8 @@ def _build_stream_chunk(msg: dict) -> str:
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is not None:
+        meta = _carry_row_mid(meta, msg)
     if meta:
         meta = _redact_deep(meta)
     # One shared guard for content: redact recursively and hold the
@@ -263,13 +274,29 @@ _BLOCKED_SLASH_COMMANDS = (
 )
 
 # Commands the dashboard serves without the harness: the composer opens /side
-# itself, and the slash gate answers /agent <name>, /clear, /goal, /prompts and
-# /workflow before any session work. On a harness in
-# ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command only gets a
-# notice, so GET /api/slash-commands lists these (plus /compact, which has a gate
-# of its own) and nothing else there.
+# itself, and the slash gate answers /agent, /clear, /code, /context, /goal, /help,
+# /hooks, /mcp, /model, /prompts, /tools, /usage and /workflow before any session
+# work (/code and /hooks on KAS alone). On a
+# harness in ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command
+# only gets a notice, so GET /api/slash-commands lists these (plus /compact, which
+# has a gate of its own) and nothing else there.
 _DASHBOARD_SERVED_SLASH_COMMANDS = frozenset(
-    {"/agent", "/clear", "/goal", "/prompts", "/side", "/workflow"}
+    {
+        "/agent",
+        "/clear",
+        "/context",
+        "/code",
+        "/goal",
+        "/help",
+        "/hooks",
+        "/mcp",
+        "/model",
+        "/prompts",
+        "/side",
+        "/tools",
+        "/usage",
+        "/workflow",
+    }
 )
 
 # Slash-command descriptions surfaced by the dashboard API
@@ -360,8 +387,9 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     """Whether *first_word* should be forwarded to the harness as a command.
 
     Two rules, and the second exists because of a trap. A member of
-    :data:`_SLASH_COMMANDS` is a command on every provider. Under ``claude_code``
-    the harness owns its own command set, so ANY leading slash is forwarded —
+    :data:`_SLASH_COMMANDS` is a command on every provider. When *cc_provider* says
+    the harness owns its own command set (the ``claude_code`` label, or a backend in
+    ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``), ANY leading slash is forwarded —
     except a quick-prompt token, which is not a command at all but a macro
     :meth:`ContextBuilder.build_message` expands into an instruction. Forwarding one
     would hand the harness a command it has no definition for, and the token would
@@ -613,15 +641,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _attached_verdict,
         _queued_depth_off_loop,
         _slot_holds_delivery,
+        background_wake_absent,
+        background_wake_pending,
         chat_done_payload,
         chunk_generation,
+        idle_compaction_blocker,
         subagents_attached,
         subagents_attached_async,
         synthesis_fire_verdict,
+        wire_session_idle_compaction_probe,
         wire_session_subagent_probe,
     )
     from kiro_crew.dashboard.chat_utils_display import (  # noqa: F401
         _DISPLAY_CLEAN_GENERATION,
+        _DISPLAY_PREVIEW_BY_OBJECT_MAX,
+        _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS,
         _DISPLAY_PREVIEW_CACHE_MAX_BYTES,
         _DISPLAY_PREVIEW_CACHE_MAX_ENTRIES,
         _DISPLAY_REDACTION_CACHE_MAX_BYTES,
@@ -638,10 +672,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _clear_display_redaction_cache,
         _collapse_wire_rows,
         _cut_preview,
+        _display_cache_epoch,
         _display_clean_add,
         _display_clean_old,
         _display_clean_seen,
         _display_clean_young,
+        _display_preview_by_object,
+        _display_preview_by_object_chars,
+        _display_preview_by_object_context,
         _display_preview_cache,
         _display_preview_cache_bytes,
         _display_preview_cache_info,
@@ -655,6 +693,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DisplayRedactionKey,
         _expire_dead_child_oauth_meta,
         _live_child_instance,
+        _oauth_banner_row_key,
+        _open_oauth_banner_rows,
         _prepare_messages,
         _prepare_messages_scoped,
         _redact_for_display,
@@ -662,10 +702,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_meta_for_role,
         _redact_value,
         _redacted_preview,
+        _redacted_preview_by_digest,
         _remember_preview,
+        _remember_preview_by_object,
         _remember_redacted,
+        _same_preview_context,
         _variant_for_emit,
         adopt_variant_text,
+        display_redaction_stamp,
         drop_records_without_placeholders,
         serialize_wire_content,
         variant_from_row,
@@ -689,17 +733,24 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AUTH_REQUIRED_KIND,
         AUTOMATION_NOTICE_KIND,
         AUTOMATION_STEER_META,
+        COMPOSER_SEND_META,
         CONTEXT_OVERFLOW_KIND,
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        GATEWAY_PROMPT_INJECT_KINDS,
+        HEARTBEAT_PROMPT_KIND,
+        IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
+        MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
+        MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
+        REQUEUED_STEER_ROW_MID_META,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
-        STEER_INTENT_META,
+        SPEC_HOOKS_RUN_NOWHERE_NOTICE,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_POSSIBLY_DELIVERED_NOTE,
         SUBAGENT_COMPLETION_KIND,
@@ -707,11 +758,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SYNTHETIC_RECOVERY_KIND,
         TRANSIENT_RETRY_KIND,
         USAGE_LIMIT_KIND,
+        WORKFLOW_FOLLOWUP_KIND,
         RecoveryPayload,
         _dequeue_next_message,
         _dequeue_next_system_message,
         _edit_queued_by_id,
+        _queued_row_id,
         _remove_queued_by_id,
+        _reorder_queued_rows,
         _stamped_turn_actor,
         app_inject_row,
         carries_attachments,
@@ -721,8 +775,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection_item,
         payload_for_replay,
         releases_past_subagent_hold,
+        teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401
+        _forget_slack_options_message,
         _persisted_thread_owner,
         expire_slack_options,
         forget_slack_options,
@@ -741,28 +797,40 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         slack_options_slot,
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
+        _CRON_SLOT_PREFIX,
         _INCOGNITO_PREFIX,
+        _JOB_ID_HEX,
+        _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
+        _cron_job_id,
         _history_key_for,
         _installed_theme_persona,
         _maybe_consolidate,
         _maybe_inject_persona,
+        _owe_listing_refresh,
+        _pay_listing_refresh,
+        _published_keys_of,
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
+        crew_log_slots_for,
+        cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
+        listing_slot_snapshot,
         reject_if_slot_under_construction,
         replacement_shares_transcript,
         restore_replacement_if_handover_did_not_land,
+        revoke_slot_trust,
         session_key_for,
         slot_history_key,
         slot_transcript_key,
         subagent_event_slot,
         tighten_live_slot_memory_mode,
         tighten_replacement_to_restricted_original,
+        transcripts_share_file,
     )
     from kiro_crew.dashboard.chat_utils_turn_recovery import (  # noqa: F401
         _CONTINUATION_BY_CAUSE,
@@ -801,6 +869,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_utils_turn_text import (  # noqa: F401
         _APPROVAL_GATED_RE,
         _CODE_DELIM_RE,
+        _DEFERRED_FOLLOWUP_RE,
+        _DEFERRED_FOLLOWUP_TAIL_SENTENCES,
+        _FOLLOWUP_USER_GATED_RE,
         _LEAKED_INVOKE_BODY_RE,
         _LEAKED_INVOKE_OPEN_RE,
         _NEGATED_PROMISE_RE,
@@ -808,9 +879,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROMISE_HAS_FOLLOWING_CONTENT_RE,
         _PROMISE_NOW_RE,
         _SENTENCE_BOUNDARY_RE,
+        _TOOL_NAME_SEPARATOR_RE,
         _UNFINISHED_PROGRESS_RE,
+        DEFERRED_FOLLOWUP_NOTICE,
+        WAKE_ARMING_TOOLS,
+        _bare_tool_name,
         _strip_quoted_code,
         _terminal_sentence,
+        has_deferred_followup_promise,
         has_leaked_tool_call,
         has_unfinished_progress_claim,
         is_promise_only_terminal,
@@ -818,6 +894,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         should_notice_compaction_dropped_leak,
         should_notice_leaked_tool_call,
         should_notice_mixed_turn_leak,
+        turn_armed_a_wake,
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
@@ -827,6 +904,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
         ATTACHMENT_META_KEYS,
+        source_channels_of,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         BUSY_RECOVERY_PREFIX,
@@ -854,6 +932,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         transcript_lock_stems,
         transcript_sort_key,
         transcript_stems,
+    )
+    from kiro_crew.history_files import (  # noqa: F401
+        transcript_stem,
     )
     from kiro_crew.hooks import (  # noqa: F401
         _HOST_READ_ONLY_BUILTIN_TOOLS,
@@ -896,6 +977,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         allowed_hosts_for,
     )
     from kiro_crew.session_surface import (  # noqa: F401
+        dashboard_tab_name,
         has_dashboard_surface,
         set_dashboard_surfaced,
     )
@@ -904,6 +986,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         encode_options_token,
         expire_options,
         mark_options_terminal,
+        options_answer_settled,
         options_edit_lock,
     )
     from kiro_crew.validation import (  # noqa: F401

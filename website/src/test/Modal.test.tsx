@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import Modal from '../components/Modal'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { renderWithProviders } from './helpers'
 
 /**
@@ -135,6 +136,33 @@ describe('Modal — focus management', () => {
     expect(dialog).toContainElement(document.activeElement as HTMLElement)
   })
 
+  it('wraps Tab when the last control is a radio chip group (roving tab stop)', async () => {
+    // A RadioChipGroup leaves its unchecked options as tabIndex=-1 buttons.
+    // They are not Tab stops, so the trap's "last" must be the checked chip,
+    // or Tab from it leaves the open dialog.
+    renderWithProviders(
+      <Harness>
+        <RadioChipGroup ariaLabel="Kind">
+          {['All', 'Docs', 'Images'].map(k => (
+            <button key={k} type="button" {...radioChip(k === 'All')}>{k}</button>
+          ))}
+        </RadioChipGroup>
+      </Harness>,
+    )
+    await openDialog()
+
+    const close = screen.getByRole('button', { name: 'Close' })
+    const all = screen.getByRole('radio', { name: 'All' })
+    expect(screen.getByRole('radio', { name: 'Images' }).tabIndex).toBe(-1)
+
+    all.focus()
+    fireEvent.keyDown(all, { key: 'Tab' })
+    expect(close).toHaveFocus()
+
+    fireEvent.keyDown(close, { key: 'Tab', shiftKey: true })
+    expect(all).toHaveFocus()
+  })
+
   it('stands its Tab trap down while a dialog of its own is open above it (interactionDisabled)', async () => {
     // A host that opens a Radix dialog portals it to document.body, OUTSIDE
     // this panel. With the trap armed, every Tab in that inner dialog reads
@@ -171,6 +199,17 @@ describe('Modal — focus management', () => {
 
   it('dismisses on Escape and still restores focus', async () => {
     renderWithProviders(<Harness />)
+    const trigger = await openDialog()
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
+  it('restores focus to the trigger when a field in the dialog has autoFocus', async () => {
+    // React applies `autoFocus` in the commit, before any effect runs, so the
+    // field already holds focus by the time the dialog's effects see the page.
+    renderWithProviders(<Harness><input aria-label="Name" autoFocus /></Harness>)
     const trigger = await openDialog()
 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })

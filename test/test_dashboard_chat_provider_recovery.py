@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from real_session_manager import open_session, real_sessions
 from test_dashboard_chat import TestAcpProcessDiedRecovery as _AcpDiedSuite
 
 
@@ -350,7 +351,7 @@ class TestAcpProcessDiedRecoveryRequeue:
             "the finished answer" in a for a in posted
         ), f"recovery reply never delivered to the linked thread; posted={posted}"
         # The user echo stays withheld: that text is the runner's, not the user's.
-        assert not any("\U0001f4ac" in a for a in posted), f"echoed runner text: {posted}"
+        assert not any("Sent from Kiro Crew:" in a for a in posted), f"echoed runner text: {posted}"
 
     @pytest.mark.asyncio
     async def test_session_reset_propagated(self, tmp_path: Path) -> None:
@@ -358,11 +359,22 @@ class TestAcpProcessDiedRecoveryRequeue:
         from kiro_crew.acp.client import AcpProcessDied
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        state.sessions = real_sessions(client)
+        key = await open_session(state.sessions, f"dashboard:{slot.key}")
         self._make_stream_raise(client, AcpProcessDied("pipe broken"))
+        streamed = []
+
+        async def _raise_and_note(msg):
+            streamed.append(msg)
+            raise AcpProcessDied("pipe broken")
+            yield  # noqa: E501
+
+        client.stream = _raise_and_note
 
         await _run_chat(state, slot, "test message")
 
-        state.sessions.reset.assert_awaited_once_with(f"dashboard:{slot.key}")
+        assert streamed, "the turn never reached the provider's stream"
+        assert not state.sessions.has_session(key)
 
     @pytest.mark.asyncio
     async def test_stop_state_suppresses_requeue(self, tmp_path: Path) -> None:
@@ -524,12 +536,16 @@ class TestAcpProcessDiedRecoveryRequeue:
         )
 
         report = asyncio.create_task(irreversible_reported.wait())
-        # flake-ok: pre-existing rendezvous, the turn holds at allow_turn_finish until the consumption report lands; moved verbatim, tracked for a de-flake pass
+        # The turn holds at allow_turn_finish until the consumption report lands, so the
+        # first of the two to finish is the report. The ceiling only names a lost run.
         done, _pending = await asyncio.wait(
             (turn, report),
             return_when=asyncio.FIRST_COMPLETED,
+            timeout=30,
         )
-        assert report in done, turn.exception()
+        assert report in done, (
+            turn.exception() if turn.done() else "consumption report never arrived"
+        )
         assert not turn.done()
 
         allow_turn_finish.set()

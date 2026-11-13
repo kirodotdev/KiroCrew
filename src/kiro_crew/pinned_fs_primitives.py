@@ -47,6 +47,12 @@ SKIP_IDENTITY_CHANGED = "identity_changed"
 #: module's SKIP_UNREADABLE, whose value is a different string for a different
 #: subject (an unreadable trash BATCH).
 SKIP_UNREADABLE_ENTRY = "unreadable_entry"
+#: The entry is one of Kiro Crew's own crew-hidden leaves and this process runs inside
+#: Kiro Crew's sandbox, which masks every such leaf (an empty stand-in on Linux, a
+#: denied read on macOS). Whatever this process sees there is not the operator's data,
+#: so it is not read at all and the gap is recorded under this code instead of as an
+#: empty tree or an unreadable one.
+SKIP_MASKED_BY_SANDBOX = "masked_by_sandbox"
 
 #: The reason codes that mean "carrying this was never the intent". A symlink and a
 #: non-regular entry are screened on EVERY run, by design, and an archive that screened
@@ -59,11 +65,17 @@ SKIP_UNREADABLE_ENTRY = "unreadable_entry"
 _NEVER_ARCHIVED = frozenset({SKIP_SYMLINK, SKIP_NOT_REGULAR})
 
 #: The reason codes that mean the archive lacks something it WAS asked to carry: the
-#: bytes were refused, truncated, swapped for another inode mid-copy, or the name went
-#: away between the listing and the copy. Listed so a test can assert the two sets
-#: together cover every ``SKIP_*`` code in this module.
+#: bytes were refused, truncated, swapped for another inode mid-copy, the name went
+#: away between the listing and the copy, or a sandbox masked it from this run. Listed
+#: so a test can assert the two sets together cover every ``SKIP_*`` code in this module.
 _OMITS_WANTED_DATA = frozenset(
-    {SKIP_UNREADABLE_ENTRY, SKIP_TOO_LARGE, SKIP_VANISHED, SKIP_IDENTITY_CHANGED}
+    {
+        SKIP_UNREADABLE_ENTRY,
+        SKIP_TOO_LARGE,
+        SKIP_VANISHED,
+        SKIP_IDENTITY_CHANGED,
+        SKIP_MASKED_BY_SANDBOX,
+    }
 )
 
 #: Times :func:`create_and_open_dir_pinned` re-runs its ``mkdir``-then-``open`` pair

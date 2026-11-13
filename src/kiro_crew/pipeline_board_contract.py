@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict, cast
+from typing import Any, Final, TypedDict, cast
 
 # The host's byte cap, IMPORTED rather than restated. A local copy would need a reason to
 # exist, and the obvious one -- keeping the dashboard package out of this module's import
@@ -46,23 +46,25 @@ from typing import Any, Final, Literal, TypedDict, cast
 # copy could only drift from the number the host actually enforces, and a producer bounding
 # a card against a stale limit builds cards the host drops whole.
 from kiro_crew.dashboard.dynamic_cards import MAX_DATA_BYTES as _HOST_MAX_DATA_BYTES
+
+# The publisher sentinel and the action gate, IMPORTED rather than copied. A publisher
+# gate is the one piece of a template that must be identical across all of them -- it is
+# what an incident hardens -- so a copy per surface is the failure mode this package
+# exists for: a hardening reaches only the surfaces written afterwards. The board was the
+# surface AHEAD on the gate (it carried an action-length floor the shared copy does not)
+# and BEHIND on the sentinel (a forgeable ``Literal["__unsaid__"]`` against the shared
+# ``Unsaid`` enum). Pointing here closes both: the enum cannot be forged by a publisher's
+# text, and the shared gate drops the floor that suppressed short real actions like
+# ``fix it`` while keeping the phrase-shape check that stopped a bare name reaching the
+# action line. ``dashboard_templates`` imports only the stdlib at module scope, so this
+# does not couple the contract to the dashboard package.
+from kiro_crew.dashboard_templates import UNSAID, Unsaid, gate_action
 from kiro_crew.work_vocab import (
     WORK_ITEM_STATES,
     WORK_VERDICTS,
     WorkBoardItem,
     WorkBoardView,
 )
-
-# --------------------------------------------------------------------------
-# the sentinel
-# --------------------------------------------------------------------------
-
-Unsaid = Literal["__unsaid__"]
-"""The type of "nobody can supply this". A required field, never an absent key."""
-
-UNSAID: Final[Unsaid] = "__unsaid__"
-"""Write this, explicitly. It cannot arrive from a lookup that returned nothing."""
-
 
 # --------------------------------------------------------------------------
 # INPUT -- the shape the ``work`` fold renders
@@ -239,7 +241,7 @@ class PipelineBoardJudgment(TypedDict):
     #: The sentence.
     lede: str | Unsaid
     #: What a person must do about ONE item, keyed by item id. Gated by
-    #: :func:`_gate_action`.
+    #: :func:`~kiro_crew.dashboard_templates.gate_action`.
     #:
     #: By item, not by column: the template's field is per card, so a column key
     #: stamps one item's sentence onto every card beside it -- two open items both
@@ -389,20 +391,6 @@ def validate_judgment(data: Any) -> PipelineBoardJudgment:
 #: than rendered -- ``ready`` in a column headed CHECKS is how this started.
 BOARD_COLUMN_NAMES: Final[tuple[str, ...]] = WORK_ITEM_STATES
 BOARD_VERDICT_NAMES: Final[tuple[str, ...]] = WORK_VERDICTS
-
-
-def _gate_action(text: str) -> str | Unsaid:
-    """An action sentence, or :data:`UNSAID`.
-
-    A bare token is refused because the live board rendered ``Raymond`` and
-    ``chat-2176`` on the line that must say what to DO. A name is not an action, and
-    the cheapest thing that separates them is whether the value reads as a phrase at
-    all: an action has a space in it and a verb's worth of length.
-    """
-    value = text.strip()
-    if len(value) < 8 or " " not in value:
-        return UNSAID
-    return value
 
 
 def _gate_fraction(text: str) -> str | Unsaid:
@@ -569,7 +557,7 @@ def _card(item: WorkBoardItem, judgment: PipelineBoardJudgment) -> PipelineBoard
         # Never derived. The fold holds no check tally, so the only honest provider
         # answer with no publisher value is UNSAID.
         "of": _gate_fraction(judgment["checks"].get(item["item_id"], "")),
-        "you": _gate_action(judgment["you"].get(item["item_id"], "")),
+        "you": gate_action(judgment["you"].get(item["item_id"], "")),
     }
 
 
@@ -1125,17 +1113,24 @@ def _column_head(column: Any, share: int | None, total: int | None) -> str:
     return f"{name} · {shown} of {total}" if total is not None else f"{name} · {shown}"
 
 
-def _column_rows(column: Any, *, limit: int, actions: bool) -> str:
+def _column_rows(column: Any, *, limit: int, actions: bool, share: int | None = None) -> str:
     """One column's cards, as newline-separated text for a ``pre-line`` block.
 
     ONE FIELD for an unbounded list, which is the whole reason this is text rather than
     a field per card: a board may hold 256 items and the host drops a card over 24 fields
     WHOLE. A prefix is printed and the rest is COUNTED in the same text, so a reader is
     never shown part of a board as if it were all of it.
+
+    ``share`` is the column's whole count, the same number :func:`_column_head` prints.
+    When it exceeds the cards held, the difference is the closed items the fold let go;
+    they have no cards, so they are counted on their own line rather than read as absent.
     """
     column = column if isinstance(column, dict) else {}
     raw = column.get("cards")
     cards = raw if isinstance(raw, list) else []
+    unlisted = share - len(cards) if share is not None and share > len(cards) else 0
+    if not cards and unlisted:
+        return f"+{unlisted} closed earlier, not listed"
     if not cards:
         # "no items", not "empty": one adjective could not be told from a value that is
         # genuinely zero, which is the same confusion the absence words above address.
@@ -1196,6 +1191,8 @@ def _column_rows(column: Any, *, limit: int, actions: bool) -> str:
         # expander and a reader said they would try clicking it; nothing on an inert card can
         # answer that. Same arithmetic, stated as how many more items there are.
         lines.append(f"    +{rest} more items (of {len(cards)})")
+    if unlisted:
+        lines.append(f"    +{unlisted} closed earlier, not listed")
     return "\n".join(lines)
 
 
@@ -1393,7 +1390,10 @@ def panel_card_data(panel: PipelineBoardPanel) -> dict[str, str]:
             smallest = dict(fixed)
             for index, column in enumerate(ordered):
                 smallest[f"column_{index}_rows"] = _column_rows(
-                    column, limit=limit, actions=actions
+                    column,
+                    limit=limit,
+                    actions=actions,
+                    share=shares.get(BOARD_COLUMN_NAMES[index]),
                 )
             if _data_bytes(smallest) <= _HOST_MAX_DATA_BYTES:
                 return smallest

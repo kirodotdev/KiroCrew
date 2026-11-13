@@ -439,7 +439,7 @@ describe('panelBridge rebuilds an approval from a permission frame', () => {
 describe('panelBridge WebSocket dispatcher', () => {
   it('opens the socket against the same origin as the page', async () => {
     await loadBridge()
-    expect(socket().url).toBe(`ws://${location.host}/api/ws`)
+    expect(socket().url).toBe(`ws://${location.host}/api/ws?caps=chunk_scope.1`)
   })
 
   it('ignores a frame that is not JSON', async () => {
@@ -660,6 +660,53 @@ describe('panelBridge connection indicator tracks the socket', () => {
       vi.advanceTimersByTime(1000)
       expect(MockSocket.instances.length).toBe(first + 1)
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes a random part off each delay and keeps growing after an early drop', async () => {
+    vi.useFakeTimers()
+    // The largest random part: each delay loses just under half.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    try {
+      const bridge = await loadBridge()
+      bridge.onChatDone(() => undefined)
+      socket().onopen?.()
+      const first = MockSocket.instances.length
+      socket().onclose?.()
+      vi.advanceTimersByTime(500)
+      expect(MockSocket.instances.length).toBe(first)
+      vi.advanceTimersByTime(1) // 1000 less 499
+      expect(MockSocket.instances.length).toBe(first + 1)
+      // Opened and dropped at once: the gateway is not healthy, so 2000 less 999.
+      socket().onopen?.()
+      socket().onclose?.()
+      vi.advanceTimersByTime(1000)
+      expect(MockSocket.instances.length).toBe(first + 1)
+      vi.advanceTimersByTime(1)
+      expect(MockSocket.instances.length).toBe(first + 2)
+    } finally {
+      random.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts the backoff over once a socket stayed open long enough', async () => {
+    vi.useFakeTimers()
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      const bridge = await loadBridge()
+      bridge.onChatDone(() => undefined)
+      const first = MockSocket.instances.length
+      socket().onclose?.() // never opened: the next delay doubles to 2000
+      vi.advanceTimersByTime(1000)
+      socket().onopen?.()
+      vi.advanceTimersByTime(10_000)
+      socket().onclose?.()
+      vi.advanceTimersByTime(1000)
+      expect(MockSocket.instances.length).toBe(first + 2)
+    } finally {
+      random.mockRestore()
       vi.useRealTimers()
     }
   })

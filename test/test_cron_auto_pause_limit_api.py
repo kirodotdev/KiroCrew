@@ -4,7 +4,8 @@ The Schedule page edit form shows and changes a job's auto-pause limit. That
 needs the list payload to carry the stored value (otherwise the form shows a
 guess and a save writes it back), and the PATCH route to validate the value
 before the store sees it and to keep the never-pause audit row that every
-other write surface produces.
+other write surface produces. The create route takes the limit, and
+``alert_after_failures`` beside it, under the same validation.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew import cron as cron_facade
 from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronService
 from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX
-from kiro_crew.dashboard.handlers.cron import api_cron_update, api_crons
+from kiro_crew.dashboard.handlers.cron import api_cron_update, api_crons, api_crons_create
 
 pytestmark = pytest.mark.asyncio
 
@@ -36,6 +38,15 @@ def _app(crons: object, *, app_claim: str | None = None) -> web.Application:
             return await handler(request)
 
         middlewares.append(_claim)
+    else:
+        # The dashboard owner's cookie session, the caller the Schedule page is.
+        @web.middleware
+        async def _owner(request: web.Request, handler):  # type: ignore[no-untyped-def]
+            request["user"] = "local-app"
+            request["app"] = ""
+            return await handler(request)
+
+        middlewares.append(_owner)
     app = web.Application(middlewares=middlewares)
     app["state"] = SimpleNamespace(
         crons=crons,
@@ -135,6 +146,10 @@ class TestAuditThroughTheRealStore:
     @pytest.fixture()
     def audited(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         rows: list[dict] = []
+        # The PATCH route imports ``dashboard.server`` lazily, and its facade mirror
+        # refuses to load while ``sel`` is patched. Load it first, so the test does
+        # not depend on another test in the same worker having imported it already.
+        import kiro_crew.dashboard.server  # noqa: F401
 
         class _Sel:
             def log_tool_invocation(self, **kw: object) -> None:
@@ -175,3 +190,89 @@ class TestAuditThroughTheRealStore:
         stored = svc.get_job(job.id)
         assert stored is not None and stored.auto_pause_after_failures == 3
         assert [r for r in audited if r.get("tool_kind") == "cron_auto_pause_limit"] == []
+
+
+_CREATE = {"name": "poller", "message": "Check it.", "every": 3600}
+
+
+def _create_app(add: AsyncMock) -> web.Application:
+    app = web.Application()
+    app["state"] = SimpleNamespace(
+        crons=SimpleNamespace(add_job_async=add),
+        push_refresh=MagicMock(),
+        ack_notification=AsyncMock(),
+        has_slot=MagicMock(return_value=False),
+    )
+    app.router.add_route("POST", "/api/crons", api_crons_create)
+    return as_owner(app)
+
+
+class TestCreate:
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("auto_pause_after_failures", 3),
+            ("auto_pause_after_failures", 0),
+            ("alert_after_failures", 2),
+        ],
+    )
+    async def test_a_failure_limit_reaches_the_store(self, field: str, value: int) -> None:
+        add = AsyncMock(return_value=_job())
+        async with TestClient(TestServer(_create_app(add))) as client:
+            resp = await client.post("/api/crons", json={**_CREATE, field: value})
+            assert resp.status == 200
+        assert add.await_args.kwargs[field] == value
+
+    async def test_absent_limits_leave_the_store_defaults(self) -> None:
+        add = AsyncMock(return_value=_job())
+        async with TestClient(TestServer(_create_app(add))) as client:
+            resp = await client.post("/api/crons", json=_CREATE)
+            assert resp.status == 200
+        assert "auto_pause_after_failures" not in add.await_args.kwargs
+        assert "alert_after_failures" not in add.await_args.kwargs
+
+    @pytest.mark.parametrize(
+        ("field", "bad"),
+        [
+            ("auto_pause_after_failures", -1),
+            ("auto_pause_after_failures", _AUTO_PAUSE_MAX + 1),
+            ("auto_pause_after_failures", "five"),
+            ("auto_pause_after_failures", None),
+            ("auto_pause_after_failures", True),
+            ("alert_after_failures", 0),
+            ("alert_after_failures", _AUTO_PAUSE_MAX + 1),
+            ("alert_after_failures", None),
+        ],
+    )
+    async def test_a_bad_limit_is_a_400_and_nothing_is_created(
+        self, field: str, bad: object
+    ) -> None:
+        add = AsyncMock(return_value=_job())
+        async with TestClient(TestServer(_create_app(add))) as client:
+            resp = await client.post("/api/crons", json={**_CREATE, field: bad})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == f"invalid_{field}"
+        add.assert_not_awaited()
+
+    async def test_the_limit_is_stored_by_the_real_store(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        app = web.Application()
+        app["state"] = SimpleNamespace(
+            crons=svc,
+            push_refresh=MagicMock(),
+            ack_notification=AsyncMock(),
+            has_slot=MagicMock(return_value=False),
+        )
+        app.router.add_route("POST", "/api/crons", api_crons_create)
+        async with TestClient(TestServer(as_owner(app))) as client:
+            resp = await client.post(
+                "/api/crons",
+                json={**_CREATE, "auto_pause_after_failures": 3, "alert_after_failures": 2},
+            )
+            assert resp.status == 200
+            job_id = (await resp.json())["id"]
+        stored = svc.get_job(job_id)
+        assert stored is not None
+        assert stored.auto_pause_after_failures == 3
+        assert stored.alert_after_failures == 2

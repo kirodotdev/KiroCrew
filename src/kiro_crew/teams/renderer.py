@@ -93,6 +93,9 @@ _TYPING_REFRESH_S = 4.0
 
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
+#: What the progress bubble becomes when the reply has no text to replace it with.
+_PROGRESS_DONE_TEXT = "✅ Done"
+
 # Refusal lines appended to one answer before they are summarized. A reply that
 # referenced a dozen unusable paths must explain itself without burying the answer.
 _MAX_REJECTION_LINES = 3
@@ -223,6 +226,9 @@ class TeamsRenderer(Renderer):
         # activity: without this flag a failed open would be retried on every
         # subsequent tool call, posting a fresh bubble each time.
         self._progress_opened = False
+        # Whether an approval card was posted after the progress message, so the
+        # answer goes out as a new message below the card instead of editing it.
+        self._progress_above_card = False
         self._tool_title = ""
         # Approved root for outbound file extraction: the provider's working
         # directory. Absolute or nothing -- a relative root is no boundary at all.
@@ -257,13 +263,9 @@ class TeamsRenderer(Renderer):
             return
         self._started = True
         await self._client.send_typing(self._conversation_id, self._service_url)
-        # A Teams typing indicator lasts a few seconds, so ONE activity leaves a
-        # turn that runs for minutes showing dots briefly and then a silent chat --
-        # indistinguishable from a dead bot. Refreshed on a timer for the same reason
-        # the reference middleware does (every 2 s there; the per-thread budget is 7
-        # sends/second, so this costs ~1% of it). The progress bubble only covers a
-        # turn that CALLS a tool; a long pure generation or a /compact has nothing
-        # else to show.
+        # A typing indicator lasts a few seconds, so a minutes-long turn would read as
+        # a dead bot; refresh it on a timer (see _TYPING_REFRESH_S). The progress bubble
+        # only covers a turn that CALLS a tool, not a long generation or a /compact.
         self._typing_task = asyncio.create_task(self._keep_typing())
 
     async def _keep_typing(self) -> None:
@@ -283,16 +285,12 @@ class TeamsRenderer(Renderer):
                 logger.debug("Teams: typing refresh failed", exc_info=True)
 
     async def on_text_chunk(self, text: str) -> None:
-        # Buffered: Teams' native streaming is throttled to 1 request/second and
-        # dies at a hard two-minute ceiling, which an agentic turn routinely
-        # exceeds -- a stream that dies mid-answer is worse than one message.
+        # Buffered: see ``streaming=False`` in TEAMS_CAPABILITIES.
         self._buf.append(text)
 
     async def on_thinking(self, text: str) -> None:
         # Teams does not surface reasoning inline: the edit budget is spent on tool
-        # progress and the answer, which is Webex's reason too. Discord, Telegram and
-        # iMessage also no-op here; WeCom is the one channel that does surface it,
-        # because its native <think> block costs no extra message.
+        # progress and the answer.
         return None
 
     async def on_tool_call(
@@ -323,8 +321,7 @@ class TeamsRenderer(Renderer):
         """Post the Approve / Trust session / Deny card for one tool request.
 
         ``tool_input`` is accepted and not rendered: the card already carries the
-        tool's title and purpose, and adding its arguments is a card-layout change
-        rather than something this signature widening should decide.
+        tool's title and purpose.
 
         The nonce is armed on the decider BEFORE the card is posted: a click can
         arrive as soon as the card renders, and a resolve against an un-armed
@@ -373,6 +370,8 @@ class TeamsRenderer(Renderer):
         # A prompt whose buttons stay live after it was answered invites a second
         # click that resolves nothing.
         self._pending_prompts[rid] = (activity_id, title)
+        # An edit does not move a message, so the bubble now sits above this card.
+        self._progress_above_card = self._progress_above_card or bool(self._progress_id)
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         logger.debug("Teams: compaction status %.0f%%", context_usage_pct)
@@ -406,10 +405,17 @@ class TeamsRenderer(Renderer):
             self.capabilities.max_message_chars,
             _default_redactor,
         ) or ([] if (kept or files) else ["…"])
+        if self._progress_id and (not chunks or self._progress_above_card):
+            # Settle the bubble when no text chunk takes it over: a reply of only
+            # chips or images has none, and a bubble above an approval card must
+            # not carry the answer, which would land above the card.
+            await self._client.update_message(
+                self._conversation_id, self._progress_id, _PROGRESS_DONE_TEXT, self._service_url
+            )
         for index, chunk in enumerate(chunks):
             # Reuse the progress bubble for the first chunk so a turn that showed
             # "🔧 …" does not leave it stranded above the answer.
-            if index == 0 and self._progress_id:
+            if index == 0 and self._progress_id and not self._progress_above_card:
                 if await self._client.update_message(
                     self._conversation_id, self._progress_id, chunk, self._service_url
                 ):
@@ -417,18 +423,11 @@ class TeamsRenderer(Renderer):
             try:
                 await self._client.send_message(self._conversation_id, chunk, self._service_url)
             except TeamsSendError:
-                # Stop at the first failed chunk -- skipping ahead would splice a gap
-                # into the middle of the answer, and a conversation that cannot take
-                # the text will not take an attachment either -- and then RAISE.
-                #
-                # Returning here is what made the gateway record an answer the user
-                # never received: `drive_turn` treats a clean return from the renderer
-                # as delivery, so it ran `record_success` and persisted the FULL text
-                # while the Connector had refused part or all of it. Raising skips both
-                # and records a failure, which is the honest outcome and the one the
-                # user can retry. It costs the delivered prefix its transcript entry;
-                # a turn silently recorded as complete costs the ability to notice at
-                # all.
+                # Stop at the first failed chunk (skipping ahead would splice a gap
+                # into the answer) and RAISE: `drive_turn` treats a clean return as
+                # delivery and would run `record_success` and persist the FULL text the
+                # Connector refused. A recorded failure is one the user can retry, at
+                # the cost of the delivered prefix's transcript entry.
                 logger.warning("Teams: answer chunk delivery failed; stopping", exc_info=True)
                 raise
         if files:

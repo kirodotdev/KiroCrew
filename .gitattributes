@@ -19,6 +19,9 @@ test/fixtures/retired_conductor_skill/*.md -text
 *.gif binary
 *.jpg binary -diff
 *.jpeg binary -diff
+# The bundled feature clips too: an MP4 whose first 8 KB has no NUL byte reads as
+# text, and a Windows checkout with core.autocrlf would then rewrite its bytes.
+*.mp4 binary
 
 # Shell scripts and the data files they parse must keep LF on every checkout.
 # `core.autocrlf=true` is the Git-for-Windows default, so without this a Windows

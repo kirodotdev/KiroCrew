@@ -17,7 +17,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 
 // `./all` for the non-English catalogs: `./index` registers English only.
 import { i18next } from './all'
-import { SUPPORTED_CODES } from './languages'
+import { SUPPORTED_CODES, SUPPORTED_LANGUAGES } from './languages'
 import { surfaceLabel } from '../surfaces/registry'
 import '../surfaces/builtins'
 import { getBuiltinSurfaces } from '../surfaces/registry'
@@ -119,5 +119,29 @@ describe('Settings tab labels', () => {
         }
       }
     }
+  })
+
+  it('translates a tab label in every non-Latin-script language once one does', async () => {
+    // A Latin-script language may keep a loanword ("Chat" in de/fr/es), and a
+    // term every non-Latin catalog keeps in English is a deliberate choice. But
+    // when one of them translates a label, a sibling left in English is a miss:
+    // hi and bn once showed "Chat" while ja, ko, ru and zh-CN translated it.
+    const nonLatin = SUPPORTED_LANGUAGES
+      .filter(l => !l.devOnly && !/[A-Za-z]/.test(l.label))
+      .map(l => l.code)
+    expect(nonLatin).toEqual(expect.arrayContaining(['hi', 'bn', 'ja', 'zh-CN']))
+    await i18next.changeLanguage('en')
+    const tabs = Object.keys(i18next.t('settings.tabs', { returnObjects: true }) as object)
+    const labels: Record<string, Record<string, string>> = {}
+    for (const lng of ['en', ...nonLatin]) {
+      await i18next.changeLanguage(lng)
+      labels[lng] = Object.fromEntries(tabs.map(k => [k, i18next.t(`settings.tabs.${k}.label`)]))
+    }
+    const missed: string[] = []
+    for (const k of tabs) {
+      const kept = nonLatin.filter(lng => labels[lng][k] === labels.en[k])
+      if (kept.length < nonLatin.length) missed.push(...kept.map(lng => `${lng}: ${k}`))
+    }
+    expect(missed).toEqual([])
   })
 })

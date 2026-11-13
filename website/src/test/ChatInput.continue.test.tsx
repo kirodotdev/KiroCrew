@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { i18nT } from '../i18n/t'
 
 /**
  * Sixth state of the composer's primary button. The first five are send / stop /
@@ -99,6 +100,29 @@ describe('ChatInput continue affordance', () => {
     // the user between two states that both mean "hand it back to the agent".
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
     expect(screen.getByTestId('composer-continue')).toHaveAttribute('title', 'Resume the interrupted turn')
+  })
+
+  it('counts the restored queue cards Resume leaves unsent, and drops the count with the last card', () => {
+    const { rerender } = renderWithProviders(
+      <ChatInput {...defaultProps} continuable continueIsRecovery restoredQueueCount={2} onContinue={vi.fn()} />,
+    )
+    const input = screen.getByLabelText('Message input')
+    expect(input.getAttribute('placeholder')).toContain("Your 2 queued messages won't send on their own: open the queue (2 queued ^), then send each with Send now (⚡).")
+    rerender(<ChatInput {...defaultProps} continuable continueIsRecovery restoredQueueCount={1} onContinue={vi.fn()} />)
+    expect(input).toHaveAttribute('placeholder', "Last turn was interrupted. Resume reruns only that turn. Your queued message won't send on its own: send it with Send now (⚡).")
+    rerender(<ChatInput {...defaultProps} continuable continueIsRecovery restoredQueueCount={0} onContinue={vi.fn()} />)
+    expect(input).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_press_resume'))
+  })
+
+  it('names the sign-in before Resume under a sign-in error, and keeps Resume and the restored-queue wording (#32065)', () => {
+    const { rerender } = renderWithProviders(
+      <ChatInput {...defaultProps} continuable continueIsRecovery resumeAfterSignIn onContinue={vi.fn()} />,
+    )
+    const input = screen.getByLabelText('Message input')
+    expect(input).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_sign_in_first'))
+    expect(screen.getByTestId('composer-continue')).toBeInTheDocument()
+    rerender(<ChatInput {...defaultProps} continuable continueIsRecovery resumeAfterSignIn restoredQueueCount={1} onContinue={vi.fn()} />)
+    expect(input).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_restored_card'))
   })
 
   it('keeps the ordinary placeholder when the turn is not resumable', () => {

@@ -276,14 +276,9 @@ test.describe('Ops Mission Control — existence', () => {
       await expect(page.getByText('Ops Mission Control', { exact: true }).first()).toBeVisible()
     }
 
-    // Library defaults to an "enabled only" view, so a disabled app is filtered
-    // out of the fresh-visit list. The property this test protects is that a
-    // disabled catalog-published builtin stays REACHABLE from Library (the
-    // #4882 stranding it prevents), which is now reached through the show-all
-    // view rather than the default. Seed that view as the precondition — the
-    // gate asks for a seeded fixture, not a skip — so the assertion verifies
-    // reachability rather than what the Library shows by default.
-    await page.addInitScript(() => localStorage.setItem('mc-apps-library-show-all', '1'))
+    // The property this test protects is that a disabled catalog-published
+    // builtin stays REACHABLE from Library: it is listed in the Disabled
+    // section on the default view.
     await page.goto('/apps/library', { waitUntil: 'domcontentloaded' })
     await expect(page.getByText('Ops Mission Control', { exact: true }).first()).toBeVisible()
   })

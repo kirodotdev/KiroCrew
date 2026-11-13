@@ -26,7 +26,8 @@ import { useAppSelector } from '../store'
 import { isChatPath } from '../hooks/notificationBanner'
 import { getViewedThreadSlot, subscribeViewedThreadSlot } from '../lib/viewedThread'
 import { useGuardedLeave } from '../components/NavigationLeaveGuard'
-import { ApiError } from '../api/apiError'
+import { ApiError, apiErrorCode } from '../api/apiError'
+import { i18nT } from '../i18n/t'
 import { GUIDE_FOUND_MAX_ATTEMPTS } from './useGuideStepTracker'
 import { TAB_ID } from '../api/tabId'
 import {
@@ -52,6 +53,25 @@ function findReportFor(step: GuideStepPlan | null): ReturnType<typeof findReport
     if (inner?.kind === 'find') return findReport(inner.query, inner.key)
   }
   return undefined
+}
+
+/**
+ * What a refused guide write says to the person, from the refusal's `code`
+ * and never from the gateway's own `error` text, which is English prose for
+ * logs ("the guide changed; reload it"). The guide is re-read on a 409 either
+ * way, so the line says what happened and that pressing again works.
+ */
+export function guideErrorText(err: unknown): string {
+  switch (apiErrorCode(err)) {
+    case 'stale_revision':
+    case 'owned_elsewhere':
+    case 'not_owner_tab':
+      return i18nT('components.guideLayer.error_moved')
+    case 'guide_finished':
+      return i18nT('components.guideLayer.error_ended')
+    default:
+      return i18nT('components.guideLayer.error_generic')
+  }
 }
 
 /** Heartbeat cadence: well inside the gateway's 45 s owner lease. */
@@ -317,7 +337,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
     // A 409 means another tab or the agent moved the guide: re-read it
     // rather than guessing, and say so without claiming anything happened.
     if (err instanceof ApiError && err.status === 409) void queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
-    setError(err instanceof Error ? err.message : String(err))
+    setError(guideErrorText(err))
   }, [queryClient])
 
   /** Navigate for the owned guide's current action. Only ever runs after
@@ -426,6 +446,18 @@ export function GuideProvider({ children }: { children: ReactNode }) {
   const inflightRef = useRef(0)
   const waitersRef = useRef<Array<() => boolean>>([])
   const [settleTick, setSettleTick] = useState(0)
+  // A waiter with a deadline. The effect below runs waiters only when the view
+  // or a report settles, and an unchanged re-read moves neither, so a timer
+  // also runs it at the deadline until it answers true.
+  const pushDeadlineWaiter = useCallback((waiter: () => boolean, deadline: number) => {
+    waitersRef.current.push(waiter)
+    const arm = () => setTimeout(() => {
+      if (!waitersRef.current.includes(waiter)) return
+      if (waiter()) waitersRef.current = waitersRef.current.filter(w => w !== waiter)
+      else arm()
+    }, Math.max(0, deadline - Date.now()) + 1)
+    arm()
+  }, [])
   // Set synchronously on the Cancel press and held until the cancel settles:
   // no progress report, recovery, heartbeat or re-plan is sent meanwhile, so
   // nothing this tab does moves the guide on past the press.
@@ -473,7 +505,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
           return true
         }
         void queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY }).then(() => {
-          if (!moved()) waitersRef.current.push(moved)
+          if (!moved()) pushDeadlineWaiter(moved, deadline)
         })
       })
     }
@@ -483,7 +515,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
       return true
     }
     if (!startWhenSettled()) waitersRef.current.push(startWhenSettled)
-  }, [busy, store, refused, queryClient])
+  }, [busy, store, refused, queryClient, pushDeadlineWaiter])
 
   const report = useCallback((outcome: GuideOutcome, resumeStepIndex?: number, detail?: GuideMissingDetail): boolean => {
     const v = viewRef.current
@@ -577,7 +609,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
           refused(err)
           return
         }
-        setError(err.message)
+        setError(guideErrorText(err))
         // Retry only once the re-read has LANDED and shows this guide past
         // the revision that was refused: a timer alone can fire while a slow
         // read is still in flight, and spend every attempt on the stale one.
@@ -590,12 +622,12 @@ export function GuideProvider({ children }: { children: ReactNode }) {
           return true
         }
         void queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY }).then(() => {
-          if (!moved()) waitersRef.current.push(moved)
+          if (!moved()) pushDeadlineWaiter(moved, deadline)
         })
       })
     }
     attempt()
-  }, [store, refused, queryClient])
+  }, [store, refused, queryClient, pushDeadlineWaiter])
   const noteSaveRefused = useCallback((actionId: string) => {
     const v = viewRef.current
     if (v?.action?.id === actionId) setSubmittedKey(null)

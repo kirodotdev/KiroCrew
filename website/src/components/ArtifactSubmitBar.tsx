@@ -76,7 +76,7 @@ export function SubmitBar({ count, submitting, onSubmit, bleed = false, connecte
   }, [onSubmit, showExtraPrompt, extraPrompt, hostReportsRefusal])
   const label = (
     <span className={`text-[13px] text-text ${stacked ? 'block break-words' : 'truncate'}`}>
-      {i18nT('components.artifactPanel.comment', { count: count })} {i18nT('components.artifactPanel.to_send_to_this_chat')}
+      {i18nT('components.artifactPanel.comments_to_send', { count })}
     </span>
   )
   const toggle = (

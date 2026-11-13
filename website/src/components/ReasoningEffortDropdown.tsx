@@ -8,7 +8,7 @@ import { pendingSlotSwitchTarget, performSlotSwitch, stagedSlotSwitchTarget, sta
 import { useAppDispatch } from '../store'
 import { updateSlot } from '../store/dashboardSlice'
 import { setAgentSwitchNotice } from '../store/chatSlice'
-import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice } from '../utils/agentSwitchFeedback'
 import { Slider, Toggle } from './ui'
 import InfoTip from './InfoTip'
 
@@ -90,15 +90,25 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   const [isDefault, setIsDefault] = useState(propDefault)
   useEffect(() => { setIsDefault(propDefault) }, [propDefault])
 
-  // idx = the concrete level the slider points at. Persists while Default is on
-  // so toggling Default off restores the user's last explicit pick.
-  const [idx, setIdx] = useState(() => currentIdx >= 0 ? currentIdx : Math.min(2, maxIdx))
+  // idx = the concrete level the slider points at. With no override it is the
+  // configured default: that is the level the turn runs at and the one the
+  // header and the switch name, and turning the switch off pins it, so a thumb
+  // anywhere else both misreads the state and changes the level on the flip.
+  // Only without a configured default is there nothing to point at (the model's
+  // own choice has no index), and the middle notch stands in. A remembered
+  // explicit pick survives while Default is on until the inheritance has
+  // persisted; from then on the thumb shows what is inherited.
+  const [idx, setIdx] = useState(() => currentIdx >= 0 ? currentIdx : defaultIdx >= 0 ? defaultIdx : Math.min(2, maxIdx))
   useEffect(() => { if (currentIdx >= 0) setIdx(currentIdx) }, [currentIdx])
+  // The default's index moves when the live level list replaces the cold-start
+  // fallback, or when Settings changes the default while the popover is open.
+  useEffect(() => { if (currentIdx < 0 && isDefault && defaultIdx >= 0) setIdx(defaultIdx) }, [currentIdx, isDefault, defaultIdx])
   useEffect(() => { setIdx(prev => Math.min(prev, maxIdx)) }, [maxIdx])
   // Async failures must restore the latest authoritative props, not the values
-  // captured when a debounced pick started. Keep the concrete selection while
-  // Default is authoritative: it is intentionally remembered for the next
-  // time the user disables Default.
+  // captured when a debounced pick started. While Default is authoritative the
+  // concrete selection is the thumb's current level (the configured default once
+  // inheritance has persisted, or a pick still remembered before that), so a
+  // rollback never moves the thumb somewhere the header does not name.
   const authoritativeRef = useRef({ isDefault: propDefault, idx: currentIdx >= 0 ? currentIdx : idx })
   authoritativeRef.current = { isDefault: propDefault, idx: currentIdx >= 0 ? currentIdx : idx }
 
@@ -132,9 +142,9 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     // unconfirmed current pick from a genuinely newer target.
     const pending = pendingSlotSwitchTarget('reasoning_effort', slot)
     if (pending !== null && pending !== failedLevel) return false
-    const message = agentSwitchFailureMessage(error)
-    if (onWriteError) onWriteError(message)
-    else dispatch(setAgentSwitchNotice(message))
+    const notice = agentSwitchErrorNotice(error)
+    if (onWriteError) onWriteError(notice.message)
+    else dispatch(setAgentSwitchNotice(notice))
     return true
   }, [dispatch, slot, onWriteError])
 

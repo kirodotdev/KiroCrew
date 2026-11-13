@@ -1,6 +1,6 @@
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 vi.mock('mermaid', () => ({
   default: {
@@ -93,7 +93,7 @@ describe('MermaidBlock click-to-enlarge', () => {
     await enlarge(trigger)
     expect(screen.getByRole('dialog')).toBeTruthy()
     const esc = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true })
-    window.dispatchEvent(esc)
+    act(() => { window.dispatchEvent(esc) })
     expect(esc.defaultPrevented).toBe(true)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })

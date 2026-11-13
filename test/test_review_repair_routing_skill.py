@@ -219,7 +219,7 @@ def test_arm_acknowledgement_requires_a_later_turn_not_an_immediate_retry(name):
     assert "check BEFORE ending the turn" not in text
 
 
-def test_comment_aware_recipes_are_finite_gated_with_the_judge_off_and_keep_repair_routing():
+def test_comment_aware_recipes_are_gated_with_the_judge_off_and_keep_repair_routing():
 
     babysit = _text(SKILLS / "babysit" / "SKILL.md")
     legacy, _ = json.JSONDecoder().raw_decode(babysit.split("monitor_start(", 1)[1])
@@ -237,23 +237,30 @@ def test_comment_aware_recipes_are_finite_gated_with_the_judge_off_and_keep_repa
         assert recipe.get("gate", True) is True
         assert recipe["judge"] is False
         assert recipe["interval_secs"] > 0
-        assert recipe["max_cycles"] > 0
-        # The runtime, not the cycle cap, ends the loop.
-        assert recipe["interval_secs"] * recipe["max_cycles"] >= recipe["max_runtime_secs"]
         for contract in (
             "Review repair routing",
             "model-pinned",
             "parent verification",
             "authorized",
             "terminal",
-            "budget",
-            "autonudge_stop",
         ):
             assert contract in recipe["message"]
-    assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (288, 86400)
-    assert (legacy["max_cycles"], legacy["max_runtime_secs"]) == (48, 14400)
-    assert "`max_cycles=288` and `max_runtime_secs=86400`" in _text(PREPARE)
+    # prepare-pr keeps its explicit bounds: the runtime, not the cap, ends the loop.
+    assert prepare["interval_secs"] * prepare["max_cycles"] >= prepare["max_runtime_secs"]
+    assert "budget" in prepare["message"] and "autonudge_stop" in prepare["message"]
+    # babysit takes the gated default (no cap, the runtime ceiling) and ends the loop
+    # itself from live state: one final report, then monitor_stop.
+    assert "max_cycles" not in legacy and "max_runtime_secs" not in legacy
+    assert legacy["message"].index("ONE final report") < legacy["message"].index("monitor_stop")
+    # The interval paces the quiet floor as well as detection, so it is pinned
+    # beside the budgets it divides.
+    assert (
+        prepare["interval_secs"],
+        prepare["max_cycles"],
+        prepare["max_runtime_secs"],
+    ) == (600, 144, 86400)
+    assert "`max_cycles=144` and `max_runtime_secs=86400`" in _text(PREPARE)
     # SKILL.md keeps the fixed arguments and points at the call that carries them.
     skill = " ".join(_text(PREPARE).split())
     assert "references/monitor-loop.md" in skill
-    assert "interval_secs=300, max_cycles=288, max_runtime_secs=86400, judge=False" in skill
+    assert "interval_secs=600, max_cycles=144, max_runtime_secs=86400, judge=False" in skill

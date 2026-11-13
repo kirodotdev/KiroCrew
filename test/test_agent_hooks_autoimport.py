@@ -15,8 +15,7 @@ class TestKiroHooksAutoimport:
     """Tests for auto-discovery of executable hook scripts in ~/.kiro/hooks/."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the HOME fake every test of this class needs, moved verbatim; none of them calls monkeypatch.undo()
-    def _isolate_home(self, tmp_path: Path, monkeypatch):
+    def _isolate_home(self, tmp_path: Path, _floor_monkeypatch):
         """Point Path.home() at tmp_path so hooks_dir validation accepts tmp dirs.
 
         The production rule rejects kiro_hooks_dir values that do not resolve
@@ -24,7 +23,7 @@ class TestKiroHooksAutoimport:
         autoimport at /tmp or similar.  Tests legitimately use tmp_path for
         isolation, so we fake HOME = tmp_path for every test in this class.
         """
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _floor_monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
 
     def _make_script(
         self,
@@ -201,15 +200,8 @@ class TestKiroHooksAutoimport:
         merged_total = sum(len(v) for v in config["hooks"].values() if isinstance(v, list))
         assert merged_total == _MAX_TOTAL_USER_HOOKS
         cap_warnings = [r for r in caplog.records if "global limit" in r.message.lower()]
-        # review-bot rev 8 fix: `_merge_kiro_hooks` re-checks the cap at the
-        # start of each event's inner loop, so the number of WARNINGs
-        # depends on how scripts are distributed across events -- which
-        # shifts with dict ordering changes or minor test edits.  The
-        # invariant we actually care about is `merged_total == cap`
-        # (asserted above); at least one cap WARNING must fire as
-        # evidence the branch was exercised, but the exact count is not
-        # the contract.  This matches the sibling test
-        # `test_kiro_hooks_total_limit_shared_across_explicit_and_autoimport`.
+        # `_merge_kiro_hooks` re-checks the cap per event, so the WARNING count
+        # depends on how scripts spread across events; only its presence is pinned.
         assert cap_warnings, (
             "expected at least one global-limit WARNING when scripts exceed "
             "_MAX_TOTAL_USER_HOOKS; the merged_total cap is the real invariant"
@@ -218,25 +210,10 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_total_limit_shared_across_explicit_and_autoimport(
         self, tmp_path: Path, caplog
     ):
-        """Regression: ``_MAX_TOTAL_USER_HOOKS`` caps combined explicit + autoimport.
+        """``_MAX_TOTAL_USER_HOOKS`` caps explicit and autoimport hooks combined.
 
-        review-bot finding (agent.py:778, importance=0): the
-        original code in ``_apply_user_kiro_hooks`` called
-        ``_merge_kiro_hooks`` twice — once for explicit entries, once for
-        auto-discovered scripts.  Because ``_merge_kiro_hooks`` initializes
-        ``total_added = 0`` on each call, the per-call cap of
-        ``_MAX_TOTAL_USER_HOOKS`` (20) applied to each source independently,
-        yielding up to 40 total user hooks instead of the intended 20.  The
-        fix merges both sources in a single pass so the total cap is
-        enforced across the combined set.
-
-        This test stages enough scripts in BOTH sources that each source
-        alone would fit under the cap (each has ``_MAX_TOTAL_USER_HOOKS``
-        entries, which equals the cap), but together they exceed it.  The
-        merged result must land at exactly ``_MAX_TOTAL_USER_HOOKS``, not
-        ``2 * _MAX_TOTAL_USER_HOOKS``.  Under the old code this test
-        observed ``merged_total == 2 * _MAX_TOTAL_USER_HOOKS``; under the
-        new single-pass code it observes exactly the cap.
+        Each source alone fits the cap, so two separate ``_merge_kiro_hooks`` passes (each
+        resetting ``total_added``) would yield twice the cap; one shared pass yields the cap.
         """
         import logging
 
@@ -298,12 +275,8 @@ class TestKiroHooksAutoimport:
             f"_merge_kiro_hooks pass so the total cap is enforced across "
             f"the combined set, not per-source."
         )
-        # The cap warning should fire at least once because the single
-        # merge pass trips the global-limit branch when the combined input
-        # exceeds the cap.  It can fire multiple times because
-        # ``_merge_kiro_hooks`` iterates events and re-checks the cap per
-        # event after it is reached; the count is not the invariant here,
-        # the total-merged count above is.
+        # The warning can fire once per event visited after the cap; only its
+        # presence matters, the merged total above is the invariant.
         cap_warnings = [r for r in caplog.records if "global limit" in r.message.lower()]
         assert cap_warnings, (
             "expected at least one global-limit WARNING from the single "
@@ -311,18 +284,10 @@ class TestKiroHooksAutoimport:
         )
 
     def test_kiro_hooks_per_event_cap_emits_sel_audit(self, tmp_path: Path, monkeypatch, caplog):
-        """Regression: per-event cap break must emit SEL audit.
+        """Hooks dropped by the per-event cap emit a SEL audit.
 
-        review-bot rev 8 finding (agent.py:682, importance=1,
-        security-controls): when ``_merge_kiro_hooks`` hits the per-event
-        cap ``_MAX_USER_HOOKS_PER_EVENT``, remaining entries for that
-        event were silently dropped with only a ``logger.warning`` and
-        no ``_sel_hook_rejected`` call.  Every other rejection branch
-        in ``_merge_kiro_hooks`` (missing command, failed validation,
-        non-string matcher, invalid matcher) correctly emits SEL audit.
-        Closing this audit-trail gap so auditors can distinguish "user
-        configured 15 preToolUse hooks and 5 were cap-dropped" from
-        "user configured 10 and all loaded".
+        Without it an auditor cannot tell "15 configured, 5 cap-dropped" from
+        "10 configured, all loaded".
         """
         import logging
 
@@ -363,32 +328,17 @@ class TestKiroHooksAutoimport:
         # Exactly _MAX_USER_HOOKS_PER_EVENT scripts should have been
         # merged for preToolUse (the cap); the other 3 must be dropped.
         assert len(config["hooks"]["preToolUse"]) == _MAX_USER_HOOKS_PER_EVENT
-        # The per-event cap path must have emitted at least one SEL
-        # audit tagged with the event (preToolUse) and the
-        # "per-event limit exceeded" reason.  Under the pre-fix code
-        # this assertion failed with zero SEL calls tagged that reason.
         cap_sel = [c for c in sel_calls if "per-event limit exceeded" in c[2].lower()]
         assert cap_sel, (
             f"regression: per-event cap must emit _sel_hook_rejected; got "
             f"zero calls with reason 'per-event limit exceeded'.  All SEL "
             f"calls: {sel_calls!r}"
         )
-        # The tag should be the event name, not the literal "autoimport",
-        # since this is inside _merge_kiro_hooks which uses the inferred
-        # event as the SEL tag (consistent with other branches in this
-        # function).
+        # `_merge_kiro_hooks` tags SEL with the event name, not "autoimport".
         assert cap_sel[0][0] == "preToolUse"
 
     def test_kiro_hooks_global_cap_emits_sel_audit(self, tmp_path: Path, monkeypatch, caplog):
-        """Regression: global cap break must emit SEL audit.
-
-        review-bot rev 8 finding (agent.py:688, importance=1,
-        security-controls): sibling to the per-event cap gap.  When the
-        global cap ``_MAX_TOTAL_USER_HOOKS`` is hit across all events,
-        remaining hooks are silently dropped.  An auditor cannot
-        distinguish "25 configured, 5 cap-dropped" from "20 configured,
-        all loaded" without a SEL signal.
-        """
+        """Hooks dropped by the global cap ``_MAX_TOTAL_USER_HOOKS`` emit a SEL audit."""
         import logging
 
         from kiro_crew import agent as _agent_mod
@@ -440,16 +390,9 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_unknown_event_type_emits_sel_audit(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: unknown event type in user_hooks must emit SEL audit.
+        """An event name outside ``_VALID_HOOK_EVENTS`` drops its bucket with a SEL audit.
 
-        review-bot rev 9 follow-up: when ``_merge_kiro_hooks``
-        encounters an event name not in ``_VALID_HOOK_EVENTS`` (e.g.
-        typo or future-event-name from a newer kiro-cli), the entire
-        event-bucket is dropped.  This is a permission decision per
-        AUTOSDE.yaml security-controls and must emit SEL audit so an
-        auditor can distinguish "user configured 0 hooks for event X"
-        from "user configured 5 and the whole bucket was dropped for
-        invalid event name".
+        Dropping the bucket is a permission decision, so it must be auditable.
         """
         import logging
 
@@ -488,15 +431,7 @@ class TestKiroHooksAutoimport:
         assert "unknown event type" in reason.lower()
 
     def test_kiro_hooks_non_list_entries_emits_sel_audit(self, tmp_path: Path, monkeypatch, caplog):
-        """Regression: non-list entries for a valid event must emit SEL audit.
-
-        review-bot rev 9 finding (agent.py:669, importance=1,
-        security-controls): when ``_merge_kiro_hooks`` sees
-        ``user_hooks["preToolUse"]`` is e.g. a string or dict (not a
-        list), the whole bucket is dropped silently.  Auditors need a
-        SEL signal to distinguish "malformed config dropped all hooks
-        for this event" from "no hooks configured".
-        """
+        """A non-list bucket for a valid event is dropped with a SEL audit."""
         import logging
 
         from kiro_crew import agent as _agent_mod
@@ -559,19 +494,11 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_invalid_matcher_skips_script(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """An invalid matcher header must skip the script entirely.
+        """An invalid matcher header skips the whole script.
 
-        Regression guard: silently demoting a tool-scoped hook to an unscoped
-        hook (firing on every tool call) would be a privilege expansion.  The
-        whole script must be rejected so the user notices and fixes the
-        matcher instead of getting a silently-broader hook.
-
-        Also asserts (rev 7 review-bot fix): the SEL audit event uses the
-        literal ``"autoimport"`` tag for consistency with every other
-        rejection branch in ``_autoimport_kiro_hooks``.  The pre-fix code
-        passed the variable ``event`` (e.g. ``"preToolUse"``), which broke
-        audit-trail consistency -- auditors filtering on
-        ``event="autoimport"`` would miss invalid-matcher rejections.
+        Demoting a tool-scoped hook to an unscoped one would widen it to every tool call.
+        The SEL audit uses the literal ``"autoimport"`` tag, like every other rejection
+        branch in ``_autoimport_kiro_hooks``, so filters on that tag see it.
         """
         import logging
 
@@ -599,9 +526,6 @@ class TestKiroHooksAutoimport:
             "matcher" in rec.message.lower() and "invalid" in rec.message.lower()
             for rec in caplog.records
         )
-        # Rev 7 review-bot fix: SEL tag must be the literal "autoimport",
-        # not the variable ``event`` (e.g. "preToolUse").  Under the
-        # pre-fix code this assertion failed with event_tag == "preToolUse".
         assert len(sel_calls) == 1, (
             f"expected exactly one _sel_hook_rejected for invalid matcher; "
             f"got {len(sel_calls)}: {sel_calls!r}"
@@ -618,25 +542,9 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_unknown_event_emits_sel_audit(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: unknown ``# event:`` rejection must emit a SEL audit event.
+        """A script whose ``# event:`` header is unknown is rejected with a SEL audit.
 
-        review-bot finding (agent.py:586, importance=1,
-        security-controls): when ``_infer_hook_event`` returns ``None``
-        (the header declares an event name outside ``_HOOK_EVENT_CANONICAL``),
-        the script is rejected.  Before this fix, the rejection only emitted
-        a ``logger.warning`` — it did NOT call ``_sel_hook_rejected``.  Every
-        other rejection branch in ``_autoimport_kiro_hooks`` (symlink-escape,
-        failed-validation, invalid-matcher) correctly emits a SEL audit event
-        per AUTOSDE.yaml's security-controls rule: "All tool invocations and
-        permission decisions must emit SEL audit events via sel.py."
-
-        This test stages a script whose ``# event:`` header is a bogus event
-        name (not in ``_HOOK_EVENT_CANONICAL``), spies on
-        ``_sel_hook_rejected``, and asserts the audit call was made with the
-        ``"autoimport"`` source tag, the script path, and an
-        ``"unknown event header"`` reason.  Under the pre-fix code, the spy
-        observed zero calls and this test failed with the designed error
-        message; under the fix, it observes exactly one.
+        Every permission decision must emit SEL (AUTOSDE.yaml security-controls).
         """
         import logging
 
@@ -660,8 +568,6 @@ class TestKiroHooksAutoimport:
             result = _autoimport_kiro_hooks(hooks_dir)
 
         assert result == {}
-        # The SEL audit must fire exactly once for this one rejected script,
-        # tagged with the ``"autoimport"`` log label and the script path.
         assert len(sel_calls) == 1, (
             f"regression: expected exactly one _sel_hook_rejected call when a "
             f"script's '# event:' header is unknown; got {len(sel_calls)}: "
@@ -676,22 +582,7 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_cannot_resolve_emits_sel_audit(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: ``entry.resolve()`` failure rejection must emit SEL audit.
-
-        review-bot finding (agent.py:556, rev 4, importance=1,
-        security-controls): the ``cannot resolve entry`` rejection branch
-        (when ``entry.resolve()`` raises ``OSError``) was missing the
-        ``_sel_hook_rejected`` call.  Every other rejection branch in
-        ``_autoimport_kiro_hooks`` emits a SEL audit event per
-        AUTOSDE.yaml's security-controls rule.  Without this call, an
-        auditor reconstructing agent-install activity from SEL would not
-        see scripts dropped due to resolve() failures.
-
-        This test forces ``Path.resolve`` to raise ``OSError`` for the
-        entry and asserts a SEL audit is recorded with the
-        ``"autoimport"`` source tag and a ``"cannot resolve entry"``
-        reason.
-        """
+        """A script whose ``entry.resolve()`` raises ``OSError`` is rejected with a SEL audit."""
         import logging
 
         from kiro_crew import agent as _agent_mod
@@ -736,18 +627,7 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_cannot_stat_emits_sel_audit(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: ``resolved_entry.stat()`` failure must emit SEL audit.
-
-        review-bot finding (agent.py:556, rev 4, importance=1,
-        security-controls): the ``cannot stat entry`` rejection branch
-        (when ``resolved_entry.stat()`` raises ``OSError``) was missing
-        the ``_sel_hook_rejected`` call.  Same audit-completeness class
-        of bug as the ``cannot resolve`` gap.
-
-        This test forces ``Path.stat`` to raise ``OSError`` for the
-        resolved entry and asserts a SEL audit is recorded with the
-        ``"autoimport"`` source tag and a ``"cannot stat entry"`` reason.
-        """
+        """A script whose ``resolved_entry.stat()`` raises is rejected with a SEL audit."""
         import logging
 
         from kiro_crew import agent as _agent_mod
@@ -759,25 +639,16 @@ class TestKiroHooksAutoimport:
         # Arm the stat failure only AFTER ``entry.is_file()`` has been
         # observed on this path.  The production loop calls ``is_file()``
         # first (internally a stat), then later ``resolved_entry.stat()``
-        # explicitly.  We want only the explicit call to fail.
-        #
-        # Previous version used ``call_count >= 3`` which worked on
-        # CPython 3.12 but is fragile: pathlib's internal stat-usage per
-        # ``is_file()`` varies between 3.10, 3.11, 3.12, 3.13 (3.12
-        # rewrote pathlib internals), so a hard-coded threshold is a
-        # time bomb.  Gating on ``is_file`` being called instead is
-        # stable across versions — no matter how many stats ``is_file``
-        # makes internally, we only raise on stats that happen *after*
-        # it completes, which is when ``resolved_entry.stat()`` runs.
+        # explicitly.  We want only the explicit call to fail.  A stat-count
+        # threshold would break across Python versions, since the number of
+        # stats inside ``is_file()`` differs between 3.10 and 3.13.
         real_stat = Path.stat
         real_is_file = Path.is_file
         armed = False
 
         def _arming_is_file(self, *args, **kwargs):
-            # Arm by Path identity (self == entry) rather than by
-            # self.name, which would also fire on any path whose
-            # basename happens to be "broken.sh" (e.g. a sibling
-            # fixture in a future multi-script variant of this test).
+            # Arm by Path identity: matching ``self.name`` would also fire on
+            # any other path named "broken.sh".
             nonlocal armed
             rv = real_is_file(self, *args, **kwargs)
             if self == entry:
@@ -815,27 +686,10 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_non_executable_emits_sel_audit(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: non-executable ``.sh`` skip must emit SEL audit.
+        """Skipping a non-executable ``.sh`` file emits a SEL audit.
 
-        review-bot rev 6 follow-up (agent.py:581,
-        importance=1, security-controls): the non-executable skip
-        branch was the last rejection path in ``_autoimport_kiro_hooks``
-        that logged at INFO only and did NOT call
-        ``_sel_hook_rejected``.  Every other rejection branch
-        (symlink-escape, cannot-resolve, cannot-stat, failed-validation,
-        unknown-event, invalid-matcher, cannot-read-dir) emits a SEL
-        audit event per AUTOSDE.yaml's security-controls rule: "All
-        tool invocations and permission decisions must emit SEL audit
-        events via sel.py."  The non-executable skip is also a
-        permission decision (a discovered ``.sh`` file will NOT be
-        loaded as a hook), so an auditor reconstructing agent-install
-        activity from SEL must see it.
-
-        This test drops a non-executable ``.sh`` file in the hooks dir,
-        spies on ``_sel_hook_rejected``, and asserts exactly one audit
-        call with the ``"autoimport"`` tag and a ``"not executable"``
-        reason.  Under the pre-fix code, the spy observed zero calls
-        and this test failed with the designed error message.
+        Not loading a discovered script is a permission decision, so it must be auditable
+        like every other rejection branch in ``_autoimport_kiro_hooks``.
         """
         import logging
 
@@ -877,29 +731,10 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_rejects_dir_equal_to_home(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: ``kiro_hooks_dir: "~"`` (resolved == HOME) must be rejected.
+        """A ``kiro_hooks_dir`` that resolves to HOME itself is rejected.
 
-        review-bot finding (agent.py:746, rev 4, importance=0,
-        default): the original containment check allowed
-        ``resolved == home`` to pass because the condition was
-        ``(resolved != home and home not in resolved.parents)``.  When
-        ``resolved == home``, the left side of the ``and`` was ``False``,
-        so the whole clause was ``False`` and the path was *accepted*.
-
-        Impact: an LLM-writable config setting ``kiro_hooks_dir: "~"``
-        would cause ``_autoimport_kiro_hooks`` to scan the *entire* home
-        directory for executable ``*.sh`` files, auto-registering any
-        executable script anywhere under ``$HOME``.
-
-        The fix is strict containment: require ``resolved`` to be *under*
-        HOME, not equal to it.  ``Path.parents`` of e.g. ``/home/user``
-        is ``(/, /home)`` and does not include ``/home/user`` itself, so
-        ``home not in resolved.parents`` rejects ``resolved == home``.
-
-        This test sets ``kiro_hooks_dir`` to a path that resolves to HOME
-        (the fake home we monkeypatch to ``tmp_path``) and asserts no
-        scripts get merged — the "evil" script at HOME root is not
-        auto-registered — and that the rejection is logged + SEL-audited.
+        Containment is strict (under HOME, not equal to it): accepting HOME would
+        auto-register every executable ``*.sh`` anywhere under ``$HOME``.
         """
         import logging
 
@@ -919,8 +754,7 @@ class TestKiroHooksAutoimport:
 
         config: dict = {"hooks": {}}
         # ``kiro_hooks_dir: "~"`` expands to HOME, which equals tmp_path
-        # after the _isolate_home fixture runs.  Under the pre-fix code
-        # this passed validation; under the fix it's rejected.
+        # after the _isolate_home fixture runs.
         mc_cfg = {"agent": {"kiro_hooks_dir": str(tmp_path)}}
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
@@ -944,7 +778,7 @@ class TestKiroHooksAutoimport:
     ):
         """kiro_hooks_dir resolving outside HOME is rejected with a fallback warning.
 
-        Regression guard: config.json is LLM-writable.  A malicious override
+        config.json is LLM-writable.  A malicious override
         pointing autoimport at /tmp or /var could auto-register any executable
         script an attacker lands there.  The code must fall back to the
         default ~/.kiro/hooks and log a WARNING + SEL audit.
@@ -989,11 +823,8 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_rejects_symlink_escaping_dir(self, tmp_path: Path, caplog):
         """A symlink inside hooks_dir pointing at an outside script is rejected.
 
-        Regression guard: entry.is_file() follows symlinks, and
-        is_sensitive_path only matches a small set of $HOME subdirs.  A
-        symlink named ``guard.sh`` inside ~/.kiro/hooks/ whose target is
-        ~/elsewhere/attacker.sh would otherwise pass every other check.
-        The resolved-path containment check must catch it.
+        ``entry.is_file()`` follows symlinks and is_sensitive_path covers few $HOME
+        subdirs, so only the resolved-path containment check catches this.
         """
         import logging
 
@@ -1018,27 +849,10 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_validates_before_parsing_headers(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: ``_validate_hook_command`` must run BEFORE header parsing.
+        """``_validate_hook_command`` runs before header parsing, so rejected paths are never read.
 
-        review-bot finding (agent.py:562, importance=1,
-        security-controls): the original ordering parsed the script's
-        ``# event:`` / ``# matcher:`` headers first and only then called
-        ``_validate_hook_command``.  Defense-in-depth: even though the
-        containment check above already rejects sensitive-path symlinks,
-        the no-file-reads-on-rejected-paths invariant is worth keeping
-        explicit.
-
-        To prove the reorder (rather than the pre-existing containment
-        check) is what stops header parsing, we force a rejection from
-        ``_validate_hook_command`` specifically: monkeypatch it to return
-        ``None`` for any path, then assert ``_parse_hook_script_headers``
-        was never invoked.  Under the OLD code, headers were parsed first
-        and this test would observe a call; under the NEW code, validation
-        rejects before the parser runs.
-
-        We also assert the rejection is SEL-audited via
-        ``_sel_hook_rejected`` so a future refactor that silently drops
-        the audit call is caught.
+        Validation is forced to reject so the containment check cannot be what stops
+        parsing; the rejection must also be SEL-audited.
         """
         import logging
 
@@ -1062,10 +876,6 @@ class TestKiroHooksAutoimport:
 
         monkeypatch.setattr(_agent_mod, "_parse_hook_script_headers", _record_header_call)
 
-        # Spy on the SEL audit sink so we can assert a rejection was
-        # recorded with the ``"autoimport"`` source tag.  Without this,
-        # a future refactor that silently drops the audit call would
-        # still let the monkeypatched validate-to-None path pass.
         sel_calls: list[tuple[str, str, str]] = []
 
         def _record_sel(event: str, command: str, reason: str) -> None:
@@ -1082,9 +892,6 @@ class TestKiroHooksAutoimport:
             "_validate_hook_command rejected the script. Validation must "
             "run first so no file reads happen on rejected paths."
         )
-        # Exactly one SEL rejection recorded for the autoimport rejection
-        # branch, tagged with the ``"autoimport"`` log label (a log-only
-        # tag; see agent.py:562-570 note).
         assert len(sel_calls) == 1, (
             f"expected exactly one _sel_hook_rejected call for the rejected "
             f"script; got {len(sel_calls)}: {sel_calls!r}"
@@ -1096,27 +903,11 @@ class TestKiroHooksAutoimport:
 
     @requires_symlinks
     def test_kiro_hooks_dir_stored_as_resolved_path(self, tmp_path: Path, monkeypatch):
-        """Regression: ``_autoimport_kiro_hooks`` receives the *resolved* hooks dir.
+        """``_autoimport_kiro_hooks`` receives the *resolved* hooks dir, not the symlink.
 
-        review-bot finding (agent.py:744, TOCTOU): the original
-        code did ``hooks_dir = requested`` after validating ``resolved``.
-        If a path component of ``requested`` was a symlink, it could be
-        swapped between the validate-in-HOME check in
-        ``_apply_user_kiro_hooks`` and the resolve()-for-containment check
-        inside ``_autoimport_kiro_hooks``, letting autoimport scan a
-        directory outside HOME.  Storing the already-resolved path makes
-        the downstream resolve() a no-op on an already-canonical path,
-        eliminating the named symlink-swap window.
-
-        This test does not (and cannot deterministically) reproduce the
-        race itself; it verifies the observable contract that proves the
-        mitigation is in place: the caller stores and forwards the
-        resolved form of ``kiro_hooks_dir``.  The per-entry containment
-        check already canonicalizes each entry, so asserting on the
-        resulting command path cannot tell the fix apart from the bug -
-        we instead intercept the call into ``_autoimport_kiro_hooks``
-        and assert it was invoked with the *resolved* path, not the
-        symlinked ``requested`` path.
+        Forwarding the symlinked path leaves a TOCTOU window where a swapped component
+        lets autoimport scan outside HOME. The race cannot be reproduced, and per-entry
+        canonicalization hides it in the command paths, so the call argument is pinned.
         """
         from kiro_crew import agent as _agent_mod
         from kiro_crew.agent import _apply_user_kiro_hooks
@@ -1129,10 +920,7 @@ class TestKiroHooksAutoimport:
 
         captured: list[Path] = []
 
-        # Spy on _autoimport_kiro_hooks to capture what `hooks_dir` value
-        # _apply_user_kiro_hooks stores and forwards.  Under the old
-        # `hooks_dir = requested` code, we would see `link_hooks`; under
-        # the new `hooks_dir = resolved` code, we see `real_hooks`.
+        # Spy on the `hooks_dir` value _apply_user_kiro_hooks forwards.
         def _spy(hooks_dir: Path) -> dict:
             captured.append(hooks_dir)
             return {}
@@ -1167,19 +955,10 @@ class TestKiroHooksAutoimport:
         assert forwarded != link_hooks
 
     def test_kiro_hooks_dir_null_byte_does_not_crash(self, tmp_path: Path, monkeypatch):
-        """Regression: ``kiro_hooks_dir`` with a null byte must not crash.
+        """A ``kiro_hooks_dir`` with a null byte falls back without crashing.
 
-        deep-review adversarial finding: ``Path("\\x00")``
-        raises ``ValueError: embedded null byte`` -- uncaught, this
-        propagates up through ``install_agent()`` and crashes agent
-        bootstrap (denial of service via LLM-writable config).
-
-        Fix: ``except (OSError, ValueError)`` around the resolve() pair.
-        This test feeds a null-byte ``kiro_hooks_dir`` and asserts the
-        code neither raises nor registers any hooks (falls back to the
-        default which we re-route away from the caller's real
-        ``~/.kiro/hooks``).  Under the pre-fix code, ``ValueError`` would
-        escape and the test body would fail with an unhandled exception.
+        ``Path.resolve`` raises ``ValueError`` on it, which would crash ``install_agent()``
+        from LLM-writable config.
         """
         from kiro_crew.agent import _apply_user_kiro_hooks
 
@@ -1192,8 +971,7 @@ class TestKiroHooksAutoimport:
         config: dict = {"hooks": {}}
         mc_cfg = {"agent": {"kiro_hooks_dir": "\x00"}}
 
-        # Must not raise.  Under pre-fix code this line propagates
-        # ``ValueError: embedded null byte`` from Path.resolve().
+        # Must not raise ``ValueError: embedded null byte``.
         _apply_user_kiro_hooks(config, mc_cfg)
 
         assert config["hooks"] == {}
@@ -1201,15 +979,10 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_cannot_read_dir_emits_sel_audit(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: ``iterdir()`` OSError on hooks_dir must emit SEL audit.
+        """An unreadable hooks dir (``iterdir()`` raises) emits a SEL audit.
 
-        deep-review coverage finding: the ``cannot read
-        <hooks_dir>`` rejection branch in ``_autoimport_kiro_hooks``
-        (when ``hooks_dir.iterdir()`` raises ``OSError``, e.g. EACCES)
-        was missing the ``_sel_hook_rejected`` call.  Without it, an
-        auditor reconstructing agent-install activity cannot
-        distinguish "hooks dir unreadable" from "no scripts configured"
-        -- both show ``requested_autoimport=0`` in the merge summary.
+        The merge summary shows ``requested_autoimport=0`` for both an unreadable dir
+        and an empty one, so only SEL tells them apart.
         """
         import logging
 
@@ -1247,19 +1020,9 @@ class TestKiroHooksAutoimport:
         assert "cannot read" in reason.lower()
 
     def test_kiro_hooks_dir_non_string_ignored_without_sel(self, tmp_path: Path, monkeypatch):
-        """Regression: non-string ``kiro_hooks_dir`` reverts to default silently.
+        """A non-string ``kiro_hooks_dir`` falls back to the default without a SEL record.
 
-        deep-review coverage finding: an LLM-writable
-        ``"kiro_hooks_dir": null`` or ``[]`` silently skips the
-        containment check (the ``isinstance(custom_dir, str) and
-        custom_dir`` guard) and uses the default ``~/.kiro/hooks``.
-        A malicious config that intentionally sets the value to a
-        non-string should NOT emit a false-positive SEL rejection
-        (nothing was actually rejected), but it also should not
-        crash or scan an unintended directory.
-
-        This test asserts: (a) fallback to default, (b) no SEL call,
-        (c) no crash.
+        Nothing was rejected, so a SEL rejection would be a false positive.
         """
         from kiro_crew import agent as _agent_mod
         from kiro_crew.agent import _apply_user_kiro_hooks
@@ -1295,21 +1058,10 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_rejects_dir_equal_to_symlinked_home(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: HOME-containment survives HOME-as-symlink topology.
+        """HOME containment holds when ``$HOME`` is a symlink.
 
-        deep-review coverage finding: managed workstations and
-        macOS laptops often have ``$HOME`` as a symlink (e.g.
-        ``/home/user -> /mnt/fast-disk/user``).  The strict-containment
-        check uses ``home = Path.home().resolve()`` and ``resolved =
-        requested.resolve()`` -- both canonicalize, so the check should
-        survive.  This test proves that contract: user points
-        ``kiro_hooks_dir`` at the canonical (resolved) HOME target
-        directly, while ``Path.home()`` returns the symlink; both
-        must canonicalize to the same path and get rejected.
-
-        Under a hypothetical regression where one side stops calling
-        ``.resolve()``, the paths would mismatch and the test would
-        accept the equal-to-HOME config, failing the assertion.
+        ``Path.home()`` returns the symlink and the config names its target; both sides
+        must be resolved for the equal-to-HOME rejection to fire.
         """
         import logging
 
@@ -1359,20 +1111,7 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_hooks_dir_resolve_oserror_emits_sel(
         self, tmp_path: Path, monkeypatch, caplog
     ):
-        """Regression: ``hooks_dir.resolve()`` OSError must emit SEL audit.
-
-        review-bot rev 5 follow-up (agent.py:509,
-        security-controls): the initial ``hooks_dir.resolve()`` failure
-        branch returned early with only a ``logger.debug`` -- no
-        ``_sel_hook_rejected`` call.  Same audit-completeness gap class
-        as rev 5 fixed for the per-entry cannot-resolve-entry branch,
-        missed on the directory-level resolve.
-
-        This test forces ``Path.resolve`` to raise ``OSError`` for the
-        hooks_dir specifically and asserts a SEL audit is recorded with
-        the ``"autoimport"`` source tag and a ``"cannot resolve
-        hooks_dir"`` reason.
-        """
+        """An ``OSError`` from ``hooks_dir.resolve()`` emits a SEL audit."""
         import logging
 
         from kiro_crew import agent as _agent_mod
@@ -1414,19 +1153,9 @@ class TestKiroHooksAutoimport:
     def test_kiro_hooks_autoimport_handles_valueerror_on_entry_resolve(
         self, tmp_path: Path, monkeypatch
     ):
-        """Regression: ``ValueError`` from ``entry.resolve()`` must not crash.
+        """A ``ValueError`` from ``entry.resolve()`` is rejected with a SEL audit, not raised.
 
-        review-bot rev 5 follow-up (agent.py:540, default):
-        the two inner ``resolve()`` calls in ``_autoimport_kiro_hooks``
-        only caught ``OSError``, not ``ValueError``.  A filename from
-        ``iterdir()`` containing a null byte (FS shenanigans, adversarial
-        filenames) would propagate ``ValueError: embedded null byte``
-        uncaught and crash agent bootstrap.
-
-        Fix: ``except (OSError, ValueError)`` on both inner resolve
-        calls.  This test forces ``Path.resolve`` on an entry to raise
-        ``ValueError`` and asserts the code rejects cleanly (no crash,
-        SEL audited).
+        A null byte in a filename raises ``ValueError``, not ``OSError``.
         """
         from kiro_crew import agent as _agent_mod
         from kiro_crew.agent import _autoimport_kiro_hooks
@@ -1465,20 +1194,9 @@ class TestKiroHooksAutoimport:
         assert "cannot resolve" in reason.lower()
 
     def test_kiro_hooks_dir_resolve_oserror_falls_back(self, tmp_path: Path, monkeypatch, caplog):
-        """Regression: OSError from ``Path.resolve()`` falls back cleanly.
+        """An ``OSError`` from ``Path.resolve()`` (ELOOP, EACCES) falls back cleanly.
 
-        deep-review coverage finding: if
-        ``requested.resolve()`` or ``Path.home().resolve()`` raises
-        ``OSError`` (ENAMETOOLONG, ELOOP, EACCES on a path component),
-        the code sets ``resolved = home = None`` and falls through to
-        the rejection branch, logs a warning, and emits SEL audit.
-
-        This test forces the OSError path and asserts: (a) no crash,
-        (b) hooks empty (fallback), (c) SEL audit emitted, (d) warning
-        logged.  Under a hypothetical regression where the except is
-        narrowed back to only ``OSError`` without catching ValueError,
-        this test would still pass -- it specifically exercises the
-        ``OSError`` arm of the ``except (OSError, ValueError)`` block.
+        The rejection branch logs a warning and emits a SEL audit; hooks stay empty.
         """
         import logging
 

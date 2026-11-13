@@ -26,13 +26,34 @@ from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.sandbox import refuse_unaudited_on_dead_fs
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, redact_exfiltration_urls
+from kiro_crew.security.redaction import (
+    _ARN_ACCOUNT_ID_12_DIGITS_RE,
+    _BOT_ID_LENGTHS,
+    _CDK_NAME_MAX_LEN,
+    _CDK_WORDS,
+    redact_credentials_with_records,
+)
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
 
 logger = logging.getLogger("kiro_crew.cron_script")
+
+
+def _delivered_text(message: object) -> str:
+    """The text a ``Done`` or ``Report`` raised with *message* carries.
+
+    A falsy value (``None``, ``0``, ``[]``, ``""``) gives ``""``, which sends nothing;
+    any other value that is not a string gives ``str()`` of it (``Done(42)`` gives
+    ``"42"``), because the gateway only sends text.
+    """
+    if not message:
+        return ""
+    if isinstance(message, str):
+        return message
+    return str(message)
 
 
 class SkipError(Exception):
@@ -45,9 +66,9 @@ class DoneError(Exception):
     Use ctx.notify() before raising Done() to deliver a message.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        self.message = _delivered_text(message)
+        super().__init__(self.message)
 
 
 class ReportError(Exception):
@@ -56,14 +77,14 @@ class ReportError(Exception):
     Use for long-lived monitors that need to report multiple times.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        self.message = _delivered_text(message)
+        super().__init__(self.message)
 
 
-# Backward-compat aliases: Skip/Done/Report are the public API used by
-# user-authored cron scripts. Renamed to *Error for flake8 N818; aliases
-# preserve the existing import/raise surface with zero behavior change.
+# Skip, Done and Report are the public names user-authored cron scripts import and
+# raise; the classes they alias carry the ``Error`` suffix pep8-naming's N818 asks of
+# an exception name.
 Skip = SkipError
 
 Done = DoneError
@@ -167,14 +188,21 @@ class ScriptContext:
             raise RuntimeError(f"list_session_folders() failed: {self._reason(result)}")
         return result
 
-    def create_session_folder(self, name: str) -> dict:
+    def create_session_folder(self, name: str, *, parent_id: str = "") -> dict:
         """Create a session folder and return it (``POST /api/chat/folders``).
 
+        A non-empty ``parent_id`` creates the folder inside that folder, so a
+        script can build a nested layout; an empty one creates it at the top
+        level. ``list_session_folders()`` returns each folder's ``id`` and
+        ``parent_id``, which is how a script finds an existing child to reuse.
         The name is redacted the way ``notify()`` redacts its text, because it
         is rendered in the dashboard sidebar. Raises RuntimeError if the gateway
         refuses or cannot be reached.
         """
-        result = self._post("/api/chat/folders", {"name": redact(name)})
+        body = {"name": redact(name)}
+        if parent_id:
+            body["parent_id"] = parent_id
+        result = self._post("/api/chat/folders", body)
         if not isinstance(result, dict) or "error" in result:
             raise RuntimeError(f"create_session_folder() failed: {self._reason(result)}")
         return result
@@ -255,14 +283,21 @@ class ScriptContext:
     # ``dashboard/custom_value`` entry, and the ``custom`` fold keeps the latest record
     # per type, so a page bound to ``custom.latest.<type>.data`` redraws when it lands.
 
-    def crew_log_append(self, type: str, data: dict) -> dict:
+    def crew_log_append(self, type: str, data: dict, *, max_age_s: int | None = None) -> dict:
         """Append one record to the bound crewmate's crew log (``POST .../dashboard/record``).
 
-        *type* names the record: letters, digits and underscores only, at most 64
+        *type* names the record: letters, digits and underscores only (never two
+        underscores in a row, which is reserved for an installed app's key), at most 64
         characters, so a page binds it as ``custom.latest.<type>``; *data* is a JSON
         object of at most 8 KiB
         serialized and 8 levels deep. The record is redacted the way ``notify()``
         redacts its text, because a page renders it.
+
+        *max_age_s* (60 to 2592000 seconds) says how long the record stays current;
+        pass about twice the job's interval. The fold then carries ``stale_after``,
+        the gateway's own write time plus it, so a page can tell the record went stale
+        when the job stopped. A run that FAILS is recorded by the gateway itself, and
+        each record this job wrote gains ``failed_at`` and ``last_error``.
 
         The gateway decides WHO wrote it: the entry is stamped with this job's id and
         the crewmate it is bound to, read from the job's own attested identity, and
@@ -276,7 +311,9 @@ class ScriptContext:
         # Each string on its own, never the serialized blob: a credential pattern that
         # spans a key and its value (``"authorization": "Bearer ..."``) would otherwise
         # eat the ``": "`` between them and leave text that is not JSON.
-        safe = {"type": redact(type), "data": _redact_deep(data)}
+        safe: dict[str, Any] = {"type": redact(type), "data": _redact_deep(data)}
+        if max_age_s is not None:
+            safe["max_age_s"] = max_age_s
         result = self._post("/api/agent-panel/dashboard/record", safe)
         if not isinstance(result, dict) or "error" in result:
             raise RuntimeError(f"crew_log_append() failed: {self._reason(result)}")
@@ -298,14 +335,14 @@ class ScriptContext:
         :meth:`close` stops the kept servers.
 
         Args are scanned for credential/URL leakage before passing to the
-        sandboxed MCP server subprocess.
+        sandboxed MCP server subprocess (:func:`_scanned_tool_args`). Raises
+        ``ValueError``, and sends nothing, when the scan would change any
+        argument, so a server never receives an argument the script did not write.
         """
-        # Scan serialized args for credential patterns
-        args_str = json.dumps(args)
-        args_str = redact(args_str)
-        safe_args = json.loads(args_str)
         try:
-            result = self._kept_servers.call_tool(server, tool, safe_args)
+            result = self._kept_servers.call_tool(
+                server, tool, _scanned_tool_args(server, tool, args)
+            )
         except Exception as exc:
             self._audit_tool_call(server, tool, "error", str(exc))
             raise
@@ -461,6 +498,146 @@ def _redact_deep(value: Any, key: str = "") -> Any:
     if isinstance(value, list):
         return [_redact_deep(inner, key) for inner in value]
     return value
+
+
+def _scanned_tool_args(server: str, tool: str, args: dict) -> dict:
+    """*args* as ``call_tool`` sends them: exactly as the script wrote them, or not at all.
+
+    Every string in *args*, keys included, is judged on its own, and a string value also
+    beside its key (:func:`_reads_as_credential`). A call the scan would change anywhere
+    is refused rather than sent changed: a rewritten argument is one the script did not
+    write, which an id parameter rejects with an error of its own that hides the cause and
+    a free-text one stores. The refusal names the argument's path, never its value.
+
+    *args* are serialized first, as the client will send them, so an argument JSON cannot
+    hold raises ``TypeError`` here, before a kept server is taken for the call and stopped
+    by the failure.
+    """
+    json.dumps(args)
+    path = _changed_path(args, "", "args")
+    if path:
+        raise ValueError(
+            f"call_tool({server!r}, {tool!r}) not sent: {path} reads as a credential, and "
+            "an argument is sent only as the script wrote it"
+        )
+    return args
+
+
+def _changed_path(value: Any, key: str, path: str) -> str:
+    """The path of the first string in *value* the scan would change, or ``""``.
+
+    *key* is the string key *value* sits under, ``""`` for none. The path is spelled with
+    the scanned keys, so a credential-shaped key is not echoed.
+    """
+    if isinstance(value, str):
+        return path if _reads_as_credential(key, value) else ""
+    if isinstance(value, dict):
+        for raw_key, inner in value.items():
+            name = redact(raw_key) if isinstance(raw_key, str) else raw_key
+            inner_path = f"{path}.{name}"
+            if name != raw_key:
+                return inner_path
+            found = _changed_path(inner, raw_key if isinstance(raw_key, str) else "", inner_path)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for i, inner in enumerate(value):
+            found = _changed_path(inner, key, f"{path}[{i}]")
+            if found:
+                return found
+    return ""
+
+
+#: A key that names an identifier: ``id`` or ``ids`` alone or after ``_`` or ``-``, in
+#: any case, or ``Id`` / ``ID`` ending a camelCase name (``driveId``, ``messageIds``).
+_ID_KEY_RE = re.compile(r"(?:\A|[_-])(?i:ids?)\Z|[a-z0-9](?:Id|ID)s?\Z")
+#: The whole of an opaque id the bare-secret pass reads a key in: a Microsoft Graph item
+#: id (base64 of an Exchange id, ``AAMk...``) or a drive id (``b!`` then base64url). Both
+#: are longer than a 40-character key, so a key alone under an id key is still judged; a
+#: key behind an id's opening (``AAMk`` and 40 characters) is not, the residual the
+#: learn-cron-dashboard spec states.
+_OPAQUE_ID_RE = re.compile(r"A[A-Za-z0-9]{3}[A-Za-z0-9+/_-]{40,}={0,2}|b![A-Za-z0-9_-]{40,}")
+#: The resource name after an account id, ``MyServiceLambda``: PascalCase words, each a
+#: capital and then lowercase letters, the word shape of the ARN rule's CDK names. A bot
+#: token's secret, which Telegram starts with ``AA``, is never that shape.
+_RESOURCE_NAME_RE = re.compile(_CDK_WORDS)
+#: A name CloudFormation generated, ``<stack>-<logical id>-<suffix>``: letter and digit
+#: segments, the stack name's and the logical id's at least, each closed by ``-``, then
+#: the 12 or 13 uppercase letters and digits it appends
+#: (``OrderService-CodeDeployApp-1ABCDEF2GHIJK``).
+_CFN_PHYSICAL_NAME_RE = re.compile(r"(?:[A-Za-z0-9]+-){2,}[A-Z0-9]{12,13}")
+#: The Telegram rule's ``<digits>:<run>`` where the digits are an account id's 12: the
+#: whole digit run, then the whole run after the ``:``, with the AWS region segment and
+#: ``:`` right before it when one is there (the region grammar ``auth.service`` accepts).
+_ACCOUNT_RESOURCE_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_-])(?P<region>[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}):)?"
+    rf"(?<![0-9])(?P<account>{_ARN_ACCOUNT_ID_12_DIGITS_RE.pattern}):"
+    r"(?P<name>[A-Za-z0-9_-]+)(?![A-Za-z0-9_-])"
+)
+
+
+def _reads_as_credential(key: str, value: str) -> bool:
+    """Whether the scan would change *value*, sent under *key*.
+
+    Judged alone, then spelled beside its key as :func:`_redact_pair` spells it, so a
+    token only its key reveals (``authorization: Bearer ...``) is found too. Two rules
+    read an identifier as a secret, and here neither counts where it does:
+
+    * The bare-secret pass guesses a key from a run's entropy, which a random opaque id
+      has too, and the redaction tiers decision never redacts a resource id. Its spans
+      do not count in a value :data:`_OPAQUE_ID_RE` matches whole under a key
+      :data:`_ID_KEY_RE` names; every other rule still judges that value.
+    * The Telegram rule reads ``<digits>:<30 or more characters>`` as a bot token, so a
+      name that leads with an account id is one to it. Its hit does not count only where
+      it positively reads as an account id and a resource name
+      (:func:`_account_resource_apart`): the text is judged again with that ``:`` read
+      as a space, so a credential inside the name is still found.
+    """
+    opaque_id = bool(key and _ID_KEY_RE.search(key) and _OPAQUE_ID_RE.fullmatch(value))
+    texts = (value, f"{key}: {value}") if key else (value,)
+    return any(_changed_by_scan(text, opaque_id) for text in texts)
+
+
+def _changed_by_scan(text: str, opaque_id: bool) -> bool:
+    """Whether the scan changes *text* by a span that counts (:func:`_reads_as_credential`)."""
+    if redact(text) == text:
+        return False
+    if redact_exfiltration_urls(text)[0] != text:
+        return True
+    found = redact_credentials_with_records(text)[2]
+    if not found:
+        return True
+    apart = _ACCOUNT_RESOURCE_RE.sub(_account_resource_apart, text)
+    if apart != text:
+        # A Telegram hit outside an account id and resource name is in *apart* as it was
+        # and is found again there. Another rule's hit is kept from *text*: the ``:`` read
+        # as a space could hide one that spans it.
+        found = [match for match in found if match.rule != "telegram_bot_token"]
+        found += redact_credentials_with_records(apart)[2]
+    return not all(match.rule == "bare_aws_secret" and opaque_id for match in found)
+
+
+def _account_resource_apart(match: re.Match[str]) -> str:
+    """*match*, its ``:`` read as a space where it is an AWS account id and a resource name.
+
+    Positive, as the ARN rule's exemption is (``_arn_exemption_withheld``), and built from
+    its parts: the 12 digits are not a 6 to 10 digit bot id padded out with leading zeros,
+    and the WHOLE run after the ``:`` is a resource name. Anywhere, that is PascalCase
+    words (:data:`_RESOURCE_NAME_RE`). Between a region segment and another ``:``, where
+    a CodeDeploy target puts its application (``<region>:<account>:<app>:<group>:CD``),
+    it may also be a CloudFormation name (:data:`_CFN_PHYSICAL_NAME_RE`). So a bot token
+    behind a padded, glued or real account id, in an ARN or not, still counts.
+    """
+    region, account, name = match["region"], match["account"], match["name"]
+    if len(name) > _CDK_NAME_MAX_LEN or len(account.lstrip("0")) in _BOT_ID_LENGTHS:
+        return match.group()
+    if _RESOURCE_NAME_RE.fullmatch(name) or (
+        region
+        and match.string.startswith(":", match.end())
+        and _CFN_PHYSICAL_NAME_RE.fullmatch(name)
+    ):
+        return f"{region}:{account} {name}" if region else f"{account} {name}"
+    return match.group()
 
 
 _REFUSAL_CODE = re.compile(r"[a-z0-9_.-]{1,64}")

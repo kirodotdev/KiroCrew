@@ -57,22 +57,10 @@ class TestRunChatAutoApproveRungs:
     def _vouch_for_the_program(self):
         """Let these tests exercise the RUNG, not the host's program layout.
 
-        Each rung now re-judges its own auto-approve by asking whether the
-        command's program names still identify the programs they name
-        (``name_grant``), which resolves against the real ``PATH`` and reads the
-        file behind each name. That made these tests depend on the machine: they
-        use ``ls -la``, which passes on Linux because ``ls`` lives in a trusted
-        system directory and FAILS on Windows, where there is no such ``ls`` --
-        so the rung declined, `approve_tool` was never called, and the assertions
-        below broke on one platform only. The thread hop the real check needs also
-        outlives these tests' event loop and crashed the xdist worker.
-
-        Stubbing it keeps each test measuring what its name claims -- does the
-        rung approve, reject, and render -- while the check itself is covered
-        directly in ``test/test_name_grant.py``. It patches the ONE off-loop
-        entry point every rung goes through; patching only the event-shaped
-        wrapper left two rungs spawning real threads, which is why the Windows
-        workers kept crashing after the first attempt at this.
+        ``name_grant`` resolves the real ``PATH``: ``ls`` is trusted on Linux but absent on
+        Windows, and its thread hop outlives the test loop. The check has its own tests in
+        ``test/test_name_grant.py``. Patch the ONE off-loop entry point every rung uses;
+        the event-shaped wrapper alone leaves two rungs spawning real threads.
         """
 
         with patch.object(
@@ -191,12 +179,8 @@ class TestRunChatAutoApproveRungs:
     async def test_trusted_pattern_append_persists_tool_meta_untruncated(self, tmp_path):
         """The trusted-pattern rung's persisted meta must be `_tool_meta` exactly.
 
-        A hand-rolled meta dict at this rung diverges from every other
-        approval rung: a shorter purpose cap cuts restored transcripts
-        mid-sentence while live rows (broadcast at `_MAX_TOOL_PURPOSE`)
-        show the whole purpose, and a dict without `input`/`kind` or the
-        `tool_call_id` redaction breaks the live↔replay join. One builder,
-        one cap.
+        A hand-rolled dict would cap the purpose differently from live rows
+        (`_MAX_TOOL_PURPOSE`) or drop `input`/`kind`, breaking the live-to-replay join.
         """
         state, client = _runner_state(tmp_path)
         slot = _slot()
@@ -372,54 +356,6 @@ class TestRunChatAutoApproveRungs:
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_awaited_once_with("req-cov-1")
         assert _card_outcomes(slot) == ["rejected"]
-
-    @pytest.mark.asyncio
-    async def test_browser_cli_presence_does_not_skip_shell_approval(self, tmp_path, monkeypatch):
-        from kiro_crew.browser_cli import install
-
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-        _set_stream(
-            client,
-            [
-                _permission(
-                    title="Running: playwright-cli snapshot",
-                    tool_input=json.dumps({"command": "playwright-cli snapshot"}),
-                ),
-                _complete(),
-            ],
-        )
-        # Pin the capability as present without consulting or touching the host.
-        monkeypatch.setattr(install, "cli_path", lambda: "/agent-writable/playwright-cli")
-
-        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
-            await _drive(state, slot)
-
-        client.approve_tool.assert_not_awaited()
-        client.reject_tool.assert_awaited_once_with("req-cov-1")
-        assert _card_outcomes(slot) == ["rejected"]
-
-    @pytest.mark.asyncio
-    async def test_browser_cli_explicit_trusted_pattern_still_auto_approves(self, tmp_path):
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-        slot._trusted_patterns = {"playwright-cli*"}
-        _set_stream(
-            client,
-            [
-                _permission(
-                    title="Running: playwright-cli snapshot",
-                    tool_input=json.dumps({"command": "playwright-cli snapshot"}),
-                ),
-                _complete(),
-            ],
-        )
-
-        await _drive(state, slot)
-
-        client.approve_tool.assert_awaited_once_with("req-cov-1")
-        assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Running: playwright-cli snapshot"]
 
     @pytest.mark.asyncio
     async def test_trusted_pattern_auto_approves_a_matching_command(self, tmp_path):

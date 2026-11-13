@@ -25,7 +25,7 @@ test.describe('Memory surfaces E2E Tests', () => {
   test('memory browser exposes the manual summarize action', async ({ page }) => {
     await page.goto('/settings/overview?view=memory', { waitUntil: 'domcontentloaded' })
     await expect(page.getByRole('heading', { name: /memory settings/i })).toBeVisible({ timeout: 5000 })
-    await expect(page.getByRole('button', { name: 'Semantic', exact: true })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('radio', { name: 'Semantic', exact: true })).toBeVisible({ timeout: 5000 })
     const summarize = page.getByRole('button', { name: /summarize now/i })
     await expect(summarize).toBeVisible({ timeout: 5000 })
     await expect(summarize).toBeEnabled()

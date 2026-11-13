@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { i18nT } from '../../i18n/t'
 import type { ChatFolder } from '../../types'
 import { orderFoldersWithPaths, type FolderSortMode } from '../../utils/folderTree'
+import { isMateManaged } from '../../utils/mateFolders'
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select'
 import { Glass } from '../../components/Glass'
 
@@ -76,7 +77,8 @@ export default function FolderSuggestionCard({
   // closed <select> shows ONLY the chosen option's text, so the path is what
   // keeps same-named subfolders under different parents unambiguous — and it
   // replaces the old card's separate breadcrumb line.
-  const options = orderFoldersWithPaths(folders, folderSortMode).map(o => ({
+  // A mate's folder takes no chat a person files, so it is not offered.
+  const options = orderFoldersWithPaths(folders, folderSortMode).filter(o => !isMateManaged(o.folder, folders)).map(o => ({
     id: o.folder.id,
     label: o.depth > 0 ? o.path : o.folder.name,
   }))

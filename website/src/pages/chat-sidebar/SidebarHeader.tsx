@@ -1,7 +1,9 @@
 /** The sidebar header: the Sessions title, the list menu (dashboards, board
- *  toggle, cleanup, model switch, tags) and the split New button with its create
- *  menu (folders, private chats, import, chat in a folder or on a crew). */
-import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone } from 'lucide-react'
+ *  toggle, cleanup, model switch, tags, PR status refresh) and the split New
+ *  button with its create menu (folders, private chats, import, chat in a folder
+ *  or on a crew). */
+import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronsDownUp, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone, RefreshCw } from 'lucide-react'
+import { api } from '../../api/client'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { LIST_HEADER_CLS, LIST_TITLE_CLS } from '../../components/listShell'
@@ -15,15 +17,17 @@ import { createTabModeForClick } from './chrome'
 import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { isMateManaged } from '../../utils/mateFolders'
+import { errMessage } from '../../utils/thunkError'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
-  const { cleanupOpen, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
-    createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folders, isMobile,
+  const { boardLaneActive, cleanupOpen, collapseAllFolders, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
+    createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folderRowsDrawn, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
     restorePreBoardWidth, seedStateLanesMutation, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
-    setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setRemoteCrewError, setSeedError, setToggleSaveFailed,
+    setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setPrStatusRefreshError, setRemoteCrewError, setSeedError, setToggleSaveFailed,
     tagColumnsEnabled, warmCrews } = shell
   const { setCleanupError, setCleanupExpanded } = shell.sessionCleanup
   const { setBulkModel, setBulkModelError, setBulkModelOpen, setBulkSkipRunning } = shell.bulkModel
@@ -102,6 +106,13 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <FolderX size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_empty_folders_menu')}
               </DropdownMenuItem>
+              {/* Tree view only: board columns keep per-column collapse overrides this write does not clear. */}
+              {folderRowsDrawn && !boardLaneActive && folders.some(f => !f.collapsed) && (
+                <DropdownMenuItem data-testid="collapse-all-folders" onClick={collapseAllFolders}>
+                  <ChevronsDownUp size={14} className="text-muted" />
+                  {i18nT('pages.chatSidebar.collapse_all_folders')}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }} {...uiLocation('sessions.list-menu.switch-model')}>
                 <Cpu size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.switch_all_to_model')}
@@ -113,6 +124,17 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
               <DropdownMenuItem onClick={() => setManageTagsOpen(o => !o)} {...uiLocation('sessions.list-menu.manage-tags')}>
                 <TagIcon size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.manage_tags')}
+              </DropdownMenuItem>
+              {/* Re-reads the session cards' PR chips now instead of at the next
+               *  background read; the new states arrive over the websocket. A
+               *  repeat click needs no pending guard: the gateway floors forced
+               *  reads per chip. */}
+              <DropdownMenuItem data-testid="refresh-pr-status" onClick={() => {
+                setPrStatusRefreshError('')
+                api.refreshPullRequestStatuses().catch((err: unknown) => setPrStatusRefreshError(errMessage(err) || i18nT('pages.chatSidebar.refresh_pr_status_failed')))
+              }}>
+                <RefreshCw size={14} className="text-muted" />
+                {i18nT('pages.chatSidebar.refresh_pr_status')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -198,10 +220,14 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                  *  rather than only in a per-session ⋯ menu that has to be opened
                  *  on some unrelated session first. */}
                 <ImportSessionItem Item={DropdownMenuItem} />
-                {folders.length > 0 && (() => {
+                {/* A mate's folder (its home and everything under it) takes no
+                 *  chat a person starts, so the picker does not offer it. */}
+                {(() => {
+                  const pickable = folders.filter(f => !isMateManaged(f, folders))
+                  if (pickable.length === 0) return null
                   const folderRows = (() => {
-                    const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
-                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
+                    const roots = pickable.filter(f => !f.parent_id).sort(folderCompare)
+                    const childrenOf = (pid: string) => pickable.filter(f => f.parent_id === pid).sort(folderCompare)
                     const items: { f: ChatFolder; depth: number }[] = []
                     const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                     walk(roots, 0)

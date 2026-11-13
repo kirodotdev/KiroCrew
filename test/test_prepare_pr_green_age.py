@@ -18,6 +18,9 @@ green.
 from __future__ import annotations
 
 import functools
+import json
+import re
+import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -26,16 +29,12 @@ import pytest
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = (
-    ROOT
-    / "src"
-    / "kiro_crew"
-    / "builtin_skills"
-    / "kirocrew-dev"
-    / "kirocrew-prepare-pr"
-    / "scripts"
-    / "green_age.py"
-)
+_SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
+SCRIPT = _SKILL_DIR / "scripts" / "green_age.py"
+
+# SKILL.md spells the cap as a word, so a change to RESYNC_CAP has to reach the
+# prose too; an entry missing here is a KeyError naming the number that moved.
+_CAP_WORDS = {2: "two", 3: "three", 4: "four", 5: "five"}
 
 
 @pytest.fixture()
@@ -371,21 +370,12 @@ def test_the_skill_states_the_loops_own_bounds(mod) -> None:
     On a 19-minute CI against a ~1.4-minute merge gap, a PR overlapping a churned
     file could re-sync forever; and an exit 2 must not read as either verdict.
     """
-    skill = " ".join(
-        (
-            ROOT
-            / "src"
-            / "kiro_crew"
-            / "builtin_skills"
-            / "kirocrew-dev"
-            / "kirocrew-prepare-pr"
-            / "SKILL.md"
-        )
-        .read_text(encoding="utf-8")
-        .split()
-    )
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
 
-    assert "three consecutive green-age re-syncs on one PR, hand it to the user" in skill
+    # The cap is a code the script returns, not advice the reader has to follow:
+    # a loop cycle wakes with no memory, so prose alone never bound it.
+    assert "the re-sync cap is spent: do NOT rebase" in skill
+    assert "after {} green-age re-syncs".format(_CAP_WORDS[mod.RESYNC_CAP]) in skill
     # Exit 30 does not get to jump the queue in front of a settling round.
     assert "does NOT override the no-push-while-runs-are-in-flight rule" in skill
     # Exit 2 satisfies no criterion and blocks none.
@@ -537,6 +527,386 @@ def test_a_failed_gh_call_in_pr_mode_is_an_environment_error(mod, monkeypatch) -
     monkeypatch.setattr(mod, "run", lambda args: (1, "", "gh: not logged in"))
     with pytest.raises(mod.EnvError):
         mod._pr_files("42")
+
+
+# --- the re-sync cap ---------------------------------------------------------
+#
+# A STALE answer says "rebase", and on a base that moves every minute it keeps
+# saying so -- each rebase throwing away a green the head had already earned.
+# These cases pin the budget that stops it, and the one thing that matters more
+# than stopping: that an unreadable budget changes nothing.
+
+
+def _stub_gh(mod, monkeypatch, *, pr_files, comments):
+    """Answer both ``gh pr view`` shapes; return the log of gh argv issued.
+
+    ``comments`` is the ``(rc, stdout)`` the counting call gets, so a test can
+    hand it a number, a failure, or junk. Everything that is not ``gh`` falls
+    through to the real runner, because the git half of the verdict is measured
+    against real repositories.
+    """
+    real_run = mod.run
+    seen: list[list[str]] = []
+
+    def fake_run(args):
+        if args[:3] == ["gh", "pr", "view"]:
+            seen.append(list(args))
+            # The counting call asks for `author,comments` in one --json value, so
+            # the field name is a substring of an argument rather than an argument.
+            if any("comments" in arg for arg in args):
+                return comments[0], comments[1], ""
+            return 0, "".join(f"{path}\n" for path in pr_files), ""
+        return real_run(args)
+
+    monkeypatch.setattr(mod, "run", fake_run)
+    return seen
+
+
+def _counts_comments(argv):
+    return any("comments" in arg for arg in argv)
+
+
+def _template_text():
+    """monitor-loop.md with the seams between adjacent string literals closed.
+
+    The `monitor_start` call it documents is Python source, so its `message` is a
+    run of concatenated literals and any phrase in it may be split wherever the
+    author wrapped the line. Joining the seams first means these assertions are
+    about what the loop receives rather than about the file's line breaks, and a
+    later reflow of the call cannot redden them for no semantic reason.
+    """
+    text = (_SKILL_DIR / "references" / "monitor-loop.md").read_text(encoding="utf-8")
+    return re.sub(r'"[ \t]*\n[ \t]*"', "", text)
+
+
+def _overlapping(pair):
+    """A branch and a base that collide in one file, so the verdict is STALE."""
+    pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
+    pair.base_gains({"src/kiro_crew/ledger/store.py": "VALUE = 3\n"})
+    return ["src/kiro_crew/ledger/store.py"]
+
+
+def _comment(login, body, assoc="CONTRIBUTOR"):
+    """One comment in the shape ``gh pr view --json author,comments`` returns."""
+    return {"author": {"login": login}, "authorAssociation": assoc, "body": body}
+
+
+def _jq_count(mod, comments, author="author"):
+    """What the selector answers for a payload, run through a real ``jq``.
+
+    ``gh`` evaluates the program remotely, so a stubbed runner returns a number
+    without it ever executing. Every case that asserts WHICH comments count has
+    to go through this.
+    """
+    proc = subprocess.run(
+        [shutil.which("jq"), "-r", mod.resync_selector()],
+        input=json.dumps({"author": {"login": author}, "comments": list(comments)}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        # Bounded so a jq that never exits fails at this line instead of hanging
+        # the xdist worker, which loses the whole run rather than one test.
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def _resync_body(mod):
+    return mod.RESYNC_MARKER + " `a.py` since this head went green; CI re-running."
+
+
+def test_a_spent_re_sync_cap_is_its_own_exit_code(mod, monkeypatch, pair, capsys) -> None:
+    """At the cap the overlap is still real, but another rebase is the wrong answer.
+
+    So it cannot share exit 30: the two call for opposite actions, and a caller
+    that had to tell them apart from prose is exactly how the cap went unenforced.
+    """
+    files = _overlapping(pair)
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, str(mod.RESYNC_CAP)))
+
+    code = _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    assert code == mod.EXIT_CAP_SPENT
+    assert code != mod.EXIT_STALE
+    err = capsys.readouterr().err
+    assert "CAP SPENT" in err
+    assert "Do NOT rebase" in err
+
+
+def test_one_re_sync_short_of_the_cap_still_says_rebase(mod, monkeypatch, pair, capsys) -> None:
+    """The cap diverts only once it is spent; below it the old verdict stands."""
+    files = _overlapping(pair)
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, str(mod.RESYNC_CAP - 1)))
+
+    code = _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    assert code == mod.EXIT_STALE
+    assert "STALE:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answer", [(1, ""), (0, ""), (0, "not a number")])
+def test_an_unreadable_re_sync_count_leaves_the_verdict_stale(
+    mod, monkeypatch, pair, capsys, answer
+) -> None:
+    """A budget nobody can read must not invent a verdict in either direction.
+
+    Reading it as spent would strand a PR that has never been re-synced; the
+    overlap is the part that was actually measured, so the answer stays the one
+    this script gave before the cap existed.
+    """
+    files = _overlapping(pair)
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=answer)
+
+    code = _run_main(mod, monkeypatch, pair, "--pr", "42")
+    payload = mod.summarize(pr="42")
+
+    assert code == mod.EXIT_STALE
+    assert payload["resyncs"] == -1
+    assert payload["cap_spent"] is False
+    assert "CAP SPENT" not in capsys.readouterr().err
+
+
+def test_a_fresh_answer_never_reads_the_re_sync_budget(mod, monkeypatch, pair) -> None:
+    """No overlap means no rebase, so the budget is irrelevant and unpaid for.
+
+    The count costs an API call on a token every workflow in the repository
+    shares, and this script runs once per poll cycle on every open PR, so it is
+    read only on the path that could actually spend it.
+    """
+    pair.branch_changes({"docs/readme.md": "branch only\n"})
+    pair.base_gains({"src/kiro_crew/chat/runner.py": "def go():\n    return 2\n"})
+    seen = _stub_gh(mod, monkeypatch, pr_files=["docs/readme.md"], comments=(0, "9"))
+
+    code = _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    assert code == mod.EXIT_FRESH
+    assert seen, "the files call should still have been issued"
+    assert not [argv for argv in seen if _counts_comments(argv)]
+
+
+def test_the_counted_marker_is_the_comment_both_callers_are_told_to_post(mod) -> None:
+    """The count is only as good as the wording it matches.
+
+    Reword the comment and the counter silently matches nothing, the cap never
+    trips, and the loop is back to rebasing forever -- a failure that looks
+    exactly like a PR whose base never moves.
+
+    Anchored on the INSTRUCTION in each file rather than on the marker appearing
+    anywhere in it. Both files also explain the mechanism in prose that names the
+    marker, so a bare substring search stays green while the one line a cycle
+    actually follows is reworded out from under the counter.
+    """
+    skill = (_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    # SKILL.md dictates the comment in backticks; the template quotes it inside
+    # the `message` string, which is the only copy a woken cycle ever reads.
+    assert "comment: `{}".format(mod.RESYNC_MARKER) in skill
+    assert "'{}'".format(mod.RESYNC_MARKER) in _template_text()
+
+
+@pytest.mark.skipif(
+    shutil.which("jq") is None,
+    reason="requires jq to evaluate the selector gh otherwise runs for us",
+)
+def test_the_selector_counts_only_re_syncs_somebody_could_have_pushed(mod) -> None:
+    """``gh`` evaluates the selector remotely, so run it here against a payload.
+
+    A stubbed runner answers a number without the program ever executing, which
+    would leave the part that decides WHAT counts untested, and both halves of
+    that decision have a failure mode. Counting any matching body lets a
+    passer-by strand the PR on exit 31 with its budget unspent. Counting only
+    the author's misses a maintainer driving a branch they did not author, whose
+    re-syncs are real, and the cap silently stops applying to them.
+    """
+
+    resync = _resync_body(mod)
+    comments = [
+        # The author's own re-syncs, whatever their association: an outside
+        # contributor driving their own fork PR reads CONTRIBUTOR.
+        _comment("author", resync),
+        _comment("author", resync),
+        # A maintainer driving a branch they did not author -- an assigned PR,
+        # or a fork with maintainer edits on -- really did spend a re-sync.
+        _comment("maintainer", resync, assoc="MEMBER"),
+        # Neither the author nor able to push: cannot spend the budget.
+        _comment("drive-by", resync),
+        _comment("stranger", resync, assoc="NONE"),
+        # The author quoting the marker mid-sentence is not a re-sync record.
+        _comment("author", "Earlier I posted " + mod.RESYNC_MARKER),
+    ]
+    assert _jq_count(mod, comments) == "3"
+
+
+@pytest.mark.skipif(
+    shutil.which("jq") is None,
+    reason="requires jq to evaluate the selector gh otherwise runs for us",
+)
+def test_a_reset_comment_restarts_the_count_and_only_a_member_can_post_one(mod) -> None:
+    """Who may reset is the whole security of the cap, so it is asserted per author.
+
+    The count is what exit 31 reads, so whoever can zero it can hand the PR
+    another budget. The author clause that the re-sync count needs would be fatal
+    here: the loop drives a PR as its author, so an author who could reset would
+    be a loop re-arming itself and the cap would bound nothing at all. A
+    passer-by must not be able to either. Both negatives are below, next to the
+    positive, because the selector is one program and a change that widens the
+    reset arm would otherwise only redden a case nobody wrote.
+    """
+    resync = _resync_body(mod)
+    spent = [_comment("author", resync) for _ in range(mod.RESYNC_CAP)]
+    reset = mod.RESET_MARKER + " -- I rebased it myself, carry on."
+
+    # The positive: a member of the project hands the PR back, and the re-syncs
+    # after the reset are the only ones left counting.
+    assert _jq_count(mod, spent + [_comment("owner", reset, assoc="OWNER")]) == "0"
+    assert (
+        _jq_count(
+            mod,
+            spent + [_comment("owner", reset, assoc="OWNER"), _comment("author", resync)],
+        )
+        == "1"
+    )
+    # Repeated resets each restart it; there is no cumulative memory to leak.
+    assert (
+        _jq_count(
+            mod,
+            [
+                _comment("author", resync),
+                _comment("owner", reset, assoc="OWNER"),
+                _comment("author", resync),
+                _comment("maintainer", reset, assoc="COLLABORATOR"),
+                _comment("author", resync),
+            ],
+        )
+        == "1"
+    )
+
+    # The author is NOT a resetter, even though the same login's re-syncs count.
+    assert _jq_count(mod, spent + [_comment("author", reset)]) == str(mod.RESYNC_CAP)
+    # Nor is a drive-by, who could otherwise keep any PR's loop running forever.
+    assert _jq_count(mod, spent + [_comment("stranger", reset, assoc="NONE")]) == str(
+        mod.RESYNC_CAP
+    )
+    # Quoting the phrase mid-body is discussion, not a reset: same anchoring rule
+    # the re-sync marker gets, or talking about a reset would perform one.
+    assert _jq_count(mod, spent + [_comment("owner", "See " + mod.RESET_MARKER, "OWNER")]) == str(
+        mod.RESYNC_CAP
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("jq") is None,
+    reason="requires jq to evaluate the selector gh otherwise runs for us",
+)
+def test_a_reset_hands_a_capped_pr_back_to_the_loop(mod, monkeypatch, pair, capsys) -> None:
+    """Exit 31 has to be an exit a PR can come back from; that is the whole fix.
+
+    Asserted end to end rather than on the selector alone, because the door is
+    open only if all three parts agree: the selector restarts the count, the
+    summary carries it, and ``main`` picks 30 over 31 again. Feeding the exit
+    codes a hand-written number instead would assert the number.
+    """
+    files = _overlapping(pair)
+    resync = _resync_body(mod)
+    spent = [_comment("author", resync) for _ in range(mod.RESYNC_CAP)]
+    handed_back = spent + [
+        _comment("owner", mod.RESET_MARKER + " -- looked at it, carry on.", assoc="OWNER")
+    ]
+
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, _jq_count(mod, spent)))
+    assert _run_main(mod, monkeypatch, pair, "--pr", "42") == mod.EXIT_CAP_SPENT
+    assert "CAP SPENT" in capsys.readouterr().err
+
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, _jq_count(mod, handed_back)))
+    code = _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    assert code == mod.EXIT_STALE
+    err = capsys.readouterr().err
+    assert "STALE:" in err
+    assert "CAP SPENT" not in err
+
+
+def test_the_cap_spent_message_names_the_way_back(mod, monkeypatch, pair, capsys) -> None:
+    """A bound with an undocumented exit is the one-way door all over again.
+
+    The mechanism is only half the fix: the person who meets exit 31 is told to
+    take the PR over, and the reset is worth nothing if that message does not say
+    it exists. It also has to keep saying the comments must not be deleted, since
+    deleting them clears the count too and destroys the record it reads.
+    """
+    files = _overlapping(pair)
+    _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, str(mod.RESYNC_CAP)))
+
+    _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    err = capsys.readouterr().err
+    assert mod.RESET_MARKER in err
+    assert "do not delete the re-sync comments" in err
+
+
+def test_the_reset_is_documented_where_a_cycle_actually_reads_it(mod) -> None:
+    """The loop must ask for a reset and never post one, so both files must say so.
+
+    `green_age.py` accepts a reset from any member of the project, and the
+    account a loop runs as is often exactly that, so nothing server-side stops a
+    cycle from writing its own. The only thing that does is the instruction --
+    and a cycle wakes with no memory, so an instruction missing from the arming
+    template never reaches it, however clearly SKILL.md states it.
+    """
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    template = " ".join(_template_text().split())
+
+    for text in (skill, template):
+        assert mod.RESET_MARKER in text
+        assert "never post" in text
+    # Each reset buys the same budget as the first, so the prose and RESYNC_CAP
+    # cannot drift into promising a wider one.
+    assert "grants another {}".format(_CAP_WORDS[mod.RESYNC_CAP]) in skill
+
+
+def test_the_counting_call_asks_github_for_the_author(mod, monkeypatch, pair) -> None:
+    """The author clause is useless if the field it reads was never requested.
+
+    `gh` returns only the fields `--json` names, so a selector comparing
+    `.author.login` against a payload without `author` compares against null and
+    counts nothing -- the cap would never trip, silently.
+    """
+    files = _overlapping(pair)
+    seen = _stub_gh(mod, monkeypatch, pr_files=files, comments=(0, "0"))
+
+    _run_main(mod, monkeypatch, pair, "--pr", "42")
+
+    counting = [argv for argv in seen if _counts_comments(argv)]
+    assert counting, "the counting call was never issued"
+    requested = counting[0][counting[0].index("--json") + 1]
+    assert "author" in requested.split(",")
+    assert "comments" in requested.split(",")
+
+
+def test_the_arming_template_carries_the_cap_and_the_in_flight_guard(mod) -> None:
+    """The template's ``message`` is the whole instruction a woken cycle receives.
+
+    It is re-injected verbatim and each wake is a fresh turn, so a rule that
+    lives only in SKILL.md never reaches the loop. Both guards below were
+    missing from this call while SKILL.md stated them, and a loop on a PR whose
+    base kept moving rebased away a head that had already gone green.
+    """
+    template = _template_text()
+    assert "green_age {}".format(mod.EXIT_CAP_SPENT) in template
+    assert "Do NOT rebase" in template
+    assert "autonudge_stop" in template
+    # The in-flight guard, and the reason a cycle must not push over a live head.
+    assert "in_progress runs" in template
+    assert "a cancelled lane never posts" in template
+
+    # A re-sync waits for the head to settle; it never cancels it. Cancelling
+    # belongs to exit 20, after a decision to change code, so the 30 clause must
+    # not offer it -- a cycle reading "cancel" beside its own verdict will take it.
+    thirty = template.split("green_age 30:", 1)[1].split(
+        "green_age {}:".format(mod.EXIT_CAP_SPENT)
+    )[0]
+    assert "wait a cycle" in thirty
+    assert "cancel" not in thirty.lower()
 
 
 # --- the helpers the classes are built from ----------------------------------

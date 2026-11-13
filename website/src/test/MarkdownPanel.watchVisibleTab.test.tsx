@@ -28,6 +28,7 @@ import { namedCeiling } from './namedCeiling'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
+import type { PartialCause } from '../utils/fileReadQuery'
 
 const highlightRegistry = new Map<string, Range[]>()
 class StubHighlight {
@@ -94,6 +95,7 @@ const { api } = await import('../api/client')
 const { fetchFileRead } = await import('../utils/fileReadQuery')
 const { copyToClipboard } = await import('../utils/clipboard')
 const { i18nT } = await import('../i18n/t')
+const { i18next } = await import('../i18n/all')
 const { default: MarkdownPanel, MISSING_FILE_RETRY_MS, MISSING_FILE_RETRY_MAX_MS } = await import('../components/MarkdownPanel')
 
 /** Reads of `path` that went through `fetchFileRead` -- fresh fetches of the
@@ -291,6 +293,12 @@ afterEach(() => {
 /** Let every effect and settled promise land. */
 const settle = () => new Promise(resolve => setTimeout(resolve, 30))
 
+/** Ceiling for the queries every mounted panel starts on mount to settle: the ⋯ menu's knowledge config and
+ *  artifact lookup, the installed apps, the prerequisite check and the diff probe. Six panels at most. */
+const PANEL_QUERIES_LANDED = namedCeiling('PANEL_QUERIES_LANDED', 5000)
+/** Wait for those reads, so their results land inside this wait and not inside `settle()`'s sleep. */
+const queriesLanded = () => waitFor(() => expect(qc.isFetching()).toBe(0), PANEL_QUERIES_LANDED)
+
 /** Ceiling for the banner's "Copied" label to revert to "Copy content": the
  *  panel resets it on a 1500 ms timer after a successful copy. */
 const COPIED_LABEL_RESETS = namedCeiling('COPIED_LABEL_RESETS', 3000)
@@ -300,6 +308,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     render(<SixTabs activePath="/tmp/c.md" onDiskContent={vi.fn()} />, { wrapper })
 
     await waitFor(() => expect(openStreams()).toHaveLength(1))
+    await queriesLanded()
     await settle()
     // Six live panels, ONE connection: the five hidden tabs never opened a
     // stream at all -- `instances` counts every construction, closed or not.
@@ -326,6 +335,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     disk.set('/tmp/c.md', '')
     render(<SixTabs activePath="/tmp/c.md" onDiskContent={onDiskContent} />, { wrapper })
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('/tmp/c.md', '', false))
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/c.md')).toBe(2)
     expect(onDiskContent).toHaveBeenCalledTimes(1)
@@ -353,6 +363,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     // from the disk truth, so the change made while it was parked is on screen.
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith(
       '/tmp/d.md', '# /tmp/d.md\n\nrewritten while hidden\n', false))
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/d.md')).toBe(1)
     expect(onDiskContent).toHaveBeenCalledTimes(1)
@@ -370,6 +381,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
 
     disk.set('/tmp/b.md', '# /tmp/b.md\n\nrewritten while hidden\n')
     rerender(<SixTabs activePath="/tmp/b.md" edited={['/tmp/b.md']} onDiskContent={onDiskContent} />)
+    await queriesLanded()
     await settle()
 
     // The edits are the user's work; a disk push would clobber them. No read,
@@ -386,6 +398,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     rerender(<SixTabs activePath="/tmp/b.md" onDiskContent={onDiskContent} />)
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith(
       '/tmp/b.md', '# /tmp/b.md\n\nrewritten while hidden\n', false))
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/b.md')).toBe(1)
     expect(openStreams()).toHaveLength(1)
@@ -407,6 +420,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     rerender(<SixTabs activePath="/tmp/a.md" onDiskContent={onDiskContent} />)
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith(
       '/tmp/a.md', '# /tmp/a.md\n\nchanged during the visit to b\n', false))
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/a.md')).toBe(2)
     expect(openStreams()).toHaveLength(1)
@@ -451,6 +465,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     rerender(<Tabs activePath={code} />)
 
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith(code, 'export const x = 2\n', false))
+    await queriesLanded()
     await settle()
     expect(readsOf(code)).toBe(1)
     // Still no stream for the editing tab: the markdown tab's stream closed with
@@ -480,6 +495,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     // so it is dropped and nothing is restamped.
     rerender(<SixTabs activePath="/tmp/b.md" edited={['/tmp/b.md']} onDiskContent={onDiskContent} />)
     land()
+    await queriesLanded()
     await settle()
     expect(onDiskContent).not.toHaveBeenCalled()
     expect(readsOf('/tmp/b.md')).toBe(1)
@@ -490,6 +506,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     rerender(<SixTabs activePath="/tmp/b.md" onDiskContent={onDiskContent} />)
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith(
       '/tmp/b.md', '# /tmp/b.md\n\nrewritten while hidden\n', false))
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/b.md')).toBe(2)
     expect(onDiskContent).toHaveBeenCalledTimes(1)
@@ -581,6 +598,7 @@ describe('MarkdownPanel — the file watch follows the visible tab', () => {
     await waitFor(() => expect(screen.getByText(/cannot read file/i)).toBeTruthy())
     rerender(<SixTabs activePath="/tmp/b.md" onDiskContent={onDiskContent} />)
     rerender(<SixTabs activePath="/tmp/b.md" onDiskContent={onDiskContent} />)
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/b.md')).toBe(1)
     expect(onDiskContent).not.toHaveBeenCalled()
@@ -670,6 +688,7 @@ describe('MarkdownPanel — the first local edit fences the disk read', () => {
     // Only the post-edit read lands; it finds the text just written on screen
     // already and restamps nothing. The older revision never lands.
     await waitFor(() => expect(readsOf(CODE)).toBe(2))
+    await queriesLanded()
     await settle()
     expect(onDiskContent).not.toHaveBeenCalled()
     expect((screen.getByTestId('pierre-editor') as HTMLTextAreaElement).value).toBe('export const x = 3\n')
@@ -698,6 +717,7 @@ describe('MarkdownPanel — the first local edit fences the disk read', () => {
 
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: CODE_AS_OPENED + 'typed\n' } })
     land()
+    await queriesLanded()
     await settle()
     expect(onDiskContent).not.toHaveBeenCalled()
 
@@ -718,6 +738,7 @@ describe('MarkdownPanel — the first local edit fences the disk read', () => {
     await waitFor(() => expect(openStreams()).toHaveLength(1))
     rerender(<EditorTabs activePath={CODE} onDiskContent={onDiskContent} />)
     await waitFor(() => expect(readsOf(CODE)).toBe(1))
+    await queriesLanded()
     await settle()
     onDiskContent.mockClear()
 
@@ -728,6 +749,7 @@ describe('MarkdownPanel — the first local edit fences the disk read', () => {
     fireEvent.change(editor, { target: { value: 'export const x = 3\nexport const y = 4\n' } })
     write()
     await waitFor(() => expect(disk.get(CODE)).toBe('export const x = 3\n'))
+    await queriesLanded()
     await settle()
 
     // The later keystroke is still on screen, nothing was read over it, and the
@@ -752,6 +774,7 @@ describe('MarkdownPanel — the first local edit fences the disk read', () => {
     disk.set(CODE, CODE_AS_OPENED)
     qc.setQueryData(['file-read', CODE], { text: CODE_AS_OPENED, ok: true, status: 200, binary: false })
     render(<EditorTabs activePath={CODE} draft={{ [CODE]: 'export const x = 3\n' }} onDiskContent={onDiskContent} />, { wrapper })
+    await queriesLanded()
     await settle()
     // Dirty from the first render: no read.
     expect(readsOf(CODE)).toBe(0)
@@ -761,6 +784,7 @@ describe('MarkdownPanel — the first local edit fences the disk read', () => {
     // The post-save catch-up has run once the cache entry is gone: every read
     // the panel adopts drops it, this one included.
     await waitFor(() => expect(qc.getQueryState(['file-read', CODE])).toBeUndefined())
+    await queriesLanded()
     await settle()
 
     // The saved text is what the tab shows and what the disk holds; nothing
@@ -844,6 +868,7 @@ describe('MarkdownPanel — every catch-up read is a fresh fetch', () => {
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: 'export const x = 3\n' } })
     fireEvent.click(screen.getByTestId('pierre-save'))
     await waitFor(() => expect(freshReadsOf(CODE)).toBe(3))      // the post-save read
+    await queriesLanded()
     await settle()
 
     expect(readsOf(CODE)).toBe(freshReadsOf(CODE))
@@ -873,6 +898,7 @@ describe('MarkdownPanel — the re-armed stream and the catch-up read cost one r
 
     // The server's connect-time frame: the same body the catch-up read applied.
     act(() => { openStreams()[0].onmessage?.({ data: JSON.stringify({ content: disk.get('/tmp/a.md') }) }) })
+    await queriesLanded()
     await settle()
     expect(readsOf('/tmp/a.md')).toBe(1)
     expect(onDiskContent).toHaveBeenCalledTimes(1)
@@ -906,6 +932,7 @@ describe('MarkdownPanel — the re-armed stream and the catch-up read cost one r
     act(() => { openStreams()[0].onmessage?.({ data: JSON.stringify({ content: bodyOf('/tmp/a.md') }) }) })
     await waitFor(() => expect(readsOf('/tmp/a.md')).toBe(2))
     land()
+    await queriesLanded()
     await settle()
     expect(onDiskContent).not.toHaveBeenCalled()
   })
@@ -919,12 +946,14 @@ describe('MarkdownPanel — the re-armed stream and the catch-up read cost one r
     disk.set(CODE, CODE_AS_OPENED)
     render(<EditorTabs activePath={CODE} onDiskContent={onDiskContent} />, { wrapper })
     await waitFor(() => expect(readsOf(CODE)).toBe(1))
+    await queriesLanded()
     await settle()
     qc.setQueryData(['file-read', CODE], { text: CODE_AS_OPENED, ok: true, status: 200, binary: false })
 
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: 'export const x = 3\n' } })
     fireEvent.click(screen.getByTestId('pierre-save'))
     await waitFor(() => expect(readsOf(CODE)).toBe(2))
+    await queriesLanded()
     await settle()
     expect(onDiskContent).not.toHaveBeenCalled()
     expect(qc.getQueryState(['file-read', CODE])).toBeUndefined()
@@ -937,15 +966,15 @@ describe('MarkdownPanel — the re-armed stream and the catch-up read cost one r
  * found" placeholder a chip click on a deleted path seeds, or the empty text
  * buffer of a binary tab -- and `onClose` is what X / Escape reach.
  */
-function LastCopyTab({ content, binary = false, partial = false, onClose = () => {}, panelRef, filePath = '/tmp/b.md' }: {
-  content: string; binary?: boolean; partial?: boolean; onClose?: () => void; filePath?: string
+function LastCopyTab({ content, binary = false, partial = false, placeholder = false, onClose = () => {}, panelRef, filePath = '/tmp/b.md' }: {
+  content: string; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean; onClose?: () => void; filePath?: string
   panelRef?: React.Ref<import('../components/MarkdownPanel').MarkdownPanelHandle>
 }) {
   return (
     <MarkdownPanel
       ref={panelRef}
       embedded liveWatch active
-      filePath={filePath} content={content} savedBaseline={content} binary={binary} partial={partial}
+      filePath={filePath} content={content} savedBaseline={content} binary={binary} partial={partial} placeholder={placeholder}
       onContentChange={() => {}} onDiskContent={() => {}}
       onSave={async () => {}} onClose={onClose}
     />
@@ -958,14 +987,23 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // with the "file not found" sentence (`openFile`, the cold-tab hydration),
     // and a binary tab's text buffer is empty. The catch-up read answers 404
     // for both, and neither is a copy of anything: a banner there would offer
-    // to download the placeholder prose under the file's name.
+    // to download the placeholder prose under the file's name. The flag, not
+    // the sentence, says so: a language switch repaints without re-seeding.
     unreadable.add('/tmp/b.md')
     const placeholder = i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-    const { unmount } = render(<LastCopyTab content={placeholder} />, { wrapper })
+    const onClose = vi.fn()
+    const { rerender, unmount } = render(<LastCopyTab content={placeholder} placeholder onClose={onClose} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
+    await queriesLanded()
     await settle()
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
     expect(screen.queryByText(/cannot read file/i)).toBeNull()
+    await act(async () => { await i18next.changeLanguage('de') })
+    rerender(<LastCopyTab content={placeholder} placeholder onClose={onClose} />)
+    expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('dialog')).toBeNull()
     unmount()
 
     // Relative: the first panel's gone-file retry may have read once more
@@ -973,6 +1011,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const base = readsOf('/tmp/b.md')
     render(<LastCopyTab content="" binary />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(base + 1))
+    await queriesLanded()
     await settle()
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
   })
@@ -1067,6 +1106,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     render(<LastCopyTab content={bodyOf('/tmp/b.md')} onClose={onClose} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
     await waitFor(() => expect(openStreams()).toHaveLength(1))
+    await queriesLanded()
     await settle()
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
 
@@ -1121,6 +1161,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const onClose = vi.fn()
     render(<LastCopyTab filePath={CODE} content={CODE_AS_OPENED} onClose={onClose} />, { wrapper })
     await waitFor(() => expect(readsOf(CODE)).toBe(1))
+    await queriesLanded()
     await settle()
 
     const land = holdReads(CODE)
@@ -1128,6 +1169,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     await waitFor(() => expect(readsOf(CODE)).toBe(2))
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: CODE_AS_OPENED + 'typed\n' } })
     land()
+    await queriesLanded()
     await settle()
     expect(onClose).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -1139,13 +1181,15 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
   })
 
   // What the gateway hands a tab for a file it could not serve whole: a body
-  // cut at its character cap (`X-Truncated`), or one with the redaction pass's
-  // tag in place of a secret (`X-Redacted`). The verdict is the HOST's, stamped
+  // cut at its character cap (`X-Truncated`), one with the redaction pass's
+  // tag in place of a secret (`X-Redacted`), or one decoded with replacement
+  // characters (`X-Lossy-Decode`). The verdict is the HOST's, stamped
   // from the read's headers by whichever read filled the buffer -- here the
   // opening read, before this panel ever mounted -- and the body says nothing:
   // a whole file may quote the tag verbatim.
   const QUOTES_THE_TAG = bodyOf('/tmp/b.md') + 'token = [REDACTED: credential]\n'
-  for (const [shape, partial, body] of [['partial', true, bodyOf('/tmp/b.md')], ['whole, tag-quoting', false, QUOTES_THE_TAG]] as const) {
+  const B = bodyOf('/tmp/b.md')
+  for (const [shape, partial, body] of [['cut', 'truncated', B], ['redacted', 'redacted', B], ['lossily decoded', 'lossy', B], ['whole, tag-quoting', false, QUOTES_THE_TAG]] as const) {
     it(`names a ${shape} buffer for what the read said it was: banner, Download name and the close prompt's words`, async () => {
       // A partial buffer is not the whole file: the banner must not call it the
       // file's remaining contents, and a download of it must not pass a prefix
@@ -1153,11 +1197,17 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
       // the most that survives, so the close asks about it exactly as it asks
       // about a whole copy -- only the words change. A whole buffer that merely
       // contains the tag is whole: same guard, the plain words, the file's own
-      // name -- nothing about its shape is consulted.
+      // name -- nothing about its shape is consulted. A partial one names the
+      // read's own cause, never a guess between them.
+      const reason = partial ? i18nT(`components.markdownPanel.partial_reason_${partial}`) : ''
+      const CAUSE_WORDS = { truncated: /cut short/, redacted: /credentials/, lossy: /UTF-8/ }
+      const namesOnlyItsCause = (text: string | null) => { for (const [cause, words] of Object.entries(CAUSE_WORDS)) expect(words.test(text ?? ''), cause).toBe(cause === partial) }
       const onClose = vi.fn()
       const blobs: Blob[] = []
       const names: string[] = []
-      const suffix = partial ? '.partial' : ''
+      // `.partial` sits before the extension so the OS keeps the file's type:
+      // `b.md` -> `b.partial.md`, a whole copy stays `b.md`.
+      const expectedName = partial ? 'b.partial.md' : 'b.md'
       Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: (b: Blob) => { blobs.push(b); return 'blob:partial' } })
       Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: () => {} })
       const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { names.push(this.download) })
@@ -1165,21 +1215,23 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
         unreadable.add('/tmp/b.md')
         render(<LastCopyTab content={body} partial={partial} onClose={onClose} />, { wrapper })
         const banner = await screen.findByTestId('markdown-panel-missing-file')
-        if (partial) expect(banner.textContent).toMatch(/only part of it/i)
+        if (partial) expect(banner.textContent).toContain(i18nT('components.markdownPanel.file_not_found_partial_copy', { reason }))
         else expect(banner.textContent).toMatch(/nothing else holds/i)
         expect(banner.textContent).not.toMatch(partial ? /nothing else holds/i : /only part of it/i)
+        namesOnlyItsCause(banner.textContent)
 
         fireEvent.click(within(banner).getByRole('button', { name: i18nT('components.markdownPanel.download') }))
-        expect(names).toEqual([`b.md${suffix}`])
+        expect(names).toEqual([expectedName])
         expect(blobs[0].size).toBe(new TextEncoder().encode(body).length)
 
         fireEvent.keyDown(document, { key: 'Escape' })
         const dialog = await screen.findByRole('dialog')
-        expect(within(dialog).getByText(i18nT(partial ? 'components.markdownPanel.close_partial_copy_body' : 'components.markdownPanel.close_last_copy_body', { name: 'b.md' }))).toBeTruthy()
+        expect(within(dialog).getByText(i18nT(partial ? 'components.markdownPanel.close_partial_copy_body' : 'components.markdownPanel.close_last_copy_body', { name: 'b.md', reason }))).toBeTruthy()
+        namesOnlyItsCause(dialog.textContent)
         expect(onClose).not.toHaveBeenCalled()
         // The dialog's own rescue hands over the same buffer, under the same name.
         fireEvent.click(screen.getByTestId('markdown-panel-dialog-download'))
-        expect(names).toEqual([`b.md${suffix}`, `b.md${suffix}`])
+        expect(names).toEqual([expectedName, expectedName])
         fireEvent.click(within(dialog).getByRole('button', { name: i18nT('components.markdownPanel.close_last_copy_button') }))
         await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
       } finally {
@@ -1192,8 +1244,8 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
 
   it('carries the read\'s own partial verdict to the host with the text, so the tab is marked from the headers', async () => {
     // The panel's reads move the verdict the way they move the buffer: a read
-    // answering `X-Truncated` (or `X-Redacted`) hands the host `partial: true`
-    // beside the text, and a later read that comes back whole hands it
+    // answering `X-Truncated` hands the host `partial: 'truncated'` beside the
+    // text, and a later read that comes back whole hands it
     // `false` -- even when the text itself did not change, since the
     // provenance did.
     const onDiskContent = vi.fn()
@@ -1203,7 +1255,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
       <MarkdownPanel embedded liveWatch active filePath="/tmp/b.md" content={bodyOf('/tmp/b.md')} savedBaseline={bodyOf('/tmp/b.md')}
         onContentChange={() => {}} onDiskContent={onDiskContent} onSave={async () => {}} onClose={() => {}} />,
       { wrapper })
-    await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('a prefix of b\n', false, true))
+    await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('a prefix of b\n', false, 'truncated'))
   })
 
   it('marks a lossily decoded read partial too: a Latin-1 file shown with replacement characters is not the file as written', async () => {
@@ -1214,7 +1266,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
       <MarkdownPanel embedded liveWatch active filePath="/tmp/b.md" content={bodyOf('/tmp/b.md')} savedBaseline={bodyOf('/tmp/b.md')}
         onContentChange={() => {}} onDiskContent={onDiskContent} onSave={async () => {}} onClose={() => {}} />,
       { wrapper })
-    await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('caf\ufffd au lait\n', false, true))
+    await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith('caf\ufffd au lait\n', false, 'lossy'))
   })
 
   it('restamps a tab whose text is unchanged when only the partial verdict moved', async () => {
@@ -1224,7 +1276,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const onDiskContent = vi.fn()
     disk.set('/tmp/b.md', bodyOf('/tmp/b.md'))
     render(
-      <MarkdownPanel embedded liveWatch active filePath="/tmp/b.md" content={bodyOf('/tmp/b.md')} savedBaseline={bodyOf('/tmp/b.md')} partial
+      <MarkdownPanel embedded liveWatch active filePath="/tmp/b.md" content={bodyOf('/tmp/b.md')} savedBaseline={bodyOf('/tmp/b.md')} partial="truncated"
         onContentChange={() => {}} onDiskContent={onDiskContent} onSave={async () => {}} onClose={() => {}} />,
       { wrapper })
     await waitFor(() => expect(onDiskContent).toHaveBeenCalledWith(bodyOf('/tmp/b.md'), false, false))
@@ -1303,6 +1355,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const onClose = vi.fn()
     render(<LastCopyTab content={bodyOf('/tmp/b.md')} onClose={onClose} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
+    await queriesLanded()
     await settle()
     broken.add('/tmp/b.md')
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -1324,8 +1377,9 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // remaining version" would be false, and one more dialog on the way out.
     for (const content of ['', i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')]) {
       const onClose = vi.fn()
-      const { unmount } = render(<LastCopyTab content={content} onClose={onClose} />, { wrapper })
+      const { unmount } = render(<LastCopyTab content={content} placeholder={content !== ''} onClose={onClose} />, { wrapper })
       await waitFor(() => expect(readsOf('/tmp/b.md')).toBeGreaterThan(0))
+      await queriesLanded()
       await settle()
       broken.add('/tmp/b.md')
       fireEvent.keyDown(document, { key: 'Escape' })
@@ -1343,6 +1397,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const onClose = vi.fn()
     render(<LastCopyTab filePath={CODE} content={CODE_AS_OPENED} onClose={onClose} />, { wrapper })
     await waitFor(() => expect(readsOf(CODE)).toBe(1))
+    await queriesLanded()
     await settle()
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: CODE_AS_OPENED + 'edited\n' } })
     unreadable.add(CODE)
@@ -1370,6 +1425,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // for a read that could not answer at all.
     render(<LastCopyTab content={bodyOf('/tmp/b.md')} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
+    await queriesLanded()
     await settle()
     unreadable.add('/tmp/b.md')
     fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
@@ -1384,6 +1440,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // could not be matched.
     render(<LastCopyTab filePath={CODE} content={CODE_AS_OPENED} />, { wrapper })
     await waitFor(() => expect(readsOf(CODE)).toBe(1))
+    await queriesLanded()
     await settle()
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: CODE_AS_OPENED + 'edited\n' } })
     unreadable.add(CODE)
@@ -1484,6 +1541,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const ref = createRef<import('../components/MarkdownPanel').MarkdownPanelHandle>()
     render(<LastCopyTab content={bodyOf('/tmp/b.md')} panelRef={ref} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
+    await queriesLanded()
     await settle()
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
     unreadable.add('/tmp/b.md')
@@ -1501,6 +1559,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     const ref = createRef<import('../components/MarkdownPanel').MarkdownPanelHandle>()
     render(<LastCopyTab content={bodyOf('/tmp/b.md')} panelRef={ref} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
+    await queriesLanded()
     await settle()
     broken.add('/tmp/b.md')
     const failed = vi.fn()

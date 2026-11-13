@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import stat
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -35,6 +36,25 @@ def _config(**agents: KiroCrewAgentConfig) -> KiroCrewConfig:
     cfg = KiroCrewConfig()
     cfg.agents.update(agents)
     return cfg
+
+
+def _fold_case_under_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``Path.stat`` fold case for names directly under the data home.
+
+    The folder on disk is spelled in lower case; any spelling of it stats it.
+
+    Simulates macOS/Windows on a Linux host: both spellings share one
+    ``(st_dev, st_ino)``, and ``resolve()`` keeps the spelling it was given.
+    """
+    home = config_dir().resolve()
+    real_stat = Path.stat
+
+    def _stat(self: Path, *args, **kwargs):
+        if self.parent == home:
+            self = self.with_name(self.name.lower())
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _stat)
 
 
 class TestNaming:
@@ -83,6 +103,25 @@ class TestProvision:
         assert provision_member_workspace(cfg, "atlas") == "member-atlas-2"
         assert cfg.workspaces["member-atlas-2"].dir == "workspace-member-atlas-2"
 
+    def test_a_case_variant_of_the_directory_is_skipped(self, monkeypatch):
+        # The folder a hand-written ``WORKSPACE-MEMBER-ATLAS`` entry names.
+        (config_dir() / "workspace-member-atlas").mkdir()
+        _fold_case_under_home(monkeypatch)
+        cfg = _config(atlas=KiroCrewAgentConfig(workspace=AUTO_WORKSPACE))
+        cfg.workspaces["hand"] = WorkspaceConfig(dir="WORKSPACE-MEMBER-ATLAS")
+        assert provision_member_workspace(cfg, "atlas") == "member-atlas-2"
+
+    def test_a_case_variant_with_no_folder_yet_follows_path_compare(self, monkeypatch):
+        # With no identities to compare, _ws_dir_in_use retains Path's lexical
+        # comparison: case-sensitive on POSIX and case-insensitive on Windows.
+        _fold_case_under_home(monkeypatch)
+        cfg = _config(atlas=KiroCrewAgentConfig(workspace=AUTO_WORKSPACE))
+        cfg.workspaces["hand"] = WorkspaceConfig(dir="WORKSPACE-MEMBER-ATLAS")
+        path_type = type(config_dir())
+        folds = path_type("WORKSPACE-MEMBER-ATLAS") == path_type("workspace-member-atlas")
+        expected = "member-atlas-2" if folds else "member-atlas"
+        assert provision_member_workspace(cfg, "atlas") == expected
+
     def test_a_stale_entry_that_cannot_resolve_does_not_block_a_create(self, monkeypatch):
         # `~gone/project` after that account is removed: expanduser raises
         # RuntimeError. The entry cannot name our fresh directory, so it is skipped.
@@ -96,6 +135,15 @@ class TestProvision:
         cfg.workspaces["old"] = WorkspaceConfig(dir="~gone/project")
         assert provision_member_workspace(cfg, "atlas") == "member-atlas"
         doc = {"workspaces": {"old": {"dir": "~gone/project"}}}
+        publish_member_workspace(doc, "member-atlas", cfg.workspaces["member-atlas"])
+        assert "member-atlas" in doc["workspaces"]
+
+    def test_a_stale_entry_with_an_embedded_nul_does_not_block_a_create(self):
+        # resolve() raises ValueError on an embedded NUL; skipped like the above.
+        cfg = _config(atlas=KiroCrewAgentConfig(workspace=AUTO_WORKSPACE))
+        cfg.workspaces["old"] = WorkspaceConfig(dir="bad\x00dir")
+        assert provision_member_workspace(cfg, "atlas") == "member-atlas"
+        doc = {"workspaces": {"old": {"dir": "bad\x00dir"}}}
         publish_member_workspace(doc, "member-atlas", cfg.workspaces["member-atlas"])
         assert "member-atlas" in doc["workspaces"]
 
@@ -137,6 +185,19 @@ class TestPublish:
                 doc, "member-atlas", WorkspaceConfig(dir="workspace-member-atlas")
             )
         assert exc_info.value.code == "workspace_dir_in_use"
+
+    def test_a_case_variant_taken_under_the_lock_is_refused(self, monkeypatch):
+        """``WORKSPACE-MEMBER-ATLAS`` is ``workspace-member-atlas`` on macOS/Windows."""
+        # The folder a hand-written ``WORKSPACE-MEMBER-ATLAS`` entry names.
+        (config_dir() / "workspace-member-atlas").mkdir()
+        _fold_case_under_home(monkeypatch)
+        doc = {"workspaces": {"hand": {"dir": "WORKSPACE-MEMBER-ATLAS"}}}
+        with pytest.raises(MemberWorkspaceUnavailable) as exc_info:
+            publish_member_workspace(
+                doc, "member-atlas", WorkspaceConfig(dir="workspace-member-atlas")
+            )
+        assert exc_info.value.code == "workspace_dir_in_use"
+        assert "member-atlas" not in doc["workspaces"]
 
     def test_a_degraded_section_is_replaced(self):
         doc: dict = {"workspaces": []}

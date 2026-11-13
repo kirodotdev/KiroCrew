@@ -801,14 +801,13 @@ class TestShapeHashOverMerges(_HomeIsolated):
     def test_hygiene_decays_unused_confidence(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, models
 
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
         entry = models.LedgerEntry.create(pattern="p", fix="f", confidence=models.CONFIDENCE_HIGH)
-        entry.last_used = (
-            # flake-ok: pre-existing wall-clock read, moved verbatim; tracked for de-flaking
-            datetime.now(timezone.utc)
-            - timedelta(days=ledger.DECAY_AFTER_DAYS + 10)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry.last_used = (now - timedelta(days=ledger.DECAY_AFTER_DAYS + 10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         ledger._write_all([entry])
-        summary = ledger.hygiene()
+        summary = ledger.hygiene(now=now)
         self.assertEqual(summary["decayed"], 1)
         self.assertEqual(ledger.read_entries()[0].confidence, models.CONFIDENCE_MEDIUM)
 

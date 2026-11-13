@@ -230,7 +230,7 @@ def _scan_lineage_memory_db(scan: _Scan) -> bool:
                         try:
                             value = json.loads(value_json)
                         except (json.JSONDecodeError, RecursionError):
-                            scan.diagnostic("memories", "invalid_memory_record")
+                            scan.diagnostic("memories", "invalid_memory_record", failed=True)
                             continue
                         if _count_secret_fields(value):
                             scan.diagnostic("memories", "secret_fields_omitted")

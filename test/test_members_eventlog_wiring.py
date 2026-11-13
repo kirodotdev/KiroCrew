@@ -9,12 +9,8 @@ the ordering and durability of queued appends in
 ``test_members_eventlog_wiring_append_ordering.py``. The fixtures they share
 live in ``members_eventlog_wiring_helpers.py``.
 
-Isolation: every test re-roots the members space at a fresh ``tmp_path`` by
-monkeypatching ``kiro_crew.members.data_home`` (``get_service()`` rebuilds its
-singleton when ``members_root()`` moves) and drops the cached service with
-``set_service(None)`` via the ``_fresh_eventlog`` fixture, so no test observes
-another test's log. The fixture pattern for the aiohttp routes mirrors the
-neighbouring ``test_members_dm_thread.py``.
+Isolation: the ``_fresh_eventlog`` fixture re-roots ``kiro_crew.members.data_home``
+at ``tmp_path`` and calls ``set_service(None)``, so no test sees another's log.
 """
 
 from __future__ import annotations
@@ -47,9 +43,7 @@ def live_config_stamp_matches(monkeypatch):
     return FAKE_CONFIG_DIGEST
 
 
-# ---------------------------------------------------------------------------
 # 1. api_members: projections + idempotent lazy config reconcile
-# ---------------------------------------------------------------------------
 def _members_app(state) -> web.Application:
     from kiro_crew.dashboard.handlers.members import api_members
 
@@ -115,20 +109,11 @@ class TestApiMembersProjections:
     async def test_a_save_landing_after_the_config_load_is_not_overwritten(
         self, tmp_path, monkeypatch
     ):
-        """The reported window: the request's config goes stale mid-flight.
+        """A save landing mid-request must not be overwritten by the stale config.
 
-        `api_members` loads the agents config once and then reads bindings, logged
-        slugs, rosters and transcript tails before any row is projected. A save in
-        that gap writes config.json AND appends its own member/config, so the fold
-        already carries the NEW value while the request still holds the OLD one. The
-        per-row comparison then reads the save as drift and appends the pre-save
-        snapshot over it, and because the fold is last-wins per field with no
-        compaction, the roster row and the member_projection frame keep rendering
-        the pre-save value until something re-reads.
-
-        A predicate over the fold cannot see this: the save landed BEFORE the row's
-        observation, so nothing moves between observing and writing. What tells the
-        two apart is whether the config is still the bytes the request read.
+        `api_members` loads the config once, then reads more before projecting; a save
+        in that gap is already in the fold. Only checking that the config is still the
+        bytes the request read tells the two apart, since the fold did not move.
         """
         from kiro_crew.config import loader as loader_mod
         from kiro_crew.dashboard.handlers import members as handlers
@@ -156,11 +141,10 @@ class TestApiMembersProjections:
             svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "sonnet"
         ), "the first read never established a config baseline"
 
-        # THE SAVE, landing inside the window: after this request bound its stamp and
-        # before any row is projected. `_logged_slugs` is the request's third read,
-        # between the config load and the row loop, so a save driven from there lands
-        # exactly where the issue reports it. The request's `cfg` is deliberately NOT
-        # touched -- holding the pre-save object IS the staleness being tested.
+        # The save lands after the request bound its stamp and before any row is
+        # projected: `_logged_slugs` runs between the config load and the row loop.
+        # The request's `cfg` is left untouched; holding the pre-save object is the
+        # staleness being tested.
         real_logged_slugs = handlers._logged_slugs
 
         def _save_lands_mid_request(service):
@@ -196,16 +180,9 @@ class TestApiMembersProjections:
     ):
         """A request holding a config of unknown provenance must not correct the log.
 
-        The refusal above needs a digest to compare. When the load could not produce
-        one -- the files were unreadable, or the document was unusable and field
-        defaults stood in -- there is nothing to compare, and the same save landing
-        mid-request would be overwritten by values whose currency cannot be checked.
-        So the read withholds the correcting write entirely rather than falling back
-        to an unguarded append, and the rows still render.
-
-        This is a separate refusal from the stamped one, and the reason the stamped
-        entry takes no stand-in for "unknown": the sweep's exemption is reached by its
-        own name, so a failed load cannot borrow it.
+        With no digest (unreadable files, or defaults standing in) the read skips the
+        correcting write rather than append unguarded, and the rows still render. The
+        sweep's exemption is reached by its own name, so a failed load cannot borrow it.
         """
         from kiro_crew.config import loader as loader_mod
         from kiro_crew.dashboard.handlers import members as handlers
@@ -272,12 +249,9 @@ class TestApiMembersProjections:
     ):
         """Current is not enough: the config must also be what the operator wrote.
 
-        A file that read whole but would not parse names its bytes, so the currency
-        check passes -- and the object it produced carries field DEFAULTS where the
-        unparseable document should have supplied values. Correcting the log from those
-        defaults would overwrite good projected values because of a typo, which is the
-        same regression the currency check exists to prevent. So faithfulness is its own
-        condition, and ``degraded_sections`` is what reports it.
+        A file that will not parse still passes the currency check, but its object holds
+        field defaults; correcting from those would overwrite good values over a typo.
+        ``degraded_sections`` reports that.
         """
         cfg = _fake_config({CREW: _agent(model="sonnet")})
         cfg.degraded_sections = frozenset({"agent"})
@@ -317,15 +291,9 @@ class TestApiMembersProjections:
     ):
         """The stamp must describe the bytes the returned object was parsed from.
 
-        `KiroCrewConfig.load` answers from a cache keyed on stat metadata, so a
-        replacement landing the same byte count can present an identical fingerprint
-        and be served the EARLIER document. A stamp read around that call would hash
-        the new bytes and certify the old document, which is the one case a content
-        digest exists to catch -- so the digest comes out of the load, and a cache hit
-        reports the digest of the bytes ITS entry was parsed from.
-
-        Here the live content has moved on from what the served entry holds, so the
-        reconcile must write nothing at all.
+        `KiroCrewConfig.load` caches on stat metadata, so a same-size replacement can be
+        served the earlier document; the digest comes from the load's own entry. Here the
+        live content moved past the served entry, so the reconcile writes nothing.
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -371,14 +339,9 @@ class TestApiMembersProjections:
     ):
         """The second window: the fold moves after the comparison was made.
 
-        The stamp answers for the config side. It says nothing about the log, where
-        another writer can commit between the comparison and this write -- and that
-        writer's values are the newer word, so a correction decided against the older
-        fold must be refused rather than appended over it.
-
-        Distinct from the stale-load window: here the caller's config IS current and
-        what moved is the projection. The direct call below passes no stamp, so the
-        conditional append is the only thing that can refuse it.
+        Another writer can commit between the comparison and this write, and its values
+        are newer. The direct call passes no stamp, so only the conditional append can
+        refuse it.
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -430,11 +393,8 @@ class TestApiMembersProjections:
     ):
         """One log holds ONE member's folded state, so a colliding row must not read it.
 
-        A slug is lossy and colliding names are supported -- each activity entry
-        keeps the exact name, which is what keeps attribution working. A whole-member
-        PROJECTION cannot be shared that way: served on the wrong row it renders one
-        member's roster, activity, wake and driving state as the other's. The row is
-        served empty instead, and the header is what tells the two apart.
+        A slug is lossy, so a projection served on the wrong row would show one member's
+        state as the other's. The row is served empty; the header tells the two apart.
         """
         cfg = _fake_config({CREW: _agent(model="claude-x")})
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
@@ -458,12 +418,8 @@ class TestApiMembersProjections:
     async def test_two_rows_sharing_one_slug_are_both_blank(self, tmp_path, monkeypatch):
         """The projection map is keyed by slug, so a collision must blank BOTH rows.
 
-        Two configured names can fold to one slug, and the response keys
-        projections by that slug -- so whichever row is projected last owns the
-        key. In one order the log's own member loses its state to the stranger's
-        blank; in the other the stranger's row renders the owner's roster,
-        activity, wake and driving state as its own. Neither is acceptable and the
-        difference is iteration order, so a shared slug is blank for everyone.
+        Whichever row is projected last owns the key, so the result would depend on
+        iteration order; a shared slug is blank for everyone.
         """
         other = "Code_Reviewer"
         assert members.slug_for_name(other) == members.slug_for_name(CREW), "precondition"
@@ -497,13 +453,8 @@ class TestApiMembersProjections:
     ):
         """A placeholder header names nobody, so it is not evidence of a second member.
 
-        ``ensure`` writes the header only while the log is fresh, so a writer with no
-        name in hand -- the message path -- decides what that log claims for life. It
-        resolves the name from the roster, but resolution can come up empty for a
-        member the config does not carry yet, and then the header keeps the SLUG. A
-        slug is a lossy fold, so reading that placeholder as an owner would blank the
-        member's own state once they DO appear in the roster, on the strength of a
-        value that was never a name.
+        A nameless writer for a member not yet in config leaves the slug in the header.
+        Reading that as an owner would blank the member's own state once they appear.
         """
         named = "Code_Reviewer"
         slug = members.slug_for_name(named)
@@ -567,11 +518,8 @@ class TestApiMembersProjections:
     ):
         """A nameless writer must not decide the header says the slug.
 
-        ``emit`` passes ``name or slug``, so the message path reaches ``ensure`` with
-        the slug. The header is written once, so accepting it would leave the log
-        claiming a value that is not a name for life -- and the roster then has to
-        treat it as unnamed, which costs the log its collision check. Resolution runs
-        only on the fresh path, so a member's config is read once ever.
+        ``emit`` passes ``name or slug`` and the header is written once, so a kept slug
+        would cost the log its collision check. Resolution runs only on the fresh path.
         """
         named = "Code_Reviewer"
         cfg = _fake_config({named: _agent(model="claude-x")}, default=named)
@@ -624,16 +572,10 @@ class TestApiMembersProjections:
     ):
         """A short secret URL parameter must not survive in the roster projection.
 
-        ``GET /api/members`` ships the same config leaf twice: once as the row's
-        own field (through ``_roster_mask`` / ``redact_external_text``) and once
-        inside ``projections.values.roster`` (through ``_redact_projection_value``).
-        A value such as ``https://h.example/v1?api_key=abc123`` -- whose query is
-        far under the exfiltration pass's length floor and whose value is not
-        credential-shaped -- is masked in the ROW but, unless the projection chain
-        carries the same URL-secret-parameter layer, travels verbatim in the
-        projection block, and ``MembersPage`` renders the projection in preference
-        to the row. The two chains must agree, so the projection carries the mask
-        too and the secret appears nowhere in the response.
+        ``GET /api/members`` ships the leaf as the row field (``_roster_mask``) and in
+        ``projections.values.roster`` (``_redact_projection_value``). A short query such as
+        ``?api_key=abc123`` is under the exfiltration length floor, and ``MembersPage``
+        renders the projection first, so both chains must mask it.
         """
         import json
 
@@ -714,9 +656,7 @@ class TestApiMembersProjections:
         assert newest["data"]["model"] == "gpt-y"
 
 
-# ---------------------------------------------------------------------------
 # 2. The roster is a READ: no creates, one view per row, the rest per member
-# ---------------------------------------------------------------------------
 def _projections_app(state) -> web.Application:
     """The per-member projections route, mounted the way the roster app above is."""
     from kiro_crew.dashboard.handlers.members import api_member_projections
@@ -739,14 +679,8 @@ SECRET_URL = "https://evil.example/x?token=AKIAIOSFODNN7EXAMPLE"
 def _member_log_root():
     """The directory a member log is actually written into.
 
-    Not ``members_root()``: a member's event log lives under the crew-log root for
-    the member kind, which is where the service itself is rooted. Counting files
-    anywhere else answers about a directory the write path never touches, so an
-    unchanged count there proves nothing about whether a log was created.
-
-    Resolved through ``data_home``, which the rootdir conftest pins per test via
-    ``KIROCREW_HOME`` -- that, not any per-fixture patch, is what keeps this count
-    scoped to the test's own isolated home.
+    Not ``members_root()``: logs live under the crew-log root for the member kind, so
+    a count anywhere else proves nothing. The conftest pins ``KIROCREW_HOME`` per test.
     """
     from kiro_crew.crew_log.store import crew_log_root
     from kiro_crew.eventlog.service import KIND_MEMBER
@@ -807,14 +741,9 @@ class TestRosterIsAPureRead:
     ):
         """A log that exists but cannot be proved is a REFUSAL, never a fresh baseline.
 
-        ``unit_ids`` skips a unit whose header it cannot read, parse, or fold back to
-        the directory holding it, so the enumeration this read trusts omits a log that
-        is right there on disk. Serving that omission as an empty baseline is the
-        dangerous half of the pair: the client keeps every cached row ABOVE the
-        sequence it is seeded at, so a stale roster row and stale drawer views stay on
-        display as though they were current, and live frames keep landing on them. The
-        refusal sentinel clears the slug instead, which is the honest answer when the
-        log cannot be read.
+        ``unit_ids`` skips a unit whose header it cannot read, so the log is missing from
+        the listing. An empty baseline would keep the client's stale cached rows on show;
+        the refusal sentinel clears the slug instead.
         """
         cfg = _fake_config({CREW: _agent(model="claude-x")})
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
@@ -886,13 +815,8 @@ class TestRosterIsAPureRead:
     async def test_a_log_created_after_the_listing_is_read_not_refused(self, tmp_path, monkeypatch):
         """A member's FIRST event must not cost that member its projections.
 
-        The listing is taken once, and two thread hops run before a row is projected,
-        so a member whose first event lands in that window has a log the listing never
-        saw. That is the ordinary beginning of every member's record, not a fault, and
-        the frame announcing it is already on its way -- so refusing the slug would
-        clear the row and drop that very frame. A directory the listing did not
-        account for is therefore re-asked rather than guessed at, and a log the store
-        proves reads like any other.
+        A first event landing after the listing gives a log the listing never saw.
+        Refusing it would clear the row and drop that frame, so the store is re-asked.
         """
         cfg = _fake_config({CREW: _agent(model="claude-x")})
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
@@ -971,13 +895,8 @@ class TestRosterIsAPureRead:
     ):
         """The per-member read is a READ: it never writes, not even a correction.
 
-        The config reconcile compares a config THIS request loaded against the folded
-        roster and appends what differs, so a save landing between the load and the
-        snapshot is undone by an append carrying the older values. The roster read is
-        where that comparison belongs: it runs for every logged member on every poll,
-        and its correcting append raises the log's sequence, so the corrected value
-        outranks an uncorrected one under higher-seq-wins. A second writer on a
-        per-member read path buys one member's correction and opens that window again.
+        The reconcile can undo a save landing mid-request, so it runs only on the roster
+        read; a second writer here would reopen that window for one member's correction.
         """
         cfg = _fake_config({CREW: _agent(model="claude-x")})
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
@@ -1142,12 +1061,8 @@ class TestRosterIsAPureRead:
     ):
         """``?member=`` may not name one member while the path names another's log.
 
-        The header check answers which member a log RECORDS, and a log whose header
-        holds the slug placeholder records nobody, so it admits any name. That alone
-        would let a read of one member's log be told to reconcile a second member's
-        config into it -- the wrong member's fields appended, and the pass recorded
-        as done so no later read corrects it. Ownership is a question about the
-        CONFIG and is asked there.
+        A slug-placeholder header admits any name, which would let another member's
+        config be reconciled into this log for good. Ownership is checked in the config.
         """
         other = "other-crew"
         cfg = _fake_config({CREW: _agent(model="claude-x"), other: _agent(model="claude-y")})
@@ -1175,11 +1090,8 @@ class TestRosterIsAPureRead:
     async def test_one_roster_read_enumerates_the_member_store_once(self, tmp_path, monkeypatch):
         """The whole-roster enumeration is paid once per request, not per closure.
 
-        ``slugs()`` is uncached -- it walks the member-kind root and reads a header
-        per member -- and two separate reads of it answer the same question, since
-        which members have a log cannot change inside one request. Asking twice
-        makes the read cost twice what the enumeration is for, against the very
-        claim that one pass beats a probe per row.
+        ``slugs()`` is uncached and reads a header per member, so a second call doubles
+        the cost for the same answer.
         """
         from kiro_crew.eventlog.service import get_service as _get
 
@@ -1218,15 +1130,8 @@ class TestRosterIsAPureRead:
     ):
         """A nameless writer's own create resolves the placeholder, not the read.
 
-        The roster read creates nothing, so the FIRST WRITER creates a member's log
-        -- and a writer with no name in hand passes the slug, which names nobody and
-        would scope that member's own activity records out of their own projection.
-
-        That resolution does not depend on the roster read at all: ``ensure``
-        resolves a placeholder against live config on the fresh-create path, which
-        is exactly the path a nameless writer takes. Pinned with a name that DIFFERS
-        from its slug, because a member legitimately named after its own slug cannot
-        tell a resolved header from an unresolved one.
+        ``ensure`` resolves a slug placeholder against live config on the fresh-create
+        path. The name differs from its slug, or a resolved header would look unresolved.
         """
         import json
 

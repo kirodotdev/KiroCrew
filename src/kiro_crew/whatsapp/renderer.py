@@ -187,8 +187,13 @@ def _sub_outside_code(
 def _convert_line(line: str) -> str:
     heading = _HEADING_RE.match(line)
     if heading:
-        # WhatsApp has no headings; bold the text instead.
-        line = f"*{heading.group(2).strip()}*"
+        # WhatsApp has no headings; bold the text instead. Bold cannot nest, so
+        # bold marks already inside the heading are dropped first: wrapping
+        # ``**Summary**`` again left literal asterisks around the word.
+        inner = heading.group(2).strip()
+        inner = _sub_outside_code(_BOLD_RE, lambda m: m.group(1), inner)
+        inner = _sub_outside_code(_BOLD_US_RE, lambda m: m.group(1), inner)
+        line = f"*{inner}*"
     line = _BULLET_RE.sub(lambda m: f"{m.group(1)}• ", line)
     line = _sub_outside_code(_BOLD_RE, lambda m: f"*{m.group(1)}*", line)
     line = _sub_outside_code(_BOLD_US_RE, lambda m: f"*{m.group(1)}*", line)

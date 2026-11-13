@@ -4,6 +4,7 @@ import { Command, Loader2 } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { selectSlotsWithLiveLastTs } from '../../store/slotLastTs'
+import { selectPersonSlots } from '../../store/dashboardSlice'
 import { findReport } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -27,15 +28,16 @@ import {
   type ContributedCommand,
 } from './contributedCommands'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { usePointerMotion } from '../../hooks/usePointerMotion'
-import { PREVIEW_CREW } from '../../utils/previewFlags'
 import { ARTIFACTS_ROW_LIMIT, COPY_KEY, DEBOUNCE_MS, ENTER_KEY, SKELETON_WIDTHS, actionLabel, headerOf, rootRowCopyable, type Scope } from './commandBarOverlayModel'
 import { useCommandBarOverlayEngines } from './useCommandBarOverlayEngines'
 import { useCommandBarOverlayRootRows } from './CommandBarOverlayRootRows'
+import { crewWaitingApprovals } from '../../pages/chat/command-center/model'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
 import { useCommandBarOverlayActivation } from './useCommandBarOverlayActivation'
 import { commandBarOverlaySlotRenderer } from './CommandBarOverlaySlot'
+import { isQuickSearchToggleEvent } from '../../lib/quickSearchShortcut'
 
 /**
  * Command Bar — the ⌘K launcher.
@@ -59,26 +61,14 @@ export default function CommandBarOverlay({
   open,
   onClose,
   initialQuery = '',
+  opener = null,
 }: {
   open: boolean
   onClose: () => void
   initialQuery?: string
+  opener?: HTMLElement | null
 }) {
   const ime = useImeGuard()
-  /**
-   * Whether the Crewmates preview is on for this reader.
-   *
-   * This bar is an INGRESS to `/members`, and that page is registered with
-   * `previewFlag: PREVIEW_CREW` — so every other door to it applies this gate, and a
-   * surface that did not would advertise a page the operator has not opted into. The
-   * app ships `defaultEnabled: true`, so without this a default install shows
-   * `Search Crewmates` in the root, carries a typed query into it, and lets Enter
-   * reach `/members` while the page itself is supposed to be invisible.
-   *
-   * It gates all THREE rows this feature adds — the view row, the fallback row and the
-   * empty-state row — because each one is independently reachable.
-   */
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
   const vv = useVisualViewport()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -191,16 +181,42 @@ export default function CommandBarOverlay({
   // owe the user something without issuing a request: the facts are already here,
   // and the alternative surfaces (sidebar, recents) are reading the same three.
   const liveSlots = useAppSelector(selectSlotsWithLiveLastTs)
+  // The person's own sessions: a Crew Mode chat's workers are listed in its side
+  // panel, never in the Needs You or Recent sessions rows (the full set stays for
+  // the engines, which key navigation and the mates' running state on it).
+  const personSlots = useAppSelector(selectPersonSlots)
+  // What those hidden workers owe the person, carried by their root: a worker's
+  // tool approval is counted on its conductor over the FULL slot set, so Needs
+  // You still names it (the fleet page counts the same way, `crewWaitingApprovals`).
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewWaitingApprovals reads
+  const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots, crewMode])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
+  const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
   const simplifiedToolNames = useSimplifiedToolNames()
   // `aria-modal` is a promise that Tab cannot reach the page behind the dialog, so
   // the trap has to be real. Escape is owned by the dialog panel's own keydown
   // handler below, which needs it to pop a scope before it closes the bar (and
   // claims it through the IME latch first).
-  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  //
+  // The trap does not restore focus: it would read the element to restore after
+  // mount, when the bar's own input already has it. The bar returns focus itself.
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false, restoreFocus: false })
+  // A dismiss -- Escape, an outside click, the gesture toggling the bar shut, a
+  // pane switch -- gives focus back to the control the bar was opened from, read
+  // by the host at the gesture. A row that closes the bar ran an action, and that
+  // action owns focus: a session row's composer handoff, in split view too, where
+  // the opener can be another pane's composer. That is the shell palette's rule.
+  const restoreRef = useRef(opener)
+  const closeFromRow = useCallback(() => {
+    restoreRef.current = null
+    onClose()
+  }, [onClose])
+  useEffect(() => () => restoreRef.current?.focus({ preventScroll: true }), [])
   const {
     sessions,
+    openSessionsKey,
     recentSessions,
     apps,
     chatFoldersRef,
@@ -211,7 +227,7 @@ export default function CommandBarOverlay({
     folders,
     runningMates,
     mates,
-  } = useCommandBarOverlayEngines({ scope, liveSlots, dispatch, navigate })
+  } = useCommandBarOverlayEngines({ scope, liveSlots, subagentQueued, dispatch, navigate })
 
   // The query is NOT reset here. It is seeded at mount, and clearing it on the open
   // edge would drop the type-ahead along with anything typed before this effect ran.
@@ -300,8 +316,8 @@ export default function CommandBarOverlay({
   commandByIdRef.current = commandById
 
   const ranked = useCommandBarOverlayRootRows({
-    liveSlots, unreadSlots, slotStatusDetail, simplifiedToolNames, dispatch, navigate, store, cycleTheme,
-    crewPreview, commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
+    liveSlots: personSlots, crewWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, dispatch, navigate, store, cycleTheme,
+    commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
     setAttentionExpanded,
   })
 
@@ -312,12 +328,13 @@ export default function CommandBarOverlay({
     mateQuery, matesError, matesSearchError, refetchMates,
     rowsAnswerTheQuery, slots, rowCount, scopeLoading, scopeFetching,
   } = useCommandBarOverlaySlots({
-    scope, debounced, query, sessions, recentSessions, artifacts, folderSortMode, folders, runningMates, mates,
-    argCommand, crewPreview, ranked, selected, setSelected,
+    scope, debounced, query, sessions, openSessionsKey, recentSessions, artifacts, folderSortMode, folders,
+    runningMates, mates,
+    argCommand, ranked, selected, setSelected,
   })
 
   const { seedNewSession, activateIndex } = useCommandBarOverlayActivation({
-    open, onClose, scope, setScope, query, setQuery, setDebounced, selected, setSelected, inputRef,
+    open, onClose: closeFromRow, scope, setScope, query, setQuery, setDebounced, selected, setSelected, inputRef,
     setUsage, setArgCommand, pendingRow, setPendingRow, setActionError, dialogRunRef,
     commandById, commandByIdRef, chatFoldersRef, dispatch, navigate, queryClient,
     slots, rowsAnswerTheQuery, scopeLoading, scopeFetching,
@@ -627,10 +644,13 @@ export default function CommandBarOverlay({
       // beats stopping propagation on the card, which would put a mouse handler on a
       // non-interactive dialog element for no behavioural gain.
       onMouseDown={e => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target !== e.currentTarget) return
+        // The press's own default action would clear the focus this close gives back.
+        e.preventDefault()
+        onClose()
       }}
     >
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a dialog owns the keyboard dismissal of its own subtree; the handler below is Escape only, and every gesture inside is on a real control */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a dialog owns the keyboard dismissal of its own subtree; the handler below dismisses on Escape and keeps every other key from reaching the page's global shortcuts, and every gesture inside is on a real control */}
       <div
         ref={dialogRef}
         // 680px, up from 576: at the narrower width a settings row's title and its
@@ -650,8 +670,17 @@ export default function CommandBarOverlay({
         // not any more: Tab reaches the scope chip and the Retry button, and Escape
         // must dismiss from either. Keydown from the input bubbles here, so this is
         // one owner rather than two.
+        //
+        // Every OTHER key stops here, so the page's global shortcuts (bubble-phase
+        // `document` listeners such as the Settings chord) do not act behind the bar,
+        // as the shared `Modal` keeps them out of its panel. The bar's own keys are
+        // handled on the input below, before they bubble here. The one key let through
+        // is the quick-search gesture, whose `window` listener toggles this bar shut.
         onKeyDown={e => {
-          if (e.key !== 'Escape') return
+          if (e.key !== 'Escape') {
+            if (!isQuickSearchToggleEvent(e.nativeEvent)) e.stopPropagation()
+            return
+          }
           // An Escape mid-composition belongs to the IME — it cancels the candidate
           // list, not the search scope or the bar. The claim owns the whole decline
           // contract (a declined key keeps its default for the IME and is stopped

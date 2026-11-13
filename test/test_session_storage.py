@@ -1,19 +1,8 @@
 """Tests for session storage measurement and the trash/restore cycle.
 
-Both stores are addressed through their real resolvers by pointing
-``KIROCREW_HOME`` and ``KIRO_HOME`` at temp directories, rather than patching the
-module's bound names, so the tests exercise the same path resolution the product
-uses and a change to where either store lives fails here.
-
-The invariant these tests exist to protect: a session's halves are always
-reclaimed and restored TOGETHER. Half a session is worse than either extreme — it
-either lists without resuming, or resumes without history.
-
-This file keeps the trash location, the single manifest read per payload, the
-manifest readers and the session lock held across the index purge. The other topics
-live in ``test_session_storage_measure.py``, ``_reclaim``, ``_restore``, ``_cotenants``,
-``_log_safety``, ``_empty_trash`` and ``_empty_trash_removal``, and the fixtures and
-builders they share in ``session_storage_helpers.py``.
+``KIROCREW_HOME`` and ``KIRO_HOME`` point at temp directories, so the real path
+resolvers run. A session's halves are always reclaimed and restored together: half a
+session either lists without resuming, or resumes without history.
 """
 
 from __future__ import annotations
@@ -50,13 +39,8 @@ class TestTrashLocation:
 class TestSingleTrashPass:
     """Each payload build reads each trash manifest exactly once.
 
-    ``list_trash`` is uncached and reads every batch manifest per call, so a
-    payload builder that calls it once for the totals (inside ``measure``) and
-    again for the wire array pays double I/O — and could ship totals that
-    contradict the array beside them if a stage/empty lands between the calls.
-    Both builders thread one list through ``measure(batches=...)`` instead,
-    mirroring the ``units=`` parameter and the counting test in
-    ``test_session_storage_measure.py``.
+    ``list_trash`` is uncached; a second call could also ship totals that contradict
+    the array if a stage lands between, so one list goes through ``measure(batches=...)``.
     """
 
     @staticmethod
@@ -335,16 +319,37 @@ class TestManifestReaders:
         assert session_storage._summarize_manifest(batch) is None
         assert session_storage._read_manifest(batch) is None
 
-    def test_undecodable_bytes_still_propagate(self, tmp_path: Path) -> None:
-        """read_text raised UnicodeDecodeError on corrupt bytes and the streaming
-        readers must keep that contract rather than silently absorbing it."""
+    def test_undecodable_bytes_read_as_unreadable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Bytes that are not UTF-8 make the manifest unreadable (None), the
+        posture every caller already keeps the batch's files safe under, rather
+        than an exception that fails the caller's whole operation."""
         batch = tmp_path / self._BATCH_ID
         batch.mkdir(parents=True)
         (batch / session_storage.MANIFEST_NAME).write_bytes(b'{"schema": 1}\n\xff\xfe garbage\n')
-        with pytest.raises(UnicodeDecodeError):
-            session_storage._read_manifest(batch)
-        with pytest.raises(UnicodeDecodeError):
-            session_storage._summarize_manifest(batch)
+        with caplog.at_level("WARNING", logger="kiro_crew.session_storage"):
+            assert session_storage._read_manifest(batch) is None
+            assert session_storage._summarize_manifest(batch) is None
+            assert session_storage._manifest_rels(batch) == []
+        assert "not valid UTF-8" in caplog.text
+
+    def test_one_undecodable_manifest_does_not_hide_the_other_batches(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """list_trash omits the one batch it cannot read and still lists the rest;
+        a restore of that batch is refused as not restorable, not crashed."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
+        [good] = session_storage.list_trash()
+        bad = session_storage.trash_root() / self._BATCH_ID
+        bad.mkdir()
+        (bad / session_storage.MANIFEST_NAME).write_bytes(b'{"schema": 1}\n\xff\xfe garbage\n')
+
+        assert [b.batch_id for b in session_storage.list_trash()] == [good.batch_id]
+        with pytest.raises(SessionStorageError):
+            session_storage.restore(self._BATCH_ID)
 
     def test_an_oserror_mid_iteration_returns_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -541,11 +546,8 @@ class TestManifestReaders:
 class TestReclaimHoldsTheSessionLockAcrossTheIndexPurge:
     """The search index's copy of a session's text must not come back after the move.
 
-    The index keeps that copy; the background indexer rebuilds a row from any
-    transcript still in place. A purge that merely PRECEDED the move therefore left a
-    window -- the indexer's write lands after it, and the text is in the index once
-    the files are gone. Both sides take ``ConversationLog._locked``, so the invariant
-    is that the purge runs while the reclaim holds that lock.
+    The indexer rebuilds rows from any transcript still in place, so the purge must run
+    while the reclaim holds ``ConversationLog._locked``, which the indexer also takes.
     """
 
     def test_the_purge_runs_while_the_unit_lock_is_held(
@@ -615,13 +617,8 @@ class TestReclaimHoldsTheSessionLockAcrossTheIndexPurge:
 class TestFileLocksDoNotPileUp:
     """``ConversationLog._file_locks`` must not grow one RLock per session forever.
 
-    The per-file writer lock is shared process-wide so two writers to one
-    transcript serialize. It is keyed by session path and held in a
-    ``WeakValueDictionary``, so an entry evicts once no one holds the lock
-    rather than one RLock accumulating per distinct session for the gateway's
-    life. That eviction is sound ONLY while every acquirer keeps a strong
-    reference for its whole critical section (so a concurrent writer to the same
-    path still gets the same object). Both facts are pinned here.
+    A ``WeakValueDictionary`` evicts unheld locks; that is sound only while every
+    acquirer keeps a strong reference for its whole critical section.
     """
 
     def test_locks_return_to_baseline_after_append_and_delete(self, tmp_path: Path) -> None:

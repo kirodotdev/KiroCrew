@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import safe_read_file, safe_read_file_bytes
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entry_is_muted,
@@ -37,9 +37,10 @@ from kiro_crew.mcp_discovery_server_info import (
     _mcp_sources,
     _scope_priority,
 )
+from kiro_crew.mcp_oauth_projection import oauth_withheld
 from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
-from kiro_crew.user_json import loads_user_jsonc
+from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
 
 logger = logging.getLogger("kiro_crew.mcp_discovery")
 
@@ -62,7 +63,7 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
                 loaded = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     configs.append(loaded)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
     # Bundled defaults.json (fallback when no project-dir)
@@ -73,7 +74,7 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
                 loaded = json.loads(bundled.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     configs.append(loaded)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
     # Installed agent config (always check for mcpServers)
@@ -123,7 +124,7 @@ def _mcp_names_from_file(path: Path) -> set[str]:
         return set()
     try:
         data = loads_user_jsonc(safe_read_file(str(path)))
-    except (json.JSONDecodeError, OSError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, TypeError):
         return set()
     servers = data.get("mcpServers") if isinstance(data, dict) else None
     if not isinstance(servers, dict):
@@ -156,7 +157,18 @@ def configured_mcp_aliases(*, data_home: Path, user_home: Path) -> set[str]:
     return {mcp_server_alias(name) for name in names}
 
 
-def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
+def _encoding_reason(path: Path) -> str | None:
+    """The fixed repair reason when *path* holds UTF-16 or marked UTF-32 text, else ``None``."""
+    try:
+        raw = safe_read_file_bytes(str(path))
+    except OSError:
+        return None
+    return None if raw is None else wide_bom_reason(raw)
+
+
+def _load_mcp_json_by_source(
+    skipped: list[tuple[Path, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Return ``{scope: {name: spec}}`` keyed by scope name.
 
     Reads every well-known MCP config location and bucketizes servers by
@@ -170,6 +182,10 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
     monkeypatch :data:`_MCP_JSON_PATHS` to a shorter tuple for isolation, the
     corresponding scopes are recovered by looking up each patched path; any
     unknown path falls back to :data:`SCOPE_KIROCREW`.
+
+    *skipped* gets ``(path, reason)`` for each file skipped because it is saved
+    as UTF-16 or UTF-32 (:func:`~kiro_crew.user_json.wide_bom_reason`), so the
+    dashboard can name it.
     """
     result: dict[str, dict[str, Any]] = {
         SCOPE_KIROCREW: {},
@@ -190,7 +206,20 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
             # JSONC-tolerant: Kiro itself reads these files with comments, so a
             # commented-out server must not drop every other server in the file.
             data = loads_user_jsonc(safe_read_file(str(p)))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            # Bytes that are not UTF-8, or not JSON, are unusable: skip the file.
+            # A UTF-16/UTF-32 file (a Windows redirect's default) fails one way or
+            # the other (UTF-16 without a mark decodes, then does not parse), and
+            # its first bytes carry the cause, so name the actionable repair the
+            # kiro-cli path names rather than the codec or parser message.
+            reason = _encoding_reason(p)
+            logger.warning(
+                "Failed to load MCP config from %s: %s", p, reason if reason is not None else exc
+            )
+            if reason is not None and skipped is not None:
+                skipped.append((p, reason))
+            continue
+        except OSError as exc:
             # PermissionError (subclass of OSError) is raised by
             # safe_read_file when is_sensitive_path() blocks the read.
             logger.warning("Failed to load MCP config from %s: %s", p, exc)
@@ -289,6 +318,12 @@ def _display_transport(value: Any) -> str:
     return text
 
 
+def _declared_type(spec: dict) -> str:
+    """The entry's ``type`` when it is a string, else ``""`` (declares none)."""
+    value = spec.get("type")
+    return value if isinstance(value, str) else ""
+
+
 def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
     return McpServerInfo(
         name=name,
@@ -296,9 +331,11 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
         args=spec.get("args", []),
         env=spec.get("env", {}),
         url=_display_transport(spec.get("url", "")),
+        declared_type=_declared_type(spec),
         headers=spec.get("headers", {}),
         scopes=_spec_scopes(spec),
         client_id=_spec_client_id(spec),
+        oauth_withheld=oauth_withheld(spec.get("oauth")),
         source=source,
         registry_pointer=(
             mcp_entry_is_registry_governed(spec) and not spec.get("command") and not spec.get("url")
@@ -556,8 +593,15 @@ def list_servers() -> list[McpServerInfo]:
         cached = probe_metadata(s.name)
         if cached is not None and cached.identity == identity:
             s.auth_challenge = cached.auth_challenge
-            s.auth_grant_present = cached.auth_grant_present
             s.temp_refusals = [dict(r) for r in cached.temp_refusals]
+            # Crew custody is read live and is not part of the identity: once the
+            # flag is off or chats leave KAS, Crew's grant says nothing about the
+            # runtime's, so the row falls back to "Not verified" until a re-probe.
+            from kiro_crew.connections import crew_oauth  # circular: crew_oauth reads list_servers
+
+            if not cached.auth_crew_held or crew_oauth.manages(s.name):
+                s.auth_grant_present = cached.auth_grant_present
+                s.auth_crew_held = cached.auth_crew_held
         # A registry pointer never has a probe result of its own, so without this
         # it reads "unknown" until the first probe pass -- the same row the probe
         # reports, stated without waiting for one. See ``probe_server``.

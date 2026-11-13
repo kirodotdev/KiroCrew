@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-RESEARCH_WORKFLOW_SOURCE = '''
+RESEARCH_WORKFLOW_SOURCE = """
 META = {
     "name": "research-recursive",
     "description": "Recursive multi-source research with reserve-and-finalize.",
@@ -212,7 +212,7 @@ async def workflow(ctx):
         "done": done,
         "open_followups": [it["text"] for it in frontier],
     }
-'''
+"""
 
 
 def build_workflow_args(campaign: dict) -> dict[str, Any]:
@@ -221,6 +221,7 @@ def build_workflow_args(campaign: dict) -> dict[str, Any]:
     ``sub_questions`` / ``sources`` are JSON-encoded in the DB row; decode them.
     ``max_cycles`` is reused as ``max_rounds``.
     """
+
     def _decode(raw: Any) -> list:
         if isinstance(raw, list):
             return raw
@@ -237,8 +238,7 @@ def build_workflow_args(campaign: dict) -> dict[str, Any]:
         "sub_questions": _decode(campaign.get("sub_questions")),
         "sources": _decode(campaign.get("sources")),
         "max_rounds": int(campaign.get("max_cycles", 10) or 10),
-        "max_subquestions_per_round": int(
-            campaign.get("max_subquestions_per_round", 3) or 3),
+        "max_subquestions_per_round": int(campaign.get("max_subquestions_per_round", 3) or 3),
         "parallel_workers": int(campaign.get("parallel_workers", 3) or 3),
         "reserve_fraction": float(campaign.get("reserve_fraction", 0.15) or 0.15),
         "success_criteria": campaign.get("success_criteria") or "",

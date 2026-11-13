@@ -11,32 +11,30 @@ const {
   sanitizeItems,
   runAnnotateOp,
 } = require("../browser-annotate");
-const { PAGE_HELPERS_SOURCE, WALKER_SOURCE } = require("../browser-ops");
+const { PAGE_HELPERS_SOURCE } = require("../browser-page-helpers");
 
 // ── page-side sources ──
 
-test("overlay: valid JS that splices the walker's shared helpers (same refs, same names)", () => {
+test("overlay: valid JS that splices the shared page helpers (same refs, same names)", () => {
   // Must parse -- a syntax error here would surface only as an executeJavaScript
   // rejection at click time.
   assert.doesNotThrow(() => new Function(OVERLAY_SOURCE));
-  assert.doesNotThrow(() => new Function(WALKER_SOURCE));
-  // The overlay and the walker mint refs through ONE implementation: the helper
-  // fragment is embedded verbatim in both, so `eN` in a chat draft is the `eN`
-  // the agent's snapshot sees.
+  assert.doesNotThrow(() => new Function(`(() => {${PAGE_HELPERS_SOURCE}})()`));
+  // The overlay mints refs through the shared helper fragment, embedded
+  // verbatim, so `eN` in a chat draft names one element for the document's life.
   assert.ok(OVERLAY_SOURCE.includes(PAGE_HELPERS_SOURCE), "overlay embeds PAGE_HELPERS_SOURCE");
-  assert.ok(WALKER_SOURCE.includes(PAGE_HELPERS_SOURCE), "walker embeds PAGE_HELPERS_SOURCE");
   assert.ok(PAGE_HELPERS_SOURCE.includes("function assignRef(el)"));
-  // selectorOf is overlay-only (its single consumer); the agent's walker must
-  // not carry a helper it never calls.
+  // selectorOf is overlay-only (its single consumer); the shared fragment must
+  // not carry a helper only one consumer calls.
   assert.ok(OVERLAY_SOURCE.includes("function selectorOf(el)"));
   assert.ok(!PAGE_HELPERS_SOURCE.includes("selectorOf"));
   // Disconnected refs are pruned on every injection: the map is bounded by the
   // live DOM even across many SPA route changes.
   assert.ok(PAGE_HELPERS_SOURCE.includes("if (!el || !el.isConnected) refs.delete(r);"));
-  // The walker never lists the overlay's own badges -- and the id is baked into
-  // the page-realm source as a literal (the constant does not exist there).
-  assert.ok(WALKER_SOURCE.includes(`if (el.id === ${JSON.stringify(HOST_ID)}) continue;`));
-  assert.ok(!WALKER_SOURCE.includes("ANNOTATE_HOST_ID"));
+  // The overlay's host id is baked into the page-realm source as a literal (the
+  // constant does not exist there).
+  assert.ok(OVERLAY_SOURCE.includes(JSON.stringify(HOST_ID)));
+  assert.ok(!OVERLAY_SOURCE.includes("ANNOTATE_HOST_ID"));
   // Refs survive SPA route changes: the map is keyed on the Document object,
   // so an annotation's ref is still valid after pushState (a real navigation
   // swaps the document and the realm with it).

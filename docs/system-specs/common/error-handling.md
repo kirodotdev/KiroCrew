@@ -41,6 +41,21 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            AcpProcessDied with ambiguous_delivery set
 ├── AcpAuthRequired        — kiro-cli not authenticated; non-retryable
 ├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
+├── AcpDelegateLaunchFailed — the kiro-cli-chat delegate failed to launch (a stale
+│                            or version-skewed install); non-retryable, and not an
+│                            AcpProcessDied, so the chat shows the reinstall
+│                            message instead of a respawn loop
+├── AcpKasExtractBroken    — kiro-cli's unpacked KAS engine (kas/<version>) is
+│                            incomplete and could not be moved aside, or the fresh
+│                            copy failed the same way; non-retryable, not an
+│                            AcpProcessDied, and the message names the directory
+│                            and the mv command
+├── AcpKasEngineRefused    -- kiro-cli refused its v3 (KAS) engine on this host
+│                            ("V3 is currently not supported on this system",
+│                            acp/kas_engine_refusal.py); non-retryable, and the
+│                            runtime that met it records KAS unservable, in memory
+│                            and in the data home, so new sessions take the Kiro
+│                            CLI launch
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
 ├── PiGateExtensionTampered — a shipped gate extension (Pi or DeepSeek) failed its digest check
@@ -88,12 +103,16 @@ instead of the row simply disappearing.
 | Boundary | Strategy |
 |----------|----------|
 | ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
+| Sandbox refusal → CLI and boot logs | `SandboxCeilingUnsealable` and `SandboxUnavailableError` sit outside the `AcpError` hierarchy, and each one's own text names the host's remedy. `kirocrew chat` (`cli_chat._run_chat`) prints that text as one line through `safe_terminal_line` and exits 1; the built-in adoption STAGE pass logs a `SandboxUnavailableError` as one warning carrying it. Neither prints a stack trace |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
 | Config load | Invalid JSON → log warning, return defaults |
 | Integer field in a dashboard JSON body | Read through `dashboard/body_numbers.body_int`, which raises `ValueError` for `1e999`/`-1e999` (infinite floats after `json.loads`) where `int()` raises `OverflowError`. The handler's own `except (TypeError, ValueError)` then gives the infinite value the same 400 or fallback any other malformed value gets there, never a 500. A site does not add `OverflowError` to its own except clause instead |
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
+| A host that does not answer (`kirocrew kas login`, the KAS engine manifest fetch) | The message names the host and leads with the cause in plain words. `asset_downloader.network_failure_cause` reads it from the exception types (urllib's `URLError.reason`, aiohttp's `os_error`), never their text: `connection refused`, `the host name could not be resolved` or `timed out`. Any other failure keeps the library's own text, which is then the only clue there is, and so does an aiohttp exception with no `host` (a connect timeout names its host only in its text) |
 | Notes git subprocess (`md_notebook/git_ops.py`) | A non-zero exit reports git's last 3 stderr lines PLUS the first transport-caused line when one sits outside that tail. git ends every fetch/push failure with the same access-rights boilerplate and prints an SSH diagnosis first, so a tail alone reports a permission problem the operator does not have (a host reachable only via `~/.ssh/config` never resolved at all). The extra line widens what the message reports; it does not decide whether the command failed. |
+| Auto-Improvement git step (`auto_improvement/backend/clone_setup.py`) | A failed clone, branch list, checkout or fetch reports git's last 2 stderr lines after dropping blank lines and git's access-rights advisory (`Please make sure you have the correct access rights` / `and the repository exists.`), redacted and then bounded. The advisory follows every transport or auth fatal, so keeping it reports a repository problem in place of the `Permission denied (publickey).` line above it. |
+| App Store install clone, pinned fetch and pull (`apps/registry_pipeline/checkout.py`) | A credential-free (catalog or `index`-tier registry) fetch of an ssh remote whose output holds ssh's own `ssh: Could not resolve hostname` line returns `git_clone_failed_strict_ssh_route` with a fixed sentence: the fetch ran in the strict sandbox, which hides `~/.ssh`, so neither `~/.ssh/config` nor the ssh-agent applied, and a host reachable only through an ssh config route is installed from the operator's own clone with `kirocrew app install <dir>`. It carries no proxy hint, because ssh never reads `HTTPS_PROXY`; an owner-credentialed clone and an HTTPS remote keep the network hint. |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
 ## Code Review Sage consolidation refusal
@@ -130,7 +149,18 @@ asks that answer before it writes the FIFO or notifies a mounted chat subscriber
 a veto therefore leaves the current page, its draft, and the hand-off queue
 unchanged. With no registered page guard the answer remains `true`, preserving
 the existing hand-off. The root error boundary's explicit hard-navigation mode
-continues to bypass the live React tree and stages before reloading.
+bypasses the live React tree: it stages, then leaves through `hardNavigate`,
+a full page load of `/chat` unless the window installed a hard-exit sink
+(`installHardExit`).
+
+An app pop-out window (`/popout/app/<route>`) must never load the dashboard
+itself, so it installs that sink (`AppPopoutHardExit` in
+`pages/AppPopoutFrame.tsx`): the sink drains the staged prompt and hands `/chat`
+to the main window through the pop-out channel. The shell installs
+`hardNavigate` as that window's soft navigator too, with no leave guard, since
+the pop-out's own page is never left. So every Ask the agent there, soft or
+hard, reaches the main window's chat and leaves the popped-out app mounted with
+its state; the main window asks its own leave guard before it navigates.
 
 The ask happens exactly once per click. A surface that already has a leave gate
 in scope (the notification sheet's crash fallback, through `AskAgentButton`'s
@@ -159,7 +189,31 @@ user would otherwise paste the log into, and a history row holds no draft.
 backend errors into actionable user text (`_format_acp_error`) and decides
 retry-eligibility (`_is_transient_raw_error`).
 Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
-never drift. Notable terminal (non-retryable) classes:
+never drift.
+
+When a curated branch words the message (`user_worded=True`), that wording
+replaces the provider's text: a named 5xx, an HTTP 50x and a "please try again"
+hint all read "transient error (HTTP 5xx)", and a dispatch failure reads the
+connection card. `_raise_acp_error`
+therefore keeps the frame itself on `AcpError.raw_detail` (on the early
+`AcpPromptBusy` raise too) through
+`raw_error_detail` (`acp/error_frames.py`): `code`, `message` and `data` rendered as one line of compact
+ASCII JSON (`ensure_ascii`, so neither a newline nor a Unicode line break such as
+U+2028 in provider text can forge a log line). Every string in the frame
+is scrubbed by `redact_exfiltration_urls` then `redact_credentials` in its own
+spelling BEFORE the escaping, because escaping puts a backslash before each
+quote and a quoted `"aws_session_token": "..."` inside a provider string would
+no longer match; the rendered whole is scrubbed again, which catches a
+key/value pair in a structured `data`. Only then is it cut to
+`RAW_ERROR_DETAIL_MAX_CHARS` (2000) with the dropped length named. The dashboard
+turn logs it at WARNING as `ACP error frame in slot <key>: <frame>`, on a line of
+its own beside `ACP error in slot ...`, which the session-health scanner parses
+and which keeps its shape. The scanner ignores a stall signature that follows
+the raw-frame label, so a frame echoing one cannot mark a slot stalled. A fallback message already carries the provider's
+text, so its `raw_detail` stays empty and no second line is written. Pinned by
+`test/test_acp_error_raw_frame_log.py`.
+
+Notable terminal (non-retryable) classes:
 
 - **Context window overflow**: the provider's exact "The context window
   overflowed" rejection becomes an ordinary `AcpError` with `transient=False`,
@@ -309,12 +363,34 @@ transient. The retry budget bounds that misclassification — three retries, ~15
 — and the formatted message closes with the terminal "refresh your AWS
 credentials" guidance rather than asserting the propagation diagnosis as fact.
 
+The engine's **model-list refusal** is checked before the connection and 5xx
+families. KAS answers `session/prompt` with `-32000` "Kiro could not load the
+available models. Please try again." and `data.errorType`
+`ModelRegistryUnavailableError` when every fetch of the model list failed for a
+reason other than a rejected or denied credential. The frame keeps no HTTP status
+and none of the service's answer, and its cause may persist (a sign-in that sends
+no profile ARN got HTTP 400 `ValidationException` on every call, #26109), so it is
+never worded as an HTTP 5xx: `acp/model_registry_errors.py` compares
+`data.errorType` exactly (a `data` sent as JSON text is parsed first; the name in
+`message` or other prose matches nothing) and words it as a model list that could
+not load, with the sign-in as the fix when it repeats. Only the wording changes:
+the frame's "Please try again" still gives it the retryable verdict and the
+`http_5xx` classifier kind, which match the engine's own `SERVER_ERROR`, bounded by
+the ladder.
+
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
 generic upstream 500, whose frame has no named exception and no HTTP status, so
 the hint is its only transient marker). Onboarding a backend means auditing that
-alternation. The kiro-cli mid-stream envelope ("Encountered an error in the
+alternation. The status and named-token patterns carry provider spellings too:
+`_RE_5XX_STATUS` reads a status after `HTTP`, `status` or the claude-agent-acp
+seam's `API Error:` prefix, so Anthropic's overload answer (`API Error: 529
+{...overloaded_error...}`) is a retryable `http_5xx`, and `_RE_5XX_NAMED`'s
+`overloaded error` token covers Claude Code's summary once its own retries are
+spent (`API Error: Repeated 529 Overloaded errors`). A bare `529` without a prefix
+stays prose, and the adapter's `API Error: NNN Input is too long` size verdict is
+checked ahead of the 5xx family, so it stays terminal. The kiro-cli mid-stream envelope ("Encountered an error in the
 response stream: …") is deliberately NOT a hint — matching it would make the
 branch a catch-all that discards the real cause.
 
@@ -334,8 +410,10 @@ verdict is transient and `classify_provider_error` names the frame
 `PROVIDER_ERROR_CONNECTION`: connection wording (`_RE_CONNECTION`) or a
 connector dispatch failure, with no throttle, usage limit, auth or
 session-expiry rejection, or model-availability answer outranking it. The
-formatter folds a dispatch failure into the generic 5xx prose, which is why the
-verdict travels as a tag instead of being read back from the message. On an
+formatter checks the same connector patterns before the 5xx family, so a
+dispatch failure shows the "Could not reach the model backend" card rather than
+the generic 5xx prose; the verdict still travels as a tag so the retry layer
+never reads it back from the message. On an
 interactive dashboard turn
 (`chat_runner`'s pre-stream transient branch) a connection failure keeps
 re-prompting the same live session past `TRANSIENT_RETRIES` until
@@ -343,8 +421,26 @@ re-prompting the same live session past `TRANSIENT_RETRIES` until
 retry, on the same backoff curve capped at `CONNECTION_RETRY_MAX_DELAY` (30 s),
 and shows one standing "Connection unstable — retrying…" notice for the extra
 attempts rather than one per attempt. Stop, a landed turn and an exhausted
-window end it exactly as they end the fixed ladder. Provider answers keep the
+window end it exactly as they end the fixed ladder. The dashboard settles that
+standing notice once the window closes (`resolveGatewayNotice` in
+`website/src/pages/chat/gatewayNotice.ts`): it reads "Connection restored"
+when an answer follows it, and the muted past-tense "Connection interrupted"
+when the give-up row or any other error comes first, so it never stays
+"retrying…" above the red "please try again." row. A new user turn decides
+neither: a message typed during the backoff does not end the replay, so the
+notice stays pending. Another re-queued recovery row (`kind: transient_retry`,
+such as a dead process's "Connection lost — retrying…") is read as recovery
+still running, so the scan continues past it. Provider answers keep the
 fixed count: a provider that answers with errors is not helped by a longer wait.
+
+A dead process is read by `llm_helpers.acp_error_is_pipe_death`: the client's
+own "process exited" / "not running" wording on an `AcpError` that carries no
+JSON-RPC `code`. An error frame is never a death, because the process that sent
+it is alive. The claude adapter answers a failed Claude Code start with
+`-32603` and "Claude Code process exited with code 1"; a fresh process repeats
+it, so the turn shows that error card instead of re-queuing behind
+"Connection lost — retrying…" until "Session stuck".
+`test_chat_runner_turn_error_arms.py` pins both.
 
 ### Provider failures a harness writes as text
 

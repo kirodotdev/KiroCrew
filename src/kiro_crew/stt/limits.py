@@ -83,20 +83,14 @@ MAX_TIMEOUT_SECS = 3_600
 #: ``0`` so the field stays an integer; ``"auto"`` is accepted as a spelling of it.
 THREADS_AUTO = 0
 
-#: Ceiling on the derived (auto) thread count. The count itself is host-derived;
-#: this only bounds EXTRAPOLATION above the widths that were measured. Decode-heavy
-#: models stop benefiting early (in-process ``base``, an 11s clip: 8 threads 0.96s,
-#: 16 1.13s, 24 1.18s, i.e. flat-to-worse), while encoder-heavy ``large-v3-turbo``
-#: keeps gaining to 24 (6.26s / 5.13s / 4.81s). 16 is where both model shapes sit
-#: within 7% of their own best, so a 64- or 128-core host gets 16 rather than an
-#: untested 32+. An explicit count is NOT capped by this: the ceiling bounds
-#: extrapolation on hosts nobody measured, and an operator who sets a count has
-#: measured their own host.
+#: Ceiling on the derived (auto) thread count; it bounds extrapolation above the
+#: measured widths. In-process ``base`` on an 11s clip is flat-to-worse past 8
+#: threads (0.96s / 1.13s / 1.18s at 8 / 16 / 24), while ``large-v3-turbo`` keeps
+#: gaining to 24 (6.26s / 5.13s / 4.81s); at 16 both are within 7% of their best.
+#: An explicit count is NOT capped: an operator who sets one has measured their host.
 #:
-#: Lives here rather than in :mod:`kiro_crew.stt.engine` so the resolver below is
-#: reachable without importing that module, which pulls in numpy. The dashboard's
-#: config read reports the resolved count and must not load an array library on
-#: the request path to do it.
+#: Lives here, not in :mod:`kiro_crew.stt.engine`, so the dashboard's config read
+#: can resolve the count without importing numpy on the request path.
 THREAD_CEILING = 16
 
 #: Ceiling on a STORED ``stt.threads``. The recogniser clamps a configured count to

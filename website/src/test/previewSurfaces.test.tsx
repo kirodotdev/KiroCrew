@@ -15,8 +15,8 @@ import { render, screen, renderHook, act, cleanup, waitFor } from '@testing-libr
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom'
 
-// DeveloperPage's tabs are heavy and irrelevant here — the last describe only
-// needs the page's tab rail and its legacy-link redirect.
+// The Developer panel's pages are heavy and irrelevant here — the last
+// describe only needs the old route's redirect.
 vi.mock('../pages/LogsPage', () => ({ LogViewer: () => <div /> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => <div /> }))
 vi.mock('../pages/TelemetryPanel', () => ({ default: () => <div /> }))
@@ -45,12 +45,15 @@ import notificationsReducer from '../store/notificationsSlice'
 // `_resetBuiltinsForTest()` in its own `beforeEach`.
 import '../surfaces/builtins'
 import {
-  PREVIEW_CREW,
   PREVIEW_FLAG_EVENT,
   PREVIEW_FLAG_PREFIX,
   PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
   PREVIEW_WEBHOOKS,
+  PREVIEW_DASHBOARD_STALE_FIELDS,
+  PREVIEW_DASHBOARD_STALE_WAKE,
+  PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_SECRETS_VAULT,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -58,6 +61,7 @@ import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
 import { api } from '../api/client'
 import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
+import { __resetPreviewFlagServerSyncForTests, usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import DeveloperPage from '../pages/DeveloperPage'
 
 const TEST_ICON: ReactElement = <span />
@@ -126,7 +130,7 @@ describe('preview flag storage', () => {
   it('keeps every flag under the shared prefix', () => {
     // Cross-tab listeners match on the prefix rather than a list of known flags,
     // so a flag named outside it would silently stop updating other tabs.
-    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_INSTANCE_SESSIONS]) {
+    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_INSTANCE_SESSIONS]) {
       expect(flag.startsWith(PREVIEW_FLAG_PREFIX)).toBe(true)
     }
   })
@@ -151,26 +155,13 @@ describe('surfacePreviewEnabled', () => {
  * registry in its `beforeEach` and would take the imported builtins with it.
  * Vitest runs describes in declaration order, so this position is the fixture.
  */
-describe('crew is preview-gated end to end', () => {
-  it('gates the Crew Members surface on PREVIEW_CREW', () => {
-    // A literal `'mc-preview-crew'` here would keep passing if the constant were
-    // renamed, leaving the rail reading one key and the toggle writing another.
-    expect(getBuiltinSurface('members')?.previewFlag).toBe(PREVIEW_CREW)
+describe('crew is advertised with no opt-in', () => {
+  it('carries no preview flag on the Crew Members surface', () => {
+    expect(getBuiltinSurface('members')?.previewFlag).toBeUndefined()
   })
 
-  it('drops Crew Members from the advertised list until the flag is on', () => {
-    const advertised = () => getAdvertisedSurfaces().some(s => s.navId === 'members')
-    expect(advertised()).toBe(false)
-    // Sessions is the ungated neighbour: it proves the real registry loaded, so
-    // the `false` above cannot be an empty-registry artefact.
-    expect(getAdvertisedSurfaces().some(s => s.navId === 'chat')).toBe(true)
-    localStorage.setItem(PREVIEW_CREW, '1')
-    expect(advertised()).toBe(true)
-  })
-
-  it('keeps the route registered either way', () => {
-    // The page has to be reachable the moment the flag flips, and a bookmark
-    // must still resolve — gating removes the ADVERTISEMENT, not the surface.
+  it('lists Crew Members in the advertised surfaces on a default install', () => {
+    expect(getAdvertisedSurfaces().some(s => s.navId === 'members')).toBe(true)
     expect(getBuiltinSurfaces().find(s => s.navId === 'members')?.route).toBe('/members')
   })
 })
@@ -356,6 +347,8 @@ describe('Settings > Developer > Feature Previews', () => {
   beforeEach(() => {
     vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    // The Shared Crew card draws only for the owner; a 404 leaves it out of the census.
+    vi.spyOn(api, 'sharedCrewPreview').mockResolvedValue(null)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
       enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
     })
@@ -397,33 +390,30 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(toggleState()).toBe('true')
   })
 
-  it('carries a crew card that starts off', () => {
-    // One card per feature: crew's own toggle, not a row folded into the
-    // webhooks card. Anchored (`^…$`) because the label's words also appear in
-    // this card's description and in the "Chat on a crew" card next to it. The
-    // label names the page the flag holds so it stops sharing a bare "Crew"
-    // with that neighbour, which a newcomer could not tell apart.
-    renderTab()
-    expect(screen.getByRole('switch', { name: /^mates$/i }).getAttribute('aria-checked')).toBe('false')
-  })
-
-  it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
-    renderTab()
+  it('says why a switch went back when the gateway refuses the write', async () => {
+    __resetPreviewFlagServerSyncForTests()
+    vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
+    function WithSync() {
+      usePreviewFlagServerSync()
+      return <FeaturePreviewsSection />
+    }
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><WithSync /></MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByTestId('feature-previews-save-error')).toBeNull()
     await act(async () => {
-      screen.getByRole('switch', { name: /^mates$/i }).click()
+      screen.getByRole('switch', { name: /webhooks/i }).click()
     })
-    expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
-    // Two flags, two keys: a shared write would release both features at once.
-    expect(localStorage.getItem(PREVIEW_WEBHOOKS)).not.toBe('1')
+    await waitFor(() => expect(screen.getByTestId('feature-previews-save-error').textContent)
+      .toMatch(/only the owner of this Kiro Crew can change feature previews, so “Webhooks” was switched back/i))
+    act(() => { __resetPreviewFlagServerSyncForTests() })
   })
 
-  it('gives the crew card NO ingress link, on either side of the toggle', async () => {
-    // Deliberate asymmetry with the webhooks card, and the reason is `webhooks`
-    // being `hiddenFromNav`: its card is that page's ONLY door, so it needs one.
-    // Crew's rail row returns in the same tick as the click, so a link here
-    // would be a second spelling of a door already on screen — and would cost a
-    // catalog key in twelve languages forever. Pinned so it cannot drift back in
-    // by symmetry with the card above it.
+  it('offers no ingress button besides the webhooks link', async () => {
+    // `webhooks` is `hiddenFromNav`, so its card is that page's ONLY door and
+    // carries a link once on. No other card here does.
     //
     // Counted as `<button>` ELEMENTS rather than by accessible name: the name of
     // a link that no longer exists is not in any catalog, so a name query could
@@ -504,15 +494,11 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 2 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 15 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
     }
-    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
-    await act(async () => {
-      screen.getByRole('switch', { name: /^mates$/i }).click()
-    })
     expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
     // The Decisions subtree, exactly. A new button here -- or a duplicate of one of
     // these -- fails, which a name allowance could not do.
@@ -521,29 +507,27 @@ describe('Settings > Developer > Feature Previews', () => {
     // the hand-off on the read-failure notice after, so a bare expect reads whichever
     // moment it hit. A button this set does not name never converges, so it fails here.
     await waitFor(() => {
-      expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
+      expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
     })
     await waitFor(() => {
       expect(kasButtons()).toEqual(['Ask the agent', 'Retry'])
     })
-    // The webhooks card still HAS its link, so this is an asymmetry on purpose
-    // rather than the ingress mechanism having been broken for both.
+    // The webhooks card HAS its link, so the empty census above is not the
+    // ingress mechanism having been broken.
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
     expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: ['Open Webhooks'] })
     // And the card beside it still draws only its own two.
-    expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
+    expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
   })
 
-  it('renders the section header and the section-wide caveat once, above the cards', () => {
-    // The caveat used to be the Developer-page tab's description, rendered by
-    // SidePanelLayout as the page header. Inside Settings the section has to
-    // carry it itself — once, not per card — or the toggles read as released
-    // features that merely happen to be off.
+  it('renders the section-wide caveat once, above the grouped cards', () => {
+    // The section carries the caveat itself — once, not per card — or the
+    // toggles read as released features that merely happen to be off.
     renderTab()
-    expect(screen.getByRole('heading', { name: /feature previews/i })).toBeTruthy()
-    expect(screen.getAllByText(/unpolished on purpose/i)).toHaveLength(1)
+    expect(screen.getAllByText('Unfinished features. Turn one on to try it.')).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'Crew and bots' })).toBeTruthy()
   })
 
   it('carries the redirect anchor on ONE element that wraps the whole section', async () => {
@@ -555,12 +539,13 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(8)
+      expect(screen.getAllByRole('switch')).toHaveLength(17)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
-    expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
+    expect(anchor.contains(screen.getByText('Unfinished features. Turn one on to try it.'))).toBe(true)
+    for (const h of screen.getAllByRole('heading')) expect(anchor.contains(h)).toBe(true)
     // The count is here so a card added outside the anchor fails rather than
     // silently escaping the ring. The last is Decisions, whose switch is
     // backend config — a different write path, the same ring.
@@ -571,7 +556,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(8) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(17) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
@@ -588,9 +573,41 @@ describe('Settings > Developer > Feature Previews', () => {
     await act(async () => { toggle().click() })
     expect(localStorage.getItem(PREVIEW_REMOTE_CREW_CHAT)).toBe('1')
     expect(toggle().getAttribute('aria-checked')).toBe('true')
-    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS]) {
+    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_INSTANCE_SESSIONS]) {
       expect(localStorage.getItem(other)).not.toBe('1')
     }
+  })
+
+  it('shows the stale-wake switch only while out-of-date fields are marked', async () => {
+    // Waking a Bot for its out-of-date fields needs the mark: with it off the
+    // switch is not drawn, and turning the mark on brings it, off by default.
+    renderTab()
+    const wake = () => screen.queryByRole('switch', { name: /^wake bots to update out-of-date fields$/i })
+    expect(wake()).toBeNull()
+    await act(async () => {
+      screen.getByRole('switch', { name: /^mark out-of-date dashboard fields$/i }).click()
+    })
+    expect(wake()?.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { wake()?.click() })
+    expect(localStorage.getItem(PREVIEW_DASHBOARD_STALE_WAKE)).toBe('1')
+    expect(localStorage.getItem(PREVIEW_DASHBOARD_STALE_FIELDS)).toBe('1')
+  })
+
+  it('offers the pending-approvals switch, off by default', async () => {
+    // Sending a pending tool approval to the notification bridge is opt-in.
+    renderTab()
+    const approvals = screen.getByRole('switch', { name: /^send pending approvals to chat apps$/i })
+    expect(approvals.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { approvals.click() })
+    expect(localStorage.getItem(PREVIEW_BRIDGE_APPROVALS)).toBe('1')
+  })
+
+  it('offers the Secrets vault redesign switch, off by default', async () => {
+    renderTab()
+    const vault = screen.getByRole('switch', { name: /^secrets vault redesign$/i })
+    expect(vault.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { vault.click() })
+    expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {
@@ -607,55 +624,48 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(localStorage.getItem(PREVIEW_REMOTE_CREW_CHAT)).not.toBe('1')
   })
 
-  it('is gone from the Developer page rail', () => {
-    // Pin the removal, not just the addition: a tab left behind would offer the
-    // same four switches from two places, and the two would drift.
-    render(<MemoryRouter initialEntries={['/developer?tab=config']}><DeveloperPage /></MemoryRouter>)
-    expect(screen.getByTestId('kirocrew-cfg')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /feature previews/i })).toBeNull()
-    expect(screen.queryByRole('switch', { name: /webhooks/i })).toBeNull()
-  })
-
-  it('redirects the old tab link to Settings > Developer with a replace', () => {
-    // `/developer?tab=feature-previews` survives in bookmarks, docs and palette
-    // history. Without the redirect SidePanelLayout would fall back to the
-    // first tab silently — the toggles would look deleted rather than moved.
-    // The probe reads the FINAL location AND the navigation type: a push would
-    // leave the pre-move URL one Back press away.
+  // `/developer?tab=…` survives in bookmarks, docs, curated tips and palette
+  // history. The probe reads the FINAL location AND the navigation type: a push
+  // would leave the pre-move URL one Back press away. Literal URLs on purpose:
+  // this is the contract old links depend on.
+  function redirectOf(from: string): string {
     function LocationProbe() {
       const loc = useLocation()
       const navType = useNavigationType()
       return <div data-testid="loc">{`${navType} ${loc.pathname}${loc.search}`}</div>
     }
     render(
-      <MemoryRouter initialEntries={['/developer?tab=feature-previews']}>
+      <MemoryRouter initialEntries={[from]}>
         <DeveloperPage />
         <LocationProbe />
       </MemoryRouter>,
     )
-    // The destination is the Settings tab that now hosts the cards, ringing
-    // the whole section (its `data-setting-key` anchor) so the reader lands ON
-    // the moved thing — the section, not one of its rows. Literal on purpose:
-    // this is the URL contract old bookmarks and docs depend on.
-    expect(screen.getByTestId('loc').textContent).toBe(
-      `REPLACE /settings/developer?highlight=key%3A${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}`,
+    return screen.getByTestId('loc').textContent ?? ''
+  }
+
+  it('redirects the old Feature Previews link to its page, ringing the section', () => {
+    expect(redirectOf('/developer?tab=feature-previews')).toBe(
+      `REPLACE /settings/developer/feature-previews?highlight=key%3A${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}`,
     )
   })
 
-  it('leaves every other Developer tab link alone', () => {
-    // The redirect keys on ONE legacy value. A broader match (any unknown tab)
-    // would hijack the page's own unknown-tab fallback, which SidePanelLayout
-    // owns and the queryParamConsumer tests pin.
-    function LocationProbe() {
-      const loc = useLocation()
-      return <div data-testid="loc">{loc.pathname + loc.search}</div>
-    }
-    render(
-      <MemoryRouter initialEntries={['/developer?tab=config']}>
-        <DeveloperPage />
-        <LocationProbe />
-      </MemoryRouter>,
-    )
-    expect(screen.getByTestId('loc').textContent).toBe('/developer?tab=config')
+  it('redirects every other old Developer tab to the same page in Settings', () => {
+    expect(redirectOf('/developer?tab=config')).toBe('REPLACE /settings/developer/config')
+  })
+
+  it('keeps the other query params a page reads', () => {
+    expect(redirectOf('/developer?tab=system&plane=services')).toBe('REPLACE /settings/developer/system?plane=services')
+  })
+
+  it('redirects a trailing-slash path the route also matches', () => {
+    expect(redirectOf('/developer/?tab=system')).toBe('REPLACE /settings/developer/system')
+  })
+
+  it('redirects a mixed-case path the route also matches', () => {
+    expect(redirectOf('/Developer?tab=config')).toBe('REPLACE /settings/developer/config')
+  })
+
+  it('sends an unknown or absent tab to the Developer tab itself', () => {
+    expect(redirectOf('/developer?tab=nope')).toBe('REPLACE /settings/developer')
   })
 })

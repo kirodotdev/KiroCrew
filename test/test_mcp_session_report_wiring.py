@@ -28,6 +28,7 @@ from kiro_crew.dashboard.chat_runner import (
     _record_session_mcp_event,
     _session_mcp_report,
 )
+from kiro_crew.dashboard.chat_turn.mcp_session import _watch_session_mcp_report
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.testing.clock import ManualClock
 
@@ -46,11 +47,8 @@ def _failed_frame(name: str, error: str) -> JsonRpcMessage:
 def drain_clock(monkeypatch):
     """The clock ``AcpClient._drain_notifications`` reads, moved only by its own readings.
 
-    The drain takes its deadline on entry and checks it before every read, so a host that
-    stalls for longer than a test's ``duration`` in between ends the drain before its
-    first read. On this clock each reading moves time 10 ms: the drain reaches its first
-    read about 20 ms into a deadline of 100 ms or more however slow the host is, and the
-    deadline still arrives after a bounded number of loop turns.
+    A stalled host could pass the drain's deadline before its first read. Here each
+    reading moves 10 ms, so the first read lands about 20 ms in however slow the host is.
     """
     ManualClock(monotonic_start=0.0, tick=0.01).install(monkeypatch, acp_client)
 
@@ -309,6 +307,103 @@ class TestLiveEvents:
         assert payload is not None
         assert payload["ready"] == ["a"]
 
+    def test_an_event_whose_frame_was_folded_on_arrival_still_reaches_the_slot(self):
+        # The transport folds a frame into the report as it arrives, before the
+        # turn yields the event for it. The event then changes nothing in the
+        # report, and the slot's copy must move all the same.
+        slot = _ChatSlot("s1")
+        state = MagicMock()
+        report = McpSessionReport(folded_on_arrival=True)
+        acp = MagicMock()
+        acp.mcp_session_report.return_value = report
+        slot._acp_client = acp
+        _publish_session_mcp_report(state, slot, acp)
+        state.broadcast_ws.reset_mock()
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        _record_session_mcp_event(state, slot, acp, EVENT_MCP_SERVER_INITIALIZED, "slack-mcp")
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == ["slack-mcp"]
+        state.broadcast_ws.assert_called_once_with(
+            "mcp_report_update", {"slot": "s1", "mcp_report": payload}
+        )
+
+    def test_a_queued_older_event_does_not_overwrite_a_newer_folded_frame(self):
+        # The server connected, then failed; both frames were folded as they
+        # arrived. The turn then yields the event for the OLDER one.
+        slot = _ChatSlot("s1")
+        state = MagicMock()
+        report = McpSessionReport(folded_on_arrival=True)
+        report.fold_frame(_ready_frame("slack-mcp"))
+        report.fold_frame(_failed_frame("slack-mcp", "died later"))
+        acp = MagicMock()
+        acp.mcp_session_report.return_value = report
+        slot._acp_client = acp
+
+        _record_session_mcp_event(state, slot, acp, EVENT_MCP_SERVER_INITIALIZED, "slack-mcp")
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == []
+        assert payload["failed"] == ["slack-mcp"]
+        assert payload["failures"] == {"slack-mcp": "died later"}
+
+
+class TestChangeHookPublishes:
+    """The chat's copy follows the report with no turn event to carry the change."""
+
+    @staticmethod
+    def _watched(session_id: str = "sess-1"):
+        slot = _ChatSlot("s1")
+        state = MagicMock()
+        report = McpSessionReport(folded_on_arrival=True)
+        report.begin_session([])
+        acp = MagicMock()
+        acp.session_id = session_id
+        acp.mcp_session_report.return_value = report
+        acp.set_mcp_report_changed_hook.side_effect = lambda hook: setattr(
+            report, "on_change", hook
+        )
+        slot._acp_client = acp
+        _publish_session_mcp_report(state, slot, acp)
+        _watch_session_mcp_report(state, slot, acp)
+        state.broadcast_ws.reset_mock()
+        return slot, state, report, acp
+
+    def test_a_server_that_connects_between_turns_reaches_the_slot(self):
+        slot, state, report, _ = self._watched()
+
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == ["slack-mcp"]
+        state.broadcast_ws.assert_called_once_with(
+            "mcp_report_update", {"slot": "s1", "mcp_report": payload}
+        )
+
+    def test_a_frame_after_the_slot_was_reset_brings_nothing_back(self):
+        slot, state, report, _ = self._watched()
+        slot.clear_mcp_report()
+
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        assert slot.mcp_report_payload() is None
+        state.broadcast_ws.assert_not_called()
+
+    def test_a_frame_for_a_session_the_slot_no_longer_shows_is_not_published(self):
+        slot, state, report, acp = self._watched()
+        acp.session_id = "sess-2"
+
+        report.fold_frame(_ready_frame("slack-mcp"))
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert payload["ready"] == []
+        state.broadcast_ws.assert_not_called()
+
 
 class TestResetInvalidation:
     """A report must never outlive the session it describes."""
@@ -434,11 +529,8 @@ class TestLiveEventOwnershipIsWired:
 class TestBothTransportsAreReached:
     """The reach must work for BOTH providers.
 
-    The publish must not take the provider's inner ``.client``: ``AcpProvider``
-    (dedicated) exposes one, but ``AcpSessionProvider`` (shared runtime) does not, so
-    that reach evaluates to None there and the report never reaches the slot —
-    the panel then falls back to host-configured green dots on that whole transport,
-    which is the exact defect this feature exists to remove.
+    ``AcpSessionProvider`` has no inner ``.client``, unlike ``AcpProvider``, so reaching
+    through it would drop the report and the panel would show host-configured dots.
     """
 
     @staticmethod
@@ -480,12 +572,9 @@ class TestBothTransportsAreReached:
 class TestReportFrameFloor:
     """The raw notification buffer must not carry frames across attempts either.
 
-    ``begin_session`` clears the derived buckets, but a failed ``session/load``
-    leaves its notifications in the shared buffer and the fallback
-    ``session/new`` drains them afterwards — so the leak survived one layer down.
-    The buffer is NOT cleared: the OAuth and config captures read it too, and an
-    authorization request from the failed attempt is still one the user must
-    answer. Only the report's view of it is floored.
+    A failed ``session/load`` leaves notifications that the fallback ``session/new``
+    drains. The buffer itself is kept, since OAuth and config captures still need it;
+    only the report's view is floored.
     """
 
     @staticmethod
@@ -533,13 +622,9 @@ class TestReportFrameFloor:
 class TestSerializerDropsOrphanedReport:
     """The single enforcement point: a report must describe the CURRENT session.
 
-    Clearing at each teardown call site was the wrong shape — there are many (the
-    reset funnel, the reload and reset-conversation routes, the queued discard, a
-    channel handler, the cron reaper, the task runner, a project change) and a new
-    one silently skips it. A liveness check was not enough either: a reset
-    recreates a session under the same key, so the slot looks alive while the
-    report describes the session that went. The serializer both the REST and WS
-    snapshots share asks for IDENTITY, which no path can bypass.
+    Teardown paths are many and a new one would skip a clear, and a reset reuses the
+    key, so liveness is not enough. The serializer shared by REST and WS snapshots
+    checks session identity.
     """
 
     @staticmethod

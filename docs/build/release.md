@@ -27,6 +27,14 @@ mapping to get wrong. `test_publish_feed_contract.py` pins the channel set
 against `publish-cli.yml`, and `cli.sh` rejects anything outside it before
 touching the CDN.
 
+Nightly builds also run Kiro Crew's own KAS engine by default: `nightly.yml`
+passes `build_channel: nightly` to `build-wheel.yml`, `build-desktop.yml` and
+`build-windows.yml`, `scripts/stamp-distribution.sh` bakes it into
+`_build_info.BUILD_CHANNEL`, and an unset `agent.kas_bundle` reads that stamp
+(`config.loader_document.kas_bundle_build_default`). `release.yml` passes no
+lane, so insider and stable builds keep the default off. Pinned by
+`test_kas_bundle_nightly_default.py`.
+
 Channel is derived from the tag, and nothing else. `release.yml`'s `version` job
 treats **any** prerelease label as insider and maps it to a PEP 440 `rcN` wheel
 using the label's trailing number. Cutting the branch, numbering the RCs,
@@ -119,10 +127,10 @@ mechanism:
     `update_latest_version` (the arm target `verify_shadow_venv` compares
     byte-for-byte, and the update popup's per-version snooze/skip keys),
     Electron's `info.version` (`versionLooksPrerelease` derives the update lane
-    from the `-` suffix), and every `_is_newer` / floor comparison. Folding one
-    of these in place broke the entire stable in-app apply path once (caught in
-    review); folding the snooze key would make dismissing `0.4.0` swallow the
-    next release's rc candidate.
+    from the `-` suffix, an edition's numeric `-N` build excepted), and every
+    `_is_newer` / floor comparison. Folding one of these in place broke the
+    entire stable in-app apply path once (caught in review); folding the snooze
+    key would make dismissing `0.4.0` swallow the next release's rc candidate.
   - *Display therefore always reads a folded SIBLING field, never the raw one*:
     `version_display` and `update_latest_version_display` on the status frame,
     `latest_version_display` on `/api/update/check` and the channel-switch
@@ -166,6 +174,29 @@ mechanism:
   way: whether it rebuilds or republishes the candidate's bytes, its version is
   newer than everything the stable feed has served.
   `test/test_check_feed_advance.py` pins the verdicts and the wiring.
+- **The insider update feeds catch up to stable.** A stable `X.Y.Z` is
+  newer than every `X.Y.Z-rc.N`, yet an RC run is the only thing that moves the
+  insider pointer by itself, so insiders would stay on the last RC that reached
+  their feed until the next one is cut. The insider guard also counts a bare tag
+  as the insider level, so an RC still running when its stable tag is pushed
+  holds its insider pointer (`v0.11.1-rc.3` did). Each desktop lane (macOS,
+  Linux, Windows) therefore copies a stable release's channel file to
+  `feed/insider/...` as its last pointer write, behind the same guard run for
+  `--channel insider`:
+  insiders on an older RC are offered the stable build, and an insider line
+  already ahead of it keeps its pointer. Only the electron-updater channel file
+  is copied — not the legacy `latest-mac.json` bridge and not the `latest/`
+  download aliases. The CLI feed cannot be copied: its manifest is signed for
+  one channel and names a wheel under that channel's `cli/` prefix. So a stable
+  `publish-cli.yml` run signs a second manifest for insider and, as its last
+  step and only when the same guard advances, stages the same wheel under
+  `cli/insider/<version>/` and writes that manifest to
+  `feed/insider/latest-cli.json`. The same run also lists the stable wheel in
+  the insider PEP 503 index, with no guard: an index only adds a version and
+  pip installs the newest one listed, so an insider line already ahead still
+  resolves to its own build. `publish-docker.yml` moves `:insider` to a stable
+  release's digest as its last alias write, behind the same guard run against
+  the repo's tags, which are pushed before any run publishes them.
 
 ### Runbook: promoting an RC to stable
 
@@ -191,18 +222,22 @@ code.
      `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
      bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
      hatch still depend on the display contract.
-   - *kiro-cli pin (read only by a `BUNDLE_KIRO_CLI=1` desktop build; a
-     default release has no reader, so this step is skipped unless such a
-     build is planned)*: compare `packaging/kiro-cli-version` with the
-     version the release manifest names today
+   - *kiro-cli pin (every release: the published Docker image installs exactly
+     this version, and a `BUNDLE_KIRO_CLI=1` desktop build bundles it)*:
+     compare `packaging/kiro-cli-version` with the version the release
+     manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
      release, never blind. A bump is two files in one commit: the version in
      `packaging/kiro-cli-version`, and in `packaging/kiro-cli-sha256` the
      manifest's `sha256` for each staged artifact (`<version>/Kiro CLI.dmg`,
      `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
-     and `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`) as
-     `<sha>  <version>/<file>` lines, replacing the previous version's. A
+     `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`, and the two
+     `<version>/kirocli-<arch>-linux-musl.zip`) as
+     `<sha>  <version>/<file>` lines, replacing the previous version's. The
+     EC2 bootstrap (`src/kiro_crew/cloud/templates/kirocrew-ec2.yaml`) carries
+     the version and the two musl sha256s as literals, and
+     `test/test_cloud_ec2.py` fails until they match both files. A
      Linux pin bump must also measure each staged binary's highest `GLIBC_*`
      requirement as described in [desktop-app](desktop-app.md); neither arch
      may exceed the desktop app's documented `GLIBC_2.34` compatibility floor.
@@ -213,13 +248,31 @@ code.
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
      kiro-cli".
+   - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
+     `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
+     redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged
+     beside `kiro-cli.exe`. Bump it when a newer kiro-cli needs a newer runtime
+     (it was built with a newer MSVC toolset), or for a Microsoft runtime fix.
+     Resolve `https://aka.ms/vs/17/release/vc_redist.x64.exe` to the immutable
+     `download.visualstudio.microsoft.com/download/pr/<id>/<SHA256>/VC_redist.x64.exe`
+     URL it redirects to (`curl -sI`), download it
+     (`curl -fsSLo VC_redist.x64.exe <that url>`), then run
+     `python3 packaging/vc_runtime.py pin <that url> VC_redist.x64.exe`: it
+     prints the new installer and DLL sha256 values; fill in `version` with the
+     redistributable's ProductVersion and replace the file in one commit. Run
+     `test/test_vc_runtime_pin.py`, and prove the bump with a
+     `BUNDLE_KIRO_CLI=1` Windows packaging probe, whose `--version` probe runs
+     the staged binary against the staged runtime. A sha mismatch fails the
+     build closed; a stale pin is not a failure, since the URL is immutable.
    - *Installer tool pins*: the source installers download mise
      (`scripts/lib/pinned-mise.sh`) and the AWS CLI and Session Manager plugin
      (`packaging/pins/aws-tools.env`) at pinned versions and refuse a sha256
      mismatch. Compare each pin with upstream and bump the stale ones: pick a
      release at least 7 days old, record each artifact's sha256 (mise: its
      release `SHASUMS256.txt`; AWS: two downloads that match), keep
-     `AWSCLI_VERSION` equal to the crew runtime Dockerfile's, and run
+     `AWSCLI_VERSION` equal to the crew runtime Dockerfile's and the plugin
+     pins equal to the copy in `src/kiro_crew/cloud/ssm.py` (the gateway's own
+     installer), and run
      `test/test_installer_tool_pins.py`. The procedure is in each file's header. A
      stale pin is not a failure; the pinned artifacts stay downloadable.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
@@ -281,19 +334,19 @@ concurrency group, and their version derivation.
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
-| `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
+| `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
-| `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
+| `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. A stable release repeats the first two for insider with an insider-signed manifest when the insider guard advances, and always adds its wheel to the insider index. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. Called THREE TIMES by each trigger: once for the universal DMG (`feed/<channel>/latest-mac.yml`) and once per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key, artifact and in-artifact zip name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`. All three are required lanes on `release.yml`, and the promotion bundle carries all three zip/DMG pairs (`mac_zip[_<arch>]` / `dmg[_<arch>]` roles). |
-| `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
+| `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. A stable release also moves `:insider` when the insider guard advances. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
 
 Release-adjacent, deliberately outside the release path:
 
 | Workflow | Role |
 |---|---|
-| `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
+| `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips and the app relaunches. A second leg pads the update ZIP past 1.1 GiB with incompressible bytes, the size at which the macOS updater once crashed mid-install. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
 | `docker-smoke.yml` | PR gate on the container contract (amd64, load-to-daemon, no push). |
 | `pages.yml` | Deploys the marketing site in `site/` to GitHub Pages on `main`, path-scoped to `site/**`. |
 | `ship-report.yml` | Daily (3am PDT) merged-PR summary to Slack. Not a release step. |
@@ -352,6 +405,23 @@ feed/<channel>/latest-cli.json                               pointer, no-cache
 feed/<channel>/simple/ + feed/<channel>/simple/kirocrew/     pointer, no-cache
 cli.sh                                                       pointer, no-cache (only root object)
 ```
+
+Every `latest-mac.yml` also carries `minimumSystemVersion`, which electron-builder
+never writes but electron-updater enforces: a client whose `os.release()` is below it
+declines the update instead of installing a build it cannot launch. The publish job
+reads it from the notarized ZIP's own `Contents/Info.plist` (`LSMinimumSystemVersion`,
+which Electron stamps from its deployment target) through
+`scripts/feed_min_system_version.py`, and writes it as the Darwin kernel version the
+updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the real
+floor raises the declared one. The step fails closed when the ZIP names no floor, or
+one with no exact kernel version (a non-`.0` macOS 11+ floor).
+
+Every channel file, on every platform, also carries `releaseNotes`: the version's
+`CHANGELOG.md` section, which the desktop app shows for a pending update before the
+user installs it. `scripts/feed_release_notes.py` picks the section the way
+Settings > Releases does (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
+JSON string, which is also a YAML double-quoted scalar, so no changelog text can
+break the file. A version with no section, in practice a nightly, gets `""`.
 
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
@@ -533,6 +603,21 @@ literal trailing-slash key `.../simple/kirocrew/` that pip requests, using
 different key). The project page is merged with the live one so prior versions
 stay installable, and a non-200/non-404 fetch aborts the step rather than
 truncating the version history.
+
+Every link carries `data-requires-python`, so pip on an older interpreter refuses
+with "Requires-Python >=3.12" instead of falling back to a release from before the
+floor was raised. A new link takes the wheel's own `Requires-Python`; the merge
+keeps each link's attributes, and stamps any link published before the attribute
+existed with `>=3.12`. That stamp is deliberate even where a pre-0.6 wheel's
+METADATA says `>=3.10`: this index serves only the supported 3.12+ line
+([decision](../decisions/2026-11-09-pip-older-than-3-12-is-refused-not-given-a-pre-0-6-release.md)).
+`pip install --ignore-requires-python` is the escape hatch.
+
+Every branch that can tag a release must merge the page the same way, because a
+tag runs the workflow from its own commit. A release branch whose merge still keeps
+only bare links would publish a page holding just its own link and drop the
+channel's whole version history. So a release branch cut before links carried
+attributes takes the attribute-keeping merge pattern before its next tag.
 
 ## The macOS trust chain
 
@@ -773,6 +858,15 @@ bucket is private and a manifest must never advertise a raw S3 URL.
 so a retried job produces a byte-identical manifest and the immutable write
 still succeeds.
 
+**The optional advance notice, `announce.json`.** Beside `latest-cli.json` the
+feed may carry `feed/<channel>/announce.json`, which the gateway reads to draw
+the About page's "Upcoming update" block (field schema and failure rules:
+[learn-cron-dashboard](../system-specs/modules/learn-cron-dashboard.md), "Upcoming
+update notice"). It is unsigned display text. Nothing writes it yet: a follow-up
+adds a step to `publish-cli.yml`, next to the manifest write, that publishes it
+from the release's changelog section ahead of the release and removes or
+replaces it once the release ships.
+
 Key provisioning, the `kms:GetPublicKey` + `kms:Sign` grant, and the rotation
 procedure (dual-trust, never an in-place swap, because schema v1 pins exactly
 one key) are in [../../packaging/signing/README.md](../../packaging/signing/README.md).
@@ -916,11 +1010,14 @@ Two Windows details do not generalise from the other platforms:
   it also has to contend with `Provider.findFile()` disambiguating entries by
   matching `process.arch` against the URL path.
 - **Windows updates are visible but non-interactive.** `quitAndInstall` passes
-  `isSilent=false` and `isForceRunAfter=true`. The assisted installer
+  `isSilent=false` and `isForceRunAfter=false` (see "Updates install on the
+  user's quit" below), so the installer does not start the app again; the one
+  exception is a Restart now the user asked for. The assisted installer
   (`nsis.oneClick: false`) uses update-only hooks in `installer.nsh` to skip the
   Welcome, install-mode, and Finish decisions, leaving only the native
-  extraction page and its real progress visible. At completion it runs the
-  locked electron-builder `StartApp` contract and exits successfully. The same
+  extraction page and its real progress visible. At completion it exits
+  successfully, running the locked electron-builder `StartApp` contract only
+  when the update was started with `--force-run`. The same
   hooks call `SetSilent normal` for `/S --updated`, so a client released before
   this behavior change also gets visible progress on its first upgrade into it.
   The downloaded installer owns this UI contract: a downgrade or channel
@@ -966,6 +1063,7 @@ files:
 path: https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721t061155/KiroCrew.zip
 sha512: '<base64>'
 releaseDate: '2026-07-21T06:22:13Z'
+releaseNotes: ""
 ```
 
 The zip is the update payload (the updater's `findFile` skips dmg/pkg); the DMG
@@ -1008,16 +1106,35 @@ platform — on macOS that flag stages eagerly, which arms ShipIt to swap the
 bundle on ANY exit (including exits that skip the gateway teardown) and cannot
 be un-armed, so it would also defeat release retraction.
 
+**Updates install on the user's quit, never while the app runs.** The Install
+click ARMS the staged build (`install()` on the lane, `updateAPI.install()` in
+the renderer): it does not stop the gateway, does not call `quitAndInstall` and
+quits nothing, and the renderer is told with `armed: true` on the `downloaded`
+state. The renderer reads that as finished, not as an install still in flight:
+`useInstallDispatch` releases its latch, the modal and the About card say the
+update installs when the user quits, and a Restart now action calls
+`updateAPI.relaunch()`. An armed stage installs even when the auto-download preference is off,
+because the user chose it. The install itself runs only from the `before-quit`
+handler, after the gateway has fully stopped, and that handler calls
+`quitAndInstall(false, false)`: the app is not relaunched by it. Squirrel.Mac
+brings the app back after its swap whatever that argument says; that is the
+platform's behavior. `updateAPI.relaunch()` (Restart now) is a plain quit and
+relaunch: with an armed stage the quit's install runs and then relaunches
+(`quitAndInstall(false, true)`), otherwise it is `app.relaunch()`. The maintainer's
+rulings are
+the 2026-11-10 decision "updates never restart a running gateway".
+The managed lane follows the same rule with its own commands; see
+[desktop-app.md → Externally-managed installs](desktop-app.md#externally-managed-installs-repackagers).
+
 **A stage is re-verified against the feed before it installs, so an install
 always applies the NEWEST build.** A download can sit staged for hours while
 newer releases publish, and installing it then applies a superseded build the
-user must immediately update again. Both install paths — the About panel's
-explicit install and the deferred install on quit — therefore call
+user must immediately update again. The quit-time install therefore calls
 `verifyStageIsLatest` (`website/electron/runtime/update/freshness-gate.js`, composed by `feed-lane.js`) first.
 It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
 and reads the verdict back out of the existing handlers, so the direction gate
 and the retraction path make the decision rather than a second copy of that
-rule. Three outcomes:
+rule. Four outcomes:
 
 - `latest` — the feed still serves the staged version, so the install proceeds.
 - `superseded` — a newer build published, or the release was retracted. The
@@ -1025,6 +1142,15 @@ rule. Three outcomes:
   card moves to what the feed now serves (the newer build's `found` or
   `downloading`, or "up to date" for a retraction) with no separate notice; the
   quit path explains the refusal in a native notification (below).
+- `channel-changed` — the stage came from a channel this install no longer
+  follows, or the check that judged it was sent to one. Every stage and every
+  offer records the channel whose feed served it, so the install is REFUSED
+  whether the switch came before the click or during the wait, and whether or
+  not the feed answered: fail-open never crosses channels. A promoted release
+  the selected channel also serves is the same build, so that channel's check
+  takes the stage over and it installs. On the manual path the card shows
+  `checking` while the selected channel is asked; the quit path explains the
+  refusal in a native notification (below).
 - `unknown` — **fail open.** The feed was unreachable, or answered nothing
   within 8s. Bytes the user already downloaded must not become uninstallable
   because the network went away, so the stage installs, exactly as an install
@@ -1049,8 +1175,9 @@ The wait has the same 8s bound and fails open to the offered build; a check it
 stops waiting for is abandoned, so its late answer cannot redirect the download
 in progress. A later gate that joins that still-running check (an install, or a
 Retry of the download) lifts the abandonment, because no install is running then
-and its verdict needs the answer. If the channel preference changed during the
-wait, nothing downloads and the new lane is checked instead (the card shows
+and its verdict needs the answer. If the offer came from a channel this install
+no longer follows, whether the switch came before the click or during the wait,
+nothing downloads and the selected channel is checked instead (the card shows
 `checking`), once the old check has fully settled; a second click that wakes
 behind that new-lane check stands down and leaves the answer to it. The
 automatic download is exempt: it starts from
@@ -1060,13 +1187,15 @@ Two consequences worth knowing when reading a bug report. The quit path verifies
 `quiet`, so a newer build discovered as the app exits is *not* auto-downloaded —
 that would be a ~350MB fetch seconds before the process ends; it is offered on
 the next launch instead. And a refusal on the quit path still quits, with a
-native notification explaining why — separate copy for a withdrawn stage versus
-one deferred by a check still running at the dispatch (possible only when the
-stage carries no version, so the gate had nothing to wait for), because only the
-first is a retraction and the second re-offers the same build next launch. The
-dashboard's arm endpoint (`api_update_arm` in
-`src/kiro_crew/dashboard/handlers/updates.py`) re-checks the feed the same way,
-and awaits an already-running check rather than arming its cached verdict.
+native notification explaining why — separate copy for a withdrawn stage, a
+stage from a channel the user left, and one deferred by a check still running at
+the dispatch (possible only when the stage carries no version, so the gate had
+nothing to wait for), because only the first is a retraction, the second waits
+for the selected channel's answer, and the third re-offers the same build next
+launch. The dashboard's arm endpoint (`api_update_arm` in
+`src/kiro_crew/dashboard/handlers/updates_step_up.py`) re-checks the feed the
+same way, and awaits an already-running check rather than arming its cached
+verdict.
 
 Turning the preference off keeps bytes already fetched but **disarms the
 install-on-quit for a stage that was downloaded automatically**, so the update a
@@ -1109,7 +1238,7 @@ The consequences to know:
 - **The "you are running prerelease bytes" note still keys on the stamp**
   (`stampedChannel`), not on the followed channel, because that statement is
   about the bytes and stays literally true on a promoted stable install.
-- **An enterprise build has no opt-in.** It follows `stable`, the minimal set of the `updates.channel` control (RFC crew-enterprise-edition, D3), whatever the preference says. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
+- **An LTS build has no opt-in.** It follows `lts`, the edition's own channel (RFC crew-lts-edition, D11), whatever the preference or a policy `updates.channel` pin says. `lts` is not a channel an oss build offers, so neither edition reads the other's feed. `release-lts.yml` publishes `lts` (see "LTS edition releases"), and neither edition falls back to the other's channel. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
 
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
@@ -1386,9 +1515,12 @@ for one to appear.
   names that tag itself (`scripts/release_previous_tag.py`): the previous
   stable tag for a stable release, and the previous prerelease of the same
   `X.Y.Z` line for a prerelease, or the previous stable for the first one.
-  It reads tags with `scripts/check_feed_advance.py::parse_version`, and if
-  listing tags or choosing one fails, GitHub chooses as before. A prerelease
-  tag whose run failed and published no page still counts as a base (#25077).
+  Candidates are the repository's release pages, not its tags: a prerelease
+  counts only once its page is published, so a prerelease tag whose run failed
+  before the page was created is skipped, while a stable page counts even as a
+  draft, because it stays one until `record-stable-promotion` publishes it.
+  It reads names with `scripts/check_feed_advance.py::parse_version`, and if
+  listing releases or choosing one fails, GitHub chooses as before.
   GitHub's own choice is the newest ancestor release tag, and since each
   release is tagged on its own release branch that is a tag from the project's
   first weeks. A stable list can still be long: on v0.5.0 it was
@@ -1461,7 +1593,24 @@ rewritten in isolation and lost three shipped sections that `main` still had.
 The rules that keep the two from drifting:
 
 - **Write the section on the release branch first** (it is what ships), then port
-  it to `main` **verbatim** — a port adds a section and removes nothing.
+  it to `main` **verbatim**. A port removes no other section. When `main` already
+  holds an earlier cut of that release's section, the port replaces that cut with
+  the release branch's text.
+- **The port passes the changelog gate by itself**, with no override. Open it as a
+  PR that changes `CHANGELOG.md` and nothing else. `check_changelog_history.py` then
+  waives its "different notes" verdict for each changed section that is
+  byte-identical, heading and body, to the same version's section on `origin` at tag
+  `vX.Y.Z`, or at `release/X.Y.0` while that tag does not exist yet (a patch release
+  such as `0.11.2` is written on its line's branch, `release/0.11.0`). Once the tag
+  exists it alone counts, because the branch keeps moving. The gate reads git
+  objects, so a label, title or PR text cannot earn the waiver; a local run reads
+  whatever its `origin` names, so only CI's result counts. Any other change is
+  refused as before: another changed path, text that differs from the release's, a
+  deleted section, a draft heading, a release text with CR or undecodable bytes, or
+  no readable tag or branch on `origin`. The tag is the shipped record, so a
+  `CHANGELOG.md`-only PR that restores an older section to its tag text passes the
+  same way. The Opus review lane applies the same rule through `AUTOSDE.yaml`, so it
+  does not block a port that matches.
 - **`main` is the recovery source.** If a release branch's changelog is damaged,
   restore from `main` rather than reconstructing by hand; `main` is never rewound
   by a release cut, so its copy is the one that still has the full history.
@@ -1473,12 +1622,34 @@ The rules that keep the two from drifting:
   for rather than sampled. 0.4.0 is the cautionary case: its per-PR accumulation
   reached 721 lines while describing about 11% of the 453 commits it covered, and it
   named none of the eighteen breaking changes it shipped.
-- **Editing the in-flight section after it is written needs the documented human
-  override**, because the immutability rule cannot tell a not-yet-shipped section
-  from a shipped one without a tag lookup, and a shallow CI checkout has no tags.
-  This is the intended trade: a fix cherry-picked into a later RC that deserves a
-  changelog line is rare, and the alternative — an exemption keyed on position in
-  the file — once made the most recently shipped section the only editable one.
+- **Editing a section on `main` that the release ref does not carry still needs the
+  documented human override.** The gate cannot tell a not-yet-shipped section from a
+  shipped one by position in the file; that exemption once made the most recently
+  shipped section the only editable one. It tells them apart by the release ref, so
+  a fix that deserves a changelog line goes onto the release branch first and is
+  then ported as above.
+
+## LTS edition releases
+
+The LTS edition (RFC crew-lts-edition, D11) ships from its own tag, `lts-vX.Y.Z`, on its own `lts` channel. `.github/workflows/release-lts.yml` runs on `lts-v*` tags only; `release.yml` runs on `v*` tags only, so neither tag reaches the other workflow. Both share the `release-publish` concurrency group.
+
+| Step | What runs |
+|---|---|
+| Version | `lts-vX.Y.Z` maps to `X.Y.Z`; any other tag shape fails |
+| Gate | The backend suite on the tagged commit, and the dependency vulnerability gate |
+| Build | `build-wheel.yml`, `build-desktop.yml`, `build-windows.yml` with `edition: lts` |
+| Sign + publish | `sign-and-notarize.yml` (3 legs), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
+
+It writes only lts paths: `feed/lts/`, `cli/lts/`, `desktop/lts/` and the signing bucket's `lts/` keys. Every published file uses the LTS stem: `KiroCrew-LTS.dmg`, `KiroCrew-LTS-arm64.dmg`, `KiroCrew-LTS-x86_64.AppImage`, `KiroCrew-LTS-Setup.exe`, and the wheel `kirocrew_lts-X.Y.Z-py3-none-any.whl` of the distribution `kirocrew-lts`. The desktop app is a side-by-side `KiroCrew LTS` app, built like nightly (`packaging/build-desktop.sh`): its own product name, Linux package and executable names, npm name, `nsis.guid` and Windows app ID, with the shared macOS bundle id, so no new signing identifier. There is no Docker image and no GitHub release. `cli.sh --channel lts` installs the LTS wheel.
+
+Every input these workflows gained (`edition`) defaults to `oss`, and every LTS name is chosen only when the channel or edition is `lts`, so a `v*` release is unchanged (`test/test_release_lts_workflow.py`). To try an LTS desktop build without publishing, run `build-desktop.yml` or `build-windows.yml` by hand with `edition: lts`.
+
+Before the first real `lts-v*` tag, two repository settings are needed. Only the owner can change them, and the order matters:
+
+1. The tag ruleset `release-tags-admin-only` covers `refs/tags/lts-v*` as well as `refs/tags/v*`, so only admins can cut an LTS release.
+2. Only then, the `prod` environment's deployment policy allows tag `lts-v*`. Every sign and publish job runs in `prod`, which today admits branch `main` and tag `v*` only.
+
+Done the other way round, there is a window in which `prod` admits `lts-v*` while any user with push access can still create such a tag, and so cut a signed LTS release.
 
 ## Deliberately not built
 

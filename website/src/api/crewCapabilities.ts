@@ -1,3 +1,5 @@
+import { withDeadline } from '../lib/withDeadline'
+import { agentPath } from './agentPath'
 import { apiTransport } from './apiTransport'
 
 export type CapabilitySection = 'mcpServers' | 'tools' | 'allowedTools' | 'autoApprove' | 'skills' | 'prompt' | 'model' | 'resources'
@@ -9,6 +11,9 @@ export interface CapabilityRow extends CapabilityRef {
   value: unknown
   managed?: boolean
   shared_reference?: boolean
+  /** On a crewmate worker row: the stored editor row a Remove drops, or `null`
+   *  when the row has none of its own (it goes with its server, or stays). */
+  remove?: CapabilityRef | null
 }
 export interface CapabilityView {
   schema_version: 1
@@ -59,10 +64,18 @@ export interface CapabilityPreview extends CapabilityView {
    * or Kiro Crew rebuilds that connection without approvals. */
   withheld_approvals?: (CapabilityRef & { reason: 'governed' | 'not_connected' | 'managed' | 'unexplained' })[]
 }
-const endpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/capabilities`
-const { get, post, put, j } = apiTransport
+/** Deadline for the two reads the Bot editor's Abilities pane waits on, which
+ *  shows its spinner until they settle. Longer than the gateway's own 20s bound
+ *  on each read (`_GET_TIMEOUT_SECS` in `dashboard/handlers/agent_capabilities.py`
+ *  and `member_worker_kit.py`), so its coded 503 normally answers first; this
+ *  ends the wait when no answer comes back at all. */
+export const ABILITIES_READ_TIMEOUT_MS = 30_000
+const { getWithSignal, post, put, j } = apiTransport
+const getWithDeadline = (url: string): Promise<unknown> =>
+  withDeadline(ABILITIES_READ_TIMEOUT_MS, undefined, signal => getWithSignal(url, signal).then(j))
+const endpoint = (member: string) => agentPath(member, '/capabilities')
 export const crewCapabilitiesApi = {
-  get: (member: string): Promise<CapabilityView> => get(endpoint(member)).then(j) as Promise<CapabilityView>,
+  get: (member: string): Promise<CapabilityView> => getWithDeadline(endpoint(member)) as Promise<CapabilityView>,
   preview: (member: string, draft: CapabilityDraft): Promise<CapabilityPreview> =>
     post(`${endpoint(member)}/preview`, draft).then(j) as Promise<CapabilityPreview>,
   save: (member: string, draft: CapabilityDraft & { preview_token: string }): Promise<CapabilityView> =>
@@ -70,40 +83,38 @@ export const crewCapabilitiesApi = {
 }
 export const crewCapabilitiesKey = (member: string) => ['crew-capabilities', member] as const
 
-/** A crewmate's worker kit: the one template last copied into its own file. */
+/** A crewmate's worker kit: abilities added to its own file from other agents. */
 export interface WorkerKitView {
   member: string
-  /** The template the kit was last copied from; '' when none was. */
-  template: string
-  /** The template to name for it: `template`, or for a private copy the
-   *  template it was forked from; '' when a private copy's origin is unknown. */
-  origin?: string
-  /** `template` is a crewmate's private copy, whose id is never shown. */
-  private_copy?: boolean
   revision: string
-  /** The file holds kit items the last copy did not write. */
-  has_additions_since: boolean
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
-  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools'
+  /** `hooks` / `permissions` / `toolsSettings`: run on the crewmate's worker only. */
+  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools' | 'hooks' | 'permissions' | 'toolsSettings'
   id: string
-  change: 'added' | 'removed' | 'changed'
+  /** `added`: written by the add. `skipped`: already present, so left alone. */
+  /** `replaced`: the behaviour-directions slot already holds other directions. */
+  change: 'added' | 'replaced' | 'skipped'
 }
 export interface WorkerKitPreview {
   member: string
   template: string
   revision: string
+  runs_unasked: boolean
+  /** The behaviour directions the add writes; `""` when the agent has none. */
+  directions?: string
+  /** The directions the slot holds now, which a `replaced` row overwrites; `""` when empty. */
+  current_directions?: string
   changes: WorkerKitChange[]
 }
 export interface WorkerKitRequest {
   template: string
-  keep_additions: boolean
   revision?: string
 }
-const workerKitEndpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/worker-kit`
+const workerKitEndpoint = (member: string) => agentPath(member, '/worker-kit')
 export const crewWorkerKitApi = {
-  get: (member: string): Promise<WorkerKitView> => get(workerKitEndpoint(member)).then(j) as Promise<WorkerKitView>,
+  get: (member: string): Promise<WorkerKitView> => getWithDeadline(workerKitEndpoint(member)) as Promise<WorkerKitView>,
   preview: (member: string, body: WorkerKitRequest): Promise<WorkerKitPreview> =>
     post(`${workerKitEndpoint(member)}/preview`, body).then(j) as Promise<WorkerKitPreview>,
   apply: (member: string, body: WorkerKitRequest & { revision: string }): Promise<WorkerKitView> =>

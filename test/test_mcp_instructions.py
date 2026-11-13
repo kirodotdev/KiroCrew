@@ -125,3 +125,14 @@ def test_the_spawn_bullet_still_points_long_lived_work_at_peer_sessions() -> Non
     spawn = next(line for line in prompt.splitlines() if line.startswith("- `spawn_run`:"))
     assert "These are the ONLY subagent mechanisms" in spawn
     assert "peer session (`session_create`) when that tool is present" in spawn
+
+
+def test_the_guide_server_says_to_write_nothing_before_its_calls() -> None:
+    """A "Show me around" reply opened with "Let me check the real layout first."
+    before the guide: every word an agent writes is shown, so the guide server's
+    own text and its find_ui description both say not to narrate the lookup."""
+    from kiro_crew import mcp_guide
+
+    assert "Write no text before these calls" in mcp_instructions.GUIDE
+    (find_ui,) = [t for t in mcp_guide._tool_definitions() if t["name"] == "find_ui"]
+    assert "with no text before the call" in find_ui["description"]

@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, waitFor } from '@testing-library/react'
 import { api } from '../api/client'
 import chatReducer, { setActiveSlot, switchSlot } from '../store/chatSlice'
-import notificationsReducer, { addNotification, unackNotification } from '../store/notificationsSlice'
+import notificationsReducer, { addNotification, fetchNotifications, unackNotification } from '../store/notificationsSlice'
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
 import type { ChatMessage, Notification } from '../types'
 import { OPEN_SETTLE_MS, OPEN_SETTLE_POLL_MS, transcriptShownFor, unreadCronNotesFor, useAckCronNotesInView, useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
@@ -23,15 +23,23 @@ const RUN = [{ role: 'assistant', content: 'Digest posted.', ts: 1, cls: '' }] a
 
 type Store = ReturnType<typeof createTestStore>
 
-/** A store with *items* in the bell and *activeSlot* holding a loaded transcript in Redux. */
-function storeWith(items: Notification[], activeSlot: string | null = 'cron-a', chat: Record<string, unknown> = {}) {
+/** A store with *items* in the bell (its first fetch landed unless *loaded* is
+ *  false) and *activeSlot* holding a loaded transcript in Redux. */
+function storeWith(items: Notification[], activeSlot: string | null = 'cron-a', chat: Record<string, unknown> = {}, loaded = true) {
   const base = { ...chatReducer(undefined, setActiveSlot(activeSlot as string)), messages: RUN, slotLoading: false, ...chat }
-  const notifications = { ...notificationsReducer(undefined, { type: '@@test/init' }), items }
+  const notifications = { ...notificationsReducer(undefined, { type: '@@test/init' }), items, loaded }
   return createTestStore({ chat: base, notifications } as never)
 }
 
-/** The user's open of *key* landing: `switchSlot.fulfilled` for a gesture. */
-function landOpen(store: Store, key: string, arg: object = { announceOnMissing: true, gesture: true }) {
+const GESTURE = { announceOnMissing: true, gesture: true }
+
+/** The user's open of *key* starting: `switchSlot.pending`, its transcript still loading. */
+function startOpen(store: Store, key: string, arg: object = GESTURE) {
+  act(() => { store.dispatch(switchSlot.pending('req-open', { key, ...arg })) })
+}
+
+/** That open's transcript load landing: `switchSlot.fulfilled`. */
+function finishOpen(store: Store, key: string, arg: object = GESTURE) {
   act(() => {
     store.dispatch(switchSlot.fulfilled(
       { key, messages: RUN, running: false, stopping: false, hasMore: false, total: 1, queue: [] } as never,
@@ -39,6 +47,12 @@ function landOpen(store: Store, key: string, arg: object = { announceOnMissing: 
       { key, ...arg },
     ))
   })
+}
+
+/** The user's open of *key*, start to landing, as the `switchSlot` thunk dispatches it. */
+function landOpen(store: Store, key: string, arg: object = GESTURE) {
+  startOpen(store, key, arg)
+  finishOpen(store, key, arg)
 }
 
 /** A live `notification` frame, as useWebSocket handles one. */
@@ -133,7 +147,7 @@ describe('switchSlot records the user open', () => {
     expect(store.getState().chat.userOpen).toBeUndefined()
     landOpen(store, 'cron-a')
     landOpen(store, 'cron-a')
-    expect(store.getState().chat.userOpen).toEqual({ key: 'cron-a', seq: 2 })
+    expect(store.getState().chat.userOpen).toEqual({ key: 'cron-a', seq: 2, landed: true })
   })
 })
 
@@ -176,7 +190,8 @@ describe('useAckCronNotesInView', () => {
     ack.mockClear()
     const failed = storeWith([note({ ts: 'run-2' })], 'cron-a', { messages: [], slotLoading: false })
     mount(failed, { panes: [{ slot: 'cron-a', shown: false }] })
-    act(() => { failed.dispatch(switchSlot.rejected(new Error('boom'), 'req-open', { key: 'cron-a', announceOnMissing: true, gesture: true })) })
+    startOpen(failed, 'cron-a')
+    act(() => { failed.dispatch(switchSlot.rejected(new Error('boom'), 'req-open', { key: 'cron-a', ...GESTURE })) })
     arrive(failed, note({ ts: 'run-3' }))
     await settle()
     expect(ack).not.toHaveBeenCalled()
@@ -280,6 +295,42 @@ describe('useAckCronNotesInView', () => {
     await settle()
     expect(ackedTs(store)).toEqual([])
     expect(ack).not.toHaveBeenCalled()
+  })
+
+  it('drops an open left for another page while its transcript is still loading, so its late landing reads nothing (#24080)', async () => {
+    // The pane shows the chat's cached transcript, but the open counts only
+    // once its own load lands; the user leaves and comes back before it does.
+    const store = storeWith([note({ ts: 'run-1' })])
+    mount(store, SHOWN_A)
+    startOpen(store, 'cron-a')
+    await settle()
+    expect(ack).not.toHaveBeenCalled()
+    act(() => navTo('/notifications'))
+    act(() => navTo('/chat'))
+    finishOpen(store, 'cron-a')
+    await settle()
+    expect(ackedTs(store)).toEqual([])
+    expect(ack).not.toHaveBeenCalled()
+  })
+
+  it('counts an open started on another page once its navigation reaches the chat, but not one that landed before it did', async () => {
+    // The palette or the bell's "go to chat" off /chat: the switch starts first,
+    // and the router renders the move to /chat after it.
+    const store = storeWith([note({ ts: 'run-1' })])
+    const r = mount(store, SHOWN_A, '/settings')
+    startOpen(store, 'cron-a')
+    act(() => navTo('/chat'))
+    finishOpen(store, 'cron-a')
+    await waitFor(() => expect(ackedTs(store)).toEqual(['run-1']))
+    r.unmount()
+
+    // Landed while still away: the user never reached the chat it opened.
+    const away = storeWith([note({ ts: 'run-2' })])
+    mount(away, SHOWN_A, '/settings')
+    landOpen(away, 'cron-a')
+    act(() => navTo('/chat'))
+    await settle()
+    expect(ackedTs(away)).toEqual([])
   })
 
   it('drops an open left for another chat before its transcript shows, so the first chat is never read', async () => {
@@ -506,6 +557,19 @@ describe('a gesture open waits for the cover its gesture is removing', () => {
     coverOff()
     await advance(OPEN_SETTLE_MS)
     expect(ack).not.toHaveBeenCalled()
+  })
+
+  it('waits inside the window for the bell\'s first fetch, then reads the notes it brought (#24080)', async () => {
+    // At boot the list holds no stored notes yet: reading it then would find none.
+    vi.spyOn(api, 'notifications').mockResolvedValue({ notifications: [note({ ts: 'run-1' })] } as never)
+    const store = storeWith([], 'cron-a', {}, false)
+    mount(store, SHOWN_A)
+    landOpen(store, 'cron-a')
+    await advance(OPEN_SETTLE_POLL_MS)
+    expect(ack).not.toHaveBeenCalled()
+    await act(async () => { await store.dispatch(fetchNotifications()) })
+    await advance(OPEN_SETTLE_POLL_MS)
+    expect(ack).toHaveBeenCalledWith('run-1')
   })
 
   it('drops the open at once when the user leaves the chat inside the window', async () => {

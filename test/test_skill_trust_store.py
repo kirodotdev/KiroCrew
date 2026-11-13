@@ -442,6 +442,26 @@ class TestListingSurvivesHandEditedTimestamps:
         # last at 0 rather than being silently dropped.
         assert [r["granted_at"] for r in rows[1:]] == [0, 0]
 
+    def test_non_finite_granted_at_does_not_crash_the_listing(self, project):
+        # json.load accepts the bare Infinity / NaN tokens and 1e400 parses to
+        # inf, so a hand edit reaches int() with values it refuses.
+        skill_trust.store_path().parent.mkdir(parents=True, exist_ok=True)
+        skill_trust.store_path().write_text(
+            '{"version": 1, "granted": ['
+            f'{{"path": {json.dumps(str(project))}, "granted_at": 1700000000}}, '
+            '{"path": "/inf", "granted_at": Infinity}, '
+            '{"path": "/nan", "granted_at": NaN}, '
+            '{"path": "/big", "granted_at": 1e400}, '
+            '{"path": "/text", "granted_at": "inf"}'
+            "]}",
+            encoding="utf-8",
+        )
+        skill_trust.reset_cache_for_tests()
+        rows = skill_trust.list_trusted_projects()
+        assert [r["path"] for r in rows][0] == str(project)
+        assert sorted(r["path"] for r in rows[1:]) == ["/big", "/inf", "/nan", "/text"]
+        assert [r["granted_at"] for r in rows[1:]] == [0, 0, 0, 0]
+
 
 class TestTrustDirIntegrity:
     def test_a_symlinked_trust_dir_is_replaced_before_writing(self, project, tmp_path):

@@ -6,6 +6,7 @@ import {
   fileOfficePreviewUrl,
   fileOfficeSlidesUrl,
   fileOfficeSlideUrl,
+  partialDownloadName,
 } from './fileReadUrl'
 
 // The four builders carry the client half of the contract that a path holding
@@ -72,5 +73,32 @@ describe('file endpoint URL builders', () => {
     const pinned = new URL(fileOfficeSlideUrl(RESERVED, 12, 'f'.repeat(64)), 'http://localhost').searchParams
     expect(pinned.get('digest')).toBe('f'.repeat(64))
     expect(pinned.get('n')).toBe('12')
+  })
+})
+
+describe('partialDownloadName', () => {
+  it('inserts .partial before the extension so the OS keeps the file type', () => {
+    expect(partialDownloadName('/home/u/release-checklist.md')).toBe('release-checklist.partial.md')
+    expect(partialDownloadName('b.md')).toBe('b.partial.md')
+    expect(partialDownloadName('/a/b/data.json')).toBe('data.partial.json')
+  })
+
+  it('inserts before the LAST extension of a multi-dot name', () => {
+    expect(partialDownloadName('archive.tar.gz')).toBe('archive.tar.partial.gz')
+  })
+
+  it('appends when there is no extension to preserve', () => {
+    expect(partialDownloadName('Makefile')).toBe('Makefile.partial')
+    expect(partialDownloadName('/etc/hosts')).toBe('hosts.partial')
+  })
+
+  it('treats a leading dot as a dotfile marker, not an extension', () => {
+    // `.env` is the whole name, not a stem of `` with extension `env`.
+    expect(partialDownloadName('.env')).toBe('.env.partial')
+    expect(partialDownloadName('/home/u/.bashrc')).toBe('.bashrc.partial')
+  })
+
+  it('appends for a trailing-dot name rather than splitting on the empty extension', () => {
+    expect(partialDownloadName('weird.')).toBe('weird..partial')
   })
 })

@@ -185,11 +185,8 @@ async def test_patch_merge_preserves_concurrent_writer_changes(tmp_path):
 def _mapping_stub(uris: list[str]):
     """Stand in for ``apply_skill_mapping``, rewriting ``resources`` to *uris*.
 
-    The unit under test is the delta merge, so the mapping's own catalog walk is not
-    what is being exercised; stubbing it lets a test state the before/after resource
-    sets directly instead of provisioning a skill tree to imply them. The snapshot it
-    hands back is empty for the same reason: the reply resolved against it is not what
-    these tests read.
+    The unit is the delta merge, so a test states the resource sets directly; the
+    returned snapshot is empty because these tests do not read the reply.
     """
 
     def _apply(data, agent_path, state, keys, session_key=""):
@@ -213,11 +210,8 @@ def _mapping_stub(uris: list[str]):
 async def test_a_patch_that_names_no_resource_change_leaves_a_malformed_value_alone(tmp_path):
     """An unrelated PATCH must not rewrite ``resources`` -- valid or not.
 
-    A non-list ``resources`` is a state this codebase guards for in its readers and in the
-    skill-mapping writer, so it reaches the delta merge in real operation. Iterating a string
-    yields characters, each of them a ``str``, so an unguarded merge persists the value split
-    per character -- silent on-disk corruption on the most common PATCH path, driven by a
-    request that never mentioned resources.
+    A non-list ``resources`` does occur; an unguarded merge iterates a string and saves it
+    split per character.
     """
     cfg = tmp_path / "kirocrew.json"
     cfg.write_text(

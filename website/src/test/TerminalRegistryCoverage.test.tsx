@@ -154,7 +154,8 @@ describe('terminalRegistry', () => {
       disposeTerminalConnection(id)
       unregisterTerminalWs(id)
     }
-    setTerminalEnabledFlag(false)
+    // RTL unmounts after this hook, so the flag's subscribers are still mounted: flip it inside act.
+    act(() => { setTerminalEnabledFlag(false) })
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
@@ -940,6 +941,61 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(3)
     })
 
+    it('takes the terminal back on Enter in the parked pane without replaying the Enter', () => {
+      const id = session('displaced-enter')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      const ws = WS_INSTANCES[0]
+      act(() => {
+        ws.simulateOpen()
+        ws.simulateJson({ type: 'error', code: 'displaced' })
+        ws.simulateClose()
+      })
+      expect(result.current).toBe('disconnected')
+      const sentBefore = ws.send.mock.calls.length
+
+      act(() => { term.dataCb?.('\r') })
+      expect(WS_INSTANCES).toHaveLength(2)
+      expect(ws.send).toHaveBeenCalledTimes(sentBefore)
+      act(() => { WS_INSTANCES[1].simulateOpen() })
+      expect(result.current).toBe('connected')
+      // Only the resize handshake goes out: the Enter that asked for the
+      // terminal must not reach the reattached shell's prompt.
+      const frames = WS_INSTANCES[1].send.mock.calls.map((_, i) => decode(WS_INSTANCES[1], i))
+      expect(frames).not.toContain('\r')
+    })
+
+    it('keeps the terminal parked for keys other than a bare Enter', () => {
+      const id = session('displaced-other-keys')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'error', code: 'displaced' })
+      ws.simulateClose()
+
+      for (const key of ['a', ' ', '\x1b', 'ls\r', '\n']) term.dataCb?.(key)
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
+    it('does not treat Enter as a take-back while the socket is only reconnecting', () => {
+      const id = session('reconnecting-enter')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateClose()
+      // An ordinary drop is already on its backoff redial; Enter must not
+      // start a second, competing dial.
+      term.dataCb?.('\r')
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
     it('reconnects after a generic startup error without sending the failed command', () => {
       const id = session('displaced-other-error')
       vi.useFakeTimers()
@@ -1298,18 +1354,20 @@ describe('terminalRegistry', () => {
         })
       }
       expect(result.current).toBe('disconnected')
-      retryTerminalConnection(id) // dials socket #11
+      act(() => { retryTerminalConnection(id) }) // dials socket #11
       const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
       latest.readyState = MockWebSocket.CLOSING
       const before = WS_INSTANCES.length
 
-      retryTerminalConnection(id)
+      act(() => { retryTerminalConnection(id) })
       // No competing dial while CLOSING.
       expect(WS_INSTANCES).toHaveLength(before)
 
       // The deferred close now fires; the reset budget redials on schedule.
-      latest.simulateClose()
-      vi.advanceTimersByTime(60_000)
+      act(() => {
+        latest.simulateClose()
+        vi.advanceTimersByTime(60_000)
+      })
       expect(WS_INSTANCES.length).toBeGreaterThan(before)
     })
 

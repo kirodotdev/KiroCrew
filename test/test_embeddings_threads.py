@@ -60,7 +60,7 @@ class TestEmbedThreads:
         # The resolver clamps to the core count, so a host with fewer cores than
         # the default answers with its own core count and the assertion would pin
         # the runner. Pinned above the default, the same way
-        # ``test_clamped_to_the_core_count`` below pins it under one.
+        # ``test_clamped_to_core_count`` below pins it under one.
         _pin_cores(monkeypatch, 8)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         assert embeddings_mod._DEFAULT_EMBED_THREADS == 4
@@ -88,14 +88,14 @@ class TestEmbedThreads:
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
 
-    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (11, 4), (16, 6)])
     def test_unset_leaves_one_core_free(self, monkeypatch, cores, expected) -> None:
         """Unset means llama.cpp never gets the whole box.
 
         Handing every core to the batch pool starves the event loop the gateway
         answers on, which a 2-vCPU host feels hardest. The 16-core expectation
-        is the one that matters twice: the cap is a CEILING on the four-thread
-        default, so a big host answers 4, not 15.
+        is the one that matters twice: the cap is a CEILING on the default, so
+        a big host answers the large-host 6, not 15.
         """
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         _pin_cores(monkeypatch, cores)
@@ -103,7 +103,7 @@ class TestEmbedThreads:
         if cores > 1:
             assert embeddings_mod._embed_threads() < cores
 
-    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 6)])
     def test_the_declared_default_in_config_is_not_operator_intent(
         self, monkeypatch, cores, expected
     ) -> None:
@@ -139,6 +139,61 @@ class TestEmbedThreads:
         )
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == configured
+
+    @pytest.mark.parametrize("cores,expected", [(8, 4), (11, 4), (12, 6), (16, 6), (64, 6)])
+    def test_a_large_host_defaults_to_six_threads(self, monkeypatch, cores, expected) -> None:
+        """Twelve or more usable CPUs default to 6 threads; fewer keep 4.
+
+        More threads embed faster, but past 6 an embed slowed the memory searches
+        running beside it (see ``_LARGE_HOST_EMBED_THREADS``). Laptops (8 cores
+        or fewer) keep 4.
+        """
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        _pin_cores(monkeypatch, cores)
+        assert embeddings_mod._embed_threads() == expected
+
+    def test_a_large_host_without_an_affinity_api_defaults_to_six(self, monkeypatch) -> None:
+        """macOS and Windows read the host count, and a 16-core one gets 6."""
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 16)
+        assert embeddings_mod._embed_threads() == 6
+
+    def test_a_small_cpu_set_on_a_large_host_keeps_four(self, monkeypatch) -> None:
+        """The large-host default reads the CPUs this process may use, not the box."""
+        if not hasattr(os, "sched_getaffinity"):
+            pytest.skip("this platform has no os.sched_getaffinity to narrow")
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(8)))
+        assert embeddings_mod._embed_threads() == 4
+
+    def test_bulk_inherit_follows_the_large_host_default(self, monkeypatch) -> None:
+        """``embedding_bulk_threads: 0`` inherits the interactive count, whatever it is."""
+        monkeypatch.setattr(
+            embeddings_mod, "_read_memory_config", lambda: {"embedding_bulk_threads": 0}
+        )
+        _pin_cores(monkeypatch, 16)
+        assert embeddings_mod.bulk_embed_threads() == 6
+
+    def test_the_help_says_4_cannot_be_pinned_on_a_large_host(self, monkeypatch) -> None:
+        """A typed 4 on a 16-CPU host runs 6, and the operator help must say so.
+
+        4 is the declared default, so it is read as the default; on 12 or more
+        usable CPUs that default is the large-host 6. Help that promised "4 can
+        be pinned anywhere above 4 CPUs" would make an operator's cap of 4 run 6.
+        """
+        import dataclasses
+
+        from kiro_crew.config.memory_sections import MemoryConfig
+
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 4})
+        _pin_cores(monkeypatch, 16)
+        assert embeddings_mod._embed_threads() == embeddings_mod._LARGE_HOST_EMBED_THREADS
+        field = {f.name: f for f in dataclasses.fields(MemoryConfig)}["embedding_threads"]
+        help_text = field.metadata["help"]
+        assert f"{embeddings_mod._LARGE_HOST_MIN_CORES} or more CPUs" in help_text
+        assert "pinning threads where the process may use 4 or fewer CPUs" not in help_text
 
     def test_a_cpu_set_decides_the_cap_not_the_machine(self, monkeypatch) -> None:
         """Two cores out of sixty-four means two cores.
@@ -489,3 +544,65 @@ class TestEmbedPriority:
         assert done.wait(timeout=5), "_submit_infer hung on a retired backend"
         assert out[0].error is not None
         assert "retired" in str(out[0].error)
+
+
+class TestTheRawKnobsReadTheLocalOverlay:
+    """``config.local.json`` wins over ``config.json`` for the raw ``memory`` knobs too.
+
+    The loader and Settings already report the overlay's value; the embedder must run
+    with the same one rather than the base file's.
+    """
+
+    @staticmethod
+    def _write(home: Path, name: str, memory: dict) -> None:
+        import json
+
+        (home / name).write_text(json.dumps({"memory": memory}), encoding="utf-8")
+
+    def test_an_overlay_value_wins_over_the_base(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.json", {"embedding_threads": 6, "embed_model_url": "base"})
+        self._write(
+            tmp_path,
+            "config.local.json",
+            {"embedding_threads": 2, "embedding_weight_repack": False},
+        )
+
+        memory = embeddings_settings._read_memory_config()
+
+        assert memory["embedding_threads"] == 2
+        assert memory["embedding_weight_repack"] is False
+        assert memory["embed_model_url"] == "base"  # a base key the overlay leaves alone
+
+    def test_an_overlay_alone_is_read(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.local.json", {"embedding_idle_evict_secs": 0})
+
+        assert embeddings_settings.embedding_idle_evict_secs() == 0
+
+    def test_a_non_object_overlay_section_replaces_the_base_like_the_loader(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The loader merges whole documents, so ``"memory": null`` in the overlay wins."""
+        import json
+
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.json", {"embedding_threads": 8})
+        (tmp_path / "config.local.json").write_text(json.dumps({"memory": None}), encoding="utf-8")
+
+        assert embeddings_settings._read_memory_config() == {}
+
+    def test_an_unreadable_overlay_leaves_the_base(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.json", {"embedding_threads": 6})
+        (tmp_path / "config.local.json").write_text("{not json", encoding="utf-8")
+
+        assert embeddings_settings._read_memory_config() == {"embedding_threads": 6}

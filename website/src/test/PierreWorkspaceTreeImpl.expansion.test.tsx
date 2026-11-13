@@ -342,6 +342,65 @@ describe('PierreWorkspaceTreeImpl — folders past the row cap', () => {
     await waitFor(() => expect(model.calls.expand).toContain('big'))
   })
 
+  describe('a nested repository', () => {
+    // A submodule is a childless folder row (no state row holds it open), so the
+    // reset that folds its own listing in would close it again. It is re-opened
+    // once the listing has landed.
+    const nestedRoot = () => mkTree({
+      paths: ['README.md'],
+      directories: ['libs', 'libs/sub'],
+      nestedRepoDirectories: ['libs/sub'],
+    })
+    const subListing = (): TreePayload => ({
+      root: ROOT,
+      dir: 'libs/sub',
+      paths: ['libs/sub/a.ts'],
+      directories: [],
+      repo: false,
+      truncated: false,
+      truncatedDirectories: [],
+    })
+
+    it('is re-opened once its own listing has landed', async () => {
+      vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir === 'libs/sub' ? subListing() : nestedRoot()))
+      renderTree()
+      await waitForTree()
+      const model = treeMock.last()
+      act(() => {
+        model.simulateExpanded(['libs/sub'])
+        model.simulateVisibleRows([{ kind: 'directory', path: 'libs/sub/', isExpanded: true }])
+      })
+      await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'libs/sub'))
+      await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('libs/sub/a.ts'))
+      await waitFor(() => expect(model.calls.expand).toContain('libs/sub'))
+    })
+
+    it('is not re-opened when it was closed again before its listing landed', async () => {
+      let release: (() => void) | undefined
+      const gate = new Promise<void>(resolve => { release = resolve })
+      vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+        if (dir !== 'libs/sub') return nestedRoot()
+        await gate
+        return subListing()
+      })
+      renderTree()
+      await waitForTree()
+      const model = treeMock.last()
+      act(() => {
+        model.simulateExpanded(['libs/sub'])
+        model.simulateVisibleRows([{ kind: 'directory', path: 'libs/sub/', isExpanded: true }])
+      })
+      await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'libs/sub'))
+      act(() => {
+        model.simulateExpanded([])
+        model.simulateVisibleRows([{ kind: 'directory', path: 'libs/sub/', isExpanded: false }])
+      })
+      await act(async () => { release?.(); await new Promise<void>(resolve => setTimeout(resolve, 0)) })
+      await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('libs/sub/a.ts'))
+      expect(model.calls.expand).not.toContain('libs/sub')
+    })
+  })
+
   it('does not reload a folder the listing bound dropped while it stays open', async () => {
     const folders = Array.from({ length: MAX_FOLDER_LISTINGS + 1 }, (_, i) => `f${String(i).padStart(2, '0')}`)
     vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir
@@ -444,8 +503,8 @@ describe('PierreWorkspaceTreeImpl — folders past the row cap', () => {
     expect(bigCalls()).toBe(settled)
   })
 
-  it('re-reads at most three open loaded folders per whole-tree poll, in turn', async () => {
-    const folders = ['f1', 'f2', 'f3', 'f4', 'f5']
+  it('re-reads at most ten open loaded folders per whole-tree poll, in turn', async () => {
+    const folders = Array.from({ length: 12 }, (_, i) => `f${i}`)
     vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir
       ? { root: ROOT, dir, paths: [`${dir}/x.ts`], directories: [], repo: false, truncated: false, truncatedDirectories: [] }
       : mkTree({ paths: ['README.md'], directories: folders, truncated: true, truncatedDirectories: folders })))
@@ -459,9 +518,9 @@ describe('PierreWorkspaceTreeImpl — folders past the row cap', () => {
     const dirCalls = () => vi.mocked(api.projectTree).mock.calls.filter(c => c[1]).length
     await waitFor(() => expect(dirCalls()).toBe(folders.length))
     await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
-    await waitFor(() => expect(dirCalls()).toBe(folders.length + 3))
+    await waitFor(() => expect(dirCalls()).toBe(folders.length + 10))
     await act(async () => { await new Promise<void>(resolve => queueMicrotask(resolve)) })
-    expect(dirCalls()).toBe(folders.length + 3)
+    expect(dirCalls()).toBe(folders.length + 10)
   })
 
   it('keeps the notice of a refused (403) folder until the user dismisses it, without re-fetching it', async () => {
@@ -643,5 +702,61 @@ describe('PierreWorkspaceTreeImpl — folders past the row cap', () => {
     expect(row).toContain('Open in folder tab')
     act(() => model.simulateSelection(row))
     expect(onOpenFolder).toHaveBeenCalledWith('big')
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — revealing the open file through one-level listings', () => {
+  // A one-level listing names `src` but nothing under it, so the open file's
+  // row exists only once `src` and then `src/lib` have loaded their own
+  // listings. Expanding a folder is what asks for its listing; the tree
+  // notifies its subscribers then, which `notify` stands in for here.
+  const FILE = 'src/lib/file.ts'
+  const listing = (dir: string, paths: string[], lazy: string[]): TreePayload => ({
+    root: ROOT, dir, paths, directories: lazy, repo: false,
+    truncated: false, truncatedDirectories: [], nestedRepoDirectories: lazy,
+  })
+  let rootPaths = ['README.md']
+  const answer = () => vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+    if (dir === 'src') return listing('src', [], ['src/lib'])
+    if (dir === 'src/lib') return listing('src/lib', [FILE], [])
+    return mkTree({ paths: rootPaths, directories: ['src'], nestedRepoDirectories: ['src'] })
+  })
+  const notify = (model: ReturnType<typeof treeMock.last>) =>
+    act(() => { model.simulateVisibleRows([]) })
+
+  beforeEach(() => {
+    rootPaths = ['README.md']
+    answer()
+  })
+
+  it('opens each folder above the file as its listing lands, then selects it', async () => {
+    renderTree({ persistExpansion: true, selectedPath: `${ROOT}/${FILE}` })
+    await waitForTree()
+    const model = treeMock.last()
+    await waitFor(() => expect(model.calls.expand).toContain('src'))
+    notify(model)
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'src'))
+    await waitFor(() => expect(model.calls.expand).toContain('src/lib'))
+    notify(model)
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'src/lib'))
+    await waitFor(() => expect(model.calls.select).toContain(FILE))
+  })
+
+  it('stops once the file is shown: a later listing does not re-open its folders', async () => {
+    const { qc } = renderTree({ persistExpansion: true, selectedPath: `${ROOT}/${FILE}` })
+    await waitForTree()
+    const model = treeMock.last()
+    await waitFor(() => expect(model.calls.expand).toContain('src'))
+    notify(model)
+    await waitFor(() => expect(model.calls.expand).toContain('src/lib'))
+    notify(model)
+    await waitFor(() => expect(model.calls.select).toContain(FILE))
+    const opened = model.calls.expand.length
+    // The user closes `src`, then a poll brings a changed root listing.
+    model.getItem('src')?.collapse?.()
+    rootPaths = ['README.md', 'NEW.md']
+    await act(async () => { await qc.refetchQueries() })
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('NEW.md'))
+    expect(model.calls.expand.slice(opened)).not.toContain('src')
   })
 })

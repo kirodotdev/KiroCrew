@@ -31,6 +31,8 @@ class _FakeLog:
     def list_sessions(self):
         return [{"key": "dashboard_test", "modified": 1000.0, "title": "T"}]
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return [
             {
@@ -49,7 +51,7 @@ def isolated_store(tmp_path: Path, monkeypatch) -> ArtifactStore:
 
 def _write_doc(tmp_path: Path, name: str, body: str = "# hello\n") -> str:
     p = tmp_path / name
-    p.write_text(body)
+    p.write_text(body, encoding="utf-8", newline="\n")
     return str(p)
 
 
@@ -84,6 +86,7 @@ def test_materialize_non_document_refused(isolated_store, tmp_path):
         h._materialize_and_pin(src, _FakeLog([src]))
 
 
+@requires_symlinks
 def test_materialize_symlinked_request_resolves_to_recorded_inode(isolated_store, tmp_path):
     """A symlink pointing at a recorded document is authorized by inode identity.
 
@@ -197,6 +200,8 @@ class _MalformedLog:
             {"key": "dashboard_ok", "modified": 5.0, "title": "ok"},
         ]
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return [
             "not-a-dict",
@@ -219,6 +224,8 @@ def test_scan_session_docs_prefers_lightweight_history_projection():
     class _ProjectedLog:
         def list_sessions(self):
             return [{"key": "dashboard_ok", "modified": 5.0, "title": "ok"}]
+
+        list_sessions_indexed = list_sessions
 
         def read_file_change_messages(self, key):
             assert key == "dashboard_ok"
@@ -276,6 +283,8 @@ class _BadTimestampLog:
             {"key": "s4", "modified": 10.0, "title": "d"},
         ]
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return [{"meta": {"file_changes": [{"path": self._doc}]}}]
 
@@ -299,7 +308,7 @@ def test_safe_read_with_identity_authorized(tmp_path):
     from kiro_crew.hooks import safe_read_file_bytes_with_identity
 
     p = tmp_path / "doc.md"
-    p.write_text("# ok\n")
+    p.write_bytes(b"# ok\n")
     st = os.stat(p)
     data = safe_read_file_bytes_with_identity(str(p), {(st.st_dev, st.st_ino)})
     assert data == b"# ok\n"

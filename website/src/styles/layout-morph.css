@@ -1,0 +1,80 @@
+/* ── Form-switch continuity ──
+ *
+ * The keyframes for `lib/layoutFormTransition.ts`, which wraps the phone/desktop
+ * form switch a live resize causes (folding or unfolding a foldable, rotating a
+ * tablet) in a same-document view transition. Every rule is scoped to the root
+ * attribute that function sets for the length of ONE transition, so no other
+ * view transition picks these up and nothing here applies at rest.
+ *
+ * The transcript keeps its node across the switch, and its group travels from
+ * its old box to its new one (the user agent's group animation over the
+ * snapshot; page layout is not re-run per frame). The sessions sidebar exists only in the
+ * desktop form, so it slides in from the inline-start edge on unfold and out to
+ * it on fold. `data-layout-morph-edge` carries that edge: `left` in a
+ * left-to-right document, `right` in a right-to-left one. The custom keyframes
+ * move transform and opacity only. */
+:root[data-layout-morph] [data-vt-transcript] { view-transition-name: kc-transcript; }
+:root[data-layout-morph] .kc-vt-sessions { view-transition-name: kc-sessions; }
+:root[data-layout-morph] [data-vt-composer] { view-transition-name: kc-composer; }
+
+:root[data-layout-morph]::view-transition-group(*),
+:root[data-layout-morph]::view-transition-old(*),
+:root[data-layout-morph]::view-transition-new(*) {
+  animation-duration: 300ms;
+  animation-timing-function: ease-out;
+}
+
+/* Everything outside the two named surfaces (header, rail, composer) switches
+ * at once: a crossfade of two differently laid-out pages ghosts every control
+ * that moved. */
+:root[data-layout-morph]::view-transition-old(root) { animation: none; opacity: 0; }
+:root[data-layout-morph]::view-transition-new(root) { animation: none; }
+
+/* The transcript's text rewraps at its new width the moment the switch lands,
+ * so it is drawn from the new snapshot only, at its own size (no stretch from
+ * the old box), anchored at the top inline-start corner and clipped to the
+ * group while the group travels from the old box to the new one. A crossfade
+ * between the two wrappings would show both. */
+:root[data-layout-morph]::view-transition-group(kc-transcript) { overflow: clip; }
+:root[data-layout-morph]::view-transition-old(kc-transcript) { animation: none; opacity: 0; }
+:root[data-layout-morph]::view-transition-new(kc-transcript) {
+  animation: none;
+  width: auto;
+  height: auto;
+  object-fit: none;
+  object-position: left top;
+}
+:root[data-layout-morph][data-layout-morph-edge="right"]::view-transition-new(kc-transcript) { object-position: right top; }
+
+/* The open chat's composer travels with its transcript, drawn the same way,
+ * anchored at the bottom. */
+:root[data-layout-morph]::view-transition-group(kc-composer) { overflow: clip; }
+:root[data-layout-morph]::view-transition-old(kc-composer) { animation: none; opacity: 0; }
+:root[data-layout-morph]::view-transition-new(kc-composer) {
+  animation: none;
+  width: auto;
+  height: auto;
+  object-fit: none;
+  object-position: left bottom;
+}
+:root[data-layout-morph][data-layout-morph-edge="right"]::view-transition-new(kc-composer) { object-position: right bottom; }
+
+:root[data-layout-morph="unfold"]::view-transition-new(kc-sessions) { animation-name: kc-sessions-in-from-left; }
+:root[data-layout-morph="unfold"][data-layout-morph-edge="right"]::view-transition-new(kc-sessions) { animation-name: kc-sessions-in-from-right; }
+:root[data-layout-morph="fold"]::view-transition-old(kc-sessions) { animation-name: kc-sessions-out-to-left; }
+:root[data-layout-morph="fold"][data-layout-morph-edge="right"]::view-transition-old(kc-sessions) { animation-name: kc-sessions-out-to-right; }
+
+@keyframes kc-sessions-in-from-left { from { transform: translateX(-100%); opacity: 0; } }
+@keyframes kc-sessions-in-from-right { from { transform: translateX(100%); opacity: 0; } }
+@keyframes kc-sessions-out-to-left { to { transform: translateX(-100%); opacity: 0; } }
+@keyframes kc-sessions-out-to-right { to { transform: translateX(100%); opacity: 0; } }
+
+/* The script already skips the transition under reduced motion; this holds if a
+ * transition starts anyway (the preference flipping mid-resize). */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-layout-morph]::view-transition-group(*),
+  :root[data-layout-morph]::view-transition-old(*),
+  :root[data-layout-morph]::view-transition-new(*) {
+    animation: none !important;
+  }
+}

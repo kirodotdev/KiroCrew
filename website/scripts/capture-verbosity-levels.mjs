@@ -53,7 +53,6 @@ const extra = async (path, route) => {
       restore_window_minutes: 30,
       merge_queued_messages: false,
       widget_density: 'more',
-      use_builtin_browser: true,
       verbosity,
       quick_send: false,
       session_grid: false,

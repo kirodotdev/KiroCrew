@@ -18,8 +18,6 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
-import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
 
@@ -42,7 +40,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -149,6 +154,12 @@ function findCreateMenuItem(label: string | RegExp) {
   return screen.findByRole('menuitem', { name: label })
 }
 
+/** Move focus onto a menu row inside act(): Radix flips the row's highlight
+ *  state on focus and blur, so a bare `.focus()` lands after the last barrier. */
+function focusRow(row: HTMLElement) {
+  act(() => { row.focus() })
+}
+
 beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
@@ -234,7 +245,7 @@ describe('create-button caret menu', () => {
   // The Mates door is gone from this menu: every row here creates something and
   // is named "New …"; a row that navigated instead read as an unnamed create
   // action on every open. Mates is reached from the rail. The retired Crew Mode
-  // ingress stays gone too, whatever the preview flag says.
+  // ingress stays gone too.
   it('offers no Mates door and no Crew Mode ingress among the create entries', async () => {
     // Asserted on a plain `localStorage.clear()` (the beforeEach): a fresh install.
     renderSidebar()
@@ -244,7 +255,7 @@ describe('create-button caret menu', () => {
     await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('open-crew-members')).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /^Mates\b/ })).toBeNull()
-    expect(screen.queryByText(/Opens the Mates page/)).toBeNull()
+    expect(screen.queryByText(/Opens the Bots page/)).toBeNull()
     expect(screen.queryByText(/Opens Settings first/)).toBeNull()
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()
@@ -252,19 +263,9 @@ describe('create-button caret menu', () => {
     expect(mocks.createChatSlot).not.toHaveBeenCalled()
   })
 
-  it('the Mates preview deep-link id still names a live settings entry', () => {
-    // Registry ids derive from the card's LABEL, so a relabel silently breaks
-    // every `?highlight=` link that inlines the string — this pins the constant
-    // to a live entry on the developer tab, the same guard
-    // `SETTINGS_DEFAULT_MODEL_ID` carries.
-    const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_CREW_MEMBERS_PREVIEW_ID)
-    expect(entry, `no registry entry for ${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`).toBeDefined()
-    expect(entry?.tab).toBe('developer')
-  })
-
   // "New chat on crew" — creating a session that runs on a connected peer. The
   // row mirrors "New chat in folder": a dynamic list behind one submenu. It is
-  // preview-gated on its OWN flag (not the Crew Members page's), so both conditions have to
+  // preview-gated on its own flag, so both conditions have to
   // hold: a warm peer AND the opt-in.
   it('offers no crew entry when no peer holds a live tunnel', async () => {
     // Absent, not disabled. A disabled row on a single-machine install
@@ -336,10 +337,10 @@ describe('create-button caret menu', () => {
     fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
     await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalled())
     // The user opens another crew session while the create is in flight.
-    openCrewWindow({ instanceId: 'i-other', key: 'elsewhere' })
+    act(() => { openCrewWindow({ instanceId: 'i-other', key: 'elsewhere' }) })
     await act(async () => { finish({ key: 'peer-new-1' }) })
     expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'i-other', key: 'elsewhere' })
-    closeCrewWindow()
+    act(() => { closeCrewWindow() })
   })
 
   it('refuses a crew create across a version mismatch before minting anything', async () => {
@@ -372,19 +373,19 @@ describe('create-button caret menu', () => {
       fireEvent.keyDown(trigger, { key: 'ArrowRight' })
     }
     let row = await screen.findByTestId('new-chat-on-crew-i-nobita')
-    row.focus()
+    focusRow(row)
     await user.keyboard('{Enter}')
     const alert = await screen.findByTestId('new-chat-on-crew-error')
     expect(mocks.crewPeerPost).toHaveBeenCalledTimes(1)
 
     row = await screen.findByTestId('new-chat-on-crew-i-nobita')
-    row.focus()
+    focusRow(row)
     await user.keyboard('{Enter}')
     await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalledTimes(2))
     await screen.findByTestId('new-chat-on-crew-error')
 
     row = await screen.findByTestId('new-chat-on-crew-i-nobita')
-    row.focus()
+    focusRow(row)
     await user.keyboard('{ArrowDown}')
     const handoff = screen.getByRole('menuitem', { name: /^Ask the agent$/i })
     expect(handoff).toHaveFocus()

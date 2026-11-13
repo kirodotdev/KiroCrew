@@ -9,6 +9,8 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +254,72 @@ def session_project_for_spawn_gate(state: DashboardState, session_key: str) -> l
             found.append(staged)
         break
     return found
+
+
+async def session_folder_steering_dirs(state: DashboardState, session_key: str) -> tuple[str, ...]:
+    """The folder steering directories *session_key*'s own turns receive.
+
+    For a sub-agent's prompt (``SubagentManager._parent_steering_dirs``), so a
+    child follows the guides its parent follows. A sub-agent parent
+    (``subagent:<id>``) answers the set its own run resolved. A chat parent
+    answers what its next turn would resolve: the folder of the slot whose
+    effective session key IS *session_key*, through the same resolver and
+    ownership fence the chat turn uses (``_resolve_folder_steering_dirs`` with
+    ``slot_steering_principal``). ``()`` for an unfiled or unknown session; a
+    resolution error is logged and also answers ``()``.
+    """
+    if not session_key:
+        return ()
+    if session_key.startswith("subagent:"):
+        manager = getattr(state, "subagents", None)
+        # A continuation runs under a new id but calls tools as its conversation
+        # key (``subagent:<first run id>``), so match the live run on that key
+        # first; the first run's record may be finished, stale or evicted.
+        info = next(
+            (
+                run
+                for run in getattr(manager, "running", ()) or ()
+                if (getattr(run, "conversation_key", "") or f"subagent:{run.id}") == session_key
+            ),
+            None,
+        )
+        if info is None:
+            agents = getattr(manager, "_agents", None) or {}
+            info = agents.get(session_key.removeprefix("subagent:"))
+        dirs = getattr(info, "steering_dirs", ()) if info is not None else ()
+        return tuple(d for d in (dirs or ()) if isinstance(d, str) and d)
+    from kiro_crew.dashboard.chat_folders import (
+        _resolve_folder_steering_dirs,
+        slot_steering_principal,
+    )
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.execution_context import read_session_execution
+
+    parent_slot: Any = None
+    for slot in list((getattr(state, "_slots", {}) or {}).values()):
+        try:
+            if effective_session_key(slot) == session_key:
+                parent_slot = slot
+                break
+        except Exception:  # noqa: BLE001 - a slot-like object without a key is not this session
+            continue
+    folder_id = str(getattr(parent_slot, "folder_id", "") or "")
+    if not folder_id:
+        return ()
+    execution = await asyncio.to_thread(read_session_execution, session_key)
+    snapshot = await state.read_folders(lambda folders: [dict(folder) for folder in folders])
+    dirs, err = await asyncio.to_thread(
+        _resolve_folder_steering_dirs,
+        snapshot,
+        folder_id,
+        slot_app=slot_steering_principal(parent_slot, execution),
+    )
+    if err:
+        logging.getLogger(__name__).warning(
+            "Folder steering unavailable for sub-agents of %s: %s", session_key, err
+        )
+        return ()
+    return tuple(dirs)
 
 
 def _resolve_active_project(state: DashboardState, session_key: str) -> Path | None:

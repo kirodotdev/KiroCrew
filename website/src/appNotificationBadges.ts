@@ -88,8 +88,8 @@ export interface BadgeNote {
 /**
  * The priority the host already excludes from its own unread count.
  *
- * Not a judgement call made here: `notification_coordinator.py` increments
- * `_unread_count` only `if note.get("priority") != "passive"`, and the feed
+ * Not a judgement call made here: `notification_coordinator.unread_count()`
+ * counts a note only when its priority is not `passive`, and the feed
  * renders a passive note dimmed as non-attention (`notifMeta.tsx`). Counting
  * one as rail attention would contradict the very subsystem this derives from.
  */
@@ -100,7 +100,7 @@ const PASSIVE_PRIORITY = 'passive'
  *
  * That definition is three clauses, not two, and it is written down in the
  * dashboard already: `!n.acked && n.priority !== 'passive' && !n.silenced`
- * (`shell/topbar/shellHeader.tsx`, commented "mirroring the backend's `_unread_count` semantics";
+ * (`shell/topbar/shellHeader.tsx`, commented "mirroring the backend's `unread_count` semantics";
  * the same predicate again in `hooks/useWebSocket.ts`, and an existing test
  * pins the expression). This mirrors it rather than inventing a variant.
  *

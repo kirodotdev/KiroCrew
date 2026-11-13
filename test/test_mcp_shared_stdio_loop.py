@@ -26,6 +26,7 @@ from stray_line_helpers import STRAY_LINES
 
 import kiro_crew.mcp_shared as mcp_shared
 from kiro_crew.mcp_shared import SKIP
+from kiro_crew.testing.wait import wait_until
 
 # --- run_mcp_stdio_loop busy-queue behavior ----------------------------------
 #
@@ -38,8 +39,7 @@ from kiro_crew.mcp_shared import SKIP
 
 class TestStdioLoopBusyQueue:
     def test_tools_call_while_busy_is_queued_and_answered_fifo(self, monkeypatch):
-        import time
-
+        spy = _ReadSpy(monkeypatch)
         call_tool, started, release = _slow_then_echo()
         harness = _LoopHarness(monkeypatch, call_tool)
         try:
@@ -47,10 +47,10 @@ class TestStdioLoopBusyQueue:
             assert started.wait(timeout=5.0)
             harness.send(_tools_call(202, "fast"))
             harness.send(_tools_call(203, "fast"))
-            # Give the busy read loop a beat to buffer both calls
-            # flake-ok: pre-existing 300 ms beat for the busy read loop to buffer both calls, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat before the busy check, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            # The busy loop finishes one frame before it reads the next, so a stray
+            # line sent behind the two calls is read only once both are buffered.
+            harness.send_raw(STRAY_LINES["null"]())
+            spy.wait_read("the stray line behind both calls", lambda v: v is SKIP)
             assert harness.responses == []  # nothing answered while busy
             release.set()
             assert harness.wait_for(lambda: len(harness.responses) >= 3)
@@ -61,8 +61,7 @@ class TestStdioLoopBusyQueue:
             harness.close()
 
     def test_cancelled_queued_call_gets_no_response_and_loop_continues(self, monkeypatch):
-        import time
-
+        spy = _ReadSpy(monkeypatch)
         call_tool, started, release = _slow_then_echo()
         harness = _LoopHarness(monkeypatch, call_tool)
         try:
@@ -73,9 +72,7 @@ class TestStdioLoopBusyQueue:
             # back-to-back pipe writes can coalesce into one buffered read,
             # in which case cancel-of-queued is best-effort (same as the
             # pre-existing in-flight cancel race).
-            # flake-ok: pre-existing 300 ms beat so the read loop consumes 302 before the cancel, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat before the cancel, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            spy.wait_read("the queued call 302", _request_frame(302))
             harness.send(
                 {
                     "jsonrpc": "2.0",
@@ -83,9 +80,13 @@ class TestStdioLoopBusyQueue:
                     "params": {"requestId": 302},
                 }
             )
-            # flake-ok: pre-existing 300 ms beat so the cancel is read before the release, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat after the cancel, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            # The cancel must be read before the release frees the worker.
+            spy.wait_read("the cancel for 302", _cancel_frame)
+            # Read is not taken: on Windows the stdin pump reads ahead of the loop. The loop
+            # takes one frame at a time, so the answer to a ping sent behind the cancel shows
+            # the loop took the cancel.
+            harness.send(_PING)
+            assert harness.wait_for(_answered(harness, 7))
             release.set()
             assert harness.wait_for(lambda: any(r[0] == 301 for r in harness.responses))
             # Loop must still serve new calls after skipping the cancelled one
@@ -97,8 +98,7 @@ class TestStdioLoopBusyQueue:
             harness.close()
 
     def test_queue_overflow_returns_busy_error(self, monkeypatch):
-        import time
-
+        spy = _ReadSpy(monkeypatch)
         monkeypatch.setattr(mcp_shared, "PENDING_CALLS_MAX", 1)
         call_tool, started, release = _slow_then_echo()
         harness = _LoopHarness(monkeypatch, call_tool)
@@ -106,9 +106,7 @@ class TestStdioLoopBusyQueue:
             harness.send(_tools_call(401, "slow"))
             assert started.wait(timeout=5.0)
             harness.send(_tools_call(402, "fast"))  # fills the queue
-            # flake-ok: pre-existing 200 ms beat so the first queued call fills the queue, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat before the overflow call, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.2)
+            spy.wait_read("the queued call 402", _request_frame(402))
             harness.send(_tools_call(403, "fast"))  # overflow
             assert harness.wait_for(lambda: any(r[0] == 403 for r in harness.responses))
             overflow = next(r for r in harness.responses if r[0] == 403)
@@ -185,6 +183,26 @@ class _ReadSpy:
     def saw(self, predicate) -> bool:
         with self._lock:
             return any(predicate(v) for v in self.returned)
+
+    def wait_read(self, what: str, predicate) -> None:
+        """Wait until the loop has read a frame ``predicate`` accepts.
+
+        The loop finishes with one frame before it reads the next, so a frame it
+        has read means every frame sent ahead of it was handled. Raises by name,
+        with the frames read so far, when the frame never arrives.
+        """
+        wait_until(
+            lambda: self.saw(predicate),
+            describe=lambda: f"the loop never read {what}; frames read so far: {self.returned!r}",
+        )
+
+
+def _request_frame(req_id):
+    return lambda v: isinstance(v, dict) and v.get("id") == req_id
+
+
+def _cancel_frame(v) -> bool:
+    return isinstance(v, dict) and v.get("method") == "notifications/cancelled"
 
 
 _PING = {"jsonrpc": "2.0", "id": 7, "method": "ping"}
@@ -484,7 +502,6 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         """The loop exits on the first refused call; anything already queued
         behind it must get the same retryable answer, not silence."""
         import shutil as _shutil
-        import time
 
         from kiro_crew import install_liveness
 
@@ -497,41 +514,44 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         )
         monkeypatch.setenv(install_liveness.POOLED_RESPAWN_COMMAND_ENV, sys.executable)
         monkeypatch.setattr(mcp_shared.sys, "exit", lambda _code: None)
+        spy = _ReadSpy(monkeypatch)
         call_tool, started, release = _slow_then_echo()
         harness = _LoopHarness(monkeypatch, call_tool)
+
+        def _tool_responses() -> list:
+            # The ping that paces the prune is answered too; it is not a tool response.
+            return [r for r in harness.responses if r[0] != 7]
+
         try:
             harness.send(_tools_call(1, "slow"))
             assert started.wait(timeout=5.0)
             # One frame per read so the busy loop's select() sees each and
             # moves it into the pending queue (two frames in one write land in
-            # the text buffer together, where select() cannot see the second).
+            # the text buffer together, where select() cannot see the second):
+            # each frame is sent only once the loop has read the one before it.
             harness.send(_tools_call(2, "queued-a"))
-            # flake-ok: pre-existing 300 ms beat so the busy loop queues each frame from its own read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat between queued frames, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            spy.wait_read("the queued call 2", _request_frame(2))
             harness.send(_tools_call(3, "queued-b"))
-            # flake-ok: pre-existing 300 ms beat so the busy loop queues each frame from its own read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat between queued frames, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            spy.wait_read("the queued call 3", _request_frame(3))
             harness.send(_tools_call(4, "queued-c"))
-            # flake-ok: pre-existing 300 ms beat so the busy loop queues each frame from its own read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat between queued frames, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            spy.wait_read("the queued call 4", _request_frame(4))
             # Cancelled while it waited: must get no response, as on the
             # ordinary dispatch path.
             harness.send(
                 {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 4}}
             )
-            # flake-ok: pre-existing 300 ms beat so the cancel is read before the prune, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing beat before the prune, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.3)
+            spy.wait_read("the cancel for 4", _cancel_frame)
+            # Read is not taken: the loop takes one frame at a time, so the answer to a ping
+            # sent behind the cancel shows the loop took the cancel before the prune.
+            harness.send(_PING)
+            assert harness.wait_for(_answered(harness, 7))
             _shutil.rmtree(package.parent)
             release.set()
-            assert harness.wait_for(lambda: len(harness.responses) == 3), harness.responses
+            assert harness.wait_for(lambda: len(_tool_responses()) == 3), harness.responses
             harness._thread.join(timeout=5.0)
         finally:
             harness.close()
-        by_id = {r[0]: r for r in harness.responses}
+        by_id = {r[0]: r for r in _tool_responses()}
         assert sorted(by_id) == [1, 2, 3], "a cancelled queued call was answered"
         assert by_id[1][2] is None  # in flight before the prune: delivered
         assert by_id[2][2]["code"] == -32000

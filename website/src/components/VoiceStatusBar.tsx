@@ -4,6 +4,7 @@ import { useId } from 'react'
 import ErrorNotice from './ErrorNotice'
 
 import MicSourceMenu from './MicSourceMenu'
+import RecordingElapsed from './RecordingElapsed'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
@@ -51,7 +52,7 @@ interface Props {
   onCancelDrain?: () => void
   /**
    * A visible, non-error status line shown while idle — the reason the mic is
-   * blocked ("Microphone in use in another chat"), or that a held dictation just
+   * blocked ("Microphone in use elsewhere"), or that a held dictation just
    * landed. Visible text, not a tooltip: a lone pane has nothing else to explain
    * a greyed mic, and touch has no hover (UX review, #9787).
    */
@@ -337,6 +338,9 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
         <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
       </span>
       <span className="font-medium shrink-0">{i18nT('components.voiceStatusBar.recording')}</span>
+      {/* Mounted with this row, which exists only while capturing, so it starts
+          at 0:00 with each recording. */}
+      <RecordingElapsed />
       {/* live input-level meter */}
       <span
         className="w-20 shrink-0 h-1.5 rounded-full bg-danger-subtle overflow-hidden"

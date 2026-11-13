@@ -1,8 +1,7 @@
 """Measure the disk a session costs, and reclaim it under user control.
 
-A session is presented as ONE thing with ONE size, because that is what it is to
-the person looking at it. Underneath, its bytes are split across two stores that
-Kiro Crew and kiro-cli each own:
+A session is reported as ONE thing with ONE size and one session count. Its bytes
+are split across two stores that Kiro Crew and kiro-cli each own:
 
 * ``<data home>/sessions/<stem>.jsonl`` plus its rotated
   ``sessions/archive/<stem>__<stamp>.jsonl`` segments — the transcript, read by
@@ -14,61 +13,41 @@ Kiro Crew and kiro-cli each own:
 * ``<kiro home>/sessions/cli/<sid>.json`` + ``<sid>.jsonl`` — kiro-cli's replay
   log, read to resume the session.
 
-A session that recorded a crew log also owns ``<data home>/crew-log/sessions/<unit>/``
-directories, one per ACP session id it ran under. They are measured with the session
-and reclaimed with it, but staged inside the crew-log tree rather than the batch (see
-:func:`_stage_crew_logs`).
+A session's ``<data home>/crew-log/sessions/<unit>/`` directories, one per ACP
+session id, are measured and reclaimed with it but staged inside the crew-log tree
+(see :func:`_stage_crew_logs`).
 
-That split is an implementation detail and never surfaces in a report: callers get
-one total and one session count.
+**A session's halves are always reclaimed together.** Without the replay log the
+transcript lists a session that cannot resume; without the transcript a resumable
+session has no history or search. :func:`_unit_paths` is the single answer to "what
+files is this session made of", and every move, restore and delete goes through it.
+A session may have only one half (a subagent run has no transcript, a pruned mapping
+leaves no replay log); whatever halves exist move together.
 
-The split does, however, dictate the deletion rule. **A session's halves are
-always reclaimed together.** Removing only one leaves a broken session rather than
-a freed one: drop the replay log and the transcript still lists a session that can
-no longer resume; drop the transcript and a resumable session has no history or
-search. Either way the user is left with something worse than both extremes.
-:func:`_unit_paths` is therefore the single place that answers "what files is this
-session made of", and every move, restore and delete goes through it.
-
-Not every session has both halves, and that is normal rather than an error — a
-subagent run leaves only a replay log, and a session whose mapping was pruned
-leaves only a transcript. The rule is that whatever halves exist move together.
-
-Reclaiming moves files into ``<data home>/trash/sessions/<batch>/`` rather than
-unlinking them. On a default install both stores sit under ``~/.kiro``, so the
-move is a same-filesystem :func:`os.rename`: instant regardless of size, and
-instantly reversible. Space is **not** returned to the filesystem until the trash
-is emptied; :attr:`StorageReport.trash_bytes` exists so callers can say so plainly
-instead of reporting a reclaim that leaves ``df`` unchanged.
-
-Every batch carries an append-only manifest recording each file's original
-absolute path, so a restore puts files back where they came from instead of
-inferring it from the layout. A batch can span six figures of sessions, so a
-whole-document manifest rewritten per move would cost quadratic bytes; appending
-also leaves a partial batch fully restorable after an interruption.
+Reclaiming moves files into ``<data home>/trash/sessions/<batch>/``: on a default
+install a same-filesystem :func:`os.rename`, instant and reversible. Space returns
+only when the trash is emptied, which :attr:`StorageReport.trash_bytes` reports.
+Each batch has an append-only manifest of every file's original absolute path, so a
+restore needs no layout inference, a six-figure batch costs linear bytes, and an
+interrupted batch stays restorable.
 
 Reading is cached; reclaiming never is
 --------------------------------------
-Enumerating the stores is the entire cost of a read here — half a million replay
-files on the measured machine — so a pass is kept briefly and shared between the
-row list, the totals and each row's detail. Only the FILESYSTEM halves are
-cached — the store scan and, on read paths, the co-tenant pass beside it: the
-flags derived from the caller's index are recomputed every call, every
-refusal-deriving path runs uncached, and every mutation re-enumerates and
-re-reads the index inside the lock. So no refusal is ever answered from a
-snapshot, and a stale cache can only make the report slightly old, never make a
+Enumerating the stores is the whole cost of a read (half a million replay files on
+the measured machine), so a pass is kept briefly and shared by the row list, totals
+and row detail. Only the filesystem scan and the read-path co-tenant pass are
+cached; index flags are recomputed every call, refusal paths run uncached, and every
+mutation re-reads inside the lock. A stale cache can make a report old, never make a
 reclaim take something it should not.
 
 Sessions this instance does not own
 -----------------------------------
-The replay store can be shared. A pod now gets its own (``pod/runtime.py`` exports
-``KIRO_HOME`` inside the pod home), so a current pod is not a co-tenant — but a
-directory left by a pod from before that export may still own sessions in the
-machine-wide store. Those maps are files at a known host-side path, so
-:func:`cotenant_sids` reads them and protects the sessions they name individually,
-exactly like this instance's own. A blanket refusal is kept only where ownership
-genuinely cannot be established: a co-tenant whose map is unreadable, or a data
-home isolated from the store it reads (see :func:`reclaim_block_reason`).
+A pod gets its own replay store (``pod/runtime.py`` exports ``KIRO_HOME``), but a
+pod directory from before that export may still own sessions in the machine-wide
+store. :func:`cotenant_sids` reads those maps and protects the sessions they name.
+A blanket refusal is kept only where ownership cannot be established: an unreadable
+co-tenant map, or a data home isolated from the store it reads (see
+:func:`reclaim_block_reason`).
 """
 
 from __future__ import annotations
@@ -94,6 +73,7 @@ from kiro_crew.session_storage_parts.batch_manifest import (  # noqa: F401
     _rewrite_manifest,
     _summarize_manifest,
     _sync_batch,
+    _warn_undecodable,
     _write_header,
 )
 from kiro_crew.session_storage_parts.batch_removal import (  # noqa: F401
@@ -160,6 +140,7 @@ from kiro_crew.session_storage_parts.pinned_delete import (  # noqa: F401
     _rename_back,
     _scan_tree,
     _stage_batch_by_name,
+    _sweep_staged,
     _unlink_debris,
 )
 from kiro_crew.session_storage_parts.store_inventory import (  # noqa: F401
@@ -177,9 +158,11 @@ from kiro_crew.session_storage_parts.store_inventory import (  # noqa: F401
     _replay_store_cotenants,
     _same_filesystem,
     _scan_cache_lock,
+    _scan_epoch,
     _scan_key,
     _scan_raw,
     _scan_raw_uncached,
+    _scan_started,
     _scan_units,
     _store_scan,
     _unit_paths,
@@ -241,11 +224,9 @@ from kiro_crew.session_storage_parts.trash_restore import (  # noqa: F401
     restore,
 )
 
-# This module is the facade of the session store and every name is reached through it as
-# ``kiro_crew.session_storage.<name>``. It binds each name its owners define but two, so
-# its namespace holds the definitions the unsplit module held, and it serves the rest from
-# the owner holding them: the names the owners import, and the scan and co-tenant caches,
-# which ``store_inventory`` rebinds. A write -- ``monkeypatch.setattr``, ``mock.patch`` --
+# Facade of the session store: every name is reached as ``kiro_crew.session_storage.<name>``.
+# It binds each name its owners define but two and serves the rest (imported names, and
+# the scan and co-tenant caches ``store_inventory`` rebinds) from the owner. A patch
 # reaches every owner holding the name (:mod:`kiro_crew._facade_mirror`). Owners never
 # import this module. New work goes to the owner of its responsibility:
 #   ``store_layout`` -- names and limits, the data types, the trash and transcript roots

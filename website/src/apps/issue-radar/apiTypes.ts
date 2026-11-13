@@ -10,6 +10,8 @@
 // module importing this file directly would slip past their mocks. Nothing here
 // imports `api.ts`.
 
+import { isHostScopedLoginCommand } from '../../utils/pullRequestErrors'
+
 export interface ConnectResponse {
   owner: string
   repo: string
@@ -176,28 +178,36 @@ export interface GitLabGroupReviewsResponse extends GitLabGroup {
   limit: number
 }
 
-/** A failed GitLab-group request, carrying the server's `code` so the UI can say
- * what to do (`group_not_found`, `setup_required`, …) instead of echoing the
- * provider's raw message. */
+/** A failed coded request (`/gitlab-groups`, `/deps`), carrying the server's
+ * `code` so the UI can say what to do (`group_not_found`, `setup_required`,
+ * `deps_auth_required`, …) instead of echoing the provider's raw message.
+ * `loginCommand` is the sign-in remedy the gateway built from its own
+ * allowlisted host; it is never parsed out of provider text here. */
 export class GitLabGroupError extends Error {
   readonly code: string
+  readonly loginCommand: string
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, loginCommand = '') {
     super(message)
     this.name = 'GitLabGroupError'
     this.code = code
+    this.loginCommand = loginCommand
   }
 }
 
 export async function gitlabGroupError(r: Response): Promise<GitLabGroupError> {
-  let body: { error?: unknown; code?: unknown } = {}
+  let body: { error?: unknown; code?: unknown; loginCommand?: unknown } = {}
   try {
     body = (await r.json()) as typeof body
   } catch {
     // A non-JSON body still yields an error with the status as its message.
   }
   const message = typeof body.error === 'string' && body.error ? body.error : `HTTP ${r.status}`
-  return new GitLabGroupError(message, typeof body.code === 'string' ? body.code : '')
+  // The one shape rule, shared with utils/pullRequestErrors.ts: only a
+  // host-scoped command the gateway built is accepted, so a body cannot smuggle
+  // arbitrary text into the copyable command.
+  const loginCommand = isHostScopedLoginCommand(body.loginCommand) ? body.loginCommand : ''
+  return new GitLabGroupError(message, typeof body.code === 'string' ? body.code : '', loginCommand)
 }
 
 /** The full single-PR payload the detail pane renders — a superset of the list
@@ -368,6 +378,15 @@ export interface TimelineEvent {
   path?: string | null
   line?: number | null
   url?: string | null
+  // comment / review_comment — the forge's own id for the comment. Unique within
+  // its thread (Azure DevOps numbers comments per thread), so a key pairs it with
+  // `thread_id`. Absent when the forge did not send one.
+  id?: number | string | null
+  // comment / review_comment — the opaque reply handle (GitHub: root inline review
+  // comment id; GitLab: discussion id; Azure DevOps: PR thread id). Absent or null
+  // when the comment cannot be replied to in a thread, e.g. a GitHub conversation
+  // comment; the timeline then falls back to a quote-reply.
+  thread_id?: string | null
 }
 
 export interface IssueDetailResponse {
@@ -526,6 +545,27 @@ export interface PrReviewResponse {
   id: number | null
   state: string | null
   submitted_at: string | null
+}
+
+/** One comment of a timeline batch: a new top-level comment, or a reply into the
+ * thread `thread_id` names. */
+export interface CommentBatchItem {
+  body: string
+  thread_id: string | null
+}
+
+/** `POST /comments`. `posted` lists the items that reached the forge by their index
+ * in the request; `failed` names the first item that did not (later items were not
+ * attempted). */
+export interface CommentBatchResponse {
+  owner: string
+  repo: string
+  number: number
+  target: 'issue' | 'pull'
+  posted: { index: number; id: number | string | null; url: string | null }[]
+  failed: { index: number; error: string } | null
+  /** Indexes of items the forge may or may not have taken: never resent. */
+  unknown?: number[]
 }
 
 export interface PrCommentResponse {
@@ -969,6 +1009,11 @@ export interface DepNode {
   kind: 'issue' | 'pull'
   state: 'open' | 'closed' | 'merged'
   title: string
+  /** True when the backend admitted this node without reading its own
+   * dependency links (GitLab: a link-admitted issue past the per-rebuild links
+   * cap, or one whose own `/links` call failed). Its incoming edges may be
+   * missing, so `buildNodes` never derives `ready` for it. */
+  blockers_unknown?: boolean
 }
 
 /** The `GET /api/apps/issue-radar/deps` payload. Schema-versioned so a client

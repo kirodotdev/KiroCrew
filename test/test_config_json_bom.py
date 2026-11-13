@@ -146,18 +146,30 @@ def test_a_bom_saved_non_object_knowledge_section_does_not_crash_the_embedder_se
     home: Path,
 ) -> None:
     from kiro_crew.dashboard.handlers import knowledge
+    from kiro_crew.knowledge import embedder
 
     config_path().write_bytes(_BOM + b'{"knowledge": ["x"]}')
 
-    knowledge._create_embedder(None)
+    created = knowledge._create_embedder(None)
+
+    assert (created.timeout_secs, created.content_budget) == (
+        embedder.TIMEOUT,
+        embedder._EMBED_CONTENT_BUDGET,
+    )
 
 
 def test_a_bom_saved_non_object_config_does_not_crash_the_embedder_setup(home: Path) -> None:
     from kiro_crew.dashboard.handlers import knowledge
+    from kiro_crew.knowledge import embedder
 
     config_path().write_bytes(_BOM + b"[]")
 
-    knowledge._create_embedder(None)
+    created = knowledge._create_embedder(None)
+
+    assert (created.timeout_secs, created.content_budget) == (
+        embedder.TIMEOUT,
+        embedder._EMBED_CONTENT_BUDGET,
+    )
 
 
 def test_the_agent_spec_builder_reads_a_bom_saved_config(home: Path) -> None:
@@ -176,7 +188,8 @@ def _config_reads_outside_the_helper(src: Path) -> tuple[list[str], int]:
     A read is a ``.read_text``/``.read_bytes`` on, or a read-mode ``open`` of,
     ``config_path()`` / ``config_local_path()`` (or a local name bound to one, or
     ``config_dir()/data_home() / "config.json"``). The only one allowed is inside
-    ``read_config_text`` itself.
+    ``read_config_text`` itself. A call of ``read_endorsed_config_text``, which reads
+    through it, counts as a helper call too.
     """
     import ast
 
@@ -217,10 +230,10 @@ def _config_reads_outside_the_helper(src: Path) -> tuple[list[str], int]:
             continue
         text = path.read_text(encoding="utf-8")
         # Only a module that names a config source can read one; parsing the
-        # rest is what made this scan slow. read_config_text is the count.
+        # rest is what made this scan slow. The helper calls are the count.
         if not any(
             needle in text
-            for needle in ("config_path", "config_local_path", "config.json", "read_config_text")
+            for needle in ("config_path", "config_local_path", "config.json", "config_text")
         ):
             continue
         tree = ast.parse(text)
@@ -235,7 +248,8 @@ def _config_reads_outside_the_helper(src: Path) -> tuple[list[str], int]:
         }
         every_node = list(ast.walk(tree))
         helper_calls += sum(
-            isinstance(node, ast.Call) and _callee(node) == "read_config_text"
+            isinstance(node, ast.Call)
+            and _callee(node) in ("read_config_text", "read_endorsed_config_text")
             for node in every_node
         )
         for scope in every_node:

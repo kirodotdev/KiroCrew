@@ -5,6 +5,7 @@ import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import { DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
+import { beginPanelSlide, markSlideSettling } from '../utils/panelSlide'
 
 /**
  * chat-core P5-d: the pinned-prompt geometry extracted from the main chat's
@@ -183,6 +184,31 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     expect(frames).toHaveLength(1)
     flushFrame(16)
     expect(h.result.current.pinned?.idx).toBe(2)
+  })
+
+  it('holds the banner through a side-panel slide: an in-between layout never drops it for a frame', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    wire(h, g)
+    expect(h.result.current.pinned?.idx).toBe(2)
+    const end = beginPanelSlide()
+    markSlideSettling(g.scroller, true)
+    // The column rewraps: for one layout every row sits below the line, which
+    // alone would drop the banner.
+    g.rows.forEach((row, i) => setRect(row, 500 + i * 80, 40))
+    act(() => { h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned?.idx).toBe(2)
+    act(() => { end() })
+    act(() => { h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned?.idx).toBe(2)
+    // Settled: the place is put back, and the banner is worked out once.
+    g.rows.forEach((row, i) => setRect(row, [0, 50, 100, 160, 300][i], 40))
+    act(() => { markSlideSettling(g.scroller, false) })
+    expect(h.result.current.pinned?.idx).toBe(2)
+    // Settled for real: a layout that drops the banner now does.
+    g.rows.forEach((row, i) => setRect(row, 500 + i * 80, 40))
+    act(() => { h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned).toBeNull()
   })
 
   it('drops the banner while disabled and re-derives it when re-enabled', () => {

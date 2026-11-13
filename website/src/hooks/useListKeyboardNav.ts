@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { createImeLatch } from './useImeGuard'
 import { useLocalCrewHidden } from '../components/overlayRoot'
 import { usePointerMotion } from './usePointerMotion'
@@ -31,6 +31,14 @@ import { usePointerMotion } from './usePointerMotion'
  *  - `Escape`                — `onClose()`, unless the shared IME latch owns
  *                              the key for candidate dismissal.
  *
+ * With zero rows and a mounted `emptyActionRef`, forward Tab focuses that
+ * control without closing. Its own keys retain native behavior, except Tab
+ * (either direction) returns focus and Escape returns focus before closing.
+ * Call `restoreEmptyFocus` before activating an action that may unmount it.
+ * If the control unmounts while holding focus by any other route (a re-render
+ * replaces it), focus returns to where forward Tab left. Enter outside the
+ * control still follows `releaseKeysWhenEmpty`.
+ *
  * The selection is mirrored into {@link selectedRef} so callbacks captured in
  * effects can read the live value without re-subscribing, matching the
  * existing FilePickerMenu pattern.
@@ -60,6 +68,19 @@ export interface UseListKeyboardNavOptions {
   /** Close the surface (Escape). */
   onClose: () => void
   /**
+   * Called when ArrowUp/ArrowDown move the selection. Optional.
+   *
+   * Only the hook's OWN keyboard movement fires this, not a host's
+   * {@link ListKeyboardNav.setSelected} call — a host that moved the selection
+   * itself (hover, a reset when the filter changes) already knows it did, and
+   * firing there would report those as the user working the keyboard.
+   *
+   * It exists because this listener is at DOCUMENT CAPTURE and stops
+   * propagation, so the arrow never reaches the owning surface: a host
+   * watching its own subtree cannot see this movement at all.
+   */
+  onMove?: () => void
+  /**
    * Alt/Option+Enter handler. Return `true` if the alternate action was
    * handled (so the hook can stop further processing). Optional.
    */
@@ -76,9 +97,21 @@ export interface UseListKeyboardNavOptions {
    * query) keep the default.
    */
   releaseKeysWhenEmpty?: boolean
+  /**
+   * An in-surface empty-state control (e.g. Retry). With zero rows and a
+   * mounted control, IME-guarded forward Tab focuses it instead of closing.
+   * Tab/Shift+Tab on it return focus; Escape returns focus and closes. Other
+   * keys on it retain native behavior. Call `restoreEmptyFocus` before its
+   * action can unmount it; if the control unmounts while holding focus without
+   * that call, the hook returns focus itself after the commit. Omit to keep the
+   * ordinary empty-list behavior.
+   */
+  emptyActionRef?: RefObject<HTMLElement | null>
 }
 
 export interface ListKeyboardNav {
+  /** Restore and clear the empty action's connected return target; otherwise a no-op. */
+  restoreEmptyFocus: () => void
   /** Currently-selected row index. */
   selected: number
   /** Set the selected index (accepts a number or updater). */
@@ -111,7 +144,31 @@ export interface ListKeyboardNav {
 }
 
 export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboardNav {
-  const { open, count, onChoose, onClose, onAltEnter, wrap = false, releaseKeysWhenEmpty = false } = opts
+  const { open, count, onChoose, onClose, onAltEnter, onMove, wrap = false, releaseKeysWhenEmpty = false, emptyActionRef } = opts
+
+  const emptyReturnRef = useRef<HTMLElement | null>(null)
+  const restoreEmptyFocus = useCallback(() => {
+    const target = emptyReturnRef.current
+    emptyReturnRef.current = null
+    if (target?.isConnected) target.focus()
+  }, [])
+
+  // The empty action can leave the DOM while it holds focus without being
+  // activated, for example when a retry already in flight settles and rows or
+  // a "no matching" status replace it. React then drops focus to <body>. After
+  // every commit, a saved return target whose action is gone (or whose surface
+  // closed) is restored if focus sits on <body>, and discarded otherwise, so
+  // focus the user put on another element is never taken back. Only forward
+  // Tab onto the action saves a target, so callers without `emptyActionRef`
+  // never reach past the first check.
+  useLayoutEffect(() => {
+    if (!emptyReturnRef.current) return
+    const action = emptyActionRef?.current
+    if (open && action?.isConnected) return
+    const active = document.activeElement
+    if (!action?.isConnected && (!active || active === document.body)) restoreEmptyFocus()
+    emptyReturnRef.current = null
+  })
 
   const [selected, setSelected] = useState(0)
   const selectedRef = useRef(0)
@@ -127,6 +184,8 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   onCloseRef.current = onClose
   const onAltEnterRef = useRef(onAltEnter)
   onAltEnterRef.current = onAltEnter
+  const onMoveRef = useRef(onMove)
+  onMoveRef.current = onMove
 
   // IME guard for the hook's keyboard actions. This listener receives NATIVE
   // KeyboardEvents (document capture), which `useImeGuard`'s synthetic-only
@@ -168,6 +227,7 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
 
   const onKey = useCallback((e: KeyboardEvent) => {
     const n = countRef.current
+    const emptyAction = n === 0 ? emptyActionRef?.current : null
     if (e.key === 'Escape') {
       // Escape dismisses an IME candidate list too. Let the shared latch own
       // that key while composition is live and in WebKit's short
@@ -176,10 +236,31 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
       if (!imeLatchRef.current!.claimKey(e)) return
       e.preventDefault()
       e.stopPropagation()
+      if (emptyAction && e.target === emptyAction) restoreEmptyFocus()
       onCloseRef.current()
       return
     }
     if (n === 0) {
+      if (emptyAction) {
+        if (e.target === emptyAction) {
+          if (e.key === 'Tab') {
+            e.preventDefault()
+            e.stopPropagation()
+            restoreEmptyFocus()
+          }
+          // The control owns its native activation and all non-navigation keys.
+          return
+        }
+        if (e.key === 'Tab' && !e.shiftKey) {
+          if (!imeLatchRef.current!.claimKey(e)) return
+          e.preventDefault()
+          e.stopPropagation()
+          emptyReturnRef.current = document.activeElement instanceof HTMLElement
+            ? document.activeElement : null
+          emptyAction.focus()
+          return
+        }
+      }
       if (e.key === 'Enter' || e.key === 'Tab') {
         if (releaseKeysWhenEmpty) {
           // Nothing to choose: the surface has no claim on the keystroke, so
@@ -208,11 +289,13 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       e.stopPropagation()
+      onMoveRef.current?.()
       const next = selectedRef.current + 1
       move(wrap ? next % n : Math.min(next, n - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       e.stopPropagation()
+      onMoveRef.current?.()
       const next = selectedRef.current - 1
       move(wrap ? (next + n) % n : Math.max(next, 0))
     } else if (e.key === 'Enter') {
@@ -234,7 +317,7 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
       e.stopPropagation()
       onChooseRef.current(selectedRef.current, false)
     }
-  }, [move, wrap, releaseKeysWhenEmpty])
+  }, [move, wrap, releaseKeysWhenEmpty, emptyActionRef, restoreEmptyFocus])
 
   // Composition tracking + latch lifecycle, keyed on `open` ONLY. The keydown
   // subscription below re-attaches whenever `onKey`'s identity changes (wrap /
@@ -306,5 +389,5 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     move(index)
   }, [move, pointerMoved])
 
-  return { selected, setSelected: setSelectedSynced, selectedRef, itemRefs, claimKey, hoverSelect }
+  return { selected, setSelected: setSelectedSynced, selectedRef, itemRefs, claimKey, hoverSelect, restoreEmptyFocus }
 }

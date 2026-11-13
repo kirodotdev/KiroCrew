@@ -1,10 +1,7 @@
 """Session storage: when this instance cannot see who else is live in a replay store.
 
-``TestSharedStoreRefusal`` pins the reclaim refusals for a store other instances may
-share, among them an isolated data home over a shared store, the move of a session a
-co-tenant claims and a co-tenant pod whose session map cannot be read, and it checks that a
-linked or relocated trash root, or a linked batch, reaches nothing. ``TestCotenantCache`` pins that the co-tenant lookup
-may reuse a cached answer for reads, never for a mutation.
+``TestSharedStoreRefusal`` pins the reclaim refusals for a store others may share.
+``TestCotenantCache`` pins that the co-tenant lookup reuses a cached answer for reads only.
 """
 
 from __future__ import annotations
@@ -29,18 +26,9 @@ from kiro_crew.session_storage import SessionIndex, SessionStorageError
 class TestCotenantCache:
     """The co-tenant lookup follows the scan cache's rules: reads may reuse, mutations never.
 
-    :func:`_scan_units` is the single funnel for four public entry points, and its
-    co-tenant dependency can bypass the 30s cache entirely — every read paying a
-    pod-root enumeration plus a map read per leftover pod even on a scan-cache hit.
-    The cache is OPT-IN per call site because the same value gates destructive
-    paths; the safety tests below are what stop a later refactor from making it
-    global.
-
-    One uncached pass deliberately remains on a default install: ``measure``
-    populates ``reclaim_blocked_reason`` via :func:`reclaim_block_reason`, whose
-    co-tenant read must never opt in (it derives a refusal). The isolated *stores*
-    fixture short-circuits that path, which is why the reuse test below counts 1;
-    the default-home test pins that the gate really does re-read.
+    The cache is opt-in per call site because the same value gates destructive paths.
+    The isolated *stores* fixture skips :func:`reclaim_block_reason`'s uncached read,
+    which is why the reuse test counts 1.
     """
 
     @staticmethod
@@ -152,11 +140,8 @@ class TestCotenantCache:
     ) -> None:
         """``KIROCREW_HOME`` alone keys the cache.
 
-        Each map is read through ``hooks.safe_read_file``, whose sensitive-path
-        READ gate re-anchors on the raw ``KIROCREW_HOME`` — the same symlinked
-        map can be refused under one anchoring and readable under another, so a
-        pass taken under one must not answer for the other. Varied ALONE so the
-        term is ratcheted independently, not only as part of a pair.
+        ``hooks.safe_read_file`` re-anchors its read gate on the raw ``KIROCREW_HOME``,
+        so the same symlinked map can be refused under one value and read under another.
         """
         pod_root = tmp_path / "pods"
         (pod_root / "wt-x").mkdir(parents=True)
@@ -176,11 +161,8 @@ class TestCotenantCache:
     ) -> None:
         """``KIRO_HOME`` alone keys the cache — defensive over-keying, ratcheted.
 
-        Today the read tier re-anchors on ``KIROCREW_HOME`` only, but the gate's
-        anchor set is keyed on both raw values; keeping ``KIRO_HOME`` in this key
-        means a future read-tier anchor cannot silently start serving stale
-        answers. A spurious miss costs a re-scan; a spurious hit would cost a
-        wrong answer.
+        The gate's anchor set is keyed on both raw values. A spurious miss costs a
+        re-scan; a spurious hit would cost a wrong answer.
         """
         pod_root = tmp_path / "pods"
         (pod_root / "wt-x").mkdir(parents=True)
@@ -200,11 +182,8 @@ class TestCotenantCache:
     ) -> None:
         """The hard reclaim gate must never opt in — and nothing else covered it.
 
-        The isolated *stores* fixture short-circuits :func:`reclaim_block_reason`
-        before its co-tenant read, so the other safety tests never execute that
-        call. This pins the DEFAULT-home posture, where the read actually runs,
-        and asserts a primed cache does not answer it — the ratchet that stops a
-        future perf change from threading ``cached=`` through the gate.
+        The *stores* fixture skips this read, so this runs on the default home, where a
+        primed cache must not answer it.
         """
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
@@ -284,10 +263,8 @@ class TestSharedStoreRefusal:
         # The co-tenant check reads the pod root, which is real host state — point it
         # at an empty dir so this asserts the guard and not the developer's machine.
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        # Pin the default home rather than clearing the memo. Clearing it makes the
-        # next data_home() RE-RESOLVE, which on a real machine initializes or
-        # migrates the operator's actual data home — and leaves that resolution
-        # memoized for every later test in the same worker.
+        # Pin the default home rather than clearing the memo: a re-resolve on a real
+        # machine migrates the operator's data home and stays memoized for the worker.
         _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         assert session_storage.reclaim_block_reason() == ""
@@ -297,9 +274,7 @@ class TestSharedStoreRefusal:
     ) -> None:
         """An install that has not migrated yet must still be able to reclaim.
 
-        The legacy home is a DEFAULT, not an isolated instance; treating it as one
-        refused every pre-migration install — including the machine this feature
-        was measured on.
+        The legacy home is a default, not an isolated instance.
         """
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
@@ -399,10 +374,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """The mirror case: a pod reads THIS store while keeping its own map.
 
-        Its mapping is a file at a known host path, so the sessions it can resume
-        are knowable. Naming them is strictly better than refusing the whole
-        operation: the pod's own sessions stay protected and everything else stays
-        reclaimable.
+        Its map names the sessions it can resume, so those stay protected and the
+        rest stays reclaimable.
         """
         pod_root = tmp_path / "pods"
         pod = pod_root / "wt-feature"
@@ -428,10 +401,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """Per-session protection is not enough for a genuine co-tenant.
 
-        An instance without its own replay store can seed and resume a session at
-        any moment — including part-way through a move loop that runs for six
-        figures of sessions — so no ownership snapshot can cover it. Those refuse
-        outright, which is the one case the blanket refusal was right about.
+        An instance without its own replay store can resume a session mid-move, so no
+        ownership snapshot covers it and the reclaim refuses outright.
         """
         pod_root = tmp_path / "pods"
         pod = pod_root / "wt-legacy-shared"
@@ -457,9 +428,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """A torn-down pod's leftover directory owns no sessions.
 
-        This is the state a machine that has run pods for weeks is actually in, and
-        blocking on it made reclaiming permanently unavailable while naming
-        directories whose gateway exited long ago.
+        Machines that run pods accumulate these; blocking on them would disable
+        reclaiming for good.
         """
         pod_root = tmp_path / "pods"
         (pod_root / "wt-long-gone").mkdir(parents=True)
@@ -478,11 +448,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """A plain-string entry is the LEGACY format, and must not fail open.
 
-        ``SessionMap._load`` still migrates ``{"key": "<sid>"}`` to the dict form on
-        read, so a map written that way is live data, not corruption. Skipping it
-        would fail open on precisely the population this protection exists for: a
-        co-tenant old enough to predate the pod store split is also old enough to
-        have been written in the old format.
+        ``SessionMap._load`` still migrates ``{"key": "<sid>"}`` on read, so such a map
+        is live data; the oldest co-tenants are the ones most likely to use it.
         """
         pod_root = tmp_path / "pods"
         pod = pod_root / "wt-legacy"
@@ -507,11 +474,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """Co-tenant ownership is re-read in the FINAL authority check.
 
-        The store scan is the slow part of a move, so a co-tenant view taken during
-        it is stale by the time files move. This simulates a co-tenant adopting a
-        pre-existing replay log in that window: the first read (during the scan)
-        does not know about it, the last one does. The freshness floor cannot cover
-        this — the adopted session is 40 days old.
+        A co-tenant adopts an old replay log during the slow scan. The freshness floor
+        cannot cover it: the adopted session is 40 days old.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "adopted001", log_bytes=64, age_days=40)
@@ -557,11 +521,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """The pod root is writable, so its map must go through the file gate.
 
-        A ``session_map.json`` replaced with a symlink would otherwise make the
-        gateway read whatever it points at. The read is routed through
-        ``hooks.safe_read_file``, which resolves the link and re-checks the
-        RESOLVED target — so a link into a protected path is refused, and the
-        co-tenant is treated as ownership-unknown rather than silently skipped.
+        ``hooks.safe_read_file`` re-checks the resolved target, so a link into a
+        protected path is refused and the co-tenant reads as ownership-unknown.
         """
         secret = tmp_path / "aws-credentials"
         secret.write_text("[default]\naws_secret_" "access_key = shhh\n", encoding="utf-8")
@@ -580,10 +541,8 @@ class TestSharedStoreRefusal:
 
         assert protected == frozenset(), "nothing may be harvested from the target"
         assert [name for name, _why in refusals] == ["wt-symlinked"]
-        # The REASON is what distinguishes refused-before-reading from
-        # read-then-failed-to-parse. A bare read would follow the link, fail to
-        # parse the credential file, and report "could not be parsed" — which is
-        # the same refusal from the caller's side but means the read happened.
+        # The reason tells refused-before-reading from a bare read that followed the
+        # link and then failed to parse.
         assert refusals[0][1] == "its session map could not be read"
         assert "parsed" not in refusals[0][1]
 
@@ -592,10 +551,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """Undecodable bytes are an unreadable map, not an exception to the caller.
 
-        ``safe_read_file`` decodes as UTF-8, and ``UnicodeDecodeError`` is a
-        ``ValueError`` rather than an ``OSError`` — so an undecodable map would
-        travel past the refusal path and out of the storage endpoints as a 500,
-        breaking the whole screen instead of protecting one co-tenant.
+        ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so it could
+        escape the refusal path as a 500.
         """
         pod_root = tmp_path / "pods"
         pod = pod_root / "wt-binary"
@@ -638,10 +595,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """The protection has to bite at the move, not only in the report.
 
-        Patched at :func:`cotenant_sids` rather than through the pod root, because
-        the *stores* fixture isolates both homes — the arrangement in which the pod
-        discovery path is correctly not consulted. What is under test here is that
-        whatever that function returns is enforced by ``move_to_trash``.
+        Patched at :func:`cotenant_sids` because the *stores* fixture isolates both
+        homes, where pod discovery is correctly skipped.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "podsid01", log_bytes=64, age_days=40)
@@ -717,10 +672,8 @@ class TestSharedStoreRefusal:
         victim = outside / "sessions" / "20260101T000000-victim01"
         victim.mkdir(parents=True)
         (victim / "keep.txt").write_bytes(b"precious")
-        # A SELF-CONSISTENT batch: every file it holds is listed, so the
-        # unmanifested-file guard does not block the delete. Without a manifest this
-        # test would pass for the wrong reason — the delete would be refused by that
-        # other guard rather than by the containment anchor under test.
+        # A self-consistent manifest, so the unmanifested-file guard does not refuse
+        # the delete before the containment anchor under test does.
         header = {
             "schema": session_storage.MANIFEST_SCHEMA,
             "batch_id": "20260101T000000-victim01",
@@ -737,9 +690,7 @@ class TestSharedStoreRefusal:
         )
 
         root = session_storage.trash_root()
-        # Link the PARENT, so the root itself is a real directory that only escapes
-        # once resolved. is_link_or_junction(root) inspects the final component and
-        # cannot see this; only anchoring the RESOLVED root to the data home can.
+        # Link the PARENT, so the root is a real directory that escapes only once resolved.
         try:
             root.parent.symlink_to(outside, target_is_directory=True)
         except (OSError, NotImplementedError):
@@ -758,12 +709,8 @@ class TestSharedStoreRefusal:
     ) -> None:
         """is_symlink() is False for an NTFS junction, so the guard must not use it.
 
-        A junction cannot be created on Linux, so this asserts the guard routes
-        through the junction-aware resolver: with that resolver reporting a link,
-        the batch must be refused and must not be listed. A guard testing
-        ``is_symlink()`` directly would ignore it — and on Windows a junction named
-        as a valid batch id reads as a real directory, so the delete would resolve
-        through it into the batch it points at.
+        Linux cannot create a junction, so this pins that the guard goes through the
+        junction-aware resolver: when it reports a link, the batch is refused.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
@@ -840,10 +787,8 @@ class TestSharedStoreRefusal:
         crew_home = tmp_path / "crew3"
         (crew_home / "sessions").mkdir(parents=True)
         monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
-        # A filesystem/drive root is refused on EVERY platform (a root is its own
-        # parent). A POSIX system directory like /etc is not portable: on Windows it
-        # resolves to C:\etc, which the validator accepts, so the override would be
-        # honoured and the store would not be shared.
+        # A filesystem root is refused on every platform; /etc would resolve to an
+        # accepted C:\etc on Windows.
         monkeypatch.setenv("KIRO_HOME", "/")
 
         assert session_storage.reclaim_block_reason() != ""

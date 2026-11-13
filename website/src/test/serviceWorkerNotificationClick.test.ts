@@ -60,11 +60,16 @@ function loadWorker(clients: FakeClient[]) {
   return { listeners, openWindow, showNotification }
 }
 
-async function push(clients: FakeClient[]) {
+async function push(clients: FakeClient[], notification: { renotify?: boolean } = {}) {
   const { listeners, showNotification } = loadWorker(clients)
   let pending: Promise<unknown> = Promise.resolve()
   listeners.push({
-    data: { json: () => ({ web_push: 8030, notification: { title: 'Job done', body: 'b', tag: 't1' } }) },
+    data: {
+      json: () => ({
+        web_push: 8030,
+        notification: { title: 'Job done', body: 'b', tag: 't1', ...notification },
+      }),
+    },
     waitUntil: (p: Promise<unknown>) => { pending = p },
   })
   await pending
@@ -122,6 +127,53 @@ describe('sw.js push', () => {
   // after every test so a failing assertion cannot leak them into the next one.
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('re-alerts a keyed banner when no dashboard tab is open', async () => {
+    const showNotification = await push([], { renotify: true })
+    expect(showNotification).toHaveBeenCalledTimes(1)
+    expect(showNotification.mock.calls[0][1]).toMatchObject({ tag: 't1', renotify: true })
+  })
+
+  it('re-alerts without probing when a hidden dashboard tab is connected', async () => {
+    const hidden = client(`${ORIGIN}/chat/abc`, 'hidden', 'connected')
+    const showNotification = await push([hidden], { renotify: true })
+    expect(hidden.postMessage).not.toHaveBeenCalled()
+    expect(showNotification).toHaveBeenCalledTimes(1)
+    expect(showNotification.mock.calls[0][1]).toMatchObject({ renotify: true })
+  })
+
+  it('re-alerts without probing when a hidden dashboard tab is disconnected', async () => {
+    const hidden = client(`${ORIGIN}/chat/abc`, 'hidden', 'disconnected')
+    const showNotification = await push([hidden], { renotify: true })
+    expect(hidden.postMessage).not.toHaveBeenCalled()
+    expect(showNotification).toHaveBeenCalledTimes(1)
+    expect(showNotification.mock.calls[0][1]).toMatchObject({ renotify: true })
+  })
+
+  it('re-alerts without probing when a hidden dashboard tab cannot answer', async () => {
+    const hidden = client(`${ORIGIN}/chat/abc`, 'hidden', 'silent')
+    const showNotification = await push([hidden], { renotify: true })
+    expect(hidden.postMessage).not.toHaveBeenCalled()
+    expect(showNotification).toHaveBeenCalledTimes(1)
+    expect(showNotification.mock.calls[0][1]).toMatchObject({ renotify: true })
+  })
+
+  it('keeps the re-alert when only a hidden connected dashboard could handle it', async () => {
+    const visible = client(`${ORIGIN}/`, 'visible', 'disconnected')
+    const hidden = client(`${ORIGIN}/chat/abc`, 'hidden', 'connected')
+    const showNotification = await push([visible, hidden], { renotify: true })
+    expect(visible.postMessage).toHaveBeenCalledTimes(1)
+    expect(hidden.postMessage).not.toHaveBeenCalled()
+    expect(showNotification).toHaveBeenCalledTimes(1)
+    expect(showNotification.mock.calls[0][1]).toMatchObject({ renotify: true })
+  })
+
+  it('suppresses a re-alert when a visible dashboard tab is connected', async () => {
+    const visible = client(`${ORIGIN}/chat/abc`, 'visible', 'connected')
+    const showNotification = await push([visible], { renotify: true })
+    expect(visible.postMessage).toHaveBeenCalledTimes(1)
+    expect(showNotification).not.toHaveBeenCalled()
   })
 
   it('shows the banner when only a standalone app window is visible', async () => {
@@ -190,6 +242,7 @@ describe('sw.js push', () => {
     const showNotification = await push([hidden])
     expect(hidden.postMessage).not.toHaveBeenCalled()
     expect(showNotification).toHaveBeenCalledTimes(1)
+    expect(showNotification.mock.calls[0][1]).not.toHaveProperty('renotify')
   })
 
   it('a root click focuses a dashboard tab, never an app window', async () => {

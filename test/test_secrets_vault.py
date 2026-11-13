@@ -565,3 +565,51 @@ async def test_a_revisioned_delete_removes_only_the_entry_that_write_stored(
     assert await vault.delete_if_revision("tok", second) is True
     assert vault.get("tok") is None
     assert await vault.delete_if_revision("tok", second) is False
+
+
+def _deny_store(monkeypatch, store: Path) -> None:
+    """Refuse every stat/read of *store* the way macOS data protection does, and
+    give ``Path.exists`` CPython 3.14's answer (False on any OSError)."""
+    import errno
+
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):
+        if os.fspath(path) == os.fspath(store):
+            raise PermissionError(errno.EPERM, "Operation not permitted", os.fspath(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+    monkeypatch.setattr(Path, "exists", lambda self, **_: os.path.exists(self))
+
+
+def test_unreadable_store_is_not_read_as_absent(tmp_path, monkeypatch) -> None:
+    """A delete over a store the OS refuses must raise, not no-op, so a
+    sign-out cannot report success while the credential stays on disk."""
+    vault = SecretVault(tmp_path)
+    vault.set_sync("kas.token", "secret")
+    store = tmp_path / ".vault" / "secrets.enc"
+
+    with monkeypatch.context() as mp:
+        _deny_store(mp, store)
+        with pytest.raises(PermissionError):
+            vault.delete_sync("kas.token")
+        with pytest.raises(PermissionError):
+            vault.list_names()
+        before = store.read_bytes()
+        with monkeypatch.context() as mp:
+            _deny_store(mp, store)
+            # A write over a store it cannot see must not replace it with a
+            # store holding only the new entry.
+            with pytest.raises(PermissionError):
+                vault.set_sync("other", "x")
+        assert store.read_bytes() == before
+    assert store.is_file()
+    assert vault.list_names() == ["kas.token"]
+
+
+def test_missing_store_still_reads_as_absent(tmp_path) -> None:
+    vault = SecretVault(tmp_path)
+    vault.delete_sync("kas.token")
+    assert vault.list_names() == []
+    assert not (tmp_path / ".vault" / "secrets.enc").exists()

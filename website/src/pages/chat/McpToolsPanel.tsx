@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Zap, ChevronRight, TriangleAlert } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { mcpToolStatus, type McpToolStatus } from '../../lib/mcpLoadedTools'
 import {
@@ -77,8 +78,8 @@ const SESSION_LABEL_KEY: Record<McpSessionServerState, string> = {
  * false authority this split exists to remove.
  *
  * The tool rows' loaded/deferred/disabled dot is a third thing again — a
- * client-side approximation derived from this session's tool_search results (see
- * deriveLoadedMcpTools), which starts empty after a reload.
+ * client-side approximation derived from the tool_search results and MCP tool
+ * calls in the messages this tab holds (see deriveLoadedMcpTools).
  */
 export default function McpToolsPanel({
   servers,
@@ -336,7 +337,7 @@ export default function McpToolsPanel({
         // servers permanently in exactly the case where they are the only thing
         // there is to show.
         <div className="mt-2 pt-2 border-t border-border text-[10px] text-muted leading-snug">
-          {i18nT('pages.chatPage.mcp_session_also_started', { names: extraServers.join(', ') })}
+          {i18nT('pages.chatPage.mcp_session_also_started', { names: fmtList(extraServers, { style: 'narrow' }) })}
         </div>
       )}
       {(extraNoTools.length > 0 || noToolsOmitted > 0) && (
@@ -344,7 +345,7 @@ export default function McpToolsPanel({
         // that is exactly the clash case, so it is named here instead of lost.
         <div role="status" className="mt-2 text-[11px] text-warn leading-snug">
           {i18nT('pages.chatPage.mcp_session_no_tools_also', {
-            names: [...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])].join(', '),
+            names: fmtList([...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])], { style: 'narrow' }),
           })}
         </div>
       )}

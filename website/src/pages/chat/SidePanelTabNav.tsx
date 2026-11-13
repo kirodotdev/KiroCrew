@@ -8,7 +8,7 @@ import type { AllTabsGroup, AllTabsRow } from '../../components/AllTabsMenu'
 import { useWheelToHorizontal } from '../../hooks/useWheelToHorizontal'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { useTerminalTitle } from '../../utils/terminalRegistry'
-import { revealChip } from './sidePanelReveal'
+import { EDGE_FADE_PX, revealChip } from './sidePanelReveal'
 import { makeRelative } from '../../components/FilePickerMenu'
 
 export const TAB_CHIP_ID_ATTR = 'data-tab-chip-id'
@@ -70,7 +70,7 @@ export function useSidePanelTabNav({
       // An id is a file path and can hold any character, so match in JS instead of building a selector.
       for (const chip of scroller.querySelectorAll<HTMLElement>(`[${TAB_CHIP_ID_ATTR}]`)) {
         if (chip.getAttribute(TAB_CHIP_ID_ATTR) !== id) continue
-        revealChip(scroller, chip, closableIds.has(id))
+        revealChip(scroller, chip, closableIds.has(id), EDGE_FADE_PX)
         return
       }
     }

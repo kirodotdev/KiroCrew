@@ -197,7 +197,7 @@ def bind_egress_session(request: web.Request) -> None:
 
 
 def dispatch_denied_reason(provider_name: str) -> str | None:
-    """The enterprise check at the point bytes leave for a destination.
+    """The LTS check at the point bytes leave for a destination.
 
     ``publish_provider`` runs it before every send method of a provider, with the
     registry key the provider was resolved under. That key is the destination the
@@ -382,7 +382,7 @@ def _ruleset_unrestricted(ruleset: object) -> bool:
 def publish_list_unrestricted(session_key: str, list_name: str) -> bool:
     """Whether publish's *list_name* list permits every value at both levels.
 
-    Asks what the list allows, not whether it is present: in an enterprise build
+    Asks what the list allows, not whether it is present: in an LTS build
     every list is present (the baseline fills it), so presence says nothing. A
     level with no ``capabilities.publish`` control, or one without the list,
     leaves it open at that level; a disabled gate permits nothing. ``False``

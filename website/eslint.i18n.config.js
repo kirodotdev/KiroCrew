@@ -78,6 +78,22 @@ export default [
       // path (no JSX, no DOM writes), and its consumer `McpAppFrame.tsx` — which
       // does carry copy — stays fully covered.
       'src/lib/mcpAppTheme.ts',
+      // The tool detail rail colour: a `color-mix()` template over theme
+      // variables, returned as a CSS value. Same named-boundary idiom and the
+      // same color-mix category as `folderColorPaint.ts` above. Stated as a
+      // false-negative class: copy added here would not be reported. Verified
+      // copy-free -- the module has no imports and no render path, and both
+      // consumers (`ToolCallLine.tsx`, `app-sdk/messageRenderers.tsx`) stay
+      // fully covered; `toolRailColor.test.ts` pins that it imports nothing.
+      'src/utils/toolRailColor.ts',
+      // The pane port probe: a loopback URL and an `ssh -L` command line that
+      // the user pastes into a terminal, so neither is read as words. The
+      // command is interpolated into the `pane_port_unreachable` catalog
+      // string as `{{command}}`, and that string carries the copy. Stated as a
+      // false-negative class: copy added here would not be reported. Verified
+      // copy-free -- the module has no imports and no render path, and its
+      // consumer `InstancesViewport.tsx` stays fully covered.
+      'src/utils/panePortProbe.ts',
       // Pierre's shared render configuration: injected stylesheet text
       // (`unsafeCSS` templates of selectors, lengths and `var(--…)` references),
       // theme ids the library matches on, and an extension→grammar map. None of
@@ -100,6 +116,17 @@ export default [
       // to this module will not be reported. Keep it stylesheet-only; anything a
       // person reads belongs in the component with `i18nT`.
       'src/components/fileChangeChipsCss.ts',
+      // Stylesheet text for the library card's SVG, set inside the SVG's own shadow
+      // root by SvgShadow: one selector and three lengths handed to the CSS parser.
+      // Extracted from `ArtifactThumbs.tsx` so that file -- which does carry copy --
+      // stays fully covered. Stated as a false-negative class: copy added to this
+      // module will not be reported. Keep it stylesheet-only.
+      'src/components/library/artifactThumbSvgCss.ts',
+      // Keeps the rules of an SVG artifact's own stylesheet that select inside the
+      // drawing, for SvgShadow: CSSOM rule class names and CSS patterns handed to
+      // the browser's parser, no copy. Stated as a false-negative class: copy
+      // added to this module will not be reported. Keep it stylesheet-only.
+      'src/components/svgStylesheet.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
@@ -177,6 +204,17 @@ export default [
       // false positive it fixes. A path this narrow cannot exempt a future file
       // that does hold copy.
       'src/apps/meetings/lib/sketchSrcdoc.ts',
+      // The Meetings "export all outputs" bundle builder (#32982). Same
+      // parser-only category as `sketchSrcdoc.ts` directly above and listed the
+      // same way, by exact path: every literal in it is HTML/CSS handed to a
+      // parser — a DOCTYPE, `<section>`/`<pre>`/`<iframe>` markup, the bundle's
+      // own CSS. It imports no `i18nT`/`useTranslation` and renders no text node;
+      // its ONE user-facing string, the "no output" marker, is passed in already
+      // translated from the gated call site in `ExportMenuItems.tsx`, so the
+      // module itself holds no copy. Stated as this file's false-negative class:
+      // any user-visible copy ever added here will not be reported — keep it
+      // parser-facing and resolve copy at the call site.
+      'src/apps/meetings/lib/meetingBundle.ts',
       // The widget and MCP-app srcdoc builders — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared `*Srcdoc.ts` glob. Every literal in both is handed to
@@ -200,6 +238,11 @@ export default [
       // user-visible copy ever added to these two paths will not be reported —
       // keep both modules parser-facing only.
       'src/lib/widgetSrcdoc.ts',
+      // The height-reporter script split out of widgetSrcdoc.ts (for the file
+      // line cap) -- ONE template literal of in-iframe JS (postMessage + layout
+      // measurement), no human-facing copy. Same parser-only boundary and same
+      // false-negative class as widgetSrcdoc.ts above: keep it parser-only.
+      'src/lib/widgetHeightReporter.ts',
       'src/lib/mcpAppSrcdoc.ts',
       // Same parser-only boundary as the srcdoc builders above: this module
       // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
@@ -575,6 +618,28 @@ export default [
               // residue the general class shape already accepts, caught by the
               // en-XA render gate instead.
               String.raw`^(?!.*(?:^|\s)[a-z]+\s+[a-z]+(?:\s|$))(?=(?:^|.*\s)\[&[^\]\s]*\]:)(?:[\s\-a-z0-9:/().%#\[\]]|\[(?:&|@(?:media|supports)\()[^\]\s]*\])+$`,
+              // Tailwind IMPORTANT-MODIFIER clusters, e.g. the server-detail line
+              // under a failure notice in apps/issue-radar/views/GraphView.tsx:
+              // `block text-left font-mono !text-[10px] leading-snug !text-muted …`.
+              // `!text-…` is how a caller's class wins over a same-property class the
+              // shared component sets on the same element (ErrorNotice's
+              // `messagePlacement="below"` span sets `text-[12px] text-danger-text`
+              // itself; which of two same-property utilities applies is decided by
+              // stylesheet order, not class order). The general class shape forbids
+              // `!`, and such constants live at module level under ALL-CAPS names,
+              // so `i18n-strict` looks inside them.
+              //
+              // Deliberately NARROWER than "allow ! anywhere", on three axes:
+              // (a) the first lookahead rejects any two ADJACENT bare lowercase
+              // words, the prose shape (`save failed !text-muted`) that would
+              // otherwise ride in on a single important token; (b) the second
+              // lookahead requires at least one `!`-opened token, so the general
+              // class shape still owns every cluster without one; (c) `!` is
+              // admitted ONLY at the start of a token and ONLY when a letter
+              // follows it, so an exclamation mark closing a sentence (`Saved!`,
+              // `Try again!`) never matches: copy puts `!` after a word, a
+              // utility puts it before one.
+              String.raw`^(?!.*(?:^|\s)[a-z]+\s+[a-z]+(?:\s|$))(?=(?:^|.*\s)![a-z])(?:[\s\-a-z0-9:/().%#\[\]]|(?:^|(?<=\s))![a-z])+$`,
               // Tailwind ARBITRARY-VALUE clusters whose bracketed value carries a
               // comma or underscore, e.g. the notification glass surfaces in
               // components/notifications/NotificationFeed.tsx:
@@ -717,6 +782,10 @@ export default [
               // that grows only when a new provider CLI is wired in on purpose.
               '^(?:gh|glab) auth login$',
               '^az login$',
+              // The install command the Decisions card's SageMaker option shows
+              // when the gateway has no boto3: typed into a terminal, so the
+              // same wire-string class, and enumerated for the same reason.
+              '^pip install "boto3>=1\\.34,<2"$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such
@@ -857,10 +926,8 @@ export default [
               '^\\[Stop-hook nudge cap reached\\]$',
               // The knowledge envelope's close marker, enumerated for the same
               // closed-set reason. `expandKnowledgeBlock` writes it into the
-              // model-facing wire text and `splitKnowledgeEnvelope` finds it there
-              // to take the envelope off the queue card, so it is never shown and
-              // a translated marker would stop the split from finding it
-              // (`pages/chat/useKnowledgeFetch.ts`). Its open marker already
+              // model-facing wire text (`pages/chat/useKnowledgeFetch.ts`), so it
+              // is protocol the model reads, not copy. Its open marker already
               // matches the em-dash shape above.
               '^\\[END KNOWLEDGE CONTEXT\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
@@ -960,13 +1027,23 @@ export default [
               // "GitLab" in every language, and a localized spelling would name a
               // product that does not exist. They reach the UI as the provider name in
               // Issue Radar's connect picker, as the `{{provider}}` value
-              // interpolated into its refresh tooltips, and as the source provider's
-              // name in the pull-request panel header, so the bare brand is the whole
+              // interpolated into its refresh tooltips, as the source provider's
+              // name in the pull-request panel header, and as the host name in the
+              // Session Environments readiness check, so the bare brand is the whole
               // literal. Whole-value-anchored like the entry above, so a sentence that
               // merely mentions a forge is still reported — only the bare name is
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
-              '^(GitHub|GitLab|Azure DevOps|Bitbucket Server|Gerrit)$',
+              '^(GitHub|GitLab|Azure DevOps|Bitbucket|Bitbucket Server|Gerrit)$',
+              // The Connections page's one Google entry: the bare brand is its
+              // settings-search suffix (`settingsManual.ts`), the same in every
+              // language, like the provider names the other OAuth app entries
+              // take from the registry. Whole-value-anchored like the entries above.
+              '^Google$',
+              // The local editor brands the "Open in {{editor}}" row names
+              // (utils/remoteEditorUrl.ts `REMOTE_EDITORS`): a product name, the same in
+              // every language. Whole-value-anchored like the entries above.
+              '^VS Code$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal
@@ -1694,6 +1771,21 @@ export default [
   // serialization-only.
   {
     files: ['src/utils/pasteTokens.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // SECRETS AUTHORIZE COMMAND ONLY, same "format IS the interface" category as
+  // `pasteTokens.ts` above: the two literals in this module are a CLI command and
+  // an MCP server grant name the owner types exactly as shown, so translating
+  // either makes the step impossible to complete. The sentence the owner reads
+  // around them is a separate, translated string
+  // (`settings.secrets.custom_authorize`) rendered by `SecretsPanel.tsx`, which
+  // shows the command verbatim in a `<code>` element. This module renders
+  // nothing and holds no prose; copy added here later belongs in the catalog.
+  {
+    files: ['src/pages/settings/secretsAuthorizeCommand.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

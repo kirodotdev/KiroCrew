@@ -79,9 +79,8 @@ class TestBaselineRules:
 
 class TestClientRestartSequence:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolate_home(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    def _isolate_home(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     def _client(self, tmp_path) -> AcpClient:
         client = AcpClient(work_dir=tmp_path)

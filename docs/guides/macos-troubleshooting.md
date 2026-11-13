@@ -40,11 +40,13 @@ never reaches launchd. That is why the general fix below is a `launchctl
 setenv`, not another rc-file edit.
 
 If **only an MCP server launcher** is missing, prefer the narrower
-`mcp.extra_path_dirs` config list. It extends MCP resolution and the MCP gateway
-daemon without changing GUI applications' general `PATH`; entries must be
-absolute, and a gateway restart is required because the daemon inherits its
-`PATH` at spawn. It does not affect ordinary agent shell commands. When those are
-missing too, either add the directories as a `PATH=` line in `~/.kiro/crew/.env`
+`mcp.extra_path_dirs` config list. It extends MCP resolution without changing GUI
+applications' general `PATH`; entries must be absolute. The directories are also
+appended last to the `PATH` of each agent child process, read at every spawn, so
+the next session picks up an edit and agent shell commands find a name there only
+when it is on no earlier `PATH` entry. The MCP gateway daemon inherits its `PATH`
+when it starts, so it needs a gateway restart. When other tools are missing too,
+either add the directories as a `PATH=` line in `~/.kiro/crew/.env`
 ([Credentials](../../src/kiro_crew/docs/configuration.md#credentials)), which is
 appended behind the app's `PATH`, or use the launchd fix below.
 
@@ -124,6 +126,56 @@ app once if a command is still missing.
 
 ---
 
+## An MCP server's `${VAR}` works from Terminal but not from the app
+
+**Symptoms:** an MCP server whose `env` uses a reference, such as
+`"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PAT}"`, works when the app or gateway is
+started from Terminal. When the app is opened from Finder or the Dock, the server
+still starts, but every call fails, typically with an authorization error such as
+`401 Bad credentials`.
+
+### Why this happens
+
+An app opened from Finder or the Dock inherits launchd's environment, as above, and
+it does not run your shell profile (`~/.zprofile`, `~/.zshrc`). A variable you
+export there is not set in the gateway, so `${GITHUB_PAT}` stays the literal text
+and the server receives `${GITHUB_PAT}` as its token. Running `open` from Terminal
+is not a test of this: it passes that Terminal's environment to the app.
+
+### How to tell
+
+At the start of each session the gateway log (`~/.kiro/crew/gateway.log`) names
+the server and the variable, never a value:
+
+```
+stdio MCP server env references a variable that is not set: ... servers=github ('GITHUB_PAT'). ...
+```
+
+The session's MCP problem summary carries the same entry, so the log line for a
+run nobody is watching (a task step, a webhook run, a subagent) names it too.
+
+### The fix
+
+Supply the value in a way that does not depend on how the app was started, then
+quit the app fully and open it again:
+
+- **The encrypted vault (recommended for a credential).** Store the value in
+  **Settings → Secrets** (here as `GITHUB_PAT`), change the server's value to
+  `"secret://GITHUB_PAT"`, and turn routing on for the server in
+  **MCP Servers**. Routing is required: an unrouted
+  server with a `secret://` value is not started. Changing the value changes what
+  the server launches, so approve the launch again on that page when it asks. The
+  secret reaches that server's environment alone. See
+  [secrets-env.md](secrets-env.md).
+- **The data home's `.env` file.** A line `GITHUB_PAT=...` in `~/.kiro/crew/.env`
+  (mode `600`) is loaded into the gateway's environment at start, so `${GITHUB_PAT}`
+  resolves whether the server is routed or not. The log then warns that the key is
+  not a recognised credential: it reaches every process the gateway starts, the
+  agent included, which is why the vault is the better home for a token. See
+  [Credentials](../../src/kiro_crew/docs/configuration.md#credentials).
+
+---
+
 ## The gateway does not start after a reboot until someone logs in
 
 **Symptoms:** on a Mac with automatic login off (a headless Mac mini reached
@@ -172,7 +224,7 @@ which case it found.
 ## Chat shows "Connection unstable — please try again." behind a corporate proxy
 
 **Symptoms:** every chat turn fails with a "Connection unstable — please try
-again." banner (the gateway log calls it a "transient error (HTTP 5xx)"), while `kiro-cli` in a Terminal window and the
+again." banner (the error card reads "Could not reach the model backend"), while `kiro-cli` in a Terminal window and the
 Kiro IDE on the same machine work fine. The log shows `dispatch failure …
 error sending request for url (https://q.us-east-1.amazonaws.com/)`.
 

@@ -191,10 +191,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LIST_PROBE_JQ,
         _MEMBER_ASSOC_RANK,
         _PROBE_KINDS,
+        _REPO_COMMENT_JQ,
         CONTRIB_WINDOW_DAYS,
         MAX_WINDOW_DAYS,
         _list_issues,
         _parse_gh_timestamp,
+        _repo_comment_jq,
         derive_members,
         get_current_login,
         list_closed_issues,
@@ -203,6 +205,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         list_open_issues_first_page,
         list_recent_open_issues,
         list_repo_collaborators,
+        list_repo_comments_since,
         list_repo_labels,
         verify_repo_access,
     )
@@ -211,6 +214,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ENABLE_AUTO_MERGE,
         _MERGE_ASYNC_POLL_DELAYS,
         _RUN_CANCELLABLE_STATES,
+        _THREAD_ID_RE,
         _WORKFLOW_RUN_JQ,
         MERGE_ASYNC_WAIT_SEC,
         PR_MERGE_METHODS,
@@ -233,7 +237,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         get_repo_permissions,
         list_pr_workflow_runs,
         merge_pull_request,
+        post_comment_batch,
         remove_issue_label,
+        reply_to_comment_thread,
         rerun_workflow_run,
         set_issue_assignees,
         set_issue_state,
@@ -246,6 +252,7 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     import time  # noqa: F401
 
     from kiro_crew.apps.builtins.issue_radar.backend import (  # noqa: F401
+        comment_batch,
         github_normalization,
         github_queries,
         github_transport,

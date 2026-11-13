@@ -1,12 +1,7 @@
 """No config_dir() inside async functions.
 
-config_dir() performs start-of-process maintenance (mkdir, breadcrumb refresh,
-ungated-archive sweep with shutil.rmtree) on every call. Calling it from an
-async function runs that maintenance on the event loop. The fix is to use
-data_home() which returns the cached path without maintenance.
-
-This guard enforces that no async function in the listed files calls
-config_dir() directly, so the fix cannot silently regress.
+config_dir() runs maintenance (mkdir, breadcrumb refresh, a shutil.rmtree sweep) on
+every call, which would block the event loop. Async code uses data_home().
 """
 
 from __future__ import annotations
@@ -41,6 +36,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_runner.py",
     "dashboard/chat_turn/account_identity.py",
     "dashboard/chat_turn/acp_recovery.py",
+    "dashboard/chat_turn/agent_started.py",
     "dashboard/chat_turn/app_agent_binding.py",
     "dashboard/chat_turn/context_cap.py",
     "dashboard/chat_turn/crew_log_attribution.py",
@@ -59,6 +55,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_turn/queue_drain.py",
     "dashboard/chat_turn/recipient.py",
     "dashboard/chat_turn/recovery.py",
+    "dashboard/chat_turn/regenerate_swap.py",
     "dashboard/chat_turn/segment_flush.py",
     "dashboard/chat_turn/session_events.py",
     "dashboard/chat_turn/session_reset.py",
@@ -92,7 +89,6 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/handlers/knowledge_sync.py",
     "dashboard/handlers/messaging.py",
     "dashboard/messaging_api/agent_push.py",
-    "dashboard/messaging_api/browser_routes.py",
     "dashboard/messaging_api/channel_config_writes.py",
     "dashboard/messaging_api/channel_delivery.py",
     "dashboard/messaging_api/channel_folder_backfill.py",
@@ -192,13 +188,9 @@ class TestNoConfigDirInAsync:
     def test_update_layout_channel_helpers_never_maintain(self) -> None:
         """The channel read/write must use ``data_home()``, not ``config_dir()``.
 
-        Neither helper is an ``async def``, so the AST walk above cannot see them
-        — but both are reached FROM async handlers: ``release_channel()`` from the
-        update check and ``set_release_channel()`` from ``POST
-        /api/update/channel``. ``config_dir()`` is resolve-and-maintain (breadcrumb
-        refresh + a leftover-archive sweep that can ``shutil.rmtree``), so using it
-        there would run a destructive sweep on the event loop, reached through an
-        indirect call chain.
+        The AST walk above misses them (not ``async def``), but async handlers call
+        ``release_channel()`` and ``set_release_channel()`` (``POST
+        /api/update/channel``).
         """
         tree = ast.parse((SRC / "platform" / "update_layout.py").read_text(encoding="utf-8"))
         # AST, not a substring scan: the module's docstrings NAME config_dir to

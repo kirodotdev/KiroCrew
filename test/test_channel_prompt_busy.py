@@ -1,20 +1,13 @@
 """A prompt-busy channel session is replaced, not papered over with a card.
 
-When the ACP backend still holds an in-flight prompt it rejects every later
-prompt on that session with ``already in progress``. Answering that with a
-generic ``An error occurred`` card and returning without touching the session
-leaves the wedge in place: the agent then rejects every subsequent @mention
-identically, and the only recovery is a manual per-agent clear-context.
+An ACP backend with an in-flight prompt rejects later prompts with ``already in
+progress``, so an error card alone leaves the agent wedged. ``AcpPromptBusy``'s
+contract is that callers reset the session, as ``chat_runner`` and Slack's
+``handler`` do; this file pins the channel loop to it.
 
-``AcpPromptBusy``'s own contract is that callers reset the session so the next
-message cold-starts. The dashboard (``chat_runner``) and Slack (``handler``)
-paths honour it, and this file pins the channel loop onto the same contract.
-
-Bounded failure matters as much as the recovery: if the wedge survives the
-reset the agent is reported ONCE and stops consuming its inbox, and the
-abandoned replacement session is torn back down -- ``channel:``-keyed sessions
-are exempt from both session reapers, and ``api_channel_wake_agent`` would
-otherwise re-acquire the same wedged session out of the registry.
+If the wedge survives the reset, the agent is reported once and stops reading its
+inbox, and the replacement is torn down: ``channel:`` sessions are exempt from both
+reapers, and ``api_channel_wake_agent`` would re-acquire the wedged one.
 """
 
 from __future__ import annotations
@@ -131,6 +124,14 @@ class FakeSessions:
 
     def release(self, key, **kwargs):
         self.released.append(key)
+
+    async def run_identity_check(self):
+        """The member's Kiro account check before a message; a test sets ``flagged`` itself."""
+        self.identity_checks = getattr(self, "identity_checks", 0) + 1
+
+    def is_retiring(self, key):
+        """Whether the check flagged the session now registered under *key*."""
+        return bool(getattr(self._sessions.get(key), "flagged", False))
 
     def has_session(self, key):
         return key in self._sessions
@@ -373,6 +374,101 @@ async def _wait_for(predicate) -> bool:
 
 
 @pytest.mark.asyncio
+async def test_a_member_whose_session_the_account_check_flagged_answers_on_a_replacement():
+    """A member keeps its spawn lease until it dies, so it never acquires again.
+
+    After a Kiro account switch the check flags the member's session, because a sweep only
+    flags a session someone holds. The next message must run on a replacement started on the
+    current account, not on the provider the member cached at spawn.
+    """
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+    stale_seen: list[str] = []
+    fresh_seen: list[str] = []
+    sessions = FakeSessions(
+        [
+            _text_client("from the flagged provider", seen=stale_seen),
+            _text_client("from the replacement", seen=fresh_seen),
+        ]
+    )
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+        sessions._sessions[agent.session_key].flagged = True
+
+        await ch.post("human", "please review this")
+        assert await _wait_for(
+            lambda: any("from the replacement" in m.content for m in ch.messages)
+            and agent.state == "listening"
+        )
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert not stale_seen, f"the message ran on the flagged session's provider: {stale_seen!r}"
+    assert fresh_seen and "please review this" in fresh_seen[0]
+    assert [key for key, _ in sessions.resets] == [agent.session_key]
+    assert sessions.acquires == [agent.session_key, agent.session_key]
+    assert sessions.identity_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_a_listening_member_runs_the_account_check_before_every_message():
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+    seen: list[str] = []
+    sessions = FakeSessions([_text_client("answer", seen=seen)])
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+        await ch.post("human", "first")
+        assert await _wait_for(lambda: len(seen) == 1 and agent.state == "listening")
+        await ch.post("human", "second")
+        assert await _wait_for(lambda: len(seen) == 2 and agent.state == "listening")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert sessions.identity_checks == 2
+    assert sessions.resets == []
+    assert sessions.acquires == [agent.session_key]
+
+
+@pytest.mark.asyncio
+async def test_a_flagged_member_that_cannot_be_restarted_says_so_and_stops():
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+    stale_seen: list[str] = []
+    sessions = FakeSessions(
+        [_text_client("from the flagged provider", seen=stale_seen)],
+        reset_exc=RuntimeError("reset failed"),
+    )
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+        sessions._sessions[agent.session_key].flagged = True
+        await ch.post("human", "please review this")
+        assert await _wait_for(lambda: agent.state == "failed")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert not stale_seen, f"the message ran on the flagged session's provider: {stale_seen!r}"
+    assert any(
+        "could not be restarted on the current Kiro account" in m.content for m in ch.messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_loop_recovers_a_wedged_agent_and_keeps_listening():
     ch = Channel(id="c1", topic="review")
     agent = ch.add_agent(role="dev", agent_name="dev")
@@ -534,10 +630,8 @@ async def test_a_replacement_registered_under_the_same_key_is_not_streamed_throu
     """A dequeued message must not reach the provider this member cached at spawn once the
     registry holds a DIFFERENT one under the same key.
 
-    Presence cannot answer this. An idle clear pops the key and shuts the cached provider down;
-    a surfaced dashboard tab can then be linked to the same key and register its own provider,
-    at which point a presence probe says "a session exists" and is satisfied, while the
-    object the member still holds is the dead one. Streaming into it loses the message.
+    After an idle clear, a linked dashboard tab can register its own provider under the
+    key, so a presence probe passes while the member still holds the dead one.
     """
     ch = Channel(id="c1", topic="review")
     agent = ch.add_agent(role="dev", agent_name="dev")

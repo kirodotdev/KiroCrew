@@ -8,7 +8,7 @@
  *  the plain subline, plus the hand-off as a sibling menu item described by it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseSlots } from '../store/dashboardSlice'
@@ -163,7 +163,9 @@ describe('SessionActionsMenu folder-order read failure', () => {
     const after = handoff.nextElementSibling
     expect(after?.getAttribute('role')).toBe('separator')
     expect(after?.nextElementSibling).toHaveTextContent(/tags/i)
-    handoff.focus()
+    // Radix menu items track their own focus in state, so moving focus onto the
+    // hand-off item (and off the item that held it) re-renders both: run it in act.
+    act(() => { handoff.focus() })
     await user.keyboard('{Enter}')
     expect(consumeChatHandoff()).toContain('gateway restarting')
   })

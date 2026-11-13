@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib.util
-import json
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -41,7 +40,6 @@ if TYPE_CHECKING:
         live,
         logger,
         pip_extra_install_command,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -121,7 +119,10 @@ async def api_feishu_config_get(request: web.Request) -> web.Response:
         # marker are filesystem reads, and the panel polls this endpoint every
         # 15s, so giving them their own thread hop would double the cost of a
         # poll for no isolation benefit.
-        return loaded, loaded.load_credentials(), _channel_sdk_status("feishu")
+        # propagate=False: a post-boot dashboard read must not re-seed
+        # os.environ (a worker-thread setdefault could restore a credential the
+        # live watcher just popped); boot owns the one propagation.
+        return loaded, loaded.load_credentials(propagate=False), _channel_sdk_status("feishu")
 
     cfg, creds, (sdk_installed, sdk_supported, sdk_command) = await asyncio.to_thread(_read)
     app_id = creds.get(CRED_FEISHU_APP_ID, "")
@@ -281,7 +282,10 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     path = config_path()
 
     def _read_config() -> dict:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
+        # The read half of this read-modify-write starts from what the load reads.
+        from kiro_crew.config.loader import read_config_for_update
+
+        data = read_config_for_update(path)
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
         return data

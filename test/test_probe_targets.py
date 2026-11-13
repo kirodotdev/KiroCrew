@@ -170,6 +170,34 @@ def test_the_url_and_shorthand_for_one_pr_are_one_subject():
     assert target.subject == "kirodotdev/KiroCrew#7491"
 
 
+def test_one_pr_spelled_in_two_cases_is_one_subject():
+    """GitHub slugs are case-insensitive, so a case difference is not a second PR.
+
+    A person types the shorthand lower-case and pastes the URL as GitHub spells it.
+    Reading those as two subjects refuses the gate and leaves the loop on its timer.
+    """
+    shorthand = infer(
+        "Drive kirodotdev/kirocrew#7491 -- "
+        "https://github.com/kirodotdev/KiroCrew/pull/7491 -- to review-ready."
+    )
+    assert shorthand is not None
+    assert shorthand.subject == "kirodotdev/KiroCrew#7491"
+
+    two_urls = infer(
+        "https://github.com/kirodotdev/KiroCrew/pull/7491 "
+        "(also https://github.com/KiroDotDev/kirocrew/pull/7491)"
+    )
+    assert two_urls is not None
+    assert two_urls.subject == "kirodotdev/KiroCrew#7491"
+
+
+def test_a_case_difference_never_hides_a_different_number():
+    assert (
+        infer("Drive kirodotdev/kirocrew#42 -- https://github.com/kirodotdev/KiroCrew/pull/7")
+        is None
+    )
+
+
 def test_two_distinct_pull_requests_refuse_rather_than_pick_one():
     """The real shape this protects against: a PR plus the PR it waits on.
 

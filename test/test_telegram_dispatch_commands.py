@@ -9,7 +9,6 @@ handler, and the exact replies of the commands the dispatcher answers itself.
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -18,9 +17,11 @@ import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
 from telegram_helpers import _dispatcher, _dm, _origin, _tg_origin
 
+from kiro_crew import safety_override_grant
 from kiro_crew.messaging.session_resume import RoutingDecision
 from kiro_crew.telegram.commands import build_help_text
 from kiro_crew.telegram.transport import TelegramInboundMessage
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestYoloCommand:
@@ -59,7 +60,7 @@ class TestYoloCommand:
         finally:
             self._reset()
 
-    def test_off_on_a_lapsed_grant_closes_the_renew_grace_window(self) -> None:
+    def test_off_on_a_lapsed_grant_closes_the_renew_grace_window(self, monkeypatch: Any) -> None:
         """ "/yolo off" must revoke a grant whose TTL already elapsed.
 
         ``deactivate()`` zeroes the past deadline, and that is what shuts the
@@ -68,14 +69,16 @@ class TestYoloCommand:
         after the operator had been told "YOLO OFF".
         """
         so = self._reset()
+        clock = ManualClock()
+        clock.install(monkeypatch, safety_override_grant)
         d, cli, _ = _dispatcher({7})
         try:
             asyncio.run(d.handle_message(_dm("/yolo on")))
             assert so.is_active() is True
 
-            # Lapse the grant but stay inside the renew grace window.
-            # flake-ok: pre-existing real-clock expiry set 10 s in the past, moved verbatim; tracked for a de-flake pass
-            so._expires_at = time.monotonic() - 10
+            # Lapse the grant but stay inside the renew grace window: the deadline is
+            # read on the injected clock, ten seconds before its now.
+            so._expires_at = clock.monotonic() - 10
             assert so.is_active() is False, "precondition: the grant has lapsed"
 
             asyncio.run(d.handle_message(_dm("/yolo off")))
@@ -237,6 +240,7 @@ class TestCommandDispatchTable:
     def test_a_forum_command_threads_into_its_topic(self) -> None:
         d, _cli, _sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         mocks = {name: AsyncMock() for name in self._HANDLERS}
+        mocks["_handle_voice"] = AsyncMock(side_effect=d._handle_voice)
         for name, mock in mocks.items():
             setattr(d, name, mock)
         for text in ("/voice on", "/spawn x", "/task run s", "/yolo on", "/cron list"):
@@ -254,6 +258,8 @@ class TestCommandDispatchTable:
                 )
             )
         route = ("forum", "-100999:4")
+        # The real /voice handler stored the choice under the topic's own route.
+        assert d._voice_pref == {route: True}
         assert mocks["_handle_voice"].await_args.args == (route, -100999, "on", 4)
         assert mocks["_handle_spawn"].await_args.kwargs["thread"] == 4
         assert mocks["_handle_task"].await_args.kwargs["thread"] == 4
@@ -416,6 +422,45 @@ class TestCommandReplies:
         key, owned = captured[0]
         assert key == self._KEY
         assert owned(_origin(7, 7)) is True and owned(_origin(8, 8)) is False
+
+    def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+        from kiro_crew.telegram import transport_dispatch as td
+
+        async def _denied(_channel_type: str) -> bool:
+            return False
+
+        # Denied in both namespaces that read the ceiling, so a strict read
+        # anywhere on the way in drops the stop.
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        monkeypatch.setattr(td, "channel_inbound_permitted", _denied)
+        d, cli, sess = _dispatcher({7})
+        d.bot_username = "KiroCrewBot"
+
+        async def _takes_every_reply(_state: Any, msg: Any, _notify: Any) -> bool:
+            return bool(getattr(msg, "reply_to_message_id", 0))
+
+        # A stop is never taken as the answer to a bridged approval note.
+        monkeypatch.setattr(
+            "kiro_crew.telegram.dispatch.bridge_reply.consume_bridged_reply", _takes_every_reply
+        )
+        sess._busy = True
+        # Every other message keeps the strict gate, a cancel word Telegram does
+        # not spell and a stop addressed to another bot included.
+        for text in ("hello", "!stop", "/stop now", "/stop@OtherBot"):
+            asyncio.run(d.handle_message(_dm(text)))
+        assert cli.sent == [] and sess._gp.cancelled == 0
+        asyncio.run(d.handle_message(_dm("/cancel@KiroCrewBot")))
+        stop_reply = TelegramInboundMessage(
+            channel_type="telegram",
+            user_id="7",
+            conversation_id="7",
+            text="/stop",
+            chat_type="private",
+            reply_to_message_id=5,
+        )
+        asyncio.run(d.handle_message(stop_reply))
+        assert sess._gp.cancelled == 2 and cli.sent[-1] == ("🛑 Stopped.", None)
 
     def test_a_topic_stop_answers_in_its_topic(self) -> None:
         d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-100999])

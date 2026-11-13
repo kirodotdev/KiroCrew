@@ -84,12 +84,12 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
   // unique (same rule the folder chips below use via buildFileLabels). `title`
   // and `aria-label` keep the full original path.
   //
-  // buildFileLabels splits on `/` only, so a Windows-shaped path's `\`
-  // separators are converted to `/` for the label computation -- but ONLY when
-  // `\` actually IS a separator in that path (drive-rooted or UNC). On POSIX a
-  // `\` is a legal file-name character (`/tmp/we\ird.md` is ONE name), so an
-  // unconditional replace would wrongly split it; `backslashIsSeparator` is the
-  // same predicate `pathBasename` uses to get that right.
+  // A Windows-shaped path's `\` separators are converted to `/` for the label
+  // map's keys -- but ONLY when `\` actually IS a separator in that path
+  // (drive-rooted or UNC). On POSIX a `\` is a legal file-name character
+  // (`/tmp/we\ird.md` is ONE name), so an unconditional replace would wrongly
+  // split it; `backslashIsSeparator` is the same predicate `pathBasename` and
+  // buildFileLabels use to get that right.
   const normFile = (p: string) => (backslashIsSeparator(p) ? p.replace(/\\/g, '/') : p)
   const fileLabels = buildFileLabels(files.map(normFile))
   // Fall back to pathBasename (Windows-aware) when a path is somehow absent
@@ -157,7 +157,7 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
             {onRemove && (
               <button
                 aria-label={i18nT('components.chatInput.remove')}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white text-[12px] flex items-center justify-center opacity-0 group-hover/preview:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within/preview:opacity-100 focus-ring-accent transition-opacity cursor-pointer"
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-danger-fg text-[12px] flex items-center justify-center opacity-0 group-hover/preview:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within/preview:opacity-100 focus-ring-accent transition-opacity cursor-pointer"
                 onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')}
               ><X className="lucide-inline" /></button>
             )}

@@ -294,11 +294,8 @@ class TestEnsureChannelFolder:
     ) -> None:
         """A store that parses but lacks the folder is not proof either.
 
-        Distinct from the swallowed-error case above, where nothing is written at
-        all: here the write "succeeds" and leaves a perfectly valid folder store
-        that simply does not contain the new folder (a partial write that still
-        parses, or a store another writer clobbered). Reading it back is only
-        evidence if the ids are actually compared.
+        The write "succeeds" with a valid store that lacks the folder, so the
+        read-back counts only if the ids are compared.
         """
         path = config_dir() / dashboard_state._FOLDERS_FILE
 
@@ -319,17 +316,9 @@ class TestEnsureChannelFolder:
     ) -> None:
         """A concurrent lookup must not see a folder whose write then fails.
 
-        ``ensure_channel_folder`` mutates the in-memory list and only then
-        persists, so between those two steps the folder is visible to anything
-        reading the store WITHOUT the lock. If the write then fails and the
-        folder is rolled back, a lookup that read in that window has already
-        handed a session a ``folder_id`` that dangles — and because slot-side
-        folder metadata marks a session as already filed, no later save corrects
-        it.
-
-        The window is opened deliberately rather than raced for: the write is
-        PARKED inside its worker thread, the loop is pumped so the lookup runs as
-        far as it can, and only then does the write fail.
+        ``ensure_channel_folder`` mutates memory before it persists, so a lockless
+        read in that window hands out a dangling ``folder_id`` no later save fixes.
+        The write is parked in its thread and the loop pumped, rather than raced.
         """
         monkeypatch.setattr(channel_folders, "configured_folder_name", lambda ns: "Discord")
         in_write = threading.Event()
@@ -368,18 +357,9 @@ class TestEnsureChannelFolder:
     def test_the_create_runs_inside_one_store_transaction(self) -> None:
         """Structural guard: find + create + persist happen in ONE transaction.
 
-        Two callers can reach this at once (two browser tabs saving two channels'
-        settings), and a duplicate folder or a dropped folder edit is the failure
-        mode. Atomicity comes from ``DashboardState.mutate_folders`` holding the
-        store lock across the whole read-modify-write — so the guard is that the
-        folder work goes through that primitive and never writes the store
-        directly.
-
-        Asserted structurally rather than by racing two tasks: the interleaving
-        depends on when the thread pool hands each coroutine back, so a timing
-        test passes even when the invariant is broken (verified in an earlier
-        round — injecting a yield did not fail such a test). The AST cannot be
-        fooled that way.
+        Two tabs saving at once must not duplicate or drop a folder, so the work
+        must go through ``DashboardState.mutate_folders``, which holds the lock.
+        Checked on the AST: a race test passes even when the invariant is broken.
         """
         source = inspect.getsource(channel_folders.ensure_channel_folder)
         tree = ast.parse(textwrap.dedent(source))
@@ -577,11 +557,8 @@ class TestFilingOnSurface:
     def test_persisted_tags_are_recovered_after_a_crash(self, dashboard_state: Any) -> None:
         """Tags stored with the filing marker are applied on restore.
 
-        The reconcile pass persists the inherited tags in the SAME metadata
-        write as the filing marker. If the process crashes before the slot's
-        first save, the marker exists but the slot line does not — this read
-        is what recovers the inheritance instead of losing it forever (the
-        marker blocks re-inheritance by design).
+        A crash before the slot's first save leaves the marker without the slot
+        line, and the marker blocks re-inheritance, so only this read recovers them.
         """
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
         dashboard_state._tags_authoritative = True
@@ -622,12 +599,8 @@ class TestFilingOnSurface:
     ) -> None:
         """An unreadable tags.json must not erase a filed chat's tags.
 
-        The three sibling restore paths gate their prune on
-        ``_tags_authoritative``; this path must match. Intersecting with an
-        unknown (empty) vocabulary would drop every persisted id, the next
-        save would write the empty list to disk, and the sticky filing marker
-        would block re-inheritance forever — silent, permanent loss from one
-        bad boot.
+        Like the sibling restore paths, the prune is gated on ``_tags_authoritative``:
+        an empty vocabulary would drop every id and the filing marker blocks re-inheritance.
         """
         dashboard_state._tags = []
         dashboard_state._tags_authoritative = False
@@ -694,14 +667,8 @@ class TestReconcilePassFiling:
     def test_one_conversations_folder_is_not_applied_to_another(self, dashboard_state: Any) -> None:
         """The namespace-wide folder must not reach an already-filed conversation.
 
-        The folder is resolved once per CHANNEL, so the same value is available to
-        every pending conversation of that channel. If it were applied without
-        re-testing per session, this happens: conversation A has never been filed,
-        so the pass resolves folder F for "discord"; conversation B was filed
-        before and the user moved it to the top level (marker set, no folder_id).
-        B would then be handed F — silently returning it to the folder and
-        OVERWRITING the user's placement on disk, which is the exact guarantee
-        this feature claims to keep.
+        The folder is resolved once per CHANNEL. A is never filed; B was filed and
+        moved to the top level by hand, so handing B the folder would undo that move.
         """
         _write_config("discord", "Discord")
         key_a = "discord:kirocrew:direct:UA"
@@ -736,12 +703,8 @@ class TestReconcilePassFiling:
     ) -> None:
         """Filing must be durable BEFORE the conversation becomes visible.
 
-        ``get_or_create_slot`` pushes a slots update, so the instant a session is
-        surfaced the user can see it and drag it elsewhere — and that move saves
-        immediately. If the filing write landed after that, it would overwrite the
-        move with the default folder and the next restart would put the session
-        back, losing a user action. So the ordering is the guarantee: by the time
-        the slot is published, the record already says where it was filed.
+        ``get_or_create_slot`` publishes the slot, and a drag right after saves at
+        once; a later filing write would overwrite that move.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
@@ -796,15 +759,11 @@ class TestReconcilePassFiling:
     def test_a_session_resumed_mid_pass_is_not_filed_over(self, dashboard_state: Any) -> None:
         """A conversation surfaced DURING the pass must not be filed by that pass.
 
-        The pass snapshots metadata and decides what to file, then awaits a
-        transcript read before writing the placement. In that window the user can
-        resume the conversation from History and move it; a slot existing by the
-        time the write happens is the evidence that happened, and writing anyway
-        would restore the default folder after the next restart.
+        The pass awaits a transcript read before writing; a slot that exists by then
+        means the user resumed and maybe moved it, so the write must stand down.
 
-        The slot has to appear DURING the pass, not before it: a session whose slot
-        already exists is never in ``pending``, so pre-creating it would make this
-        test pass without ever reaching the re-check.
+        The slot must appear DURING the pass: a pre-existing slot is never in
+        ``pending``, and the test would pass without reaching the re-check.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
@@ -835,16 +794,9 @@ class TestReconcilePassFiling:
     ) -> None:
         """Turning the feature ON must not re-place conversations already surfaced.
 
-        The gap this closes: a conversation that first surfaced while filing was
-        OFF gets neither ``folder_id`` nor ``channel_folder_filed``. The user then
-        moves it into a folder and back out to the top level (which clears
-        ``folder_id`` and omits the key entirely), and later enables filing. On the
-        next surface after a restart, a check that only looked at those two keys
-        would read "never filed" and overwrite the deliberate top-level placement.
-
-        ``channel_origin`` is the evidence that distinguishes them: the slot saver
-        persists it once the conversation has been surfaced as a tab, so its
-        presence means first surface has already happened.
+        Surfaced while filing was OFF, it has neither ``folder_id`` nor
+        ``channel_folder_filed``, so those keys alone read as "never filed".
+        ``channel_origin``, persisted on first surface, tells the two apart.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
@@ -873,12 +825,8 @@ class TestReconcilePassFiling:
     def test_filing_is_persisted_so_it_never_runs_twice(self, dashboard_state: Any) -> None:
         """The pass that files a conversation must record it ON DISK.
 
-        A freshly surfaced slot is deliberately not dirty — its window came
-        straight off the file — so the periodic flush skips it and neither the
-        placement nor the marker would reach the metadata line on their own. If
-        they do not, the next pass after a restart files the conversation again,
-        undoing wherever the user moved it. Asserted against the store, not a
-        method call.
+        A freshly surfaced slot is not dirty, so the periodic flush skips it; without
+        this write the next pass after a restart files it again. Checked on the store.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
@@ -905,12 +853,8 @@ class TestReconcilePassFiling:
     def test_inherited_tags_ride_the_same_filing_write(self, dashboard_state: Any) -> None:
         """Marker and tags are persisted atomically, or a crash loses the tags.
 
-        The filing marker is what tells every later pass (and a post-crash
-        restore) that inheritance already ran. Persisting it WITHOUT the tags
-        opens a window: crash after the metadata write but before the slot's
-        first save, and the restored conversation has the marker, no tags, and
-        no way to ever get them — the marker blocks re-inheritance by design.
-        One write closes the window.
+        The marker blocks re-inheritance, so a crash between a marker-only write and
+        the slot's first save would leave the chat with no tags for good.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
@@ -942,11 +886,8 @@ class TestReconcilePassFiling:
     ) -> None:
         """Validation runs at the write boundary, not resolve time.
 
-        The reconcile pass reads folder tags early, then awaits transcript and
-        config reads before filing. A tag deleted in that window must not be
-        written onto the freshly filed chat — the filing write validates the
-        ids against the vocabulary as it is at write time. Modeled here by a
-        folder carrying an id the vocabulary does not contain.
+        A tag deleted between the early folder read and the write must not reach the
+        chat. Modeled by a folder carrying an id the vocabulary lacks.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
@@ -971,11 +912,11 @@ class TestReconcilePassFiling:
         ], "a deleted tag id was resurrected into the filing write"
 
     def test_filing_validate_and_write_hold_the_tags_write_lock(self, dashboard_state: Any) -> None:
-        """The vocabulary intersection and the filing write are ONE critical
-        section under ``tags_write_lock``, mirroring ``api_chat_slot_tags``: a
-        tag deletion committing between the intersection and the write would
-        resurrect the deleted id onto the filed chat, and the sticky filing
-        marker means no later pass ever re-validates it."""
+        """The tag intersection and filing write share one ``tags_write_lock`` section.
+
+        As in ``api_chat_slot_tags``: a deletion in between would resurrect the id, and
+        the sticky marker means nothing re-validates it.
+        """
         from kiro_crew.dashboard.chat_tags import tags_write_lock
 
         _write_config("discord", "Discord")
@@ -1009,12 +950,8 @@ class TestReconcilePassFiling:
     def test_a_save_cannot_erase_a_marker_it_never_loaded(self, dashboard_state: Any) -> None:
         """An on-disk marker survives a save by a slot that never restored it.
 
-        There are four paths that rebuild a slot from history, and any one of them
-        omitting the marker would be enough to lose it: the save rebuilds the
-        metadata line from scratch, so a slot whose in-memory flag is False writes
-        a line WITHOUT the marker, and the conversation gets re-filed on the next
-        pass. Carrying the on-disk value forward makes that whole class of
-        omission harmless rather than relying on every restore path being correct.
+        The save rebuilds the metadata line, so any of the four restore paths that
+        forgot the flag would drop it. Carrying the on-disk value forward covers all.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -1042,15 +979,9 @@ class TestReconcilePassFiling:
     def test_the_filing_marker_survives_a_later_slot_save(self, dashboard_state: Any) -> None:
         """Moving the session must not erase the record that filing happened.
 
-        ``_save_slot_to_history`` rebuilds the metadata line from scratch,
-        preserving only an explicit allowlist, so any key it does not write is
-        DROPPED. The user moving a filed conversation to the top level triggers
-        exactly such a save with ``folder_id`` now empty — if the marker were not
-        written back there, that save would erase it and the next reconcile after
-        a restart would file the conversation straight back into the folder,
-        undoing the move. This is the same defect as
-        ``test_a_move_to_the_top_level_survives_a_restart``, reached through the
-        save path rather than the reconcile path.
+        ``_save_slot_to_history`` keeps only an allowlist of keys, and a move to the
+        top level triggers such a save. Save-path twin of
+        ``test_a_move_to_the_top_level_survives_a_restart``.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -1073,11 +1004,8 @@ class TestReconcilePassFiling:
     def test_a_move_to_the_top_level_survives_a_restart(self, dashboard_state: Any) -> None:
         """An already-filed conversation is never filed again.
 
-        Moving a session to the top level clears its ``folder_id``, and the
-        metadata line OMITS that key when it is empty — so a ``folder_id`` check
-        alone cannot tell "the user moved it out" from "never filed", and the
-        next pass after a restart would file it straight back in. The persisted
-        ``channel_folder_filed`` marker is what distinguishes them.
+        An empty ``folder_id`` is omitted from the line, so it cannot tell "moved
+        out" from "never filed"; the ``channel_folder_filed`` marker does.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"

@@ -153,9 +153,44 @@ class Lesson:
     # from ``category``, ``ts`` or wording -- see
     # ``kiro_crew.lesson_validation.normalize_lesson_applies``.
     applies: str | None = None
+    # Who wrote this lesson, as the server derived it: the reduced principal
+    # ``shared_crew.memory_changes.writer_stamp`` builds (id, kind, display name).
+    # ``None`` for a lesson written before writers were recorded, or with no
+    # known person behind it. A label only; nothing gates on it.
+    written_by: dict[str, str] | None = None
 
 
 # ── Storage ──
+
+
+def _lesson_lines(path: Path) -> list[str | None]:
+    """The lines of *path*, with ``None`` for a line that does not decode.
+
+    Read exactly as before (the platform's default text decoding), so a file that
+    loads today reads the same. Only when that whole-file decode fails is the file
+    split into lines and each decoded on its own, so one bad byte costs its own
+    line instead of every lesson in the file.
+    """
+    try:
+        return list(path.read_text().splitlines())
+    except UnicodeDecodeError:
+        import locale  # in-function: only reached for a damaged file
+
+        encoding = locale.getpreferredencoding(False)
+    lines: list[str | None] = []
+    for raw in path.read_bytes().splitlines():
+        try:
+            lines.append(raw.decode(encoding))
+        except UnicodeDecodeError:
+            lines.append(None)
+    return lines
+
+
+def _written_by_of(raw: object) -> dict[str, str] | None:
+    """A stored ``written_by`` read back; ``None`` when absent or damaged."""
+    from kiro_crew.shared_crew.memory_changes import stamp_of
+
+    return stamp_of(raw)
 
 
 def _serializable(lesson: Lesson) -> dict:
@@ -171,6 +206,8 @@ def _serializable(lesson: Lesson) -> dict:
     row = asdict(lesson)
     if row.get("applies") is None:
         row.pop("applies", None)
+    if row.get("written_by") is None:
+        row.pop("written_by", None)
     return row
 
 
@@ -214,6 +251,30 @@ def _prune_to_total(lessons: list[Lesson]) -> list[Lesson]:
         if len(drop) >= over:
             break
     return [lesson for index, lesson in enumerate(lessons) if index not in drop]
+
+
+def _conflicting_preference(new: Lesson, stored: Lesson, new_scope: str | None) -> bool:
+    """Whether *stored* is a preference that *new* replaces (newest wins).
+
+    Both rows are ``preference`` lessons in the same scope, and they share at
+    least half of the larger keyword set: the vector store's topic-overlap
+    rule (``vector_memory_runtime.lessons.lesson_keywords``), so both stores
+    call the same pair a conflict. A standing (``always``) row is never
+    replaced by a finding (``on_topic``), matching the vector store's tier rule.
+    """
+    if new.category != "preference" or stored.category != "preference":
+        return False
+    if canonical_scope(stored.repo_scope) != new_scope:
+        return False
+    if new.applies == LESSON_APPLIES_ON_TOPIC and stored.applies != LESSON_APPLIES_ON_TOPIC:
+        return False
+    from kiro_crew.vector_memory_runtime.lessons import lesson_keywords
+
+    new_words = lesson_keywords(new.rule.lower())
+    old_words = lesson_keywords(stored.rule.lower())
+    if not new_words or not old_words:
+        return False
+    return len(new_words & old_words) / max(len(new_words), len(old_words)) >= 0.5
 
 
 def _keep_one_identity(lesson: Lesson) -> str:
@@ -391,7 +452,7 @@ class LessonStore:
         return self._insert_or_enrich(lesson, enrich=False)
 
     @named_store_operation
-    def save_or_enrich(self, lesson: Lesson) -> str:
+    def save_or_enrich(self, lesson: Lesson, *, superseded_out: list[str] | None = None) -> str:
         """Insert *lesson*, or attach its NOT-clause to the record holding the same
         rule, in ONE lock acquisition. Returns
         ``inserted``/``enriched``/``unchanged``/``refused``.
@@ -402,10 +463,76 @@ class LessonStore:
         Re-submitting a rule to attach a NOT-clause must not fall into the duplicate
         check, which matches on the rule alone: returning before looking at
         ``negative`` would drop the clause behind an HTTP 200.
-        """
-        return self._insert_or_enrich(lesson, enrich=True)
 
-    def _insert_or_enrich(self, lesson: Lesson, *, enrich: bool) -> str:
+        A ``preference`` insert also replaces the stored preferences it
+        conflicts with (newest wins, :func:`_conflicting_preference`). The rule
+        text of each replaced row is appended to *superseded_out* when given.
+        """
+        return self._insert_or_enrich(lesson, enrich=True, superseded_out=superseded_out)
+
+    @named_store_operation
+    def replace_rule(self, old_rule: str, old_repo_scope: str | None, lesson: Lesson) -> str:
+        """Rewrite the row ``(old_rule, old_repo_scope)`` to *lesson*'s text, in place.
+
+        The Memory tab's edit. One lock acquisition, so the row count never changes:
+        an insert-then-delete at the ``_MAX_LESSONS_TOTAL`` cap would first evict an
+        unrelated row. The row keeps its position, tier and NOT-clause; only the
+        rule and the writer change. The clause is the one stored NOW, read under the
+        lock, so a clause another writer attached since the list was read survives.
+
+        Returns ``replaced``; ``refused_volatile`` or ``refused_injection`` when a
+        content screen refuses the rule with the row's stored clause;
+        ``missing`` when no row matches the old pair exactly (case-insensitive,
+        surrounding whitespace ignored, scope compared canonically); ``ambiguous``
+        when more than one row does, since the edit cannot say which; ``collision``
+        when ANOTHER row already holds the new text in that scope, because merging
+        into it would drop one of the two rows' tiers. Nothing is written unless the
+        outcome is ``replaced``.
+        """
+        old_text = old_rule.lower().strip()
+        new_text = lesson.rule.lower().strip()
+        scope = canonical_scope(old_repo_scope)
+        with self._lock:
+            rows = self._load_for_write()
+            # A stored scope that is present but inadmissible (an imported "/") marks a
+            # scoped-but-broken row, not a global one, exactly as ``remove`` reads it:
+            # it folds to None, so it would otherwise stand in for the global row.
+            same_scope = [
+                i
+                for i, le in enumerate(rows)
+                if (le.repo_scope is None or scope_is_admissible(le.repo_scope))
+                and canonical_scope(le.repo_scope) == scope
+            ]
+            sources = [i for i in same_scope if rows[i].rule.lower().strip() == old_text]
+            if not sources:
+                return "missing"
+            # Two rows sharing the text and scope (different tiers or clauses) cannot
+            # be told apart by the selector, so the edit refuses rather than guess.
+            if len(sources) > 1:
+                return "ambiguous"
+            source = sources[0]
+            if any(i != source and rows[i].rule.lower().strip() == new_text for i in same_scope):
+                return "collision"
+            # The screens judge the row as it will be stored: the new rule with the
+            # clause the row holds now.
+            negative = rows[source].negative
+            if contains_volatile_lesson_fact(lesson.rule, negative):
+                return "refused_volatile"
+            if lesson_contains_injection(lesson.rule, negative):
+                return "refused_injection"
+            updated = list(rows)
+            updated[source] = replace(
+                rows[source],
+                rule=lesson.rule,
+                written_by=lesson.written_by or rows[source].written_by,
+            )
+            self._write_all(updated)
+        logger.info("Replaced lesson: %s", lesson.rule)
+        return "replaced"
+
+    def _insert_or_enrich(
+        self, lesson: Lesson, *, enrich: bool, superseded_out: list[str] | None = None
+    ) -> str:
         """Shared body for :meth:`save` and :meth:`save_or_enrich`.
 
         The single lock acquisition is the load-bearing part. Doing enrich and
@@ -498,11 +625,31 @@ class LessonStore:
                         # edit followed by a failed write would leave the cache
                         # advertising a clause that was never persisted -- and that
                         # cache feeds context injection.
-                        updated.append(replace(le, negative=next_negative, repo_scope=next_scope))
+                        updated.append(
+                            replace(
+                                le,
+                                negative=next_negative,
+                                repo_scope=next_scope,
+                                written_by=lesson.written_by or le.written_by,
+                            )
+                        )
                     continue
                 updated.append(le)
             if outcome == "unchanged":
                 return outcome  # nothing to write; leave the file untouched
+            replaced: list[str] = []
+            if not matched and enrich:
+                # Newest wins: an explicit preference replaces the stored
+                # preferences it conflicts with, so two contradicting rules are
+                # never both in effect. Automatic writers (``save``) never reach
+                # this, and nothing but a preference is replaced.
+                kept: list[Lesson] = []
+                for le in updated:
+                    if _conflicting_preference(lesson, le, wanted_scope):
+                        replaced.append(le.rule)
+                    else:
+                        kept.append(le)
+                updated = kept
             if not matched:
                 # Insert the normalised clause too, so a whitespace-only one is stored
                 # as absent rather than as blanks.
@@ -528,6 +675,8 @@ class LessonStore:
                         )
                         return "refused"
             self._write_all(updated)
+        if superseded_out is not None:
+            superseded_out.extend(replaced)
         logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
         return outcome
 
@@ -580,7 +729,14 @@ class LessonStore:
         Holds the lock. An unlocked read-modify-write here would lose a concurrent
         ``save`` outright -- and without that lock the atomicity
         :meth:`save_or_enrich` claims would not actually hold.
+
+        A blank (empty or whitespace-only) *rule_substring* is refused with
+        :class:`ValueError` on the plain substring path: every rule contains the
+        empty string, so it would remove every lesson. *exact* and *keep_one*
+        cannot remove every lesson and stay open.
         """
+        if not exact and not keep_one and not rule_substring.strip():
+            raise ValueError("rule substring is blank: it would match every lesson")
         if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
             raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
         with self._lock:
@@ -662,7 +818,11 @@ class LessonStore:
         # Non-blank lines that do not read as a lesson, with their line numbers.
         # Each one costs only itself; the warning below counts them.
         unreadable: list[tuple[int, str]] = []
-        for lineno, line in enumerate(self._path.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(_lesson_lines(self._path), start=1):
+            if line is None:
+                # A line that does not decode costs only itself, like any bad row.
+                unreadable.append((lineno, ""))
+                continue
             line = line.strip()
             if not line:
                 continue
@@ -702,9 +862,12 @@ class LessonStore:
                             and data["applies"].strip().lower() in LESSON_APPLIES_VALUES
                             else None
                         ),
+                        written_by=_written_by_of(data.get("written_by")),
                     )
                 )
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, RecursionError):
+                # RecursionError: a line nested past the interpreter's limit is
+                # not a JSONDecodeError, and would otherwise fail the whole read.
                 unreadable.append((lineno, line))
                 continue
         if unreadable:

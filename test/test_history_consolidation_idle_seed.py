@@ -1,10 +1,7 @@
 """The idle sweep must find sessions left unconsolidated before a restart.
 
-``HistoryConsolidator._last_activity`` is in memory only and was written only by
-``maybe_consolidate``. After a gateway restart, a session with an unconsolidated
-tail that nobody touched again was never in that dict, so ``check_idle_sessions``
-never looked at it and its tail was never consolidated. The first sweep now seeds
-the dict once, off the event loop, from the transcripts on disk.
+``HistoryConsolidator._last_activity`` lives in memory only, so the first sweep seeds
+it once, off the event loop, from the transcripts on disk.
 """
 
 from __future__ import annotations
@@ -33,13 +30,8 @@ LIVE = "dashboard:chat-left-behind"
 def _off_loop(write: Callable[[], None]) -> None:
     """Run a transcript seed in a worker thread and wait for it.
 
-    ``mark_consolidated`` and ``update_metadata`` end in
-    ``atomic_write.replace_with_retry``, which retries a Windows sharing violation
-    only when no event loop runs in the calling thread. These helpers are called
-    from ``async def`` tests, so on the loop thread the first ``[WinError 5]`` from
-    a scanner briefly holding the transcript is raised at once. A worker thread has
-    no loop of its own, so the bounded retry applies, and the on-loop-persist guard
-    is a no-op there.
+    ``atomic_write.replace_with_retry`` retries a Windows sharing violation
+    (``[WinError 5]``) only off the event loop, and these are ``async def`` tests.
     """
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(write).result()
@@ -224,6 +216,8 @@ async def test_session_end_does_not_start_a_second_run_under_the_live_key(tmp_pa
         consolidator.consolidate_session("dashboard:chat-left-behind")
         consolidator.maybe_consolidate("dashboard:chat-left-behind")
 
+    assert consolidator._running == {STEM}
+    assert not consolidator._tasks
     run.assert_not_called()
 
 
@@ -389,9 +383,9 @@ async def _sweep(
     reads: list[str] = []
     counts = consolidator._count_rows
 
-    def counting(key: str, floor: int | None) -> object:
+    def counting(key: str, floor: int | None, floor_generation: int | None = None) -> object:
         reads.append(key)
-        found = counts(key, floor)
+        found = counts(key, floor, floor_generation)
         if after_read is not None:
             after_read(key)
         return found
@@ -581,8 +575,8 @@ async def test_a_deleted_session_is_forgotten_once_its_count_has_ended(tmp_path)
     entered, release = threading.Event(), threading.Event()
     counts = consolidator._count_rows
 
-    def held(k: str, floor: int | None) -> object:
-        found = counts(k, floor)  # the thread has read the transcript ...
+    def held(k: str, floor: int | None, floor_generation: int | None = None) -> object:
+        found = counts(k, floor, floor_generation)  # the thread has read the transcript ...
         entered.set()
         assert release.wait(timeout=30)  # ... and returns only after the delete
         return found
@@ -671,8 +665,8 @@ async def test_a_seed_with_nothing_left_still_goes_to_consolidate(tmp_path):
 async def test_the_seed_helpers_ride_out_a_windows_sharing_violation(tmp_path, monkeypatch, helper):
     """Pin ``_restarted`` and ``_live`` to the retrying path.
 
-    Seeded on the loop thread, the marker rewrite re-raises the first simulated
-    violation, which is the ``[WinError 5]`` the Windows shard hit.
+    On the loop thread the marker rewrite would re-raise ``[WinError 5]``. The two
+    simulated violations land on the creating append and are retried.
     """
     from windows_sim import replace_sharing_violation
 
@@ -687,5 +681,5 @@ async def test_the_seed_helpers_ride_out_a_windows_sharing_violation(tmp_path, m
             log, consolidator = _live(tmp_path, [LIVE], consolidated=True)
     await asyncio.gather(*list(consolidator._tasks), return_exceptions=True)
 
-    assert sim["n"] == 3  # two refused renames, then the retry that landed
+    assert sim["n"] == 4  # two refused creates, the retry that landed, then the marker rewrite
     assert log.get_metadata(LIVE)["last_consolidated"] == 3

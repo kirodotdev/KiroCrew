@@ -32,6 +32,7 @@ def _make_gateway():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._no_crons = False
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
@@ -180,6 +181,10 @@ class TestCronDedup:
         title = gw.dashboard_state.notify.call_args.args[1]
         assert "🔇" in title
         assert "dup #1" in title
+        # It carries the stored result unchanged, so it names that result.
+        assert job.last_result_ts > 0
+        meta = gw.dashboard_state.notify.call_args.kwargs["meta"]
+        assert meta["result_ts"] == job.last_result_ts
 
     def test_different_result_resets_dedup(self) -> None:
         gw = _make_gateway()
@@ -246,6 +251,8 @@ class TestCronDedup:
         gw.slack.post_blocks.assert_called_once()
         posted_text = gw.slack.post_blocks.call_args
         assert "⚠️" in str(posted_text)
+        # Its bell note carries the rewritten text, so it names no stored result.
+        assert "result_ts" not in gw.dashboard_state.notify.call_args.kwargs["meta"]
         # Dedup state should reset after successful reminder delivery
         assert job.consecutive_dupes == 0
         assert job.last_posted_at >= before
@@ -412,11 +419,8 @@ class TestCronFailureDedup:
 class TestCronDeliveryFailureAutoPause:
     """Delivery-path failures feed the single failure accountant.
 
-    The turn-level ``except`` in the gateway's cron delivery path must route
-    the counter through ``CronJob.record_failure()`` so a job that fails by
-    raising reaches the auto-pause threshold like every other failure path,
-    and so a count accumulated by another writer (gate verdict, timeout)
-    survives a later raise instead of being reset to 1.
+    The delivery path's ``except`` goes through ``CronJob.record_failure()``, so a
+    count from another writer (gate verdict, timeout) survives a later raise.
     """
 
     def test_repeated_identical_delivery_exceptions_auto_pause(self) -> None:

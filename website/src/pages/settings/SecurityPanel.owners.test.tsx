@@ -57,6 +57,7 @@ describe('SecurityPanel owners', () => {
   it('are the files the panel is made of', () => {
     expect(OWNERS).toEqual([
       'SecurityPanelApprovals.tsx',
+      'SecurityPanelConfigPending.tsx',
       'SecurityPanelDeniedCommands.tsx',
       'SecurityPanelGovernance.tsx',
       'SecurityPanelLayers.tsx',

@@ -37,6 +37,7 @@ import logging
 
 from kiro_crew.artifacts import (
     MAX_AUTO_WIDGET_ARTIFACTS,
+    MAX_NAME_LEN,
     ArtifactAlreadyExistsError,
     ArtifactError,
     ArtifactValidationError,
@@ -87,9 +88,13 @@ def register_widgets(text: str, message_ts: str, session_key: str) -> list[str]:
             # content validation; skip rather than log a failure per turn.
             continue
         slug = derive_widget_body_slug(message_ts, w.content)
+        # The title is display text the agent chose, not a name a person typed:
+        # a blank or over-long one must not cost the widget its artifact, so it
+        # is fitted to the name rules instead of failing validation.
+        name = w.title.strip()[:MAX_NAME_LEN].strip() or _DEFAULT_WIDGET_NAME
         try:
             store.create(
-                name=w.title or _DEFAULT_WIDGET_NAME,
+                name=name,
                 content=w.content,
                 slug=slug,
                 kind="widget",

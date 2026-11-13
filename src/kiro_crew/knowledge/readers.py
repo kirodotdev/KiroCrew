@@ -1,11 +1,14 @@
-"""File readers for knowledge ingestion. Supports text, PDF, PPTX, DOCX, HTML."""
+"""File readers for knowledge ingestion. Supports text, PDF, PPTX, DOCX, MSG, HTML."""
 
 import codecs
+import html as html_lib
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.pdf_extract import PDF_MAX_PAGES, extract_pdf_segments, pdfplumber_available
 from kiro_crew.pinned_fs import open_fenced_for_read
 from kiro_crew.security import is_sensitive_path
@@ -20,6 +23,9 @@ try:
 except ImportError:
     _html2text_mod = None  # type: ignore[assignment]
 
+# Opening or closing block-level tags (and <br>) in the regex HTML fallback.
+_HTML_BLOCK_TAG_RE = re.compile(r'<(?:br|/?(?:p|div|li|h[1-6]|tr))\b[^>]*>', re.IGNORECASE)
+
 
 def _decode_text_bytes(raw: bytes) -> str:
     """Decode raw file bytes as text.
@@ -31,7 +37,10 @@ def _decode_text_bytes(raw: bytes) -> str:
     arriving as BOM'd UTF-16 decodes correctly. A BOM that lies (truncated
     copies, binary that happens to start FF FE) degrades to latin-1 rather
     than failing the file's ingest. Everything else keeps the historical
-    utf-8 -> latin-1 chain. Operating on one in-memory buffer (never
+    utf-8 -> latin-1 chain, read as ``utf-8-sig`` so a UTF-8 BOM (Notepad,
+    PowerShell ``-Encoding utf8``) is dropped rather than kept as a U+FEFF
+    that hides a first-line ``# heading`` from the markdown chunker.
+    Operating on one in-memory buffer (never
     reopening the path) keeps the sensitive-path check race-free, and the
     newline translation mirrors text-mode open() so results are unchanged.
     """
@@ -42,7 +51,7 @@ def _decode_text_bytes(raw: bytes) -> str:
             text = raw.decode('latin-1')
     else:
         try:
-            text = raw.decode('utf-8')
+            text = raw.decode('utf-8-sig')
         except UnicodeDecodeError:
             text = raw.decode('latin-1')
     return text.replace('\r\n', '\n').replace('\r', '\n')
@@ -217,7 +226,7 @@ class _AdocIncludes:
             with f:
                 if os.fstat(f.fileno()).st_size > _ADOC_MAX_INCLUDE_BYTES:
                     return None
-                raw = f.read(_ADOC_MAX_INCLUDE_BYTES + 1)
+                raw = bounded_read(f, _ADOC_MAX_INCLUDE_BYTES + 1)
         except OSError:
             return None
         if len(raw) > _ADOC_MAX_INCLUDE_BYTES:
@@ -236,10 +245,97 @@ def _missing_dep(fmt: str, package: str) -> tuple[str, dict]:
     return message, {'format': 'error', 'error': f'{fmt} support requires {package}'}
 
 
+#: The MAPI string properties a .msg indexes, each a top-level
+#: ``__substg1.0_<id><type>`` stream (type 001F UTF-16LE, 001E 8-bit).
+_MSG_PROPS = {
+    'subject': '0037', 'sender': '0C1A', 'smtp': '5D01', 'address': '0C1F',
+    'address_type': '0C1E', 'to': '0E04', 'cc': '0E03', 'body': '1000',
+}
+#: PR_CLIENT_SUBMIT_TIME, else PR_MESSAGE_DELIVERY_TIME, in ``__properties_version1.0``.
+_MSG_DATE_TAGS = (0x00390040, 0x0E060040)
+#: PR_MESSAGE_CODEPAGE, else PR_INTERNET_CPID: the code page of the 8-bit strings.
+_MSG_CODEPAGE_TAGS = (0x3FFD0003, 0x3FDE0003)
+_MSG_PROPERTIES = '__properties_version1.0'
+#: The OLE compound-file signature every Outlook .msg starts with.
+_OLE_MAGIC = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+
+
+def _msg_ole(olefile, fh):
+    """``OleFileIO`` over *fh* that raises on every spec defect, minus its duplicate scan.
+
+    ``DEFECT_INCORRECT`` stops any stream at the FAT, which olefile trims to the
+    file's sectors; the skipped scan walks a list per directory entry, which is
+    quadratic in entries on a crafted file.
+    """
+    ole = olefile.OleFileIO(raise_defects=olefile.DEFECT_INCORRECT)
+    ole._check_duplicate_stream = lambda first_sect, minifat=False: None
+    ole.open(fh)
+    return ole
+
+
+def _msg_text(ole, size: int) -> str:
+    """Subject, From, Date, To and Cc lines, a blank line, then the plain-text body."""
+    names = {}
+    for key, prop in _MSG_PROPS.items():
+        for kind in ('001F', '001E'):
+            name = f'__substg1.0_{prop}{kind}'
+            if ole.exists(name) and ole.get_size(name) > 0:
+                names[key] = name
+                break
+    has_props = ole.exists(_MSG_PROPERTIES) and ole.get_size(_MSG_PROPERTIES) > 0
+    read = [*names.values(), *([_MSG_PROPERTIES] if has_props else [])]
+    # Streams occupy disjoint sectors, so more than the file means a looping FAT chain.
+    if sum(ole.get_size(name) for name in read) > size:
+        raise ValueError('malformed .msg: its streams are larger than the file')
+
+    props = {}
+    if has_props:
+        raw = ole.openstream(_MSG_PROPERTIES).read()
+        # A 32-byte header, then 16-byte entries: tag, flags, an 8-byte value.
+        props = {
+            int.from_bytes(raw[i:i + 4], 'little'): int.from_bytes(raw[i + 8:i + 16], 'little')
+            for i in range(32, len(raw) - 15, 16)
+        }
+    # PT_LONG: the code page is the value's low 4 bytes.
+    codepage = next((props[tag] for tag in _MSG_CODEPAGE_TAGS if props.get(tag)), 0) & 0xFFFFFFFF
+    try:
+        encoding = codecs.lookup(f'cp{codepage}').name if codepage else None
+    except LookupError:
+        encoding = None
+
+    def value(key: str) -> str:
+        name = names.get(key)
+        if name is None:
+            return ''
+        raw = ole.openstream(name).read()
+        if name.endswith('001F'):
+            text = raw.decode('utf-16-le', 'replace')
+        else:
+            text = raw.decode(encoding, 'replace') if encoding else _decode_text_bytes(raw)
+        return text.replace('\r\n', '\n').rstrip('\x00')
+
+    date = ''
+    filetime = next((props[tag] for tag in _MSG_DATE_TAGS if props.get(tag)), 0)
+    if filetime:
+        stamp = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=filetime // 10)
+        date = stamp.strftime('%Y-%m-%d %H:%M:%S UTC')
+    sender = value('sender').strip()
+    address = value('smtp').strip()
+    if not address and value('address_type').strip().upper() == 'SMTP':
+        address = value('address').strip()
+    if address and address != sender:
+        sender = f'{sender} <{address}>' if sender else address
+    fields = (('Subject', value('subject').strip()), ('From', sender), ('Date', date),
+              ('To', value('to').strip()), ('Cc', value('cc').strip()))
+    header = '\n'.join(f'{label}: {text}' for label, text in fields if text)
+    return f'{header}\n\n{value("body")}'.strip()
+
+
 class FileReader:
-    # Binary formats need optional runtime deps: .pdf -> pdfplumber and .docx ->
-    # python-docx (both declared in setup.cfg). .pptx -> python-pptx is NOT declared,
-    # so .pptx is intentionally kept out of SUPPORTED even though _read_pptx exists.
+    # Binary formats need optional runtime deps: .pdf -> pdfplumber, .docx ->
+    # python-docx and .msg -> olefile (all declared in setup.cfg). .pptx ->
+    # python-pptx is NOT declared, so .pptx is intentionally kept out of
+    # SUPPORTED even though _read_pptx exists.
     # Every source-code extension listed in ingestion.CODE_EXTS must appear here:
     # SUPPORTED is the folder-scan gate (folder_watcher._walk), and a source's
     # include_extensions can only narrow it, so an extension missing here is
@@ -247,7 +343,7 @@ class FileReader:
     # CODE_EXTS as a subset of this set.
     SUPPORTED = {
         '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
-        '.html', '.htm', '.docx', '.pdf',
+        '.html', '.htm', '.docx', '.pdf', '.msg',
         # AsciiDoc reads as text; .asc stays out because it also names PGP armor.
         '.adoc', '.asciidoc',
         '.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
@@ -259,6 +355,7 @@ class FileReader:
         '.pdf': '_read_pdf',
         '.pptx': '_read_pptx',
         '.docx': '_read_docx',
+        '.msg': '_read_msg',
         '.html': '_read_html',
         '.htm': '_read_html',
         '.adoc': '_read_asciidoc',
@@ -424,10 +521,44 @@ class FileReader:
                         level = int(style.split()[-1])
                     except (ValueError, IndexError):
                         level = 1
+                    # Markdown stops at six '#'. Word's Heading 7-9 map to
+                    # level 6, so chunk_markdown still sees them as headings.
+                    level = max(1, min(level, 6))
                     lines.append(f'{"#" * level} {text}')
                 else:
                     lines.append(text)
             return '\n'.join(lines), {'format': 'docx', 'content_type': 'markdown', 'paragraph_count': len(doc.paragraphs)}
+        except Exception as e:
+            return _read_error(e)
+
+    def _read_msg(self, path: str) -> tuple[str, dict]:
+        """An Outlook .msg, an OLE compound file, parsed in this process by olefile.
+
+        A .msg without the OLE signature is text (ROS message definitions, Tcl
+        message catalogs) and reads as text. For the rest, work stays proportional
+        to the file: the header's FAT sector count is checked before olefile loops
+        over it, and :func:`_msg_ole` and :func:`_msg_text` bound the rest. One
+        open serves the check and the parse.
+        """
+        # Imported here for the same boot import chain reason as python-docx.
+        try:
+            import olefile  # type: ignore[import-untyped]
+        except ImportError:
+            return _missing_dep('MSG', 'olefile')
+        try:
+            with open(path, 'rb') as fh:
+                size = os.fstat(fh.fileno()).st_size
+                header = fh.read(512)
+                if not header.startswith(_OLE_MAGIC):
+                    return _decode_text_bytes(header + fh.read()), {'format': 'msg'}
+                fh.seek(0)
+                # One FAT sector maps sector_size / 4 sectors of sector_size bytes.
+                shift = int.from_bytes(header[0x1E:0x20], 'little')
+                fat_sectors = int.from_bytes(header[0x2C:0x30], 'little')
+                if shift not in (9, 12) or fat_sectors > size // (1 << (2 * shift - 2)) + 2:
+                    return _read_error(ValueError('malformed .msg header'))
+                with _msg_ole(olefile, fh) as ole:
+                    return _msg_text(ole, size), {'format': 'msg'}
         except Exception as e:
             return _read_error(e)
 
@@ -446,6 +577,14 @@ class FileReader:
             return h.handle(html), {'format': 'html'}
         text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        # Source whitespace, newlines included, renders as one space. A block
+        # tag ends a line, marked with a NUL sentinel so that only block tags
+        # (not source newlines or a decoded '&#10;') split the text.
+        text = re.sub(r'[\s\x00]+', ' ', text)
+        text = _HTML_BLOCK_TAG_RE.sub('\x00', text)
         text = re.sub(r'<[^>]+>', ' ', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text, {'format': 'html'}
+        # Entities decode after tag stripping: a literal '&lt;div>' in the
+        # page is text to index, never a tag to strip.
+        text = html_lib.unescape(text)
+        lines = (re.sub(r'\s+', ' ', line).strip() for line in text.split('\x00'))
+        return '\n'.join(line for line in lines if line), {'format': 'html'}

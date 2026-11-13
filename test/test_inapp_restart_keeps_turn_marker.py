@@ -10,6 +10,7 @@ the Resume button. A turn that lands during the drain still clears it.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -42,11 +43,14 @@ def _blocking_client(release: asyncio.Event, *, lands: bool):
 
 async def _restart_mid_turn(tmp_path, monkeypatch, key: str, *, lands: bool):
     """Run one turn, then drive the real in-app restart while it is in flight."""
+    from kiro_crew.dashboard import restart_resume
     from kiro_crew.dashboard.chat import _run_chat
 
     state = _state_for_run_chat(tmp_path, monkeypatch)
     state._gateway_restart_in_progress = False
     state.push_update_progress = MagicMock()
+    monkeypatch.setattr(restart_resume, "intent_path", lambda: tmp_path / "resume-intent.json")
+    state.get_or_create_slot("idle-neighbour").append("user", "hi", "msg msg-u")
     slot = state.get_or_create_slot(key)
     slot.append("user", "do something long", "msg msg-u")
     release = asyncio.Event()
@@ -85,6 +89,14 @@ async def test_inapp_restart_keeps_the_marker_of_an_unfinished_turn(tmp_path, mo
     assert slot._turn_in_flight_generation > 0
     meta = state.conversation_log.get_metadata("dashboard:cut")
     assert meta["turn_in_flight_generation"] == slot._turn_in_flight_generation
+
+
+@pytest.mark.asyncio
+async def test_inapp_restart_records_only_the_chat_whose_turn_it_cuts(tmp_path, monkeypatch):
+    await _restart_mid_turn(tmp_path, monkeypatch, "cut", lands=False)
+
+    # The idle neighbour is left for its owner; the next boot resumes "cut".
+    assert json.loads((tmp_path / "resume-intent.json").read_text()) == ["cut"]
 
 
 @pytest.mark.asyncio

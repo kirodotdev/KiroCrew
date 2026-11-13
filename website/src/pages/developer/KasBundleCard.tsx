@@ -7,6 +7,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsToggle } from '../../components/settings'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { Btn } from '../../components/ui'
+import { useOutageFailure } from '../../hooks/useOutageFailure'
 import { fmtBytes, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -47,6 +48,15 @@ export function KasBundleCard() {
     refetchInterval: query => (query.state.data?.installing ? INSTALL_POLL_MS : false),
   })
   const status = statusQ.data
+  // A read that failed because the gateway was down (a restart; the engine
+  // notice polls this same entry): the offline state says so, not this card.
+  // The card does not poll, so the hook re-reads it once the gateway is back.
+  const outageFailure = useOutageFailure(
+    statusQ.isError,
+    statusQ.errorUpdatedAt,
+    () => statusQ.refetch({ cancelRefetch: false }),
+  )
+  const statusFailed = statusQ.isError && !outageFailure
 
   const installMut = useMutation({
     mutationFn: () => api.kasBundleInstall(),
@@ -71,13 +81,16 @@ export function KasBundleCard() {
   if (!status) {
     // The same recovery the tab offers when its own config read fails: a read
     // that failed once is not a dead end, and a page reload is not the remedy.
+    // Retry stays through an outage: only the alert is the offline state's.
     return statusQ.isError ? (
       <div className="space-y-2" data-testid="kas-bundle-card">
-        <ErrorNotice
-          message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
-          variant="inline"
-          askAgent
-        />
+        {statusFailed && (
+          <ErrorNotice
+            message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
+            variant="inline"
+            askAgent
+          />
+        )}
         <Btn type="button" onClick={() => void statusQ.refetch()} data-testid="kas-bundle-retry">
           {i18nT('pages.developer.agentBackendTab.retry')}
         </Btn>
@@ -87,6 +100,14 @@ export function KasBundleCard() {
 
   const installed = status.installed
   const canTurnOn = installed !== null && !installing
+  // The last KAS spawn took Crew's own engine because kiro-cli's relay cannot run
+  // here. The only sign of that switch on this card, so it is always shown.
+  const automatic = status.route?.automatic === true
+  const automaticText = !automatic
+    ? ''
+    : status.route?.reason === 'kiro_cli_signed_out'
+      ? i18nT('pages.developer.kasBundleCard.route_auto_kiro_cli_signed_out')
+      : i18nT('pages.developer.kasBundleCard.route_auto_no_kiro_cli')
   const progress = status.progress
   const progressText =
     progress.total > 0
@@ -101,6 +122,14 @@ export function KasBundleCard() {
   return (
     <div className="space-y-2" data-testid="kas-bundle-card">
       <div className="flex flex-wrap items-center gap-2">
+        {/* busy while its OWN save runs, so the switch keeps keyboard focus
+            instead of a native disabled dropping it to the page. The
+            can't-turn-on case stays native disabled: the switch is off and the
+            engine is not installed yet, which is not the save running. (This
+            note sits outside the element on purpose: the settings extractor
+            scans the tag's own text to a 4000-char ceiling, and a backtick in
+            an inline comment would open a template-string state that hides the
+            closing tag and drops the setting from the registry.) */}
         <div className="min-w-0 flex-1">
           <SettingsToggle
             configKey={KAS_BUNDLE_CONFIG_KEY}
@@ -108,7 +137,8 @@ export function KasBundleCard() {
             description={i18nT('pages.developer.kasBundleCard.toggle_description')}
             checked={status.enabled}
             onChange={value => toggleMut.mutate(value)}
-            disabled={toggleMut.isPending || (!status.enabled && !canTurnOn)}
+            busy={toggleMut.isPending}
+            disabled={!status.enabled && !canTurnOn}
           />
         </div>
         {/* Its own notice below says what is pending once a save lands, so the
@@ -118,6 +148,12 @@ export function KasBundleCard() {
           <SchemaRestartBadge configKey={KAS_BUNDLE_CONFIG_KEY} />
         </span>
       </div>
+
+      {automatic && (
+        <div className="text-[12px] text-muted" role="status" data-testid="kas-bundle-route-auto">
+          {automaticText}
+        </div>
+      )}
 
       {restartPending && (
         <div
@@ -153,8 +189,9 @@ export function KasBundleCard() {
                   })
                 : i18nT('pages.developer.kasBundleCard.installed', { version: installed.version })}
             </span>
-            {/* A green line under an OFF switch reads as "already running" without this. */}
-            {!status.enabled && (
+            {/* A green line under an OFF switch reads as "already running" without
+                this, unless the engine runs anyway because kiro-cli cannot. */}
+            {!status.enabled && !automatic && (
               <span className="text-muted" data-testid="kas-bundle-off-note">
                 {i18nT('pages.developer.kasBundleCard.off_note')}
               </span>
@@ -178,7 +215,7 @@ export function KasBundleCard() {
           lines above are that stale answer, and this notice is what says so. */}
       <ErrorNotice
         message={
-          statusQ.isError
+          statusFailed
             ? i18nT('pages.developer.kasBundleCard.status_unavailable')
             : status.error
               ? status.error

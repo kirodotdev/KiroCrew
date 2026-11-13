@@ -1032,6 +1032,24 @@ class TestValidateFilePath:
         monkeypatch.setattr(hooks_mod._config_paths, "peek_data_home", lambda: swapped)
         assert hooks_mod._unc_data_home_root() == swapped
 
+    def test_root_memo_keeps_a_failed_computation_as_absent(self, monkeypatch):
+        """A raising resolve memoizes root-absent and is not re-run on the next
+        check: ``config.paths`` pins only a resolve that returned."""
+        import kiro_crew.hooks as hooks_mod
+
+        calls: list[int] = []
+
+        def _boom() -> Path:
+            calls.append(1)
+            raise OSError("share unreachable")
+
+        monkeypatch.setattr(hooks_mod, "_unc_data_home_root_cache", None)
+        monkeypatch.setattr(hooks_mod._config_paths, "peek_data_home", _boom)
+
+        assert hooks_mod._unc_data_home_root() is None
+        assert hooks_mod._unc_data_home_root() is None
+        assert len(calls) == 1
+
 
 class TestSafeReadFile:
     def test_reads_text(self, tmp_path):
@@ -1208,6 +1226,18 @@ class TestSafeReadPrefix:
         assert safe_read_prefix("", 4) is None
         assert safe_read_prefix(str(tmp_path / "gone"), 4) is None
         assert safe_read_prefix(str(Path.home() / ".aws" / "config"), 4) is None
+
+    def test_refuse_judges_the_kernel_path_of_the_opened_file(self, tmp_path):
+        f = _write(tmp_path / "a.txt", "abcdef")
+        seen: list[str] = []
+
+        def refuse(opened: str) -> bool:
+            seen.append(opened)
+            return True
+
+        assert safe_read_prefix(str(f), 3, refuse=refuse) is None
+        assert [os.path.normcase(p) for p in seen] == [os.path.normcase(os.path.realpath(f))]
+        assert safe_read_prefix(str(f), 3, refuse=lambda _opened: False) == b"abc"
 
 
 class TestIsAccessControlXattr:
@@ -1517,11 +1547,9 @@ class TestSafeWriteFileNolink:
 
             return _Other()
 
-        monkeypatch.setattr(os, "stat", _swap_after_staging)
-        try:
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "stat", _swap_after_staging)
             assert safe_write_file_nolink(str(f), "new") is False
-        finally:
-            monkeypatch.undo()
         assert state["fired"] is True
         assert f.read_text(encoding="utf-8") == "old"
         # The staged sibling is cleaned up even on the refusal path.

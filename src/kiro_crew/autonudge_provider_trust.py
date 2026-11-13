@@ -27,6 +27,7 @@ from typing import Any, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
+from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ _PENDING_REVOCATIONS_LOCK = threading.Lock()
 def _record_lock() -> Iterator[None]:
     path = monitor_owner_credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.parent / _LOCK_NAME, "a+", encoding="utf-8") as handle:
+    with open(path.parent / _LOCK_NAME, "a+", encoding="utf-8", opener=owner_only_opener) as handle:
         with platform_compat.file_lock(handle.fileno(), exclusive=True):
             yield
 

@@ -1,16 +1,19 @@
-"""The design_tweak preview check and the deploy scan run the credential scan in linear time.
+"""The design_tweak preview check and the deploy scans run the credential scan in linear time.
 
 The PEM branch of the credential pattern ends in a lazy full-block tail that reads to the end
 of the text when no END marker follows. A text that repeats the header paid that read once per
-header: quadratic. Both callers now take their matches from ``redaction._credential_matches``,
-which never lets such a header reach the tail. These tests count the scans the full-block
-pattern runs, which does not depend on the clock, and pin that a real key is still refused
-and a quoted marker with no key body is still let through by the preview.
+header: quadratic. Every caller takes its matches from ``security.iter_credential_matches``,
+which never lets such a header reach the tail. The raw ``search`` is quadratic on a long ``eyJ``
+run too. These tests count the scans the full-block pattern runs, which does not depend on the
+clock, and pin that a real key is still refused and a quoted marker with no key body is still
+let through by the preview.
 """
 
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -86,16 +89,51 @@ def test_deploy_scan_never_runs_a_repeated_header_through_the_full_block_tail(
     full-block pattern never sees a repeated header. The raw pattern it replaced is a
     module-level list the scan walked with ``finditer``, so this fails on that code."""
     calls: list[str] = []
-    real = redaction._credential_matches
+    real = redaction.iter_credential_matches
 
     def spy(text: str) -> Any:
         calls.append(text)
         return real(text)
 
-    monkeypatch.setattr(scan, "_credential_matches", spy)
+    monkeypatch.setattr(scan, "iter_credential_matches", spy)
     assert _scan((_B + "\n") * headers)
     assert len(calls) == 1
     assert full_pattern.matches == 0
+
+
+_SKILL_SCRIPTS = Path(scan.__file__).parent / "skills" / "artifact-deploy" / "scripts"
+
+
+def _run_skill_scan(script: str, target: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Run the scan *script* hands to ``python3 -`` over *target*, here; return its exit code."""
+    text = (_SKILL_SCRIPTS / script).read_text(encoding="utf-8")
+    start = text.index("<<'PYEOF'\n") + len("<<'PYEOF'\n")
+    code = text[start : text.index("\nPYEOF\n", start)]
+    monkeypatch.setattr(sys, "argv", ["-", str(target)])
+    with pytest.raises(SystemExit) as exited:
+        # Runs the heredoc of a tracked skill script, no external input.
+        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+        exec(compile(code, script, "exec"), {"__name__": "__main__"})
+    return exited.value.code
+
+
+@pytest.mark.parametrize("script", ["deploy.sh", "_common.sh"])
+def test_deploy_skill_scan_never_runs_the_full_pattern_over_a_file(
+    full_pattern: _CountingPattern,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    script: str,
+) -> None:
+    """The raw ``search`` the skill scripts ran re-walks a long ``eyJ`` run from each ``eyJ``.
+    Their scan still exits 2 and names the file holding a real key."""
+    (tmp_path / "bundle.js").write_text("eyJ" * 2_000, encoding="utf-8")
+    assert _run_skill_scan(script, tmp_path, monkeypatch) == 0
+    assert full_pattern.matches == 0
+    key = tmp_path / "notes.txt"
+    key.write_text(f"{_BR}\n{_BODY}\n{_ER}\n", encoding="utf-8")
+    assert _run_skill_scan(script, tmp_path, monkeypatch) == 2
+    assert capsys.readouterr().out.splitlines() == [str(key)]
 
 
 @pytest.mark.timeout(60)

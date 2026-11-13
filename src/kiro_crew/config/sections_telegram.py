@@ -269,6 +269,15 @@ class TelegramConfig:
             tags=["telegram"],
         ),
     )
+    max_text_inject_kb: int = field(
+        default=50,
+        metadata=_meta(
+            "Attachment Text Limit (KiB)",
+            "How much of an attached text file or document reaches the model, in "
+            "KiB of characters (at least 1); the rest is cut with a truncation marker.",
+            tags=["telegram"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         # Telegram carries only the soft nudge threshold; the hard-compaction

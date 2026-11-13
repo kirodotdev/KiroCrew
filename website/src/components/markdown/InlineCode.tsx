@@ -1,19 +1,18 @@
-import React, { useContext } from 'react'
-import { Check, ExternalLink, Folder, MessageSquare } from 'lucide-react'
+import React, { useContext, useId, useState } from 'react'
+import { ExternalLink, Folder, MessageSquare } from 'lucide-react'
 import { fileIcon } from '../../utils/fileIcons'
 import { wholeMatchAutolinkHref } from '../../utils/autolinkRules'
 import { useGatewayPlatform, type GatewayPlatform } from '../../hooks/useGatewayPlatform'
-import { useBranding } from '../../hooks/useBranding'
-import { InstantTip, useInstantTip } from '../InstantTip'
 import ErrorNotice from '../ErrorNotice'
-import FilePathMenu, { useRevealFailure } from '../FilePathMenu'
+import { OverlayPortal } from '../overlayRoot'
+import FilePathMenu, { useCanReveal, useRevealFailure } from '../FilePathMenu'
 import { i18nT } from '../../i18n/t'
 import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx, SidebarFolderCtx } from './contexts'
 import { activatePath, basenameOf, usePathResolution } from './pathReferences'
 import { folderSegmentsOf, resolveFolderChip, useSessionChip } from './linkTargets'
 import { ClosedSessionNotice } from './ClosedSessionNotice'
 import { SESSION_REF_TRAILING } from './treeTransforms'
-import { CopyFailedNotice, useCopiedFlash, useTitleCuedCopy } from './copyFeedback'
+import { useBubbleCuedCopy, useTitleCuedCopy } from './copyFeedback'
 import { ELEMENT_OVERRIDES, isElementWithProps } from './elements'
 
 /**
@@ -155,14 +154,14 @@ function FolderGlyphReserve() {
  * Dateimanager", "dans le gestionnaire de fichiers", "ファイルマネージャーに表示"),
  * which a placeholder cannot carry.
  */
-function revealHintFor(isDir: boolean, platform: GatewayPlatform, directLocal: boolean): string {
-  // On a remote or tunneled session /api/reveal cannot drive the gateway host's
-  // file manager, so shift+click degrades to a clipboard copy (files.py answers
-  // the copy-degrade branch). Naming Finder/Explorer here would promise an action
-  // the backend no longer performs, so the hint tells the truth: shift+click
-  // copies the path. The click (open/browse) arm is unchanged — it drives the
+function revealHintFor(isDir: boolean, platform: GatewayPlatform, canReveal: boolean): string {
+  // Where no reveal can land (a remote or tunneled session, or a gateway host
+  // that cannot open a file manager: the shared useCanReveal gate) shift+click
+  // copies the path instead (see `InlineCode`'s handler), and naming
+  // Finder/Explorer here would promise an action nothing performs. So the hint
+  // tells the truth: shift+click copies the path. The click (open/browse) arm is unchanged — it drives the
   // in-app viewer, which works remotely — so only the shift+click clause differs.
-  if (!directLocal) {
+  if (!canReveal) {
     return isDir
       ? i18nT('components.markdownRenderer.click_to_browse_shift_click_to_copy_path')
       : i18nT('components.markdownRenderer.click_to_open_shift_click_to_copy_path')
@@ -237,33 +236,35 @@ function revealHintFor(isDir: boolean, platform: GatewayPlatform, directLocal: b
  * `data-session-key` and the accessible name; a finer vocabulary here would
  * duplicate them for no consumer. Set AFTER the inbound props, so raw HTML
  * cannot claim another.
+ *
+ * `onIntent` is for a path-shaped span whose probe is held (`PathProbeCtx`,
+ * the text of a reply still being typed): the pointer arriving starts that
+ * probe, so a span that names a file or directory becomes the path chip,
+ * usually before the bubble shows, and its click then opens it. Not on focus:
+ * the path chip is a different element, so that swap would drop a keyboard
+ * user's focus. The click itself always copies, at once: WebKit refuses a
+ * clipboard write that waits on a probe's round trip, because the click's user
+ * activation is spent by then (`utils/clipboard.ts`), and the chip's name says
+ * "Copy".
  */
-function CopyableCode({ className, safeProps, text, children }: {
+function CopyableCode({ className, safeProps, text, children, onIntent }: {
   className: string
   safeProps: Record<string, unknown>
   text: string
   children: React.ReactNode
+  onIntent?: () => void
 }) {
   const value = text.trim()
-  const { copied, failed, flashSeq, copy } = useCopiedFlash(value)
-  // Held by the outcome's attempt number, not a boolean: a second refusal is a
-  // new outcome that must reopen a bubble a scroll or Escape closed, and a
-  // boolean that stays true has no edge for it. `arm` names the pressed chip
-  // for that reopen — after an Escape no enter or focus fires for the retry.
-  // `flow`: above from the message's first line, below from any lower one, so
-  // the bubble never covers the words that lead up to the chip.
-  const { tip, tipHandlers, tipId, arm } = useInstantTip({ hold: flashSeq, placement: 'flow' })
-  const handleCopy = (e: React.MouseEvent | React.KeyboardEvent) => {
+  const { press, tipHandlers, bubble } = useBubbleCuedCopy(
+    value,
+    i18nT('components.markdownRenderer.click_to_copy'),
+    i18nT('components.markdownRenderer.couldnt_copy_select_the_text_to_copy_it_manually'),
+  )
+  const handleCopy = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
-    arm(e.currentTarget as HTMLElement)
-    copy(value)
+    press(e.currentTarget)
   }
-  const cue = failed
-    ? <CopyFailedNotice message={i18nT('components.markdownRenderer.couldnt_copy_select_the_text_to_copy_it_manually')} />
-    : copied
-      ? i18nT('components.markdownRenderer.copied')
-      : i18nT('components.markdownRenderer.click_to_copy')
   return (
     <>
       <code
@@ -283,17 +284,11 @@ function CopyableCode({ className, safeProps, text, children }: {
         onClick={handleCopy}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleCopy(e) }}
         {...tipHandlers}
+        onPointerEnter={e => { onIntent?.(); tipHandlers.onPointerEnter(e) }}
       >
         {children}
       </code>
-      <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[calc(100vw-1rem)]">{cue}</InstantTip>
-      {/* Always mounted, so the region exists before its text changes — a live
-          region that appears already filled is not reliably read. Empty, it
-          costs one out-of-flow node. Only the short, transient "Copied!" lives
-          here: the refusal's accessible surface is the ErrorNotice itself. */}
-      <span role="status" aria-live="polite" className="sr-only">
-        {copied ? i18nT('components.markdownRenderer.copied') : ''}
-      </span>
+      {bubble}
     </>
   )
 }
@@ -307,6 +302,9 @@ function CopyableCode({ className, safeProps, text, children }: {
  * hover, and Ctrl/Cmd+click reserved for copying. A reader who has learned what a
  * file chip does therefore already knows what this does.
  *
+ * Its hint and both copy outcomes live in a bubble like the copy chip's
+ * (`useBubbleCuedCopy`), so a Ctrl/Cmd+click confirms without moving the line.
+ *
  * `stopPropagation` keeps the container's artifact-link delegation from also
  * firing for a click this chip has handled.
  */
@@ -319,9 +317,17 @@ function SessionChip({ sessionKey, sessionTitle, label, safeProps, onOpen, child
   onOpen: (key: string) => void
   children: React.ReactNode
 }) {
+  // The session title leads: the key alone does not say which conversation this is.
+  const hintLines = [
+    sessionTitle,
+    i18nT('components.markdownRenderer.click_to_switch_to_this_session'),
+    i18nT('components.markdownRenderer.ctrl_click_to_copy'),
+  ]
+  const hint = hintLines.map((line, i) => <div key={i} className={i === 0 ? 'font-medium' : undefined}>{line}</div>)
+  const descId = useId()
   // The notice names what failed, never the gesture. When the label already IS
   // the key, "the full session ID for <key>" says the key twice (#14294).
-  const { copied, press, failureBubble } = useTitleCuedCopy(sessionKey, label === sessionKey
+  const { press, tipHandlers, bubble } = useBubbleCuedCopy(sessionKey, hint, label === sessionKey
     ? i18nT('components.markdownRenderer.couldnt_copy_the_session_id_label', { label })
     : i18nT('components.markdownRenderer.couldnt_copy_the_full_session_id_for_label', { label }))
   const act = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
@@ -334,6 +340,8 @@ function SessionChip({ sessionKey, sessionTitle, label, safeProps, onOpen, child
   }
   return (
     <>
+    {/* Before the chip: `InlineCode` puts the sentence's punctuation right after it. */}
+    {bubble}
     <code
       className={CHIP_ACTIONABLE}
       // eslint-disable-next-line jsx-a11y/no-noninteractive-element-to-interactive-role -- <code> is intentionally interactive (click-to-switch)
@@ -348,18 +356,21 @@ function SessionChip({ sessionKey, sessionTitle, label, safeProps, onOpen, child
       // keeps the VISIBLE text: an `aria-label` replaces the content as the
       // name, so naming only the title would drop the key the message is
       // about and make two sessions with one title indistinguishable. The
-      // title rides in the three-line description below.
+      // title rides in the description below.
       aria-label={i18nT('components.markdownRenderer.switch_to_session_chip_name', { label })}
-      // Title leads: the key alone does not say which conversation this is.
-      title={copied
-        ? i18nT('components.markdownRenderer.copied')
-        : `${sessionTitle}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
+      // No native title, whatever raw HTML asked for: the bubble is the tooltip.
+      title={undefined}
+      {...tipHandlers}
+      aria-describedby={descId}
     >
       <MessageSquare size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
       {children}
-      {copied && <Check size={12} aria-hidden="true" className="inline align-middle ml-0.5 opacity-70 pointer-events-none text-ok" />}
     </code>
-    {failureBubble}
+    {/* The bubble's lines as the chip's description, open or not: a screen
+        reader that reaches the chip without focusing it (touch exploration,
+        browse mode) never opens the bubble, and the session title is what the
+        name lacks. Portalled, so its text stays out of the message's own. */}
+    <OverlayPortal><span id={descId} hidden>{hintLines.join('\n')}</span></OverlayPortal>
     </>
   )
 }
@@ -390,7 +401,12 @@ function FolderChip({ folderId, folderPath, label, safeProps, onReveal, children
   onReveal: (folderId: string) => void
   children: React.ReactNode
 }) {
-  const { copied, press, failureBubble } = useTitleCuedCopy(folderPath, i18nT('components.markdownRenderer.couldnt_copy_the_folder_path_label', { label }))
+  const { press, tipHandlers, bubble } = useBubbleCuedCopy(folderPath, (
+    <>
+      <div>{i18nT('components.markdownRenderer.click_to_show_this_folder_in_the_sidebar')}</div>
+      <div>{i18nT('components.markdownRenderer.ctrl_click_to_copy')}</div>
+    </>
+  ), i18nT('components.markdownRenderer.couldnt_copy_the_folder_path_label', { label }))
   const act = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
@@ -413,15 +429,13 @@ function FolderChip({ folderId, folderPath, label, safeProps, onReveal, children
       // session chip: two folders can share a leaf name, and the path is what
       // tells a screen-reader user which one this is.
       aria-label={i18nT('components.markdownRenderer.show_folder_chip_name', { label })}
-      title={copied
-        ? i18nT('components.markdownRenderer.copied')
-        : `${i18nT('components.markdownRenderer.click_to_show_this_folder_in_the_sidebar')}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
+      title={undefined}
+      {...tipHandlers}
     >
       <Folder size={CHIP_GLYPH_SIZE} aria-hidden="true" className={`${CHIP_GLYPH_GEOMETRY} opacity-70`} />
       {segmentedLabel(label, children)}
-      {copied && <Check size={12} aria-hidden="true" className="inline align-middle ml-0.5 opacity-70 pointer-events-none text-ok" />}
     </code>
-    {failureBubble}
+    {bubble}
     </>
   )
 }
@@ -473,16 +487,22 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const visibleText = codeTextOf(children)
   const codeStr = (visibleText ?? '').replace(/\n$/, '')
   const probeEnabled = useContext(PathProbeCtx)
+  // Where the probe is held (text still being typed), this span is probed on
+  // demand instead: once the pointer comes to it (`asked`).
+  const [asked, setAsked] = useState(false)
   const actions = useContext(PathActionCtx)
   const sessionActions = useContext(SessionActionCtx)
   const folderActions = useContext(SidebarFolderCtx)
   const insideLink = useContext(InsideLinkCtx)
   const gatewayPlatform = useGatewayPlatform()
-  const { directLocal } = useBranding()
+  // Whether shift+click can reveal at all (FilePathMenu.useCanReveal): the
+  // browser on the gateway host AND a host that can open a file manager. Shared
+  // with the menu's reveal row, so the hint and the row never disagree about it.
+  const canReveal = useCanReveal()
   const raw = codeStr.trim()
   // Inside a link to a web page the span never becomes a chip (see the early
   // return below), so it never asks the backend whether its text names a path.
-  const pathResolution = usePathResolution(raw, probeEnabled && insideLink !== 'external')
+  const pathResolution = usePathResolution(raw, (probeEnabled || asked) && insideLink !== 'external')
   // Before the early returns below (rules of hooks): a closed session's chip
   // waits on a gateway probe. Same text the chip branch below would see.
   const sessionTarget = useSessionChip(visibleText === null || raw === '' ? null : raw, sessionActions)
@@ -493,6 +513,12 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   // other copy affordance in the renderer uses, and the same failure surface (the
   // bubble). Declared before the early returns below (rules of hooks).
   const pathCopy = useTitleCuedCopy(raw, i18nT('components.markdownRenderer.couldnt_copy_the_path_label', { label: basenameOf(raw.replace(/[\\/]+$/, '')) || raw }))
+  // Shift+click's copy where no reveal can land (see `act`): the resolved path
+  // without its `:line` suffix, which is what the hint's "copy path" names and
+  // what the gateway's clipboard fallback copied. Ctrl/Cmd+click above copies
+  // the chip's text as shown.
+  const resolvedPath = pathResolution.path
+  const shiftCopy = useTitleCuedCopy(resolvedPath, i18nT('components.markdownRenderer.couldnt_copy_the_path_label', { label: basenameOf(resolvedPath.replace(/[\\/]+$/, '')) || resolvedPath }))
 
   // `data-path*` / `data-session-key` / `data-chip-action` describe a chip THIS
   // component rendered, so only it may set them. rehypeSanitize allowlists every
@@ -627,11 +653,15 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
         </a>,
       )
     }
-    return keep(<CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{reserve}{children}</CopyableCode>)
+    // A path-shaped span whose probe is held is probed once the pointer comes
+    // to it, and becomes the path chip below if it names a file or directory.
+    // Until then it is a copy chip, and its click copies.
+    const onIntent = !probeEnabled && pathResolution.shaped ? () => setAsked(true) : undefined
+    return keep(<CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr} onIntent={onIntent}>{reserve}{children}</CopyableCode>)
   }
   const isDir = pathResolution.kind === 'dir'
   const { path, splitPath, kind, line: targetLine, endLine: targetEndLine } = pathResolution
-  const revealHint = revealHintFor(isDir, gatewayPlatform, directLocal)
+  const revealHint = revealHintFor(isDir, gatewayPlatform, canReveal)
   // A leading glyph is what makes "this is actionable" legible at rest. Without
   // one, a confirmed chip and an inert one differ only on hover, so a reader
   // cannot tell which paths the backend actually resolved. Files use the same
@@ -652,13 +682,17 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     e.stopPropagation()
     // Ctrl/Cmd+Click copies the path text rather than opening/revealing.
     if (e.ctrlKey || e.metaKey) { pathCopy.press(e.currentTarget); return }
+    // Where no reveal can land, Shift+click copies the path, as the hint says,
+    // rather than asking the gateway for a file manager it cannot show.
+    if (e.shiftKey && !canReveal) { shiftCopy.press(e.currentTarget); return }
     activatePath(path, kind, e.shiftKey, actions, reveal.onError, targetLine, targetEndLine)
   }
   // Right-click opens the shared file-path menu (Open in default app / reveal /
   // copy path), additive to the existing click/shift-click activation. The
-  // native items self-gate on directLocal; the in-app items ("Open in side
-  // panel", "Show folder in side panel") come from this host's own handlers,
-  // so a remote session still gets an entry that works on the viewer's screen.
+  // native items self-gate on the shared reveal gate; the in-app items ("Open in
+  // side panel", "Show folder in side panel") come from this host's own
+  // handlers, so a remote session still gets an entry that works on the
+  // viewer's screen.
   // `kind` is threaded through so a directory chip hides "Open with default
   // app" — the reveal endpoint 400s an `open` on a directory, which would land
   // the user on an error for a click they cannot fix.
@@ -699,9 +733,10 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
         // to. That keeps the disclosure honest without a second catalog string:
         // the location is already in the text the user is hovering.
         //
-        // While a Ctrl/Cmd+click copy is confirmed the title says so, the same
-        // acknowledgment the session chip gives the same gesture.
-        title={pathCopy.copied
+        // While a Ctrl/Cmd+click (or a copying Shift+click) copy is confirmed the
+        // title says so. The session and folder chips confirm in their bubble
+        // instead; this title is also the target disclosure above.
+        title={pathCopy.copied || shiftCopy.copied
           ? i18nT('components.markdownRenderer.copied')
           : `${raw}\n${revealHint}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
       >
@@ -721,6 +756,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
       <ErrorNotice variant="inline" className="ml-1.5 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="md-chip-reveal-error" />
     )}
     {pathCopy.failureBubble}
+    {shiftCopy.failureBubble}
     </>
   )
 }

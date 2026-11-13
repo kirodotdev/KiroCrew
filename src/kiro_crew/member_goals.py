@@ -71,6 +71,7 @@ from typing import Any
 
 from kiro_crew import dashboard_frame, member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,14 @@ CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY, CADENCE_HEARTBEAT)
 #: 30-minute floor and an hourly default (RFC "Crewmate heartbeat", Cost and cache).
 HEARTBEAT_INTERVALS = (30, 60, 120, 240)
 DEFAULT_HEARTBEAT_INTERVAL = 60
+#: The user's answer to the Heartbeat checkbox on a ``crewmate.goal`` card, kept
+#: as the record's ``heartbeat_offer``: a decline is remembered, so no later goal
+#: card offers the Heartbeat again, and either answer tells the goal-setup turn
+#: that the card already settled it. A goal card offers the Heartbeat while it is
+#: off and this is not ``declined`` (``change_card_catalog_plans._goal_heartbeat_offer``).
+HEARTBEAT_OFFER_ACCEPTED = "accepted"
+HEARTBEAT_OFFER_DECLINED = "declined"
+HEARTBEAT_OFFER_ANSWERS = (HEARTBEAT_OFFER_ACCEPTED, HEARTBEAT_OFFER_DECLINED)
 #: Report kinds: what a weekly and a monthly check-in each produce.
 REPORT_KINDS = (CADENCE_WEEKLY, CADENCE_MONTHLY)
 #: Cron day of week (0 = Sunday); Monday by default.
@@ -303,6 +312,7 @@ def empty_record() -> dict[str, Any]:
         "reports": [],
         "removed_key_result": None,
         "removed_goal": None,
+        "heartbeat_offer": None,
     }
 
 
@@ -521,6 +531,8 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
                     k for k in (links if isinstance(links, list) else []) if isinstance(k, str)
                 ],
             }
+    if data.get("heartbeat_offer") in HEARTBEAT_OFFER_ANSWERS:
+        rec["heartbeat_offer"] = data["heartbeat_offer"]
     return rec
 
 
@@ -543,7 +555,7 @@ def _read_pinned(path: Path) -> bytes | None:
             os.close(fd)
             raise _Linked(f"{path.name} is not a regular file")
         with os.fdopen(fd, "rb") as fh:
-            return fh.read(_RECORD_MAX_BYTES + 1)
+            return bounded_read(fh, _RECORD_MAX_BYTES + 1)
     finally:
         os.close(d)
 
@@ -692,7 +704,7 @@ def _mutate(slug: str, member: str, fn: Any) -> Any:
         if data is not None and not _owned_by(data, slug, member):
             # Another exact name's record under a colliding slug: never written
             # over from here. The owner's routes refuse ambiguous slugs first.
-            raise GoalError("slug_collision", "another crewmate's goal is stored under this name")
+            raise GoalError("slug_collision", "another Bot's goal is stored under this name")
         rec = _normalize(data) if data is not None else empty_record()
         result = fn(rec)
         if _fit(slug, member, rec) and isinstance(result, dict) and "record" in result:
@@ -748,10 +760,21 @@ def _new_goal_id(taken: set[str]) -> str:
             return gid
 
 
+def _key_results_with_held(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """The live key results plus the one held for its own Undo, which still serves its goals."""
+    held = rec.get("removed_key_result")
+    kr = held.get("kr") if isinstance(held, dict) else None
+    return [*rec["key_results"], *([kr] if isinstance(kr, dict) else [])]
+
+
 def _strip_goal(rec: dict[str, Any], gid: str) -> list[str]:
-    """Take *gid* off every key result; returns the ids of those that served it."""
+    """Take *gid* off every key result; returns the ids of those that served it.
+
+    The key result held for its own Undo counts too: leaving it out means undoing both
+    removals brings it back without the goal.
+    """
     served = []
-    for kr in rec["key_results"]:
+    for kr in _key_results_with_held(rec):
         if gid in kr.get("goal_ids", []):
             kr["goal_ids"] = [g for g in kr["goal_ids"] if g != gid]
             served.append(kr["id"])
@@ -774,6 +797,7 @@ def set_goal(
     goal_id: str | None = None,
     expected: str | None = None,
     restore_from: str | None = None,
+    heartbeat_offer: str | None = None,
 ) -> dict[str, Any]:
     """Add a goal, or change or clear the goal *goal_id*.
 
@@ -792,13 +816,21 @@ def set_goal(
     pre-change text of that goal, read server-side from the card's private
     snapshot: the plan's body carries it scrubbed, and the raw text is what
     goes back.
+
+    *heartbeat_offer* is the user's answer to the goal card's Heartbeat
+    checkbox (:data:`HEARTBEAT_OFFER_ANSWERS`), stored in the same write as the
+    goal so the goal-setup turn that write starts already sees it.
     """
     clean = _clean_text(text, max_chars=GOAL_TEXT_MAX_CHARS, multiline=True, what="the goal")
     if goal_id is not None and not is_goal_id(goal_id):
         raise GoalError("invalid_goal_id", "a goal id is g and 8 hex digits")
+    if heartbeat_offer is not None and heartbeat_offer not in HEARTBEAT_OFFER_ANSWERS:
+        raise GoalError("invalid_heartbeat_offer", "heartbeat_offer is accepted or declined")
 
     def fn(rec: dict[str, Any]) -> dict[str, Any]:
         now = _now()
+        if heartbeat_offer is not None:
+            rec["heartbeat_offer"] = heartbeat_offer
         if goal_id is None:
             if expected is not None and (expected != "" or rec["goals"]):
                 raise GoalError("changed_meanwhile", "the goals were changed since this was shown")
@@ -890,7 +922,7 @@ def restore_goal(slug: str, member: str, goal_id: Any) -> dict[str, Any]:
             rec["removed_goal"] = None
             return {"stale": True}
         rec["goals"].insert(min(int(removed["index"]), len(rec["goals"])), copy.deepcopy(goal))
-        for kr in rec["key_results"]:
+        for kr in _key_results_with_held(rec):
             if kr["id"] in removed["key_result_ids"] and goal["id"] not in kr["goal_ids"]:
                 kr["goal_ids"].append(goal["id"])
         rec["removed_goal"] = None
@@ -1336,6 +1368,7 @@ def set_schedules(
     changes: dict[str, Any],
     *,
     expected: dict[str, Any] | None = None,
+    held_is_done: bool = False,
 ) -> dict[str, Any]:
     """Change the check-in switches and their timing. Returns the record.
 
@@ -1346,7 +1379,9 @@ def set_schedules(
     (``no_goal``). Only the owner's route and an applied card call this, so the
     crewmate never turns a switch on by itself.
     When supplied, *expected* covers every written field and is compared under
-    the write lock; omitted fields stay untouched. No expectation keeps the
+    the write lock; omitted fields stay untouched. With *held_is_done* (a goal
+    card's Undo only) a write whose *changes* already hold succeeds without
+    writing even when *expected* does not match. No expectation keeps the
     ordinary owner's partial-update behavior.
     """
     _validate_schedules(changes)
@@ -1360,6 +1395,11 @@ def set_schedules(
 
     def fn(rec: dict[str, Any]) -> dict[str, Any]:
         if expected is not None and any(rec["schedules"].get(k) != v for k, v in expected.items()):
+            if held_is_done and all(rec["schedules"].get(k) == v for k, v in changes.items()):
+                # An Undo turning off a Heartbeat the user turned off since:
+                # nothing to write and nothing to refuse. Never on Apply, where a
+                # no-op success would read as the card having turned it on.
+                return copy.deepcopy(rec)
             raise GoalError("changed_meanwhile", "the check-ins were changed since this was shown")
         if not has_goal(rec) and any(changes.get(c) is True for c in CADENCES):
             raise GoalError("no_goal", "set a goal before turning a check-in on")

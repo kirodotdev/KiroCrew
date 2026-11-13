@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest'
-import { formatArtifactCommentsMessage, formatCommentsMessage, sliceCodePoints, type Comment } from '../components/CommentOverlay'
+import { formatArtifactCommentsMessage, formatCommentsMessage, type Comment } from '../components/CommentOverlay'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
 import { findUniqueCoords } from '../components/markdownPanelSourcePos'
 
@@ -56,13 +56,6 @@ describe('formatCommentsMessage', () => {
     const out = formatArtifactCommentsMessage('s', 'n', [{ body: 'b', anchor: { quote } }])
     expect(hasLoneSurrogate(out)).toBe(false)
     expect(out).toContain('"' + 'x'.repeat(79) + '…": ')
-  })
-
-  it('sliceCodePoints moves both edges off a surrogate pair', () => {
-    expect(sliceCodePoints('a😀b', 0, 2)).toBe('a')
-    expect(sliceCodePoints('a😀b', 2)).toBe('b')
-    expect(sliceCodePoints('a😀b', 0, 3)).toBe('a😀')
-    expect(sliceCodePoints('a😀b', 2, 2)).toBe('')
   })
 
   it('includes a surrounding-context snippet when content is provided', () => {

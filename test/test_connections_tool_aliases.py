@@ -1392,9 +1392,9 @@ def test_importing_agent_does_not_eagerly_load_the_registry(tmp_path):
     # ``-B`` + a throwaway cwd keep the child's imports side-effect free: without
     # them it writes ``__pycache__`` bytecode into the source tree it imports.
     result = subprocess.run(
-        [sys.executable, "-B", "-c", probe],
+        [sys.executable, "-X", "utf8", "-B", "-c", probe],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=False,
         cwd=tmp_path,
     )

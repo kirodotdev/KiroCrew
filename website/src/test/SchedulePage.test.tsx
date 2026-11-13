@@ -4,6 +4,7 @@ import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import { SCHEDULE_PRESETS, PRESET_CATEGORIES } from '../utils/schedulePresets'
 import type { CronJob } from '../types'
+import { i18next } from '../i18n/all'
 
 // Covers the arm -> confirm -> delete -> revert state machine. This logic is on
 // a destructive, irreversible action and had two real bugs (premature button
@@ -49,6 +50,14 @@ vi.mock('../api/client', () => ({
 const openGallery = async () => {
   fireEvent.keyDown(screen.getByLabelText('Browse schedule templates'), { key: 'Enter' })
   fireEvent.click(await screen.findByText('Browse all templates'))
+}
+
+// Bulk Delete lives in the batch bar's Actions menu (Radix needs keyboard-open in jsdom).
+const openBatchMenu = () =>
+  fireEvent.keyDown(screen.getByLabelText('Actions for the checked jobs'), { key: 'Enter' })
+const clickBulkDelete = async (name: RegExp) => {
+  openBatchMenu()
+  fireEvent.click(await screen.findByRole('menuitem', { name }))
 }
 
 describe('SchedulePage next-run ordering', () => {
@@ -228,7 +237,7 @@ describe('SchedulePage batch select + bulk delete', () => {
     expect(screen.getByText('2 selected')).toBeInTheDocument()
 
     // Open the confirm modal — the delete button is disarmed until "delete" is typed.
-    fireEvent.click(screen.getByRole('button', { name: /Delete 2 selected/ }))
+    await clickBulkDelete(/Delete 2 selected/)
     const modal = await screen.findByRole('dialog')
     expect(modal).toBeInTheDocument()
     const armBtn = screen.getByRole('button', { name: 'Delete 2' })
@@ -255,7 +264,7 @@ describe('SchedulePage batch select + bulk delete', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Nightly report' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Weekly digest' }))
-    fireEvent.click(screen.getByRole('button', { name: /Delete 2 selected/ }))
+    await clickBulkDelete(/Delete 2 selected/)
     await screen.findByRole('dialog')
     fireEvent.change(screen.getByLabelText(/Type/, { selector: 'input' }), { target: { value: 'delete' } })
 
@@ -747,5 +756,172 @@ describe('SchedulePage failed-job error surface', () => {
     fireEvent.click(await screen.findByText('Nightly report'))
 
     expect(await screen.findByText('12 files copied')).toBeInTheDocument()
+  })
+
+  it('the failed-run traceback surface is not clipped to the 200px sliver', async () => {
+    // #21061: the detail dialog is `max-h-[86vh]` with its own scrolling body,
+    // and the Last Error notice sat under a fixed `max-h-[200px]`, so a
+    // multi-line traceback rendered as a ~200px window that collapsed to a
+    // one- or two-line sliver when the dialog scrolled -- exactly the line
+    // naming the failure fell off. Both run surfaces carry the taller
+    // viewport-relative cap instead.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({
+        command: 'backup.sh',
+        last_status: 'error',
+        last_error: 'Traceback (most recent call last):\n  File "daily_report.py", line 42, in run\nConnectionError: Max retries exceeded',
+      })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const notice = await screen.findByTestId('schedule-job-last-error')
+    expect(notice.className).toContain('max-h-[min(45vh,420px)]')
+    expect(notice.className).not.toContain('max-h-[200px]')
+  })
+
+  it('the successful-run output surface is not clipped to the 200px sliver', async () => {
+    // Same cap as the Last Error notice (#21061): a long `last_result` on a
+    // succeeded job lost all but ~200px to the inner scrollbar too.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ command: 'backup.sh', last_status: 'ok', last_result: '12 files copied' })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const pre = (await screen.findByText('12 files copied')).closest('pre')
+    expect(pre).not.toBeNull()
+    expect(pre!.className).toContain('max-h-[min(45vh,420px)]')
+    expect(pre!.className).toContain('shrink-0')
+    expect(pre!.className).not.toContain('max-h-[200px]')
+  })
+
+})
+
+describe('SchedulePage translated labels', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(async () => {
+    // The test's tree is still mounted here, and a dialog's ErrorNotice
+    // subscribes to language switches, so the reset re-renders it: run it in act.
+    await act(async () => { await i18next.changeLanguage('en') })
+  })
+
+  it('names the job dialog tabs in the active language', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+    await i18next.changeLanguage('de')
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Nightly report'))
+    const dialog = await screen.findByRole('dialog')
+
+    // The tab row may collapse to a menu at this width; open it if it did.
+    const toggle = within(dialog).queryByRole('button', { name: 'Details', expanded: false })
+    if (toggle) fireEvent.click(toggle)
+    expect(within(dialog).getByRole('radio', { name: 'Protokolle' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('radio', { name: 'Logs' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [1, 'Delete 1 selected job'],
+    [2, 'Delete 2 selected jobs'],
+  ])('titles the bulk Delete button with a real plural for %i selected', async (n, title) => {
+    const { api } = await import('../api/client')
+    const jobs = [mkJob({ id: 'job-1', name: 'Nightly report' }), mkJob({ id: 'job-2', name: 'Weekly digest' })]
+    vi.mocked(api).crons.mockResolvedValue({ jobs })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    for (const job of jobs.slice(0, n)) {
+      fireEvent.click(screen.getByRole('checkbox', { name: `Select ${job.name}` }))
+    }
+
+    openBatchMenu()
+    expect(await screen.findByTitle(title)).toBeInTheDocument()
+  })
+
+  it('titles the bulk Delete button in the active language', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+    await i18next.changeLanguage('de')
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    const row = screen.getByText('Nightly report').closest('tr')!
+    fireEvent.click(within(row).getByRole('checkbox'))
+
+    fireEvent.keyDown(screen.getByRole('button', { name: i18next.t('pages.schedulePage.batchActions.actions_for_selected') }), { key: 'Enter' })
+    expect(await screen.findByTitle('1 ausgewählten Job löschen')).toBeInTheDocument()
+  })
+
+  // Japanese puts the count and the verb in a different order from English, so
+  // gluing translated fragments around the number read wrong ("2 選択済み",
+  // "選択されたジョブと その実行履歴…"). Each line must be one whole sentence.
+  it('renders the bulk-delete copy as whole sentences in Japanese', async () => {
+    const { api } = await import('../api/client')
+    const jobs = [mkJob({ id: 'job-1', name: 'Nightly report' }), mkJob({ id: 'job-2', name: 'Weekly digest' })]
+    vi.mocked(api).crons.mockResolvedValue({ jobs })
+    await i18next.changeLanguage('ja')
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    for (const name of ['Nightly report', 'Weekly digest']) {
+      fireEvent.click(within(screen.getByText(name).closest('tr')!).getByRole('checkbox'))
+    }
+
+    expect(screen.getByText('2 件選択済み')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('button', { name: i18next.t('pages.schedulePage.batchActions.actions_for_selected') }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: '選択した 2 件を削除' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '2 件のスケジュール済みジョブを削除しますか？' })).toBeInTheDocument()
+    expect(within(dialog).getByText('選択したジョブとその実行履歴を完全に削除します。この操作は取り消せません。')).toBeInTheDocument()
+    const label = dialog.querySelector('label[for="batch-delete-confirm"]')!
+    expect(label.textContent).toBe('確認するには delete と入力します')
+    expect(within(label as HTMLElement).getByText('delete').tagName).toBe('CODE')
+  })
+
+  it('describes one selected job in the singular, in English', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    fireEvent.click(within(screen.getByText('Nightly report').closest('tr')!).getByRole('checkbox'))
+    await clickBulkDelete(/^Delete 1 selected$/)
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByRole('heading', { name: 'Delete 1 scheduled job?' })).toBeInTheDocument()
+    expect(within(dialog).getByText(
+      'This permanently removes the selected job and its run history. This action cannot be undone.',
+    )).toBeInTheDocument()
+  })
+})
+
+describe('SchedulePage strict-schedule marker', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('marks a strict job row and leaves a non-strict row unmarked', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [
+      mkJob({ id: 'strict', name: 'Strict job', strict_schedule: true }),
+      mkJob({ id: 'loose', name: 'Loose job' }),
+    ] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Strict job')).toBeInTheDocument())
+
+    const strictRow = screen.getByText('Strict job').closest('tr') as HTMLElement
+    const looseRow = screen.getByText('Loose job').closest('tr') as HTMLElement
+    const badge = within(strictRow).getByTestId('schedule-strict-badge')
+    expect(badge).toHaveTextContent('Exact time')
+    expect(within(looseRow).queryByTestId('schedule-strict-badge')).toBeNull()
   })
 })

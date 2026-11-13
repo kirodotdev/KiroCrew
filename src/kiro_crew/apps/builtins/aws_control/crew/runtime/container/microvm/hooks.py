@@ -54,8 +54,8 @@ advice:
   with another account's activation could send that agent commands in the
   window. Winning ``run`` takes ``lambda:CreateMicrovmAuthToken`` in the OWNER's
   account, so on this lane's single-owner deployment that caller already holds
-  the owner's own AWS access. Closing the window for a shared account is tracked
-  as a follow-up.
+  the owner's own AWS access. This lane serves neither a shared account nor a
+  roster; adding either means closing the window first.
 * **No ``Server`` header.** The default names the interpreter version.
 
 The crew itself is NOT on this port. The front process binds loopback on this

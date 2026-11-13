@@ -1,16 +1,7 @@
 """Mirror-link edge cases, backfill fidelity and the inbound claim a link request takes.
 
-Pins what the mirror-link endpoint answers for a malformed body, a reminder that cannot be
-posted, a target that cannot be resolved, a failed first send or backfill send, a lost
-ownership race, a failing occupancy precheck and governance that narrows before the first
-send; the non-Slack backfill (turn-aware selection, chunking, the delivery budget, numbered
-options, unconverted markdown, redaction) and the claim ordering and rollback around it;
-and the inbound marker on the claim, which follows the transport's resume capability and
-target policy, never survives a governance denial and has the occupancy precheck in front of
-it.
-The request contract, the Discord DM mirror, unlink, reminder mode, pause and the
-channel-target listing live in ``test_chat_mirror.py``; the shared fakes and builders live
-in ``chat_mirror_helpers.py``.
+The request contract, the Discord DM mirror, unlink, reminder mode and pause live in
+``test_chat_mirror.py``; shared fakes are in ``chat_mirror_helpers.py``.
 """
 
 from __future__ import annotations
@@ -354,10 +345,8 @@ class TestMirrorBackfillFidelity:
     async def test_history_that_fits_exactly_is_not_trimmed(self, tmp_path, monkeypatch):
         """No gap marker when there is no gap.
 
-        Six two-message turns is exactly the 12-unit budget. An earlier version
-        reserved the marker's slot unconditionally, so the reservation pushed the
-        oldest turn out and then spent that slot announcing the omission it had
-        itself caused — a false gap on history that fit.
+        Six two-message turns is exactly the 12-unit budget. Reserving the marker's slot
+        unconditionally would push the oldest turn out and announce a false gap.
         """
         state, transport = self._linked(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
@@ -470,11 +459,8 @@ class TestMirrorBackfillFidelity:
     ):
         """The 200 must not be returned before the seeding is delivered.
 
-        This is the property that forbids backgrounding this path. The observable
-        is the ORDER of the sends against the response, not the position of the
-        persist: the binding is now claimed BEFORE the announcement, because an
-        inbound reply arriving during a multi-second backfill would otherwise run
-        in the channel's native session.
+        This is why the path is not backgrounded. The test reads the ORDER of the sends
+        against the response; the binding itself is claimed before the announcement.
         """
         state, transport = self._linked(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
@@ -663,13 +649,9 @@ class TestMirrorBackfillFidelity:
     async def test_a_reply_during_the_backfill_resolves_the_dashboard_session(
         self, tmp_path, monkeypatch
     ):
-        """The window this ordering exists to close.
+        """A reply during the rate-limited backfill must already resolve THIS session.
 
-        The notice says "continuing here", then the catch-up transcript goes out
-        one message at a time against the transport's rate limit — seconds, not an
-        instant. A reply arriving in that window must already resolve THIS session;
-        with the claim taken last it resolved nothing and ran in the channel's
-        native session, which is the one the notice said the user had left.
+        With the claim taken last it would run in the channel's native session.
         """
         state = _prep(tmp_path, monkeypatch)
         transport = _fake_transport("telegram", session_resume=True)
@@ -767,11 +749,8 @@ class TestInboundClaimFollowsTheCapability:
     ):
         """A binding can be unwound; posted messages cannot.
 
-        The authoritative check is atomic inside ``set_mirror_link``, but that
-        fires only after the link notice and the whole catch-up transcript have
-        been delivered. So the same question is asked at the first point the real
-        location is known, and nothing is sent into a conversation this session
-        does not get to own.
+        The atomic check in ``set_mirror_link`` fires only after the notice and backfill
+        are sent, so the precheck asks the same question as soon as the location is known.
         """
         transport = _fake_transport("discord", session_resume=True)
         state = _prep(tmp_path, monkeypatch)
@@ -822,11 +801,8 @@ class TestInboundClaimFollowsTheCapability:
     async def test_a_governance_denial_persists_no_inbound_binding(self, tmp_path, monkeypatch):
         """The write that grants inbound capability must stay behind the gate.
 
-        Persisting is the side effect that matters: a binding written for a
-        message governance went on to deny would leave the conversation connected
-        AND inbound-capable, so the channel would keep resuming a session policy
-        had just refused. The endpoint's existing fail-closed path is what
-        prevents it — this pins that the strengthened write inherits it.
+        A binding written for a denied message would leave the channel resuming a session
+        policy had just refused.
         """
         transport = _fake_transport("discord", session_resume=True)
 
@@ -869,12 +845,8 @@ class TestInboundClaimFollowsTheCapability:
     async def test_the_precheck_asks_the_writers_exact_question(self, tmp_path, monkeypatch):
         """The precheck must pass the claim's inbound intent, not just the location.
 
-        Drop the argument and the precheck answers a different question from the
-        writer it backs -- refusing where the writer allows, which would newly
-        reject a second outbound-only mirror on transports that cannot resume at
-        all. The sentinel default is what makes omission detectable: a plain
-        ``False`` default would make "passed False" and "not passed" identical, so
-        the test would pass against the very divergence it exists to catch.
+        Without it the precheck would refuse where the writer allows. The sentinel default
+        is needed: with ``False`` "passed False" and "not passed" look identical.
         """
         sentinel = object()
         seen: list[object] = []

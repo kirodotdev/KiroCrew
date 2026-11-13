@@ -5,6 +5,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useComposerAttachments, type ComposerAttachmentsOptions } from './useComposerAttachments'
+import { uploadComposerFiles } from '../../utils/composerUpload'
+
+// The real upload by default; one case swaps in a result carrying a resize.
+vi.mock('../../utils/composerUpload', async importOriginal => {
+  const real = await importOriginal<typeof import('../../utils/composerUpload')>()
+  return { ...real, uploadComposerFiles: vi.fn(real.uploadComposerFiles) }
+})
 
 const pdf = (name = 'spec.pdf') => new File(['x'], name, { type: 'application/pdf' })
 const ok = (paths: string[]) => new Response(JSON.stringify({ paths }), { status: 200 })
@@ -71,6 +78,21 @@ describe('useComposerAttachments', () => {
     expect(hook.result.current.files).toEqual(['/up/a.pdf', '/up/b.pdf'])
     act(() => { hook.result.current.removeFile('/up/a.pdf') })
     expect(hook.result.current.files).toEqual(['/up/b.pdf'])
+  })
+
+  it('restore puts back the resize info it is handed after clear dropped it', async () => {
+    const { hook } = setup()
+    const info = { name: 'big.png', fromW: 4000, fromH: 3000, toW: 2000, toH: 1500, fromBytes: 9, toBytes: 3 }
+    vi.mocked(uploadComposerFiles).mockResolvedValueOnce({
+      paths: ['/up/big.png'], resized: [info], resizedByPath: { '/up/big.png': info },
+    })
+    act(() => { hook.result.current.addFiles([new File(['x'], 'big.png', { type: 'image/png' })]) })
+    await waitFor(() => expect(hook.result.current.resizedInfo).toEqual({ '/up/big.png': info }))
+    act(() => { hook.result.current.clear() })
+    expect(hook.result.current.resizedInfo).toEqual({})
+    act(() => { hook.result.current.restore(['/up/big.png', '/w/plain.ts'], { '/up/big.png': info }) })
+    expect(hook.result.current.files).toEqual(['/up/big.png', '/w/plain.ts'])
+    expect(hook.result.current.resizedInfo).toEqual({ '/up/big.png': info })
   })
 
   it('a reset key change aborts the upload and drops its late result', async () => {

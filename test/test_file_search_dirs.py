@@ -9,7 +9,7 @@ sensitivity check.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -25,7 +25,7 @@ def _make_app(index=None) -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
-    state.file_indexes.get.return_value = index
+    state.file_indexes.ensure = AsyncMock(return_value=index)
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""
@@ -78,7 +78,7 @@ class TestFileIndexDirs:
     async def test_index_includes_dir_entries(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             results = idx.search("widgets", _scorer)
             by_name = {r["name"]: r for r in results}
@@ -95,7 +95,7 @@ class TestFileIndexDirs:
         """An empty dir has no files, so it can only appear if dirs are walked."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             names = {r["name"] for r in idx.search("widgetsempty", _scorer)}
             assert "widgetsempty" in names
@@ -106,7 +106,7 @@ class TestFileIndexDirs:
     async def test_index_kinds_filter(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             dirs = idx.search("widgets", _scorer, 15, "dirs")
             assert dirs, "expected at least one directory hit"
@@ -126,7 +126,7 @@ class TestFileIndexDirs:
         """Dot-prefixed dirs ARE candidates; skip-listed dirs are not."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             names = {r["name"] for r in idx.search("widgets", _scorer, 50, "dirs")}
             assert ".widgetshidden" in names, "dot-prefixed dir must be offered as a candidate"
@@ -145,7 +145,7 @@ class TestFileIndexDirs:
         """
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             for q in ("git", "cache"):
                 names = {r["name"] for r in idx.search(q, _scorer, 50, "dirs")}
@@ -160,7 +160,7 @@ class TestFileIndexDirs:
         hidden.mkdir()
         (hidden / "widgetsinside").mkdir()
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             names = {r["name"] for r in idx.search("widgets", _scorer, 50, "dirs")}
             assert ".secretcfg" not in names, "does not match query, not expected here"
@@ -178,7 +178,7 @@ class TestFileIndexDirs:
             return 10.0 if q in name.lower() else 0.0
 
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             results = idx.search("alpha", flat_scorer)
             kinds = [r["kind"] for r in results]
@@ -305,7 +305,7 @@ class TestApiFileSearchDirs:
         """The fast path must pass the kinds param through to FileIndex.search."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             app = _make_app(index=idx)
             async with TestClient(TestServer(app)) as client:
@@ -554,3 +554,130 @@ class TestFileSearchWalkDeadline:
         # response carries no truncation signal (there is no such field).
         assert len(body["results"]) == 6
         assert "truncated" not in body
+
+
+def _populate_dot_dirs(tmp_path):
+    """A project whose only ``tasks`` matches sit inside dot directories.
+
+    Returns the project root. Only ``.kiro/specs`` and ``.kiro/steering``
+    may be walked; every other ``tasks`` file here is in a directory that must
+    stay closed, so finding one means the walk entered it.
+    """
+    project = tmp_path / "proj"
+    spec = project / ".kiro" / "specs" / "login-flow"
+    spec.mkdir(parents=True)
+    (spec / "tasks.md").write_text("t")
+    (spec / "requirements.md").write_text("r")
+    steering = project / ".kiro" / "steering"
+    steering.mkdir()
+    (steering / "tasks-style.md").write_text("s")
+    # Inside .kiro, but neither an opened child nor an opened child's content.
+    settings = project / ".kiro" / "settings"
+    settings.mkdir()
+    (settings / "tasks-settings.md").write_text("x")
+    (project / ".kiro" / "tasks-top.md").write_text("x")
+    # Dot directories that stay closed.
+    for closed in (".ssh", ".aws", ".vscode", ".github"):
+        (project / closed).mkdir()
+        (project / closed / f"tasks{closed}.md").write_text("x")
+    (project / ".github" / "workflows").mkdir()
+    (project / ".github" / "workflows" / "tasks-ci.yml").write_text("x")
+    # A nested .git and a nested dot dir below an opened child stay closed too.
+    (spec / ".git").mkdir()
+    (spec / ".git" / "tasks-git.md").write_text("x")
+    (spec / ".hidden").mkdir()
+    (spec / ".hidden" / "tasks-hidden.md").write_text("x")
+    return project
+
+
+_OPENED_TASKS = {
+    os.path.join(".kiro", "specs", "login-flow", "tasks.md"),
+    os.path.join(".kiro", "steering", "tasks-style.md"),
+}
+
+
+def _assert_only_opened_dot_dirs_walked(rels):
+    assert _OPENED_TASKS <= rels, f"expected the spec and steering files, got {sorted(rels)}"
+    leaked = {r for r in rels if r.endswith((".md", ".yml")) and r not in _OPENED_TASKS}
+    assert not leaked, f"a closed dot directory was walked: {sorted(leaked)}"
+
+
+class TestOpenedDotDirs:
+    """``.kiro/specs`` and ``.kiro/steering`` are walked; every other dot dir is not."""
+
+    @pytest.mark.asyncio
+    async def test_index_finds_spec_and_steering_files_only(self, tmp_path):
+        project = _populate_dot_dirs(tmp_path)
+        idx = FileIndex(str(project))
+        await idx.build()
+        try:
+            rels = {os.path.relpath(r["path"], project) for r in idx.search("tasks", _scorer, 50, "files")}
+        finally:
+            idx.stop()
+        _assert_only_opened_dot_dirs_walked(rels)
+
+    @pytest.mark.asyncio
+    async def test_walk_fallback_finds_spec_and_steering_files_only(self, tmp_path, mock_sel):
+        project = _populate_dot_dirs(tmp_path)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-search?q=tasks&kinds=files&limit=50&project={project}")
+            assert resp.status == 200
+            rels = {os.path.relpath(r["path"], project) for r in (await resp.json())["results"]}
+        _assert_only_opened_dot_dirs_walked(rels)
+
+    @pytest.mark.asyncio
+    async def test_index_offers_no_other_dir_inside_kiro(self, tmp_path):
+        project = _populate_dot_dirs(tmp_path)
+        idx = FileIndex(str(project))
+        await idx.build()
+        try:
+            dirs = {os.path.relpath(e[0], project) for e in idx._entries if e[5] == "dir"}
+        finally:
+            idx.stop()
+        assert os.path.join(".kiro", "specs") in dirs
+        assert os.path.join(".kiro", "specs", "login-flow") in dirs
+        assert os.path.join(".kiro", "settings") not in dirs
+        assert os.path.join(".github", "workflows") not in dirs
+
+    @pytest.mark.asyncio
+    async def test_walk_fallback_offers_no_other_dir_inside_kiro(self, tmp_path, mock_sel):
+        project = _populate_dot_dirs(tmp_path)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-search?q=settings&kinds=dirs&project={project}")
+            rels = {os.path.relpath(r["path"], project) for r in (await resp.json())["results"]}
+        assert os.path.join(".kiro", "settings") not in rels
+
+    @pytest.mark.asyncio
+    async def test_symlinked_specs_dir_does_not_escape_the_root(self, tmp_path, mock_sel):
+        """A symlink at ``.kiro/specs``, or one below it, is never followed.
+
+        The only symlink test of this class, so it alone is listed in
+        ``test/requires-real-symlinks.txt``.
+        """
+        outside = tmp_path / "outside"
+        (outside / "spec-a").mkdir(parents=True)
+        (outside / "spec-a" / "tasks-outside.md").write_text("x")
+        # The link IS .kiro/specs.
+        linked_specs = tmp_path / "proj-a"
+        (linked_specs / ".kiro").mkdir(parents=True)
+        os.symlink(str(outside), str(linked_specs / ".kiro" / "specs"))
+        # A real .kiro/specs holding a link to the outside tree.
+        linked_child = tmp_path / "proj-b"
+        (linked_child / ".kiro" / "specs" / "real").mkdir(parents=True)
+        (linked_child / ".kiro" / "specs" / "real" / "tasks.md").write_text("t")
+        os.symlink(str(outside), str(linked_child / ".kiro" / "specs" / "linked"))
+
+        for project in (linked_specs, linked_child):
+            idx = FileIndex(str(project))
+            await idx.build()
+            try:
+                indexed = {r["name"] for r in idx.search("tasks", _scorer, 50, "files")}
+            finally:
+                idx.stop()
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/file-search?q=tasks&kinds=files&project={project}")
+                walked = {r["name"] for r in (await resp.json())["results"]}
+            assert "tasks-outside.md" not in indexed, f"the index followed a symlink out of {project}"
+            assert "tasks-outside.md" not in walked, f"the walk fallback followed a symlink out of {project}"
+        # The real spec next to the link is still found, so the walk did run.
+        assert "tasks.md" in indexed and "tasks.md" in walked

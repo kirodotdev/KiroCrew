@@ -1,12 +1,12 @@
 ---
 title: Conductor context cap -- the gateway trims a goal conductor's KAS chat to 150K tokens at a turn start
-status: draft
+status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-19
-last-audited: 2026-10-19
-audited-at: c3f2b27de7
+last-audited: 2026-11-03
+audited-at: e5353f39bb
 doc-pr: null
-implementation-prs: []
+implementation-prs: [22718, 27024, 29388]
 tracking-issues: [22082]
 supersedes: [rfc-conductor-rolling-reset.md]
 superseded-by: []
@@ -14,8 +14,10 @@ superseded-by: []
 
 # RFC: Conductor context cap
 
-- Status: draft. Two decisions are pending, and both come before the
-  implementation pull request (section 9): acceptance by the user
+- Status: partial (2026-11-03, section 9): phase 1 is on main, and the
+  cold-only amendment below is built in
+  [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388). As drafted, two
+  decisions came before the implementation pull request (section 9): acceptance by the user
   (iamwhatever), the maintainer who owns the conductor patrol, and agreement
   from bolichen97, whose ruling on
   [#18931](https://github.com/kirodotdev/KiroCrew/issues/18931) this document
@@ -34,6 +36,17 @@ superseded-by: []
   proposes the same restart-and-replay move as an operator's choice at Crew's
   own compaction threshold, which a KAS session never reaches (section 3.7).
 - Tracking issue: [#22082](https://github.com/kirodotdev/KiroCrew/issues/22082).
+- **Amended 2026-11-03 (owner ruling): a warm cache is never trimmed.** Rule A
+  (trim over 400K whatever the cache) is removed; Rule B (over 200K once the
+  previous turn ended 300 s or more ago) is the only trim. The window and
+  KAS's own compaction carry a warm chat until its cache expires. Sections
+  2, 3.2, 3.3 (the note and the seed), 5 and 6 below are amended in place; the
+  measurements they cite stay as recorded. The same ruling covers workers
+  ([rfc-worker-context-cap.md](rfc-worker-context-cap.md)). Why: on
+  2026-11-01..03 (2.77 days, 15 conductor chats, 32 KAS sessions) an offline
+  replay of the shipped check found 0 conductor turn starts over 400K on a warm
+  cache, so Rule A trimmed nothing that Rule B would not, and the owner prefers
+  using the window over cutting a warm session.
 - Code measured at `c3f2b27de7`. The numbers come from the R5 study on one
   operator's host: 5,174 dashboard turns from 2026-10-01 to 2026-10-19, each
   joined across Kiro Crew's usage rows, its chat history and the KAS
@@ -77,8 +90,10 @@ Two existing levers do not reach it:
 
 Goals:
 
-- A goal conductor's KAS chat stays between 150K and 400K tokens, with no model
-  call to trim it and no wait inside a turn.
+- A goal conductor's KAS chat is trimmed back to about 150K tokens at a turn
+  start once its cache has expired, with no model call to trim it and no wait
+  inside a turn. (Amended 2026-11-03: it was "stays between 150K and 400K";
+  a warm chat now has no upper line short of KAS's own compaction.)
 - What the conductor needs after a trim comes from what it already keeps: its
   session ledger, its work ledger and the newest messages of its chat.
 - Nothing is deleted. The transcript a person reads stays whole, and older
@@ -119,13 +134,14 @@ Every other session keeps today's behaviour.
 | Name | Value | Why |
 |---|---|---|
 | LOW | 150K tokens | where a trim lands. A cold request there takes 7.1 s, about what a warm 400K request takes today (7.0 s) |
-| HIGH | 400K tokens | above it a cold request passes 13 s, and a trim from 400K to 150K pays back in 3.4 requests, about one conductor turn |
+| ~~HIGH~~ | ~~400K tokens~~ | removed 2026-11-03 (owner ruling). It was the Rule A line: above it a cold request passes 13 s, and a trim from 400K to 150K pays back in 3.4 requests |
 | Rule B line | 200K tokens (LOW + 50K) | at LOW itself Rule B fires on 63 of 100 conductor turns; at 200K on 12, keeping 94% of the gain |
 | Cache life | 300 s | credits per request step from 1.88 to 2.95 at 5.0 min at the same size |
 
-The two rules, read at the start of each turn:
+The rule, read at the start of each turn:
 
-- **Rule A:** the context is over HIGH. Trim to LOW.
+- ~~**Rule A:** the context is over HIGH. Trim to LOW.~~ Removed 2026-11-03:
+  a warm cache is never trimmed, at any size.
 - **Rule B:** the previous turn on this session ended 300 s or more ago, and the
   context is over 200K. Trim to LOW. The cache has already expired, so the
   trim costs nothing extra: the next request writes a new cache either way.
@@ -150,7 +166,7 @@ The inputs:
   than planned cannot then repeat on every cold turn.
 
 The marks are fixed in code for phase 1. They are tokens, not a share of the
-window: on a model whose window makes KAS compact before 400K, the cap simply
+window: on a model whose window makes KAS compact before 200K, the cap simply
 never fires.
 
 ### 3.3 The trim
@@ -175,8 +191,19 @@ on the old session.
    memory, skills and steering. With KAS's own system prompt and tools, a
    fresh conductor session starts at about 55K tokens.
 2. A trim note for the model: the chat was trimmed at this turn's start, the
-   newest messages follow as text, tool output and older messages are not in
-   context, and `search_chat_history` finds them in the transcript.
+   newest messages follow as text, and tool output and older messages are not
+   in context. Amended 2026-11-03: the note said `get_chat_session` reads tool
+   output back, which it did not (it returns user, assistant and inject rows
+   only). It now says to re-read a file it needs, and to fetch any other tool
+   output with `get_chat_session(session_key, tool_call_id)`, a new optional
+   argument that returns that one transcript tool row's stored output (already
+   redacted and cut to 8,000 chars when stored). A call without it is
+   unchanged.
+2a. Added 2026-11-03: a pointer list, one line per stored tool result in the
+   chat's transcript, newest last, at most 100:
+   `tool_call_id | tool | short args | output size`, under a header naming the
+   chat's session key. Built by the implementation pull request
+   [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388).
 3. The summary: the session-ledger snapshot (`render_snapshot` in
    `src/kiro_crew/session_ledger.py`, at most 1,600 chars: goal, phase, next,
    tried, artifacts). A patrol wake already carries the same block
@@ -187,17 +214,17 @@ on the old session.
    row rules (user, assistant and inject rows, newest first; no tool rows; at
    most 500 user and assistant rows and 10 inject rows, each inject row
    clipped to 2,000 chars, and inject rows held to a quarter of the budget),
-   under a trim budget of **270,000 chars** instead of
-   the 80,000-char `_REPLAY_BUDGET_CHARS`. Every other cold start keeps
-   80,000.
+   under a trim budget of **90,000 tokens** turned into chars with the
+   chat's own chars per token (below), instead of the 80,000-char
+   `_REPLAY_BUDGET_CHARS`. Every other cold start keeps 80,000.
 5. The turn's own message.
 
 No model call is spent: the summary is ledger state on disk, and the tail is
 text already in the transcript.
 
 **Choosing N, the tail.** The budget fills the room LOW leaves:
-(150K − 55K base − about 5K for the note, the summary and the turn's message)
-× 3 chars per token ≈ 270,000 chars. R5 put that room at about 95K tokens,
+150K − 55K base − about 5K for the note, the summary and the turn's message
+= 90,000 tokens. R5 put that room at about 95K tokens,
 which is about 19 conductor turns of KAS context growth. That growth counts
 tool output, which the replay never carries, so a text tail reaches much
 further back. Measured on the same conductor DM transcript (822 turns since
@@ -216,6 +243,21 @@ replayable text is about 630 chars per turn at the p50 (564 on a patrol turn,
 with no Kiro Crew context, with a summary and a 330K-char text tail; it landed
 at 152K, and its credits matched the cost model (1.87 measured vs 1.93
 predicted).
+
+**Turning the 90,000 tokens into chars** (amended 2026-11-01). The budget
+was first a fixed 270,000 chars, at 3 chars per token. The conductor DM's
+mixed Chinese and English text with tables reads at about 1.65 chars per
+token, so its ten trims of 10-22 to 10-24 landed at 199K to 211K, not 150K
+(`research/crewmate-perf/R11-patrol-cost.md` section 4). The chars per token
+is now measured off the chat's own previous trim: the tail's chars over the
+first reading of the session that trim seeded, less the 60K base. That
+reading also holds the first turn's own growth, so the ratio reads a little
+low and a trim lands at or under LOW. A chat with no measured trim yet (its
+first trim, or the first after a gateway restart) uses 1.6. A measured ratio
+is held to 1.0 to 3.0, so a tail is never longer than the 270,000 chars it
+was. No tokenizer is added: the reading is the one Rules A and B already
+read. Replayed on those ten trims, the landings move from 199K–211K (p50
+204K) to 127K–143K (p50 136K).
 
 | | What happens to it |
 |---|---|
@@ -358,7 +400,8 @@ It passes when, over the after window:
   again for something already answered nor misses a pending decision.
 
 **Tests in the implementation.** Each rule and each check in section 3.4 gets
-a test that fails first: Rule A, Rule B, the 300-s clock read from the
+a test that fails first: Rule B, a warm session over 400K left alone (amended
+2026-11-03, replacing the Rule A test), the 300-s clock read from the
 previous turn's release rather than its acquire, the damping guard, an unknown reading, a slash command, a queued
 reset, a pending question, attached sub-agents, a refused teardown and the off
 switch. The seed gets tests for its budget, its note, its snapshot and the
@@ -373,8 +416,15 @@ notice row the trim's replay skips.
   quality beyond one planted fact recalled after a seeded start; the hand
   check in section 5 covers it.
 - **A slower trimmed turn.** The new session's start (4.4 s p50) lands on the
-  trimmed turn. A Rule A trim on a warm turn makes that turn slower than it
-  would have been, and every later turn faster.
+  trimmed turn. Only a cold turn is trimmed (amended 2026-11-03), so this is
+  the only cost; there is no warm-turn trim any more.
+- **A warm chat past 400K (added 2026-11-03).** With Rule A gone, a conductor
+  whose turns keep arriving inside the 300-s cache life can grow past 400K and
+  stays there until a turn start finds its cache expired, or KAS compacts it at
+  80% of its window. Each request over 400K costs more and its cold first
+  output passes 13 s (section 3.2). Measured on 2026-11-01..03: 0 conductor
+  turn starts over 400K on a warm cache, and the largest conductor context
+  under the cold-only rule was 391K.
 - **A landing off target.** Chars per token vary with the text, so a trim may
   land above or below 150K. The damping guard stops a high landing from
   repeating, and the before/after check measures the landing.
@@ -426,6 +476,17 @@ transcript on disk or either ledger.
 
 Both come before the implementation pull request opens.
 
+**Recorded 2026-11-03.** Decision 1: the user (iamwhatever) accepted the cap
+and amended it the same day: a warm cache is never trimmed, conductors
+included; Rule A is removed and Rule B is the only trim (the amendment at the
+top of this document). Phase 1 shipped in
+[#22718](https://github.com/kirodotdev/KiroCrew/pull/22718) and its landing
+fix in [#27024](https://github.com/kirodotdev/KiroCrew/pull/27024); the
+cold-only amendment is built in
+[#29388](https://github.com/kirodotdev/KiroCrew/pull/29388). Decision 2 is not
+recorded in this document. Status `partial`: phase 1 is on main, the
+amendment is not yet.
+
 ## 10. Rollout
 
 **Phase 1, this document.** One implementation pull request:
@@ -437,10 +498,11 @@ Both come before the implementation pull request opens.
   (3.6);
 - the tests in section 5.
 
-Exit criteria, each testable: a capped session over 400K at a turn start
+Exit criteria, each testable: a capped session over 200K after 300 s
 starts that turn on a new KAS session whose first prompt carries the note, the
-snapshot and a tail of at most 270,000 chars; a session over 200K after 300 s
-does the same; every check in 3.4 leaves the old session in place; the
+snapshot and a tail of at most 90,000 tokens at the chat's chars per token
+(at most 270,000 chars); a session on a warm cache is never trimmed, at any
+size (amended 2026-11-03); every check in 3.4 leaves the old session in place; the
 transcript on disk is byte-identical before and after a trim, apart from the
 notice row; and with `session.context_cap` off, no session changes behaviour.
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
+from kiro_crew.crew_avatar_seed import default_icon_avatar
 
 #: One-time marker for :func:`create_first_crewmate_once`, under the data home.
 FIRST_CREWMATE_MARKER = "mate_member_created.json"
@@ -169,14 +170,21 @@ def _create_private(template: str) -> bool:
         _invalidate_config_cache()
         config = KiroCrewConfig.load()
     except Exception:
-        agent_mod.logger.warning("The first crewmate was not created", exc_info=True)
+        agent_mod.logger.warning("The first Bot was not created", exc_info=True)
         return False
     if ASSISTANT_MEMBER_NAME in config.agents:
         _mark(FIRST_CREWMATE_MARKER)
         return False
     # Its own workspace from the start, like its own store: the first crewmate is
     # an ordinary crewmate and gets what every created crewmate gets.
-    member = KiroCrewAgentConfig(kiro_agent=template, workspace=AUTO_WORKSPACE, source="builtin")
+    member = KiroCrewAgentConfig(
+        kiro_agent=template,
+        workspace=AUTO_WORKSPACE,
+        source="builtin",
+        # The same name-seeded icon every create path applies, so the first
+        # crewmate is born an icon rather than the name's trait ghost.
+        avatar=default_icon_avatar(ASSISTANT_MEMBER_NAME),
+    )
     config.agents[ASSISTANT_MEMBER_NAME] = member
     previous_store, previous_id = member.memory_store, member.member_id
     previous_workspace, new_workspace = member.workspace, ""
@@ -203,7 +211,7 @@ def _create_private(template: str) -> bool:
             except Exception:
                 agent_mod.logger.warning("An unpublished store was not retired", exc_info=True)
         agent_mod.logger.warning(
-            "The first crewmate was not created; it is tried again at next start", exc_info=True
+            "The first Bot was not created; it is tried again at next start", exc_info=True
         )
         return False
     return True
@@ -222,6 +230,6 @@ def _owe_first_welcome() -> None:
         _invalidate_config_cache()
         config = KiroCrewConfig.load()
     except Exception:
-        agent_mod.logger.warning("The first crewmate's welcome was not recorded", exc_info=True)
+        agent_mod.logger.warning("The first Bot's welcome was not recorded", exc_info=True)
         return
     mark_welcome_owed(ASSISTANT_MEMBER_NAME, config=config)

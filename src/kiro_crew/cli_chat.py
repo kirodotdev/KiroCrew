@@ -10,9 +10,12 @@ import re
 import sys
 import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
+from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+from kiro_crew.agent_sdk.host_auth import for_terminal
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -41,7 +44,7 @@ from kiro_crew.hooks import (
     target_paths,
 )
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
-from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
@@ -54,12 +57,15 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
-from kiro_crew.sandbox import SandboxCeilingUnsealable
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.terminal_safe import safe_terminal_line
+
+if TYPE_CHECKING:
+    from kiro_crew.cli_chat_context import CliSessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +85,37 @@ _DEFAULT_KIRO_AGENT = "kirocrew"
 #: record is attributed to the CLI even if the key ever gains a suffix.
 _CLI_SEL_SOURCE = "cli"
 
-#: The only answer that approves a tool call, the key advertised for refusing
-#: one, and the key that refuses it WITH a typed reply to the agent. Matched
-#: exactly -- see :func:`_prompt_answer`.
-_ALLOW_KEY = "a"
-_DENY_KEY = "d"
+#: The answer that approves a tool call, the key advertised for refusing one,
+#: and the key that refuses it WITH a typed reply to the agent. Matched exactly
+#: -- see :func:`_prompt_answer`. ``y`` / ``n`` are Kiro CLI's own
+#: tool-permission keys (``crates/chat-cli/src/cli/chat/mod.rs``), so muscle
+#: memory from ``kiro-cli chat`` carries over instead of a habitual ``y`` being
+#: read as a denial.
+_ALLOW_KEY = "y"
+_DENY_KEY = "n"
 _OTHER_KEY = "o"
+#: An unadvertised alias for allow, so a user who learned ``a`` from this
+#: prompt is not suddenly refused. Temporary: it is removed one release after
+#: the ``y`` / ``n`` keys ship (tracked in the CLI spec). ``d`` needs no entry
+#: because every unrecognised answer already denies.
+_LEGACY_ALLOW_KEYS = frozenset({"a"})
+#: Kiro CLI's "trust this tool for the session". Not honoured here: this CLI
+#: has no persistent approval (see :func:`_answer_permission`), so ``t`` denies
+#: like any other unrecognised answer, but says why instead of looking like a
+#: misread allow.
+_TRUST_KEY = "t"
+_TRUST_UNSUPPORTED_NOTICE = (
+    "   Denied: trusting a tool for the session is not available in kirocrew chat. "
+    f"Answer {_ALLOW_KEY} to allow each call once."
+)
 
 #: Audit codes. Stable and machine-readable, mirroring the dashboard's own
 #: ``error="hook_deny"``: an audit record must not restate the path or command a
 #: gate reason names.
 _HOOK_DENY_CODE = "hook_deny"
+#: The running agent spec's own PreToolUse hooks refused the call (see
+#: :func:`_spec_hook_refusal`).
+_SPEC_HOOK_CODE = "spec_hook"
 _NONINTERACTIVE_CODE = "noninteractive"
 _USER_DENY_CODE = "user_denied"
 #: The person refused the call by typing a reply for the agent instead (``o``).
@@ -279,9 +305,12 @@ class _ToolGate:
     hooks: HookManager
     session_key: str = _CLI_SESSION_KEY
     agent: str = ""
+    #: The kiro agent the session runs, whose spec's hooks apply: a crew member's
+    #: bound agent, while ``agent`` stays the member for governance.
+    kiro_agent: str = ""
 
 
-def _build_tool_gate(agent: str = "") -> _ToolGate:
+def _build_tool_gate(agent: str = "", kiro_agent: str = "") -> _ToolGate:
     """Load the security gate for this CLI process.
 
     Opt-out state comes from the keystone ``denied_commands.json`` rather than
@@ -291,29 +320,42 @@ def _build_tool_gate(agent: str = "") -> _ToolGate:
     return _ToolGate(
         hooks=HookManager(hooks_config_from_config_dict(KiroCrewConfig.load().hooks)),
         agent=agent,
+        kiro_agent=kiro_agent,
     )
 
 
-def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None, str]:
-    """Map ``--agent``'s name to ``(kiro_agent, crew_agent, member_model)``.
+def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None, str, str]:
+    """Map ``--agent``'s name to ``(kiro_agent, crew_agent, member_model, memory_store)``.
 
     ``--agent`` takes a crew member or a kiro agent. A ``config.agents`` key is a
     member, checked first as the dashboard and the cron path do: it starts its
-    bound kiro agent under its own crew identity, with its model pin. A member
-    bound to no kiro agent runs the built-in one. Any other name is a kiro agent
-    and passes through with no crew identity and no model pin.
+    bound kiro agent under its own crew identity, with its model pin and its
+    memory store. A member bound to no kiro agent runs the built-in one. Any other
+    name is a kiro agent and passes through with no crew identity, no model pin
+    and the default store.
 
     Blocking: resolving a member's bound agent may scan the agents directory, so
     an ``async`` caller runs this on a worker thread.
     """
     if name not in cfg.agents:
-        return name, None, ""
+        return name, None, "", DEFAULT_MEMORY_STORE
     bindings = resolve_agent_bindings(cfg, name, validate_memory_files=False)
-    return bindings.kiro_agent or _DEFAULT_KIRO_AGENT, name, bindings.model
+    return (
+        bindings.kiro_agent or _DEFAULT_KIRO_AGENT,
+        name,
+        bindings.model,
+        bindings.memory_store_name,
+    )
 
 
 async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
     """Run a single message or interactive chat session."""
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence here, before
+    # the config load below reads the pick. Probe-once, off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
     if model:
         cfg.agent.model = model
@@ -323,10 +365,10 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # the gate would therefore run that agent while bypassing its task profile.
     agent_name = agent or cfg.agent.default_agent or _DEFAULT_KIRO_AGENT
     # Only ``--agent`` names a member: ``agent.default_agent`` is a template name.
-    kiro_agent, crew_agent, member_model = agent_name, None, ""
+    kiro_agent, crew_agent, member_model, memory_store = agent_name, None, "", DEFAULT_MEMORY_STORE
     if agent:
         try:
-            kiro_agent, crew_agent, member_model = await asyncio.to_thread(
+            kiro_agent, crew_agent, member_model, memory_store = await asyncio.to_thread(
                 _resolve_cli_agent, cfg, agent
             )
         except UnknownMemoryStore as exc:
@@ -359,7 +401,17 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider.child_fidelity_aware = True
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
-    gate = _build_tool_gate(agent_name or "")
+    gate = _build_tool_gate(agent_name or "", kiro_agent)
+    # Imported here so the other CLI commands do not pay for the context stack.
+    from kiro_crew.cli_chat_context import build_cli_session_context
+
+    context = await build_cli_session_context(
+        hooks=gate.hooks,
+        bot_name=cfg.agent.bot_name,
+        session_key=_CLI_SESSION_KEY,
+        agent=kiro_agent,
+        memory_store=memory_store,
+    )
     # The bundled ``postToolUse`` hook appends every ``execute_bash`` call to
     # ``<data home>/audit.log`` from inside kiro-cli, whichever process launched
     # it, and the sweep that bounds that file runs on the gateway's cleanup loop
@@ -389,9 +441,10 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             # `-m` is documented as a non-interactive single message, so this
             # path never stops to ask -- a permission request is denied rather
             # than blocking a caller that may be a script.
-            await _send_and_print(provider, message, interactive=False, gate=gate)
+            built = await context.first_message(provider, message)
+            await _send_and_print(provider, built or message, interactive=False, gate=gate)
         else:
-            await _interactive(provider, cfg, gate=gate, agent=agent_name)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context)
     finally:
         try:
             await provider.shutdown()
@@ -414,10 +467,13 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     The sandbox launcher raises ``SandboxCeilingUnsealable`` from its ceiling
     materialisers when a governance ceiling cannot be made sealable — a symlink or a second hard link on the live-target pointer
     is the shape an ordinary snapshot tool produces — and that refusal is deliberately
-    NOT in the ``AcpError`` hierarchy, so ``_stream_and_print``'s handler never sees it
+    NOT in the ``AcpError`` hierarchy, so ``_send_and_print``'s handler never sees it
     and it escaped here as an unhandled exception. The remedy was technically on screen,
     buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
-    to tell an operator whose actual problem is one extra file link.
+    to tell an operator whose actual problem is one extra file link. The launcher's
+    ``SandboxUnavailableError`` (no sandbox backend on this host, for one a stock Ubuntu
+    whose AppArmor restricts unprivileged user namespaces) is outside that hierarchy too,
+    and its text already names the host's remedy, so it is printed the same way.
 
     Printed verbatim: the exception's own text names the path and the one-step fix, and a
     summary here would be a second wording of it that could drift.
@@ -433,7 +489,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
         asyncio.run(_chat(message, model, agent=agent))
     except KeyboardInterrupt:
         print("\nBye! 👻")
-    except SandboxCeilingUnsealable as exc:
+    except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
         # Escaped HERE as well as in the formatters that build these sentences, and the
         # duplication is the point: this handler takes ANY builder of this exception,
         # including ones in modules it does not own, and several embed a filename read
@@ -447,6 +503,11 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
             "   Run `kirocrew doctor` to see this before the next spawn.",
             file=sys.stderr,
         )
+        sys.exit(1)
+    except AcpError as exc:
+        # A backend that fails to start, before any turn, prints its message as a
+        # failed turn does in ``_send_and_print``, not as a traceback.
+        print(f"\n❌ {for_terminal(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -671,7 +732,7 @@ def _kind_text(event: LLMEvent) -> str:
 class _PromptAnswer:
     """What the person at the terminal answered a permission prompt with.
 
-    ``allowed`` is True ONLY for the exact allow token. ``reply`` is non-empty
+    ``allowed`` is True ONLY for an exact allow token. ``reply`` is non-empty
     only when the person chose ``o`` and typed something: the call is refused
     and that text goes back to the agent as their answer (see
     :func:`_steer_user_reply`). Every other answer is a plain denial.
@@ -682,11 +743,14 @@ class _PromptAnswer:
 
 
 async def _prompt_answer(event: LLMEvent) -> _PromptAnswer:
-    """Ask the human, and allow ONLY on the exact allow token.
-    Matched exactly rather than by first letter: a prefix match reads ``abort``
-    as an allow, which is the opposite of what the person typing it means.
-    Anything else -- an unrecognised word, a blank line, EOF -- denies, so the
-    safe answer is the one a user gets by doing nothing.
+    """Ask the human, and allow ONLY on an exact allow token.
+    The allow tokens are ``y`` and the unadvertised legacy ``a``. Matched
+    exactly rather than by first letter: a prefix match reads ``yank`` or
+    ``abort`` as an allow, which is the opposite of what the person typing it
+    means. Anything else -- an unrecognised word, a blank line, EOF -- denies,
+    so the safe answer is the one a user gets by doing nothing. ``t`` (Kiro
+    CLI's trust-for-session) denies too, with a notice, because there is no
+    session grant here to honour it with.
 
     The exact ``o`` token asks a second question: a free-text reply the agent
     receives instead of a bare denial ("use the staging bucket instead", "show
@@ -739,8 +803,11 @@ async def _prompt_answer(event: LLMEvent) -> _PromptAnswer:
         f"[{_OTHER_KEY}] other (reply to the agent): "
     )
     choice = answer.strip().lower()
-    if choice == _ALLOW_KEY:
+    if choice == _ALLOW_KEY or choice in _LEGACY_ALLOW_KEYS:
         return _PromptAnswer(allowed=True)
+    if choice == _TRUST_KEY:
+        print(_TRUST_UNSUPPORTED_NOTICE)
+        return _PromptAnswer(allowed=False)
     if choice != _OTHER_KEY:
         return _PromptAnswer(allowed=False)
     reply = await _read_line("   Your reply (the tool will not run; blank to just deny): ")
@@ -951,6 +1018,26 @@ def _audit(
     )
 
 
+async def _spec_hook_refusal(provider: LLMProvider, gate: _ToolGate, event: LLMEvent) -> str | None:
+    """Why the running agent spec's own PreToolUse hooks refuse *event*, or ``None``.
+
+    Asked only where Crew runs the spec's hooks (KAS and the other backends whose
+    harness never receives them); there the projection sends every call such a hook
+    covers here. The agent-channel member's gate (:mod:`kiro_crew.channel_spec_hooks`):
+    the spec's hooks alone, through an empty store, so the CLI runs none of the Hooks
+    page's, and a spec that cannot be read refuses.
+    """
+    # Deferred, as in messaging.tool_hooks: the agent_sdk package reaches acp.client.
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.agent_sdk.spec_hooks import running_agent, turn_spec_hooks
+    from kiro_crew.channel_spec_hooks import pre_tool_refusal
+
+    if not capabilities_of(provider).crew_fires_spec_hooks:
+        return None
+    spec = await turn_spec_hooks(provider, running_agent(provider, gate.kiro_agent))
+    return await pre_tool_refusal(spec, provider, event, gate.session_key)
+
+
 async def _answer_permission(
     provider: LLMProvider,
     event: LLMEvent,
@@ -973,6 +1060,7 @@ async def _answer_permission(
     not just ``title``: for a shell tool the title may be an LLM-authored
     description, so a dangerous command behind a benign label is exactly what
     keying on the title alone would let through (see ``AcpEvent.shell_command``).
+    The agent spec's own PreToolUse hooks answer next (:func:`_spec_hook_refusal`).
 
     Its verdict is a deny CEILING: ``TOOL_AUTO_APPROVE`` still asks, because
     honouring it here would add a second path that runs a tool with no human
@@ -1050,7 +1138,18 @@ async def _answer_permission(
             mcp_tool_name=event.tool_name,
             mcp_identity_trusted=event.mcp_identity_trusted,
             spawn_target=event.spawn_target,
+            # The KAS spec's own deny-all-but restrictions. Only refusals, so
+            # they travel here although the spec's grants do not: dropping them
+            # would let an answered prompt run what the spec refuses.
+            spec_shell_allowlist=getattr(event, "spec_shell_allowlist", None),
+            spec_write_allowlist=getattr(event, "spec_write_allowlist", None),
+            spec_write_cwd=getattr(event, "spec_write_cwd", "") or "",
+            # Lifts the shell allowlist only for a read-only command, as above.
+            spec_shell_readonly=getattr(event, "spec_shell_readonly", False) is True,
         )
+        spec_refusal: str | None = None
+        if decision.action != TOOL_DENY:
+            spec_refusal = await _spec_hook_refusal(provider, gate, event)
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
         await _reject_internal_failure(
@@ -1086,6 +1185,25 @@ async def _answer_permission(
             _print_permission_notice(f"\nBlocked by security policy: {safe_title} -- {reason}")
         except Exception:
             logger.warning("Could not prepare the CLI policy-denial notice", exc_info=True)
+        return
+    if spec_refusal is not None:
+        # The agent's own guard refused it, as kiro-cli would before asking anyone.
+        await _refuse_host_deny(
+            provider,
+            gate,
+            event,
+            error=_SPEC_HOOK_CODE,
+            cause=DENY_CAUSE_POLICY,
+            reason=spec_refusal,
+        )
+        try:
+            reason = _for_consent(spec_refusal, stream=sys.stderr)
+            safe_title = _for_consent(title, stream=sys.stderr)
+            _print_permission_notice(
+                f"\nBlocked by the agent's PreToolUse hooks: {safe_title} -- {reason}"
+            )
+        except Exception:
+            logger.warning("Could not prepare the CLI hook-denial notice", exc_info=True)
         return
 
     if _unverifiable_shell(event):
@@ -1298,7 +1416,9 @@ async def _send_and_print(
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
     try:
-        async for event in provider.stream(message):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model inside this turn, on the same session (``acp.timed_out_continuation``).
+        async for event in continue_timed_out_calls(provider.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
                 print(event.text, end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
@@ -1326,7 +1446,7 @@ async def _send_and_print(
         print("\n⏱️  Response timed out.", file=sys.stderr)
         sys.exit(1)
     except AcpError as e:
-        print(f"\n❌ {e}", file=sys.stderr)
+        print(f"\n❌ {for_terminal(str(e))}", file=sys.stderr)
         sys.exit(1)
     if undelivered:
         print(
@@ -1354,18 +1474,27 @@ async def _interactive(
     *,
     gate: _ToolGate | None = None,
     agent: str = "",
+    context: CliSessionContext | None = None,
 ) -> None:
     """REPL loop — read user input, stream responses, auto-compact at configured threshold.
 
     The threshold is the one the run's crew declares (``agents.<name>.autocompact_pct``),
     resolved from *agent* by the same rule the provider factory keys the run on,
     else the global ``session.autocompact_pct``.
+
+    *context* builds the first message of each session on a harness other than
+    kiro-cli and KAS: the first turn's, the first after a compaction restart or a
+    history-clearing command, and the first after the provider's
+    ``context_incarnation`` changed, since each of those sessions holds none of it.
     """
     print(BANNER)
     print()
 
     print("Type your message (Ctrl+D or 'exit' to quit)\n")
 
+    # ``provider.context_incarnation`` after the last turn that carried the
+    # context; ``None`` until one does, and again once the session drops it.
+    delivered_to: object | None = None
     while True:
         # A cancelled permission prompt left a reader on stdin that this call
         # would race for the user's keystrokes, so the session ends here instead
@@ -1383,7 +1512,14 @@ async def _interactive(
             print("Bye! 👻")
             break
 
-        await _send_and_print(provider, message, interactive=True, gate=gate)
+        built: str | None = None
+        if context is not None and context.owed(provider, delivered_to):
+            built = await context.first_message(provider, message)
+        await _send_and_print(provider, built or message, interactive=True, gate=gate)
+        if built is not None:
+            delivered_to = provider.context_incarnation
+        elif context is not None and context.clears_history(message):
+            delivered_to = None
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
@@ -1406,6 +1542,7 @@ async def _interactive(
                     pass
             await provider.shutdown()
             await provider.start()
+            delivered_to = None
         elif warn_at > 0 and pct >= warn_at:
             print(f"\n⚠️  Context at {pct:.0f}%", file=sys.stderr)
 

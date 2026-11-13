@@ -41,7 +41,12 @@ from recovery_l1_chat_runner_helpers import (
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, JsonRpcMessage
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_STEER_CONSUMED,
+    EVENT_TEXT_CHUNK,
+    JsonRpcMessage,
+)
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard import session_health as sh
 from kiro_crew.dashboard.chat import _run_chat
@@ -153,6 +158,30 @@ class TestHandleClassifies:
         )
         idx = src.index("self.last_infra_error = None")
         assert 'self._last_stop_reason = ""' in src[:idx]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "src/kiro_crew/mcp_gateway/pool.py:41:class BackendGone(RuntimeError):",
+            "docs/x.md:12: if the backend is gone, the stub retries",
+            "test.py:3: ERR = -32001",
+        ],
+    )
+    @pytest.mark.parametrize("status", ["completed", "in_progress"])
+    def test_a_call_that_prints_a_marker_is_not_infra(self, text, status):
+        """A search that succeeds, or streams, and prints a marker is not a refusal."""
+        h = _handle()
+        h._handle_update(_tool_call("t1"))
+        h._handle_update(_tool_result("t1", text, status=status))
+        assert h.last_infra_error is None
+
+    @pytest.mark.parametrize("status", ["failed", ""])
+    def test_a_refusal_that_did_not_complete_is_still_infra(self, status):
+        h = _handle()
+        h._handle_update(_tool_call("t1"))
+        h._handle_update(_tool_result("t1", _CAPACITY, status=status))
+        assert h.last_infra_error is not None
+        assert h.last_infra_error.error_class == lad.CLASS_CAPACITY
 
     def test_gateway_recoverable_infra_marker(self):
         h = _handle()
@@ -357,9 +386,11 @@ class TestRunnerBranch:
         # normally and were kept, so they MUST settle. A pre-output 5xx (no
         # terminal), a cancelled Stop (discarded) and an empty-response re-queue
         # all keep the debt armed; a STARTED-but-not-completed compaction is not
-        # yet durable and also stays armed.
-        delivered = src.index("_first_turn_history_delivered = (")
-        dwin = src[delivered : delivered + 700]
+        # yet durable and also stays armed. The rule is defined once, as the
+        # turn-scoped helper the settle and the merge-card consumption both read.
+        delivered = src.index("def _kiro_cli_kept_the_prompt(")
+        dwin = src[delivered : delivered + 1400]
+        assert "_first_turn_history_delivered = _kiro_cli_kept_the_prompt(" in src
         # The fix: the predicate must NOT gate on _turn_landed (that excluded the
         # promise-only / leaked-tool / infra-recovery terminals the reviewer named).
         assert "_turn_landed" not in dwin
@@ -1320,3 +1351,221 @@ class TestTheRunnerCallSitesChargeTheFailedCycle:
             "an ACP transient-5xx same-session retry charged the failed-cycle "
             "streak -- a retried cycle has not failed"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "recovery_error",
+        [_transient_error, lambda: RuntimeError("the model session died mid-turn")],
+        ids=["acp-error-arm", "generic-arm"],
+    )
+    async def test_a_wake_whose_recovery_dies_charges_the_wakes_loop(
+        self, tmp_path, recovery_error
+    ) -> None:
+        """The wake's own turn streams and hits a transient error, so its one-shot
+        CONTINUE is queued; that recovery streams and then dies in either terminal
+        arm. The recovery is a new turn the wake never marked, so unless the wake's
+        loop rides its entry, neither turn charges the loop, and the work-ledger
+        wake's one retry (``gate._spend_ledger_wake_retry``) never comes.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            error = _transient_error() if len(prompts) == 1 else recovery_error()
+
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="reading the ledger ")
+                raise error
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        svc = _RecordingNudgeSvc()
+        slot = _RecordingSlot("chat-1-wake-recovery")
+        with (
+            patch.object(chat_runner, "_recovery_delay", new=AsyncMock()),
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[work-ledger wake] item=it_1 status=question",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-ledger",
+                _directive_loop_gen=3,
+            )
+            if slot.task:
+                await slot.task
+        assert slot.recovery_inserts == [chat_runner._POSTTOKEN_RECOVER_MSG]
+        assert len(prompts) == 2, "the CONTINUE recovery never reached the model"
+        assert svc.charges == [
+            ("chat-1-wake-recovery", "loop-ledger", 3)
+        ], "the wake's recovery died uncharged, so its loop never retries the wake"
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_took_a_steered_wake_charges_its_loop_when_it_dies(
+        self, tmp_path
+    ) -> None:
+        """A person's turn takes a work-ledger wake steered into it, then dies. The
+        turn is not the loop's own, so unless taking the wake makes it the loop's
+        cycle, nothing charges the loop and the wake's one retry never comes.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        slot = _RecordingSlot("chat-1-steered-wake")
+        wake = "[work-ledger wake] item=it_1 status=question"
+
+        def _stream(_message, *_a, **_kw):
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fixing the login bug ")
+                slot._pending_steers.append(wake)
+                slot._steer_automation[wake] = {
+                    "cycle": 2,
+                    "loop_id": "loop-ledger",
+                    "generation": 3,
+                }
+                yield LLMEvent(
+                    kind=EVENT_STEER_CONSUMED, text=f"<user_message>\n{wake}\n</user_message>"
+                )
+                raise RuntimeError("the model session died mid-turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        svc = _RecordingNudgeSvc()
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "fix the login bug")
+            if slot.task:
+                await slot.task
+        assert slot._pending_steers == [], "the turn never took the steered wake"
+        assert svc.charges == [
+            ("chat-1-steered-wake", "loop-ledger", 3)
+        ], "the turn that carried the wake died uncharged, so its loop never retries it"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("steer_loop_id", "expected_charge"),
+        [("loop-ledger", ("loop-ledger", 4)), ("loop-other", ("loop-other", 4))],
+        ids=["same-loop-newer-generation", "replacing-loop"],
+    )
+    async def test_a_loop_cycle_that_took_a_steered_wake_charges_the_right_cycle(
+        self, tmp_path, steer_loop_id, expected_charge
+    ) -> None:
+        """A loop's own cycle at generation 3 takes a steered wake, then dies.
+
+        The loop's instruction changed while the cycle ran, so a wake of the same loop
+        carries generation 4; a charge under 3 is discarded as stale and the wake gets
+        no retry. A slot holds one loop, so a wake of another loop means the cycle's
+        loop was replaced, and the charge goes to the live one.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        slot = _RecordingSlot("chat-1-steered-cycle")
+        wake = "[work-ledger wake] item=it_2 status=question"
+
+        def _stream(_message, *_a, **_kw):
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="reading the ledger ")
+                slot._pending_steers.append(wake)
+                slot._steer_automation[wake] = {
+                    "cycle": 2,
+                    "loop_id": steer_loop_id,
+                    "generation": 4,
+                }
+                yield LLMEvent(
+                    kind=EVENT_STEER_CONSUMED, text=f"<user_message>\n{wake}\n</user_message>"
+                )
+                raise RuntimeError("the model session died mid-turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        svc = _RecordingNudgeSvc()
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[work-ledger wake] item=it_1 status=question",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-ledger",
+                _directive_loop_gen=3,
+            )
+            if slot.task:
+                await slot.task
+        assert slot._pending_steers == [], "the turn never took the steered wake"
+        assert svc.charges == [("chat-1-steered-cycle", *expected_charge)]
+
+    @pytest.mark.asyncio
+    async def test_one_echo_that_settles_two_wakes_charges_the_newer_generation(
+        self, tmp_path
+    ) -> None:
+        """One echo settles a loop's wake at generation 3 and its wake at 4, sent in
+        that order. A charge under the stale 3 is discarded, so the newer wake loses
+        its retry; the turn must carry the last-sent wake.
+        """
+
+        class _PinnedHash(str):
+            # A set of plain str is walked in hash-seeded order; pinning the hash
+            # makes a set walk visit the generation-3 text first on every run.
+            def __new__(cls, text: str, pinned: int) -> "_PinnedHash":
+                obj = super().__new__(cls, text)
+                obj._pinned = pinned
+                return obj
+
+            def __hash__(self) -> int:
+                return self._pinned
+
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        slot = _RecordingSlot("chat-1-two-wakes")
+        older = _PinnedHash("[work-ledger wake] item=it_1 status=question", 0)
+        newer = _PinnedHash("[work-ledger wake] item=it_2 status=question", 1)
+
+        def _stream(_message, *_a, **_kw):
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fixing the login bug ")
+                for wake, generation in ((older, 3), (newer, 4)):
+                    slot._pending_steers.append(wake)
+                    slot._steer_automation[wake] = {
+                        "cycle": 2,
+                        "loop_id": "loop-ledger",
+                        "generation": generation,
+                    }
+                yield LLMEvent(
+                    kind=EVENT_STEER_CONSUMED,
+                    text=(
+                        f"<user_message>\n{older}\n</user_message>"
+                        f"<user_message>\n{newer}\n</user_message>"
+                    ),
+                )
+                raise RuntimeError("the model session died mid-turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        svc = _RecordingNudgeSvc()
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "fix the login bug")
+            if slot.task:
+                await slot.task
+        assert slot._pending_steers == [], "the turn never took both steered wakes"
+        assert slot._steer_automation == {}, "a settled wake kept its automation meta"
+        assert svc.charges == [
+            ("chat-1-two-wakes", "loop-ledger", 4)
+        ], "the turn carried the older wake, so the charge was stale and the retry lost"

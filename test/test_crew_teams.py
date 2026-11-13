@@ -922,6 +922,7 @@ class TestBackupCoverage:
         import zipfile
 
         from kiro_crew import portability
+        from kiro_crew import snapshot as snap
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -934,7 +935,7 @@ class TestBackupCoverage:
         zip_path = tmp_path / "import.zip"
         zip_path.write_bytes(buf.getvalue())
         with patch.object(portability, "_mc_dir", return_value=home):
-            with pytest.raises(Exception) as exc:
+            with pytest.raises(snap.SourceComponentUnsound) as exc:
                 portability.apply_import_zip(zip_path, mode="replace")
         assert "crew-teams" in str(exc.value)
         assert not teams.teams_path().exists()

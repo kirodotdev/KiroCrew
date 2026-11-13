@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import memory_edit, memory_stores
+from kiro_crew import memory_edit, memory_record_metadata, memory_stores
 from kiro_crew.config import loader
 from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
@@ -96,6 +96,29 @@ def test_paged_literal_search_and_atomic_batch(store):
     assert result["changed_count"] == 65
     assert memory_edit.list_records(store, {"q": "@new.example"})["total"] == 65
     assert json.loads(store.get_semantic("user.language")["value_json"]) == "Chinese"
+
+
+@pytest.mark.parametrize(
+    "value, query",
+    [
+        (r"Projects live in C:\Users\rohan\src", r"C:\Users\rohan\src"),
+        ('Greets people with "good morning"', '"good morning"'),
+        ({"rule": r"Build under D:\work", "category": "knowledge"}, r"D:\work"),
+    ],
+)
+def test_literal_search_matches_stored_text_with_backslashes_and_quotes(store, value, query):
+    assert store.set_semantic("user.note", value, 1.0, "user_explicit") is None
+    listed = memory_edit.list_records(store, {"q": query})
+    assert listed["total"] == 1, (value, query, listed["total"])
+
+
+def test_literal_search_lists_a_deeply_nested_value(store):
+    value: object = "deep note"
+    for _ in range(600):
+        value = [value]
+    assert store.set_semantic("user.deep", value, 1.0, "user_explicit") is None
+    listed = memory_edit.list_records(store, {"q": "deep note"})
+    assert listed["total"] == 1
 
 
 def test_every_preview_page_reuses_the_signed_operation_and_original_expiry(store, monkeypatch):
@@ -869,3 +892,132 @@ def test_query_forget_excludes_null_id_rows_and_applies_cleanly(tmp_path):
         assert bad_sem == 1
     finally:
         tier.close()
+
+
+@pytest.mark.parametrize("stored", ["NaN", "Infinity", "-Infinity"])
+def test_editing_a_fact_with_a_non_finite_stored_value_is_refused_not_a_500(stored):
+    # An imported fact can hold NaN/Infinity in value_json: json.loads reads it
+    # back as a float, but _json (allow_nan=False) cannot write it, so every edit
+    # path re-serializing the old value raised ValueError -> 500. It is now a
+    # clean MemoryEditError the route maps to 409.
+    before = {
+        "kind": "fact",
+        "key": "env.python",
+        "value_json": stored,
+        "text": stored,
+    }
+    operation = {"type": "set", "value": "3.12"}
+    # Catch the base ValueError: on the unfixed path the re-serialize raises a
+    # bare ValueError (not the MemoryEditError subclass), so asserting the type
+    # and code below FAILS there rather than erroring past pytest.raises.
+    with pytest.raises(ValueError) as excinfo:
+        # store is unused: the guard raises before any store method is reached.
+        memory_edit._after(None, before, operation)
+    assert isinstance(excinfo.value, memory_edit.MemoryEditError)
+    assert excinfo.value.code == "memory_record_unreadable"
+    assert excinfo.value.status == 409
+
+
+def test_editing_a_fact_with_a_finite_stored_value_still_proceeds(store):
+    # The guard must not refuse an ordinary value: a normal edit still applies.
+    assert store.set_semantic("user.language", "Chinese", 1.0, "user_explicit") is None
+    before = memory_edit.list_records(store, {"q": "language"}, limit=10)["entries"][0]
+    after = memory_edit._after(store, before, {"type": "set", "value": "English"})
+    assert json.loads(after["value_json"]) == "English"
+
+
+# -- a page of the list reads its own records, not the whole store -------------- #
+#
+# ``list_records`` returns one page and the total. The total needs every match
+# counted; it does not need every match's metadata, decoded value and fingerprint.
+
+RECORDS = 66  # what ``seed`` writes: 65 addresses and one language
+
+
+@pytest.fixture
+def record_reads(monkeypatch):
+    """How many records had their metadata read and their fingerprint computed."""
+    counts = {"metadata": 0, "fingerprint": 0}
+    real_metadata = memory_record_metadata.get_record_metadata
+    real_record = memory_edit._record
+
+    def metadata(db, record_id):
+        counts["metadata"] += 1
+        return real_metadata(db, record_id)
+
+    def record(row):
+        counts["fingerprint"] += 1
+        return real_record(row)
+
+    monkeypatch.setattr(memory_record_metadata, "get_record_metadata", metadata)
+    monkeypatch.setattr(memory_edit, "_record", record)
+    return counts
+
+
+def _seeded(store, record_reads: dict) -> dict:
+    """Seed the store, then start the counts at zero: the seeding reads records too."""
+    seed(store)
+    record_reads.update(metadata=0, fingerprint=0)
+    return record_reads
+
+
+def _whole(store, query: dict) -> list[dict]:
+    """Every match, assembled the way the unpaged callers read them."""
+    rows = list(memory_edit._rows(store, memory_edit._query(query)))
+    for row in rows:
+        memory_edit._conflict_count(store, row)
+    return rows
+
+
+def test_a_page_with_no_search_term_reads_only_its_own_records(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {}, limit=10, offset=20)
+
+    assert page["total"] == RECORDS and page["has_more"]
+    assert len(page["entries"]) == 10
+    assert reads == {"metadata": 10, "fingerprint": 10}
+
+
+def test_a_searched_page_fingerprints_only_its_own_records(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {"q": "email"}, limit=10, offset=20)
+
+    assert page["total"] == 65 and page["has_more"]
+    assert len(page["entries"]) == 10
+    # A search term is matched against each record's metadata, so that is read
+    # for every record; the fingerprint is only for the records returned.
+    assert reads == {"metadata": RECORDS, "fingerprint": 10}
+
+
+@pytest.mark.parametrize("query", [{}, {"q": "email"}, {"kind": "fact"}, {"q": "chinese"}])
+def test_the_pages_together_are_the_unpaged_listing(store, query):
+    seed(store)
+    whole = _whole(store, query)
+    paged: list[dict] = []
+    offset = 0
+    while True:
+        page = memory_edit.list_records(store, query, limit=25, offset=offset)
+        assert page["total"] == len(whole)
+        paged += page["entries"]
+        offset += 25
+        assert page["has_more"] == (offset < len(whole))
+        if not page["has_more"]:
+            break
+    assert paged == whole
+
+
+def test_a_page_past_the_end_is_empty_and_still_counts_every_record(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {}, limit=50, offset=500)
+
+    assert page == {"entries": [], "total": RECORDS, "has_more": False}
+    assert reads == {"metadata": 0, "fingerprint": 0}
+
+
+def test_an_unpaged_read_still_assembles_every_record(store, record_reads):
+    """The callers that act on a whole selection pass no page and get every record."""
+    reads = _seeded(store, record_reads)
+    rows = list(memory_edit._rows(store, memory_edit._query({})))
+
+    assert len(rows) == RECORDS and all(row is not None for row in rows)
+    assert reads == {"metadata": RECORDS, "fingerprint": RECORDS}

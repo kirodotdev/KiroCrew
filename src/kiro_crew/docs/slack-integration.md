@@ -90,12 +90,17 @@ Available to all allowed users (no `!` prefix needed):
 
 When Kiro Crew needs to run a tool (file write, bash command, etc.):
 
-1. **Auto mode** (`!yolo on`): silently approves everything
-2. **Interactive mode** (default): posts Approve / Trust session / Reject buttons
-3. `agent.tool_approval_timeout_secs` timeout (default 600 seconds) —
-   auto-rejects if no click. The other five channels that prompt at all wait
-   five minutes, and four channels do not prompt. See [Channel capabilities](channel-capabilities.md).
-4. "Trust session" approves all remaining tools for that session
+1. **Auto mode** (default, `agent.approval_mode: "auto"`): approves every tool
+   call the tool gate allows, with no buttons. `!yolo on` switches a gateway
+   set to interactive to it, and `!yolo off` switches back.
+2. **Interactive mode** (opt in with `agent.approval_mode: "interactive"` or
+   `kirocrew gateway --approval interactive`, then restart the gateway): posts
+   Approve / Trust session / Reject buttons
+3. In interactive mode, a prompt nobody clicks is auto-rejected after
+   `agent.tool_approval_timeout_secs` (default 600 seconds). The other five
+   channels that prompt at all wait five minutes, and four channels do not
+   prompt. See [Channel capabilities](channel-capabilities.md).
+4. In interactive mode, "Trust session" approves all remaining tools for that session
 
 Approval buttons appear in both Slack and the dashboard. Approving in either
 place resolves both.
@@ -127,8 +132,10 @@ Authorization: owner and allowed users. Unauthorized callers get
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear as 🔧 _tool name_ inline.
 
-With `slack.reactions_enabled` on, the reaction on your message tracks the phase: 👀 queued, 🤔 thinking,
-👨‍💻 coding, 🌐 browsing, 🔧 running a tool, 🦞 done, 😱 error.
+With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
+("is working on your request") your message gets no reaction; elsewhere it gets 👀
+while it is answered, removed when the reply lands (the reply is the done signal).
+A failed turn gets 😱.
 
 ## File attachments
 
@@ -184,17 +191,20 @@ Off by default. Applies to the next new session with no restart.
 
 ## OPTIONS Buttons
 
-When Kiro Crew presents choices, they render as interactive Block Kit buttons.
-Click a button to send that choice back to the conversation. You can select
-multiple options before submitting.
+When Kiro Crew presents choices, each one is a button: one click sends that
+choice back to the conversation. To send several at once, open the card's ⋯ menu
+and pick **Choose several…**, then tick them in the dialog and press Send. Once a
+card is answered its buttons give way to a line saying who chose what and when;
+a later click on it only gets a private "Already answered".
 
 ## Access control
 
 Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody else.
 Multi-user access is disabled because an allowed user would act under the owner's
 system identity — the owner's file permissions and cloud credentials — with no scope
-limit and no expiry. `!allowlist`, `/kirocrew @user` and `slack.allowed_users` are all
-inert as a result, and stale allowlist entries are pruned at startup.
+limit and no expiry. `!allowlist`, `/kirocrew @user`, `slack.allowed_users` and
+`slack.open_channels` are all inert as a result, and stale allowlist entries are
+pruned at startup.
 
 `!dashboard` presigned links go to the owner only.
 
@@ -256,12 +266,78 @@ things about it are worth knowing before you use it:
 - **A token is verified against Slack before it is stored.** A rejected token is not
   written. If the host is offline the save succeeds with a warning instead, and clearing
   a token takes an explicit clear action rather than an empty field.
-- **Some changes need a restart** — the tokens, the owner ID, the slash command and the
-  enterprise-org allowlist are read at boot. Reactions and thinking-indicator toggles
-  apply immediately.
+- **New tokens apply when you click Reconnect**, without a gateway restart. A changed
+  owner ID, or a token for a different workspace, is refused there and still needs a
+  restart. The slash
+  command and the enterprise-org allowlist are read at boot.
+  Reactions and thinking-indicator toggles apply immediately.
 
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
+
+## Slack Code: agent sessions and code channels
+
+Two switches in the Slack channel view's **Slack Code** section, each off by default and
+applied without a restart. A switch that is on runs only once your installed Slack app can use the
+feature: its permissions (read from Slack each time the gateway connects) include the
+feature's scope, and Slack has not refused it for your workspace. Until then Slack works
+exactly as with the switch off, and the page says why under the switch.
+
+- **Agent sessions** (`slack.agent_sessions`) declares the Slack app an agent
+  (`features.agent_view`): threads show a live status and title, and Slack's own Stop
+  button cancels a running turn. Turning the switch on only changes the manifest the
+  page generates; the permanent step is saving that manifest in Slack, which cannot
+  switch an app back from the agent view to the older assistant view, so the update
+  steps warn you there.
+- **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
+  coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
+  `channels:write.invites` and `groups:write.invites` scopes. Your workspace must have
+  Slack code channels enabled.
+
+**Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
+restart): a folder, an agent, a model, a reasoning effort and an approval mode. Set any of
+them; anything empty falls through:
+
+- folder: the default folder here, else a top-level **Code channels** folder. That folder is
+  created the first time a code channel needs it, with `kirocrew-conductor` as its default
+  agent, so a code channel with nothing set runs the conductor there. **New folder…** in
+  the folder list creates a sidebar folder (name, optional project directory and default
+  agent) and selects it;
+- agent: the default agent here, then the folder's default agent, then the agent Slack
+  already uses. The list offers every agent a chat can run, the shipped ones included,
+  except background-only ones (`kirocrew-lite`, `kirocrew-guest`, `kirocrew-heartbeat`);
+- project: the folder's project directory, then the project of the thread the channel was
+  opened from;
+- model and effort: set here, else the agent's own;
+- approval mode (`approval_mode`): `ask` (the default: look-ups such as file reads, web
+  searches and read-only shell commands run on their own, everything else waits for
+  approval), `trust_reads` (also searches of memory, past chats, skills and the knowledge
+  library) or `trust` (every tool
+  runs without asking). The page labels them Normal, Reads and Trust, as the session's own
+  approval picker does.
+
+The page previews what a new code channel will run with. A folder or agent deleted after
+you saved it is flagged on the page and skipped; the other defaults still apply.
+
+**Updating an existing Slack app.** A switch changes the manifest (scopes, events and
+feature blocks), and Slack grants scopes only when the app is (re)installed. The
+**Update your Slack app** panel lists what each switch adds, compares it with the scopes
+your installed app holds, and reads one of: *Up to date*, *Needs update*, *Workspace not
+enabled* (Slack refuses a feature, such as code channels, for this workspace), *Cannot check* (Slack did not
+report the app's scopes: select **Check again** first, and open the update steps with
+**Show update steps** only if it still cannot check and threads show no Stop button). To update:
+copy the manifest, open the app's **App Manifest** page (the panel links it), replace the
+YAML, save, reinstall the app when Slack asks, then select **Check again**: the gateway
+picks up the new permissions at once. Slack does not report event subscriptions, so the
+check covers scopes only. If Slack refuses a feature at runtime (`feature_disabled`,
+`missing_scope`), Kiro Crew posts one notification, keeps Slack working as before and
+retries after the next reconnect.
+
+The same manifest is printed by `kirocrew manifest`, which renders the switches saved in
+`config.json`. Kiro Crew does not push the manifest into your app itself:
+`apps.manifest.update` replaces the whole app configuration and needs a workspace-wide
+configuration token (see `docs/request-for-change/rfc-slack-code-channels.md`).
 
 ## Related docs
 

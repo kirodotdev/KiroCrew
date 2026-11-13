@@ -1,28 +1,9 @@
-"""AWS Control backup/costs — the paths the P0 suite's backup classes leave uncovered.
+"""AWS Control backup: the ``_authorize_upload`` branches and the two push paths.
 
-``test_aws_control_app_hardening.py`` already pins the security-critical traversal (symlink
-and junction refusals, descriptor-pinned descent, FIFO/O_NONBLOCK non-hang, the
-restore staging checks, the teardown stop gate, and the corrupt-state shape
-guards). This file covers what those do not exercise: the two whole-run push
-paths (``run_snapshot_backup`` / ``run_sessions_backup``) with ``_authorize_upload``
-fully mocked, the ``_authorize_upload`` account-mismatch and consent branches, the
-name-based archive fallback that only Windows runs at runtime, ``list_remote_backups``,
-the ``restore_download`` resolve-outside-storage guard, ``due_for_nightly``'s
-malformed-timestamp branch, and the ``costs`` cache read/freshness branches.
-
-Every fixture that touches the filesystem stays inside ``tmp_path`` so nothing
-escapes into the real data home; the two run paths mock the S3 ``put_file`` and
-the authorization so no network or live STS is ever reached.
-
-This module keeps the ``_authorize_upload`` branches and the two push paths. The
-other cases are in sibling modules: the unpinned-walk refusal, ``list_remote_backups``
-and the ``restore_download`` guard in ``test_aws_control_backup_ownership.py``;
-``due_for_nightly``'s bad stamp and the retry backoff in
-``test_aws_control_backup_retry_backoff.py``; the ``costs`` cache and the run state
-in ``test_aws_control_backup_run_state.py``; the Layer B gate in
-``test_aws_control_backup_layer_b.py`` and ``test_aws_control_backup_layer_b_mid_build.py``;
-and the upload records in ``test_aws_control_backup_upload_records.py``. The shared
-constants live in ``aws_control_backup_helpers.py``.
+Covers ``run_snapshot_backup`` / ``run_sessions_backup`` with S3 ``put_file`` and the
+authorization mocked, so no network or live STS is reached. Traversal hardening is in
+``test_aws_control_app_hardening.py``; other backup cases sit in sibling
+``test_aws_control_backup_*.py`` modules.
 """
 
 from __future__ import annotations
@@ -39,9 +20,7 @@ from aws_control_backup_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
 
-# ---------------------------------------------------------------------------
 # _authorize_upload — the branches the teardown test in the P0 suite skips over
-# ---------------------------------------------------------------------------
 
 
 class TestAuthorizeUpload:
@@ -167,22 +146,19 @@ class TestAuthorizeUpload:
         assert read.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # run_snapshot_backup / run_sessions_backup — the whole push path
-# ---------------------------------------------------------------------------
 
 
 class TestRunSnapshotBackup:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         # A successful push ends with the retention sweep, which LISTS the drive.
         # Stubbed here rather than per test: the sweep swallows its own failures by
         # design, so an unstubbed test would attempt a real CLI call and still
         # pass. Retention's own behaviour is covered in
         # test_aws_control_backup_retention.py.
-        monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
+        _floor_monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
         yield
 
     def test_failed_snapshot_build_raises_before_any_upload(self):
@@ -233,27 +209,12 @@ class TestRunSnapshotBackup:
                 ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
             )
 
-        # ONE authorization per S3 operation, and that is the contract: the
-        # archive PUT and each of the two label PUTs sit immediately after their
-        # own gate, so none of them runs on a decision that went stale during
-        # another's round trip.
+        # ONE authorization per S3 operation: the archive PUT and the two label PUTs
+        # each sit right after their own gate. THREE, not four: no retention count is
+        # set, so the off sweep must do no cloud work.
         #
-        # THREE, not four: this fixture configures no retention count, so retention
-        # is off and the sweep declines before asking for anything. That is the
-        # shipped default, and it is worth pinning as an absence rather than as a
-        # smaller number -- an off sweep costs no authorization round trip and no
-        # listing call, so a fourth gate appearing here would mean the sweep had
-        # started doing cloud work on an install that never asked for it.
-        #
-        # Each write also NAMES what it carries, which is what lets the gate
-        # re-read the unattended grant for the right payload. The archive is the
-        # snapshot's payload; the two label writes are one caption published under
-        # both prefixes and are nobody's payload, so they name none.
-        #
-        # The write gates are checked field by field rather than against a whole
-        # expected call: they now carry `payload_kind` as well, so an equality
-        # against a fixed call would assert the ABSENCE of that argument, which is
-        # the opposite of what the line above pins.
+        # The archive names the snapshot payload; the label writes are one caption
+        # under both prefixes and name none. Gates are checked field by field.
         assert authz.call_count == 3
         write_gates = [c for c in authz.call_args_list if "operation" not in c.kwargs]
         assert len(write_gates) == 3
@@ -323,13 +284,12 @@ class TestRunSnapshotBackup:
 
 class TestRunSessionsBackup:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         # See TestRunSnapshotBackup: the push ends with a drive listing, and the
         # sweep swallows its own failures, so leaving it unstubbed would attempt a
         # real CLI call from a passing test.
-        monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
+        _floor_monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
         yield
 
     def test_empty_session_dirs_raise_before_upload(self, tmp_path, monkeypatch):

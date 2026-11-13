@@ -126,12 +126,9 @@ async function main() {
       if (path === '/api/mcp') return json(route, mcpServers), true
       return false
     },
+    // Pre-select the slot so the SPA boots straight into the transcript.
+    localStorageEntries: { 'mc-active-slot-chat': SLOT },
   })
-
-  // Pre-select the slot so the SPA boots straight into the transcript. Added
-  // AFTER stubDashboardApi's init script, whose localStorage.clear() would
-  // otherwise wipe it.
-  await page.addInitScript(s => localStorage.setItem('mc-active-slot-chat', s), SLOT)
 
   const shot = async name => {
     await page.screenshot({ path: `${OUT}/${name}.png` })

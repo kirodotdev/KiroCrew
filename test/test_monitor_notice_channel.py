@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.dashboard.handlers.messaging import api_notification_channels
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 from kiro_crew.notifications.bus import (
@@ -127,7 +128,7 @@ class TestGatewayNoticesLandOnMonitorChannel:
         assert all(n["silenced"] is True and n["priority"] == "passive" for n in monitor_notes)
         assert "silenced" not in agent_note
         assert agent_note["priority"] == "default"
-        assert state._unread_count == 1  # only the agent note counts
+        assert unread_count(state._notification_log) == 1  # only the agent note counts
 
     def test_muting_agent_no_longer_silences_monitor_notices(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)

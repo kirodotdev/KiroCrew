@@ -43,9 +43,9 @@ which would over-grant.
 | `kirocrew gateway --port 9999` | Override dashboard port |
 | `kirocrew gateway --port auto` | OS-assigned ephemeral port |
 | `kirocrew gateway --no-open` | Don't auto-open dashboard URL in browser |
-| `kirocrew gateway --approval reads` | Auto-approve read-only tools |
+| `kirocrew gateway --approval reads` | Auto-approve read-only tools on background turns (cron, task runner, subagents); a channel turn still asks about every tool |
 | `kirocrew gateway --approval yolo` | Auto-approve all tools (requires isolated KIROCREW_HOME) |
-| `kirocrew gateway --approval interactive` | Prompt for every tool (default) |
+| `kirocrew gateway --approval interactive` | Prompt for every tool. Without `--approval`, `agent.approval_mode` decides (default `auto`: no prompt) |
 | `kirocrew gateway --seed FIXTURE` | Seed $KIROCREW_HOME from fixture before starting (dev) |
 | `kirocrew gateway --seed-replace` | Wipe a non-empty target home and re-seed it (paired with `--seed`) |
 | `kirocrew gateway --no-tunnel` | Never publish a tunnel for this process's whole life, whatever `tunnel.enabled` says. Scoped to TUNNELS: it does not change where the dashboard binds |
@@ -127,86 +127,39 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | `kirocrew chat -m "message"` | Single message (non-interactive) |
 | `kirocrew chat --model MODEL_ID` | Use a specific model (default `auto`; any id the model picker lists) |
 
-## Browsing (`browser` MCP tool, then `playwright-cli`)
+When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
+`n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
+type a reply to the agent instead. Anything else denies.
 
-Browsing is not a `kirocrew` subcommand. Start with the **`browser` MCP tool**
-in the native Browser panel:
-`op=navigate|snapshot|click|type|press_key|hover|select_option|screenshot|wait_for|back|console`.
-It refuses loopback, private, and link-local targets. Use `playwright-cli` when
-no native panel serves the session, or for attached logins, saved storage state,
-and the full operate verbs. It must be on `PATH`; install via **Settings → Browser**
-(also holds the attach token) or `npm install -g @playwright/cli@latest`
-(Node.js 20 or newer).
+## Browsing (`browser` MCP tool)
 
-| Command | Description |
-|---------|-------------|
-| `playwright-cli open <url>` | Open a page (prints URL, title, and a snapshot path) |
-| `playwright-cli snapshot` | Write the accessibility tree to a YAML file, print its path |
-| `playwright-cli click <ref>` / `fill <ref> <text>` | Act on an element from a snapshot |
-| `playwright-cli screenshot [ref]` | Write a PNG, print its path. `[ref]` is an ELEMENT, not a path; do not pass `--filename` (it resolves against the CWD and is not auto-approved) |
-| `playwright-cli state-save` / `state-load <file>` | Save or restore a logged-in session. Bare `state-save` writes into the service's own directory; both a name and `state-load` prompt for approval, because each names a local path |
-| `PLAYWRIGHT_MCP_ISOLATED=false playwright-cli attach --extension=chrome` | Drive the user's own running Chrome, with their logins |
-| `playwright-cli show --port <n> --host 127.0.0.1` | Serve the CLI's dashboard for the Browser panel |
+Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
+`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|reflex|ask`.
+It drives one browser the gateway owns (the user's own Chrome where there is
+one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
+user watches the page live in the chat, where one click takes over. It opens
+public `http(s)` URLs only, plus loopback origins the user listed under
+**Settings → Browser → Local preview origins**.
+
+| Op | Description |
+|----|-------------|
+| `navigate {url}` | Open a page (returns URL and title) |
+| `snapshot` | The page as an outline with element refs (`e5`); re-run after every page change |
+| `click {ref \| x,y}` / `type {ref, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field |
+| `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
+| `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 
 **Browsing workflow:** load the `web-browse`, `web-verify`, or `browser-auth`
-skill for the task. On the CLI path:
-1. Check `command -v playwright-cli`; if absent, use `web_fetch` and give the
-   install command above.
-2. Run `playwright-cli open <url>`; read its snapshot YAML only when the tree is
-   needed, such as before clicking. Refs (`[ref=e5]`) expire on page changes:
-   re-snapshot before the next action.
-3. On a login redirect, `state-load` a saved session or let the user sign in in
-   the Browser panel, then `state-save`.
+skill for the task. A sign-in, CAPTCHA or 2FA is the user's step: use the `ask`
+op (the tool's description lists its args), or ask them to take over the live
+view; your next op waits until they hand it back, then runs.
 
-**No npm access (internal registry, air-gapped host):** detection is **PATH-based**
--- `playwright-cli` on `PATH` is all that matters, so ANY install route works and the
-Settings button is a convenience, not the only one. In order of likelihood:
-
-1. Most internal registries proxy npmjs, so the plain install already works.
-2. Force the public registry for this one package:
-   `npm install -g @playwright/cli --registry=https://registry.npmjs.org`.
-3. **An internal registry that requires a login the user does not have** (the
-   common Amazon-internal / corporate case). Install into a user-owned prefix
-   against the public registry, ignoring the corporate `.npmrc` for this one
-   command, then put the binary on `PATH`:
-
-   ```bash
-   NPM_CONFIG_USERCONFIG=/dev/null \
-     npm install --prefix ~/.local/share/playwright-cli \
-     --registry=https://registry.npmjs.org @playwright/cli@0.1.18
-   mkdir -p ~/.local/bin
-   ln -sf ~/.local/share/playwright-cli/node_modules/.bin/playwright-cli \
-     ~/.local/bin/playwright-cli
-   ```
-
-   Two caveats worth stating to the user rather than burying: `~/.local/bin` has
-   to be **on `PATH`** or Kiro Crew still reports "not installed" (detection is
-   `PATH` + the Node bin dirs, nothing else); and `NPM_CONFIG_USERCONFIG=/dev/null`
-   deliberately ignores their employer's registry configuration, which is their
-   call to make, not ours to assume.
-4. Air-gapped: `npm pack @playwright/cli` on a connected machine, copy the
-   `.tgz` over, then `npm install -g ./playwright-cli-<version>.tgz`. Note the
-   tarball alone is not runnable -- it needs its `playwright` /
-   `playwright-core` dependencies resolved too.
-
-What does **not** substitute for it: `pip install playwright` and
-`dotnet tool install Microsoft.Playwright.CLI` install a DIFFERENT tool -- the
-`playwright` browser-installer/codegen CLI, not `@playwright/cli` (binary
-`playwright-cli`, its own 0.x line, which depends on `playwright@1.63.0-alpha`).
-Switching to yarn, pnpm or bun hits the same registry, so it only helps when the
-`npm` client itself is missing. And there is **no standalone binary**: the
-upstream GitHub release carries no build assets and `playwright-cli.js` starts
-with `#!/usr/bin/env node`, so Node.js 20+ is required no matter how it is
-fetched.
-
-**Approval:** page-scoped verbs run without prompting the user, because installing
-the CLI is itself the consent. Verbs that reach the local machine still prompt on
-purpose -- `eval`, `run-code`, `upload`, `state-load`, a named `state-save`, and the
-installers. Let the user approve those rather than rewriting the command to dodge
-the prompt.
-
-The full verb list is in the skill `playwright-cli install --skills agents --global`
-writes.
+**Setup:** **Settings → Browser** installs the engine on the gateway's machine
+and, on a desktop, connects the user's own Chrome (enable
+`chrome://inspect/#remote-debugging` once, then Allow). A tool reply that
+browsing is not set up points there; a `capabilities.browse` policy denial is
+final. The old Playwright CLI install is gone: `kirocrew doctor` reports a
+leftover prefix without touching it.
 
 ## Autonomous Task Runner
 
@@ -224,7 +177,7 @@ writes.
 |---------|-------------|
 | `kirocrew spawn run "task"` | Spawn a background subagent (wait for result) |
 | `kirocrew spawn run --async "task"` | Fire-and-forget subagent |
-| `kirocrew spawn run --crew NAME "task"` | Run as a crew member (its memory and template); an unknown name is refused |
+| `kirocrew spawn run --crew NAME "task"` | Run as a Bot (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
 | `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
 | `kirocrew spawn list` | List active subagents |
@@ -245,6 +198,7 @@ writes.
 | `kirocrew cron add NAME "" --every 600 --command "df -h /" --no-persistent-session --minimal-context` | Zero-token job: run a vetted shell command |
 | `kirocrew cron add ... --timeout 30 --timeout-secs 60` | Subprocess timeout (script/command) and whole-wake budget |
 | `kirocrew cron add ... --[no-]persistent-session --[no-]minimal-context --hide-in-chat --model ID` | Session shape and model; defaults are persistent session on, minimal context off, so pass `--no-persistent-session --minimal-context` for a script/command job |
+| `kirocrew cron add ... --project-path /abs/repo` | Run the agent session in that repo, so its `.kiro/steering/` and `AGENTS.md` load (agent jobs only; `cron update JOB_ID --project-path ''` clears it) |
 | `kirocrew cron update JOB_ID --message "new msg"` | Update job message |
 | `kirocrew cron update JOB_ID --agent myagent` | Update job agent |
 | `kirocrew cron update JOB_ID --approval-mode auto` | Set auto-approval |
@@ -255,7 +209,7 @@ writes.
 | `kirocrew cron adopt JOB_ID --session-of SESSION` | Give the job an owning chat session, so that session manages it and receives its results |
 | `kirocrew cron adopt JOB_ID --release` | Clear the owning session, returning the job to CLI/dashboard-only management |
 | `kirocrew cron trigger JOB_ID` | Trigger a job immediately |
-| `kirocrew cron preview SCRIPT` | Run a script cron locally with real MCP tools; notifications are printed, not delivered |
+| `kirocrew cron preview SCRIPT` | Run a script cron locally with real MCP tools; notifications and session and crew-log calls are printed, not made |
 | `kirocrew cron preview SCRIPT -m "msg" -e K=V` | Preview with an input message / extra env vars |
 
 ## Learning & Memory
@@ -266,6 +220,7 @@ writes.
 | `kirocrew learn add "rule text"` | Save a lesson (category: knowledge) |
 | `kirocrew learn add "rule text" --category tool` | Save with category (tool/preference/knowledge) |
 | `kirocrew learn add "rule text" --negative "avoid X"` | Save with negative example |
+| `kirocrew learn add "rule text" --applies on_topic` | Save as a past finding loaded only when relevant (`always`: a standing rule for every session) |
 | `kirocrew learn remove "query"` | Remove lessons matching substring (add `--repo-scope FRAG` to remove only that scope, `--repo-scope ""` for global only) |
 | `kirocrew memory list` | Show semantic memory entries |
 | `kirocrew memory search "query"` | Search episodic memories |
@@ -347,6 +302,7 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew app install /path/to/app-dir` | Install app from local directory (needs app.json) |
 | `kirocrew app enable NAME` | Enable an installed app (an app that asks to control your chats is allowed in the dashboard only) |
 | `kirocrew app disable NAME` | Disable an installed app |
+| `kirocrew app update NAME [--source DIR]` | Update an installed app in place from its source directory (the one it was installed or last updated from, unless `--source` names another, which then becomes the recorded one), keeping its data and enabled state. Needs a running gateway; with none reachable it changes nothing |
 | `kirocrew app uninstall NAME` | Uninstall an app and preserve its data directory |
 | `kirocrew app uninstall NAME --purge-data` | Uninstall and explicitly delete the app data directory |
 | `kirocrew app info NAME` | Show app details |
@@ -414,6 +370,7 @@ already-running app record -- restart it.
 | `kirocrew bench retrieval` | Measure retrieval recall/nDCG against a corpus (deterministic) |
 | `kirocrew bench kb-retrieval` | Measure Knowledge Library recall/MRR/nDCG against a golden set (deterministic) |
 | `kirocrew bench lesson-recall` | Measure lesson ranking recall/MRR/nDCG against a golden set (deterministic) |
+| `kirocrew bench session-recall` | Measure session search recall/MRR against a golden set (deterministic) |
 | `kirocrew bench compare A B` | Diff two saved JSON reports; refuses to attribute a delta when the runs disagree on corpus |
 
 ## Governance Policy
@@ -431,6 +388,8 @@ or write them).
 | `kirocrew policy validate` | Load-check the policy + all profiles |
 | `kirocrew policy explain SCOPE ITEM` | Explain one tool/scope decision for a surface |
 | `kirocrew policy explain SCOPE ITEM --session-key K --agent A --app APP` | Scope the explanation to a surface |
+| `kirocrew policy explain SCOPE ITEM --json` | Print the explanation as one JSON object |
+| `kirocrew policy explain --batch FILE` | Explain each JSON Lines request in FILE (`-` = stdin) in one run, one JSON answer per line |
 | `kirocrew policy profile NAME` | Show a profile by name |
 | `kirocrew policy source` | Show whether this host fetches its policy from a central source |
 | `kirocrew policy fetch` | Fetch the central policy now and apply it if usable (`--force` re-downloads, ignoring cached validators) |

@@ -743,3 +743,61 @@ class TestRunChatToolCallUpdate:
         # The trailing assistant message proves the run loop survived.
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert any("after the boom" in m["content"] for m in assistant_msgs)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_hands_its_pre_tool_hooks_the_served_model(tmp_path, monkeypatch):
+    """The tool-call frame's PreToolUse fire carries the session's model too."""
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TOOL_CALL, LLMEvent
+
+    fire = AsyncMock()
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", fire)
+    state = TestRunChatToolCallUpdate._make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = TestRunChatToolCallUpdate._make_mock_client(
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title="ls", tool_kind="execute", tool_call_id="tc-m"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+    )
+    client.served_model = "model-x"
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+    await _run_chat(state, slot, "hello")
+
+    assert fire.await_args.kwargs["session_model"] == "model-x"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_after_a_turn_scoped_fallback_hands_hooks_the_model_that_ran(
+    tmp_path, monkeypatch
+):
+    """A pinned session's served_model still names the pin after the engine hops."""
+    from kiro_crew.acp.engine_fallback import (
+        TRACKER_ATTR,
+        EngineFallbackTracker,
+        ModelFallbackNotice,
+    )
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TOOL_CALL, LLMEvent
+
+    fire = AsyncMock()
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", fire)
+    state = TestRunChatToolCallUpdate._make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = TestRunChatToolCallUpdate._make_mock_client(
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title="ls", tool_kind="execute", tool_call_id="tc-f"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+    )
+    client.served_model = "model-a"
+    tracker = EngineFallbackTracker()
+    tracker.walk.record(ModelFallbackNotice("model-a", "model-b", "refused", engine="kas"))
+    setattr(client, TRACKER_ATTR, tracker)
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+    await _run_chat(state, slot, "hello")
+
+    assert fire.await_args.kwargs["session_model"] == "model-b"

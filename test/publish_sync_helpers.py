@@ -135,7 +135,9 @@ class DummyPublishProvider(PublishProvider):
             concurrency_token=str(res.get("sha256") or expected_token),
         )
 
-    async def update_sharing(self, *, external_id, visibility, shared_with) -> None:
+    async def update_sharing(
+        self, *, external_id, visibility, shared_with
+    ) -> tuple[str, str] | None:
         self.calls.append(
             (
                 "update_sharing",
@@ -144,6 +146,9 @@ class DummyPublishProvider(PublishProvider):
         )
         if self.update_sharing_response.get("error"):
             raise PublishError(str(self.update_sharing_response["error"]))
+        notice = str(self.update_sharing_response.get("notice") or "")
+        code = str(self.update_sharing_response.get("notice_code") or "")
+        return (notice, code) if notice else None
 
     async def unpublish(self, *, external_id) -> None:
         self.calls.append(("delete", {"artifact_id": external_id}))
@@ -230,11 +235,10 @@ def fake_client_fixture():
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the modules that import it calls monkeypatch.undo()
-def wire(monkeypatch, store, fake_client):
+def wire(_floor_monkeypatch, store, fake_client):
     """Point the sync engine at the test store + register the dummy provider
     under the default provider name so ``get_provider`` resolves to it."""
-    monkeypatch.setattr(publish_sync, "get_default_store", lambda: store)
+    _floor_monkeypatch.setattr(publish_sync, "get_default_store", lambda: store)
     publish_provider.reset_providers()
     saved_factories = dict(publish_provider._FACTORIES)
     publish_provider.register_provider(fake_client.name, lambda: fake_client)

@@ -30,7 +30,6 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 vi.mock('../hooks/useBranding', () => ({
   useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true }),

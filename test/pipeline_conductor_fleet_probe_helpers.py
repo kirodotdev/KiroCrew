@@ -48,37 +48,18 @@ SUITE_FILES = (
 UNBUDGETED = ["-n4"]
 
 
-# Three platform facts meet this suite, and each is handled by the mechanism the
-# repository already has for it.
-#
-# ``os.sysconf`` and ``os.getloadavg`` are absent on Windows, and the probe's own
-# source treats both as optional -- the age is uncomputable without a clock-tick
-# rate, the load average sits behind a ``hasattr`` guard -- so the cases needing
-# them patch them in with ``raising=False`` and run everywhere, and the answer a
-# host without a clock source gets is asserted on every platform.
-#
-# A name meaning another DIRECTORY is what most of the ``/proc`` fixtures below
-# need: a junction supplies it on Windows with no privilege at all, so they go
-# through ``conftest.make_dir_link`` and keep their coverage on every host.
-#
-# A real link to a FILE -- the ``exe`` entries and the transcript that escapes
-# its store -- needs ``SeCreateSymbolicLinkPrivilege``, which CI runners hold and
-# an ordinary Windows shell does not. Those cases are inventoried by exact node
-# id in ``test/requires-real-symlinks.txt``, which the root conftest skips only
-# when its capability probe fails, so the inventory stays the one place that
-# records what a host without the privilege loses.
+# Platform facts:
+# - ``os.sysconf`` and ``os.getloadavg`` are absent on Windows and optional in the probe,
+#   so cases patch them in with ``raising=False`` and run everywhere.
+# - Directory links go through ``conftest.make_dir_link`` (a junction on Windows, no
+#   privilege needed).
+# - Real file links need ``SeCreateSymbolicLinkPrivilege``; those cases are listed by
+#   node id in ``test/requires-real-symlinks.txt`` and skipped when the probe fails.
 
 
-# The name the script is loaded under decides whether it is measured at all. CI
-# measures the backend with the package selector ``--cov=kiro_crew``, and coverage
-# treats that as a module-name boundary: a file loaded under a bare top-level name
-# falls outside it, so every line these cases execute is recorded against nothing
-# and the script reads as untested however thoroughly it is exercised. Measured on
-# this checkout with that selector: a ``fleet_probe`` load leaves the file absent
-# from the coverage data entirely, a dotted load under the package records it.
-# The dotted spelling mirrors where the script physically sits; its directory is
-# not importable (a hyphen in the skill name, no ``__init__.py``), which is why
-# the module name has to be supplied rather than derived.
+# CI's ``--cov=kiro_crew`` is a module-name boundary, so the script must load under a
+# dotted ``kiro_crew`` name or it is not measured at all. The name is supplied because
+# the directory is not importable (a hyphen in the skill name, no ``__init__.py``).
 LOAD_NAME = "kiro_crew.builtin_skills.pipeline_conductor.scripts.fleet_probe"
 
 
@@ -111,9 +92,7 @@ def transcript(store: Path, key: str, *rows: str, age_secs: int = 0) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------
 # Classification
-# --------------------------------------------------------------------------
 
 
 def err_res(mod):
@@ -138,9 +117,7 @@ def stat_fields(starttime: int) -> str:
     return " ".join(fields)
 
 
-# --------------------------------------------------------------------------
 # Host posture: what counts as the fleet's problem
-# --------------------------------------------------------------------------
 
 
 def host_proc(tmp_path, monkeypatch, *, mem_kb: int | None = 8_388_608) -> Path:
@@ -201,29 +178,13 @@ def fleet_pid(
 ) -> None:
     """A fleet-owned pid whose ``cmdline`` carries the real procfs byte shape.
 
-    ``proc_pid`` writes ``"\\0".join(argv) + "\\0"`` -- arguments NUL-separated and one
-    NUL terminator, which is what the kernel produces. The scan is driven through that
-    byte path on purpose: a pre-joined string handed straight to the rules cannot show
-    that the split, the dropped terminator and the re-join preserved the argument
-    boundaries the argv-side checks read.
+    ``proc_pid`` writes ``"\\0".join(argv) + "\\0"`` as the kernel does, so the scan's
+    split and re-join are exercised. ``cwd`` goes through ``make_dir_link``.
 
-    The ``cwd`` link goes through ``make_dir_link`` like every other directory link in
-    this file: a name meaning another DIRECTORY is a junction on Windows and needs no
-    privilege, where a bare ``symlink_to`` would raise on an unelevated Windows shell and
-    ERROR every case built on this fixture instead of running it.
-
-    ``unspoofed`` supplies the ``exe`` link as well, because a real fleet-owned process
-    has one: it runs as the fleet's own uid, so the kernel's binary always reads, and the
-    ``argv[0]`` rule requires that binary to CONFIRM the name the process claims. An
-    unspoofed process is one whose binary's name IS what ``argv[0]`` says, so the link is
-    built from ``argv[0]``'s own last component -- the ordinary case, and therefore the
-    default. Pass ``unspoofed=False`` for a test that arranges the link itself or needs it
-    absent.
-
-    That link is a DIRECTORY junction rather than a symlink to a file, and the difference
-    is free: the probe reads the link's TARGET as a string and takes its last component,
-    never stating it, so a junction carries exactly the same fact while needing no
-    Windows privilege and adding nothing to the real-symlink inventory.
+    ``unspoofed`` (the default) adds an ``exe`` link named after ``argv[0]``'s last
+    component, since the ``argv[0]`` rule requires the binary to confirm the name. It is a
+    directory junction: the probe reads only the target string, so no privilege is needed.
+    Pass ``unspoofed=False`` to arrange the link yourself or leave it absent.
     """
     entry = proc_pid(root, pid, argv, starttime=500)
     make_dir_link(entry / "cwd", fleet)
@@ -237,38 +198,15 @@ def fleet_pid(
 def install_prefixes(tmp_path: Path) -> dict[str, str]:
     """Real prefixes for the entry-point tests, keyed for ``str.format`` substitution.
 
-    A console script is installed into the same directory as the interpreter it was
-    installed for, so these tests have to BUILD that rather than name a path and rely on
-    the host having one. Naming ``/usr/local/bin`` would pass or fail with whatever the
-    runner happens to have installed there, which is the worst kind of test: green on one
-    host and red on another for reasons the change never touched.
+    A console script sits beside its interpreter, so the prefixes are built rather than
+    named (``/usr/local/bin`` would depend on the host). The installed prefixes differ (a
+    system root, a venv in the checkout, a version-manager prefix), each ``bin`` with
+    three interpreter spellings.
 
-    The four installed prefixes are deliberately unlike each other -- a system root, a
-    virtualenv inside the fleet checkout, a version-manager prefix -- because the rule
-    must recognise all of them without naming any. Each one's ``bin`` gets the three
-    interpreter spellings a real installation carries.
-
-    Three counterexamples come with them, and the third is the one that matters most.
-    ``checkout`` is the case GPT's finding named: a repository that merely HOLDS a ``bin``
-    directory, with no interpreter installed beside its contents. Every prefix's ``sbin``
-    is created EMPTY, because a python console script is never installed there -- it
-    separates "a directory whose name looks like an installation's" from "a directory an
-    interpreter was installed into". And ``user`` models a ``pip install --user``, which
-    writes the console script into ``~/.local/bin`` and NO interpreter with it: writing
-    one there would fabricate a file a real ``--user`` install never creates, and a test
-    passing on a fabricated file certifies a behaviour that cannot occur. So the
-    interpreter is deliberately absent and ``user`` belongs among the declining cases --
-    that miss is stated in ``_is_installed_entry_point`` rather than claimed away.
-
-    Only plain files and directories are created, so nothing here joins the real-symlink
-    privilege inventory.
-
-    Building them is host-independent; USING one is not. A prefix is only meaningful to
-    ``_is_installed_entry_point`` when it is POSIX-absolute, so the cases that actually
-    substitute one are guarded by ``require_resolvable_prefixes``. Merely calling this
-    helper is not guarded, because most of its callers enumerate runner forms of which only
-    three carry a prefix at all, and skipping the other twelve would discard real coverage
-    of platform-independent logic.
+    Counterexamples: ``checkout`` holds a ``bin`` with no interpreter; every ``sbin`` is
+    empty; ``user`` models ``pip install --user`` (no interpreter in ``~/.local/bin``), a
+    miss stated in ``_is_installed_entry_point``. Only plain files and directories are
+    made. Cases that substitute a prefix call ``require_resolvable_prefixes``.
     """
     made: dict[str, str] = {}
     for key, relative in (
@@ -295,18 +233,9 @@ def install_prefixes(tmp_path: Path) -> dict[str, str]:
 def require_resolvable_prefixes(prefixes: dict[str, str]) -> None:
     """Skip a case that needs an installed prefix the running host cannot express.
 
-    ``_is_installed_entry_point`` declines any path it cannot resolve, and a drive-lettered
-    one is exactly that: the rule reads ``/proc/<pid>/cmdline``, which only a Linux kernel
-    writes, so ``C:/...`` never reaches it from a scanned process. On a host whose own
-    absolute paths are drive-lettered, every case built on a prefix therefore declines --
-    which turns the cases expecting a REPORT into failures and, worse, leaves the ones
-    expecting a decline passing for a reason that has nothing to do with what they pin.
-
-    Adapting the fixture would need a real interpreter at a POSIX-absolute path outside
-    ``tmp_path``, which is the host-dependent test ``install_prefixes`` exists to avoid, and
-    widening the rule would add a branch no caller can reach. So the prefix-dependent cases
-    state their absence here instead, and what the decline GUARANTEES on such a host is
-    pinned on every host by
+    ``_is_installed_entry_point`` declines a drive-lettered path, which ``/proc`` never
+    holds, so on such a host every prefix case declines and would pass or fail for the
+    wrong reason. The decline itself is pinned on every host by
     ``test_an_installed_entry_point_needs_a_posix_absolute_path_on_any_host``.
     """
     unresolvable = sorted(p for p in prefixes.values() if not p.replace("\\", "/").startswith("/"))
@@ -322,15 +251,9 @@ def require_resolvable_prefixes(prefixes: dict[str, str]) -> None:
 def with_prefixes(tokens: list[str], prefixes: dict[str, str]) -> list[str]:
     """Substitute ``install_prefixes`` keys into an argv enumeration's tokens.
 
-    An enumeration cannot hold the paths directly, because they only exist once a test
-    has built them under its own ``tmp_path``. A token carrying no placeholder passes
-    through unchanged, so a case that is deliberately relative or deliberately Windows
-    stays exactly as written.
-
-    A case that DID take a substitution now depends on the prefix being resolvable, so that
-    is the point where ``require_resolvable_prefixes`` applies -- and only there. Three of
-    the fifteen runner forms carry a placeholder; guarding the helper itself would skip the
-    other twelve, whose logic is platform-independent and worth covering everywhere.
+    A token with no placeholder passes through unchanged. Only a case that took a
+    substitution needs ``require_resolvable_prefixes``, so the twelve of fifteen runner
+    forms without one still run everywhere.
     """
     substituted = [token.format(**prefixes) for token in tokens]
     if substituted != tokens:

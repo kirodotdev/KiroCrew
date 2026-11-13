@@ -195,6 +195,7 @@ async def _gateway_cron_callback(monkeypatch, cfg):
     gw.slack = gw.conv_log = gw.dashboard_state = gw.subagent_mgr = None
     gw._owner_id = "owner"
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._no_crons = False
     gw._cfg = cfg
     gw.cron_svc = None

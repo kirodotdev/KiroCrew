@@ -325,7 +325,10 @@ async def resolve_slack(
         channel = target_channel
     else:
         try:
-            creds = await asyncio.to_thread(KiroCrewConfig.load().load_credentials)
+            # propagate=False: a post-boot read must not re-seed os.environ (a
+            # worker-thread setdefault could restore a credential the live
+            # watcher just popped).
+            creds = await asyncio.to_thread(KiroCrewConfig.load().load_credentials, propagate=False)
             owner_id = creds.get("KIROCREW_OWNER_ID", "")
             if owner_id:
                 channel = await slack.open_dm(owner_id)

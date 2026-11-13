@@ -3,7 +3,6 @@ back a steer the running turn has not read yet."""
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -13,6 +12,7 @@ if TYPE_CHECKING:
         DashboardState,
         _edit_queued_by_id,
         _remove_queued_by_id,
+        _reorder_queued_rows,
         attachment_meta,
         deny_app_slot_access,
         queue_entry_is_user_origin,
@@ -80,6 +80,11 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     )
     _redacted = queued_text_for_display(content, user_origin=_user_origin)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
+    # A cancelled entry whose editor was open took its hold with it, so the
+    # entries it held may run now.
+    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
+
+    release_and_drain(state, slot, _entry)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",
@@ -127,10 +132,14 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
     if not slot.queue_edit_by_id(
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        # The replacement words are the editor's: see ``api_chat``.
+        directive_owner_origin=is_owner_dashboard_request(request),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are
@@ -155,7 +164,15 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     _edit_attachments = attachment_meta(entry.get("meta")) if entry is not None else {}
     if _edit_attachments:
         frame["meta"] = _edit_attachments
+    edit_rev = entry.get("edit_rev") if entry is not None else None
+    if isinstance(edit_rev, int):
+        frame["editRev"] = edit_rev
     state.broadcast_ws("queue_edit", frame)
+    # The edit is stored, so the hold its open editor placed can go: a turn
+    # that ended while the person typed starts now, with these words.
+    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
+
+    release_and_drain(state, slot, entry)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",
@@ -202,18 +219,7 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     remaining = [item for item in slot._queue if item["id"] not in set(order)]
     slot._queue[:] = reordered + remaining
     # Reorder the queued messages in the messages list to match
-    queued_msgs = [m for m in slot.messages if m.get("role") == "queued"]
-    other_msgs = [m for m in slot.messages if m.get("role") != "queued"]
-    queued_by_id: dict[str | None, dict] = {}
-    for m in queued_msgs:
-        try:
-            cls = json.loads(m.get("cls", "{}"))
-            queued_by_id[cls.get("queue_id")] = m
-        except (json.JSONDecodeError, TypeError):
-            pass
-    reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
-    remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
-    slot.messages[:] = other_msgs + reordered_msgs + remaining_msgs
+    _reorder_queued_rows(slot.messages, order)
     slot.invalidate_source_links()
     state.broadcast_ws(
         "queue_reorder", {"slot": name, "order": [item["id"] for item in slot._queue]}

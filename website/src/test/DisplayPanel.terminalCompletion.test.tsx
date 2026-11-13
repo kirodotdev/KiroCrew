@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
 /**
@@ -34,6 +34,7 @@ vi.mock('../api/client', () => {
       kirocrewConfig: kirocrewConfigMock,
       patchConfig: patchConfigMock,
       installTheme: vi.fn(() => Promise.resolve({ ok: true })),
+      kiroPrerequisite: vi.fn(() => new Promise(() => {})),
     },
     ApiError,
   }
@@ -175,5 +176,62 @@ describe('DisplayPanel → Terminal command completion', () => {
     // A refetch round-trip later it still reads OFF.
     await new Promise(r => setTimeout(r, 20))
     expect(sw).toHaveAttribute('aria-checked', 'false')
+  })
+})
+
+/**
+ * The gateway platform comes from the prerequisite status the gate caches
+ * under ['kiro-prerequisite']; the panel only reads it. Seeding that cache is
+ * what a real dashboard does, so the classification of the display label
+ * ("Windows", "macOS", the non-owner sentinel "gateway") runs for real.
+ */
+describe('DisplayPanel → Terminal command completion by gateway platform', () => {
+  const UNAVAILABLE = /Not available on a Windows gateway/
+
+  beforeEach(() => {
+    patchConfigMock.mockReset()
+    patchConfigMock.mockImplementation(() => Promise.resolve({}))
+    seed(undefined)
+  })
+
+  function renderOn(platform: string) {
+    const r = renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
+    act(() => {
+      r.queryClient.setQueryData(['kiro-prerequisite'], { platform })
+    })
+    return r
+  }
+
+  it('shows the switch as unavailable, with the reason, on a Windows gateway', async () => {
+    renderOn('Windows')
+    const sw = await toggle()
+    await waitFor(() => expect(sw).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByText(UNAVAILABLE)).toBeInTheDocument()
+    fireEvent.click(sw)
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('reads as off on a Windows gateway while the stored value stays on', async () => {
+    renderOn('Windows')
+    const sw = await toggle()
+    await waitFor(() => expect(sw).toHaveAttribute('aria-disabled', 'true'))
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['macOS', 'Linux'])('keeps the working switch on a %s gateway', async platform => {
+    renderOn(platform)
+    const sw = await toggle()
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
+    expect(screen.queryByText(UNAVAILABLE)).not.toBeInTheDocument()
+    fireEvent.click(sw)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(KEY, false))
+  })
+
+  it('keeps the working switch when the platform is withheld from a non-owner', async () => {
+    renderOn('gateway')
+    const sw = await toggle()
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
+    expect(screen.queryByText(UNAVAILABLE)).not.toBeInTheDocument()
   })
 })

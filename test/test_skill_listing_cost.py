@@ -60,6 +60,33 @@ class TestInjectOnTriggerField:
         assert [s["key"] for s in loader.list_skills() if not s["inject_on_trigger"]] == pointers
 
 
+class TestCreatedAtField:
+    """The Skills list's Newest first sort reads only a RECORDED creation time."""
+
+    def test_frontmatter_created_at_is_a_unix_time(self, tmp_path: Path) -> None:
+        md = _write(tmp_path / "skills", "fresh")
+        md.write_text(
+            md.read_text().replace("---\nbody", "created_at: 2026-10-01T12:00:00+00:00\n---\nbody")
+        )
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        assert _one(loader, "fresh")["created_at"] == 1790856000.0
+
+    def test_a_naive_time_reads_as_utc(self, tmp_path: Path) -> None:
+        md = _write(tmp_path / "skills", "naive")
+        md.write_text(
+            md.read_text().replace("---\nbody", "created_at: 2026-10-01T12:00:00\n---\nbody")
+        )
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        assert _one(loader, "naive")["created_at"] == 1790856000.0
+
+    @pytest.mark.parametrize("extra", ["", "created_at: not-a-date\n"], ids=["absent", "malformed"])
+    def test_no_usable_time_is_none_not_the_file_mtime(self, tmp_path: Path, extra: str) -> None:
+        md = _write(tmp_path / "skills", "undated")
+        md.write_text(md.read_text().replace("---\nbody", f"{extra}---\nbody"))
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        assert _one(loader, "undated")["created_at"] is None
+
+
 class TestSetInjectOnTrigger:
     """The toggle is a targeted frontmatter edit, not a form round-trip."""
 

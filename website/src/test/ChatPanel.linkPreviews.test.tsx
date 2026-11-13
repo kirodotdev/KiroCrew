@@ -73,10 +73,11 @@ describe('ChatPanel settings – Link Previews toggle', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
   })
 
-  it('states the outbound-fetch tradeoff in the description', async () => {
+  it('states the outbound-fetch tradeoff on the row, with the full sentence in its tip', async () => {
     wrap(<ChatPanel />)
+    expect(await screen.findByText('Each linked site sees a request from your IP address.')).toBeInTheDocument()
     expect(
-      await screen.findByText(/fetches every link the model outputs.*request from your IP address/),
+      screen.getByTitle(/fetches every link the model outputs.*request from your IP address/),
     ).toBeInTheDocument()
   })
 

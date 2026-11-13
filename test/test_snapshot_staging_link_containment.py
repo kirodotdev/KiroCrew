@@ -74,12 +74,8 @@ class TestNestedLinksCannotSmuggleFilesIntoABundle:
         nested inside a component tree must be caught by a reparse-aware check or it is
         copied THROUGH -- pulling whatever it targets into the bundle and then to S3.
 
-        M1 retarget: staging routes through `pinned_fs`. The pinned tree walk
-        (`stage_tree_pinned`) screens each entry by `lstat`/`fstat` on a descriptor -- a
-        reparse point is not `S_ISREG`/a real dir there -- and the declared by-name
-        fallback in `_copytree_safe` uses `pinned_fs.is_reparse_point`, which reports a
-        junction where `islink` does not. This pins that the junction-aware screen is what
-        both staging paths rely on, rather than the removed `is_link_or_junction` helper.
+        `stage_tree_pinned` screens entries by `lstat`/`fstat` on a descriptor, and the
+        by-name fallback in `_copytree_safe` uses `pinned_fs.is_reparse_point`.
         """
         import inspect
 

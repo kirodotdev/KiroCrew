@@ -12,7 +12,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 // apps through the vendor stub, and a host-namespaced cache client is not part
 // of that contract.
 import { useAppQuery, useAppQueryKey } from '../../app-sdk/appQuery'
-import { Download, FolderClosed, FileText, X } from 'lucide-react'
+import { Download, FolderClosed, FolderPlus, FileText, X } from 'lucide-react'
 import { Btn, Input, ContentSkeleton, IconButton } from '../../components/ui'
 import { detectFileType } from '../../components/FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from '../../components/ContentRenderer'
@@ -23,6 +23,7 @@ import { awsControlApi } from './api'
 import type { DriveSection } from './types'
 import { CopyBtn, AwsErrorNotice } from './shared'
 import type { Failure } from './useDrivePageFiles'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 const EXPIRY_LABEL_KEY: Record<string, string> = {
   '1h': 'apps.awsControl.console.expiry_1h',
@@ -208,7 +209,7 @@ export function PreviewDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-8"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-safe-or-4 sm:p-safe-or-8"
       data-testid="drive-preview-dialog"
       role="presentation"
       onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
@@ -341,7 +342,7 @@ export function PreviewDialog({
  * keyboard behaviour (focus in, Tab ring, Escape, focus restore) comes from the
  * shared hook, exactly as `AddFromArtifactsDialog`, the Library picker.
  */
-export function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, onMove, onClose }: {
+export function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, onMove, onClose, onNewFolder }: {
   fileKey: string
   /** The folder the file lives in ('' = top level). */
   currentPath: string
@@ -354,6 +355,12 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
   askAgent: boolean
   onMove: (folder: string) => void
   onClose: () => void
+  /**
+   * The empty state's way forward: close the picker and open the page's own
+   * New folder field. Omitted where that field cannot appear (search hides
+   * it), and the empty state then keeps only its sentence.
+   */
+  onNewFolder?: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   // `restoreFocus: false`: at mount the previously focused element is a menu
@@ -375,7 +382,7 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-safe-or-4"
       role="presentation"
       onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
       onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) onClose(); backdropDown.current = false }}
@@ -402,9 +409,17 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
           </IconButton>
         </div>
         {options.length === 0 ? (
-          <p className="text-[13px] text-muted" data-testid="move-no-folders">
-            {i18nT('apps.awsControl.console.move_no_folders')}
-          </p>
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-[13px] text-muted" data-testid="move-no-folders">
+              {i18nT('apps.awsControl.console.move_no_folders')}
+            </p>
+            {onNewFolder && (
+              <Btn onClick={onNewFolder} data-testid="move-new-folder">
+                <FolderPlus size={13} />
+                {i18nT('apps.awsControl.console.folder_new')}
+              </Btn>
+            )}
+          </div>
         ) : (
           <div className="flex max-h-72 flex-col gap-1 overflow-y-auto" data-testid="move-options">
             {options.map((o) => (
@@ -424,13 +439,18 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
         )}
         {pending && (
           <p className="mt-2 text-[12px] text-muted" data-testid="move-pending">
-            {i18nT('apps.awsControl.console.move_moving')}
+            {i18nT('apps.awsControl.console.move_moving_picker')}
           </p>
         )}
+        {/* `below`: the picker is `max-w-sm`, so a hand-off in its own column
+            beside the sentence split it a few words per line. The scoped label
+            says which problem the hand-off is about. */}
         <AwsErrorNotice
           error={error?.error}
           message={error?.message}
           askAgent={askAgent}
+          askAgentLabel={i18nT('apps.awsControl.console.move_ask_agent')}
+          actionPlacement="below"
           className="mt-2"
           testId="move-error"
         />
@@ -473,7 +493,7 @@ export function ShareDialog({ account, section, fileKey, onClose }: { account: s
     // press that starts AND ends on it), the panel is the dialog. Same shape
     // as `AddFromArtifactsDialog`, the Library picker.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-safe-or-4"
       role="presentation"
       onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
       onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) close(); backdropDown.current = false }}
@@ -499,19 +519,20 @@ export function ShareDialog({ account, section, fileKey, onClose }: { account: s
         {!url ? (
           <>
             <span className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_expiry')}</span>
-            <div className="mb-3 flex gap-1.5" data-testid="share-expiry" role="group" aria-label={i18nT('apps.awsControl.console.share_expiry')}>
+            <RadioChipGroup className="mb-3 flex gap-1.5" data-testid="share-expiry" ariaLabel={i18nT('apps.awsControl.console.share_expiry')}>
               {EXPIRY_OPTIONS.map((o) => (
                 <button
                   key={o.key}
+                  type="button"
                   onClick={() => setSecs(o.secs)}
-                  aria-pressed={secs === o.secs}
+                  {...radioChip(secs === o.secs)}
                   className={`rounded-md border px-2.5 py-1 text-[13px] cursor-pointer transition-colors ${secs === o.secs ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-transparent text-muted hover:text-text'}`}
                   data-testid={`share-expiry-${o.key}`}
                 >
                   {i18nT(EXPIRY_LABEL_KEY[o.key])}
                 </button>
               ))}
-            </div>
+            </RadioChipGroup>
             <label htmlFor="aws-share-note" className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_note')}</label>
             <Input id="aws-share-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder={i18nT('apps.awsControl.console.share_note_placeholder')} className="mb-3 w-full" data-testid="share-note" />
             {/* A refused share (publishing denied by policy, a dead key) used to

@@ -66,9 +66,12 @@ ADMISSION_SITES: dict[Site, frozenset[str]] = {
     ("acp/client_start.py", "_spawn"): frozenset({FORK, FRESH}),
     ("acp/harness/kas.py", "KasHarness.session_extras._build"): frozenset({FORK, FRESH}),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): frozenset({FORK}),
+    # A KAS session's sub-agent target, registered in the same batch as its agent.
+    ("acp/kas_subagent_targets.py", "_project_target"): frozenset({FORK, FRESH}),
     ("acp/runtime_mode_activation.py", "_activate_mode_bracketed"): frozenset({FRESH}),
     ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): frozenset({FRESH}),
+    ("providers/chat_share.py", "ChatSharePlacement._admit_joiner"): frozenset({FORK}),
 }
 
 # Per admission site: (gates it does not reference, whether something else covers it).
@@ -95,11 +98,28 @@ KNOWN_GAPS: dict[Site, tuple[frozenset[str], str]] = {
         "not a start path: it resolves the spec whose MCP servers a session mounts, "
         "and the spawn that consumes it runs its own admission",
     ),
+    ("providers/chat_share.py", "ChatSharePlacement._admit_joiner"): (
+        frozenset({FRESH}),
+        "covered: this is the SHARED-runtime JOIN confirmation, not a spawn. The "
+        "founder ran both gates inside _found_shared_runtime -> spawn(), so a joiner "
+        "lands on a process already admitted for freshness; and the confirmation "
+        "block re-reads agent_spec_generation and releases-and-retries on a moved "
+        "spec, so a joiner can never attach across a spec change. Only fork "
+        "governance is checked here, because a failed fork refresh leaves the spec "
+        "bytes unchanged and so is invisible to the generation re-read. The "
+        "enterprise ceiling needs no join-time check: the joiner's own "
+        "create_session / load_session runs AcpRuntime._refuse_over_ceiling_start "
+        "for the agent it will run, against the ceiling as it stands at that start",
+    ),
 }
 
 # (module, function) -> the admission sites that govern the spawn it builds, or a
 # string stating why no admission gate applies.
 AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
+    ("acp/harness/strands.py", "StrandsLaunch.resolve_spawn"): (
+        "UNGATED: the Strands CLI's own --agent names Kiro Crew's sealed gate module, a "
+        "Python project file, not a Kiro agent spec, so no spec admission applies"
+    ),
     ("acp/client_start.py", "_spawn"): (("acp/client_start.py", "_spawn"),),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): (
         ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"),
@@ -118,8 +138,21 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
     ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"): (
         "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub"
     ),
+    ("mcp_gateway/rewriter_spec.py", "_refusing_stub_entry"): (
+        "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub, "
+        "which runs with --refuse and starts nothing"
+    ),
     ("testing/workflow_memory_scenario.py", "respond"): (
         "not a kiro-cli spawn: a test scenario reading its own argv"
+    ),
+    ("acp/kas_env_launch.py", "_shim_entry"): (
+        "not a kiro-cli spawn: the KAS MCP launcher's own --agent names the snapshot to read"
+    ),
+    ("acp/kas_env_launch.py", "batch_snapshot_names"): (
+        "not a kiro-cli spawn: reads the KAS MCP launcher's --agent back from a projected entry"
+    ),
+    ("kas_env_shim.py", "_resolve_snapshot"): (
+        "not a kiro-cli spawn: the KAS MCP launcher declaring its own --agent option"
     ),
 }
 

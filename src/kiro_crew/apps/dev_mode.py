@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     _check_path_safety,
+    _is_sidecar_entry,
     _read_installed,
     _write_installed,
     app_dir,
@@ -133,7 +134,7 @@ def _read_dev_sentinel() -> set[str]:
     """Read the raw dev-app-name set from the sentinel file (empty on any error)."""
     try:
         data = json.loads(_sentinel_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return set()
     if isinstance(data, list):
         return {str(x) for x in data}
@@ -186,13 +187,36 @@ def _read_dev_grants() -> dict[str, str]:
     """
     try:
         data = json.loads(_grants_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     if isinstance(data, dict):
         return {
             str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)
         }
     return {}
+
+
+def _read_dev_grants_for_update() -> dict[str, str] | None:
+    """The grant map a read-modify-write starts from; ``None`` when it cannot be used.
+
+    Unlike :func:`_read_dev_grants`, only a missing file is empty. A record that is
+    cut off, is not an object or cannot be opened answers ``None`` (a file with no
+    content at all is the empty record the write probe creates). Writing it back
+    from an empty read would drop every other app's grant, and an out-of-install
+    grant is restored only by the operator's explicit confirmation.
+    """
+    try:
+        text = _grants_path().read_text(encoding="utf-8")
+        # The write probe creates the record empty (see :func:`_grant_record_unwritable`),
+        # so a file with no content holds no grants.
+        data = json.loads(text) if text.strip() else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def _write_dev_grants(grants: dict[str, str]) -> None:
@@ -256,19 +280,20 @@ def _scan_installed_dev_apps() -> set[str]:
     Unlike :func:`_load_dev_apps` (which only *filters* the sentinel against
     on-disk metadata and can never *add* an entry the sentinel is missing), this
     walks the apps directory and reads each app's ``installed.json`` ``dev``
-    flag directly. It is the source of truth for reconciling the sentinel at
-    startup, so a ``dev: true`` written to ``installed.json`` out-of-band
-    (snapshot restore, hand-edit, a crash between the metadata write and the
-    sentinel write) is actually honored — the documented contract field, not
-    the internal sentinel, decides. Blocking filesystem IO — offload to a
-    thread; called only once at watcher init, never on the hot path.
+    flag directly. It is the source of truth the sentinel is rebuilt from, at
+    startup and on every toggle, so a ``dev: true`` written to ``installed.json``
+    out-of-band (snapshot restore, hand-edit, a crash between the metadata write
+    and the sentinel write) is actually honored — the documented contract field,
+    not the internal sentinel, decides. Blocking filesystem IO — offload to a
+    thread; called at watcher init and by :func:`set_dev_mode`, never on the hot
+    path.
     """
     keep: set[str] = set()
     root = apps_dir()
     if not root.is_dir():
         return keep
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         try:
             meta = _read_installed(entry.name)
@@ -422,6 +447,21 @@ def set_dev_mode(
             return {"error": f"app {name!r} is not installed"}
         granted_root: str | None = None
         out_of_install_confirmed = False
+        # Read the grant record once, here: it is only written under this lock, and a
+        # record that cannot be read must not be written back as empty. An enable
+        # refuses; a disable has no grant to find in it and leaves it as it is (an
+        # unreadable record grants nothing, see :func:`dev_mode_granted_root`).
+        grants = _read_dev_grants_for_update()
+        if grants is None and enabled:
+            return {
+                "error": (
+                    f"cannot toggle dev mode for app {name!r}: the dev-mode grant "
+                    f"record ({_grants_path()}) could not be read, and writing it "
+                    "back would drop the grants it holds — repair or remove the "
+                    "file, then retry"
+                ),
+                "code": "dev_mode_grant_record_unreadable",
+            }
         # VALIDATE BEFORE ANY WRITE: every enable (and any disable of a granted
         # app) mutates the grant record, and that record is sealed read-only
         # against agent-sandboxed processes at the OS level (see
@@ -433,7 +473,7 @@ def set_dev_mode(
         # sandboxed process go through the gateway (the dashboard toggle),
         # which owns the record; the CLI path is for processes on the host
         # outside agent confinement.
-        if enabled or name in _read_dev_grants():
+        if enabled or (grants is not None and name in grants):
             unwritable = _grant_record_unwritable()
             if unwritable is not None:
                 sel().log_api_access(
@@ -579,23 +619,21 @@ def set_dev_mode(
             # app, which the reconcile never expires because the app still
             # exists — and the app could then write ``dev: true`` back into
             # its own metadata and re-satisfy the grant check unaided.
-            grants = _read_dev_grants()
-            if name in grants:
+            if grants is not None and name in grants:
                 grants.pop(name)
                 _write_dev_grants(grants)
         meta.dev = enabled
         _write_installed(name, meta)
-        names = _read_dev_sentinel()
-        if enabled:
-            names.add(name)
-        else:
-            names.discard(name)
+        # The sentinel is derived from every ``installed.json`` (this app's flag was
+        # just written above), so it is rebuilt from them, never patched from a
+        # sentinel that may be cut off or unreadable.
+        names = _scan_installed_dev_apps()
         _write_dev_sentinel(names)
         if enabled and granted_root is not None:
             # The AUTHORIZATION record, written LAST on enable (mirror of the
             # revoke-first rule above: a crash mid-toggle must always leave
             # the un-granted state) and only here / in :func:`remove_dev_app`.
-            grants = _read_dev_grants()
+            assert grants is not None  # an enable returned above when the record was unreadable
             grants[name] = granted_root
             _write_dev_grants(grants)
             if out_of_install_confirmed:

@@ -248,7 +248,11 @@ describe('link-bridge shim', () => {
     ['data', 'data:text/html,<p>x</p>'],
     ['mailto', 'mailto:someone@example.test'],
     ['file', 'file:///etc/hosts'],
-    ['relative', '/artifacts/slug'],
+    ['page-relative', 'artifacts/slug'],
+    ['backslash host', '/\\evil.example.test/x'],
+    ['tab-split host', '/\t/evil.example.test/x'],
+    ['dot-segment host', '/.//evil.example.test/x'],
+    ['dot-segment backslash host', '/./\\evil.example.test/x'],
   ])('leaves a _blank %s link to the sandbox and posts nothing', async (_label, href) => {
     const { posted } = install()
     const host = mount(`<a id="t" target="_blank">x</a>`)
@@ -256,6 +260,17 @@ describe('link-bridge shim', () => {
     click(host, '#t')
     await settle()
     expect(posted).toEqual([])
+  })
+
+  it.each([
+    ['_blank', '_blank'],
+    ['_top', '_top'],
+  ])('hands a %s dashboard path to the host as written', async (_label, target) => {
+    const { posted } = install()
+    const host = mount(`<a id="t" href="/chat?sid=chat-1#end" target="${target}">chats</a>`)
+    expect(click(host, '#t')).toBe(false)
+    await settle()
+    expect(posted).toEqual([{ type: OPEN, url: '/chat?sid=chat-1#end' }])
   })
 
   it.each([

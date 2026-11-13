@@ -116,8 +116,10 @@ async function main() {
 
   const page = await context.newPage()
   logPageProblems(page)
-  await stubDashboardApi(page, { slots, theme: 'dark', extra })
-  await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, SLOT)
+  await stubDashboardApi(page, {
+    slots, theme: 'dark', extra,
+    localStorageEntries: { 'mc-active-slot': SLOT },
+  })
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2000)
 

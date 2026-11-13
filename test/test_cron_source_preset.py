@@ -4,14 +4,10 @@ Two create-only fields record where a job was seeded from:
   source_preset          -- the Schedule-page template id (e.g. "error-digest").
   source_template_prompt -- the template's prompt text as it was at save time.
 
-The snapshot makes the "template updated" hint attributable: the Schedule page
-compares the SNAPSHOT against the template's current prompt (did the template
-move?), not the job's live message (which the user may have edited). Both are
-dashboard-only (only that create path stamps them), create-only (provenance is
-fixed at creation), and never gate execution.
-
-The "" default is load-bearing: a crons.json written without these fields must
-still deserialize and carry "" (no hint). That is pinned here.
+The "template updated" hint compares the SNAPSHOT with the template's current prompt,
+not the job's live message, which the user may have edited. Both fields are
+dashboard-only, create-only, and never gate execution. A crons.json without them
+must still load with "".
 """
 
 from __future__ import annotations
@@ -118,17 +114,10 @@ class TestFields:
 
 @pytest.mark.asyncio
 class TestAddJobAsync:
-    """The dashboard create path (add_job_async) stamps both fields, fully-formed
-    on the first save.
+    """The dashboard create path (add_job_async) stamps both fields on the first save.
 
-    The asyncio marker is scoped to this class, not the module: it is the only
-    class here whose tests are `async def`. A module-level `pytestmark` reaches
-    the plain `def` tests in TestFields/TestNotUpdatable too, and in strict mode
-    pytest-asyncio then builds and closes a throwaway event loop for each of them
-    and emits a "marked with '@pytest.mark.asyncio' but it is not an async
-    function" PytestWarning -- which also makes a sync test indistinguishable
-    from an async one when reading the file, and would go red the day the suite
-    runs under -W error."""
+    The asyncio marker is class-scoped: a module `pytestmark` would reach the sync
+    tests and emit a PytestWarning for each under strict mode."""
 
     async def test_async_create_stamps_both_and_persists(self, tmp_path):
         svc = CronService()

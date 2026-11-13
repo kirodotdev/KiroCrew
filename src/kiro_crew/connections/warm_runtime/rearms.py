@@ -103,10 +103,14 @@ async def _settle_invalidation_rearms() -> None:
     has run no re-arm is in flight by definition.
     """
     current = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    # A task bound to another loop is never cancelled or gathered here: its loop is
+    # gone (a test loop per test), cancelling it would schedule onto that closed
+    # loop, and gathering it from this one raises.
     pending = [
         task
         for task in list(_invalidation_rearms.values())
-        if task is not current and not task.done()
+        if task is not current and not task.done() and task.get_loop() is loop
     ]
     for task in pending:
         task.cancel()
@@ -177,13 +181,15 @@ def rearm_invalidated_provider(slug: str) -> None:
     Off the loop -- a synchronous caller with no running loop -- there is nothing to schedule
     onto and nothing to warm for: the next activation's scan picks the provider up.
     """
-    running = _invalidation_rearms.get(slug)
-    if running is not None and not running.done():
-        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         logger.debug("no running loop for the %s invalidation re-arm; leaving it to the scan", slug)
+        return
+    # A re-arm bound to another loop is absent: its loop was torn down under it, so
+    # it never finishes and its done callback never drops the entry.
+    running = _invalidation_rearms.get(slug)
+    if running is not None and not running.done() and running.get_loop() is loop:
         return
     task = loop.create_task(_warm_facade()._rearm_invalidated_provider(slug))
     _invalidation_rearms[slug] = task

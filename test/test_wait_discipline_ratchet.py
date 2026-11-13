@@ -38,8 +38,11 @@ a docstring or a comment is not a site):
   ``test_flake_pattern_ratchet.py``.
 
 N is a numeric literal, or a module-level constant assigned one: the 50 ms
-``_TRANSFER_TIMEOUT`` was a constant. A site under ``pytest.raises(TimeoutError)``
-is exercising the timeout path on purpose and is not counted.
+``_TRANSFER_TIMEOUT`` was a constant. The constant may also come from
+``from <helpers> import NAME``, where ``<helpers>`` is a module beside the file or
+at the test root, so a split that moves a constant into a helpers module keeps its
+sites counted. A site under ``pytest.raises(TimeoutError)`` is exercising the
+timeout path on purpose and is not counted.
 
 Two modes:
 
@@ -77,10 +80,11 @@ import ast
 import functools
 import importlib.util
 import os
+import posixpath
 import re
 import sys
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -201,18 +205,56 @@ def _literal(node: ast.AST | None) -> float | None:
     return None
 
 
+#: Reads a file by its path relative to the test root; ``None`` when it is absent.
+Reader = Callable[[str], "str | None"]
+
+
+def _tree_reader(root: Path) -> Reader:
+    """A :data:`Reader` over the files under *root* as they are on disk."""
+
+    def read(rel: str) -> str | None:
+        try:
+            return (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    return read
+
+
+def _numeric_constants(tree: ast.Module) -> dict[str, float]:
+    """The module-level names *tree* binds to a numeric literal."""
+    constants: dict[str, float] = {}
+    for stmt in tree.body:
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        if isinstance(target, ast.Name):
+            number = _literal(value)
+            if number is not None:
+                constants[target.id] = number
+    return constants
+
+
 class _Module:
     """One parsed file: parents, module-level numeric constants, import aliases."""
 
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, rel: str = "", read: Reader | None = None) -> None:
         self.tree = tree
+        self.rel = rel
+        self.read = read or _tree_reader(TEST_ROOT)
         self.parents: dict[ast.AST, ast.AST] = {}
         self.calls: list[ast.Call] = []
-        self.constants: dict[str, float] = {}
+        self.constants = _numeric_constants(tree)
         #: local name -> stdlib module, for ``import asyncio as aio``.
         self.modules: dict[str, str] = {m: m for m in _SLEEP_HOMES}
         #: local name -> ``module.name``, for ``from asyncio import sleep``.
         self.from_imports: dict[str, str] = {}
+        #: local name -> ``(module, name)``, for ``from <helpers> import NAME``.
+        self.imported: dict[str, tuple[str, str]] = {}
+        self._helpers: dict[str, dict[str, float]] = {}
         stack: list[ast.AST] = [tree]
         while stack:
             node = stack.pop()
@@ -228,17 +270,9 @@ class _Module:
             elif isinstance(node, ast.ImportFrom) and node.module in _SLEEP_HOMES:
                 for alias in node.names:
                     self.from_imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-        for stmt in tree.body:
-            target: ast.AST | None = None
-            value: ast.AST | None = None
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-                target, value = stmt.targets[0], stmt.value
-            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-                target, value = stmt.target, stmt.value
-            if isinstance(target, ast.Name):
-                number = _literal(value)
-                if number is not None:
-                    self.constants[target.id] = number
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                for alias in node.names:
+                    self.imported[alias.asname or alias.name] = (node.module, alias.name)
 
     def callee(self, call: ast.Call) -> str:
         """``asyncio.wait_for`` however the file spelled it; ``<obj>.result`` for a method."""
@@ -253,13 +287,33 @@ class _Module:
         return ""
 
     def seconds(self, node: ast.AST | None) -> float | None:
-        """A numeric literal, or a module-level name bound to one."""
+        """A numeric literal, or a module-level name bound to one here or in a helper."""
         number = _literal(node)
         if number is not None:
             return number
         if isinstance(node, ast.Name):
-            return self.constants.get(node.id)
+            if node.id in self.constants:
+                return self.constants[node.id]
+            if node.id in self.imported:
+                module, name = self.imported[node.id]
+                return self.helper_constants(module).get(name)
         return None
+
+    def helper_constants(self, module: str) -> dict[str, float]:
+        """*module*'s numeric constants, read from beside this file, else the test root."""
+        if module not in self._helpers:
+            self._helpers[module] = {}
+            path = module.replace(".", "/") + ".py"
+            for rel in dict.fromkeys((posixpath.join(posixpath.dirname(self.rel), path), path)):
+                source = self.read(rel)
+                if source is None:
+                    continue
+                try:
+                    self._helpers[module] = _numeric_constants(ast.parse(source))
+                except SyntaxError:
+                    pass
+                break
+        return self._helpers[module]
 
     def inside_loop(self, node: ast.AST) -> bool:
         """A loop between *node* and its enclosing function, class or lambda."""
@@ -330,15 +384,19 @@ def _flake_ok(line: str) -> bool:
     return len(reason) >= MIN_REASON_CHARS and bool(re.search(r"[A-Za-z]{3,}", reason))
 
 
-def sites_in(source: str, rel: str) -> list[Site]:
-    """Every counted site in one file's source; ``flake-ok`` lines are excused."""
+def sites_in(source: str, rel: str, read: Reader | None = None) -> list[Site]:
+    """Every counted site in one file's source; ``flake-ok`` lines are excused.
+
+    *read* supplies the helper modules an imported constant comes from; by default
+    the files under :data:`TEST_ROOT` as they are on disk.
+    """
     if not any(word in source for word in _TRIGGERS):
         return []
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return []
-    module = _Module(tree)
+    module = _Module(tree, rel, read)
     lines = source.splitlines()
     found: list[Site] = []
     for call, kind, seconds in _short_waits(module):
@@ -366,7 +424,7 @@ def scan(root: Path = TEST_ROOT) -> dict[str, list[Site]]:
             source = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        found = sites_in(source, rel)
+        found = sites_in(source, rel, _tree_reader(root))
         if found:
             out[rel] = found
     return out
@@ -502,7 +560,13 @@ def _pr_mode_violations(
             base_source = ratchet_scope.show_at(base, base_path, cwd=cwd)
             if base_source is not None:
                 base_rel = base_path[len("test/") :]
-                base_count = len(sites_in(base_source, base_rel))
+                base_count = len(
+                    sites_in(
+                        base_source,
+                        base_rel,
+                        lambda path: ratchet_scope.show_at(base, f"test/{path}", cwd=cwd),
+                    )
+                )
         else:
             # New file: honour a baseline entry the PR ships for it.
             # When test_root is set use the baseline from that root.
@@ -517,7 +581,7 @@ def _pr_mode_violations(
             now_source = now_abs.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        now_sites = sites_in(now_source, rel)
+        now_sites = sites_in(now_source, rel, _tree_reader(test_root))
         now_count = len(now_sites)
 
         if now_count > base_count:
@@ -919,6 +983,30 @@ def test_a_planted_short_wait_is_named(tmp_path: Path) -> None:
     assert list(found) == ["test_planted.py"]
     assert [str(site) for site in found["test_planted.py"]] == [
         "test/test_planted.py:3  wait_for(1s)"
+    ]
+
+
+def test_a_constant_imported_from_a_helpers_module_is_resolved(tmp_path: Path) -> None:
+    """A split that moves the interval into a helpers module keeps the site counted:
+    the constant is read from the module beside the file, else at the test root."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "poll_helpers.py").write_text("_POLL = 0.05\n", encoding="utf-8")
+    (tmp_path / "sub" / "near_helpers.py").write_text("_HOP = 2\n", encoding="utf-8")
+    (tmp_path / "sub" / "test_split.py").write_text(
+        "import asyncio, time\n"
+        "from poll_helpers import _POLL\n"
+        "from near_helpers import _HOP as hop\n"
+        "async def test_x():\n"
+        "    while not done():\n"
+        "        time.sleep(_POLL)\n"
+        "    await asyncio.wait_for(f(), hop)\n",
+        encoding="utf-8",
+    )
+    found = scan(tmp_path)
+    assert list(found) == ["sub/test_split.py"]
+    assert [str(site) for site in found["sub/test_split.py"]] == [
+        "test/sub/test_split.py:6  sleep-in-loop(0.05s)",
+        "test/sub/test_split.py:7  wait_for(2s)",
     ]
 
 

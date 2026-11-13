@@ -310,6 +310,8 @@ def test_detect_probe_spawn_env_is_scrubbed(monkeypatch, returncode, expected):
     from kiro_crew.apps import registry
 
     _plant_gateway_identity(monkeypatch)
+    # The POSIX probe path; the native-Windows refusal has its own tests.
+    monkeypatch.setattr(registry, "_manifest_shell_platform_refusal", lambda: None)
     monkeypatch.setattr(registry, "app_execution_denied", lambda *a, **kw: "")
     captured, chokepoint = _stub_registry_probe(monkeypatch, registry, returncode)
 
@@ -349,6 +351,7 @@ def test_install_detect_guard_spawn_env_is_scrubbed(monkeypatch):
     monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
     monkeypatch.setattr(registry, "app_execution_denied", lambda *a, **kw: "")
     monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+    monkeypatch.setattr(registry, "_manifest_shell_platform_refusal", lambda: None)
     captured, chokepoint = _stub_registry_probe(monkeypatch, registry, 0)
 
     result = asyncio.run(registry.install_from_registry("demoapp"))

@@ -4,6 +4,7 @@ delivery-sink fan-out (including the zero-push-on-silenced/passive regression)."
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import random
 from unittest.mock import MagicMock
@@ -448,6 +449,50 @@ def test_web_push_payload_worst_case_fits_the_push_limit():
         assert len(sealed) <= 4096, (repr(filler), len(sealed))
 
 
+def test_web_push_payload_worst_case_keyed_note_fits_the_push_limit():
+    """A keyed note adds a full-budget tag and ``renotify`` on top of every
+    other field at its maximum. Those additions are what the worst case above
+    never measures, so measure them: the plaintext must stay inside the
+    module's payload budget and the sealed message under the 4096 byte
+    ceiling, or the keyed push is rejected with 413 and never arrives."""
+    from kiro_crew.dashboard.notification_coordinator import NATIVE_TAG_MAX_BYTES
+    from kiro_crew.dashboard.state_parts import dashboard_services
+    from kiro_crew.dashboard.state_parts.dashboard_services import _web_push_payload
+
+    plain_budget = getattr(dashboard_services, "_PUSH_PAYLOAD_BYTES", 4096 - 103)
+    # The largest tag a keyed note can carry: an ASCII key costs one serialized
+    # byte per character, so it fills the tag budget exactly instead of being
+    # hashed down to the much shorter ``key#<hex>`` form.
+    tag_prefix = "key:system:"
+    note_key = "k" * (NATIVE_TAG_MAX_BYTES - len(tag_prefix))
+    worst_tag = tag_prefix + note_key
+    tag_bytes = len(json.dumps(worst_tag, ensure_ascii=False).encode("utf-8")) - 2
+    assert tag_bytes == NATIVE_TAG_MAX_BYTES, tag_bytes
+
+    for filler in ("\x01", "件", '"'):
+        payload = _web_push_payload(
+            {
+                "ts": "2026-10-23T05:00:00.000000+00:00",
+                "title": filler * 500,
+                "body": filler * 20000,
+                # Just under the replacement threshold, so it is kept as is.
+                "url": "/" + "%" * 383,
+                "channel": filler * 2000,
+                "group_key": filler * 2000,
+                "source": "system",
+                "key": note_key,
+            }
+        )
+        n = payload["notification"]
+        assert n["tag"] == worst_tag, (repr(filler), n["tag"])
+        assert n["renotify"] is True
+        plain = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        assert len(plain) <= plain_budget, (repr(filler), len(plain))
+        sub = _fake_subscription()
+        sealed = web_push._encrypt(plain, sub["keys"]["p256dh"], sub["keys"]["auth"])
+        assert len(sealed) <= 4096, (repr(filler), len(sealed))
+
+
 @pytest.mark.asyncio
 async def test_send_web_push_loads_vapid_keys_off_the_event_loop(monkeypatch, tmp_path):
     """A cold key cache reads or generates the keypair file; that IO must run
@@ -750,3 +795,34 @@ def test_web_push_imports_without_resolve_result(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert hasattr(module, "PublicAddressResolver")
+
+
+@pytest.mark.asyncio
+async def test_fan_out_task_survives_a_gc_pass(monkeypatch, tmp_path):
+    """The scheduled push task is held until it finishes.
+
+    The loop keeps only a weak reference to a task. A send parked on a future
+    nothing else references forms an unreachable cycle with its task, so a
+    ``gc.collect()`` destroys the task mid-run unless the state holds it.
+    """
+    import asyncio
+    import gc
+
+    state = _make_state(monkeypatch, tmp_path)
+    state.bind_serving_loop(asyncio.get_running_loop())
+
+    async def _parked(note):
+        await asyncio.get_running_loop().create_future()
+
+    monkeypatch.setattr(state, "_send_web_push_all", _parked)
+    state._fan_out_web_push({"title": "t"})
+    await asyncio.sleep(0)  # let the task start and park on its future
+    gc.collect()
+
+    parked = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "_parked"]
+    assert len(parked) == 1, "the push task was garbage-collected mid-run"
+    assert parked[0] in state._background_tasks
+    parked[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await parked[0]
+    assert parked[0] not in state._background_tasks

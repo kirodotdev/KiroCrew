@@ -12,11 +12,11 @@ runtime modules. The rule that async code offloads lock-taking store calls is pi
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import pytest
 
+from kiro_crew.testing.wait import default_timeout, drained_progress
 from kiro_crew.vector_memory import (
     _HAS_FAISS,
     _HAS_NUMPY,
@@ -43,52 +43,43 @@ def _join_stress_threads(
 ) -> None:
     """Join stress threads, distinguishing a real deadlock from a slow runner.
 
-    A plain ``join(timeout=60)`` cannot tell "the lock is stuck" from "this
-    Windows runner is overloaded" — it fails both the same way, so a genuine
-    deadlock and mere slowness produce the same red. Per AGENTS.md a timing
-    test must assert the *shape* (does work advance?), not a wall-clock
-    duration.
+    Each worker counts iterations in ``progress`` (keyed by ``threading.get_ident()``);
+    this fails only when the sum stands still for ``stall_windows`` x ``window`` seconds,
+    so slowness alone never fails. The whole run is held to 3/4 of the test's timeout.
 
-    Each worker records its completed-iteration count in ``progress`` (keyed by
-    ``threading.get_ident()``). We observe in ``window``-second slices: a thread
-    is only declared deadlocked if it is still alive AND the workers made zero
-    forward progress across ``stall_windows`` consecutive windows. A stalled
-    lock never advances; a slow-but-live worker keeps incrementing its counter
-    and is simply waited on. Slowness alone is never a failure.
-
-    Each observation window costs ~``window`` seconds *in total*, not per
-    thread: the per-thread join timeout is divided by the live-thread count and
-    the window is capped by a monotonic deadline. Joining N threads for the full
-    ``window`` each would make one window take ``window * N`` — with 8 stalled
-    workers that is 240s, past the pytest ``--timeout`` kill, so a real deadlock
-    would hang to the harness kill instead of failing cleanly. Bounding the
-    window keeps the ``stall_windows * window`` no-progress budget (~60s at the
-    defaults) safely under that timeout.
+    A window costs ``window`` seconds in total, not per thread: joining each of N threads
+    for a full window would pass the pytest ``--timeout`` kill on a real deadlock.
     """
-    stalled_windows = 0
-    last_total = -1
-    while any(t.is_alive() for t in threads):
-        # flake-ok: pre-existing monotonic deadline bounding each join slice, moved verbatim
-        deadline = time.monotonic() + window
+
+    def _joined(budget: float) -> bool:
         for t in threads:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if t.is_alive():
+                t.join(timeout=budget)
                 break
-            live = sum(1 for x in threads if x.is_alive()) or 1
-            t.join(timeout=min(remaining, window / live))
-        total = sum(progress.values())
-        if any(t.is_alive() for t in threads):
-            if total == last_total:
-                stalled_windows += 1
-                if stalled_windows >= stall_windows:
-                    raise AssertionError(
-                        f"{label}: no progress across {stall_windows} x "
-                        f"{window:g}s windows ({total} iterations done) — "
-                        f"genuine deadlock, not slow runner"
-                    )
-            else:
-                stalled_windows = 0
-            last_total = total
+        return not any(t.is_alive() for t in threads)
+
+    drained_progress(
+        # list(): a worker may still be adding its own key to ``progress``.
+        lambda: sum(list(progress.values())),
+        done=_joined,
+        window=window * stall_windows,
+        cap=default_timeout() * 1.5,
+        describe=lambda: (
+            f"{label}: {sum(1 for t in threads if t.is_alive())} of {len(threads)} "
+            f"stress threads still alive"
+        ),
+    )
+
+
+def _join_all(threads: list[threading.Thread], what: str) -> None:
+    """Join ``threads`` under the lost-run bound; a thread that never finishes fails by name.
+
+    The bound only names a hang: a worker blocked on the store's lock would
+    otherwise hold the test until the harness kills the whole worker.
+    """
+    for t in threads:
+        t.join(timeout=default_timeout())
+        assert not t.is_alive(), f"{what}: {t.name} still running at the lost-run bound"
 
 
 @pytest.mark.xdist_group("vector_memory_concurrency")
@@ -96,11 +87,8 @@ class TestVectorStoreConcurrency:
     """Writes are offloaded to worker threads (consolidation, dashboard) while
     reads (search_episodic via context assembly) run on the event loop thread.
 
-    The shared sqlite connection and the non-thread-safe FAISS index /
-    _faiss_id_map must be serialized by _db_lock. Without it, a concurrent
-    write_episodic (faiss.add + id_map.append) racing a search_episodic can
-    IndexError on _faiss_id_map[idx] (add-before-append window) or corrupt the
-    C++ index. Regression guard for the loop-offload concurrency finding.
+    _db_lock serializes the sqlite connection and FAISS / _faiss_id_map; without it a
+    search can IndexError on _faiss_id_map[idx] between faiss.add and the append.
     """
 
     def test_concurrent_write_and_search_no_crash(self, tmp_path, opened) -> None:
@@ -144,26 +132,16 @@ class TestVectorStoreConcurrency:
         ]
         for t in threads:
             t.start()
-        for t in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            t.join()
+        _join_all(threads, "write/search stress")
 
         assert not errors, f"concurrent write/search raised: {errors!r}"
 
     def test_concurrent_write_lesson_and_get_lessons_no_crash(self, tmp_path, opened) -> None:
-        """write_lesson is now offloaded to worker threads (consolidation, task
-        runner) concurrent with loop-thread readers (get_lessons, get_lessons_context).
+        """write_lesson on worker threads beside loop-thread lesson readers.
 
-        Regression guard for the _save_lessons offload. write_lesson touches raw
-        self.db without _db_lock on some paths (get_lessons SELECT, delete_semantic
-        tombstone, embedding backfill UPDATEs). Races on the shared connection
-        surface as arbitrary transient exceptions (OperationalError "no more rows
-        available", corrupt rows exploding as TypeError in json.loads) whose type
-        varies by platform and sqlite driver (stdlib vs pysqlite3), so per-call
-        exceptions are tolerated — production callers already swallow and log
-        them (a lost lesson write is retried on the next consolidation). The
-        real guard: the stress must not deadlock, segfault, or corrupt the
-        store — verified by the post-stress functional write/read cycle.
+        Some write_lesson paths use self.db without _db_lock, and the transient errors
+        vary by platform and driver, so per-call exceptions are tolerated (callers log
+        them). The guard is no deadlock, no crash and a working write/read afterwards.
         """
         dim = 16
 
@@ -226,18 +204,11 @@ class TestVectorStoreConcurrency:
         assert any("zeta functionality" in str(ls.get("value_json", "")) for ls in lessons)
 
     def test_concurrent_semantic_write_and_context_no_errors(self, tmp_path, opened) -> None:
-        """get_semantic_context runs on executor threads (subagent context builds
-        via run_in_embed_pool) concurrent with set_semantic writers on worker
-        threads. Its SELECTs must not hit the shared connection WITHOUT _db_lock,
-        racing writers' implicit transactions and the per-connection statement
-        cache — observed in production as sqlite3.InterfaceError ("bad parameter
-        or other API misuse") from get_semantic_context, which propagates
-        unguarded through memory.get_context -> context.build_session_context
-        and kills the whole subagent run.
+        """get_semantic_context on executor threads beside set_semantic writers.
 
-        Unlike the lesson stress above, readers here must raise NOTHING: with
-        the fetches locked, every db access on this path is serialized, and the
-        production caller has no try/except to absorb a transient.
+        Readers must raise nothing: an unlocked SELECT gives sqlite3.InterfaceError, and
+        memory.get_context -> context.build_session_context has no try/except, so it
+        kills the subagent run.
         """
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
@@ -252,8 +223,7 @@ class TestVectorStoreConcurrency:
         def _writer(n: int, tag: str) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
@@ -264,8 +234,7 @@ class TestVectorStoreConcurrency:
         def _context_reader(n: int) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     # Alternate branches: query-scored path and recency path.
@@ -286,6 +255,7 @@ class TestVectorStoreConcurrency:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "semantic write/context stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not errors, f"concurrent set_semantic/get_semantic_context raised: {errors!r}"
 
         # Coherence: a post-stress read returns the seeded entries intact.
@@ -317,8 +287,7 @@ class TestVectorStoreConcurrency:
         def _lesson_writer(n: int, tag: str) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             for i in range(n):
                 try:
                     store.write_lesson(
@@ -333,8 +302,7 @@ class TestVectorStoreConcurrency:
         def _lesson_reader(n: int) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for _ in range(n):
                     store.get_lessons_context()
@@ -351,17 +319,14 @@ class TestVectorStoreConcurrency:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "lesson write/context stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not reader_errors, f"get_lessons_context raised: {reader_errors!r}"
 
     def test_stem_words_thread_safe(self) -> None:
-        """_stem_words must not share ONE module-level snowballstemmer instance.
-        The pure-Python stemmer keeps the word under stem as mutable instance
-        state (set_current -> _stem -> get_current), so concurrent
-        get_semantic_context calls (parallel subagent context builds)
-        interleaved that cursor and raised IndexError("string index out of
-        range") — or silently produced wrong stems. Now one instance per
-        thread: hammering _stem_words from many threads must neither raise nor
-        diverge from the single-threaded result.
+        """_stem_words uses one snowballstemmer per thread, not one shared instance.
+
+        The stemmer keeps the current word as instance state, so a shared one raises
+        IndexError or gives wrong stems under concurrent calls.
         """
         vocab = [f"word{i} running jumped happily nationalization {i}" for i in range(50)]
         word_sets = [set(v.split()) for v in vocab]
@@ -374,8 +339,7 @@ class TestVectorStoreConcurrency:
         def _stemmer_worker() -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for _ in range(40):
                     for ws, exp in zip(word_sets, expected):
@@ -388,6 +352,7 @@ class TestVectorStoreConcurrency:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "stemmer stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not errors, f"concurrent _stem_words raised/diverged: {errors!r}"
 
 
@@ -484,9 +449,7 @@ class TestSearchLastAccessedLocking:
         threads = [threading.Thread(target=_searcher, args=(50,)) for _ in range(4)]
         for t in threads:
             t.start()
-        for t in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            t.join()
+        _join_all(threads, "search/update stress")
 
         # The locked, transactional UPDATE must not surface 'database is locked'
         # or interleave into a crash under concurrent search load.
@@ -517,21 +480,12 @@ class _TrackingLock:
 class _AuditingConnection:
     """sqlite connection proxy that flags statements issued without ``_db_lock``.
 
-    Python's sqlite3 emits an implicit ``BEGIN`` before INSERT/UPDATE/DELETE
-    when it observes ``sqlite3_get_autocommit() == 1``. Two threads writing on
-    the same connection can both pass that check and both issue ``BEGIN``, and
-    the loser raises ``OperationalError: cannot start a transaction within a
-    transaction``. Holding ``_db_lock`` across every DML statement is what
-    prevents it, so this proxy audits that discipline directly.
+    Two unlocked writers can both issue the implicit ``BEGIN`` and the loser raises
+    ``OperationalError: cannot start a transaction within a transaction``.
 
-    Reads are audited too, but only the two episodic-search fetches, which the
-    context-assembly path runs concurrently with memory writes. sqlite3 caches
-    prepared statements per connection, so a SELECT that overlaps another
-    statement can have its row iteration corrupted — that surfaced on Windows
-    CI as a NULL ``embedding`` from a query filtering ``embedding IS NOT NULL``,
-    raising ``TypeError`` on ``len()``. The other read methods are deliberately
-    NOT audited: they run unlocked by design and widening the audit to them
-    would assert an invariant this change does not establish.
+    Of the reads only the two episodic-search fetches are audited: an overlapping SELECT
+    can return a NULL ``embedding`` despite ``embedding IS NOT NULL``. Other reads run
+    unlocked by design.
     """
 
     _DML = ("INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN")
@@ -663,9 +617,7 @@ class TestSharedConnectionLockDiscipline:
         threads.append(threading.Thread(target=_writer))
         for t in threads:
             t.start()
-        for t in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            t.join()
+        _join_all(threads, "search/semantic-write stress")
 
         assert not errors, f"concurrent search/write raised: {errors!r}"
         entry = store.get_semantic("project.notes.findings_doc")
@@ -749,15 +701,9 @@ class TestSharedConnectionLockDiscipline:
     def test_retire_recall_survives_without_the_mmr_pool(self, tmp_path: Path, opened) -> None:
         """The vector arm alone fills the per-write cap when MMR is off.
 
-        ``mmr`` does not only pick a reranker — it sizes the candidate pool
-        (``_MMR_MAX_POOL`` vs ``limit``), so the retirement lookup keeps a wide
-        ``limit``: the caller's own ``cosine_sim > 0.7`` threshold, not the pool
-        cut, decides which rows are candidates. The row texts avoid both
-        text-LIKE fallback patterns ("editor: vim" / "editor vim"), so only the
-        vector branch can retire them, and the write must retire exactly
-        ``_MAX_EPISODIC_RETIRED_PER_WRITE`` of the fifteen conflicting rows: fewer
-        means the vector branch under-delivered, more means the cap is not
-        applied on V1.
+        ``mmr`` also sizes the pool (``_MMR_MAX_POOL`` vs ``limit``). The texts avoid the
+        text-LIKE fallbacks ("editor: vim" / "editor vim"), so only the vector branch can
+        retire them, exactly ``_MAX_EPISODIC_RETIRED_PER_WRITE`` of fifteen.
         """
         dim = 64
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim))
@@ -848,13 +794,9 @@ class TestDbLockGuard:
     """AST guard: EVERY statement on the shared
     ``check_same_thread=False`` connection must be serialized on ``_db_lock``.
 
-    Enforcing the contract by convention alone is error-prone. This test
-    makes a raw unlocked ``self.db.execute(...)`` in vector_memory.py a CI
-    failure instead of a code-review catch: new fetches must route through
-    ``_fetch_all_locked``/``_fetch_one_locked`` (which lock internally) or sit
-    inside an explicit ``with self._db_lock:`` read-modify-write section or
-    ``_vector_commit``. The helper's own acquisition is checked too; removing it
-    must fail this guard, not turn the helper's name into an exemption.
+    Fetches go through ``_fetch_all_locked``/``_fetch_one_locked`` or sit inside
+    ``with self._db_lock:`` or ``_vector_commit``. The helpers' own acquisition is
+    checked too, so a helper name is no exemption.
     """
 
     #: Methods allowed to touch the raw ``self._db`` attribute unlocked:
@@ -1176,12 +1118,7 @@ class TestReaderConcurrency1947:
     get_episodic_list, memory_stats, _get_episodic, get_rejection_stats)
     against concurrent writers.
 
-    Same defect class: an unserialized statement racing a writer's
-    implicit transaction corrupts the per-connection statement cache
-    (sqlite3.InterfaceError "bad parameter or other API misuse") or silently
-    corrupts row iteration. With every fetch routed through the locked helper,
-    readers must raise NOTHING — dashboard/API callers surface any exception
-    as a 500.
+    Readers must raise nothing: dashboard and API callers turn any exception into a 500.
     """
 
     def test_previously_unlocked_readers_survive_concurrent_writes(
@@ -1203,8 +1140,7 @@ class TestReaderConcurrency1947:
         def _writer(n: int, tag: str) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
@@ -1216,8 +1152,7 @@ class TestReaderConcurrency1947:
         def _reader(n: int) -> None:
             tid = threading.get_ident()
             progress[tid] = 0
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            start_barrier.wait()
+            start_barrier.wait(timeout=default_timeout())
             try:
                 for i in range(n):
                     store.get_semantic("project.seed.k00")
@@ -1241,6 +1176,7 @@ class TestReaderConcurrency1947:
         for t in threads:
             t.start()
         _join_stress_threads(threads, progress, "unlocked-reader/writer stress")
+        assert not start_barrier.broken, "a stress thread never reached the start barrier"
         assert not errors, f"concurrent reader/writer stress raised: {errors!r}"
 
         # Post-stress coherence: counts add up and a fresh read round-trips.

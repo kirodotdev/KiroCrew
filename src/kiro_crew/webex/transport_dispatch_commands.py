@@ -103,7 +103,10 @@ async def _handle_model(self: WebexDispatcher, inbound: "WebexInbound") -> None:
         lines += ["", "Reply `/model <number>` to switch."]
         await self._reply(inbound, "\n".join(lines))
         return
-    if not arg.isdigit() or not 1 <= int(arg) <= len(choices):
+    # Typed text, so refuse what int() would raise on: "²".isdigit() is True
+    # while int("²") raises, and so does int() past sys.get_int_max_str_digits().
+    numeric = arg.isascii() and arg.isdigit() and len(arg) <= 3
+    if not numeric or not 1 <= int(arg) <= len(choices):
         await self._reply(
             inbound,
             f"❌ Pick a number between 1 and {len(choices)} — send `/model` for the list.",
@@ -156,6 +159,13 @@ async def _apply_model(
     if not live:
         return deferred
     if not await self.sessions.try_acquire(session_key):
+        # The acquire's Kiro account check retires a session that holds
+        # another account, and then nothing is live: the next message starts
+        # a fresh one. A session the check only flagged (an idle parent it
+        # spared for its running sub-agents) stays registered but is refused
+        # the same way, and the next message's claim retires it.
+        if not self.sessions.has_session(session_key) or self.sessions.is_retiring(session_key):
+            return deferred
         return (
             f"✅ Model set to **{label}**, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to your "

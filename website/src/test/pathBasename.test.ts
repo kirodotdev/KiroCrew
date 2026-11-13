@@ -5,7 +5,7 @@
  * `split('/').pop()` / `replace(/\/+$/, '')` always did.
  */
 import { describe, it, expect } from 'vitest'
-import { backslashIsSeparator, pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
+import { backslashIsSeparator, pathBasename, relativeToRoot, stripTrailingSeparators } from '../utils/pathBasename'
 
 describe('pathBasename', () => {
   it.each([
@@ -64,5 +64,31 @@ describe('backslashIsSeparator', () => {
     ['/x\\y', false], ['x\\y', false], ['C:x\\y', false], ['\\\\', false], ['CD:\\x', false],
   ])('%s -> %s', (p, expected) => {
     expect(backslashIsSeparator(p)).toBe(expected)
+  })
+})
+
+// Issue #27823: search hit labels. A Windows gateway prints native paths, so a
+// hit must match its root with either separator and without case.
+describe('relativeToRoot', () => {
+  it.each([
+    ['C:\\proj\\src\\a.py', 'C:\\proj', 'src\\a.py'],
+    ['C:\\proj\\src\\a.py', 'C:/proj', 'src\\a.py'],
+    ['c:\\proj\\a.py', 'C:\\proj', 'a.py'],
+    ['C:\\proj\\a.py', 'C:\\proj\\', 'a.py'],
+    ['C:\\a.py', 'C:\\', 'a.py'],
+    ['\\\\host\\share\\a.py', '\\\\HOST\\share', 'a.py'],
+    ['D:\\other\\b.py', 'C:\\proj', 'D:\\other\\b.py'],
+    ['C:\\project\\x.py', 'C:\\proj', 'C:\\project\\x.py'],
+    ['C:\\proj', 'C:\\proj', ''],
+    // POSIX: byte for byte, `\` is a name character.
+    ['/proj/src/a.py', '/proj', 'src/a.py'],
+    ['/proj/src/a.py', '/proj/', 'src/a.py'],
+    ['/proj/a.py', '/', 'proj/a.py'],
+    ['/Proj/a.py', '/proj', '/Proj/a.py'],
+    ['/project/x.py', '/proj', '/project/x.py'],
+    ['/proj/\\x.py', '/proj', '\\x.py'],
+    ['/proj/a.py', '', '/proj/a.py'],
+  ])('%s under %s -> %s', (p, root, expected) => {
+    expect(relativeToRoot(p, root)).toBe(expected)
   })
 })

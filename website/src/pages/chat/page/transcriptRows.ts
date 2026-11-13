@@ -5,10 +5,29 @@ import { useSlotDeferredValue } from '../../../hooks/useSlotDeferredValue'
 import { mcpAppKey } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from '../ChatPageMessageContent'
-import { applyRunningState, createTurnGrouper, isTurnEnd, TURN_OPENER_ROLES } from '../groupDisplayItems'
+import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn } from '../groupDisplayItems'
 import type { DisplayItem, TurnItem } from '../types'
 import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
+
+/**
+ * True when `next` is `prev` with only its LAST message and LAST display item
+ * replaced: a streaming flush growing the reply in place, cheap enough to
+ * render at urgent priority. Anything else (a new row, a landed page, a
+ * regroup) stays deferred.
+ */
+export function grewOnlyAtTail(
+  prev: { messages: ChatMessage[]; displayItems: DisplayItem[] },
+  next: { messages: ChatMessage[]; displayItems: DisplayItem[] },
+): boolean {
+  const pm = prev.messages, nm = next.messages, pd = prev.displayItems, nd = next.displayItems
+  if (pm.length !== nm.length || pd.length !== nd.length || nm.length === 0) return false
+  const a = pm[pm.length - 1], b = nm[nm.length - 1]
+  if (a.ts !== b.ts || a.role !== b.role) return false
+  for (let i = 0; i < nm.length - 1; i++) if (pm[i] !== nm[i]) return false
+  for (let i = 0; i < nd.length - 1; i++) if (pd[i] !== nd[i]) return false
+  return true
+}
 
 interface TranscriptRowsOptions {
   messages: ChatMessage[]
@@ -71,7 +90,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // messages they came from, so every deferred reader (the transcript, the
   // turn minimap, the Navigation tab) sees the same snapshot by construction.
   const liveTranscript = useMemo(() => ({ messages, displayItems }), [messages, displayItems])
-  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript)
+  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript, grewOnlyAtTail)
   // MCP App payloads live outside the message list, so promote after the
   // transcript defer: the FIRST render that can draw an iframe must already use
   // the same TurnBlock subtree that later grouping will keep. Short turns are
@@ -108,7 +127,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
         next.push(item)
         continue
       }
-      if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
+      if (item.kind === 'single' && opensDisplayTurn(item.msg)) {
         flushLooseTurn()
         next.push(item)
         continue
@@ -119,6 +138,9 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
         const toolCallId = item.msg.meta?.tool_call_id
         if (typeof toolCallId === 'string' && appToolCallIds.has(toolCallId)) looseHasApp = true
       }
+      // A reply an error cut short carries stats too. Any row after it (its card,
+      // a recovery) makes an app-bearing batch long enough that the grouper has
+      // already made it a turn, which this pass keeps whole.
       if (item.kind === 'single' && isTurnEnd(item.msg)) flushLooseTurn()
     }
     flushLooseTurn()

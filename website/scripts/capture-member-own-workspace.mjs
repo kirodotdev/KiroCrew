@@ -10,7 +10,8 @@
  *                       the own-workspace option, selected, above the existing
  *                       workspaces
  *   03-profile-<theme>  a created crewmate's Profile card: the Workspace tile
- *                       reads the generated `member-radar` name
+ *                       reads "Radar" for the generated `member-radar`, which
+ *                       is its tooltip
  *
  * Real components against stubbed /api (Vite + Playwright); the backend is
  * exercised by CI only. Reuses the Crewmates page harness
@@ -116,7 +117,7 @@ for (const theme of ['dark', 'light']) {
     const page = await newPage(theme, 'empty')
     const dlg = await openDialog(page)
     await dlg.getByLabel('Name').fill('Radar')
-    await dlg.getByLabel('What it looks after').fill('Triage new GitHub issues every morning')
+    await dlg.getByLabel('Goal', { exact: true }).fill('Triage new GitHub issues every morning')
     await dlg.getByTestId('crewmate-create-advanced-toggle').click()
     const adv = dlg.getByTestId('crewmate-create-advanced')
     await adv.waitFor()
@@ -156,7 +157,7 @@ for (const theme of ['dark', 'light']) {
     const tile = page.getByTestId('crew-profile-workspace')
     await tile.waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(700)
-    check(`03-profile-${theme} workspace tile`, (await tile.innerText()).includes('member-radar'), `tile="${(await tile.innerText()).replace(/\s+/g, ' ').trim()}"`)
+    check(`03-profile-${theme} workspace tile`, (await tile.innerText()).includes('Radar') && (await tile.locator('[title]').getAttribute('title')) === 'member-radar', `tile="${(await tile.innerText()).replace(/\s+/g, ' ').trim()}"`)
     await assertTheme(page, theme, `03-profile-${theme}`)
     await page.screenshot({ path: `${OUT}/03-profile-${theme}.png` })
     await page.close()

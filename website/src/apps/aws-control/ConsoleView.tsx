@@ -76,6 +76,14 @@ export function ReconnectAction({ profile, askAgent }: { profile: AwsProfile; as
 
   return (
     <div className="mt-2" data-testid="reconnect">
+      {/* The probe's own error (only a failed probe sets `detail`; redacted
+          server-side), so the cause shows before the generic guidance. */}
+      <AwsErrorNotice
+        askAgent={askAgent}
+        message={profile.detail}
+        className="mb-2"
+        testId="reconnect-detail"
+      />
       <Btn onClick={() => setOpen((v) => !v)} data-testid="reconnect-toggle" aria-expanded={open}>
         <RefreshCw size={13} />
         {i18nT('apps.awsControl.page.reconnect')}

@@ -103,39 +103,28 @@ _MATE_AUTO_GRANTS = (
 #: the person arranged and would have to reconstruct by hand. Creation is otherwise
 #: recoverable clutter; mutation of what the user arranged is not.
 #:
-#: Both granted creation verbs earn half 2 from a server ceiling — without its
-#: ceiling neither verb is safe to auto-approve:
+#: The granted creation verb earns half 2 from a server ceiling — without it the
+#: verb is not safe to auto-approve:
 #:
-#: * ``chat_folder_create`` had no bound at all, so a loop grew durable on-disk
-#:   state without limit. Now ``MAX_CHAT_FOLDERS``, tested under the folder lock.
 #: * ``session_create`` had a GLOBAL ceiling (``MAX_LIVE_SLOTS``) but no
 #:   distribution: one caller could hold all 500, and every later create — the
 #:   person opening a chat tab included — got the 429. A bounded resource that one
 #:   caller can exhaust is not bounded from anybody else's point of view. Now
-#:   ``MAX_SLOTS_PER_CREATOR`` bounds what a single caller holds, leaving 450 slots
-#:   reachable no matter what the conductor does.
+#:   the per-creator cap (``session.max_per_creator``, default
+#:   ``MAX_SLOTS_PER_CREATOR``) bounds what a single caller holds, leaving 450 slots
+#:   reachable no matter what the conductor does, and never fewer than 50 at the
+#:   highest value the owner can set.
 #:
 #: Every verb this server exposes, against that rule:
 #:
-#: * ``chat_folder_tree`` — READ of the caller's visible tree. GRANTED.
-#: * ``chat_folder_create`` — creates a NEW folder, and
-#:   ``_refuse_tree_shaping_if_unverifiable`` refuses an unverifiable caller and
-#:   keeps an app agent out of the person's own folders. Touches nothing that
-#:   already existed, and bounded by ``MAX_CHAT_FOLDERS``. GRANTED.
-#: * ``chat_folder_file_self`` — writes the CALLER'S OWN ``folder_id``, and only
-#:   that: the target slot is the ``dashboard:<slot>`` the verified caller key
-#:   names (``mcp_dashboard._own_chat_slot``; a linked channel/cron slot is
-#:   refused because its binding can be rebound between read and write),
-#:   there is no ``session`` argument, so ingested content cannot aim it at a
-#:   peer. The one placement it can change
-#:   is the conductor's own — the ``not the conductor's own`` clause of the
-#:   invariant is exactly what admits it. This is what lets a conductor sit
-#:   INSIDE the goal's folder beside its workers' subfolders instead of
-#:   floating at the top level; the destination path is created on the way
-#:   (mkdir -p, bounded by ``MAX_CHAT_FOLDERS`` like any create). GRANTED.
+#: * ``chat_folder_*`` — every folder verb is WITHHELD. A dispatcher does not
+#:   manage folders: Crew Mode workers and a crewmate's workers live under their
+#:   root (rfc-crewmate-workers-under-the-crewmate.md, Design 6). The verbs stay
+#:   mounted behind an approval like any ungranted tool, and ordinary agents
+#:   keep them.
 #: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
-#:   both globally (``MAX_LIVE_SLOTS``, 429 on breach) and per caller
-#:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
+#:   both globally (``MAX_LIVE_SLOTS``, 409 on breach) and per caller
+#:   (``session.max_per_creator``), and visible in the sidebar. GRANTED.
 #:   One known side effect, recorded because it is the closest thing to an
 #:   exception here: ``create_session`` mints its slot with
 #:   ``origin=SlotOrigin.USER`` (it is a first-class user-owned session, which is
@@ -155,6 +144,10 @@ _MATE_AUTO_GRANTS = (
 #:   ``session_read_message`` is and returns a digest of the same transcript: a
 #:   verb is granted for a step, and no conductor step calls it yet. A skill that
 #:   adopts it for the patrol cycle adds it here with that step as the reason.
+#: * ``session_queue`` — WITHHELD. Its ``move`` action reorders instructions
+#:   waiting in another session's queue, which is a write to
+#:   what that session runs next, and no conductor step calls it yet. The same
+#:   step-adopts-it rule as ``session_summary`` applies.
 #: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
 #:   ``folder_id``: the PATCH goes to ``/api/chat/slots/<target>/folder`` where the
 #:   target is the session named in the ARGUMENTS, and the strictly-resolved
@@ -203,7 +196,17 @@ _MATE_AUTO_GRANTS = (
 #:   needs it.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
-#:   reachable; nothing bounds WHAT is sent.
+#:   reachable; nothing bounds WHAT is sent. Not granted by name here, because
+#:   the conductor has no server-side creator fence while ``agent.session_control``
+#:   is on. Instead the approval decider auto-approves it, and ``session_close``,
+#:   for ``kirocrew-conductor`` and ``kirocrew-team-lead`` ONLY when the target is
+#:   a session the caller created by vouched lineage
+#:   (``_conductor_own_child_call`` in ``dashboard/chat_turn/tool_approval.py``,
+#:   ``agent.conductor_own_child_verbs``; rfc-conductor-own-child-verbs.md). A send
+#:   anywhere else still prompts.
+#: * ``work_dispatch`` — WITHHELD, on ``session_send``'s reason: its last step sends
+#:   the seed, and the approval prompt is where a person reads that seed. Granting
+#:   it is rfc-work-dispatch.md's open question Q1, not a default.
 #: * ``session_broadcast`` — WITHHELD, on ``session_send``'s reason multiplied by
 #:   the fleet: one call runs ingested text as a user-role turn in every session
 #:   this agent created. Nothing about the fan-out narrows what is sent, so the
@@ -241,6 +244,8 @@ _MATE_AUTO_GRANTS = (
 #: * ``session_set_color`` — WITHHELD. Writes a session other than the
 #:   caller's (its sidebar tint). The route confines it to sessions the
 #:   caller created and refuses the caller's own, but no conductor step needs it.
+#: * ``session_set_note`` — WITHHELD. Writes text another session's next turn
+#:   reads. Same reach as ``session_set_color``, and no conductor step needs it.
 #: * ``session_reload`` — WITHHELD. Tears down another session's agent process
 #:   and relaunches it. The conversation survives, but a reload is still a
 #:   process-level action on a session a person may be watching, and no
@@ -259,12 +264,8 @@ _MATE_AUTO_GRANTS = (
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted
 #: tool. The cost is an approval when a round files a session, seeds a child, or
 #: stops one; all three happen right after a human approved the plan, while the
-#: unattended patrol cycle needs none of them. A ``folder`` argument on
-#: ``session_create`` would remove the filing call altogether.
+#: unattended patrol cycle needs none of them.
 _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
-    "@kirocrew-dashboard/chat_folder_tree",
-    "@kirocrew-dashboard/chat_folder_create",
-    "@kirocrew-dashboard/chat_folder_file_self",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
     "@kirocrew-dashboard/session_status",
@@ -283,7 +284,7 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: → stop) stalls on an approval prompt at its second step with nobody at the
 #: keyboard.
 #: ``session_broadcast`` joins on exactly ``session_send``'s argument rather than a
-#: new one, and the fan-out does not widen it: the verb's DEFAULT audience is read
+#: new one, and the fan-out does not widen it: the verb's `all: true` audience is read
 #: from the same ``created_by`` field the ownership fence reads, and every delivery
 #: re-runs that fence per target, so a member's broadcast reaches the worker
 #: sessions it opened and nothing else — the same confinement, applied to each of
@@ -297,11 +298,18 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: And it refuses a turn that finished or was stopped (``turn_not_failed``).
 #: Restarting a worker whose turn timed out is the patrol step the verb exists
 #: for, and that step runs with nobody at the keyboard.
+#: ``session_close`` joins under the same fence: ``close_target`` runs
+#: ``authorize_target``, so a member closes only worker sessions it created or
+#: manages, and ``close_target`` refuses a crewmate's own thread. A close archives
+#: (reopenable from History), never deletes. Closing a finished or stuck worker is
+#: the cleanup step of the same unattended loop; without the grant those workers
+#: stay open until a person closes each one.
 _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
     "@kirocrew-dashboard/session_send",
     "@kirocrew-dashboard/session_broadcast",
     "@kirocrew-dashboard/session_stop",
     "@kirocrew-dashboard/session_retry",
+    "@kirocrew-dashboard/session_close",
 )
 
 
@@ -406,8 +414,8 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: DERIVED, not copied. The set is the union of the prompt's own "Your tools:"
 #: inventory and the ``goal-conductor`` skill's real call sites, filtered to
 #: the tools that actually register on ``kirocrew-core`` — the ``session_*``
-#: and ``chat_folder_*`` verbs the charter also names are
-#: ``@kirocrew-dashboard`` and are granted by the tuple above, while
+#: verbs the charter also names are ``@kirocrew-dashboard`` and are granted
+#: by the tuple above, while
 #: ``list_sessions`` is core (``mcp_tools/sessions.py``) despite sitting in the
 #: prompt's child-session paragraph. Deriving rather than reusing the sibling's
 #: thirteen is load-bearing: ``select_crew`` is absent from that tuple and is
@@ -447,22 +455,34 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: still an installed spec.
 #:
 #: ``work_ledger_rebuild`` is the goal conductor's recovery step and no other
-#: conductor's procedure names it. ``work_brief`` is the one worker-half verb
+#: conductor's procedure names it. ``work_brief`` is a worker-half verb
 #: granted: it only READS the caller's own bound item (or answers ``not_bound``),
 #: which is the same rule the two conductor verbs rest on. It is also a
 #: second-level conductor's mandated FIRST call, in a child session nobody opened —
 #: gated, that call is an approval stall before any planning happens.
-#: ``work_report`` stays gated: it WRITES into the parent's record, across a
-#: dispatch relationship.
 _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
     "@kirocrew-work/work_ledger_record",
 )
 
 
+#:
+#: ``accept_eval`` is the goal-conductor skill's bundled check served in-process
+#: (``mcp_work.CHECK_TOOLS``). Granted because, unlike ``execute_bash``, its
+#: arguments are typed data: no field names a command, an argv or a path to run,
+#: and the evaluator builds every argv itself and refuses a ``cmd`` kind. It READS
+#: world state and writes nothing, so a verify cycle waits on no shell approval.
+#:
+#: ``work_report`` is the same grant every worker holds (``_WORKER_WORK_GRANTS``).
+#: A conductor or team lead that another conductor dispatched reports at round
+#: boundaries; gated, each report is an approval stall in a child session nobody
+#: watches. It writes only the caller's own bound item, and a root conductor gets
+#: ``not_bound``. The pipeline and security conductors keep it gated.
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
     "@kirocrew-work/work_brief",
+    "@kirocrew-work/work_report",
+    "@kirocrew-work/accept_eval",
 )
 
 
@@ -580,21 +600,12 @@ _PIPELINE_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
 #: on ``session_send``'s withholding — the fan-out changes how many sessions ingested
 #: text reaches, not whether anything bounds it.
 _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
-    "@kirocrew-dashboard/chat_folder_tree",
-    "@kirocrew-dashboard/chat_folder_create",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
     "@kirocrew-dashboard/session_status",
 )
 
 
-#: The security conductor's dashboard grants: the pipeline conductor's plus
-#: ``chat_folder_file_self``, for the same reason the goal conductor holds it
-#: (see ``_CONDUCTOR_DASHBOARD_GRANTS``): the verb writes only the caller's own
-#: placement, and this agent's procedure files itself in the audit's folder
-#: before its auditors go under ``<audit>/<agent>``. The pipeline conductor's
-#: procedure does not file itself yet, so its tuple stays as it is rather
-#: than carrying a grant nothing in its skill exercises.
-_SECURITY_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS + (
-    "@kirocrew-dashboard/chat_folder_file_self",
-)
+#: The security conductor's dashboard grants: the pipeline conductor's, with no
+#: folder verb, like every dispatcher's (see ``_CONDUCTOR_DASHBOARD_GRANTS``).
+_SECURITY_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS

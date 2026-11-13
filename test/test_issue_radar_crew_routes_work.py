@@ -1,20 +1,17 @@
 """Issue Radar's crew work-record route, ``PUT /crew/work``, for a numbered item.
 
-A write upserts the item and appends its ledger event in one call, and a refused write
-leaves no ledger line; the record tool's ``clear`` empties a label list; ``phase: skipped``
-writes the repo-wide shared skip index in the same request; and one work write is one
-crew-log entry. The agent's own session-resolved write and the numberless sweep are
-tested in ``test_issue_radar_crew_routes.py``, and a non-finite number in a work body in
-``test_issue_radar_crew_routes_controls.py``.
+Covers upsert plus ledger event, ``clear`` on labels, the shared skip index and one entry
+per write. The session-resolved write and sweep are in ``test_issue_radar_crew_routes.py``;
+non-finite numbers in ``test_issue_radar_crew_routes_controls.py``.
 """
 
 import asyncio
+import json
 from typing import Any
 from unittest import mock
 
 from aiohttp import web
 from issue_radar_crew_routes_helpers import (
-    BASE,
     OWNER,
     REPO,
     _CrewRouteCase,
@@ -304,11 +301,8 @@ class TestWorkItems(_CrewRouteCase):
     async def test_a_traversal_id_is_400_not_404_and_never_reaches_a_path(self):
         """A malformed id must be refused as a bad request.
 
-        404 would be a lie (nothing was looked up) and 409 would tell a crew agent
-        to retry an id that can never work. The dangerous ones are the path-shaped
-        values: ``Path(store) / "/etc/policy"`` discards the base entirely, so an
-        unchecked id is an arbitrary-file read here and an arbitrary-file write on
-        the update route.
+        409 would invite a retry. ``Path(store) / "/etc/policy"`` drops the base, so an
+        unchecked id is an arbitrary-file read here and write on the update route.
         """
         for bad in ("/etc/policy", "../../../../etc/policy", "c_1234abcd/../escape"):
             res = await self.call(
@@ -363,42 +357,41 @@ class TestWorkItems(_CrewRouteCase):
 class TestTheRecordToolEmptiesLabelsWithClear(_CrewRouteCase):
     """``issue_radar_crew_record`` with ``clear: ["labels_applied"]``, end to end.
 
-    A client that drops empty lists never delivers ``labels_applied: []``, so the
-    tool description points a crew that removed its last label at the ``clear``
-    spelling. The tool runs from its own entry (schema validation and handler) with
-    its two loopback legs bridged onto the registered read and write handlers, which
-    write the real store.
+    Some clients drop ``labels_applied: []``, hence ``clear``. The core's forwarded
+    call is bridged onto the app's real ``agent-tools`` handler, which runs the real
+    read and write handlers in-process.
     """
 
     def agent(self, crew: dict) -> str:
         return f"dashboard:{crew['slot_key']}"
 
     async def record(self, crew: dict, args: dict[str, Any]) -> str:
+        from aiohttp.test_utils import make_mocked_request
+        from issue_radar_agent_tools_helpers import shipped
+
+        from kiro_crew.apps import app_agent_tools
+        from kiro_crew.apps.builtins.issue_radar.backend import agent_tools
+
         loop = asyncio.get_running_loop()
 
-        def leg(method: str, path: str, body: Any, session_key: Any) -> dict:
-            self.assertTrue(path.startswith(BASE), path)
+        def post(path: str, body: Any = None, *, session_key: Any = None, **_kw: Any) -> dict:
+            req = make_mocked_request(
+                "POST", path, headers={"X-Session-Key": session_key or ""}, app=self.app
+            )
+            req["internal_auth"] = True
+            req._read_bytes = json.dumps(body).encode()
             res = asyncio.run_coroutine_threadsafe(
-                self.call(
-                    method, path[len(BASE) :], body=body, internal_auth=True, session=session_key
-                ),
-                loop,
+                agent_tools.handle_agent_tool_call(req), loop
             ).result(timeout=30)
             payload = _payload(res)
             # The shape ``mcp_core._send`` hands back for a refusal.
             return payload if res.status < 400 else {"error": payload.get("error", ""), **payload}
 
-        def get(path: str, session_key: Any = None, **_kw: Any) -> dict:
-            return leg("GET", path, "", session_key)
-
-        def put(path: str, body: Any = None, session_key: Any = None) -> dict:
-            return leg("PUT", path, body, session_key)
-
         sk = self.agent(crew)
         with (
+            mock.patch.object(app_agent_tools, "declared_tool", lambda name: shipped(name)),
             mock.patch.object(mcp_core, "_resolve_session_key_strict", return_value=sk),
-            mock.patch.object(mcp_core, "_get", side_effect=get),
-            mock.patch.object(mcp_core, "_put", side_effect=put),
+            mock.patch.object(mcp_core, "_post", side_effect=post),
         ):
             return await asyncio.wait_for(
                 asyncio.to_thread(mcp_core._call_tool, "issue_radar_crew_record", args), timeout=30
@@ -483,6 +476,32 @@ class TestSharedSkipIndex(_CrewRouteCase):
             await self.call("GET", "/crew", query={"owner": OWNER, "repo": REPO, "id": crew_id})
         )
 
+    async def test_get_crew_names_who_answered_so_a_dropped_wake_loses_nothing(self):
+        """The human-answered wake is dropped while a crew is mid-turn; the read every
+        turn starts with must still say who handed the issue back."""
+        author = self.crew("Andromeda")
+        res = await self._skip(
+            author["id"], 42, why="two fixes, a maintainer picks", skip_scope="needs-decision"
+        )
+        self.assertEqual(res.status, 200)
+        self.assertEqual((await self._page(author["id"]))["recent_answers"], [])
+        off_loop(
+            crew_store.record_human_answer,
+            OWNER,
+            REPO,
+            author["id"],
+            42,
+            "alice",
+            "2999-01-01T00:00:00Z",
+            self.root,
+        )
+
+        page = await self._page(author["id"])
+        self.assertNotIn(42, page["skipped_numbers"])
+        self.assertEqual(
+            [(r["number"], r["actor"]) for r in page["recent_answers"]], [(42, "alice")]
+        )
+
     async def test_a_skip_by_one_crew_is_visible_to_another_through_get_crew(self):
         author = self.crew("Andromeda")
         reader = self.crew("Whirlpool")
@@ -508,12 +527,8 @@ class TestSharedSkipIndex(_CrewRouteCase):
     async def test_a_needs_human_pass_is_accepted_and_indexed_for_the_fleet(self):
         """The write path that replaces holding an issue for a human.
 
-        This is the whole handover: the crew records ``skipped`` with a
-        ``needs-decision`` scope, its claim is released, and the reason and scope are
-        visible to every OTHER crew in the repo — so the next one does not
-        re-investigate an issue that is already waiting on a person. Asserted through
-        the route rather than the store because this route is the only place the "a
-        pass is always indexed" invariant is enforced.
+        A ``needs-decision`` skip releases the claim and is visible to every OTHER crew.
+        Checked through the route, the only place "a pass is always indexed" holds.
         """
         author = self.crew("Andromeda")
         reader = self.crew("Whirlpool")
@@ -623,12 +638,8 @@ class TestWorkWriteIsOneEntry(_CrewRouteCase):
     """The write route appends ONE ``radar/recorded`` entry to the crew's live crew
     log, and answers with the record that entry produces.
 
-    The all-or-nothing property the retired file store bought with three locks and
-    a rollback is now a property of the append: the item's delta, the line that
-    explains it and the skip row that indexes a pass ride on one entry, so there is
-    no partial state for a crash to leave and no rollback to get wrong. What the
-    route owes instead is a NAMED refusal when the crew has nowhere to record, so an
-    agent can tell "the log is not there" from "the update was refused".
+    Delta, line and skip row ride one entry, so a crash leaves no partial state. With no
+    log to record into, the refusal is NAMED so an agent can tell it from a rejection.
     """
 
     def agent(self, crew: dict) -> str:

@@ -22,21 +22,48 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_blocks import attributable_user_chars
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
+    SLASH_COMMAND_DESCRIPTIONS,
     is_harness_slash_command,
     user_text_span,
 )
+from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_BYTES
 from kiro_crew.memory import MemoryStore
-from kiro_crew.quick_prompts import QUICK_PROMPTS, expand_quick_prompt
+from kiro_crew.messaging.dispatch_admission import _CANCEL_ALIASES
+from kiro_crew.quick_prompts import (
+    _RESERVED_TOKENS,
+    _USER_PROMPT_MAX_BYTES,
+    QUICK_PROMPTS,
+    expand_quick_prompt,
+    reserved_user_prompts,
+    user_quick_prompt_menu,
+)
 from kiro_crew.skills import SkillsLoader
 
 _REPO = Path(__file__).resolve().parents[1]
 _MENU_TSX = _REPO / "website" / "src" / "components" / "SlashCommandMenu.tsx"
 _EN_MANUAL = _REPO / "website" / "src" / "i18n" / "locales" / "en.manual.json"
+
+
+@pytest.fixture(autouse=True)
+def prompts_dir(tmp_path, _floor_monkeypatch):
+    """A private ``~/.kiro/prompts``: a user quick prompt is read from the home."""
+    home = tmp_path / "home"
+    _floor_monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    path = home / ".kiro" / "prompts"
+    path.mkdir(parents=True)
+    return path
+
+
+def _opted_in(body: str, description: str = "") -> str:
+    meta = f"description: {description}\n" if description else ""
+    return f"---\n{meta}slash_command: true\n---\n{body}\n"
 
 
 def _make_builder(tmp_path):
@@ -222,6 +249,117 @@ class TestDoesNotShadowRealCommands:
         for mod_name, aliases in collected.items():
             clash = set(QUICK_PROMPTS) & aliases
             assert not clash, f"{mod_name} already handles {sorted(clash)}"
+
+    def test_reserved_tokens_cover_every_surface(self):
+        """A user prompt may not take a name any surface handles ahead of
+        ``build_message``: the dashboard's commands, the composer's own, and every
+        channel's. Collected by reflection, like the alias test above, so a channel
+        that gains a command fails here until the reserved set names it."""
+        names = re.search(
+            r"const FRONTEND_COMMAND_NAMES = \[(.*?)\]", _MENU_TSX.read_text(encoding="utf-8"), re.S
+        )
+        assert names, "FRONTEND_COMMAND_NAMES not found in SlashCommandMenu.tsx"
+        surfaces = set(re.findall(r"'([^']+)'", names.group(1)))
+        surfaces |= set(_SLASH_COMMANDS) | set(SLASH_COMMAND_DESCRIPTIONS) | set(_CANCEL_ALIASES)
+        modules = sorted((_REPO / "src" / "kiro_crew").glob("*/commands.py"))
+        assert len(modules) >= 8, "channel command modules moved?"
+        for path in modules:
+            mod = importlib.import_module(f"kiro_crew.{path.parent.name}.commands")
+            for attr in dir(mod):
+                value = getattr(mod, attr)
+                if attr.endswith("_ALIASES") and isinstance(value, (set, frozenset)):
+                    surfaces |= {v for v in value if isinstance(v, str)}
+            for row in getattr(mod, "COMMANDS", ()):
+                surfaces |= {f"/{row.name}", *row.aliases}
+            # ``(name, help)`` rows, or ``(name, aliases, help)`` in Teams.
+            for row in getattr(mod, "COMMAND_SPEC", ()):
+                surfaces |= {f"/{row[0]}", *(row[1] if len(row) == 3 else ())}
+        tokens = {t.lower() for t in surfaces if re.fullmatch(r"/[A-Za-z][A-Za-z0-9-]*", t)}
+        assert tokens - _RESERVED_TOKENS == set()
+
+
+class TestUserQuickPrompts:
+    """A saved prompt opted in with ``slash_command: true`` is a quick prompt."""
+
+    def test_opted_in_prompt_expands_with_its_argument(self, prompts_dir):
+        (prompts_dir / "cr.md").write_text(_opted_in("Review {arg} for bugs."), encoding="utf-8")
+
+        out = expand_quick_prompt("/CR https://example.test/pull/7")
+
+        assert out == "[QUICK PROMPT /cr]\nReview https://example.test/pull/7 for bugs.\n"
+
+    def test_argument_is_appended_when_there_is_no_placeholder(self, prompts_dir):
+        (prompts_dir / "cr.md").write_text(_opted_in("Review the change."), encoding="utf-8")
+
+        assert expand_quick_prompt("/cr #12") == "[QUICK PROMPT /cr]\nReview the change.\n\n#12\n"
+
+    def test_a_prompt_without_the_flag_is_ordinary_text(self, prompts_dir):
+        (prompts_dir / "cr.md").write_text("---\ndescription: x\n---\nReview.\n", "utf-8")
+
+        assert expand_quick_prompt("/cr x") is None
+        assert user_quick_prompt_menu() == []
+
+    def test_a_reserved_name_is_never_a_user_prompt(self, prompts_dir):
+        for name in ("help", "new", "review", "plain"):
+            (prompts_dir / f"{name}.md").write_text(_opted_in("Mine."), encoding="utf-8")
+
+        assert expand_quick_prompt("/help") is None
+        assert expand_quick_prompt("/review x") is None
+        assert "Mine." not in (expand_quick_prompt("/plain") or "")
+        assert user_quick_prompt_menu() == []
+
+    def test_reserved_user_prompts_names_only_opted_in_shadowed_files(self, prompts_dir):
+        (prompts_dir / "fork.md").write_text(_opted_in("Mine."), encoding="utf-8")
+        (prompts_dir / "help.md").write_text("---\ndescription: x\n---\nNot opted in.\n", "utf-8")
+        (prompts_dir / "cr.md").write_text(_opted_in("Review."), encoding="utf-8")
+
+        assert [p.name for p in reserved_user_prompts()] == ["fork.md"]
+
+    def test_doctor_names_a_shadowed_prompt_without_failing(self, prompts_dir, capsys):
+        from kiro_crew.doctor_checks import features
+
+        (prompts_dir / "fork.md").write_text(_opted_in("Mine."), encoding="utf-8")
+
+        features._doctor_saved_prompts()
+
+        out = capsys.readouterr().out
+        assert "Saved prompts" in out
+        assert "~/.kiro/prompts/fork.md never runs: /fork is a built-in command" in out
+        assert "rename the file, for example to fork-prompt.md" in out
+
+    def test_doctor_prints_nothing_when_no_prompt_is_shadowed(self, prompts_dir, capsys):
+        from kiro_crew.doctor_checks import features
+
+        (prompts_dir / "cr.md").write_text(_opted_in("Review."), encoding="utf-8")
+
+        features._doctor_saved_prompts()
+
+        assert capsys.readouterr().out == ""
+
+    def test_menu_lists_each_prompt_with_its_description(self, prompts_dir):
+        (prompts_dir / "cr.md").write_text(_opted_in("Body.", "Review a change"), "utf-8")
+        (prompts_dir / "standup.md").write_text(_opted_in("# Daily standup\nList."), "utf-8")
+
+        assert user_quick_prompt_menu() == [
+            {"name": "/cr", "description": "Review a change"},
+            {"name": "/standup", "description": "Daily standup"},
+        ]
+
+    def test_the_size_cap_is_the_prompt_mention_cap(self):
+        """The same file read as ``@name`` must not fit one cap and miss the other."""
+        assert _USER_PROMPT_MAX_BYTES == MAX_PROMPT_BYTES
+
+    def test_build_message_expands_it_and_credits_the_user_nothing(self, tmp_path, prompts_dir):
+        (prompts_dir / "cr.md").write_text(_opted_in("Review {arg}."), encoding="utf-8")
+        typed = "/cr the retry path"
+        span: list[int] = []
+
+        msg, _ = _make_builder(tmp_path).build_message(
+            typed, is_new_session=False, user_text_range=(0, len(typed)), user_span_out=span
+        )
+
+        assert "[QUICK PROMPT /cr]\nReview the retry path." in msg
+        assert span[0] == span[1]
 
 
 class TestNotForwardedToTheHarness:

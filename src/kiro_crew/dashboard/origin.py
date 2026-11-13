@@ -29,6 +29,7 @@ import re
 # shared stdlib module object, patching it through this name still reaches the
 # helpers in ``urls``.
 import socket  # noqa: F401
+import time
 from typing import TYPE_CHECKING
 
 # Re-exported so every name this module owns stays importable from it.
@@ -52,12 +53,17 @@ from kiro_crew.dashboard.urls import (  # noqa: F401
     is_local_only,
     is_loopback,
     machine_hostname,
+    origin_floor,
+    origin_permitted,
     parse_dashboard_url,
     resolve_dashboard_host,
     should_canonicalize_host,
 )
+from kiro_crew.shared_crew import access
+from kiro_crew.shared_crew.contracts import SSM_GUEST_REQUEST_KEY, SSM_REQUEST_KEY, SsmGuest
 
 if TYPE_CHECKING:  # aiohttp is needed for annotations only
+    import asyncio
     from collections.abc import Iterable
 
     from aiohttp import web
@@ -87,6 +93,20 @@ _PROXY_FORWARD_HEADERS = (
 )
 
 
+def is_ssm_request(request: web.Request) -> bool:
+    """Whether the SSM listener admitted *request*.
+
+    An AWS Systems Manager port forward reaches the gateway as a loopback
+    connection with no forwarding header, the exact shape of the machine's own
+    user. The listener marks what it admits, and no peer-address test may trust
+    such a request as local.
+    """
+    read = getattr(request, "get", None)
+    if read is None:
+        return False
+    return read(SSM_REQUEST_KEY) is True or isinstance(read(SSM_GUEST_REQUEST_KEY), SsmGuest)
+
+
 def is_direct_local_request(request: web.Request) -> bool:
     """Return ``True`` only for a request made directly from this machine.
 
@@ -97,7 +117,8 @@ def is_direct_local_request(request: web.Request) -> bool:
     ``Forwarded``/``X-Forwarded-*``/``X-Real-IP`` headers; a browser talking
     to localhost directly never does. So: loopback peer AND no forwarding
     headers ⇒ direct local. Anything else is treated as remote (fail-closed
-    for the secret-reveal and config-write gates).
+    for the secret-reveal and config-write gates). A request the SSM listener
+    admitted is never direct local (:func:`is_ssm_request`).
 
     Known limits: an SSH port-forward (``ssh -L``), socat relay, or a proxy
     that strips all forwarding headers is indistinguishable from a local
@@ -110,7 +131,7 @@ def is_direct_local_request(request: web.Request) -> bool:
     headers. Hosted/multi-user deployments should force read-only via a
     server-side policy regardless of request origin.
     """
-    if not is_loopback(request.remote or ""):
+    if is_ssm_request(request) or not is_loopback(request.remote or ""):
         return False
     return not any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
@@ -149,7 +170,18 @@ def is_proxied_request(request: web.Request) -> bool:
     This is NOT the inverse of :func:`is_direct_local_request`, which also
     requires loopback because it answers a different question ("is this the
     local machine", for the secret-reveal and config-write gates).
+
+    A request the Kiro relay delivered is proxied by construction: every person
+    on the relay reaches this gateway through the one relay client, so it answers
+    ``True`` whatever headers the person's client sent.
     """
+    # Imported here, not at module level: the relay package reads the prefix from
+    # ``relay_headers``, which imports aiohttp, and this module is on the slim MCP
+    # entry's import path (``port_resolution``), which must not load aiohttp.
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+
+    if published_relay_caller(request) is not None:
+        return True
     return any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
 
@@ -306,6 +338,100 @@ def mark_audit_claimed(request: web.Request) -> None:
     request[AUDIT_CLAIMED_KEY] = True
 
 
+#: Seconds during which a repeat refusal for the same (reason, origin) pair is
+#: not logged again. A reconnecting dashboard retries ``/api/ws`` every few
+#: seconds, and a hostile page can send refused requests at will; without the
+#: throttle either one fills the size-capped, rotating gateway log.
+_REFUSAL_LOG_INTERVAL_SECS = 60.0
+
+#: Most refusal lines written per interval across ALL origins. The per-origin
+#: throttle alone does not bound the log: the origin is attacker-chosen, so a
+#: peer that varies it on every request would get a line each time and could
+#: rotate every retained ``gateway.log`` file away. Past the budget one
+#: "suppressed" line is written and the rest of the interval stays silent.
+_REFUSAL_LOG_BUDGET = 20
+
+#: Most (reason, origin) pairs remembered by the throttle. The keys come from a
+#: request header, so the map is cleared when it reaches this size instead of
+#: growing without bound.
+_REFUSAL_LOG_MAX_KEYS = 256
+
+#: Longest request path written to the log, in characters.
+_REFUSAL_LOG_PATH_CHARS = 200
+
+_refusal_log_last: dict[tuple[str, str], float] = {}
+_refusal_window = {"start": 0.0, "count": 0}
+
+
+def _log_origin_refusal(request: web.Request, reason: str, origin_base: str) -> None:
+    """Write one throttled WARNING for an origin refusal to the gateway log.
+
+    Every caller already records the refusal in the SEL, but the SEL is a
+    separate file. Without this line a dashboard served from an origin that is
+    not allowlisted (for example a tunnel URL missing from ``dashboard.url``)
+    reconnect-loops with nothing in ``gateway.log`` to say why.
+
+    Only the origin's ``scheme://host[:port]`` is logged, never the raw header:
+    with ``fallback_header="Referer"`` the value is a full URL, and dashboard
+    URLs can carry a token in their query string. The request path is logged
+    without its query string for the same reason.
+
+    Every request-derived value is formatted with ``%r``: ``request.path`` is
+    percent-DECODED, so an encoded ``%0A`` would otherwise start a forged line
+    in a log that operators and agents read.
+    """
+    key = (reason, origin_base)
+    now = time.monotonic()
+    last = _refusal_log_last.get(key)
+    if last is not None and now - last < _REFUSAL_LOG_INTERVAL_SECS:
+        return
+    window = _refusal_window
+    if now - window["start"] >= _REFUSAL_LOG_INTERVAL_SECS:
+        window["start"] = now
+        window["count"] = 0
+    if window["count"] >= _REFUSAL_LOG_BUDGET:
+        if window["count"] == _REFUSAL_LOG_BUDGET:
+            logger.warning(
+                "Origin check refused more than %d requests in %ds; further "
+                "refusals are not logged until the interval ends.",
+                _REFUSAL_LOG_BUDGET,
+                int(_REFUSAL_LOG_INTERVAL_SECS),
+            )
+        window["count"] += 1
+        return
+    window["count"] += 1
+    if len(_refusal_log_last) >= _REFUSAL_LOG_MAX_KEYS:
+        _refusal_log_last.clear()
+    _refusal_log_last[key] = now
+    logger.warning(
+        "Origin check refused %s %r: %s (origin=%r, peer=%r). If this is the "
+        "dashboard's own address, add it to dashboard.url or "
+        "KIROCREW_ALLOWED_LOOPBACK_PORTS. Repeats are suppressed for %ds.",
+        request.method[:16],
+        request.path[:_REFUSAL_LOG_PATH_CHARS],
+        reason,
+        origin_base,
+        request.remote or "unknown",
+        int(_REFUSAL_LOG_INTERVAL_SECS),
+    )
+
+
+def _ssm_origins_for(request: web.Request) -> set[str]:
+    """The SSM listener's own origins, only for a request that arrived on its port.
+
+    They are deliberately NOT in the shared ``allowed_origins``: that set is read by
+    every listener, so a local process squatting the same port on the other loopback
+    family would otherwise pass the dashboard's own CSRF check.
+    """
+    holder = request.app.get("ssm_gate_ref")
+    gate = getattr(holder, "gate", None)
+    if gate is None or getattr(holder, "withdrawn", False) or not gate.owns(request):
+        return set()
+    from kiro_crew.dashboard import ssm_gate
+
+    return ssm_gate.origins(gate.port)
+
+
 def check_origin(
     request: web.Request,
     *,
@@ -318,8 +444,12 @@ def check_origin(
     always trusted — local processes like mcp-core and doctor don't
     send Origin headers but are not cross-origin attacks.  A browser
     on the same machine would always send an Origin header.
+
+    Every ``False`` result is a refusal at all call sites, so each one is
+    also logged here (see :func:`_log_origin_refusal`).
     """
     allowed: set[str] = request.app["allowed_origins"]
+    allowed = allowed | _ssm_origins_for(request) if "ssm_gate_ref" in request.app else allowed
     origin = request.headers.get("Origin") or ""
     if not origin and fallback_header:
         origin = request.headers.get(fallback_header, "")
@@ -331,6 +461,8 @@ def check_origin(
         # exist on that transport). Reject others.
         if is_loopback(request.remote or "") or request_is_unix_socket(request):
             return True
+        if require:
+            _log_origin_refusal(request, "no Origin header from a non-loopback peer", "")
         return not require
     origin_base = "/".join(origin.split("/")[:3]) if "://" in origin else ""
     if origin_base in allowed:
@@ -350,20 +482,40 @@ def check_origin(
     # exactly. So only a different spelling of an allowed origin newly passes.
     canon = _canonical_origin(origin_base)
     if canon is not None:
-        if any(_canonical_origin(a) == canon for a in allowed):
-            return True
         _scheme, canon_host, canon_port = canon
+        # An LTS build matches a non-loopback origin exactly as listed
+        # (``dashboard_origins`` is an exact-origin list): no other spelling passes.
+        # Each approved origin is stored in ``urls.stored_origin`` form (the
+        # ``origin_policy_item`` spelling a browser sends), so the exact
+        # ``origin_base in allowed`` test above is the comparison in that form.
+        from kiro_crew import edition
+
+        exact_only = edition.is_lts() and not is_loopback(canon_host)
+        if not exact_only and any(_canonical_origin(a) == canon for a in allowed):
+            return True
         if is_loopback(canon_host):
             req = _split_authority(request.headers.get("Host", ""))
             if req is not None and req[0]:
                 if (_canonical_host(req[0]), req[1]) == (canon_host, canon_port):
-                    return True
+                    # Not on the allowlist, so an extra origin: the
+                    # ``dashboard_origins`` policy decides it, audited (oss with
+                    # no policy: allowed).
+                    from kiro_crew.dashboard.urls import origin_permitted
+
+                    return origin_permitted(origin_base, audit_tool="dashboard_origin_request")
     # NOTE (CSE SEC-016): we deliberately do NOT blanket-trust every loopback
     # origin regardless of port. A browser always sends an Origin header, so a
     # malicious local web page on an arbitrary port would otherwise pass this
     # CSRF check (cookies are auto-attached). SSH-tunnel users whose browser
     # sends a different local port must opt that port in via
     # ``KIROCREW_ALLOWED_LOOPBACK_PORTS`` (folded into the allowed set above).
+    if origin_base:
+        _log_origin_refusal(request, "origin not in the allowlist", origin_base[:100])
+    elif origin == "null":
+        # Opaque origin: a sandboxed iframe, a file:// page or a redirect chain.
+        _log_origin_refusal(request, "opaque origin", "null")
+    else:
+        _log_origin_refusal(request, "malformed origin header", "")
     return False
 
 
@@ -423,6 +575,86 @@ def check_host(request: web.Request) -> bool:
         return False
     allowed = {_canonical_host(h) for h in build_allowed_hosts(allowed_origins)}
     return host in allowed
+
+
+def withdraw_refused_origins(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
+    """Withdraw from *app*'s live origin set each extra ``dashboard_origins`` now refuses.
+
+    An extra is asked only when it is added, so a live policy refresh runs this (a
+    post-install hook) and :func:`check_origin` and the ``Host`` barrier narrow without
+    a restart. It asks on the refresher thread, so an error reaches the hook runner's
+    incident and no SEL write lands on *loop*; only the removal runs on *loop*, where
+    requests read the set. Never asked, as at start: the floor and the tailnet origins
+    (MagicDNS and the direct listener), which answer to ``capabilities.tailnet_origin``.
+    The first ask is a pure read, since hooks run on every confirming poll. An error
+    withdraws (fail-closed); a widened policy adds nothing until a restart.
+    """
+    # Deferred: the tailnet module loads the daemon and sandbox stack, which nothing
+    # else in this module needs.
+    from kiro_crew.dashboard.tailnet import running_tailnet_origin
+
+    def kept() -> set[str]:
+        tailnet_origin = running_tailnet_origin(app)[0]
+        floor = origin_floor(app["port"], tailnet_origin)
+        # Under --port auto app["port"] is the requested 0 and served_port the bound
+        # one; the start-time set floors both, so the refresh keeps both.
+        served = app.get("served_port")
+        if served and served != app["port"]:
+            floor |= origin_floor(served, tailnet_origin)
+        return floor | {dashboard_origin(url) for url in access.tailnet_direct().urls}
+
+    allowed: set[str] = app["allowed_origins"]
+    refused = {
+        o
+        for o in allowed - kept()
+        if not origin_permitted(o) and not origin_permitted(o, audit_tool="dashboard_origin")
+    }
+    if refused:
+        logger.warning(
+            "dashboard origins no longer permitted by governance (dashboard_origins), "
+            "withdrawn: %s",
+            ", ".join(sorted(refused)),
+        )
+        # ``kept`` again on the loop: tailnet recovery adds its origin there one step
+        # before it records the host, so the read above can trail the set.
+        loop.call_soon_threadsafe(lambda: allowed.difference_update(refused - kept()))
+    _withdraw_ssm_origins(app, loop)
+
+
+def _withdraw_ssm_origins(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
+    """Stop trusting the SSM listener's origins once the live policy refuses them.
+
+    They are never in ``allowed_origins`` (see :func:`_ssm_origins_for`), so the set
+    withdrawal above cannot reach them. Asked as it is: the first ask is a pure read,
+    and only a refusal is audited. The gate itself stays, so a request on the SSM port
+    is still judged by it; what ends is the origin trust and the management routes.
+    One way: a widened policy adds nothing until a restart.
+
+    Every way the SSM origins are trusted, so none is missed: ``check_origin`` (its only
+    reader of them, called by the CSRF middleware, the dashboard, STT and terminal
+    WebSockets, auth refresh and logout, and mobile auth and connect) reads ``withdrawn``
+    through :func:`_ssm_origins_for`; the three owner routes read it through
+    ``routes_ssm.governed``; and the bind-time check in ``ssm_gate.resolve`` only decides
+    whether the listener starts.
+    """
+    holder = app.get("ssm_gate_ref")
+    gate = getattr(holder, "gate", None)
+    if gate is None or holder.withdrawn:
+        return
+    from kiro_crew.dashboard import ssm_gate
+
+    refused = sorted(
+        o
+        for o in ssm_gate.origins(gate.port)
+        if not origin_permitted(o) and not origin_permitted(o, audit_tool="ssm_listener")
+    )
+    if refused:
+        logger.warning(
+            "ssm listener origins no longer permitted by governance (dashboard_origins), "
+            "withdrawn: %s",
+            ", ".join(refused),
+        )
+        loop.call_soon_threadsafe(setattr, holder, "withdrawn", True)
 
 
 # ---------------------------------------------------------------------------

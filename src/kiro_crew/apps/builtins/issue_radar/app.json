@@ -37,7 +37,8 @@
       "/api/apps/issue-radar/*"
     ],
     "network": true,
-    "storage": true
+    "storage": true,
+    "workerAutoApprove": true
   },
   "dependencies": {
     "optionalCommands": [
@@ -47,7 +48,291 @@
     ]
   },
   "backend": {
-    "routes": "backend.routes:register_routes"
+    "routes": "backend.routes:register_routes",
+    "hooks": {
+      "routes": "backend.agent_tools:register_routes"
+    }
+  },
+  "agentTools": {
+    "route": "agent-tools",
+    "tools": [
+      {
+        "name": "issue_radar_record_investigation",
+        "description": "Record your conclusion on an Issue Radar investigation, so the verdict and summary appear on the issue's card instead of living only in this chat. Call this when you finish investigating an issue or PR opened via Issue Radar's Investigate button — the seed prompt names the owner, repo and number to pass back. Do NOT call it from a Review session: that prompt asks for a draft and forbids recording anything. This is the ONLY way to persist findings: a raw HTTP PUT to the same endpoint has no credential and is refused with 403. Local triage state only — nothing is written to GitHub or GitLab. Pass provider, host and kind with owner, repo and number: together they pick which record is written. Within one investigation run a write merges into the existing record, so a partial update is fine; the first findings written after the item's session changed (e.g. Start over) replace the previous run's findings.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string",
+              "description": "Repo owner / group",
+              "maxLength": 500
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repo / project name",
+              "maxLength": 500
+            },
+            "number": {
+              "type": "integer",
+              "description": "Issue or PR number",
+              "minimum": 1,
+              "maximum": 1000000000
+            },
+            "provider": {
+              "type": "string",
+              "enum": [
+                "github",
+                "gitlab"
+              ],
+              "description": "Forge the repo lives on",
+              "maxLength": 16
+            },
+            "host": {
+              "type": "string",
+              "description": "Forge host, e.g. github.com or a self-hosted GitLab",
+              "maxLength": 253
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "issue",
+                "pull"
+              ],
+              "description": "Which sequence the number belongs to. Matters on GitLab, where issue #5 and merge request !5 are unrelated items",
+              "maxLength": 8
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "investigating",
+                "resolved",
+                "archived"
+              ],
+              "description": "Record status (default resolved)",
+              "maxLength": 16
+            },
+            "verdict": {
+              "type": "string",
+              "description": "bug | feature | question | duplicate | needs-info",
+              "maxLength": 500
+            },
+            "root_cause": {
+              "type": "string",
+              "description": "Root cause or the code area involved",
+              "maxLength": 5000
+            },
+            "suggested_labels": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "description": "Labels you recommend for this item",
+              "maxItems": 20
+            },
+            "next_action": {
+              "type": "string",
+              "description": "Recommended next action",
+              "maxLength": 5000
+            },
+            "summary": {
+              "type": "string",
+              "description": "One-paragraph summary",
+              "maxLength": 5000
+            }
+          },
+          "required": [
+            "owner",
+            "repo",
+            "number",
+            "provider",
+            "host",
+            "kind"
+          ]
+        }
+      },
+      {
+        "name": "issue_radar_crew_read",
+        "description": "Read your Issue Radar crew's ledger: the crew record, the repo's protocol settings, and every work item that is not finished — each with its phase, its `next` step, what was already tried and rejected, its worktree, branch, PR and last CI reading. Takes no arguments: the crew is resolved from this session, so you cannot read another crew's ledger. It also returns `skipped_numbers` and `recent_skips` — the SHARED skip index for this repository, written by every crew on it, not just you. CHECK an issue against `skipped_numbers` BEFORE you investigate it: a number in that list has already been passed on and re-investigating it is wasted work that every crew would repeat. `recent_skips` says why the recent passes happened. Your per-turn nudge already carries a snapshot, so call this for the two cases a snapshot cannot cover: a turn long enough that the snapshot has gone stale, and a resume after compaction or a gateway restart where you must re-establish what you were doing before writing anything. A ledger too large for one answer leaves out its oldest entries, least needed first (finished items, progress lines, skip reasons, answers, then unfinished items), and `omitted` counts them; `skipped_numbers` is never trimmed. This is the ONLY read path: a raw HTTP GET to the same endpoint has no credential and is refused with 403.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "strictSession": true,
+        "maxResultChars": 60000
+      },
+      {
+        "name": "issue_radar_crew_record",
+        "description": "Record one step of Issue Radar crew work: it updates the work item AND appends one progress line, in a single call. There is deliberately no separate 'append event' tool — a phase must never move without a logged reason — so `event` and `event_kind` are REQUIRED whenever you pass `phase`. The ledger is your memory, not your report: write what a cold resume needs (`next` as an intent — 'add the Windows branch to _safe_chmod, the test already fails' — plus worktree, branch, base_sha, and any approach you tried and rejected). Fields you omit are left as an earlier write stored them, so a partial update is fine and is never a way to erase state. Setting `phase` to `skipped` also writes this repository's SHARED skip index, so every other crew sees the pass and none of them re-investigates the issue — pass `skip_scope` to say what kind of pass it was (architecture, new-feature, needs-design, needs-decision, needs-investigation, duplicate, already-fixed, not-reproducible, wrong-root-cause, breaking-change, gate-config, other) and put the real explanation in `why`, which is what the next crew reads. The crew and repo come from this session, not from arguments. To record that you checked the queue and took NOTHING, send `event_kind: sweep` with NO `number` — never invent an issue number for a cycle you did no work in. That writes one crew-level line and no work item, so it also takes none of the work-item fields. WARNING — `event` BECOMES PUBLIC: it is rendered into your claim comment on the forge as well as on your crew page. `why` is not posted to the forge, but it shows on your crew page and, for a skip, in the skip index every crew on this repo reads. Never put an absolute path, a host name or anything else about the machine you run on in either; worktree paths belong in `worktree`, which stays local. This is the ONLY write path: a raw HTTP PUT to the same endpoint has no credential and is refused with 403.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "integer",
+              "description": "Issue number this step belongs to. Omit it ONLY with `event_kind: sweep`, to record that you checked the queue and took nothing — never invent a number for that",
+              "minimum": 1,
+              "maximum": 1000000000
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "addressing-review",
+                "awaiting-ci",
+                "awaiting-merge",
+                "awaiting-reply",
+                "claimed",
+                "handed-back",
+                "implementing",
+                "investigating",
+                "preempted",
+                "resolved",
+                "selected",
+                "skipped",
+                "yielded"
+              ],
+              "description": "Work-item phase. Requires `event` + `event_kind`. Only one item may be in `implementing` or `addressing-review` at a time — a second is refused",
+              "maxLength": 32
+            },
+            "skip_scope": {
+              "type": "string",
+              "description": "Only with `phase: skipped`. What kind of pass this is, for the repo-wide shared skip index. Optional — an omitted or unrecognised value is recorded as `other`, and the pass is indexed either way. One of: already-fixed, architecture, breaking-change, duplicate, gate-config, needs-decision, needs-design, needs-investigation, new-feature, not-reproducible, other, wrong-root-cause",
+              "maxLength": 32
+            },
+            "outcome": {
+              "type": "string",
+              "description": "Why it ended. Set only in a terminal phase",
+              "maxLength": 500
+            },
+            "next": {
+              "type": "string",
+              "description": "The resumable intent — the concrete next step, not a status word",
+              "maxLength": 5000
+            },
+            "decision": {
+              "type": "string",
+              "description": "What you decided to do",
+              "maxLength": 5000
+            },
+            "why": {
+              "type": "string",
+              "description": "On what grounds",
+              "maxLength": 5000
+            },
+            "tried_approach": {
+              "type": "string",
+              "description": "An approach you tried and rejected — appended, so a resumed turn does not re-walk it",
+              "maxLength": 5000
+            },
+            "tried_rejected_because": {
+              "type": "string",
+              "description": "Why that approach was rejected",
+              "maxLength": 5000
+            },
+            "worktree": {
+              "type": "string",
+              "description": "Absolute worktree path (local only, never made public)",
+              "maxLength": 4096
+            },
+            "branch": {
+              "type": "string",
+              "description": "Working branch name",
+              "maxLength": 255
+            },
+            "base_sha": {
+              "type": "string",
+              "description": "Base commit the branch was cut from",
+              "maxLength": 64
+            },
+            "pr_number": {
+              "type": "integer",
+              "description": "PR / merge request number",
+              "minimum": 1,
+              "maximum": 1000000000
+            },
+            "ci_state": {
+              "type": "string",
+              "description": "Latest CI verdict, e.g. success / failure / pending",
+              "maxLength": 32
+            },
+            "ci_passed": {
+              "type": "integer",
+              "description": "Checks passing",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            "ci_total": {
+              "type": "integer",
+              "description": "Checks total",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            "ci_round": {
+              "type": "integer",
+              "description": "Which CI round this is",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "ci_inherited_reds": {
+              "type": "integer",
+              "description": "Failures already red on the base — record these so you do not rebase at the base branch's own breakage",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            "claim_comment_id": {
+              "type": "integer",
+              "description": "Id of your claim comment, so it can be edited in place",
+              "minimum": 1,
+              "maximum": 1000000000000000000
+            },
+            "labels_applied": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "description": "Labels you applied, so a hand-back removes exactly those. Once you hold none, pass clear: [\"labels_applied\"] rather than an empty list, which some clients drop before it reaches the server",
+              "maxItems": 20
+            },
+            "clear": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "description": "Fields to EMPTY, by name — the only way to erase one, since an omitted field is left as stored. `pr_number` once the pull request is closed, `claim_comment_id` once the claim comment is gone, `next` when there is no next step, `labels_applied` once you hold no labels. A field both cleared and set in the same call keeps the set value. One of: base_sha, branch, ci_state, claim_comment_id, decision, labels_applied, next, outcome, pr_number, why, worktree",
+              "maxItems": 16
+            },
+            "event": {
+              "type": "string",
+              "description": "PUBLIC one-line progress note, e.g. 'CI round 3 — 41/47 green, 6 inherited from main'. No paths, no host names",
+              "maxLength": 500
+            },
+            "event_kind": {
+              "type": "string",
+              "enum": [
+                "ci",
+                "claim",
+                "conflict",
+                "handback",
+                "implement",
+                "investigate",
+                "merge",
+                "reply",
+                "review",
+                "skip",
+                "sweep",
+                "yield"
+              ],
+              "description": "Which kind of step this line records",
+              "maxLength": 16
+            }
+          },
+          "required": []
+        },
+        "strictSession": true,
+        "maxResultChars": 60000
+      }
+    ]
   },
   "notifications": {
     "channels": [

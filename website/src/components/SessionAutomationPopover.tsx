@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
   deriveAutomationStatus,
+  isBuiltInPullRequestMonitorKind,
   MONITOR_STATUS_KEYS,
   normalizePullRequestMonitorTarget,
   normalizeAutomationRecord,
@@ -424,18 +425,35 @@ export default function SessionAutomationPopover({
       'components.sessionAutomationPopover.limit_range',
       { min: fmtNumber(limits.minimum), max: fmtNumber(limits.maximum) },
     )
+    // Editing a contributed-kind monitor: only the built-in kinds have a
+    // client-side parser, so a contributed kind's target is sent trimmed for the
+    // backend's kind-specific validation (`api_monitor_update`) and surfaced
+    // through the mutation's error path on refusal. Built-in editing and all
+    // creation (which infers a built-in kind from the URL) run the client parser
+    // unchanged.
+    const editingContributedKind = !!editedMonitor
+      && !isBuiltInPullRequestMonitorKind(editedMonitor.monitorKind)
     if (validates('target') && !draft.target.trim()) {
       nextErrors.target = i18nT('components.sessionAutomationPopover.enter_pull_request_url')
     }
-    const normalizedTarget = normalizePullRequestMonitorTarget(draft.target.trim())
-    if (validates('target') && draft.target.trim() && !normalizedTarget) {
-      nextErrors.target = i18nT('components.sessionAutomationPopover.invalid_pull_request_url')
-    } else if (validates('target') && editedMonitor && normalizedTarget
-      && normalizedTarget.kind !== editedMonitor.monitorKind) {
-      nextErrors.target = i18nT(
-        'components.sessionAutomationPopover.provider_change_requires_new_monitor',
-      )
+    const normalizedTarget = editingContributedKind
+      ? null
+      : normalizePullRequestMonitorTarget(draft.target.trim())
+    if (!editingContributedKind) {
+      if (validates('target') && draft.target.trim() && !normalizedTarget) {
+        nextErrors.target = i18nT('components.sessionAutomationPopover.invalid_pull_request_url')
+      } else if (validates('target') && editedMonitor && normalizedTarget
+        && normalizedTarget.kind !== editedMonitor.monitorKind) {
+        nextErrors.target = i18nT(
+          'components.sessionAutomationPopover.provider_change_requires_new_monitor',
+        )
+      }
     }
+    // The target value the update sends: the client-canonicalized form for a
+    // built-in kind, the trimmed input for a contributed one.
+    const targetToSend = editingContributedKind
+      ? draft.target.trim()
+      : normalizedTarget?.target
     if (validates('cadence') && cadence === null) {
       nextErrors.cadence = rangeError(STRUCTURED_MONITOR_LIMITS.cadenceSecs)
     }
@@ -495,7 +513,7 @@ export default function SessionAutomationPopover({
       return
     }
     const payload: MonitorWrite = {}
-    if (editor.dirty.target) payload.target = normalizedTarget!.target
+    if (editor.dirty.target) payload.target = targetToSend!
     if (editor.dirty.cadence) payload.cadence_secs = cadence!
     if (editor.dirty.runtime) payload.max_runtime_secs = runtime!
     if (editor.dirty.turns) payload.max_agent_turns = turns!

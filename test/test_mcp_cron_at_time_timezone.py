@@ -98,3 +98,20 @@ def test_wall_clock_outside_datetime_range_is_refused_without_creating_a_job(cal
         "Error: 9999-12-31 23:59 in America/Los_Angeles is outside the supported date range"
     )
     assert jobs == []
+
+
+def test_relative_at_time_past_year_2100_is_refused_without_creating_a_job(call_tool):
+    # "in 999999999 hours" parses to a time ~116,000 years out. The dashboard
+    # route and the CLI refuse it at the schema's year-2100 ceiling for ``at``;
+    # the tool must too, rather than save a job no page can render.
+    result, jobs = call_tool({"at_time": "in 999999999 hours"})
+
+    assert result == "Error: resolved time is outside the supported range (0 to 4102444800)"
+    assert jobs == []
+
+
+def test_relative_at_time_inside_the_range_still_saves(call_tool):
+    result, jobs = call_tool({"at_time": "in 2 hours"})
+
+    assert "Added job" in result
+    assert len(jobs) == 1

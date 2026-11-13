@@ -8,6 +8,24 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.shared_crew.collab import DecisionKind, DecisionState
+from kiro_crew.shared_crew.collaborators import (
+    broadcast_to_collaborators,
+    deliver_to_collaborators,
+)
+from kiro_crew.shared_crew.contracts import Principal
+from kiro_crew.shared_crew.decisions import (
+    MAX_RETAINED_DECISIONS,
+    decisions_for,
+    open_and_broadcast,
+    question_decision_id,
+    settle_after_wait,
+    state_approval_decision_id,
+    system_initiator,
+    turn_initiator,
+)
+
 _Redactor = Callable[[str], tuple[str, object]]
 
 #: Outcome of a wait that ended without an answer. The client derives every
@@ -17,12 +35,32 @@ _Redactor = Callable[[str], tuple[str, object]]
 _EXPIRED_DECISION = "expired"
 #: The audit outcome of a wait whose id a later same-id request took over.
 _SUPERSEDED_DECISION = "superseded"
+#: Question endings in which nobody answered; their shared decision is closed.
+_UNANSWERED_REASONS = frozenset({"expired", "withdrawn", "no_client"})
 
 
 def _redact(text: object, redact_url: _Redactor, redact_secret: _Redactor) -> str:
     value, _ = redact_url(str(text or ""))
     value, _ = redact_secret(value)
     return value
+
+
+def _instance_of(state: Any, approval_id: str) -> str:
+    """The ``instance`` of the coordinator record currently held under *approval_id*."""
+    record = state._pending_approvals.get(approval_id)
+    instance = record.get("instance") if isinstance(record, dict) else ""
+    return instance if isinstance(instance, str) else ""
+
+
+def native_resolution_target(mid: str | None) -> dict[str, str]:
+    """The fields naming a chat runner's resolved request on ``approval_resolved``.
+
+    ``origin`` tells a client the frame is the runner's own, so it never
+    settles a coordinator row under a colliding id; ``mid`` (the permission
+    row's delivery identity, when it has one) names the row. Every producer of
+    a native resolution frame spells it through here.
+    """
+    return {"origin": "native", **({"mid": mid} if mid else {})}
 
 
 def _push_slots(state: Any) -> None:
@@ -39,6 +77,46 @@ def _bounded_purpose(text: str) -> str:
     from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
 
     return _redact_tool_field(text, limit=_MAX_TOOL_PURPOSE)
+
+
+def _bool_outcome(future: asyncio.Future[bool]) -> str | None:
+    """The decision a settled boolean approval future carries, else ``None``."""
+    if future.cancelled() or not future.done() or future.exception() is not None:
+        return None
+    return "approved" if future.result() else "rejected"
+
+
+#: How many ended coordinator requests keep their target for a late click:
+#: as many as the shared decision registry keeps decisions, so a late click
+#: on a request whose decision is still on record always finds its target.
+_SETTLED_TARGETS_CAP = MAX_RETAINED_DECISIONS
+#: The longest approval id a settled target is kept under. A longer id is
+#: not remembered, so a late click on it answers as an unknown request.
+_MAX_SETTLED_ID_CHARS = 256
+
+
+def _remember_settled_target(state: Any, approval_id: str, record: dict) -> None:
+    """Keep the slot and instance of the request that last ended under *approval_id*.
+
+    The shared decision under a coordinator id is keyed by the id alone, and a
+    later request reusing the id replaces it. A late click on an ended request
+    may adopt the settled decision only when that decision is this request's.
+    """
+    if len(approval_id) > _MAX_SETTLED_ID_CHARS:
+        return
+    targets: dict[str, tuple[str, str]] = state.__dict__.setdefault(
+        "_settled_coordinator_targets", {}
+    )
+    targets.pop(approval_id, None)
+    targets[approval_id] = (str(record.get("slot") or ""), str(record.get("instance") or ""))
+    while len(targets) > _SETTLED_TARGETS_CAP:
+        targets.pop(next(iter(targets)))
+
+
+def settled_coordinator_target(state: Any, approval_id: str) -> tuple[str, str] | None:
+    """The ``(slot, instance)`` of the request that last ended under *approval_id*."""
+    targets = state.__dict__.get("_settled_coordinator_targets") or {}
+    return targets.get(approval_id)
 
 
 def _slot_decision(approved: bool, rejected_once: bool) -> str:
@@ -64,11 +142,20 @@ class ApprovalCoordinator:
         is_background: bool,
         redact_url: _Redactor,
         redact_secret: _Redactor,
+        run_task_id: str = "",
+        task_index: int | None = None,
+        on_host_decision: Callable[[str], object] | None = None,
     ) -> bool:
+        """Wait for a person's answer; an expired or cancelled wait answers ``False``.
+
+        A caller that records who decided passes *on_host_decision*: it is told
+        ``DENY_CAUSE_APPROVAL_TIMEOUT`` before an expiry's ``False``, and a
+        cancellation is raised to it, because nobody refused.
+        """
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         state._approval_futures[approval_id] = future
-        state._pending_approvals[approval_id] = {
+        record: dict[str, Any] = {
             "id": approval_id,
             # The request id is the caller's and can recur; this names THIS
             # request, so a card rendered from an earlier record with the same
@@ -83,7 +170,18 @@ class ApprovalCoordinator:
             "slot": slot,
             "ts": time.time(),
         }
+        if run_task_id and isinstance(task_index, int) and not isinstance(task_index, bool):
+            # A task gate names its run and task as fields, so a project page
+            # finds its own run's gate in the global listing without reading
+            # anything out of the id, which stays opaque.
+            record["run_task_id"] = run_task_id
+            record["task_index"] = task_index
+        state._pending_approvals[approval_id] = record
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
+        decision_id = state_approval_decision_id(approval_id)
+        open_and_broadcast(
+            state, decision_id, DecisionKind.APPROVAL, slot or "state", system_initiator(source)
+        )
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is
         # what moves the parent slot into the Needs Approval lane. Without it
@@ -95,7 +193,13 @@ class ApprovalCoordinator:
         )
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
+            if on_host_decision is not None:
+                on_host_decision(DENY_CAUSE_APPROVAL_TIMEOUT)
+            return False
+        except asyncio.CancelledError:
+            if on_host_decision is not None:
+                raise
             return False
         finally:
             # The id is the caller's and can recur while this wait is open; a
@@ -113,8 +217,10 @@ class ApprovalCoordinator:
                 # the broadcast on the healthy path.
                 if future.cancelled() or not future.done():
                     ApprovalCoordinator._retire_unresolved(state, approval_id, slot)
+                _remember_settled_target(state, approval_id, record)
                 state._pending_approvals.pop(approval_id, None)
                 state._approval_futures.pop(approval_id, None)
+                settle_after_wait(state, decision_id, _bool_outcome(future), DecisionState.EXPIRED)
                 # Every exit -- decided, expired, cancelled -- leaves the record
                 # gone, so one push here takes the slot back out of the lane.
                 _push_slots(state)
@@ -139,7 +245,14 @@ class ApprovalCoordinator:
         decision = _EXPIRED_DECISION
         session_key = slot_key if slot_key else "state"
         try:
-            state._audit_and_broadcast_approval(session_key, approval_id, False, decision)
+            state._audit_and_broadcast_approval(
+                session_key,
+                approval_id,
+                False,
+                decision,
+                origin="coordinator",
+                instance=_instance_of(state, approval_id),
+            )
         except Exception:
             state._log.warning(
                 "audit/broadcast failed for expired approval %s", approval_id, exc_info=True
@@ -176,6 +289,9 @@ class ApprovalCoordinator:
         decision: str,
         *,
         audit_provider: Callable[[], Any],
+        origin: str = "",
+        instance: str = "",
+        mid: str = "",
     ) -> None:
         ApprovalCoordinator.audit(
             state, session_key, approval_id, approved, decision, audit_provider=audit_provider
@@ -184,6 +300,19 @@ class ApprovalCoordinator:
             payload: dict = {"id": approval_id, "approved": approved}
             if session_key and session_key != "state":
                 payload["slot"] = session_key
+            # Names WHICH request was resolved, so a client settles the rows
+            # raised for that request and no other. A coordinator resolution
+            # carries the record's instance (the id recurs); a chat runner's
+            # carries the mid of its permission row. ``origin`` says which
+            # registry, so a frame from one never settles the other's row
+            # under a colliding id. The caller names it: a coordinator record
+            # with no instance is still a coordinator resolution.
+            if origin == "coordinator":
+                payload["origin"] = "coordinator"
+                if instance:
+                    payload["instance"] = instance
+            elif origin == "native":
+                payload.update(native_resolution_target(mid))
             # A decided approval's payload stays as it is: approved/rejected
             # is derivable from ``approved``, and the client renders it so.
             if decision == _EXPIRED_DECISION:
@@ -197,7 +326,13 @@ class ApprovalCoordinator:
         future = state._approval_futures.get(approval_id)
         if future and not future.done():
             future.set_result(approved)
-            state._audit_and_broadcast_approval("state", approval_id, approved)
+            state._audit_and_broadcast_approval(
+                "state",
+                approval_id,
+                approved,
+                origin="coordinator",
+                instance=_instance_of(state, approval_id),
+            )
             return True
         return False
 
@@ -252,15 +387,35 @@ class ApprovalCoordinator:
             return False
         if expected_future is not None and future is not expected_future:
             return False
+        if approved:
+            from kiro_crew.dashboard.deny_override import is_deny_override_card
+
+            if is_deny_override_card(slot.messages, approval_id):
+                # Only the owner's own override click on the slot route answers
+                # a security-rule override card; a plain approve from any other
+                # route would be recorded as approved and then refused, so it
+                # settles nothing and the card stays open.
+                return False
         decision = _slot_decision(approved, rejected_once)
+        # Read before the result lands: the row's mid is reported only while
+        # its request is pending.
+        mid = slot.approval_instance(approval_id) or ""
         future.set_result(decision)
         if permission_marker(slot.messages, approval_id, decision):
             # The periodic flush skips clean slots; the resolved marker
             # must become durable before its future disappears.
             slot._dirty = True
-        state._audit_and_broadcast_approval(slot.key, approval_id, approved, decision)
+        state._audit_and_broadcast_approval(
+            slot.key, approval_id, approved, decision, origin="native", mid=mid
+        )
         state.push_slots_update()
         return True
+
+
+def _question_initiator(state: Any, slot_key: str) -> Principal:
+    """Who started the turn that asked: the latest user message's author."""
+    slot = getattr(state, "_slots", {}).get(slot_key)
+    return turn_initiator(getattr(slot, "messages", None))
 
 
 #: Retained outcomes cover one ask per live dashboard slot; terminal entries yield first.
@@ -268,6 +423,21 @@ _AGENT_ASK_RETENTION_LIMIT = 500
 
 #: The coordinator's own clock, so a test can freeze it without patching ``time``.
 _monotonic = time.monotonic
+
+#: An app embed is sent no ``question_card`` frame; it polls instead, at its slowest
+#: every ``EMBED_QUESTION_POLL_IDLE_MS`` (10 s, ``app-sdk/EmbedQuestionCard.tsx``).
+#: A poll this recent counts as a receiver; the margin covers one missed poll.
+_EMBED_POLL_LIVE_SECS = 20.0
+
+
+def note_embed_poll(slot: Any) -> None:
+    """Record that *slot*'s cards were just read through its poll route (``slot_question.py``)."""
+    slot._embed_question_polled_at = _monotonic()
+
+
+def _embed_is_polling(state: Any, slot_key: str) -> bool:
+    polled = getattr(state._slots.get(slot_key), "_embed_question_polled_at", None)
+    return polled is not None and _monotonic() - polled <= _EMBED_POLL_LIVE_SECS
 
 
 class QuestionCoordinator:
@@ -372,7 +542,7 @@ class QuestionCoordinator:
             "native": native,
             "ts": time.time(),
         }
-        return int(await state.deliver_ws_owners("question_card", payload))
+        return int(await deliver_to_collaborators(state, "question_card", payload))
 
     @staticmethod
     def mark_pending(
@@ -444,7 +614,7 @@ class QuestionCoordinator:
                 else {"card_id": card_id, "slot": slot_key}
             )
             try:
-                state.broadcast_ws_owners("question_card_resolved", payload)
+                broadcast_to_collaborators(state, "question_card_resolved", payload)
             except Exception:
                 state._log.warning("WS broadcast failed for card retirement", exc_info=True)
 
@@ -475,7 +645,15 @@ class QuestionCoordinator:
         state._pending_questions[ask_id] = payload
         state._question_futures[ask_id] = future
         state.mark_question_pending(slot_key, blocking=True, card_id=ask_id)
-        state.broadcast_ws_owners("question_card", payload)
+        broadcast_to_collaborators(state, "question_card", payload)
+        decision_id = question_decision_id(ask_id)
+        open_and_broadcast(
+            state,
+            decision_id,
+            DecisionKind.QUESTION,
+            slot_key,
+            _question_initiator(state, slot_key),
+        )
 
         window = timeout if timeout is not None else state._QUESTION_TIMEOUT_DEFAULT
         window = max(1, min(int(window), state._QUESTION_TIMEOUT_MAX))
@@ -496,6 +674,16 @@ class QuestionCoordinator:
         finally:
             state._pending_questions.pop(ask_id, None)
             state._question_futures.pop(ask_id, None)
+            settle_after_wait(
+                state,
+                decision_id,
+                terminal_reason if terminal_reason in ("answered", "dismissed") else None,
+                (
+                    DecisionState.EXPIRED
+                    if terminal_reason == "expired"
+                    else DecisionState.WITHDRAWN
+                ),
+            )
             state.clear_question_pending(
                 slot_key,
                 blocking=True,
@@ -503,7 +691,8 @@ class QuestionCoordinator:
                 reason=terminal_reason,
             )
             try:
-                state.broadcast_ws_owners(
+                broadcast_to_collaborators(
+                    state,
                     "question_card_resolved",
                     {"ask_id": ask_id, "reason": terminal_reason},
                 )
@@ -512,12 +701,50 @@ class QuestionCoordinator:
 
     @staticmethod
     def resolve(
-        state: Any, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+        state: Any,
+        ask_id: str,
+        answers: dict[str, str] | None,
+        *,
+        reason: str | None = None,
+        responder: Principal | None = None,
+        response_id: str = "",
     ) -> bool:
+        """Settle one blocking question.
+
+        With a ``responder`` (a person answering through the dashboard) the
+        settle goes through the shared decision registry, so of two collaborators
+        answering at once exactly one settles it; the loser reads the settled
+        decision from the registry.
+        """
         future = state._question_futures.get(ask_id)
         if future is None or future.done():
             return False
         terminal_reason = reason or ("answered" if answers is not None else "dismissed")
+        if responder is not None:
+            registry = decisions_for(state)
+            decision_id = question_decision_id(ask_id)
+            if registry.get(decision_id) is None:
+                payload = state._pending_questions.get(ask_id) or {}
+                slot_key = str(payload.get("slot") or "")
+                registry.open(
+                    decision_id,
+                    DecisionKind.QUESTION,
+                    slot_key,
+                    _question_initiator(state, slot_key),
+                )
+            resolution = registry.resolve(
+                decision_id,
+                response_id=response_id,
+                responder=responder,
+                outcome=terminal_reason,
+                apply=lambda: not future.done(),
+            )
+            if not resolution.applied:
+                return False
+            if resolution.decision is not None:
+                from kiro_crew.shared_crew.decisions import broadcast_decision
+
+                broadcast_decision(state, resolution.decision)
         ask = getattr(state, "_agent_asks", {}).get(ask_id)
         if ask is not None:
             # Why the wait ended, for the tool result. The answer map alone
@@ -526,6 +753,19 @@ class QuestionCoordinator:
             ask["reason"] = terminal_reason
         QuestionCoordinator._record_resolution(state, ask_id, terminal_reason)
         future.set_result(answers)
+        if responder is None:
+            # No verified responder: an expiry or withdrawal closes the decision,
+            # any other ending resolves it with an Unknown responder.
+            settle_after_wait(
+                state,
+                question_decision_id(ask_id),
+                None if terminal_reason in _UNANSWERED_REASONS else terminal_reason,
+                (
+                    DecisionState.EXPIRED
+                    if terminal_reason == "expired"
+                    else DecisionState.WITHDRAWN
+                ),
+            )
         if ask is not None:
             # Synchronously, not as a done-callback: a callback runs a loop tick
             # later, and in that window the card is still on screen and still
@@ -595,7 +835,8 @@ class QuestionCoordinator:
         The window is the fixed ``state._AGENT_ASK_WINDOW_DEFAULT``; no caller sets it.
         Zero clients means nobody can answer. The ask is then torn down at once so
         the caller can fall back instead of blocking on a card no one sees, unless it
-        was already settled during the send, whose outcome is kept for collection.
+        was already settled during the send, whose outcome is kept for collection, or
+        an app embed is polling the slot's cards (counted as one client).
         An ask withdrawn while the send was still awaiting its sockets also yields 0.
         ``None``
         means only live asks occupy the retention cap, so this ask was not registered.
@@ -624,13 +865,20 @@ class QuestionCoordinator:
         state._pending_questions[ask_id] = payload
         state._question_futures[ask_id] = future
         state.mark_question_pending(slot_key, blocking=True, card_id=ask_id)
-        clients = int(await state.deliver_ws_owners("question_card", payload))
+        open_and_broadcast(
+            state,
+            question_decision_id(ask_id),
+            DecisionKind.QUESTION,
+            slot_key,
+            _question_initiator(state, slot_key),
+        )
+        clients = int(await deliver_to_collaborators(state, "question_card", payload))
         retained = state._agent_asks.get(ask_id)
         if retained is None or retained["future"] is not future:
             # The tool gave up while this send was awaiting a slow socket, and its
             # withdrawal already retired the card: nothing is left to watch.
             return 0
-        if clients == 0 and not future.done():
+        if clients == 0 and not future.done() and not _embed_is_polling(state, slot_key):
             QuestionCoordinator.resolve(state, ask_id, None, reason="no_client")
             state._agent_asks.pop(ask_id, None)
             return 0
@@ -657,7 +905,8 @@ class QuestionCoordinator:
                 reason=reason,
             )
         try:
-            state.broadcast_ws_owners(
+            broadcast_to_collaborators(
+                state,
                 "question_card_resolved",
                 {"ask_id": ask_id, "reason": reason},
             )

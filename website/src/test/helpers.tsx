@@ -1,6 +1,6 @@
 import React from 'react'
-import { render, renderHook, waitFor, type RenderOptions } from '@testing-library/react'
-import { expect } from 'vitest'
+import { act, fireEvent, render, renderHook, screen, waitFor, type RenderOptions } from '@testing-library/react'
+import { expect, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -11,6 +11,7 @@ import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import type { RootState } from '../store'
 import { ThemeProvider } from '../hooks/useTheme'
+import { TAB_ID_ATTR } from '../hooks/useRevealActiveTab'
 
 /** Create a fresh Redux store, optionally with preloaded state. */
 export function createTestStore(preloadedState?: Partial<RootState>) {
@@ -120,4 +121,55 @@ export function renderHookWithProviders<T>(
  *  a second on a loaded runner, and the wait ends as soon as the root settles. */
 export async function settleSidebarRowAnim(): Promise<void> {
   await waitFor(() => expect(document.querySelector('[data-row-anim="settled"]')).not.toBeNull(), { timeout: 5000 })
+}
+
+export function expectWheelToScrollRow(row: HTMLElement): void {
+  let left = 0
+  const stub = (scrollWidth: number) => {
+    Object.defineProperty(row, 'clientWidth', { configurable: true, get: () => 100 })
+    Object.defineProperty(row, 'scrollWidth', { configurable: true, get: () => scrollWidth })
+    Object.defineProperty(row, 'scrollLeft', { configurable: true, get: () => left, set: (v: number) => { left = v } })
+  }
+  const wheel = () => {
+    const e = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    return e
+  }
+  stub(400)
+  const clipped = wheel()
+  expect(left).toBe(40)
+  expect(clipped.defaultPrevented).toBe(true)
+  left = 300
+  const atEnd = wheel()
+  expect(left).toBe(300)
+  expect(atEnd.defaultPrevented).toBe(false)
+  stub(100)
+  left = 0
+  const fits = wheel()
+  expect(left).toBe(0)
+  expect(fits.defaultPrevented).toBe(false)
+}
+
+export function openAllTabsMenu(): HTMLElement[] {
+  // Radix opens a dropdown on a primary-button pointerdown.
+  act(() => { fireEvent.pointerDown(screen.getByTestId('all-tabs-trigger'), { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+  return screen.getAllByRole('menuitemradio')
+}
+
+/** The test DOM has no layout: give `scroller` a 100px scrollport and every tab in it 40px, including later ones. */
+export function stubTabRow(scroller: HTMLElement): { left: () => number; tabRect: (id: string) => DOMRect } {
+  let left = 0
+  const tabs = () => [...scroller.querySelectorAll<HTMLElement>(`[${TAB_ID_ATTR}]`)]
+  const rect = (x: number, width: number) => ({ x, y: 0, left: x, top: 0, width, height: 32, right: x + width, bottom: 32, toJSON: () => ({}) }) as DOMRect
+  const tabRect = (id: string) => rect(tabs().findIndex(t => t.dataset.tabId === id) * 40 - left, 40)
+  Object.defineProperty(scroller, 'clientWidth', { configurable: true, get: () => 100 })
+  Object.defineProperty(scroller, 'scrollWidth', { configurable: true, get: () => tabs().length * 40 })
+  Object.defineProperty(scroller, 'scrollLeft', { configurable: true, get: () => left, set: (v: number) => { left = v } })
+  const real = Element.prototype.getBoundingClientRect
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    if (this === scroller) return rect(0, 100)
+    const id = this instanceof HTMLElement ? this.dataset.tabId : undefined
+    return id !== undefined && scroller.contains(this) ? tabRect(id) : real.call(this)
+  })
+  return { left: () => left, tabRect }
 }

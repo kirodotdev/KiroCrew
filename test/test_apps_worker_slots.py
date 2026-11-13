@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 from types import SimpleNamespace
 from unittest import mock
 
@@ -194,6 +196,31 @@ async def test_raising_the_limit_wakes_a_waiter():
     second = await await_until(waiter, what="the raised worker-slot limit")
     assert second.key == "demo-2" and not second.released
     assert set(worker_slots._registry.leases) == {"demo-1", "demo-2"}
+    await second.release()
+    await first.release()
+
+
+@pytest.mark.asyncio
+async def test_the_raised_limit_wake_up_is_held_until_it_finishes():
+    """The loop keeps only a weak reference, so the module must hold the wake-up."""
+    state = _State()
+    first = await acquire_worker_slot(state, "demo", "demo-1", project="/w")
+    waiter = asyncio.ensure_future(
+        acquire_worker_slot(state, "demo", "demo-2", project="/w", timeout=5)
+    )
+    await asyncio.sleep(0)
+    cond = worker_slots._registry.cond
+    assert cond is not None
+    # Holding the condition's lock parks the wake-up task on it.
+    async with cond:
+        set_worker_slot_limit("demo", 2)
+        held = getattr(worker_slots, "_BACKGROUND_TASKS", set())
+        assert len(held) == 1, "nothing holds the parked wake-up task"
+        ref = weakref.ref(next(iter(held)))
+        gc.collect()
+        assert ref() is not None, "a parked wake-up was collected mid-run"
+    second = await await_until(waiter, what="the raised worker-slot limit")
+    await async_wait_until(lambda: not held, describe=lambda: f"held wake-ups: {len(held)}")
     await second.release()
     await first.release()
 

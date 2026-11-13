@@ -94,10 +94,8 @@ const BUSY = { en: 'Generating title', 'zh-CN': '正在生成标题' }
 async function shoot(browser, base, locale, file) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, locale })
   const page = await context.newPage()
-  await stubSplitPanes(page, { slots, transcripts: TRANSCRIPTS, layout: LAYOUT })
-  // The locale seed is this harness's own (the zh-CN frame); it runs after the
-  // fixture's localStorage.clear() like the layout seed does.
-  await page.addInitScript(lang => { localStorage.setItem('mc-lang', lang) }, locale)
+  // The locale seed is this harness's own (the zh-CN frame).
+  await stubSplitPanes(page, { slots, transcripts: TRANSCRIPTS, layout: LAYOUT, localStorageEntries: { 'mc-lang': locale } })
   logPageProblems(page)
 
   await page.goto(`${base}/chat/${LEFT}`, { waitUntil: 'domcontentloaded' })
@@ -166,8 +164,8 @@ async function shootFlow(browser, base) {
       }
       return false
     },
+    localStorageEntries: { 'mc-lang': 'en' },
   })
-  await page.addInitScript(lang => { localStorage.setItem('mc-lang', lang) }, 'en')
   logPageProblems(page)
 
   await page.goto(`${base}/chat/${LEFT}`, { waitUntil: 'domcontentloaded' })
@@ -262,8 +260,7 @@ async function shootMainHeader(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, locale: 'en' })
   const page = await context.newPage()
   // No layout seed: the anchor slot opens as a plain single chat.
-  await stubSplitPanes(page, { slots, transcripts: TRANSCRIPTS, layout: {} })
-  await page.addInitScript(lang => { localStorage.setItem('mc-lang', lang) }, 'en')
+  await stubSplitPanes(page, { slots, transcripts: TRANSCRIPTS, layout: {}, localStorageEntries: { 'mc-lang': 'en' } })
   logPageProblems(page)
 
   await page.goto(`${base}/chat/${LEFT}`, { waitUntil: 'domcontentloaded' })

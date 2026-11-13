@@ -224,19 +224,39 @@ def _home_dir_targets_uncached(
     """
     resolved = roots if roots is not None else _resolved_root_key()
     wanted: dict[str, str | None] = {}
-    _anchor_targets(home_dirs, resolved, wanted)
+    # Both passes spell the same paths, so the second reads the first's joins.
+    spelled: dict[tuple[str, str], str] = {}
+    _anchor_targets(home_dirs, resolved, wanted, spelled)
     answers = dict(zip(wanted, _realpaths_or_none(list(wanted))))
-    return _anchor_targets(home_dirs, resolved, answers)
+    return _anchor_targets(home_dirs, resolved, answers, spelled)
 
 
 def _anchor_targets(
-    home_dirs: list[str], resolved: _ResolvedRoots, resolved_paths: dict[str, str | None]
+    home_dirs: list[str],
+    resolved: _ResolvedRoots,
+    resolved_paths: dict[str, str | None],
+    spelled: dict[tuple[str, str], str] | None = None,
 ) -> set[str]:
     """One pass of :func:`_home_dir_targets_uncached`, reading answers from *resolved_paths*.
 
     A path not in the dict is recorded there as unresolved, which is how the first
     pass enumerates what the second pass needs resolved.
+
+    *spelled* holds each ``(root, entry)`` this BUILD has already joined into a path, so
+    the same spelling is joined once across both passes. It is lexical only -- no answer
+    from the filesystem is kept in it -- and it never outlives the build.
     """
+    if spelled is None:
+        spelled = {}
+    listed = frozenset(home_dirs)
+
+    def _spelled_under(root: str, d: str) -> str:
+        """*d* under *root*, spelled with the running OS's separator."""
+        key = (root, d)
+        path = spelled.get(key)
+        if path is None:
+            path = spelled[key] = os.path.join(root, *_leaf_segments(d))
+        return path
 
     # Both supported Crew home prefixes map to the same override leaves.
     # Resolve each identical spelling once within this build; never carry these
@@ -251,7 +271,7 @@ def _anchor_targets(
     os_home = resolved.os_home
 
     def _anchor(root: str, d: str) -> str:
-        return os.path.join(root, *_leaf_segments(d)).casefold()
+        return _spelled_under(root, d).casefold()
 
     def _anchor_both_separators(root: str, d: str) -> set[str]:
         """*d* under *root*, spelled with BOTH separators.
@@ -328,7 +348,7 @@ def _anchor_targets(
                 # that way) so this matches regardless of the running os.sep.
                 if d == _prefix or d.startswith(_prefix + "/"):
                     leaf = d[len(_prefix) :].lstrip("/")
-                    full = os.path.join(kiro_home, *_leaf_segments(leaf)) if leaf else kiro_home
+                    full = _spelled_under(kiro_home, leaf) if leaf else kiro_home
                     sensitive_targets.add(full.casefold())
                     # Also add the resolved form in case the env value itself has
                     # symlinks (matches the home/home_real duality above).
@@ -350,7 +370,7 @@ def _anchor_targets(
     # set, and its resolved spelling joins it. Driven from the caller's own
     # *home_dirs*, so a write-tier leaf never reaches the read gate's set.
     for d in home_dirs:
-        full_real = resolve_target(os.path.join(home, *_leaf_segments(d)))
+        full_real = resolve_target(_spelled_under(home, d))
         if full_real is not None:
             sensitive_targets.add(full_real.casefold())
     # Both kiro-cli leaves follow ``KIRO_HOME`` — kiro-cli's own home override,
@@ -378,7 +398,7 @@ def _anchor_targets(
     # so an extra target under a bogus value is harmless and fail-safe.
     if kiro_home_override:
         for _cli_leaf in _KIRO_CLI_WRITE_TIER_LEAVES:
-            if _cli_leaf not in home_dirs:
+            if _cli_leaf not in listed:
                 continue
             _under = _leaf_segments(_cli_leaf)[1:]
             _over_full = os.path.join(kiro_home_override, *_under) if _under else kiro_home_override
@@ -394,7 +414,7 @@ def _anchor_targets(
     # write-tier build must not gain a read-tier target.
     _adapter_roots = dict(resolved.adapter_roots)
     for _leaf, _root_envs, _under_root in _OVERRIDE_ANCHORED_LEAVES:
-        if _leaf not in home_dirs:
+        if _leaf not in listed:
             continue
         for _env in _root_envs:
             _root = _adapter_roots.get(_env)
@@ -418,6 +438,7 @@ def _anchor_targets(
     # short expiry, a false negative would be the stale window this bounds.
     differed = any(
         value is not None
+        and value != key  # an answer spelled as it was asked cannot differ once normalised
         and os.path.normcase(os.path.normpath(value)) != os.path.normcase(os.path.normpath(key))
         for key, value in resolved_paths.items()
     )
@@ -426,12 +447,14 @@ def _anchor_targets(
     return built
 
 
-# How long a built target set stays reusable. ``_home_dir_targets_uncached``
-# rebuilds a ~75-entry set on EVERY ``is_sensitive_path`` call and measured at
-# 1.14ms of that call's 1.25ms (91%) on a dev desktop, because it realpath()s
-# ``$HOME`` and each KIROCREW_HOME-anchored leaf. Callers hit it per FILE — one
-# skills-tree walk made thousands of identical calls and took 4.2s, of which
-# 3.5s was this rebuild.
+# How long a built target set stays reusable. Uncached, ``_home_dir_targets_uncached``
+# would rebuild the set on EVERY ``is_sensitive_path`` call, and the build is most of
+# such a call: it resolves ``$HOME`` and one path per entry of the caller's list (211
+# for the read gate, 284 for the write gate on a host with no home override; more
+# under each override root). Measured on Linux through the resolver pool, with the
+# home 6 and 16 folders deep: 2.9 and 3.7 ms per read build, 4.1 and 4.8 ms per write
+# build, where a whole decision served from the cache takes 0.6 to 0.9 ms. Callers
+# hit it per FILE -- one skills-tree walk makes thousands of identical calls.
 #
 # Deliberately TTL-bounded rather than a plain ``lru_cache``: part of the set is
 # derived from FILESYSTEM state, so an unbounded cache would keep matching a
@@ -448,8 +471,8 @@ def _anchor_targets(
 #      test ``test_repointed_home_symlink_is_not_served_from_cache``).
 #   2. ``Path.home()`` reads ``USERPROFILE`` on Windows and never ``HOME``, so on
 #      that platform the key omits the one variable that decides the anchor.
-# Resolving the roots costs ~2 realpath calls (~0.06ms) against the ~1.14ms
-# rebuild it replaces, so the win survives. Those calls -- and the rebuild
+# Resolving the roots costs one small child request (~0.1ms) against the rebuild
+# it replaces, so the win survives. Those calls -- and the rebuild
 # itself -- run on the ``mc-pathres`` pool under the resolve budget, one thread
 # hop each (``_resolved_root_key`` resolves all six roots in one job,
 # ``_rebuild_targets_bounded`` resolves every leaf in one job), because
@@ -459,9 +482,17 @@ def _anchor_targets(
 # Residual, accepted: a symlink swapped DEEPER inside the crew home (an
 # individual keystone leaf, or an intermediate directory on the way to one) can
 # still be served stale for up to the TTL. Detecting that needs the per-leaf
-# realpath calls that ARE the expense — measured 45 realpath calls per build,
-# 94% of its 1.39ms — so there is no cheap way to keep the cache and revalidate
-# them.
+# resolution that IS the expense, so there is no cheap way to keep the cache and
+# revalidate them.
+#
+# What ONE build observes: every leaf, and every folder on the way to a leaf, in one
+# request to the resolver child. The child reads a folder the leaves share ONCE per
+# request rather than once per leaf (``_child_realpath.realpaths_sharing_folders``:
+# about 250 ``lstat`` calls for the read list in a home with no links, where one
+# ``realpath`` per leaf makes 1,800 to 3,900). A path with a link anywhere on the way
+# goes to ``os.path.realpath`` whole. A build is therefore one view of those folders,
+# and nothing read in it is kept for the next: the expiry below still decides how
+# old a served set can be.
 #
 # The TTL is therefore sized as small as it can be while still doing its job.
 # The FLOOR is 0.1s, NOT a "few seconds", because a skills walk issues thousands

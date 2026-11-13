@@ -328,9 +328,12 @@ class TestProvider:
 
     def test_a_hand_edited_section_never_stops_the_load(self):
         """The parse normalizes; it does not reject, so a typo cannot block boot."""
-        DecisionsConfig.from_raw(
+        parsed = DecisionsConfig.from_raw(
             {"enabled": "maybe", "bucket": "most", "provider": {"timeout_ms": "quick"}}
         )
+        # A malformed bucket fails closed to nobody; an unreadable timeout is the default.
+        assert parsed.bucket == 0
+        assert parsed.provider.timeout_ms == DecisionProviderConfig.timeout_ms
 
 
 class TestTheLoaderWiresTheSection:

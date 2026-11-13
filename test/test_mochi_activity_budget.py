@@ -119,12 +119,40 @@ class TestFloorAndModel:
         rt = self._runtime(tmp_path)
         save_settings(tmp_path, {"activityTier": "economy"})
         now = hooks._now_ms()
-        fresh = {"id": "a", "lastCheckedAt": wf._iso(now - 5 * 60_000)}
-        stale = {"id": "b", "lastCheckedAt": wf._iso(now - 60 * 60_000)}
+        fresh = {"id": "a", "lastChecked": wf._iso(now - 5 * 60_000)}
+        stale = {"id": "b", "lastChecked": wf._iso(now - 60 * 60_000)}
         never = {"id": "c"}
         monkeypatch.setattr(wf, "read_watchlist", lambda *a, **k: {"items": []})
         monkeypatch.setattr(wf, "find_due_watch_items", lambda *a, **k: [fresh, stale, never])
         assert [i["id"] for i in rt.due_watch_items()] == ["b", "c"]
+
+    def test_floor_reads_the_check_time_a_real_check_records(self, tmp_path):
+        """End to end through the watchlist file: a check recorded by the
+        ``historyEntry`` update five minutes ago defers an item whose own 3-minute
+        interval says due. The floor reads the time that update records, not
+        ``lastCheckedAt``, a field no writer sets."""
+        from kiro_crew.apps.builtins.mochi import hooks
+        from kiro_crew.apps.builtins.mochi import watchlist_file as wf
+        from kiro_crew.apps.builtins.mochi.settings import save_settings
+
+        rt = self._runtime(tmp_path)
+        save_settings(tmp_path, {"activityTier": "economy"})
+        checked_at = hooks._now_ms() - 5 * 60_000
+        added = {"kind": "url", "label": "docs", "target": "https://example.com"}
+        wl = wf.apply_watchlist_update(
+            {"version": 1, "items": []},
+            {"add": [{**added, "checkIntervalMins": 3}]},
+            now_ms=checked_at - 3 * 60_000,
+        )
+        item_id = wl["items"][0]["id"]
+        wl = wf.apply_watchlist_update(
+            {"version": 1, "items": wl["items"]},
+            {"update": [{"id": item_id, "historyEntry": {"result": "same", "changed": False}}]},
+            now_ms=checked_at,
+        )
+        wf.write_atomic(rt._watchlist_path, {"version": 1, "items": wl["items"]})
+        assert [i["id"] for i in wf.find_due_watch_items(wl, now_ms=hooks._now_ms())] == [item_id]
+        assert rt.due_watch_items() == []
 
     def test_unlimited_applies_no_floor(self, tmp_path, monkeypatch):
         from kiro_crew.apps.builtins.mochi import hooks
@@ -134,7 +162,7 @@ class TestFloorAndModel:
         rt = self._runtime(tmp_path)
         save_settings(tmp_path, {"activityTier": "unlimited"})
         now = hooks._now_ms()
-        fresh = {"id": "a", "lastCheckedAt": wf._iso(now - 1_000)}
+        fresh = {"id": "a", "lastChecked": wf._iso(now - 1_000)}
         monkeypatch.setattr(wf, "read_watchlist", lambda *a, **k: {"items": []})
         monkeypatch.setattr(wf, "find_due_watch_items", lambda *a, **k: [fresh])
         assert [i["id"] for i in rt.due_watch_items()] == ["a"]

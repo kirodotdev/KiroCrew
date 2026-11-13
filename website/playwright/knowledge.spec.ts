@@ -102,18 +102,18 @@ test.describe('Knowledge Page E2E Tests', () => {
     await expect(page.getByText('0 items')).toBeVisible({ timeout: 10000 })
 
     // Click "Graph View" tab
-    await page.getByRole('button', { name: /Graph View/i }).click()
+    await page.getByRole('tab', { name: /Graph View/i }).click()
     // The graph canvas (lazy-loaded) should appear or a loading skeleton.
     // In graph view, the stats bar hint at the bottom changes.
     await expect(page.getByText('/ to search')).not.toBeVisible()
 
     // Click "Sources" tab
-    await page.getByRole('button', { name: /Sources/i }).click()
+    await page.getByRole('tab', { name: /Sources/i }).click()
     // Sources tab shows source management UI — the "+ Add Source" button is always visible
     await expect(page.getByRole('button', { name: /\+ Add Source/i })).toBeVisible({ timeout: 5000 })
 
     // Click back to "List View"
-    await page.getByRole('button', { name: /List View/i }).click()
+    await page.getByRole('tab', { name: /List View/i }).click()
     await expect(page.getByText('/ to search')).toBeVisible({ timeout: 5000 })
   })
 

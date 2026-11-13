@@ -68,9 +68,7 @@ def _body(sid: str = SESSION) -> list[dict]:
     return _entries(sid)[1:]
 
 
-# ---------------------------------------------------------------------------
 # 1. Many producers, one session
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -262,9 +260,7 @@ def test_call_index_contiguous_under_concurrent_producers():
     )
 
 
-# ---------------------------------------------------------------------------
 # 2. Many sessions at once
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -369,9 +365,7 @@ def test_many_sessions_each_file_well_formed():
         assert "turn/completed" in types_seen, f"{sid}: missing turn/completed"
 
 
-# ---------------------------------------------------------------------------
 # 3. Interleaved sessions -- no entry lost while another's write is in flight
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -462,9 +456,7 @@ def test_burst_across_sessions_all_entries_land():
     assert total_tool_entries == n_sessions * entries_per
 
 
-# ---------------------------------------------------------------------------
 # 4. flush(timeout=...) under concurrent producers
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -569,9 +561,7 @@ def test_flush_timeout_zero_does_not_hang():
     ]
 
 
-# ---------------------------------------------------------------------------
 # Mixed: different on_* entry points concurrently on one session
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -650,9 +640,7 @@ def test_mixed_entry_points_concurrent():
     )
 
 
-# ---------------------------------------------------------------------------
 # The drain barrier itself: a writer that stops is reported, never waited on
-# ---------------------------------------------------------------------------
 
 
 def _park_appends(monkeypatch) -> threading.Event:
@@ -707,9 +695,7 @@ async def test_the_barrier_gives_up_at_its_ceiling(monkeypatch):
         release.set()
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _find_gaps(seqs: list[int]) -> list[int]:

@@ -184,9 +184,7 @@ async def _collect_recent_sessions_off_loop(
 # ---------------------------------------------------------------------------
 
 
-def _build_sessions_blocks(
-    rows: list[dict], *, for_home_tab: bool = False
-) -> list[dict]:
+def _build_sessions_blocks(rows: list[dict], *, for_home_tab: bool = False) -> list[dict]:
     """Render rows from :func:`_collect_recent_sessions` as Block Kit blocks.
 
     Returns task_card + actions pairs separated by dividers, using the
@@ -237,9 +235,7 @@ def _build_sessions_blocks(
     return blocks
 
 
-def _session_home_tab_blocks(
-    row: dict, safe_title: str, safe_agent: str
-) -> list[dict]:
+def _session_home_tab_blocks(row: dict, safe_title: str, safe_agent: str) -> list[dict]:
     """Section + actions row for ``views.publish`` (Home Tab).
 
     Slack's ``views.publish`` API rejects ``task_card`` blocks, so the

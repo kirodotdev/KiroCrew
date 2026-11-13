@@ -11,6 +11,7 @@ Each case has a supported-backend control, so the skip cannot pass vacuously.
 
 from __future__ import annotations
 
+import logging
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -50,6 +51,10 @@ class _OverflowClient:
         yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(duration_ms=1))
 
 
+def _executor_logs(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "kiro_crew.task_executor"]
+
+
 async def _bailing_settle(_ask, _policy):
     return SimpleNamespace(outcome="bailed", meta={"pct": 95.0})
 
@@ -82,18 +87,22 @@ async def _run_overflow(monkeypatch: pytest.MonkeyPatch, client: _OverflowClient
 
 
 @pytest.mark.asyncio
-async def test_task_runner_skips_compact_on_a_backend_that_cannot_serve_it(monkeypatch):
+async def test_task_runner_skips_compact_on_a_backend_that_cannot_serve_it(monkeypatch, caplog):
     client = _OverflowClient(ACP_BACKEND_KAS)
-    sessions = await _run_overflow(monkeypatch, client)
+    with caplog.at_level(logging.INFO, logger="kiro_crew.task_executor"):
+        sessions = await _run_overflow(monkeypatch, client)
+    assert f"Task 1: {ACP_BACKEND_KAS} cannot compact, resetting session" in _executor_logs(caplog)
     client.compact.assert_not_awaited()
     client.wait_for_compaction.assert_not_awaited()
     sessions.reset.assert_awaited_once_with(_SESSION_KEY)
 
 
 @pytest.mark.asyncio
-async def test_task_runner_still_compacts_a_backend_that_can(monkeypatch):
+async def test_task_runner_still_compacts_a_backend_that_can(monkeypatch, caplog):
     client = _OverflowClient(None)
-    sessions = await _run_overflow(monkeypatch, client)
+    with caplog.at_level(logging.INFO, logger="kiro_crew.task_executor"):
+        sessions = await _run_overflow(monkeypatch, client)
+    assert "Task 1: compaction succeeded" in _executor_logs(caplog)
     client.compact.assert_awaited_once()
     sessions.reset.assert_not_awaited()
 

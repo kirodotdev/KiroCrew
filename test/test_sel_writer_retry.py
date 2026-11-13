@@ -207,13 +207,13 @@ def test_a_failed_stat_after_a_partial_append_is_never_replayed(tmp_path, monkey
         real(lines[:1], **kwargs)
         raise OSError(errno.EIO, "I/O error")
 
-    monkeypatch.setattr(log, "_append_lines_locked", append)
-    _stat_fails_for(monkeypatch, log._path, lambda: bool(calls))
+    with monkeypatch.context() as mp:
+        mp.setattr(log, "_append_lines_locked", append)
+        _stat_fails_for(mp, log._path, lambda: bool(calls))
 
-    exc = log._flush_batch([_event("blind-a"), _event("blind-b")])
-    assert isinstance(exc, sel_mod._MaybeWritten)
+        exc = log._flush_batch([_event("blind-a"), _event("blind-b")])
+        assert isinstance(exc, sel_mod._MaybeWritten)
 
-    monkeypatch.undo()
     assert log._path.read_text(encoding="utf-8").count("blind-a") == 1
 
 

@@ -15,15 +15,16 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os as _kernel_os
 
 # Bound for the spawn audit (``test/test_spawn_audit.py``), which finds a spawn through
 # the modules a file imports; the probes that spawn with it read the client's binding.
 import subprocess as subprocess_mod  # noqa: F401
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, TypeVar
 
 # The helpers read the modules they probe with (``platform_compat``, ``sys``, ``Path``,
 # ``subprocess``, ``os``, ``time``) through the facade their code came from, imported
@@ -37,6 +38,52 @@ from typing import Literal
 # Logged under the ACP client's name: the escaped-child sweep is part of the client's
 # teardown, and operator log filters and level settings key on that name.
 logger = logging.getLogger("kiro_crew.acp.client")
+
+_T = TypeVar("_T")
+
+
+def walk_observes_descendants() -> bool:
+    """Whether ``_get_child_pids`` can see a descendant on this platform.
+
+    True on POSIX, where the walk reads ``/proc`` or asks ``pgrep``. False on
+    Windows: there is no pgrep, and the tree kill goes through the owned-handle
+    drain and ``kill_process_tree`` (``taskkill /T``), which walk descendants
+    themselves, so the records this walk feeds are a POSIX-only concern.
+
+    The one statement of that fact. A caller that would wait for the walk, or
+    schedule another, asks here first: an empty walk on a platform that cannot
+    observe says nothing about the tree, so looking again cannot help.
+    """
+    from kiro_crew.acp.client import platform_compat
+
+    return not platform_compat.IS_WINDOWS
+
+
+#: How long a root whose tree showed no descendant is given before the tree is
+#: read once more: a root that has only just answered may fork a moment later.
+EMPTY_WALK_RETRY_DELAY = 0.5
+
+#: How long a process created a moment ago is given to fork before its tree is
+#: read for the first time. Not the retry delay: every start that can observe
+#: pays this one, so it is the shorter of the two, and it comes before any look
+#: where the retry comes after an empty one.
+EARLY_WALK_SETTLE_DELAY = 0.3
+
+
+async def wait_for_descendants(delay: float) -> bool:
+    """Wait *delay* seconds for a root to fork, where a walk could then see it.
+
+    ``True`` after the wait: the caller walks. ``False`` at once, with no wait,
+    where the walk cannot see a descendant (``walk_observes_descendants``): the
+    caller skips the walk it was waiting for.
+
+    Every wait for the tree walk goes through here, so no caller can sleep for
+    a walk that would read back empty however long it waited.
+    """
+    if not walk_observes_descendants():
+        return False
+    await asyncio.sleep(delay)
+    return True
 
 
 def _get_child_pids(parent_pid: int | None, _visited: set[int] | None = None) -> list[int]:
@@ -63,30 +110,86 @@ def _get_child_pids(parent_pid: int | None, _visited: set[int] | None = None) ->
     return all_pids
 
 
+def _read_task_children(
+    list_tasks: Callable[[], Iterable[_T]], read_children: Callable[[_T], str]
+) -> list[int]:
+    """Direct children from the per-task ``children`` files, the one reader both walks use.
+
+    The caller supplies how to list a pid's tasks and read one task's file, so each
+    walk keeps the facade bindings its tests patch. A pid whose task list cannot be
+    read has exited and is a leaf. A task that exits mid-scan hands its children to
+    a sibling thread the scan may already have read, so a vanished task file lists
+    the tasks once more and adds what that pass finds to what the first pass read.
+    A child seen by either pass is kept: the second pass can come back empty when
+    the parent has exited meanwhile, and a pid read twice appears once.
+    """
+    children: list[int] = []
+    seen: set[int] = set()
+    for _attempt in range(2):
+        try:
+            tasks = list(list_tasks())
+        except OSError:
+            # Exited before this listing: a leaf, or the first pass's children.
+            break
+        vanished = False
+        for task in tasks:
+            try:
+                text = read_children(task)
+            except OSError:
+                vanished = True
+                continue
+            for tok in text.split():
+                if tok.isdigit() and int(tok) not in seen:
+                    seen.add(int(tok))
+                    children.append(int(tok))
+        if not vanished:
+            break
+    return children
+
+
+# Whether this kernel provides ``/proc/<pid>/task/<tid>/children``: None until
+# ``_children_interface`` first asks, then fixed for the process.
+_CHILDREN_INTERFACE: bool | None = None
+
+
+def _children_interface() -> bool:
+    """Whether the running kernel has the per-task ``children`` files.
+
+    Asked once of the real ``/proc/self`` through the stdlib ``os`` (``_kernel_os``), never through
+    the facade ``Path`` the walk reads: a test that routes the walk's ``/proc`` to a
+    fake tree must not decide the cached answer for every later walk.
+    """
+    global _CHILDREN_INTERFACE
+    if _CHILDREN_INTERFACE is None:
+        _CHILDREN_INTERFACE = _kernel_os.path.exists(
+            f"/proc/self/task/{threading.get_native_id()}/children"
+        )
+    return _CHILDREN_INTERFACE
+
+
 def _direct_children(pid: int) -> list[int]:
     """Return direct child PIDs. Uses /proc on Linux, pgrep on other POSIX.
 
-    Windows: returns ``[]`` — there is no pgrep, and the tree kill goes through
-    ``kill_process_tree`` (``taskkill /T``), which walks descendants itself, so
-    the escaped-child sweep this feeds is a POSIX-only concern.
-    """
-    from kiro_crew.acp.client import Path, platform_compat, subprocess_mod, sys  # noqa: F811
+    On Linux the per-task ``children`` files, read by ``_read_task_children``, are
+    the answer, empty included, so a leaf costs no spawn. proc(5) calls these files
+    exact only for stopped children; the walk's callers
+    absorb that race, since ``guarded_tree_pass`` walks twice and every later
+    pass walks again. pgrep is the fallback only for a
+    kernel without the files (``_CHILDREN_INTERFACE``).
 
-    if platform_compat.IS_WINDOWS:
+    Returns ``[]`` where the walk cannot see a descendant
+    (``walk_observes_descendants``).
+    """
+    from kiro_crew.acp.client import Path, subprocess_mod, sys  # noqa: F811
+
+    if not walk_observes_descendants():
         return []
-    if sys.platform == "linux":
-        try:
-            children: list[int] = []
-            tasks_dir = Path(f"/proc/{pid}/task")
-            if tasks_dir.is_dir():
-                for tid in tasks_dir.iterdir():
-                    cf = tid / "children"
-                    if cf.exists():
-                        children.extend(int(p) for p in cf.read_text().split() if p.strip())
-            if children:
-                return children
-        except Exception:
-            pass  # fall through to pgrep
+    if sys.platform == "linux" and _children_interface():
+        # pgrep -P scans every /proc entry: 275 to 428 ms a call at about 3,000
+        # processes, against about 0.2 ms for these files. Asked once per leaf, it
+        # pushed a 6-leaf tree walked twice past the 3 s TREE_REFRESH_TIMEOUT.
+        tasks_dir = Path(f"/proc/{pid}/task")
+        return _read_task_children(tasks_dir.iterdir, lambda tid: (tid / "children").read_text())
     try:
         # timeout so a hung pgrep cannot occupy a subprocess_executor worker
         # indefinitely (the ps spawns in _get_start_time/_read_basename already
@@ -242,7 +345,6 @@ async def guarded_tree_pass(
     replace: bool,
     keep_unwalked: Callable[[int, ChildRecord], bool] | None = None,
     still_owner: Callable[[], bool] | None = None,
-    retry_delay: float | None = None,
 ) -> TreePass:
     """Walk *pid*'s tree once, under every guard a recorded child needs.
 
@@ -275,17 +377,15 @@ async def guarded_tree_pass(
     Every blocking probe and the write run on *executor* (the caller's own
     ``subprocess_executor()``), never on the event loop.
 
-    *retry_delay* walks once more after that many seconds when the first walk is
-    empty (a root racing its own cold start). Never catches: the caller owns
-    logging and its own failure policy, and a cancellation must reach it.
+    Never waits for a tree to appear: an empty walk returns ``"empty"`` at once,
+    and a caller that wants another look runs another pass. Never catches: the
+    caller owns logging and its own failure policy, and a cancellation must
+    reach it.
     """
     loop = asyncio.get_running_loop()
     if not root_holds():
         return TreePass("refused")
     descendants = await loop.run_in_executor(executor, probes.walk, pid)
-    if not descendants and retry_delay is not None:
-        await asyncio.sleep(retry_delay)
-        descendants = await loop.run_in_executor(executor, probes.walk, pid)
     if not descendants:
         return TreePass("empty")
     if replace:
@@ -476,23 +576,14 @@ def _own_children(pid: int) -> list[int]:
     """Direct children of *pid*, asked of the kernel one thread at a time."""
     from kiro_crew.acp.runtime import os
 
-    kids: list[int] = []
-    try:
-        entries = os.listdir(f"/proc/{pid}/task")
-    except OSError:
-        return kids
-    for tid in entries:
-        try:
-            with open(f"/proc/{pid}/task/{tid}/children") as f:
-                tokens = f.read().split()
-        except OSError:
-            continue
-        for tok in tokens:
-            try:
-                kids.append(int(tok))
-            except ValueError:
-                continue
-    return kids
+    task_dir = f"/proc/{pid}/task"
+    listdir = os.listdir
+
+    def read(tid: str) -> str:
+        with open(f"{task_dir}/{tid}/children") as f:
+            return f.read()
+
+    return _read_task_children(lambda: listdir(task_dir), read)
 
 
 def _iter_descendant_pids(

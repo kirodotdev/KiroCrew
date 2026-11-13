@@ -131,7 +131,7 @@ class TestDeploySkillsCopyNotSymlink:
             skill_root.mkdir()
             skill_dir = skill_root / "artifact-deploy"
             skill_dir.mkdir()
-            (skill_dir / "SKILL.md").write_text("# Artifact Deploy Skill\n")
+            (skill_dir / "SKILL.md").write_text("# Artifact Deploy Skill\n", encoding="utf-8")
 
             results = _iter_skill_files(skill_root)
             assert len(results) == 1

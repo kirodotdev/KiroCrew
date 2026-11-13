@@ -1,14 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import type { ChatMessage } from '../types'
+import { replyShowsFooter } from '../pages/chat/replyFooter'
 
 /**
  * REGRESSION GUARD — a completed turn's footer survives a LATER, unrelated run.
  *
- * `showFooter` for the last message used to end at a bare `return !slotRunning`,
- * so any run starting in the slot — a cron, a monitor cycle, another tab, a
- * background job with nothing to do with this turn — retracted the footer of a
- * turn that had already finished.
+ * A footer rule that ends at a bare "is the session idle" check lets any run
+ * starting in the slot — a cron, a monitor cycle, another tab, a background job
+ * with nothing to do with this turn — retract the footer of a turn that has
+ * already finished.
  *
  * Measured frame by frame from a 60fps phone recording (1320x2868): the stats
  * line, the timestamp row and the overflow trigger vanished for 3 frames (50ms),
@@ -17,9 +19,9 @@ import { join } from 'node:path'
  * clamped down by the engine, and when the footer returns nothing ever pushes
  * them back up. Each flicker ratcheted them 108px away from the bottom.
  *
- * A message carrying turn stats is proof its turn completed, so that is the
- * condition that makes the footer permanent. Pinned by source scan because the
- * predicate is an inline IIFE inside a 60-prop JSX element with no seam to call.
+ * A message carrying turn stats is proof its turn ended, so that is the
+ * condition that makes the footer permanent. The rule lives in
+ * `pages/chat/replyFooter.ts`; this pins that ChatPage draws from it.
  */
 // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
 // the pins read the page and those owners.
@@ -33,26 +35,25 @@ const SRC = [
     .map(f => readFileSync(join(PAGES_DIR, f), 'utf8')),
 ].join('\n')
 
+const row = (role: string, meta?: Record<string, unknown>): ChatMessage =>
+  ({ role, content: `zzq-${role}`, cls: '', meta }) as ChatMessage
+
 describe('completed-turn footer', () => {
+  it('ChatPage draws its reply footer from the shared rule', () => {
+    expect(SRC).toContain('showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)}')
+  })
+
   it('is not retracted by a run that started later', () => {
-    const i = SRC.indexOf('showFooter={(() => {')
-    expect(i).toBeGreaterThan(-1)
-    const pred = SRC.slice(i, SRC.indexOf('})()}', i))
-    // Turn stats short-circuit BEFORE the running check, or a later run still wins.
-    const statsAt = pred.indexOf('turn_stats')
-    const runningAt = pred.indexOf('return !slotRunning')
-    expect(statsAt).toBeGreaterThan(-1)
-    expect(runningAt).toBeGreaterThan(-1)
-    expect(statsAt).toBeLessThan(runningAt)
-    expect(pred).toMatch(/elapsed_ms[^)]*\)\s*>\s*0\)\s*return true/)
+    const done = row('assistant', { turn_stats: { elapsed_ms: 59_000, credits: 1.98 } })
+    expect(replyShowsFooter(done, [row('user'), done], 1, true)).toBe(true)
   })
 
   it('still withholds the footer while the turn that owns it is running', () => {
     // The guard must not become "always show": a streaming turn has no stats yet,
     // and its footer would claim a measurement that does not exist.
-    const i = SRC.indexOf('showFooter={(() => {')
-    const pred = SRC.slice(i, SRC.indexOf('})()}', i))
-    expect(pred).toMatch(/if \(isStreaming\) return false/)
-    expect(pred).toContain('return !slotRunning')
+    const running = row('assistant')
+    const streaming = row('streaming')
+    expect(replyShowsFooter(running, [row('user'), running], 1, true)).toBe(false)
+    expect(replyShowsFooter(streaming, [row('user'), streaming], 1, false)).toBe(false)
   })
 })

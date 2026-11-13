@@ -6,9 +6,9 @@
  * check needs), a reload mid-turn shows the peer's turn running, and continue /
  * regenerate / rewind go to the peer's routes and render the peer's answer.
  * Redaction of peer text happens in the hub proxy and is pinned there
- * (test/test_instances.py, TestProxyRedactsPeerReplies).
+ * (test/test_instances_proxy_handler.py, TestProxyRedactsPeerReplies).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -65,11 +65,17 @@ vi.mock('../api/client', async () => ({
 
 import CrewChatWindow from '../pages/chat/crew-window/CrewChatWindow'
 import { createCrewWindowRenderers, PEER_SAFE_ROWS } from '../pages/chat/crew-window/crewWindowRenderers'
+import { mergeRenderers, resolveRenderer } from '../app-sdk/messageRenderers'
+import type { ChatMessage } from '../types'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
   capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
+import { crewModePreviewOn } from './crewModePreview'
+import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
+import { DICTATION_NOTE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
+import { queryClient as globalQueryClient } from '../api/queryClient'
 
 class FakeEventSource {
   static all: FakeEventSource[] = []
@@ -106,21 +112,16 @@ function renderWindow() {
 
 const posted = () => mocks.crewPeerPost.mock.calls.map(c => [c[1], c[2]])
 
-/** The user bubble's More menu (Quote holds the row seat, as locally). */
-async function openMore(row = 0) {
-  await waitFor(() => expect(screen.getAllByTestId('user-more-actions').length).toBeGreaterThan(row), PEER_ROW_WAIT)
-  fireEvent.pointerDown(screen.getAllByTestId('user-more-actions')[row], { button: 0, ctrlKey: false, pointerType: 'mouse' })
-}
+/** Edit & Resend follows Copy on the user row while the row can be edited. */
+const editButtons = () => screen.queryAllByRole('button', { name: 'Edit & Resend' })
 async function openEdit(row = 0) {
-  await openMore(row)
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit & Resend' }))
+  await waitFor(() => expect(editButtons().length).toBeGreaterThan(row), PEER_ROW_WAIT)
+  fireEvent.click(editButtons()[row])
 }
 /** Whether the first user row offers Edit & Resend. */
 async function editOffered() {
-  await openMore()
-  const offered = !!screen.queryByRole('menuitem', { name: 'Edit & Resend' })
-  fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
-  return offered
+  await waitFor(() => expect(screen.getAllByLabelText('Copy').length).toBeGreaterThan(0), PEER_ROW_WAIT)
+  return editButtons().length > 0
 }
 
 /** Edit & Resend on the user bubble, the way the local chat rewinds: the
@@ -164,7 +165,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  closeCrewWindow()
+  // Host subscribes to the store while the tree is still mounted here (RTL unmounts after this hook).
+  act(() => { closeCrewWindow() })
   vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
@@ -187,7 +189,93 @@ describe('CrewChatWindow', () => {
   it('offers voice input in the composer', async () => {
     detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }] }
     renderWindow()
-    expect(await screen.findByRole('button', { name: 'Voice input' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /^Voice input/ })).toBeInTheDocument()
+  })
+
+  // The window does not own the push-to-talk key (the main composer does), so
+  // its mic must not name the key: pressing it would dictate elsewhere.
+  it('does not name the push-to-talk key on its mic', async () => {
+    detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }] }
+    renderWindow()
+    const mic = await screen.findByRole('button', { name: 'Voice input' })
+    expect(mic).toHaveAttribute('title', 'Voice input')
+    expect(mic).not.toHaveAttribute('aria-keyshortcuts')
+  })
+
+  // The dock is the local page's bare box, not a band of its own: no box from
+  // the composer's own root up to the dock root draws glass, a top border or
+  // vertical padding, and the notices column takes no room while it is empty.
+  it('floats the composer in the local dock shape, with an empty notices column that takes no room', async () => {
+    renderWindow()
+    // Connected: until the version read lands, the column carries the offline line.
+    const box = await screen.findByRole('textbox', PEER_ROW_WAIT)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    const dock = screen.getByTestId('crew-window-dock')
+    expect(dock).toHaveClass('pointer-events-none')
+    expect([...dock.children].map(c => c.classList.contains('dock-inert'))).toEqual([true, true])
+    const chrome: Element[] = []
+    for (let el: Element | null = box.closest('.input-area')?.parentElement ?? null; el && el !== dock.parentElement; el = el.parentElement) chrome.push(el)
+    expect(chrome).toContain(dock.children[1])
+    expect(chrome).toContain(dock)
+    for (const el of chrome) expect(el.className).not.toMatch(/(^|\s)(liquid-glass|border-t|p[ytb]?-\S+)(?=\s|$)/)
+    const notices = screen.getByTestId('crew-window-notices')
+    expect(notices).toHaveClass('empty:hidden')
+    await waitFor(() => expect(notices.childElementCount).toBe(0))
+  })
+
+  // The dock stops short of the transcript's scrollbar column, as the local
+  // dock does: the composer's shelf fade spans the dock's own box, so a dock
+  // over the gutter would paint over the thumb.
+  it("stops the dock short of the transcript's scrollbar gutter", async () => {
+    // happy-dom lays nothing out: give the scroller (the box the dock follows)
+    // a 6px scrollbar column, and every other box the zero width it reports anyway.
+    const isScroller = (el: Element) => el.nextElementSibling?.getAttribute('data-testid') === 'crew-window-dock'
+    const offsetWidth = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 806 : 0 })
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 800 : 0 })
+    onTestFinished(() => { offsetWidth.mockRestore(); clientWidth.mockRestore() })
+    renderWindow()
+    await screen.findByRole('textbox', PEER_ROW_WAIT)
+    expect(screen.getByTestId('crew-window-dock').style.right).toBe('6px')
+  })
+
+  // A frameless line stands on the notices' glass chip, never bare over the
+  // transcript. Until the version read lands, the window is not connected.
+  it('shows the offline line on the notices chip while the crew is not connected', async () => {
+    mocks.instancesCapabilities.mockReturnValue(new Promise(() => {}))
+    renderWindow()
+    const line = await screen.findByText('devbox is not connected. Reconnect it to send.')
+    const chip = line.closest('.liquid-glass')
+    expect(chip).not.toBeNull()
+    expect(screen.getByTestId('crew-window-notices')).toContainElement(chip as HTMLElement)
+    expect(screen.getByRole('textbox')).toBeDisabled()
+  })
+
+  it('shows a failed effort-options read on the notices chip', async () => {
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => (
+      path === 'api/chat/slots?crew=all' ? Promise.resolve([slotRow])
+        : path.endsWith('/selection-capabilities') ? Promise.reject(new Error('peer unreachable'))
+          : Promise.resolve(detail)))
+    renderWindow()
+    // Behind the version read, then one retry of the failed capability read.
+    const line = await screen.findByText(/Could not verify this session's reasoning effort options/, {}, PEER_ROW_WAIT)
+    const chip = line.closest('.liquid-glass')
+    expect(chip).not.toBeNull()
+    expect(screen.getByTestId('crew-window-notices')).toContainElement(chip as HTMLElement)
+  })
+
+  // A card notice draws its own frame, so it stands in the column on no glass of
+  // its own; the frameless lines beside it keep the chip.
+  it('keeps a card notice off the glass chip that holds the frameless lines', async () => {
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
+    renderWindow()
+    await editAndResend('hi again')
+    const line = await screen.findByText('Rewinding: sending replaces the conversation from this message on.')
+    const card = (await screen.findByText(/refused that action/)).closest('[role="alert"]')
+    const notices = screen.getByTestId('crew-window-notices')
+    expect(card).not.toBeNull()
+    expect(notices).toContainElement(card as HTMLElement)
+    expect(card?.closest('.liquid-glass')).toBeNull()
+    expect(notices).toContainElement(line.closest('.liquid-glass') as HTMLElement)
   })
 
   it('keeps Stop reachable while an approval is pending', async () => {
@@ -267,9 +355,11 @@ describe('CrewChatWindow', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       mocks.instancesCapabilities
-        .mockResolvedValueOnce({ version_match: false, version: '', local_version: '0.9.0' })
+        .mockResolvedValueOnce({ version_match: false, version: '', local_version: '0.9.0', unavailable: { version: 'capability_peer_not_connected' } })
         .mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
       renderWindow()
+      // The tunnel-down answer reads as an unknown version; its notice is the first frame that answer renders.
+      await screen.findByText(/Could not read which version this crew runs \(capability_peer_not_connected\)/, {}, PEER_ROW_WAIT)
       await waitFor(() => expect(mocks.instancesCapabilities).toHaveBeenCalledTimes(1))
       expect(mocks.crewPeerGet).not.toHaveBeenCalled()
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
@@ -418,6 +508,70 @@ describe('CrewChatWindow', () => {
     await waitFor(() => expect(screen.queryByTestId('queue-card')).toBeNull(), PEER_ROW_WAIT)
   })
 
+  it('shows a final reply that lands while an earlier re-read is still in flight (#25803)', async () => {
+    renderWindow()
+    await screen.findByText('hello', {}, PEER_ROW_WAIT)
+    // A slow tunnel: the next detail read answers with the transcript AS OF
+    // ITS START, and only when released.
+    let release: (() => void) | null = null
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => {
+      if (path === 'api/chat/slots?crew=all') return Promise.resolve([{ key: 'other' }, slotRow])
+      const snapshot = detail
+      if (release) return Promise.resolve(snapshot)
+      return new Promise(resolve => { release = () => resolve(snapshot) })
+    })
+    const es = FakeEventSource.all[FakeEventSource.all.length - 1]
+    // The window throttles its re-read; the clock is stepped past that
+    // throttle, so no step waits on wall time.
+    vi.useFakeTimers()
+    try {
+      // A tool row finishes: its re-read starts and is held on the tunnel.
+      es.emit('chat_message', { slot: 'k1' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+      expect(release).not.toBeNull()
+      // The final reply lands on the peer while that read is still in flight,
+      // and its own re-read fires before the first one answers.
+      detail = { ...detail, messages: [...(detail.messages as object[]), { role: 'assistant', content: 'final reply', ts: 't3' }] }
+      es.emit('chat_message', { slot: 'k1' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+    } finally {
+      vi.useRealTimers()
+    }
+    release!()
+    expect(await screen.findByText('final reply', {}, PEER_ROW_WAIT)).toBeTruthy()
+  })
+
+  it('follows many frames during one held re-read with a single extra read', async () => {
+    renderWindow()
+    await screen.findByText('hello', {}, PEER_ROW_WAIT)
+    const detailPath = 'api/chat/slots/k1?limit=200'
+    let release: (() => void) | null = null
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => {
+      if (path === 'api/chat/slots?crew=all') return Promise.resolve([{ key: 'other' }, slotRow])
+      if (release) return Promise.resolve(detail)
+      return new Promise(resolve => { release = () => resolve(detail) })
+    })
+    mocks.crewPeerGet.mockClear()
+    const detailReads = () => mocks.crewPeerGet.mock.calls.filter(c => c[1] === detailPath).length
+    const es = FakeEventSource.all[FakeEventSource.all.length - 1]
+    vi.useFakeTimers()
+    try {
+      es.emit('chat_message', { slot: 'k1' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+      expect(detailReads()).toBe(1)
+      // Several frames land while that read is held, each past the throttle.
+      for (let i = 0; i < 4; i++) {
+        es.emit('chat_message', { slot: 'k1' })
+        await act(() => vi.advanceTimersByTimeAsync(1000))
+      }
+      expect(detailReads()).toBe(1)
+      await act(async () => { release!(); await vi.advanceTimersByTimeAsync(1000) })
+      expect(detailReads()).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('puts a refused steer back into the composer', async () => {
     slotRow = { ...slotRow, running: true }
     mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
@@ -427,6 +581,56 @@ describe('CrewChatWindow', () => {
     fireEvent.change(box, { target: { value: 'steer me' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(box).toHaveValue('steer me'))
+  })
+
+  // `stt.dictation_note` is this machine's setting, as the dictation is; the
+  // note rides the text the peer receives. The Voice atom's own marking is
+  // pinned in useComposerVoiceDictationNote.test; `markDictated` stands in.
+  it('ends a dictated message with the dictation note, and hands a refused one back without it', async () => {
+    _resetDictationProvenance()
+    globalQueryClient.setQueryData(['sttConfig'], { enabled: true, dictation_note: true })
+    try {
+      mocks.crewPeerPost.mockRejectedValueOnce(new Error('peer refused'))
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      fireEvent.change(box, { target: { value: 'book the room' } })
+      markDictated(crewWindowSlot('cd-1', 'k1'))
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: `book the room\n\n${DICTATION_NOTE}`, slot: 'k1' }]))
+      await waitFor(() => expect(box).toHaveValue('book the room'))
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted().filter(p => p[0] === 'api/chat?ws=1')).toHaveLength(2))
+      expect(posted().filter(p => p[0] === 'api/chat?ws=1')[1]).toEqual(['api/chat?ws=1', { message: `book the room\n\n${DICTATION_NOTE}`, slot: 'k1' }])
+      // The next message, typed by hand, carries nothing.
+      fireEvent.change(box, { target: { value: 'typed after' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed after', slot: 'k1' }]))
+    } finally {
+      globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
+      _resetDictationProvenance()
+    }
+  })
+
+  it('emptying the composer forgets the dictation, so a fresh typed message gets no note', async () => {
+    _resetDictationProvenance()
+    globalQueryClient.setQueryData(['sttConfig'], { enabled: true, dictation_note: true })
+    try {
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      markDictated(crewWindowSlot('cd-1', 'k1'))
+      fireEvent.change(box, { target: { value: 'spoken then deleted' } })
+      fireEvent.change(box, { target: { value: '' } })
+      expect(isDictated(crewWindowSlot('cd-1', 'k1'))).toBe(false)
+
+      fireEvent.change(box, { target: { value: 'typed instead' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed instead', slot: 'k1' }]))
+    } finally {
+      globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
+      _resetDictationProvenance()
+    }
   })
 
   it('shows the peer\'s stop in flight and its compaction, not a live Stop', async () => {
@@ -479,6 +683,8 @@ describe('CrewChatWindow', () => {
     expect(screen.queryByRole('slider')).toBeNull()
     // The threshold read would ask THIS machine about a session it does not have.
     expect((mocks as Record<string, { mock?: { calls: unknown[] } }>).chatSlotAutocompact?.mock?.calls ?? []).toHaveLength(0)
+    // Nor would the cache hit rate's crew-log read, which only the peer holds.
+    expect((mocks as Record<string, { mock?: { calls: unknown[] } }>).sessionCrewLogProjections?.mock?.calls ?? []).toHaveLength(0)
   })
 
   it('names the PEER\'s folder as a label, with no picker and nothing rooted here', async () => {
@@ -694,6 +900,15 @@ describe('CrewChatWindow', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
   })
 
+  it.each([
+    [{ version: '0.8.0', behind: true }, "This crew runs Kiro Crew 0.8.0, older than this machine's 0.9.0. Update the crew to match."],
+    [{ version: '0.10.0', ahead: true }, "This crew runs Kiro Crew 0.10.0, newer than this machine's 0.9.0. Update this machine to match."],
+  ])('names the older side of a version mismatch (%o)', async (caps, text) => {
+    mocks.instancesCapabilities.mockResolvedValue({ version_match: false, local_version: '0.9.0', ...caps })
+    renderWindow()
+    expect(await screen.findByText(text, {}, PEER_ROW_WAIT)).toBeTruthy()
+  })
+
   it('shows the Behind badge in the header for a compatible crew on an older build', async () => {
     mocks.instancesCapabilities.mockResolvedValue({ version_match: true, behind: true, version: '0.9.0', local_version: '0.9.1' })
     renderWindow()
@@ -872,6 +1087,18 @@ describe('CrewChatWindow', () => {
     expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
   })
 
+  it("draws a peer's project-hooks notice read-only, with no link that writes this hub's choice", () => {
+    const row = {
+      role: 'notice',
+      content: 'ℹ Project hooks are off for this folder.',
+      meta: { kind: 'spec_hooks', project_hooks: 'off', project_hooks_folder: '/work/repo' },
+    } as unknown as ChatMessage
+    const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false })
+    const picked = resolveRenderer(row, mergeRenderers(crew))
+    expect(picked?.id).toBe('project_hooks')
+    expect(crew).toContain(picked)
+  })
+
   it('lets in only shared rows decided safe for a peer (a new row falls back)', () => {
     // A new shared row must be added to PEER_SAFE_ROWS on purpose, or it draws
     // through the store-free default instead of reading this hub's own state.
@@ -879,13 +1106,18 @@ describe('CrewChatWindow', () => {
     // A guide offer row reads the local guide store, which a peer's window has none of.
     // An elicitation card answers through THIS hub's slot route; the peer's ask lives
     // on the peer, so the window leaves it to the SDK default, which draws it read-only.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation'])
+    // The outgoing session-message card names the recipient (and opens it) from
+    // THIS hub's session roster, where a peer's session keys mean nothing: a
+    // peer's window draws that row through the store-free default too.
+    // A restart's Trust reset row picks a mode through THIS hub's route, never the peer's.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
     expect(crew).not.toContain('subagent_run_tool')
     expect(crew).not.toContain('conversation_card')
     expect(crew).not.toContain('elicitation')
+    expect(crew).not.toContain('trust_reset_notice')
   })
 
   it('draws a peer code fence copy-only, with no Run into this machine', async () => {
@@ -1279,3 +1511,6 @@ describe('CrewChatWindow', () => {
     expect(FakeEventSource.all[0].close).toHaveBeenCalled()
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

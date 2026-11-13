@@ -103,10 +103,8 @@ def test_fall_back_daily_job_runs_in_each_repeated_hour() -> None:
 
     01:30 happens twice in America/Toronto on the fall-back day: first in EDT
     (``fold=0``), then in EST (``fold=1``), an hour apart. That is beyond the
-    adjacent-minute bound, so ``is_due`` treats the two as separate runs.
-    Whether a fixed-time job should run once in the repeated hour is a policy
-    question for maintainers; this test pins the behavior as it stands, so a
-    change to it is deliberate.
+    adjacent-minute bound, so ``is_due`` treats the two as separate runs. This
+    pins current behavior so a policy change is deliberate.
     """
     day = (2025, 11, 2)
     runs = _runs("30 1 * * *", TORONTO, _at(TORONTO, *day, 0, 0), 360)

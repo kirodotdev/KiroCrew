@@ -16,17 +16,24 @@ latched value can be arbitrarily stale. That splits the callers in two:
   authority: one has no turn at all, the other has already rewritten durable
   history by the time the turn fails. See
   ``docs/system-specs/modules/acp-client.md`` § "Poll-driven spawn sites are
-  readiness-gated".
+  readiness-gated". The reruns block only while their turn runs on a harness
+  that signs in via kiro-cli (:func:`rerun_signs_in_via_kiro_cli`).
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.acp_backends import backends_retired_by_host_logout
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+if TYPE_CHECKING:
+    from kiro_crew.dashboard.state import _ChatSlot
+    from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +48,13 @@ _KIRO_NOT_READY_RESPONSE = {
     "error": "Kiro CLI setup or sign-in is required before starting a session.",
     "code": KIRO_PREREQUISITE_REQUIRED_CODE,
 }
-_KIRO_NOT_READY_CODE = _KIRO_NOT_READY_RESPONSE["code"]
+# A probe that timed out is not a sign-in wall, so it must not carry that code: the
+# dashboard would tell a user whose CLI may be installed and signed in to sign in.
+_KIRO_PROBE_TIMED_OUT_RESPONSE = {
+    "error": "The Kiro CLI check timed out. The CLI may be installed and signed in; "
+    "try again in a moment.",
+    "code": "kiro_probe_timed_out",
+}
 
 # When was the current refusal last reported at WARNING? ``None`` means "not yet, warn
 # now". Module-level because the gate must work with no service at all (the fail-closed
@@ -177,7 +190,7 @@ def _log_safe_path(request: object) -> str:
     return repr(raw)
 
 
-def _warn_refused_once(path: str) -> None:
+def _warn_refused_once(path: str, code: str) -> None:
     """WARNING on the transition into refusing, DEBUG thereafter.
 
     Mirrors ``mcp_discovery._warn_probe_sandbox_unavailable_once``, and for the same
@@ -208,7 +221,7 @@ def _warn_refused_once(path: str) -> None:
 
     now = _clock()
     if _refusal_warned_at is not None and now - _refusal_warned_at < _REFUSAL_REWARN_SECS:
-        logger.debug("%s refused with 503 %s (already reported)", path, _KIRO_NOT_READY_CODE)
+        logger.debug("%s refused with 503 %s (already reported)", path, code)
         return
     _refusal_warned_at = now
     logger.warning(
@@ -217,7 +230,7 @@ def _warn_refused_once(path: str) -> None:
         "for which condition — a missing binary, a sandbox refusal and a timed-out "
         "probe are three different failures.",
         path,
-        _KIRO_NOT_READY_CODE,
+        code,
         _REFUSAL_REWARN_SECS,
     )
 
@@ -290,8 +303,75 @@ async def reject_if_kiro_unverified(
     pollers would otherwise pay on each tick.
     """
 
-    if await kiro_verified_ready(_service(request), max_age_secs=max_age_secs):
+    service = _service(request)
+    if await kiro_verified_ready(service, max_age_secs=max_age_secs):
         _clear_refusal_warning()
         return None
-    _warn_refused_once(_log_safe_path(request))
-    return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+    timed_out = isinstance(service, KiroPrerequisiteService) and service.probe_timed_out
+    body = _KIRO_PROBE_TIMED_OUT_RESPONSE if timed_out else _KIRO_NOT_READY_RESPONSE
+    _warn_refused_once(_log_safe_path(request), body["code"])
+    return web.json_response(body, status=503)
+
+
+async def kiro_latched_ready(request: web.Request) -> bool:
+    """The request app's latched readiness: no probe, fails closed.
+
+    For a read that spawns nothing and only has to notice a KNOWN sign-out (a
+    refused refresh probe or a chat turn's auth failure narrows the latch), so
+    it can fall back to :func:`reject_if_kiro_unverified` instead of paying its
+    re-probe on every call.
+    """
+
+    return await kiro_session_ready(_service(request))
+
+
+async def rerun_signs_in_via_kiro_cli(
+    sessions: SessionManager | None, slot: _ChatSlot | None
+) -> bool:
+    """Whether a rerun on *slot* starts its turn on a harness that signs in via kiro-cli.
+
+    The latch :func:`reject_if_kiro_unverified` reads is a kiro-cli verdict, so it
+    describes only the harnesses in ``backends_retired_by_host_logout()``. On any
+    other harness the rerun's own turn is the sign-in authority, as for a send.
+
+    The backend is the one a fresh session for the slot would start on
+    (``_configured_backend_for_slot``: crewmate pin, member route, then default),
+    selected from *sessions*' applied config: its provider factory was built
+    from that config and allocates the rerun's session, while ``config.json``
+    runs ahead of it until the config watcher applies a write. Edit-resend and
+    rewind discard the live conversation, so their turn starts there. Regenerate
+    keeps the live session, but rewrites nothing unless its turn replies
+    (``regenerate_swap``). No slot, no session manager, or no readable answer
+    keeps the gate.
+    """
+    if slot is None or sessions is None:
+        return True
+    try:
+        # Deferred: importing chat_handlers loads this module.
+        from kiro_crew.dashboard.chat_handlers import _configured_backend_for_slot
+
+        backend = await _configured_backend_for_slot(slot, sessions._cfg)
+    except Exception:  # noqa: BLE001 - an unreadable selection keeps the gate
+        logger.debug("Rerun backend unreadable; keeping the kiro-cli gate", exc_info=True)
+        return True
+    return backend in backends_retired_by_host_logout()
+
+
+def refuse_rerun_after_signed_out_turn(slot: _ChatSlot) -> web.Response | None:
+    """503 when *slot*'s last turn ended signed out, for a rerun the gate skipped.
+
+    Edit-resend and rewind cut history before their turn runs. On a harness the
+    kiro-cli gate does not cover, the one sign-in fact held here is the slot's
+    last outcome, ``_last_turn_auth_required``: rewritten as each turn ends, kept
+    in memory only, so it covers a turn this process ran on the slot.
+    """
+    if slot._last_turn_auth_required:
+        return web.json_response(
+            {
+                "error": "The last turn here ended because the coding agent is signed out. "
+                "Sign in, then send a message before rewriting this conversation.",
+                "code": "harness_sign_in_required",
+            },
+            status=503,
+        )
+    return None

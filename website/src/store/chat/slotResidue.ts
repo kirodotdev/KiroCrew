@@ -11,6 +11,7 @@ import { MCP_APP_KEY_SEP, evictMcpApps } from './mcpApps'
 import { clearFiledFolderSuggestions } from './composerCards'
 import {
   recordEndedTurn,
+  rowEndsPendingTurn,
   settleEndedActiveTurn,
   settleEndedBackgroundTurn,
   turnAlreadyEnded,
@@ -31,7 +32,7 @@ import {
  *  `evictMcpApps`. */
 const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
-  state.slotSide, state.slotSideClosed, state.slotSideRestored ?? {}, state.slotSideReading ?? {}, state.slotStatusDetail,
+  state.slotSide, state.slotSideClosed, state.slotSideRestored ?? {}, state.slotSideReading ?? {}, state.slotSideClosedElsewhere ?? {}, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.endedTurn,
   state.followups, state.folderSuggestions, state.restoredQuestionNotices,
@@ -47,6 +48,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotPaneNextBefore ?? {}, state.slotPaneLoadingOlder ?? {}, state.slotPaneOlderError ?? {},
   state.slotPaneRemovedQueueIds ?? {},
   state.thinkingOrphans,
+  state.sendAttempts ?? {},
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
@@ -145,10 +147,10 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
       const seenSnapshot = state.slotsSnapshotSeen === true
       if (action.payload.length > 0) state.slotsSnapshotSeen = true
       // An empty frame before the first real snapshot is a reconnect artifact.
-      // The authoritative empty case is not lost by skipping it: every
-      // reconnect dispatches `fetchSlots` right after `sseConnected`
-      // (`runReconnectCatchUp` in `hooks/websocket/reconnectCatchUp.ts`), and
-      // the case below reconciles that reply even when it is empty.
+      // The authoritative empty case is not lost by skipping it: a reconnect
+      // whose connect snapshot is empty dispatches `fetchSlots`
+      // (`createReconnectSnapshotWait` in `hooks/websocket/reconnectCatchUp.ts`),
+      // and the case below reconciles that reply even when it is empty.
       if (action.payload.length === 0 && !seenSnapshot) return
       reconcileSlotResidue(state, action.payload)
       clearFiledFolderSuggestions(state, action.payload)
@@ -158,7 +160,10 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
       for (const row of action.payload) {
         if (row.running === false) {
           const identity = wireTurnIdentity(row)
-          if (identity && !turnAlreadyEnded(state, row.key, identity)) {
+          // A parked send survives a row that does not end its turn, as the
+          // active slot's does in `settleEndedActiveTurn`.
+          const parked = !!state.slotRun?.[safeKey(row.key)]?.pendingTurn
+          if (identity && !turnAlreadyEnded(state, row.key, identity) && (!parked || rowEndsPendingTurn(state, row.key, identity))) {
             settleEndedBackgroundTurn(state, row.key)
           }
           recordEndedTurn(state, row.key, row)

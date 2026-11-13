@@ -491,7 +491,7 @@ async def _sync_start_locked() -> dict:
             # The BYTES captured at import, not a copy of the file as it is now:
             # copying at sync time would execute whatever had been written to the
             # checkout since this gateway started.
-            snap.write_bytes(runtime._PREFLIGHT_SOURCE)
+            await asyncio.to_thread(snap.write_bytes, runtime._PREFLIGHT_SOURCE)
         except OSError as exc:
             # mkdtemp can succeed and the COPY still fail, and nothing has
             # registered the directory for the run's cleanup yet at this point --
@@ -690,7 +690,7 @@ async def _sync_start_locked() -> dict:
         runner_dir = Path(tempfile.mkdtemp(prefix="kirocrew-sync-runner-"))
         runner_snap = runner_dir / "sync_runner.py"
         # The BYTES captured at import, not a copy of the file as it is now.
-        runner_snap.write_bytes(runtime._SYNC_RUNNER_SOURCE)
+        await asyncio.to_thread(runner_snap.write_bytes, runtime._SYNC_RUNNER_SOURCE)
         # Pinned in argv below (same contract as the steps digest): the staged
         # file is mutable between now and exec, argv is not, so the bootstrap
         # can refuse a snapshot rewritten in that window.
@@ -701,7 +701,7 @@ async def _sync_start_locked() -> dict:
         # program that reads it, and nothing worktree-controlled is interpolated
         # into code.
         steps_payload = json.dumps(wrapped_steps).encode("utf-8")
-        steps_json_path.write_bytes(steps_payload)
+        await asyncio.to_thread(steps_json_path.write_bytes, steps_payload)
         # Pinned in argv below: argv is immutable once the runner process
         # exists, so the runner can verify the file it reads is the manifest
         # THIS gateway staged -- a rewrite of steps.json between staging and

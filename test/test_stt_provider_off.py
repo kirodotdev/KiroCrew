@@ -82,8 +82,7 @@ class TestOffIsSelectable:
 
 class TestOffDisablesEverySpeechPath:
     def test_the_batch_module_spells_off_the_same_way(self) -> None:
-        """``transcribe`` keeps ``kiro_crew.config`` off its import path, so it
-        carries its own copy of the value; the two must never drift."""
+        """``transcribe`` carries its own copy of the value; the two must never drift."""
         from kiro_crew import transcribe
 
         assert transcribe.STT_PROVIDER_OFF == STT_PROVIDER_OFF

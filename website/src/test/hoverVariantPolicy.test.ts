@@ -44,6 +44,7 @@ beforeAll(async () => {
     'md:opacity-0',
     '[@media(hover:none)]:opacity-100',
     '[@media(hover:none)]:disabled:opacity-30',
+    '[@media(hover:none)]:aria-disabled:opacity-30',
     '[.group:hover_&]:block',
   ])
 })
@@ -70,6 +71,15 @@ describe('hover variant policy (tailwind-theme.css)', () => {
   it('a (hover: none) disabled state sorts after the (hover: none) reveal it dims', () => {
     const reveal = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:opacity-100')
     const dimmed = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:disabled\\:opacity-30')
+    expect(reveal).toBeGreaterThan(-1)
+    expect(dimmed).toBeGreaterThan(reveal)
+  })
+
+  it('a (hover: none) aria-disabled state also sorts after the (hover: none) reveal it dims', () => {
+    // A busy control that keeps focus is aria-disabled, not disabled, and must
+    // stay dimmed on touch the same way.
+    const reveal = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:opacity-100')
+    const dimmed = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:aria-disabled\\:opacity-30')
     expect(reveal).toBeGreaterThan(-1)
     expect(dimmed).toBeGreaterThan(reveal)
   })
@@ -129,6 +139,7 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['components/CopyBranchButton.tsx', 'group-hover/branch:opacity-70', 'copy glyph inside the always-visible branch button'],
   ['components/FileChangeChips.tsx', 'group-hover/tip:opacity-100', 'hover tooltip on a clickable chip; tapping opens the diff view, which names the file'],
   ['components/crew/CrewAvatarButton.tsx', 'group-hover/avatar:opacity-100', 'hover overlay, explicitly hidden under (hover: none)'],
+  ['pages/chat/BrowserLiveCardViews.tsx', 'pointer-events-none absolute inset-0 grid place-items-center bg-bg/40 opacity-0', '"Click to take over" hint over the frame; the header\'s Take over button is the control and a tap on the frame claims too'],
   ['pages/ArtifactDetailPageHeader.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
   ['pages/settings/SecurityPanelPosture.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],
@@ -215,13 +226,11 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     ['components/RegistryManager.tsx', 'sm:group-hover:opacity-100 [@media(hover:none)]:opacity-100'],
     // A pending registry action keeps its dimmed state on touch: the touch override lives in the idle branch only.
     ['components/RegistryManager.tsx', "refreshMutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'"],
-    // A disabled remove button stays dimmed on touch.
-    ['apps/personal-shopper/SitesTab.tsx', 'disabled:opacity-30 [@media(hover:none)]:disabled:opacity-30'],
+    // A busy (aria-disabled) remove button stays dimmed on touch.
+    ['apps/personal-shopper/SitesTab.tsx', 'aria-disabled:opacity-30 aria-disabled:hover:text-[var(--muted)] aria-disabled:cursor-not-allowed [@media(hover:none)]:aria-disabled:opacity-30'],
     // The daily-usage tooltip is the only place a day's figures appear and the bar has no click to lose,
     // so it keeps an ungated :hover that a tap still triggers.
     ['pages/overview/TokenDailyChart.tsx', 'hidden [.group:hover_&]:block'],
-    // An always-visible overlay control keeps the room its hover state reserved, so it covers no content on touch.
-    ['apps/code-review-sage/components/RunCard.tsx', "(onDelete ? ' [@media(hover:none)]:pb-7' : '')"],
     // Every notification dismiss rests at the same weight on touch.
     ['components/notifications/NotificationFeed.tsx', 'group-hover:opacity-40 [@media(hover:none)]:opacity-60'],
     ['pages/chat-sidebar/HistoryPane.tsx', "${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}"],

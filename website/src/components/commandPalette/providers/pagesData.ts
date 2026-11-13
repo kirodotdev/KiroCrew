@@ -42,7 +42,6 @@ export const EXTRA_PAGES: readonly { key: string; route: string; previewFlag?: s
   // which direction this one runs.
   { key: 'webhooks', route: '/webhooks', previewFlag: PREVIEW_WEBHOOKS },
   { key: 'logs', route: '/logs' },
-  { key: 'developer', route: '/developer' },
   { key: 'tasks', route: '/tasks' },
   { key: 'mc-agents', route: '/mc-agents' },
   { key: 'instances', route: '/instances' },
@@ -68,7 +67,6 @@ export const EXTRA_PAGE_TITLE_KEY: Record<string, string> = {
   // from the `hooks` entry (the agent-hooks page) that sits beside it.
   webhooks: 'pages.settings.webhooksPanel.inbound_webhooks',
   logs: 'components.commandPalette.providers.pagesProvider.logs',
-  developer: 'components.commandPalette.providers.pagesProvider.developer',
   tasks: 'components.commandPalette.providers.pagesProvider.tasks',
   'mc-agents': 'components.commandPalette.providers.pagesProvider.kirocrew_agents',
   instances: 'components.commandPalette.providers.pagesProvider.remote_crew',

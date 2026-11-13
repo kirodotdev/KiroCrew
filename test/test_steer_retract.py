@@ -439,6 +439,62 @@ class TestDropped:
         assert row["meta"][steer_retract.RETRACT_ACTION_META] == "queue"
 
     @pytest.mark.asyncio
+    async def test_queue_instead_keeps_the_steers_banner(self, harness):
+        async with TestClient(TestServer(harness.app)) as http:
+            resp = await http.post(
+                "/api/chat",
+                json={
+                    "slot": "test",
+                    "message": "the long scripted instruction",
+                    "banner": "short label",
+                    "steer": True,
+                },
+            )
+            assert resp.status == 200
+            await _retract(http, _mid_of(harness.slot, "the long scripted instruction"), "queue")
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        (entry,) = harness.slot._queue
+        assert entry["content"] == "the long scripted instruction"
+        assert entry["meta"]["banner"] == "short label"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("owner", [True, False])
+    async def test_queue_instead_keeps_the_steers_owner_mark(self, harness, owner):
+        async with TestClient(TestServer(harness.app)) as http:
+            await _steer(http, "read the other crew's chat")
+            harness.slot._steer_owner_origin["read the other crew's chat"] = owner
+            await _retract(http, _mid_of(harness.slot, "read the other crew's chat"), "queue")
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        (entry,) = harness.slot._queue
+        assert entry.get("_directive_owner_origin", False) is owner
+        assert "read the other crew's chat" not in harness.slot._steer_owner_origin
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("act_now", [True, False])
+    async def test_queue_instead_keeps_the_steers_composer_mark(self, harness, act_now):
+        # The person's own steer taken back to the queue is still their send: it
+        # keeps the mark that lets it pass the sub-agent hold, and only then.
+        from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
+
+        async with TestClient(TestServer(harness.app)) as http:
+            await _steer(http, "check the other branch")
+            if act_now:
+                harness.slot._steer_act_now.add("check the other branch")
+            else:
+                harness.slot._steer_act_now.discard("check the other branch")
+            await _retract(http, _mid_of(harness.slot, "check the other branch"), "queue")
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        (entry,) = harness.slot._queue
+        assert ((entry.get("meta") or {}).get(COMPOSER_SEND_META) is True) is act_now
+        assert "check the other branch" not in harness.slot._steer_act_now
+
+    @pytest.mark.asyncio
     async def test_queue_instead_keeps_the_request_time_admission(self, harness):
         from kiro_crew.dashboard import chat_runner
         from kiro_crew.dashboard import session_control as sc
@@ -673,11 +729,13 @@ class TestAHardStop:
                 "queued completion", [SimpleNamespace(agent_id="owed")]
             )
             # The hard Stop's slots push serializes every slot whenever its coalescing
-            # window is open, which reads the manager's running and queued sub-agents.
+            # window is open, which reads the manager's running and queued sub-agents
+            # and the queued rows' wait labels.
             harness.state.subagents = SimpleNamespace(
                 settle_queued_delivery=MagicMock(side_effect=settle_queued_delivery),
                 running_agents_for=MagicMock(return_value=[]),
                 published_queued_depths=MagicMock(return_value={}),
+                published_queued_labels=MagicMock(return_value={}),
             )
         harness.state.sessions.stop_turn = AsyncMock(return_value="hard")
         harness.slot._stop_state = "soft_pending"

@@ -14,9 +14,12 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
+        _FILE_BUSY_ERROR,
         _FILE_KINDS_MAX_PATHS,
         _FILE_READ_BINARY_EXTS,
         _FILE_READ_SNIFF_BYTES,
+        MEMORY_DB_FILE,
+        SQLITE_SIDECAR_SUFFIXES,
         _path_probe_stall_key,
         _PathProbeBusy,
         _probe_busy_response,
@@ -24,13 +27,17 @@ if TYPE_CHECKING:
         _run_path_probe,
         _sel,
         atomic_write,
+        bounded_read,
+        config_dir,
         is_sensitive_path,
         logger,
         open_access_control_source,
         pinned_fs,
         pinned_parent_replace_supported,
+        platform_compat,
         read_bounded_json,
         require_owner_dashboard_request,
+        sandbox_plan,
     )
 
 
@@ -46,16 +53,48 @@ def _open_rb_nofollow(path: str) -> int:
     produces, keeping callers' error handling identical. The window between
     lstat and open is acceptable defence-in-depth there -- path containment
     was already enforced by the caller's validation, and creating a symlink
-    on Windows requires elevated or developer-mode privileges. ``O_BINARY``
-    keeps the CRT from text-mode translating file bytes on Windows; it is 0
-    elsewhere.
+    on Windows requires elevated or developer-mode privileges.
+
+    The Windows open is ``platform_compat.open_file_for_shared_read``, not the
+    CRT ``os.open``: the CRT grants no ``FILE_SHARE_DELETE``, and Word and
+    Excel hold every open document with delete access, so a CRT open of a
+    document open in either is a sharing violation. Granting delete sharing
+    leaves the guard as it was: the guard is the ``lstat`` above, the window
+    after it is the same, and another program renaming or deleting the name
+    cannot change which file this descriptor reads. The helper opens in
+    binary, so the CRT does not text-mode translate the bytes.
     """
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if not nofollow:
-        st = os.lstat(path)
-        if _stat_mod.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
-            raise OSError(errno.ELOOP, "symlinks not allowed", path)
-    return os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_BINARY", 0))
+    if nofollow:
+        return os.open(path, os.O_RDONLY | nofollow)
+    st = os.lstat(path)
+    if _stat_mod.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
+        raise OSError(errno.ELOOP, "symlinks not allowed", path)
+    return platform_compat.open_file_for_shared_read(path)
+
+
+def _is_live_memory_store_file(path: str) -> bool:
+    """Whether *path* is the Global V1 ``memory.db`` or one of its SQLite sidecars.
+
+    The gateway holds that database open through its memory store, and closing ANY
+    descriptor of a file releases every POSIX record lock the process holds on it.
+    SQLite locks the database and its ``-shm`` that way, so one plain open and close
+    here leaves the store writing with no lock another process can see; that
+    process's next close may delete the ``-wal`` the store still writes through, and
+    the database splits. Compared by file identity, so a case variant of the name on
+    a case-insensitive volume is the same file. Named stores need no check:
+    ``memory_stores/`` is on the sensitive-path floor.
+    """
+    try:
+        target = os.stat(path)
+    except OSError:
+        return False
+    store = os.path.join(config_dir(), MEMORY_DB_FILE)
+    for name in (store, *(store + suffix for suffix in SQLITE_SIDECAR_SUFFIXES)):
+        with contextlib.suppress(OSError):
+            if os.path.samestat(target, os.stat(name)):
+                return True
+    return False
 
 
 class _TextRead(NamedTuple):
@@ -63,7 +102,8 @@ class _TextRead(NamedTuple):
 
     ``kind`` is the verdict the endpoint maps onto its status and audit outcome:
     ``invalid`` (validation refused), ``dir`` / ``missing`` (nothing to read),
-    ``file`` (``content`` is the capped text) or ``read_failed``. ``path`` is the
+    ``file`` (``content`` is the capped text), ``busy`` (another program holds
+    the file without sharing it) or ``read_failed``. ``path`` is the
     validated path, or ``""`` for ``invalid`` -- the raw input is the caller's to
     log, as before. ``lossy`` says the UTF-8 decode had to substitute
     replacement characters, so ``content`` is not the file as written.
@@ -126,6 +166,8 @@ def _read_request_path(raw: str, read_cap: int) -> _TextRead:
             return _TextRead("dir" if os.path.isdir(checked.path) else "missing", checked.path, "")
         if checked.code in ("invalid_path", "sensitive_path"):
             return _TextRead("invalid", "", "")
+        if checked.code == "file_busy":
+            return _TextRead("busy", checked.path, "")
         # symlink_refused (the final component became a link inside this
         # transaction), read_failed, file_too_large: the read did not happen.
         return _TextRead("read_failed", checked.path, "")
@@ -169,7 +211,8 @@ class _OpenDenied(NamedTuple):
 
     ``code`` uses the machine vocabulary the streaming endpoint already
     exposes (``invalid_path`` / ``sensitive_path`` / ``not_found`` /
-    ``symlink_refused`` / ``file_too_large`` / ``read_failed``); each adopter
+    ``symlink_refused`` / ``file_too_large`` / ``file_busy`` /
+    ``read_failed``); each adopter
     maps it onto its own SEL outcome and response body, which is where the
     endpoints legitimately differ. ``path`` is the raw input for
     ``invalid_path`` (validation produced nothing) and the validated path
@@ -202,7 +245,8 @@ def _open_checked_file(
 ) -> _CheckedFile | _OpenDenied:
     """The open-and-check half of the file-serving security prefix.
 
-    validate -> sensitive-path check -> is-file -> ``_open_rb_nofollow`` ->
+    validate -> sensitive-path check (the floor, and the live memory store files
+    of :func:`_is_live_memory_store_file`) -> is-file -> ``_open_rb_nofollow`` ->
     fstat (cap enforced only when *fstat_cap* is passed), then RETURNS the
     checked open file object. What happens to the bytes afterwards is
     per-endpoint POLICY and stays with the caller: the whole-read envelope
@@ -231,6 +275,9 @@ def _open_checked_file(
     that traceback (its 500 is the only signal); the streaming and sheet
     endpoints answer a coded refusal instead and pass False, so a request
     loop against a known-unreadable path cannot amplify into the log.
+    ``file_busy`` (another program holds the file without sharing it) logs
+    one warning line, no traceback, whatever this says: it names a cause the
+    operator can act on, and it ends when that program closes the file.
 
     Synchronous by design -- callers run it on a worker thread. Refusals are
     returned as typed codes, not responses: SEL logging and the HTTP body
@@ -246,7 +293,7 @@ def _open_checked_file(
         path = None
     if not path:
         return _OpenDenied("invalid_path", raw_path)
-    if is_sensitive_path(path):
+    if is_sensitive_path(path) or _is_live_memory_store_file(path):
         return _OpenDenied("sensitive_path", path)
     if not os.path.isfile(path):
         return _OpenDenied("not_found", path)
@@ -257,6 +304,16 @@ def _open_checked_file(
     except OSError as exc:
         if exc.errno == errno.ELOOP:  # symlink with O_NOFOLLOW
             return _OpenDenied("symlink_refused", path)
+        # A Windows sharing or lock violation (ERROR_SHARING_VIOLATION 32,
+        # ERROR_LOCK_VIOLATION 33): another program holds the file without
+        # sharing it for reading. It clears when that program closes the file,
+        # so it is a retryable answer, not a read failure. The codes are
+        # literals because this body runs on the handlers module's namespace.
+        if getattr(exc, "winerror", None) in (32, 33):
+            logger.warning(
+                "%s could not open %s: another program has the file open", tool_name, path
+            )
+            return _OpenDenied("file_busy", path)
         if log_open_failure:
             # The only traceback for a failed open: adopters map the code
             # onto an outcome, and SEL records outcome, not cause.
@@ -330,6 +387,13 @@ def _open_refusal(denied: _OpenDenied, *, tool_name: str) -> _OpenRefusal:
         return _OpenRefusal(
             web.json_response({"error": "file too large", "code": "file_too_large"}, status=413)
         )
+    if code == "file_busy":
+        # Retryable: the same request succeeds once the other program closes
+        # the file, so it is a 503 rather than the read failure below.
+        _log("failure", res, "file_busy")
+        return _OpenRefusal(
+            web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
+        )
     # read_failed: the residual code. (The whole-read envelope's own size
     # guard is its bounded read, because an fstat pre-check races a
     # concurrent writer while reading at most cap+1 bytes bounds memory
@@ -391,7 +455,7 @@ def _open_checked(
     path = checked.path
     try:
         with checked.file as f:
-            data = f.read(max_bytes + 1)
+            data = bounded_read(f, max_bytes + 1)
     except OSError:
         # Keep the traceback for a failed read: this 500 is the only signal,
         # and SEL records outcome, not cause.
@@ -427,7 +491,10 @@ def _resolve_project_relative(raw: str) -> tuple[str, str | None]:
         return "", "cannot_resolve"
     candidate = os.path.realpath(os.path.join(proj, raw))
     resolved_proj = os.path.realpath(proj)
-    if not (candidate == resolved_proj or candidate.startswith(resolved_proj + os.sep)):
+    # ``path_within``, not ``resolved_proj + os.sep``: a project at a drive root
+    # (``H:\``, or ``/``) keeps its trailing separator through ``realpath``, and
+    # the doubled separator would put every path below it outside.
+    if not sandbox_plan.path_within(candidate, resolved_proj):
         return "", "outside_project"
     return candidate, None
 
@@ -624,6 +691,7 @@ def _file_write_blocking(path: str, content: str) -> str | None:
             mode=_stat_mod.S_IMODE(src_stat.st_mode),
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,
+            preserve_windows_dacl=True,
         )
     finally:
         for fd in (src_fd, dir_fd):

@@ -136,11 +136,13 @@ async function open(browser, theme, frames, extra, { solid = false } = {}) {
   const page = await context.newPage()
   logPageProblems(page)
   // Nothing seeded = the shipped default: the boot script solidifies every pane.
-  await stubDashboardApi(page, { slots, theme, extra, localStorageEntries: solid ? null : GLASS_ON })
+  await stubDashboardApi(page, {
+    slots, theme, extra,
+    localStorageEntries: { 'mc-active-slot': SLOT, ...(solid ? {} : GLASS_ON) },
+  })
   // Registered AFTER the stub's swallow route so it wins: the socket opens
   // against nothing and we push the frames into it once the page is up.
   await page.routeWebSocket(/\/api\/ws/, ws => { frames.forEach((k, i) => setTimeout(() => ws.send(JSON.stringify(FRAMES[k])), 1500 + i * 400)) })
-  await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, SLOT)
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(1500 + frames.length * 400 + 1500)
   return { context, page }

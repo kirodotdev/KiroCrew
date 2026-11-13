@@ -11,10 +11,12 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
+        MAX_SHORT_STRING,
         DashboardState,
         NotificationPayload,
         NotificationValidationError,
         _publishing_session_meta,
+        _redact_note_value,
         _sel,
         attributable_session_key,
         caller_names_a_missing_slot,
@@ -24,17 +26,14 @@ if TYPE_CHECKING:
     )
 
 
-async def api_notification_agent_push(request: web.Request) -> web.Response:
-    """POST /api/notifications/agent — send_notification MCP tool (RFC Phase 5).
+def _refuse_unattributable_caller(
+    request: web.Request, state: DashboardState, operation: str
+) -> web.Response | None:
+    """The refusal for a caller that may not act on system.agent notes, or None.
 
-    Agent sessions publish schema-v2 notifications through the system.agent
-    channel. Body: ``{"title": str, "body"?: str, "priority"?: str,
-    "url"?: str, "group_key"?: str, "actions"?: [{id,label,url?}]}``.
-    ``source``/``channel``/``slot`` are server-fixed (never body-supplied), and the
-    full payload validation applies — internal-path urls, action caps,
-    length caps. Durability mirrors the app push: a 200 awaits the persist.
+    Publishing and dismissing share it: both act as ``source="system"`` on the
+    system.agent channel, so the same three callers are refused for both.
     """
-    state: DashboardState = request.app["state"]
     # App tokens must never reach this endpoint: an app's
     # declared ``permissions.api`` uses prefix-boundary matching, so an app
     # allowed ``/api/notifications`` is also admitted to this child route by
@@ -52,7 +51,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         # response (backend-security-controls: every denial emits SEL).
         _sel().log_api_access(
             caller=f"app:{request.get('app')}",
-            operation="notification_agent_push",
+            operation=operation,
             outcome="denied",
             source="notifications_api",
             error="app tokens forbidden on the agent publish path",
@@ -68,7 +67,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     if not request.get("internal_auth"):
         _sel().log_api_access(
             caller=str(request.get("user") or request.remote or ""),
-            operation="notification_agent_push",
+            operation=operation,
             outcome="denied",
             source="notifications_api",
             error="internal-secret authentication required (cookie callers forbidden)",
@@ -91,7 +90,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     ):
         _sel().log_api_access(
             caller=str(request.headers.get("X-Session-Key") or ""),
-            operation="notification_agent_push",
+            operation=operation,
             outcome="denied",
             source="notifications_api",
             error="calling session's slot is gone; cannot attribute a system publish",
@@ -100,6 +99,44 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             {"error": "calling session not found", "code": "caller_session_missing"},
             status=403,
         )
+    return None
+
+
+def _refuse_redactable_key(key: object) -> web.Response | None:
+    """The refusal for a key delivery redaction would rewrite, or None.
+
+    A note's fields are redacted before it is stored, and the stored key is what a
+    later publish or dismiss is matched against. A key that looks like a credential
+    or a URL would be stored as its redaction, so two different keys could collapse
+    into one and replace each other's notes, and the original could never be
+    dismissed. Refusing it keeps a key's identity exactly what the caller sent.
+    """
+    if isinstance(key, str) and key and _redact_note_value(key) != key:
+        return web.json_response(
+            {
+                "error": "key must not contain a credential or a URL",
+                "code": "key_would_be_redacted",
+            },
+            status=400,
+        )
+    return None
+
+
+async def api_notification_agent_push(request: web.Request) -> web.Response:
+    """POST /api/notifications/agent — send_notification MCP tool (RFC Phase 5).
+
+    Agent sessions publish schema-v2 notifications through the system.agent
+    channel. Body: ``{"title": str, "body"?: str, "priority"?: str,
+    "url"?: str, "group_key"?: str, "key"?: str, "actions"?: [{id,label,url?}]}``.
+    A ``key`` replaces the agent note already published under it.
+    ``source``/``channel``/``slot`` are server-fixed (never body-supplied), and the
+    full payload validation applies — internal-path urls, action caps,
+    length caps. Durability mirrors the app push: a 200 awaits the persist.
+    """
+    state: DashboardState = request.app["state"]
+    refusal = _refuse_unattributable_caller(request, state, "notification_agent_push")
+    if refusal is not None:
+        return refusal
     # Bound the body BEFORE decoding, mirroring the app push endpoint: without
     # this the strict-internal route inherits the server-wide client_max_size,
     # and a large JSON object would be buffered and decoded on the event-loop
@@ -113,13 +150,16 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # validator assumes str/list shapes, so a non-string url or non-list
     # actions would raise AttributeError/TypeError past the
     # NotificationValidationError catch -- a 500 where the contract says 400.
-    for field_name in ("title", "body", "priority", "url", "group_key"):
+    for field_name in ("title", "body", "priority", "url", "group_key", "key"):
         value = body.get(field_name)
         if value is not None and not isinstance(value, str):
             return web.json_response({"error": f"{field_name} must be a string"}, status=400)
     actions = body.get("actions")
     if actions is not None and not isinstance(actions, list):
         return web.json_response({"error": "actions must be a list"}, status=400)
+    key_refusal = _refuse_redactable_key(body.get("key"))
+    if key_refusal is not None:
+        return key_refusal
     # Attribution comes from an attested, non-app session header, never the
     # body, so no caller can put another crewmate's face on its note or point
     # its note at another session.
@@ -135,6 +175,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         priority=body.get("priority"),
         url=body.get("url"),
         group_key=body.get("group_key"),
+        key=body.get("key"),
         actions=actions,
         member=member,
         meta=session_meta or {},
@@ -180,3 +221,54 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         source="notifications_api",
     )
     return web.json_response({"ok": True, "note": note})
+
+
+async def api_notification_agent_dismiss(request: web.Request) -> web.Response:
+    """POST /api/notifications/agent/dismiss — dismiss_notification MCP tool.
+
+    Body: ``{"key": str}``. Removes the system.agent note published under that key
+    from the bell, every open view and history. Keys are shared by every agent
+    session, as on publish, so any of the person's sessions can dismiss a note
+    another one posted. ``dismissed`` says whether a note held the key.
+    """
+    state: DashboardState = request.app["state"]
+    refusal = _refuse_unattributable_caller(request, state, "notification_agent_dismiss")
+    if refusal is not None:
+        return refusal
+    body, _cap_err = await read_bounded_json(request)
+    if _cap_err is not None:
+        return _cap_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    key = body.get("key")
+    # The same cap NotificationPayload.key has on publish, so a key no publish could
+    # have stored is refused here rather than reported as matching nothing.
+    if not isinstance(key, str) or not key.strip() or len(key) > MAX_SHORT_STRING:
+        return web.json_response(
+            {
+                "error": f"key must be a non-empty string of at most {MAX_SHORT_STRING} chars",
+                "code": "invalid_key",
+            },
+            status=400,
+        )
+    key_refusal = _refuse_redactable_key(key)
+    if key_refusal is not None:
+        return key_refusal
+    dismissed, persisted = await state.dismiss_notification(source="system", key=key)
+    if not persisted:
+        _sel().log_api_access(
+            caller="agent",
+            operation="notification_agent_dismiss",
+            outcome="error",
+            source="notifications_api",
+            error="persistence failed",
+        )
+        return web.json_response(
+            {"error": "failed to persist the dismissal", "code": "persist_failed"}, status=500
+        )
+    _sel().log_api_access(
+        caller="agent",
+        operation="notification_agent_dismiss",
+        outcome="success",
+        source="notifications_api",
+    )
+    return web.json_response({"ok": True, "dismissed": dismissed})

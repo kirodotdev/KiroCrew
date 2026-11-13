@@ -12,10 +12,11 @@ and stays the import path and the patch seam: a patch through it reaches this mo
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
+from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.mcp_tools.spawn_parts.schemas import _parent_allowlist_filter
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -25,6 +26,10 @@ from kiro_crew.subagent import (
     visible_agent_names,
 )
 from kiro_crew.subagent_wait_reasons import queued_wait_text
+from kiro_crew.validation import MAX_RESPONSE_LEN, sanitize_string
+
+if TYPE_CHECKING:
+    from kiro_crew.mcp_shared import DeferredTool
 
 
 def _queued_why(record: Mapping[str, Any]) -> str:
@@ -93,6 +98,8 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
                 progress = f" ({', '.join(parts)})"
             _withheld = a.get("context_withheld") or []
             scope = f"  ctx-withheld: {','.join(_withheld)}" if _withheld else ""
+            if a.get("failover_from"):
+                scope += f"  failover: {a['failover_from']}→{a.get('backend', '?')}"
             lines.append(f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}")
     # Always append available agents (fresh read from disk). Same grammar filter and
     # redaction as the two bounded rosters (``_agent_roster_hint`` and the unknown-agent
@@ -126,7 +133,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def spawn_status(name: str, args: dict[str, Any]) -> str:
+def spawn_status(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     agent_id = args.get("agent_id", "")
     if not agent_id or not agent_id.isalnum():
         return "Error: invalid agent_id"
@@ -206,6 +213,26 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         result = "_No result._"
     result, _ = redact_exfiltration_urls(result)
     result, _ = redact_credentials(result)
+    if d.get("failover_from"):
+        # agent.acp_failover moved this run: say where the work went.
+        result = (
+            f"(ran on {d.get('backend', '?')!r}: {d['failover_from']!r} could not start,"
+            " agent.acp_failover)\n" + result
+        )
+    if not running:
+        # The same notes spawn_sub_agents and the completion event attach, so a
+        # later read of the result is not mistaken for verified work. Exactly
+        # True: a read that does not say (a run recovered from disk) adds nothing.
+        notes = [
+            f"This agent {note}"
+            for flag, note in (
+                ("made_no_tool_calls", NO_TOOL_CALLS_NOTE),
+                ("leaked_tool_call", LEAKED_TOOL_CALL_NOTE),
+            )
+            if d.get(flag) is True
+        ]
+        if notes:
+            result = "\n".join([*notes, result])
 
     if isinstance(meta, dict) and meta:
         # Paged/grepped read — prepend a compact header so the LLM knows how
@@ -249,4 +276,18 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         reason, _ = redact_exfiltration_urls(str(d["error"]))
         reason, _ = redact_credentials(reason)
         out = f"[ENDED WITH ERROR · {reason}]\n{out}"
-    return out
+    if (
+        spawn_params
+        or (isinstance(meta, dict) and meta)
+        or d.get("done") is not True
+        or d.get("outcome") != "completed"
+        or len(sanitize_string(out)) > MAX_RESPONSE_LEN
+    ):
+        # Only a completed run whose whole sanitized reply fits the response
+        # cap can settle its completion event.
+        return out
+    # A full read of a finished run hands the parent the result its completion
+    # event carries, so that event is settled once this reply is written.
+    from kiro_crew.subagent_read_collected import answer_full_read
+
+    return answer_full_read(out, agent_id)

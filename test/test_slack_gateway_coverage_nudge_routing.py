@@ -27,10 +27,24 @@ from kiro_crew.autonudge import MANUAL_STOP_REASON, MONITOR_TERMINAL_REASON, Nud
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ═════════════════════════════════════════════════════════════════════════
 # _init_autonudge closures: the _fire router and the _observer
 # ═════════════════════════════════════════════════════════════════════════
+
+
+async def _deliveries_ended(orch: Any) -> None:
+    """Wait until every terminal-notice delivery the orchestrator holds has ended.
+
+    The observer and startup's replay each hand a delivery to ``create_task`` and keep
+    it in ``orch._background_tasks``, so the observer returning shows only that the task
+    exists. A delivery parked on the persist future keeps this wait open until the test
+    resolves that future, and any count read after the wait is a final one.
+    """
+    await await_until(
+        asyncio.gather(*orch._background_tasks), what="the terminal-notice deliveries ending"
+    )
 
 
 class TestAutonudgeRouterAndObserver:
@@ -188,6 +202,70 @@ class TestAutonudgeRouterAndObserver:
         assert payload["loop"]["id"] == "loop-1"
         assert payload["loop"]["cycle_count"] == 2
         assert payload["loop"]["created_ts"] == 1_800_000_000.0
+
+    @pytest.mark.asyncio
+    async def test_observer_scrubs_loop_text_and_keeps_addressing_fields(self):
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+
+        loop = _loop(
+            secret,
+            id=secret,
+            message=f"deploy with {secret} now",
+            stopped_reason=f"failed on {secret}",
+        )
+        observer("armed", loop)
+
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert secret not in payload["loop"]["message"], "the broadcast served message raw"
+        assert secret not in payload["loop"]["stopped_reason"], "stopped_reason was served raw"
+        assert payload["loop"]["id"] == secret, "a scrubbed id addresses no row"
+        assert payload["loop"]["slot_key"] == secret, "a scrubbed slot_key addresses no row"
+
+    @pytest.mark.asyncio
+    async def test_observer_withholds_loop_text_when_redaction_cannot_compose(self):
+        """The frame still goes out, with placeholders where the scrub could not run."""
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers.autonudge import REDACTION_UNAVAILABLE_PLACEHOLDER
+        from kiro_crew.platform import (
+            PlatformCompositionError,
+            build_default_context,
+            set_context,
+        )
+
+        class _Broken:
+            def redact(self, text: str) -> str:
+                raise PlatformCompositionError("companion credential policy unreadable")
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        loop = _loop(
+            "chat-1-1721",
+            message=f"deploy with {secret} now",
+            stopped_reason=f"failed on {secret}",
+            cycle_count=3,
+        )
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_Broken()))
+        try:
+            observer("updated", loop)
+        finally:
+            set_context(build_default_context(KiroCrewConfig()))
+
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert secret not in json.dumps(payload), "an unscrubbed secret reached the frame"
+        assert payload["loop"]["message"] == REDACTION_UNAVAILABLE_PLACEHOLDER
+        assert payload["loop"]["stopped_reason"] == REDACTION_UNAVAILABLE_PLACEHOLDER
+        assert payload["loop"]["id"] == "loop-1"
+        assert payload["loop"]["slot_key"] == "chat-1-1721"
+        assert payload["loop"]["cycle_count"] == 3
 
     @pytest.mark.asyncio
     async def test_observer_frame_carries_stopped_reason_and_deadline_for_a_plain_loop(self):
@@ -358,8 +436,7 @@ class TestAutonudgeRouterAndObserver:
 
         observer("updated", loop)
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         orch._notify_nudge_expired.assert_called_once_with(loop)
 
@@ -383,13 +460,16 @@ class TestAutonudgeRouterAndObserver:
         )
 
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The delivery posts the notice and then waits on the persist future with no
+        # turn between the two, so a posted notice means it is parked there.
+        await async_wait_until(
+            lambda: orch._notify_nudge_expired.called,
+            describe=lambda: f"notice calls: {orch._notify_nudge_expired.call_args_list}",
+        )
 
         inst.mark_terminal_notification_delivered.assert_not_awaited()
         persisted.set_result(True)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         inst.mark_terminal_notification_delivered.assert_awaited_once_with(
             loop.id,
@@ -422,11 +502,11 @@ class TestAutonudgeRouterAndObserver:
         )
 
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The second emission is a retry only once the first attempt has ended and
+        # given its claim back; until then the observer would drop it as a repeat.
+        await _deliveries_ended(orch)
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         inst.mark_terminal_notification_delivered.assert_not_awaited()
         assert orch._notify_nudge_expired.call_count == 2
@@ -463,16 +543,17 @@ class TestAutonudgeRouterAndObserver:
         finally:
             if not notification_started.is_set():
                 startup.cancel()
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The notice is posted and its persist future is still open: startup has either
+        # returned (the replay is its own task) or is parked on that future (the replay
+        # runs inline). No further loop turn changes which, so none is awaited.
         startup_blocked = not startup.done()
 
         persisted.set_result(True)
         _on_fire, observer, inst = await _within_lost_run(startup, "startup after the persist")
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         observer("updated", loop)
+        await _deliveries_ended(orch)
 
         assert not startup_blocked
         orch._notify_nudge_expired.assert_called_once_with(loop)
@@ -499,8 +580,7 @@ class TestAutonudgeRouterAndObserver:
         )
 
         await self._wire(orch, emit_during_start=loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         orch._notify_nudge_expired.assert_called_once_with(loop)
 
@@ -751,7 +831,7 @@ class TestFireWebexNudge:
         transport.dispatcher.handle_message.assert_awaited_once()
         inbound = transport.dispatcher.handle_message.await_args.args[0]
         kwargs = transport.dispatcher.handle_message.await_args.kwargs
-        assert kwargs == {"interpret_commands": False}
+        assert kwargs == {"interpret_commands": False, "skill_trigger_text": "keep checking"}
         assert inbound.person_email == "a@b.test"
         assert inbound.text.startswith("[auto-nudge cycle 1]")
         from kiro_crew.webex.transport import ROOM_DIRECT

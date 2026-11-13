@@ -1,12 +1,13 @@
 /**
  * Does a tool title name the kirocrew-core `wait` tool?
  *
- * An allowlist of the three shapes the transport actually produces, not a
+ * An allowlist of the shapes the transport actually produces, not a
  * substring or token test:
  *
  *   wait                      direct MCP
  *   kirocrew-core___wait      pooled gateway namespacing
  *   wait (mcp)                suffixed
+ *   @kirocrew-core/wait       the default (kas) harness
  *
  * A strict `=== 'wait'` comparison matches only the first, which reads as "the
  * countdown is broken on my machine" on the other two transports. But the
@@ -33,5 +34,9 @@
 const WAIT_TITLE_RE = /^(?:[a-z0-9][a-z0-9._-]*___)?wait(?:\s*\([a-z0-9 ._-]+\))?$/
 
 export function isWaitToolTitle(title: string): boolean {
-  return WAIT_TITLE_RE.test((title || '').trim().toLowerCase())
+  const normalized = (title || '').trim().toLowerCase()
+  // The default (kas) harness titles a tool call `@<server>/<tool>`. Only the
+  // kirocrew-core server's `wait` is accepted, as one exact string: another
+  // server's `@x/wait` is the misattribution case the comment above describes.
+  return normalized === '@kirocrew-core/wait' || WAIT_TITLE_RE.test(normalized)
 }

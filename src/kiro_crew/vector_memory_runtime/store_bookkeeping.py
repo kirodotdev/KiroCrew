@@ -129,6 +129,7 @@ def _record_mutation(
     *,
     metadata: dict | None = None,
     operation: str = "update",
+    new_value: bool = False,
 ) -> dict:
     """Caller holds the lock and transaction; preserve canonical view shape."""
     with self._db_lock:
@@ -152,6 +153,7 @@ def _record_mutation(
             metadata=metadata,
             operation=operation,
             limit_v1_history=self.algorithm_version == "v1",
+            new_value=new_value,
         )
 
 
@@ -248,13 +250,15 @@ def get_rejection_stats(self: VectorMemoryStore) -> dict[str, int]:
     writes. The other codes
     stay semantic-scoped: ``conflict_skip`` is also emitted for episodic
     FAISS dedup, so counting episodic there would conflate benign
-    deduplication with policy rejections.
+    deduplication with policy rejections. ``consolidation_value_size`` is
+    written by the consolidation pass, not by ``validate_semantic``.
     """
     rows = self._fetch_all_locked(
         "SELECT event_type, COUNT(*) as count FROM memory_events "
         "WHERE event_type = 'injection_blocked' "
         "OR (memory_type = 'semantic' AND event_type IN "
-        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty')) "
+        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty', 'work_state', "
+        "'consolidation_value_size')) "
         "GROUP BY event_type"
     )
     return {r["event_type"]: r["count"] for r in rows}

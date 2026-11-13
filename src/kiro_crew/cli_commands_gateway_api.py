@@ -6,7 +6,8 @@ secret ``_internal_secret`` reads. Every request goes through
 that very connection is proven to be this install's recorded gateway. ``_spawn`` lists subagents or
 starts one (``_spawn_run``, which waits for the result unless told not to);
 ``_artifact`` lists, saves, shows, updates and deletes artifacts and lists an
-artifact's versions.
+artifact's versions. ``_create_cron_folder`` creates the missing Schedule-page
+folder a ``kirocrew cron add/update --folder`` names, through the dashboard.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
 name here as ``kiro_crew.cli_commands.<name>``, and a patch through the facade reaches
@@ -24,8 +25,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from kiro_crew.config.loader import KiroCrewConfig, read_local_secret
-from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.config.loader import read_local_secret
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.terminal_safe import safe_terminal_line
@@ -77,6 +77,63 @@ def _peer_refusal() -> type[Exception]:
     return _GatewayPeerRefused
 
 
+def _create_cron_folder(name: str) -> dict[str, object]:
+    """Create a Schedule-page cron folder through the running gateway; never locally.
+
+    The CLI's ``create`` leg for ``mcp_cron._resolve_cron_folder_via``: POSTs
+    ``{"name": name}`` to the dashboard's own ``/api/cron-folders`` -- the
+    handler that creates a folder under the folder lock and persists it through
+    ``DashboardState.create_cron_folder`` -- exactly as the ``cron_add`` tool
+    does. ``cron_folders.json`` is owned by the dashboard, which rewrites it
+    wholesale, so a create written here would be lost on its next save; with no
+    gateway there is simply no create.
+
+    Returns the endpoint's JSON (``{"id": ..., "name": ...}``) or
+    ``{"error": ...}``. The port is resolved instance-aware, as ``cron trigger``
+    resolves it, so a ``--port auto`` sibling never receives the secret.
+    """
+    # In-function: a module-scope import would surface on the cli_commands facade.
+    from kiro_crew.loopback_http import deadline_expired
+    from kiro_crew.port_resolution import resolve_client_port_ex
+
+    port, _evidence_backed = resolve_client_port_ex(None)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/cron-folders",
+        data=json.dumps({"name": name}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": _internal_secret(port),
+        },
+        method="POST",
+    )
+    try:
+        with _gateway_send(req, port, 10, "cli_cron_folder_create") as resp:
+            raw = resp.read()
+            made = json.loads(raw) if raw else {}
+    except _peer_refusal() as exc:
+        return {"error": f"gateway ownership not verified: {exc}"}
+    except urllib.error.HTTPError as exc:
+        try:
+            return {"error": str(json.loads(exc.read()).get("error") or f"{exc.code} {exc.reason}")}
+        except Exception:
+            return {"error": f"{exc.code} {exc.reason}"}
+    except (urllib.error.URLError, OSError) as exc:
+        if deadline_expired(exc):
+            # Something took the request, so the folder may exist now: say so
+            # rather than inviting a retry that could make a second one.
+            return {
+                "error": f"gateway on port {port} is up but busy; the folder may have been "
+                "created -- check `kirocrew cron list` or the Schedule page before retrying"
+            }
+        return {
+            "error": f"gateway not running (cannot reach dashboard on port {port}): "
+            "start it or pass an existing folder"
+        }
+    except ValueError:
+        return {"error": "gateway returned an unreadable answer"}
+    return made if isinstance(made, dict) else {"error": "gateway returned an unreadable answer"}
+
+
 def _spawn_row_text(row: dict[str, object]) -> str:
     """A ``spawn list`` row's id and task, as one terminal line.
 
@@ -88,8 +145,42 @@ def _spawn_row_text(row: dict[str, object]) -> str:
     return f"{row_id}  {task}"
 
 
+def _spawn_done_status(row: dict[str, object]) -> tuple[str, str]:
+    """A finished ``spawn list`` row's icon and note, read from its ``outcome``.
+
+    ``outcome`` is the run's terminal classification; an empty ``error`` does
+    not mean success, since a user-stopped run carries none. The success icon
+    is given to ``completed`` only, or to a row with neither ``outcome`` nor
+    ``error`` (a gateway that does not send ``outcome``); any other value shows
+    as a failure. The error is agent-influenced, so it is confined to one line.
+    """
+    outcome = row.get("outcome")
+    error = row.get("error")
+    if outcome == "completed" or (outcome is None and not error):
+        return "✅", ""
+    if outcome == "stopped":
+        return "⏹", "  (stopped)"
+    reason = safe_terminal_line(str(error or outcome or "failed"))[:80]
+    return "❌", f"  (failed: {reason})"
+
+
+def _client_port(cli_port: int | None) -> int:
+    """The gateway port this command calls, found the way ``kirocrew status`` finds it.
+
+    ``resolve_client_port`` walks the flag, ``KIROCREW_PORT``, the bound port, the
+    port in ``dashboard.url`` and the running gateway's marker, so a gateway on a
+    non-default port is reached without a ``--port``. Imported in-function: a
+    module-scope import would surface on this split module's star-import facade
+    (cli_commands).
+    """
+    from kiro_crew.port_resolution import resolve_client_port
+
+    return resolve_client_port(cli_port)
+
+
 def _spawn(args: argparse.Namespace) -> None:
     """Dispatch spawn subcommands: run, list."""
+    args.port = _client_port(getattr(args, "port", None))
     base = f"http://127.0.0.1:{args.port}"
     action = getattr(args, "spawn_action", None)
 
@@ -142,7 +233,7 @@ def _spawn(args: argparse.Namespace) -> None:
             print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
             if a.get("done"):
-                status, note = "✅", ""
+                status, note = _spawn_done_status(a)
             elif a.get("awaiting_approval"):
                 # A distinct icon from the executing hourglass, so `spawn list`
                 # answers "is this working or waiting for me?".
@@ -157,6 +248,11 @@ def _spawn(args: argparse.Namespace) -> None:
         return
 
     print("Usage: kirocrew spawn {run|list}")
+
+
+#: Seconds the gateway holds one status read of a blocking ``spawn run``, and the
+#: interval between reads it answered without holding.
+_SPAWN_WAIT_SECS = 2.0
 
 
 def _spawn_run(args: argparse.Namespace, base: str) -> None:
@@ -247,20 +343,35 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         )
     else:
         print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
-    poll_url = f"{base}/api/spawn/{agent_id}"
+    # The gateway holds each read until the run ends or the interval passes, so the
+    # result prints when the run ends. A read answered sooner with the run not done
+    # (it is queued, or the gateway did not hold) is repeated on the interval.
+    poll_url = f"{base}/api/spawn/{agent_id}?wait_secs={_SPAWN_WAIT_SECS:g}"
     secret = _internal_secret(args.port)
     told_awaiting = False
     while True:
-        _time.sleep(2)
+        asked = _time.monotonic()
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with _gateway_send(poll_req, args.port, 5, "cli_spawn_poll") as resp:
+            with _gateway_send(poll_req, args.port, 5 + _SPAWN_WAIT_SECS, "cli_spawn_poll") as resp:
                 status = json.loads(resp.read())
         except _peer_refusal() as e:
             print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
             sys.exit(1)
-        except Exception:
-            print("Error: lost connection to gateway", file=sys.stderr)
+        except Exception as e:
+            # A timeout is a busy gateway, not a lost one, and the subagent it
+            # accepted may still be running. Imported in-function for the
+            # cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if deadline_expired(e):
+                print(
+                    "Error: gateway on port %d is up but did not answer in time (busy); "
+                    "the subagent may still be running -- check `kirocrew spawn list`" % args.port,
+                    file=sys.stderr,
+                )
+            else:
+                print("Error: lost connection to gateway", file=sys.stderr)
             sys.exit(1)
         # Say WHY the wait is not progressing. A spawn with no parent session
         # raises its approval prompt unowned, so it appears only on the global
@@ -275,17 +386,33 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
                 file=sys.stderr,
             )
         if status.get("done"):
-            if status.get("error"):
-                print(f"Error: {status['error']}", file=sys.stderr)
+            # An empty ``error`` does not mean success: a user-stopped run (or a
+            # parent turn that ended) carries ``outcome: "stopped"`` with no
+            # error, the same shape ``_spawn_done_status`` reads for ``spawn
+            # list``. Exit 0 only for ``completed``, or for a gateway that sends
+            # no ``outcome`` and no error; any other terminal state prints the
+            # partial result and exits non-zero, so ``spawn run '…' && next``
+            # stops.
+            outcome = status.get("outcome")
+            error = status.get("error")
+            if outcome == "completed" or (outcome is None and not error):
+                print(status.get("result", ""))
+                return
+            if outcome == "stopped":
+                print(status.get("result", ""))
+                print("Stopped before completion.", file=sys.stderr)
                 sys.exit(1)
-            print(status.get("result", ""))
-            return
+            if error:
+                print(f"Error: {error}", file=sys.stderr)
+            else:
+                print(f"Error: run ended {outcome}", file=sys.stderr)
+            sys.exit(1)
+        _time.sleep(max(0.0, _SPAWN_WAIT_SECS - (_time.monotonic() - asked)))
 
 
 def _artifact(args: argparse.Namespace) -> None:
     """List, save, view, update, or delete artifacts."""
-    cfg = KiroCrewConfig.load()
-    _host, port = parse_dashboard_url(cfg.dashboard.url)
+    port = _client_port(None)
     base = f"http://127.0.0.1:{port}"
 
     action = getattr(args, "artifact_action", None) or "list"
@@ -310,7 +437,21 @@ def _artifact(args: argparse.Namespace) -> None:
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
-            return {"error": str(exc)}
+            # A timeout means the gateway may have taken the request and still be
+            # working: it is up but busy. A write may land after this client gives
+            # up, so its line asks for a check, not a re-run. Imported in-function
+            # for the cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if not deadline_expired(exc):
+                return {"error": str(exc)}
+            busy = f"gateway on port {port} is up but did not answer in time (busy)"
+            if method == "GET":
+                return {"error": f"{busy}; try again in a moment"}
+            return {
+                "error": f"{busy}; the change may have been applied -- "
+                "check `kirocrew artifact list` before re-running"
+            }
 
     def _read_content(args: argparse.Namespace) -> str:
         if getattr(args, "content_file", None):
@@ -323,7 +464,20 @@ def _artifact(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            return p.read_text(encoding="utf-8")
+            # A missing file, a folder or non-UTF-8 bytes is the caller's input,
+            # not a crash: one line and exit 1, like the other errors here.
+            try:
+                return p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                reason = "not UTF-8 text"
+            except OSError as exc:
+                reason = exc.strerror or str(exc)
+            print(
+                f"Error: could not read --content-file {safe_terminal_line(str(p))}: "
+                f"{safe_terminal_line(reason)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if getattr(args, "content", None):
             return args.content
         if not sys.stdin.isatty():
@@ -332,6 +486,24 @@ def _artifact(args: argparse.Namespace) -> None:
             "Error: provide --content, --content-file, or pipe content via stdin", file=sys.stderr
         )
         sys.exit(1)
+
+    def _slug_segment(slug: str) -> str:
+        """Return *slug* as one encoded URL path segment, or exit 2.
+
+        The slug is spliced into ``/api/artifacts/<slug>``. Unencoded, a slug
+        like ``x/publish`` reaches a different route (DELETE on it unpublishes
+        ``x``) and ``?``/``#`` cut the path short; ``.`` and ``..`` are dot
+        segments a URL normalizer collapses. Real slugs are none of these, so
+        refuse them and the empty slug outright, and encode everything else.
+        """
+        if not slug or "/" in slug or slug in (".", ".."):
+            print(
+                f"Error: invalid artifact slug {slug!r}: it must be non-empty, "
+                "not '.' or '..', and contain no '/'",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return urllib.parse.quote(slug, safe="")
 
     def _parse_tags(s: str | None) -> list[str]:
         if not s:
@@ -354,19 +526,27 @@ def _artifact(args: argparse.Namespace) -> None:
             print("No artifacts.")
             return
         for a in items:
-            tags = f"  [{', '.join(a.get('tags') or [])}]" if a.get("tags") else ""
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
+            tags = (
+                f"  [{safe_terminal_line(', '.join(str(t) for t in a.get('tags') or []))}]"
+                if a.get("tags")
+                else ""
+            )
             print(
-                f"{a.get('slug', '?'):<40s}  v{a.get('version', '?'):<3} "
-                f"{a.get('kind', '?'):<10}{tags}  {a.get('name', '?')}"
+                f"{safe_terminal_line(str(a.get('slug', '?'))):<40s}  "
+                f"v{safe_terminal_line(str(a.get('version', '?'))):<3} "
+                f"{safe_terminal_line(str(a.get('kind', '?'))):<10}{tags}  "
+                f"{safe_terminal_line(str(a.get('name', '?')))}"
             )
         return
 
     if action == "show":
-        slug = args.slug
+        seg = _slug_segment(args.slug)
         version = getattr(args, "version", None)
-        path = f"/api/artifacts/{slug}"
-        if version:
-            path = f"/api/artifacts/{slug}/versions/{int(version)}"
+        path = f"/api/artifacts/{seg}"
+        if version is not None:
+            path = f"/api/artifacts/{seg}/versions/{int(version)}"
         d = _request("GET", path)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
@@ -434,6 +614,7 @@ def _artifact(args: argparse.Namespace) -> None:
 
     if action == "update":
         slug = args.slug
+        seg = _slug_segment(slug)
         body = {}
         # Only read stdin when explicit content args are absent. In non-
         # interactive environments (CI, cron, piped /dev/null) sys.stdin.isatty()
@@ -456,7 +637,7 @@ def _artifact(args: argparse.Namespace) -> None:
         if not body:
             print("Error: provide content/--name/--description/--tags", file=sys.stderr)
             sys.exit(1)
-        d = _request("PATCH", f"/api/artifacts/{slug}", body)
+        d = _request("PATCH", f"/api/artifacts/{seg}", body)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
@@ -476,7 +657,7 @@ def _artifact(args: argparse.Namespace) -> None:
 
     if action == "delete":
         slug = args.slug
-        d = _request("DELETE", f"/api/artifacts/{slug}")
+        d = _request("DELETE", f"/api/artifacts/{_slug_segment(slug)}")
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
@@ -485,7 +666,7 @@ def _artifact(args: argparse.Namespace) -> None:
 
     if action == "versions":
         slug = args.slug
-        d = _request("GET", f"/api/artifacts/{slug}/versions")
+        d = _request("GET", f"/api/artifacts/{_slug_segment(slug)}/versions")
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)

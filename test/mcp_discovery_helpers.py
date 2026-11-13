@@ -18,8 +18,7 @@ def _clear_cache() -> None:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse sandbox passthrough moved verbatim; no test in the test_mcp_discovery*.py modules calls monkeypatch.undo()
-def _passthrough_sandbox(monkeypatch):
+def _passthrough_sandbox(_floor_monkeypatch):
     """``probe_server`` routes the spawned MCP binary through
     ``sandboxed_spawn_argv`` → ``wrap_argv``, which raises when no OS-level
     sandbox backend is available (e.g. macOS without sandbox-exec). These tests
@@ -31,7 +30,7 @@ def _passthrough_sandbox(monkeypatch):
     def _passthrough(argv, *a, env=None, **k):
         return list(argv), dict(env if env is not None else _os.environ), None
 
-    monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _passthrough)
+    _floor_monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _passthrough)
 
 
 @pytest.fixture(autouse=True)

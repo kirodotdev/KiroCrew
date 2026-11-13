@@ -28,8 +28,8 @@ Fewer than two qualifying items means one long session is the better shape, and
 a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
-[Agents](agents.md) for the per-session, per-thread and per-cron selectors) and
-give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+[Agents](agents.md) for the per-session, per-thread and per-cron selectors), which
+is what an Ultra Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 
@@ -46,8 +46,9 @@ An item is the unit of dispatch. It holds:
 | `verdict` | conductor | the acceptance evaluator's answer |
 | `fails` | conductor | how many acceptance attempts came back `fail` |
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
-| `status` | worker | `progress` / `done` / `blocked` / `question` |
+| `status` | worker | `progress` / `done` / `blocked` / `question`, and `reply` while `work_ledger.remote_dispatch` is on |
 | `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
+| `wake_at` | worker | on `progress`, when the worker will resume: an ISO-8601 time with a zone, at most 24 hours ahead |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
@@ -84,8 +85,11 @@ wherever a conductor runs, rather than discovering the refusal from a worker tha
 cannot report.
 
 **The acceptance condition is named before dispatch, not after.** It is one of
-four kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
-pull request has merged), `file` (a path exists), or `human_approval` (you accept it — legitimate for a design review,
+five kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
+pull request has merged), `edition_check` (a check an installed edition
+provides through `kirocrew acceptance-check`, for work that lands where the
+evaluator cannot read it itself), `file` (a path exists), or `human_approval`
+(you accept it — legitimate for a design review,
 and never machine-evaluated). There is deliberately no "run this command" kind,
 so "the tests pass" is expressed as `pr_checks` on the pull request that carries
 the work, and CI's verdict is the one that counts.
@@ -111,10 +115,11 @@ conductor's own children are workers. An operator who runs a deeper
 organization raises the cap with `work_ledger.max_depth` (2 to 10); `work_ledger_read`
 reports the cap in force as `max_depth`, and a `depth_exceeded` refusal names
 the setting. Lowering the cap does not close ledgers that are already open: it
-refuses new ledgers and new items at the levels it removes. A bound lead's or
-conductor's `work_report` waits on an approval prompt unless the agent's allowed
-tools include `@kirocrew-work/work_report`, so a deeper run that nobody watches
-needs that entry for the parent to wake on its own. A worker holds one open item at a time.
+refuses new ledgers and new items at the levels it removes. A bound team lead's or
+goal conductor's `work_report` runs without an approval prompt: their allowed
+tools include `@kirocrew-work/work_report`, as every worker's do, so a deeper run
+that nobody watches still wakes its parent. The pipeline and security conductors
+keep it gated. A worker holds one open item at a time.
 
 ## Other refusals
 
@@ -122,7 +127,7 @@ With the crew log on, a write can still be refused. Each answer carries a `code`
 
 | Code | What happened | What to do |
 |---|---|---|
-| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | Retry the write. For a `create` whose answer carries an `item_id`, do not repeat the `create`; read the board first. |
+| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | When the message says the write has been undone, retry it; that holds for a `create` too, whose item was removed. When it says the write could not be undone, read the board before retrying (a `cache_dirty` refusal: see the next row). |
 | `409 cache_dirty` | An undo failed, so the board's files may not match the record. Reads and writes of the board (`work_ledger_read`, `work_ledger_record`, `work_brief`, `work_report`) are refused until it is repaired. | Run `work_ledger_rebuild`. To keep the files as they stand instead, remove the marker file the message names. |
 | `400 work_entry_too_large` | The write does not fit one crew-log line. | Shorten the fields you sent. |
 | `400 work_item_too_large` | The item predates the record and, written whole, does not fit one line; usually its acceptance is too large. | The conductor shrinks it with `work_ledger_record action=accept` and a smaller acceptance. |
@@ -151,11 +156,16 @@ returns is state. It does not return the conductor's goal or any sibling item: a
 worker has neither.
 
 A session that is not a dispatched worker gets `not_bound`, which is also how a
-root conductor learns it has no parent.
+root conductor learns it has no parent, and how a `kirocrew-worker` started with
+`spawn_run` learns that its task message is the whole task. A worker calls
+`work_brief` first whatever its first message says, so it never works out for
+itself whether it is bound, and one that is bound cannot skip its brief. Only
+`work_brief`'s refusal names the message as the task: a refused `work_report`
+may come from a worker whose item moved to another session.
 
 ## `work_report` — what a worker writes
 
-One call, four statuses:
+One call, four statuses, and a fifth under a Feature Preview:
 
 | `status` | Meaning | Who acts next |
 |---|---|---|
@@ -163,6 +173,7 @@ One call, four statuses:
 | `blocked` | an external dependency stopped the work | the conductor clears or re-plans around it |
 | `question` | a decision the conductor owns is needed | the conductor answers |
 | `done` | the worker claims acceptance is met | the conductor verifies |
+| `reply` | the worker's answer to a follow-up the conductor sent it; needs no evidence and claims nothing finished. Accepted only while `work_ledger.remote_dispatch` is `true` (default `false`, read on every call); with it off, `reply` is refused as an unknown status. Like any report it replaces the item's last status, and like `done` it leaves the next move with the conductor, so it is never flagged `stale` | the conductor relays it |
 
 **`blocked` and `question` differ by who must act.** That is why they are
 separate values and not one "stuck". A build the worker does not control is
@@ -170,7 +181,12 @@ separate values and not one "stuck". A build the worker does not control is
 
 **`reason` says when a `blocked` or `question` report waits on a person.**
 `approval` means a tool approval timed out or is waiting, and `needs_human`
-means only a person can unblock it. A wait on a build, service or other item
+means the worker says only a person can unblock it: credentials or a
+permission, spend, an irreversible step or deleting someone else's work, a
+costly preference nobody can infer, or a choice the person asked to make. It
+is the worker's claim; the conductor checks it against those five and decides
+any choice that fits none, so a worker with a recommendation reports
+`question` without it. A wait on a build, service or other item
 carries no reason. It is refused on `progress` and `done`, and every report
 replaces it. When every open item waits on a person (`approval` or
 `needs_human`) and nothing on the ledger changed since the conductor's last
@@ -178,8 +194,22 @@ turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
 the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
 
+**`wake_at` says a `progress` report is a wait until a known time.** The item is
+not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
+worker stalled; once it passes, the staleness window runs from it. The exception is
+a worker whose own loop is active but cannot fire (held on an unanswered approval,
+or past its budget or cycle cap): its `wake_at` is ignored and the normal window
+runs, because the wait it declared leans on a loop that wakes nobody. A `wake_at`
+that does not parse with a zone, is in the past or is more than a day ahead is
+refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
+on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
+report. Every report replaces it. Nothing wakes the conductor at that time yet; a
+worker still idle one window after it is flagged `stale` like any other. A
+remote-dispatch report does not carry it to the hub's board yet.
+
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
-and `done` pull its `work-ledger` loop forward to within seconds. `progress`
+and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
+`work-ledger` loop forward to within seconds. `progress`
 does not, which is what makes a pause cheap: a worker that stops to wait reports
 `progress` and its conductor spends no turn hearing it. A worker turn that ends
 having reported nothing wakes nobody, and neither does a worker's session
@@ -215,25 +245,65 @@ it says so, e.g. `{"tests": "not run: harness unavailable"}`.
 are wrong or oversized: a truncated pointer is a broken pointer, while prose cut
 at the cap still reads.
 
+## A person's steer
+
+An item can carry a `steer` event: the time, actor `person`, and the person's own
+text, redacted and cut to 500 characters. It records that the person typed into
+the crew member (the worker session) that holds the item, from an Ultra Mode chat.
+It is also written, with fixed text and nothing from the tool call, when the
+person answers a tool approval in that crew member's chat while the item's last
+report is `blocked` or `question` with reason `approval` and nobody has answered
+it yet (`work_ledger_worker.record_approval_answered`). One is written per such
+report, so the Board, the sidebar count and goal-board stop showing the item as
+needing you once the approval it asked for is answered.
+`work_ledger_read` shows it in the item's events. A steer moves no field: status,
+acceptance and verdict stay where they were, and acceptance stays the evaluator's.
+A person's steer outranks the conductor's decision. The ledger write
+(`work_ledger_worker.record_person_steer_result`) is here; the way to type into a
+crew member, which calls it, lands with the Crew panel.
+
 ## Why `done` is a claim
 
-A worker's `done` never closes an item. The conductor reads its whole ledger
-with `work_ledger_read` — every item, its own derived staleness flags, and a
-ready-to-evaluate batch — runs the acceptance evaluator against the item's own
-condition, and records the answer with `work_ledger_record` as a `verdict`:
+A worker's `done` never closes an item. The conductor runs the acceptance
+evaluator against the item's own condition and records the answer with
+`work_ledger_record` as a `verdict`.
+The evaluator is the `accept_eval` tool on `kirocrew-work`. Called with no
+arguments it reads the stored condition of every item whose worker reported
+`done` from the conductor's own ledger, so the conductor reads nothing first and
+copies no document; an item that is not `done` is never evaluated. Each answer
+carries what the worker reported (`reported`: its summary and claimed `pr`), the
+`fails` so far and the worker's session key; an item that has read `pending` past
+its budget also carries `pending_overdue`, the conductor's last `decision` and its
+stored `acceptance`, and a bar that is not concrete yet comes back with its stored
+`acceptance` too. A reply too large for the tool-result limit leaves those fields
+out, stored bars first, and says so (`truncated`); if it is still too large it
+names the last items under `omitted` for a call of their own. A `pass` is
+then recorded and closed by one write, a `close` that carries the `verdict`.
+The tool runs the
+goal-conductor skill's bundled script in-process with typed arguments, takes no
+command or path to run, and is auto-approved for the conductor and the team
+lead, so an unattended verify cycle waits on no click. The script still runs by
+shell for an older spec. The verdicts are:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting, for at most 24 hours on
-  end. Past that the item reads `pending_overdue`, and the conductor asks you, the
-  way it reports a `refused` one: keep waiting, which starts a fresh 24 hours, or
-  drop the item. A `human_approval` bar is never overdue: it waits for your answer.
+  end. Past that the item reads `pending_overdue`. The conductor does not ask:
+  the first time it keeps waiting, which starts a fresh 24 hours, and says so;
+  the second time it drops the item and reports it. A `human_approval` bar is
+  never overdue: it waits for your answer.
 - `refused` — the evaluator will not answer the condition as written, and no
   amount of waiting changes that. A **draft** pull request whose checks have not
   finished lands here, because a draft is the author's own "not ready" and a
   readiness gate on the draft flag never resolves — so a `pr_checks` item is
   opened non-draft, or marked ready before the worker reports. A condition that
-  names a command to run lands here too.
+  names a command to run lands here too, and so does an `edition_check` whose
+  check says a person must decide.
 - `error` — a broken condition or environment, including a bar still set to `TBD`.
+
+Only a `pass` lets an item close `accepted`. A `close` with `state: accepted` on
+an item with no verdict, or whose latest verdict is anything else, is refused
+(`invalid_value` on `state`) and the item stays open; close it `rejected` or
+`abandoned` instead. A `human_approval` item gets its `pass` from your answer.
 
 So the strongest true thing a worker can say is that it believes the bar is met.
 The conductor's own read is also filtered: only items currently reporting `done`
@@ -245,27 +315,27 @@ A conductor stops patrolling only when every item is terminal (accepted,
 rejected or abandoned), or when the user says stop, in words or through a round
 or time budget they set. An item that fails acceptance three times is closed
 `rejected` and the rest keep going. A decision that needs a person parks only
-that item: the conductor asks about it and keeps patrolling the others.
+that item: the conductor asks about it and keeps patrolling the others. The
+conductor and the team lead carry one rule in their own agent prompts: act on a
+clear recommendation and report it; ask only for credentials or a permission,
+spend, an irreversible step or deleting someone's work, a costly preference
+they cannot infer, or a choice the person said they want to make.
 
 Parallel work is bounded in code, not only in the prompt. Each goal may hold at
 most `concurrency_cap` items open at once. The default is 6; a `goal` write sets
 it (`concurrency_cap`, 1 to 32). A `create` past it is refused
 `goal_concurrency_cap_reached`, and the board writes nothing. That is not a
-stop: the next item that lands frees a seat, and the conductor asks the user
-only when it wants more running at once, raising `concurrency_cap` if they
-agree. Closed items never count toward it.
+stop: the next item that lands frees a seat, and the conductor waits for it
+rather than asking to raise the cap. Closed items never count toward it.
 
-The total is advisory. Each goal is expected to create at most `item_cap` items,
-closed ones and every round's re-plans included; the default is 20 and a `goal`
-write sets it (`item_cap`, 1 to 256). Nothing is refused past it. The read
-returns `goal_items_used` and `cap_exceeded` on the `conductor` block, compact
-reads included; the conductor puts `items used: N of <item_cap>` in every round
-report and, when `cap_exceeded` is true, tells the user the goal has spent past
-its line. Only a goal write with `new_goal=true` (a goal the user replaced)
-starts a new count; rewording the goal, moving the round or changing a cap
-keeps it. A board that never records a goal, such as a pipeline or security
-conductor's queue, has neither goal cap. Two rounds in a row with nothing
-accepted stop new dispatches until the user answers.
+The total has no cap. The read returns the goal's item count, closed items and
+every round's re-plans included, as `goal_items_used` on the `conductor` block,
+compact reads included. Only a goal write with `new_goal=true` (a goal the user
+replaced) starts a new count; rewording the goal, moving the round or changing
+the cap keeps it. A board that never records a goal, such as a pipeline or
+security conductor's queue, has no concurrency cap. After two rounds in a row with
+nothing accepted the conductor tells the user and re-plans the failing items
+once; a third stops new dispatches until the user answers.
 
 ## Not the same as the session ledger, or subagents
 
@@ -345,7 +415,9 @@ built with; running it is a second, explicit invocation.
 
 Flags: `--purge` (irreversible), `--older-than-days N` (default 30) and
 `--purge-unreadable`, which also removes records the sweep could not parse —
-they are listed but kept without it.
+they are listed but kept without it. `--purge-unreadable` only works with
+`--purge`; alone it is refused. A purge exits 1 when any delete failed, after
+finishing the rest and naming each store it could not delete.
 
 The sweep is conservative by design. A conductor holding an open item is never a
 candidate at any age, neither is one with no items at all, and each delete is

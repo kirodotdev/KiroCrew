@@ -18,7 +18,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
@@ -50,9 +50,11 @@ from kiro_crew.platform.policy_distribution_source import (
     POLICY_URL_ENV,
     FetchedPolicy,
     FetchRequest,
+    _assert_signed_in_unchanged,
     _body_digest,
     _fetcher_for,
-    _is_enterprise,
+    _is_lts,
+    _source_identity,
     _split_url,
     cache_only,
     host_pinned_source,
@@ -66,6 +68,31 @@ logger = logging.getLogger("kiro_crew.platform.policy_distribution")
 # ──────────────────────────────────────────────────────────────────────────
 # Parse + verify one fetched document
 # ──────────────────────────────────────────────────────────────────────────
+
+
+def _without_legacy_terminal_refusal(data: Dict[str, Any]) -> Dict[str, Any]:
+    """*data* with ``boot.allow_terminal`` dropped when an older translation wrote it.
+
+    The enterprise translation (``enterprise_policy_translate.BOOT``) does not state
+    ``allow_terminal``; translations before ``TRANSLATION_REVISION`` ``t3`` wrote
+    ``false``, which nothing enforced. So a translated document that states it is an
+    older build's cached copy, and reading the key as left out keeps the terminal those
+    hosts have today, offline included. Any other document applies as written.
+    shortcut: detected by content, not by the cache's revision, because the etag does
+    not reach this parse; if the translation ever states the key, make this
+    revision-aware.
+    """
+    from kiro_crew.platform.enterprise_policy_fetch import ISSUER_PREFIX
+
+    identity = data.get("identity")
+    issuer = identity.get("issuer") if isinstance(identity, dict) else None
+    boot = data.get("boot")
+    if not (isinstance(issuer, str) and issuer.startswith(ISSUER_PREFIX)):
+        return data
+    if not (isinstance(boot, dict) and "allow_terminal" in boot):
+        return data
+    trimmed = {key: value for key, value in boot.items() if key != "allow_terminal"}
+    return {**data, "boot": trimmed}
 
 
 def parse_distributed_policy(body: bytes, *, source: str) -> GovernanceCeiling:
@@ -102,7 +129,7 @@ def parse_distributed_policy(body: bytes, *, source: str) -> GovernanceCeiling:
         raise PlatformCompositionError(f"policy fetched from {label} is not a JSON object")
 
     state = _verify_policy_signature(data, source=label)
-    ceiling = parse_policy(data, signature_state=state)
+    ceiling = parse_policy(_without_legacy_terminal_refusal(data), signature_state=state)
     # Mandated provenance is enforced HERE as well as at the shared boot gate, so a
     # refused document never reaches the cache. The opt-in is ``require_policy_signature``
     # in the admission policy — the operator-controlled trust root that is on the
@@ -164,7 +191,7 @@ def load_distributed_policy(
     # last-known-good. Serving it would let a retired endpoint keep governing a
     # host that has been repointed — including a redirect made specifically to
     # replace a compromised source.
-    if cached is not None and cached.source_digest != _source_digest(dist.source):
+    if cached is not None and cached.source_digest != _source_digest(_source_identity(dist.source)):
         logger.info("the cached ceiling came from a different source; ignoring it after a repoint")
         cached = None
 
@@ -193,6 +220,7 @@ def load_distributed_policy(
         and not _cache_is_too_old(dist, cached)
     )
     if fresh_enough and cached is not None:
+        _assert_signed_in_unchanged(dist.source, cached.body)
         try:
             ceiling = parse_distributed_policy(cached.body, source=dist.source)
             # Record it: a ceiling served from the cache is still a ceiling this tier
@@ -255,10 +283,11 @@ def _load_cache_only(dist: PolicyDistribution) -> GovernanceCeiling:
     cached = read_cache()
     if (
         cached is not None
-        and _is_enterprise()
-        and cached.source_digest != _source_digest(dist.source)
+        and _is_lts()
+        # The child's pin is its gateway's: it sees no sign-in of its own.
+        and cached.source_digest != _source_digest(_source_identity(dist.source))
     ):
-        # An enterprise build has exactly one source (RFC D2), so a cache recorded
+        # An LTS build has exactly one source (RFC D2), so a cache recorded
         # against any other address is not the fleet's ceiling, even for a child.
         logger.info("the cached ceiling came from a different source; ignoring it")
         cached = None
@@ -333,14 +362,14 @@ def central_ceiling_installed() -> bool:
 
 
 def _env_pins_the_source() -> bool:
-    """Is the address coming from the host (env, or an enterprise build) rather than a document?
+    """Is the address coming from the host (env, or an LTS build) rather than a document?
 
     When it is, a document's own ``distribution.source`` is already ignored:
     :func:`resolve_distribution` lets the environment win per setting, precisely so
     whatever provisions the host owns the address. So a declaration that differs is not a
     migration this host would follow, and refusing the document over it would break the
     ordinary canary — one host pinned elsewhere by env while the fleet publishes its
-    canonical address. An enterprise build always pins: its source is a build-time
+    canonical address. An LTS build always pins: its source is a build-time
     constant (RFC D2), so no document can move it.
     """
     return bool(host_pinned_source())
@@ -471,6 +500,7 @@ def _load_by_fetch(dist: PolicyDistribution, cached: Optional[CachedPolicy]) -> 
         body, provenance = cached.body, "the re-validated cached copy"
     else:
         body, provenance = fetched.body, dist.source
+    _assert_signed_in_unchanged(dist.source, body)
 
     try:
         ceiling = parse_distributed_policy(body, source=dist.source)
@@ -547,7 +577,7 @@ def _load_by_fetch(dist: PolicyDistribution, cached: Optional[CachedPolicy]) -> 
     elif not fetched.not_modified:
         published = write_cache(
             body,
-            source=dist.source,
+            source=_source_identity(dist.source, body),
             etag=fetched.etag,
             last_modified=fetched.last_modified,
             expect_pair=expect_pair,
@@ -603,11 +633,12 @@ def _load_from_cached_winner(dist: PolicyDistribution, winner: CachedPolicy) -> 
         # winner was published by another process, and that process may have been configured
         # for a different source. Re-gating parse, migration and composition but not
         # provenance would let source B's ceiling govern a host pointed at source A.
-        if winner.source_digest != _source_digest(dist.source):
+        if winner.source_digest != _source_digest(_source_identity(dist.source)):
             raise PlatformCompositionError(
-                "it was cached against a different source, so it is not this host's "
-                "last-known-good"
+                "it was cached against a different source or sign-in, so it is not this "
+                "host's last-known-good"
             )
+        _assert_signed_in_unchanged(dist.source, winner.body)
         ceiling = parse_distributed_policy(winner.body, source=dist.source)
         migrated = _declared_source(winner.body)
         if migrated and migrated != dist.source and not _env_pins_the_source():
@@ -687,6 +718,11 @@ def _from_cache_on_outage(
     """
     if cached is None:
         return None
+    # Asked again here, after the fetch: the sign-in may have changed while it ran.
+    if cached.source_digest != _source_digest(_source_identity(dist.source)):
+        logger.error("the cached ceiling was read for another sign-in, and %s", reason)
+        return None
+    _assert_signed_in_unchanged(dist.source, cached.body)
     age = cached.age_secs()
     if _cache_is_too_old(dist, cached):
         logger.error(
@@ -725,10 +761,10 @@ def _unavailable(dist: PolicyDistribution, reason: str) -> None:
         )
         return None
     mark_governance_incident("failed_closed", "policy_distribution:unavailable")
-    if _is_enterprise():
-        # No local lever to suggest: an enterprise build requires its central policy.
+    if _is_lts():
+        # No local lever to suggest: an LTS build requires its central policy.
         raise PlatformCompositionError(
-            f"this enterprise build requires its central policy, and no ceiling could be "
+            f"this LTS build requires its central policy, and no ceiling could be "
             f"established ({detail}). Refusing to start."
         )
     raise PlatformCompositionError(

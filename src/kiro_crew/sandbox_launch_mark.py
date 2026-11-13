@@ -3,7 +3,7 @@
 ``cli.main`` and ``mcp_entry.slim_server`` drop ``KIROCREW_SANDBOX_ACTIVE`` before they
 do anything else, so a nested ``wrap_argv`` re-wraps instead of trusting an inherited
 marker. The governance tier still has to know, later in the same process, whether it was
-launched inside a sandbox: an enterprise build's sandboxed child takes the ceiling from
+launched inside a sandbox: an LTS build's sandboxed child takes the ceiling from
 the policy cache the gateway wrote, read-only, instead of fetching one
 (``policy_distribution_source.cache_only``). Each entry point calls :func:`note` just
 before it drops the marker.

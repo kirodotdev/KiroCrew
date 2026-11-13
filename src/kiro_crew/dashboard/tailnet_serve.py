@@ -51,8 +51,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from kiro_crew.dashboard.tailnet import (
+    POLICY_OFF_DETAIL,
     _cli_path,
     is_governance_pinned_off,
+    policy_off,
     refused_cli_detail,
 )
 from kiro_crew.sandbox import scrub_env
@@ -92,6 +94,7 @@ SERVE_MOUNT = "/"
 
 ResultCode = Literal[
     "ok",
+    "policy_off",
     "governance_pinned",
     "no_cli",
     "no_permission",
@@ -562,6 +565,20 @@ def _no_cli_result(port: int) -> ServeResult:
     )
 
 
+def policy_refusal(*, audit_tool: str) -> ServeResult | None:
+    """The refusal an LTS build gives a publish its policy does not permit.
+
+    ``None`` when publishing may go on: an ``oss`` build, or an enterprise policy
+    that permits ``capabilities.tailnet_origin``. Decided by ``tailnet.policy_off``,
+    the one policy boolean, with no tailnet list and no daemon read, and written to
+    SEL under *audit_tool*. Every publish path (the dashboard card, mobile,
+    ``kirocrew tailnet up``) reaches it through :func:`publish`.
+    """
+    if not policy_off(audit_tool=audit_tool):
+        return None
+    return ServeResult(False, "policy_off", f"{POLICY_OFF_DETAIL} Nothing was published.")
+
+
 def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     """Publish the dashboard on this machine's tailnet over HTTPS.
 
@@ -575,7 +592,13 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     and the two config write paths. A ceiling pinning ``capabilities.tailnet_origin``
     off means the fleet forbids putting this host's dashboard on a tailnet, so the
     CLI is not spawned at all — refusing after publishing would be theatre.
+
+    In an LTS build publishing is refused before anything else unless the
+    policy turns ``capabilities.tailnet_origin`` on (:func:`policy_refusal`).
     """
+    refused = policy_refusal(audit_tool=audit_tool)
+    if refused is not None:
+        return refused
     if is_governance_pinned_off(audit_tool=audit_tool):
         return ServeResult(
             False,

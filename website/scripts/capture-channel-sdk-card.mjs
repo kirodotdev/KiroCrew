@@ -51,6 +51,7 @@ const WA_MISSING = {
   enabled: true,
   // What the gateway writes on a missing extra; the panel must not show it.
   connect_error: 'The WhatsApp channel needs its optional dependency: pip install neonize==0.4.3.post0',
+  connect_failed: true,
   sdk_installed: false,
 }
 

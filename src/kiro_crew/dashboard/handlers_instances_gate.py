@@ -56,8 +56,16 @@ _PEER_FIELD_MAX_CHARS = 2048
 _CHAIN_MUTATION_LOCK = LoopBoundLock()
 
 
-def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "") -> None:
-    """Emit a SEL audit event for an instances control-plane action."""
+def _audit(
+    operation: str, outcome: str, *, request_id: str = "", error: str = "", caller: str = ""
+) -> None:
+    """Emit a SEL audit event for an instances control-plane action.
+
+    ``caller`` records the originating MCP session key (the internal-secret
+    request's ``X-Session-Key``) for the crew-scoped reads, so an audit reviewer
+    can see WHICH agent session read a remote crew's history — the exact
+    cross-crew disclosure this surface enables. Omitted for browser/owner routes.
+    """
     try:
         sel().log_tool_invocation(
             session_key="dashboard:instances",
@@ -66,6 +74,7 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
             request_id=request_id,
             source="dashboard",
             error=error,
+            metadata={"caller": caller} if caller else None,
         )
     except Exception:  # audit must never break the request path
         logger.debug("SEL audit failed for instances_%s", operation, exc_info=True)
@@ -187,6 +196,41 @@ def _apply_update(reg, instance_id: str, changes: dict) -> object:
     even when every caller hands it to a thread.
     """
     return reg.update(instance_id, **changes)
+
+
+# A tunnel is opened from these fields, so editing one of them makes a live
+# tunnel wrong rather than merely out of date: it keeps forwarding the old
+# port to the old host under the new label. Tear it down as part of the save
+# so the next connect builds from what the user just entered.
+_TRANSPORT_FIELDS = frozenset(
+    {
+        "ssh_host",
+        "remote_port",
+        "connection_method",
+        "ssm_target",
+        "ssm_run_as",
+        "aws_profile",
+        "aws_region",
+        "remote_bin",
+        # The far end of a chained forward. A live tunnel holding the parent's
+        # OLD port forwards to a port nothing listens on any more, which is the
+        # same wrongness as an edited host.
+        "via_remote_port",
+    }
+)
+
+
+def _moves_the_tunnel(reg, instance_id: str, changes: dict) -> bool:
+    """Whether *changes* sets a transport field to a value the record does not hold.
+
+    Blocking, like ``_apply_update``: the manager runs it under its lock, so the
+    record it reads is the one the write lands on. A record already gone answers
+    True, and the write then refuses it as not found.
+    """
+    inst = reg.get(instance_id)
+    return inst is None or any(
+        k in _TRANSPORT_FIELDS and v != getattr(inst, k) for k, v in changes.items()
+    )
 
 
 def _status_for(state: "DashboardState", instance_id: str) -> dict:

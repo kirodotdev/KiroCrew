@@ -17,7 +17,7 @@ name: GUI User Test
 # over the same OIDC trust chain ux-review.yml and design-review.yml use.
 #
 # TRIGGERS: workflow_dispatch (pick tier / scenario / model) and the nightly
-# schedule (full tier; a non-PASS night opens or updates ONE issue labelled
+# schedule (currently PAUSED, see `on:`; full tier; a non-PASS night opens or updates ONE issue labelled
 # gui-test-report). Both run the code of the ref they were started on -- the
 # default branch for the schedule, a maintainer-chosen ref for a dispatch -- so
 # no pull-request-controlled code ever runs with the Bedrock credential.
@@ -58,8 +58,14 @@ on:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
         default: "60"
-  schedule:
-    - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
+  # PAUSED: every scheduled run from 2026-09-18 to 2026-11-04 ended FAIL (31 of
+  # 31 in October) after spending about $35-45 of Bedrock each, so the nightly is
+  # off until the failing scenarios tracked in #22733 are fixed. Dispatch still
+  # runs the lane by hand. To resume, restore these two lines and add
+  # "GUI User Test" back to the self-reporting set pinned in
+  # test/test_scheduled_failure_watch.py.
+  # schedule:
+  #   - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
 
 permissions:
   contents: read
@@ -74,11 +80,17 @@ concurrency:
 jobs:
   gui-user-test:
     name: GUI User Test
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. Named by its runner
+    # LABEL, not by `group:`: the group belongs to the kirodotdev organization,
+    # so a fork running its own copy cannot reach it and would wait forever for
+    # a runner. The `||` leg keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Boot (~4 min: npm ci + build) + every shipped scenario at ~2-4 min each
     # with one retry apiece, plus model-latency tail. The USD budget below is
-    # the real stop; this is the backstop for a hung target.
-    timeout-minutes: 90
+    # the real stop; this is the backstop for a hung target. The last 20 min
+    # are room for the gh wrapper to wait out a spent API rate limit.
+    timeout-minutes: 110
     env:
       GUI_DISPLAY: ":99"
       GUI_SCREEN: "1600x1000x24"
@@ -186,8 +198,12 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/gui-user-test/boot.sh
-          # Only the origin goes to later steps; the one-time token stays in
-          # target.env (0600) for boot.sh's browser launch and is masked.
+          # Only the origin goes to $GITHUB_ENV (later steps). The one-time
+          # token and the session cookie boot.sh exchanges it for stay in
+          # target.env (0600) and are masked: boot.sh's browser launch reads the
+          # token, and the trusted harness step reads the cookie from the file to
+          # reset seeded session titles between scenarios. Neither reaches
+          # $GITHUB_ENV, a command line, or the model-driven browser's page.
           grep '^GUI_BASE_URL=' "$GUI_OUT/target.env" >> "$GITHUB_ENV"
 
       # Credentials are assumed AFTER the target is up: the gateway and the
@@ -216,6 +232,7 @@ jobs:
           python test/gui_user/harness.py \
             --out "$GUI_OUT/results" \
             --base-url "$GUI_BASE_URL" \
+            --dashboard-cookie-file "$GUI_OUT/target.env" \
             --model "$MODEL" \
             --region us-west-2 \
             --tier "$TIER" \
@@ -243,6 +260,15 @@ jobs:
                 [ -f "$f" ] && perl -pi -e "s/\Q$token\E/[REDACTED-TOKEN]/g" "$f"
               done
             fi
+            # The session cookie boot.sh captured is a credential too; its value
+            # is the part after the "mc_token_<port>=" name. Redact it the same
+            # way before the logs are uploaded.
+            cookie="$(sed -n 's/^GUI_DASHBOARD_COOKIE=//p' "$GUI_OUT/target.env" | sed 's/^[^=]*=//')"
+            if [ -n "$cookie" ]; then
+              for f in "$GUI_OUT"/*.log "$GUI_OUT"/*.err; do
+                [ -f "$f" ] && perl -pi -e "s/\Q$cookie\E/[REDACTED-COOKIE]/g" "$f"
+              done
+            fi
           fi
           rm -f "$GUI_OUT/target.env"
 
@@ -266,6 +292,21 @@ jobs:
           [ -f "$summary" ] && summary_args=(--summary "$summary")
           python test/gui_user/report.py --format features --run-url "$RUN_URL" ${summary_args[@]+"${summary_args[@]}"} \
             > "$GUI_OUT/results/features.md"
+
+      # The night's paid run ends in `gh` calls: the ledger lookup and
+      # download, and the report issue. One of them failing on a spent API rate
+      # limit costs the night's friction record and report, so every `gh` call
+      # from here on, the ones friction.py runs included, goes through the
+      # rate-limit-aware wrapper (.github/actions/gh-rate-limit). It is
+      # installed after the target is torn down, so the wrapper file did not
+      # exist while anything the scenarios started was running, and it trusts
+      # the checkout no more than friction.py already does. `always()` so it
+      # covers the same steps that run when the scenarios fail.
+      - name: Install rate-limit-aware gh
+        if: always()
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
 
       # New-user friction: what confused the tester persona, carried across
       # nights. `merge` writes this run's friction.json (ledger-aware rows:

@@ -886,7 +886,11 @@ def test_markup_cannot_split_a_suspicious_url_across_tags():
 
     url = "https://collect.attacker.example/?payload=" + "aB3" * 70 + "&host=corp-laptop"
     cut = url.index("?") + 1
-    markup = "<p><span>" + url[:cut] + "</span><span>" + url[cut:] + "</span></p>"
+    # The raw scan reads past a bare tag's ``>``, so it catches a URL split by one.
+    bare = "<p><span>" + url[:cut] + "</span><span>" + url[cut:] + "</span></p>"
+    assert "aB3" * 10 not in _redact(bare)
+    # A double quote in the second tag still ends the URL for the raw scan.
+    markup = "<p><span>" + url[:cut] + '</span><span class="v">' + url[cut:] + "</span></p>"
     # Neither half is a suspicious URL on its own: the raw scan leaves the markup alone.
     assert _redact(markup) == markup
     assert _hides_secret(markup)

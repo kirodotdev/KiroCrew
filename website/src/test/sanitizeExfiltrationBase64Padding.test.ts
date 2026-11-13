@@ -3,8 +3,8 @@
  *  (test/test_exfil_base64_padding.py pins the Python side).
  *
  *  A `name=<32-char id>` link now renders; padded base64, AWS key ids, heavy
- *  percent encoding, a 40-hex value and a payload in the parameter name are all
- *  still redacted. URLs are built from parts on purpose.
+ *  percent encoding and a payload in the parameter name are all still redacted;
+ *  an exact-length hex run is a git object name and is kept. URLs are built from parts on purpose.
  */
 import { describe, it, expect } from 'vitest'
 import { sanitizeExfiltrationUrls } from '../utils/sanitize'
@@ -53,8 +53,8 @@ describe('sanitizeExfiltrationUrls: `=` is base64 padding, not a joiner', () => 
     expect(isRedacted(url('q=' + '%41'.repeat(25)))).toBe(true)
   })
 
-  it('redacts a 40-hex value', () => {
-    expect(isRedacted(url('sha=' + '0123456789abcdef'.repeat(2) + '01234567'))).toBe(true)
+  it('keeps a 40-hex value: a git object name, not a base64 blob', () => {
+    expect(isRedacted(url('sha=' + '0123456789abcdef'.repeat(2) + '01234567'))).toBe(false)
   })
 
   it('redacts a payload carried in the parameter name', () => {

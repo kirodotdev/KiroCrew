@@ -104,6 +104,44 @@ def test_bucket_policy_never_grants_the_private_prefix():
             assert pd.PRIVATE_PREFIX not in stmt["Resource"]
 
 
+def test_bucket_policy_denies_every_request_not_sent_over_tls():
+    """Any principal, any S3 action, on the bucket and every object, unless the request
+    used TLS. Deny-only, so it cannot widen what the Allow grants."""
+    policy = json.loads(
+        pd.PersonalDriveProvider()._prefix_scoped_bucket_policy(
+            BUCKET, "arn:aws:cloudfront::1:distribution/E1"
+        )
+    )
+    tls = [s for s in policy["Statement"] if s.get("Sid") == "KiroCrewDenyInsecureTransport"]
+    assert tls == [
+        {
+            "Sid": "KiroCrewDenyInsecureTransport",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [f"arn:aws:s3:::{BUCKET}", f"arn:aws:s3:::{BUCKET}/*"],
+            "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+        }
+    ]
+    assert [s["Sid"] for s in policy["Statement"]] == [
+        "AllowCloudFrontServedPrefixOnly",
+        "DenyCloudFrontEverythingElse",
+        "KiroCrewDenyInsecureTransport",
+    ]
+
+
+def test_an_existing_drive_gets_the_tls_deny_on_its_next_publish(monkeypatch, payload):
+    """Drives built before the TLS deny existed pick it up: the reuse path re-installs
+    the whole policy on every publish."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(drive=True)
+    spy.install(monkeypatch)
+    _publish(pd.PersonalDriveProvider(), payload)
+    assert spy.created_buckets == []
+    sids = [s.get("Sid") for s in spy.bucket_policy()["Statement"]]
+    assert "KiroCrewDenyInsecureTransport" in sids
+
+
 # ── sharing changes and removal ──────────────────────────────────────────────
 
 

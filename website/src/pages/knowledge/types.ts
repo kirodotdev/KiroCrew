@@ -23,7 +23,6 @@ export interface Entity {
   name: string
   entity_type: string
   description?: string
-  mention_count?: number
 }
 
 export interface Relation {
@@ -80,11 +79,28 @@ export interface Source {
   last_synced?: string
   item_count?: number
   properties?: string | Record<string, unknown>
+  /** bedrock_kb rows only: whether a search would query this row now. False
+   *  when its registration was made under an account the current grant no
+   *  longer confirms; absent on every other type. */
+  searchable?: boolean
+  /** bedrock_kb rows only, when `searchable` is false: `other_account` when the
+   *  gateway's own registration of this row names another AWS account than
+   *  the current grant (remove and add again fixes it); `unknown` otherwise. */
+  searchable_reason?: 'other_account' | 'unknown'
+  /** bedrock_kb rows only, while `searchable`: the outcome of the last search
+   *  that reached this row since the gateway started. `refused` means the
+   *  consent check turned it away before any request (an account it could
+   *  not confirm, as with expired credentials); `error` means a request or
+   *  the client setup failed. */
+  last_search?: { outcome: 'ok' | 'refused' | 'error'; at: string }
   summary_topic?: string
   summary_themes?: string
   spend?: SourceSpend
   /** False when the gateway refuses Sync (409 source_not_syncable), e.g. the Auto-added source. */
   syncable?: boolean
+  /** True while a folder scan of this source runs. sync_status reads 'synced'
+   *  once the scan's first file lands, so this is what says the counts still move. */
+  scanning?: boolean
 }
 
 export interface SourceFileInfo {
@@ -115,5 +131,7 @@ export interface NamespaceInfo {
 
 export interface IngestionJob {
   name: string
-  status: string
+  status: 'uploading' | 'done' | 'error'
+  /** The failure message, when the upload failed with one. */
+  error?: string
 }

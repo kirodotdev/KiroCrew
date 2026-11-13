@@ -27,21 +27,27 @@ name: Merge Queue Readiness
 # readiness status had not been published yet. A workflow that never fires on
 # pull_request creates no check run on a pull request head at all.
 #
-# Hosted runner, deliberately. This job polls; it runs no tests, so it does not
+# No fleet route, deliberately. This job polls; it runs no tests, so it does not
 # need the fleet's size, and the fleet's webhook admits jobs by actor and
-# workflow shape this file has no measured history with. The poll budget below
-# starts when the job starts, so hosted runner queue time does not eat into it.
+# workflow shape this file has no measured history with. In this repository it
+# takes the `kirocrew-runners` group's label; in a fork it stays on a hosted
+# runner (the `readiness` job below says why). The poll budget below starts
+# when the job starts, so runner queue time does not eat into it.
 # The budget is the polled lanes' own ceiling, not their typical time: a CI run
 # is ~25-30 minutes on the fleet, but ci.yml's longest `needs` chain of job
-# caps is 190 minutes (changes and await-fast-gate in parallel 15 ->
-# backend-lint 25 -> lint-gate 5 -> backend-test 2 x 60, because max-parallel
-# runs its 8 shards in two rounds of 4 -> coverage-combine 15 -> coverage-gate
-# 10), so a shorter budget would dequeue a pull request whose lanes were about
-# to go green. The 200-minute budget is that chain plus slack for the shards'
-# own pickup.
+# caps is 210 minutes (changes and await-fast-gate in parallel 15 ->
+# backend-lint 25 -> lint-gate 5 -> backend-test 2 x 70, because max-parallel
+# runs its 8 shards in two rounds of 4 and an off-CodeBuild run holds the
+# longer 70-minute shard cap -> coverage-combine 15 -> coverage-gate 10), so a
+# shorter budget would dequeue a pull request whose lanes were about to go
+# green. The 220-minute budget is that chain plus slack for the shards' own
+# pickup.
 # test_ci_fleet_routing_expression_parity.py holds the budget above that sum. Keep the ruleset's
-# merge-queue "status check timeout" at 240 minutes or more: this budget plus a
-# slow hosted pickup.
+# merge-queue "status check timeout" at 240 minutes or more: this budget plus
+# the job's pickup. In this repository that pickup waits on the group's
+# capped definition, so it draws on the same 20-minute margin between the
+# 220-minute budget and the 240-minute timeout, and how much of that margin it
+# uses is unmeasured.
 #
 # Only a verdict fails the group, and the first verdict is final: a run that
 # concluded without success fails the group on the tick that reads it, with no
@@ -76,17 +82,62 @@ jobs:
     # The job name IS the check name the ruleset requires. Renaming it silently
     # stops satisfying branch protection for every queued pull request.
     name: PR Readiness
-    runs-on: ubuntu-latest
+    # In THIS repository this poll takes the `kirocrew-runners` group's own
+    # runner instead of the shared standard pool, whose concurrency is shared
+    # enterprise-wide. Targeted by LABEL rather than `group:`: a group belongs
+    # to the kirodotdev organization, and a fork that enables its own merge
+    # queue runs this same workflow, where a `group:` it cannot reach would
+    # queue until the 24-hour auto-cancel. A larger runner changes nothing
+    # about this job's posture -- still a GitHub-hosted ephemeral VM, still
+    # `actions: read`, `checks: read` and `contents: read` and nothing else.
+    #
+    # READ THIS BEFORE TREATING IT AS A LIKE-FOR-LIKE SWAP. This job is not a
+    # test lane. It sleeps and lists runs once a tick, so a faster runner
+    # finishes it no sooner, and its 220-minute poll budget starts when the
+    # job starts, so queue time never counted against it. What the group buys
+    # is its slot-hours off the shared standard pool. What it COSTS is a slot
+    # held for the whole poll -- a 36-minute median at the time of the move --
+    # on a capped definition that the jobs it polls also need. The queue
+    # builds up to 40 groups at once (`max_entries_to_build`), so up to 40
+    # sleeping polls can hold a fifth of the 200-slot cap while their own
+    # polled lanes queue for what is left. Because `name:` above is the check
+    # the ruleset requires, every minute either side spends waiting for a slot
+    # is a merge group waiting with it.
+    #
+    # That contention fails CLOSED rather than deadlocking. Three bounds end
+    # the wait: the poll's 220-minute budget and the 225-minute job cap once
+    # the job runs, and the ruleset's 240-minute status-check timeout while it
+    # is still queued. Each ends it by failing or ejecting the group. The one
+    # an operator sees first is poll-budget exhaustion naming a slow lane, and
+    # both outcomes read like flaky ejections rather than a capacity problem.
+    #
+    # What makes it a trade rather than a defect: five of the six polled
+    # workflows already reach this group. `client-py.yml` carries the label
+    # unconditionally in this repository, and `ci.yml`, `fast-gate.yml`,
+    # `build.yml` and `internal-content-scan.yml` (through
+    # `internal-content-scan-gate.yml`'s reusable call) reach it on their
+    # actor-miss leg; only `main-ratchet-audit.yml` stays hosted. Several `ci.yml` jobs
+    # reach it with no fleet branch at all, so every merge group already waits
+    # on this cap, and this adds one more waiter rather than creating the
+    # exposure.
+    #
+    # ROLLBACK IS FIRST, NOT LAST. If merge groups start timing out, or the
+    # definition is at `maximum_runners`, restore `runs-on: ubuntu-latest` on
+    # this line before diagnosing anything else -- ahead of every other
+    # group-targeted site, because this one gates the queue itself.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Above the poll's TOTAL_BUDGET below, so the step's own error names the
     # slow lane rather than the job cap cutting it off.
-    timeout-minutes: 205
+    timeout-minutes: 225
     permissions:
       # actions:read is what lets this read the other workflows' runs on the
       # merge group's commit. It is READ on purpose: this poll never reruns a
       # run, so it holds no write scope on Actions and grants nothing on the
-      # repository's contents. Job-level permissions REPLACE the top-level
-      # grant, so contents:read is restated.
+      # repository's contents. checks:read reads the commit's check-runs when
+      # the runs listing answers none. Job-level permissions REPLACE the
+      # top-level grant, so contents:read is restated.
       actions: read
+      checks: read
       contents: read
     steps:
       - name: Wait for every test workflow on this merge group
@@ -110,21 +161,25 @@ jobs:
           # may not be visible for the first seconds. APPEAR_BUDGET covers that
           # race; after it, a run the API lists as absent is a real
           # misconfiguration and fails.
-          # TOTAL_BUDGET is 200 minutes: ci.yml's 190-minute longest chain of
+          # TOTAL_BUDGET is 220 minutes: ci.yml's 210-minute longest chain of
           # job caps (changes | await-fast-gate 15 -> backend-lint 25 ->
-          # lint-gate 5 -> backend-test 2 rounds x 60 under max-parallel ->
-          # coverage-combine 15 -> coverage-gate 10) plus slack for the
-          # shards' own pickup. The ruleset's merge-queue
+          # lint-gate 5 -> backend-test 2 rounds x 70 under max-parallel, the
+          # off-CodeBuild shard cap -> coverage-combine 15 -> coverage-gate 10)
+          # plus slack for the shards' own pickup. The ruleset's merge-queue
           # status-check timeout has to stay at 240 minutes or more so that
-          # this budget plus a slow hosted pickup fits inside it.
+          # this budget plus the job's own pickup fits inside it.
           APPEAR_BUDGET=300
-          TOTAL_BUDGET=12000
+          TOTAL_BUDGET=13200
           # One runs listing per tick serves all six workflows, and the tick is
           # 60 s while a run may still be appearing, 180 s once all are seen
           # (CI takes ~25 minutes, so the slow tick costs at most ~3 minutes).
           # The repository's installation token is shared by every workflow:
           # at 40 queued groups that is 40 x 1 call / 180 s ~ 800 calls an
           # hour, where one listing per workflow every 120 s would be ~4,800+.
+          # A tick whose listing comes back empty also reads the commit's
+          # check-runs and each run they name (runs_from_check_runs, ~8 calls):
+          # before a group's runs are listed and while the listing glitch
+          # lasts, never on a tick that lists runs.
           APPEAR_TICK=60
           SEEN_TICK=180
           started="$(date +%s)"
@@ -142,12 +197,42 @@ jobs:
           read_listing() {
             if listing="$(gh api --method GET "repos/$REPO/actions/runs" \
                   -f "head_sha=$SHA" -f "event=merge_group" -f per_page=100 2>"$errfile")"; then
-              listing_error=""
-              return 0
+              if [ "$(printf '%s' "$listing" | jq '[.workflow_runs[]?] | length' 2>/dev/null)" != "0" ] \
+                 || listing="$(runs_from_check_runs)"; then
+                listing_error=""
+                return 0
+              fi
             fi
             listing=""
             listing_error="$(api_error)"
             return 1
+          }
+
+          # The head_sha listing is a filtered search that can answer no runs
+          # for a commit whose runs exist, so read_listing reads an empty
+          # answer through the commit's check-runs (every row, filter=all): an
+          # Actions job's check-run names its run as `details_url` =
+          # .../<repo>/actions/runs/<run id>/job/<job id>. Prints the
+          # merge_group runs those name for $SHA in the listing's shape. A
+          # named run that cannot be read fails the read, so the tick counts
+          # the workflows errored, never missing.
+          runs_from_check_runs() {
+            local ids id run found=""
+            ids="$(gh api --method GET --paginate \
+              "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" 2>"$errfile" \
+              | jq -rs --arg repo "$REPO" '
+                [.[].check_runs[] | (.details_url // "")
+                 | select(contains("/" + $repo + "/actions/runs/"))
+                 | split("/actions/runs/")[1] | split("/")[0]
+                 | select(test("^[0-9]+$"))]
+                | unique | .[]' 2>>"$errfile")" || return 1
+            for id in $ids; do
+              run="$(gh api "repos/$REPO/actions/runs/$id" 2>"$errfile")" || return 1
+              found="$found$run"$'\n'
+            done
+            jq -cs --arg sha "$SHA" \
+              '{workflow_runs: [.[] | select(.event == "merge_group" and .head_sha == $sha)]}' \
+              <<<"$found" 2>"$errfile"
           }
 
           # Prints one JSON line: workflow $1's latest run for this commit on

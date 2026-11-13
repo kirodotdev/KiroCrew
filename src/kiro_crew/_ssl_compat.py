@@ -18,8 +18,11 @@ from pathlib import Path
 
 try:  # macOS-only dependency (setup.cfg marker); absent on other platforms.
     import truststore
-except ImportError:
+
+    _TRUSTSTORE_IMPORT_ERROR: str | None = None
+except ImportError as _exc:
     truststore = None  # type: ignore[assignment]
+    _TRUSTSTORE_IMPORT_ERROR = str(_exc) or type(_exc).__name__
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,21 @@ _CA_BUNDLE_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
 # warning names the way out.
 _EXPORTED_ENV_PREFIX = "KIROCREW_EXPORTED_"
 _TRUSTSTORE_INJECTED = False
+# Why the macOS system trust store is NOT in use for this process, once an
+# attempt to enable it failed. ``None`` while it is in use or was never tried.
+# Read by system_trust_note() so a failed download and ``kirocrew doctor`` can
+# say which CA set was actually trusted.
+_TRUSTSTORE_FAILURE: str | None = None
+# Whether the latest system_trust_context() call built a truststore context:
+# ``None`` before any call. A caller that built its own context trusts the
+# system store even when the startup patch failed, and the reverse.
+_TRUSTSTORE_CONTEXT_BUILT: bool | None = None
+
+# The states macos_trust_state() reports.
+TRUST_SYSTEM = "system"
+TRUST_OPERATOR_BUNDLE = "operator-bundle"
+TRUST_FALLBACK = "fallback"
+TRUST_NOT_MACOS = "not-macos"
 
 
 def _inject_macos_system_trust() -> bool:
@@ -56,18 +74,20 @@ def _inject_macos_system_trust() -> bool:
     OpenSSL trust anchor.  Return ``False`` on failure so startup can retain the
     prior file-based behavior rather than losing all HTTPS capability.
     """
-    global _TRUSTSTORE_INJECTED
+    global _TRUSTSTORE_INJECTED, _TRUSTSTORE_FAILURE
 
     if _TRUSTSTORE_INJECTED:
         return True
 
     if truststore is None:
+        _TRUSTSTORE_FAILURE = f"truststore could not be imported ({_TRUSTSTORE_IMPORT_ERROR})"
         logger.warning("truststore is not installed; falling back to file-based CA discovery")
         return False
 
     try:
         truststore.inject_into_ssl()
     except Exception as exc:
+        _TRUSTSTORE_FAILURE = f"enabling it raised {type(exc).__name__}: {exc}"
         # A log line rather than warnings.warn: under a strict warnings filter
         # a warning becomes an exception inside the startup prelude, turning
         # the fallback this function promises into a startup crash.
@@ -79,7 +99,97 @@ def _inject_macos_system_trust() -> bool:
         return False
 
     _TRUSTSTORE_INJECTED = True
+    _TRUSTSTORE_FAILURE = None
     return True
+
+
+def _operator_ca_bundle() -> str | None:
+    """The operator's own ``SSL_CERT_FILE``, or ``None`` when unset or this runtime's export.
+
+    A value carrying its provenance marker is the bundle :func:`_export_ca_bundle`
+    chose for child processes, not a choice the operator made.
+    """
+    value = os.environ.get("SSL_CERT_FILE")
+    if not value or _inherited_export_reason("SSL_CERT_FILE", value) is not None:
+        return None
+    return value
+
+
+def macos_trust_state() -> tuple[str, str]:
+    """Which CA set this process's HTTPS clients trust, as ``(state, detail)``.
+
+    *state* is one of :data:`TRUST_SYSTEM` (macOS system trust store),
+    :data:`TRUST_OPERATOR_BUNDLE` (the operator's ``SSL_CERT_FILE``, by their
+    choice), :data:`TRUST_FALLBACK` (macOS, but the system trust store could not
+    be enabled, so only file-based CAs are trusted) or :data:`TRUST_NOT_MACOS`.
+    *detail* names the bundle or the reason. Reads state only; enables nothing.
+    """
+    if sys.platform != "darwin":
+        return TRUST_NOT_MACOS, ""
+    bundle = _operator_ca_bundle()
+    if bundle is not None:
+        return TRUST_OPERATOR_BUNDLE, bundle
+    if _TRUSTSTORE_CONTEXT_BUILT is False:
+        return TRUST_FALLBACK, _TRUSTSTORE_FAILURE or "building a system trust context failed"
+    if _TRUSTSTORE_INJECTED or _TRUSTSTORE_CONTEXT_BUILT:
+        return TRUST_SYSTEM, ""
+    reason = _TRUSTSTORE_FAILURE or "it was not enabled at startup"
+    return TRUST_FALLBACK, reason
+
+
+def system_trust_note() -> str | None:
+    """One sentence for a certificate-verification error, or ``None`` when nothing is off.
+
+    Set only when this process runs on macOS without the system trust store, so a
+    CA installed in the Keychain (a corporate or MDM root) is not trusted.
+    """
+    state, detail = macos_trust_state()
+    if state != TRUST_FALLBACK:
+        return None
+    return (
+        "the macOS system trust store is not in use "
+        f"({detail}), so CAs installed in the Keychain are not trusted; "
+        "run `kirocrew doctor` for details"
+    )
+
+
+def system_trust_context() -> ssl.SSLContext:
+    """A verifying client context whose CAs come from the platform trust store.
+
+    On macOS this is a ``truststore`` context built directly, so a caller does
+    not depend on :func:`_inject_macos_system_trust` having patched ``ssl`` --
+    unless the operator set ``SSL_CERT_FILE``: then it is the same
+    ``ssl.create_default_context()`` every other HTTPS client in the process
+    gets, because startup skips the system trust store for that variable too.
+    Everywhere else, and when ``truststore`` is missing or cannot build a
+    context, it is ``ssl.create_default_context()``. Every branch requires a
+    valid certificate chain and a matching hostname. The outcome is recorded so
+    :func:`system_trust_note` describes the context the caller actually got.
+    """
+    global _TRUSTSTORE_FAILURE, _TRUSTSTORE_CONTEXT_BUILT
+
+    if sys.platform == "darwin" and _operator_ca_bundle() is None:
+        if truststore is None:
+            _TRUSTSTORE_CONTEXT_BUILT = False
+            if _TRUSTSTORE_FAILURE is None:
+                _TRUSTSTORE_FAILURE = (
+                    f"truststore could not be imported ({_TRUSTSTORE_IMPORT_ERROR})"
+                )
+            return ssl.create_default_context()
+        try:
+            ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        except Exception as exc:  # noqa: BLE001 - the file-based context below still verifies
+            _TRUSTSTORE_CONTEXT_BUILT = False
+            _TRUSTSTORE_FAILURE = f"building a context raised {type(exc).__name__}: {exc}"
+            logger.warning(
+                "Could not build a macOS system trust context; using file-based CAs: %s", exc
+            )
+        else:
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.check_hostname = True
+            _TRUSTSTORE_CONTEXT_BUILT = True
+            return ctx
+    return ssl.create_default_context()
 
 
 def _ssl_context_has_ca_trust(context: ssl.SSLContext) -> bool:

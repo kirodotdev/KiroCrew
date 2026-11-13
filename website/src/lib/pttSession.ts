@@ -34,6 +34,10 @@ import { MAX_HOLD_MS } from './pushToTalk'
  *
  * - `'finish'`: they deliberately said they are done (released the hold, or
  *   pressed again to stop). With `stt.submit_on_release` on, this sends.
+ * - `'send'`: they deliberately chose to send this one utterance, whatever
+ *   `stt.submit_on_release` says (the hold bar's up-right zone, offered when
+ *   a plain release would only transcribe). The send takes the composer's
+ *   default busy decision, so it steers a running turn where Send would.
  * - omitted: every other stop. That covers a deliberate keep-as-draft (Shift,
  *   the hold bar's sideways zone) and anything they did not choose (the safety
  *   cap, focus loss, the page hiding, an orphaned startup). Never sends.
@@ -41,7 +45,7 @@ import { MAX_HOLD_MS } from './pushToTalk'
  * Omitted is the default on purpose, so a stop path nobody updated stays on
  * the side that cannot send.
  */
-export type StopIntent = 'finish'
+export type StopIntent = 'finish' | 'send'
 
 export interface VoiceControls {
   recording: boolean

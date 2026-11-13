@@ -1,26 +1,13 @@
 """Every /api/chat/slots/{slot}/* route takes one app-ownership decision.
 
-An app's ``permissions.api`` grant is a prefix match, so an app granted
-``/api/chat`` reaches every per-slot path. ``slot_ownership_middleware`` decides
-ownership once for the whole family rather than per handler. The pins
-below are structural (every registered route is decided, every exception is
-named and reasoned, the middleware sits in both server chains) and behavioural
-(the live table, swept route by route, refuses a non-owner app before the
-handler runs), followed by tests on the real handlers and on the requests that
-can create the slot they name.
+``permissions.api`` is a prefix match, so ``slot_ownership_middleware`` decides
+ownership once for the whole family, before the handler runs.
 
-The route table is built inside fixtures, never at import: building it runs
-``register_all``, which composes the platform context and writes under the data
-home, and at collection time that happens before any per-test isolation.
+The route table is built inside fixtures, never at import: ``register_all`` writes
+under the data home before per-test isolation exists at collection time.
 
-Its last section pins the binders that never adopt an app-owned slot. The owner app's own
-task-review session, linked slot and conflicts, resume's answers for a missing or
-under-construction name, the mode route's grant re-read and the handlers mounted outside
-the chain live in ``test_slot_ownership_checkpoint_owner_session.py``. Acquisition after
-the setup of a send or create, the ownership rechecks after the awaits of title
-generation, the session summary, regenerate, switch-variant and rewind, and the placement
-of the final acquisition recheck live in ``test_slot_ownership_checkpoint_post_await.py``.
-The fixtures and helpers more than one of these files reads live in
+Related: ``test_slot_ownership_checkpoint_owner_session.py``,
+``test_slot_ownership_checkpoint_post_await.py`` and
 ``slot_ownership_checkpoint_helpers.py``.
 """
 
@@ -40,11 +27,13 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are requested by name
     _GRANT,
+    _MANIFEST,
     _NOT_FOUND,
     APP,
     _client,
     _persist,
     _persist_and_close,
+    _scoped,
     _with_reply,
     chat_run_fixture,
     regen_run_fixture,
@@ -52,6 +41,7 @@ from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are re
     state_fixture,
 )
 
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import slot_ownership
 from kiro_crew.dashboard.slot_ownership import (
     SLOT_ROUTE_POLICIES,
@@ -312,6 +302,75 @@ class TestTheLiveTableRefusesANonOwnerApp:
             async with _sweep_client(state, routes, reached) as client:
                 result = await _call(client, "POST", "/api/chat/slots/c1/approve", APP)
         assert (result, reached) == ((404, _NOT_FOUND), [])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", [False, True])
+    async def test_the_grant_reaches_a_member_thread_only_with_the_scope(
+        self, state, sel_spy, scope: bool
+    ) -> None:
+        """A member's pinned DM thread is a user session the grant alone stops at."""
+        from kiro_crew.members import DM_SLOT_MODE
+
+        state.get_or_create_slot(
+            "member-mate", agent="mate", mode=DM_SLOT_MODE, origin=SlotOrigin.USER
+        )
+        reached: list[str] = []
+        routes = [("POST", "/api/chat/slots/{slot}/approve")]
+        with patch(_GRANT, return_value=True), patch(_MANIFEST, return_value=_scoped(scope)):
+            async with _sweep_client(state, routes, reached) as client:
+                result = await _call(client, "POST", "/api/chat/slots/member-mate/approve", APP)
+        if scope:
+            assert (result, reached) == (
+                (200, {"ok": True}),
+                ["POST /api/chat/slots/member-mate/approve"],
+            )
+        else:
+            assert (result, reached) == ((404, _NOT_FOUND), [])
+            assert [d["error"] for d in sel_spy.denials()] == [
+                slot_ownership.SESSION_CONTROL_DENIED
+            ]
+
+    @pytest.mark.asyncio
+    async def test_the_scope_alone_reaches_nothing(self, state, sel_spy) -> None:
+        from kiro_crew.members import DM_SLOT_MODE
+
+        state.get_or_create_slot(
+            "member-mate", agent="mate", mode=DM_SLOT_MODE, origin=SlotOrigin.USER
+        )
+        _seed_family(state)
+        reached: list[str] = []
+        routes = [("POST", "/api/chat/slots/{slot}/approve")]
+        with patch(_GRANT, return_value=False), patch(_MANIFEST, return_value=_scoped(True)):
+            async with _sweep_client(state, routes, reached) as client:
+                for name in ("member-mate", "u1"):
+                    assert await _call(client, "POST", f"/api/chat/slots/{name}/approve", APP) == (
+                        404,
+                        _NOT_FOUND,
+                    )
+        assert reached == []
+
+    @pytest.mark.asyncio
+    async def test_the_manifest_is_read_once_with_the_grant_whatever_the_slot_is(
+        self, state, sel_spy
+    ) -> None:
+        """One manifest read per request serves the grant and its member-thread
+        scope: the cost of a refusal never depends on whether the name addressed a
+        member thread, and the scope can never come from a later read than the
+        grant's."""
+        from kiro_crew.members import DM_SLOT_MODE
+
+        state.get_or_create_slot("u1", origin=SlotOrigin.USER)
+        state.get_or_create_slot(
+            "member-mate", agent="mate", mode=DM_SLOT_MODE, origin=SlotOrigin.USER
+        )
+        manifest = MagicMock(return_value=_scoped(False))
+        routes = [("POST", "/api/chat/slots/{slot}/approve")]
+        with patch(_GRANT, return_value=True), patch(_MANIFEST, manifest):
+            async with _sweep_client(state, routes, []) as client:
+                for name in ("absent", "u1", "member-mate"):
+                    manifest.reset_mock()
+                    await _call(client, "POST", f"/api/chat/slots/{name}/approve", APP)
+                    assert (name, manifest.call_count) == (name, 1)
 
     @pytest.mark.asyncio
     async def test_the_grant_is_read_once_whatever_the_slot_is(self, state, sel_spy) -> None:
@@ -592,6 +651,8 @@ class TestRegenerateAndSwitchVariant:
         self, state, regen_run, monkeypatch
     ) -> None:
         """The checkpoint judged the app's slot; the handler must not act on its successor."""
+        # The gate asks only when the applied harness signs in via kiro-cli.
+        state.sessions._cfg = KiroCrewConfig.load()
         state.get_or_create_slot("s1", app=APP)
         replacement = _ChatSlot("s1")
         replacement._origin = SlotOrigin.USER
@@ -739,7 +800,7 @@ class TestTranscriptOwnershipWithoutALiveSlot:
     async def test_an_app_cannot_publish_its_own_transcript_under_a_users_session(
         self, state
     ) -> None:
-        """The slot a resume builds writes ``dashboard:<name>``, so that key must be the app's too."""
+        """A resume's slot writes ``dashboard:<name>``, so that key must be the app's too."""
         await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
         victim = state.get_or_create_slot("victim", origin=SlotOrigin.USER)
         await _persist_and_close(state, victim)
@@ -878,13 +939,8 @@ class TestTranscriptOwnershipWithoutALiveSlot:
     ) -> None:
         """A transcript replaced under another app inside the reopen window never publishes.
 
-        A closed session's resume clears ``closed`` after construction, in an
-        awaited worker call. The fixture's line carries no ``created_at`` (the
-        legacy shape), so the identity arm cannot see a delete and same-key
-        recreate there; ownership is what tells the two transcripts apart. The
-        clear is parked, the session is deleted and recreated as another app's,
-        and the resume must refuse with the app's uniform 404, publish nothing,
-        and leave the other app's transcript as that app wrote it.
+        The line has no ``created_at`` (legacy shape), so only ownership tells the two
+        transcripts apart. The resume must refuse 404 and leave the other app's file.
         """
         log = state.conversation_log
         key = "dashboard:a1"
@@ -956,6 +1012,57 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert "b1" not in state._slots_under_construction
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "published_incarnation", ["pinned", "replacement"], ids=["pinned", "replacement"]
+    )
+    async def test_a_pinned_resume_dedups_onto_a_concurrent_publish_only_of_the_pinned_transcript(
+        self, state, monkeypatch, published_incarnation
+    ) -> None:
+        from kiro_crew.dashboard import chat_handlers
+
+        log = state.conversation_log
+        source_key = "dashboard:a1"
+        await asyncio.to_thread(
+            log.update_metadata, source_key, {"app": APP, "closed": True, "closed_at": 1.0}
+        )
+        pinned_created_at = (await asyncio.to_thread(log.get_metadata, source_key))["created_at"]
+        published_created_at = (
+            pinned_created_at if published_incarnation == "pinned" else "1999-01-01T00:00:00+00:00"
+        )
+        loop = asyncio.get_running_loop()
+        hop = LoopHop(loop)
+        read_owner = chat_handlers.transcript_acquisition_reason
+        published = []
+
+        async def publish_same_transcript():
+            slot = state.get_or_create_slot("a1", app=APP)
+            slot._disk_meta_created_at = published_created_at
+            published.append(slot)
+
+        def inspect_destination(log_arg, key, app):
+            reason = read_owner(log_arg, key, app)
+            if key == "dashboard:b1" and "b1" in state._slots_under_construction:
+                hop.run(publish_same_transcript(), "the concurrent publish of a1")
+            return reason
+
+        monkeypatch.setattr(chat_handlers, "transcript_acquisition_reason", inspect_destination)
+        async with _client(state, APP) as client:
+            resp = await client.post(
+                "/api/chat/slots/b1/resume",
+                json={"key": source_key, "expected_created_at": pinned_created_at},
+            )
+            hop.check()
+            body = await resp.json()
+        assert published, "the publish during the destination read did not occur"
+        if published_incarnation == "pinned":
+            assert (resp.status, body.get("key")) == (200, "a1"), body
+        else:
+            assert (resp.status, body.get("code")) == (409, "resume_identity_mismatch"), body
+        assert state._slots["a1"] is published[0]
+        assert "b1" not in state._slots
+        assert "b1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
     async def test_an_app_resumes_its_own_closed_session(self, state) -> None:
         await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
         async with _client(state, APP) as client:
@@ -981,12 +1088,8 @@ class TestTranscriptOwnershipWithoutALiveSlot:
     ) -> None:
         """The identity re-reads survive a transient file lock on the resume's own line.
 
-        A just-rewritten session file is briefly unopenable while an indexer or AV
-        scanner holds it on Windows (ERROR_SHARING_VIOLATION). The off-loop read's
-        bounded retries ride over a lock that clears within the budget, so the
-        resume publishes; a lock that outlasts every attempt refuses and publishes
-        nothing. Count-based rather than clock-based so it is deterministic on a
-        loaded runner.
+        Models Windows ERROR_SHARING_VIOLATION: a lock within the retry budget
+        publishes, one past it refuses. Count-based, so deterministic when loaded.
         """
         import builtins
         import threading
@@ -1047,14 +1150,8 @@ class TestTranscriptOwnershipWithoutALiveSlot:
     ) -> None:
         """A reopen re-read waits out a lock longer than one read's own retry budget.
 
-        The post-reopen re-reads open a file this resume just rewrote. On a loaded
-        Windows runner the transient hold can outlast ``get_metadata_status``'s own
-        bounded retry, which then reports unreadable and would refuse. The handler
-        re-reads a few more times off the loop, so a hold that clears within that
-        wider window lets the read succeed and the resume publishes. The fault
-        budget here exceeds one read's attempts but not the handler's, so a read
-        with no extra retries would refuse and the extra retries are what carry it.
-        Not run on a real Windows host.
+        The fault budget exceeds ``get_metadata_status``'s own retries but not the
+        handler's extra re-reads, so only those carry it. Not run on real Windows.
         """
         import builtins
 
@@ -1098,12 +1195,8 @@ class TestTranscriptOwnershipWithoutALiveSlot:
     ) -> None:
         """A delete that begins and ends during the off-loop final read is caught.
 
-        The final identity re-read is off the loop, so a whole process-local
-        delete can run and release inside it: its in-flight marker clears before
-        ``_identity_refusal`` reads it. The invalidation generation outlives the
-        marker — every delete bumps it — so the synchronous generation re-check
-        before the publish refuses, and no slot is published over the deleted
-        session.
+        The delete's in-flight marker clears before ``_identity_refusal`` reads it, but
+        the invalidation generation it bumped makes the pre-publish re-check refuse.
         """
         await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
         log = state.conversation_log

@@ -60,7 +60,7 @@ class _ConfigLock:
 
     def __enter__(self) -> "_ConfigLock":
         lock_file = app_data_dir(APP_NAME) / _CONFIG_LOCK_FILENAME
-        self._fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+        self._fd = platform_compat.open_create_or_existing(str(lock_file), os.O_RDWR, 0o600)
         platform_compat.acquire_lock(self._fd, exclusive=True)
         return self
 
@@ -75,6 +75,21 @@ class _ConfigLock:
 
 def _config_path() -> Path:
     return app_data_dir(APP_NAME) / CONFIG_FILENAME
+
+
+def config_unreadable() -> bool:
+    """True when the app config exists but cannot be read as an object.
+
+    ``read_config`` answers ``{}`` for that, the same as for a fresh install, so a
+    caller that must tell "nothing configured" from "cannot tell" asks here.
+    """
+    try:
+        data = json.loads(_config_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return True
+    return not isinstance(data, dict)
 
 
 def read_config() -> dict[str, Any]:

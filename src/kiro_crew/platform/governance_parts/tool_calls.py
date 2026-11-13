@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, Optional, Tuple
 
-from kiro_crew.platform.governance_parts.matching import _url_host
+from kiro_crew.platform.governance_parts.matching import _UnmatchableCommand, _url_host
 from kiro_crew.platform.guest_paths import (
     GuestPath,
     guest_also_local,
@@ -165,11 +165,13 @@ def classify_tool_title(tool_name: str) -> Tuple[Tuple[str, str], ...]:
 
     * ``mcp__…`` → ``("mcp", "@server/tool")`` — the headline case.
     * ``Running: <cmd>`` → ``("commands", "<cmd>")``.
-    * ``Reading <path>`` → ``("filesystem.read", "<path>")`` — kiro-cli's
-      file-read tool title carries the path after the prefix, so the path
-      ScopedRuleset (deny-oriented read block) applies at the name gate.  An
-      ungoverned ``filesystem.read`` scope permits (the standalone default), so
-      this is a no-op unless a policy/profile governs read paths.
+    * ``Reading <rest>`` → ``("filesystem.read", "<rest>")`` — kiro-cli's
+      file-read title names the target after the prefix (a path, a file name
+      with a line range, or a label such as ``listing workspace``), and the path
+      ScopedRuleset applies to it at the name gate.  An ungoverned
+      ``filesystem.read`` scope permits (the standalone default), so this is a
+      no-op unless a policy/profile governs read paths.  ``gate_decision`` drops
+      this pair when the call's arguments name the read path.
     * unprefixed → BOTH ``("commands", <title>)`` and ``("tools", <title>)`` —
       whichever scope the operator actually governs applies; the other is a
       no-op (an ungoverned scope permits).
@@ -242,6 +244,16 @@ _GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
 #: allow-prefix whenever the gateway runs there.
 _NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
 
+#: Same never-permittable construction, for a shell call's recovered command that
+#: :func:`~kiro_crew.platform.allowed_commands.chain_commands` cannot split into
+#: plain commands (a quote in a chain, a redirect, a substitution, a newline, too
+#: long). ``gate_decision`` asks it beside the whole command, so an allow-mode
+#: ``commands`` set refuses a command it cannot check part by part, while a
+#: deny-mode or ungoverned scope permits it.
+_UNSPLITTABLE_COMMAND_ITEM = _UnmatchableCommand(
+    "\x00<governance:shell-command-unsplittable-unverifiable>"
+)
+
 
 def _governed_targets(
     paths: Iterable[str], root: Optional[str], also_local: bool = False
@@ -312,7 +324,8 @@ def classify_tool_args(
       ``_UNANCHORED_TARGET_ITEM`` (see below) instead of a path.
     * ``kind == "read"`` with a path argument →
       ``("filesystem.read", "<path>")``
-      (redundant with the ``Reading`` title path, harmless — both must permit).
+      (``gate_decision`` judges the read on it in place of the ``Reading``
+      title's pair).
     * ``kind == "fetch"`` with a ``url`` → ``("network.egress", "<host>")`` —
       the host is extracted from the URL so the ``host`` matcher applies.
 
@@ -461,6 +474,26 @@ def classify_tool_args(
             # marker (see the truncated-scan policy in the docstring).
             pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
             pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
+    return tuple(pairs)
+
+
+def classify_image_reads(raw_params: Optional[Mapping[str, object]]) -> Tuple[Tuple[str, str], ...]:
+    """``("filesystem.read", <path>)`` for each file a batch read's Image entries open.
+
+    An Image entry (``{"mode": "Image", "image_paths": [...]}``, ``paths`` in
+    kiro-cli's agent engine) lists its files under a key the shared walk does not
+    read. The entry's shape marks the read, not the ACP kind, which kiro-cli's
+    read permission request leaves empty.
+    """
+    ops = raw_params.get("operations") if isinstance(raw_params, Mapping) else None
+    if not isinstance(ops, list):
+        return ()
+    entries = [op for op in ops if isinstance(op, Mapping) and op.get("mode") == "Image"]
+    found = target_paths({"operations": entries}, ("image_paths", "paths"))
+    targets = _governed_targets(found, guest_root(raw_params), guest_also_local(raw_params))
+    pairs = [("filesystem.read", path) for path in targets]
+    if found.truncated:
+        pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
     return tuple(pairs)
 
 

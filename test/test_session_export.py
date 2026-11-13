@@ -1,18 +1,9 @@
 """Tests for the session file export (``GET /api/chat/slots/{slot}/export``).
 
-The emphasis is on the invariants a reviewer would want pinned, which are all
-compatibility or egress claims rather than "the feature works":
-
-* **``bundle_version`` stays 2** and the ``source`` record is additive, so an
-  instance that has not updated still receives a bundle from one that has —
-  proven by round-tripping an export through the importer's own validator;
-* **the tunnel's bundle is unchanged**, so an existing working flow does not
-  start putting new keys on the wire;
-* **recorded, never applied** — nothing in the record survives validation, and
-  ``approval_policy`` least of all;
-* **the filename comes from the REDACTED title**, because a filename is listed
-  by whatever holds the file and is therefore its own egress surface;
-* **an incognito or temporary session cannot be exported at all.**
+Pinned invariants: ``bundle_version`` stays 2 with an additive ``source`` record; the
+tunnel's bundle is unchanged; the record is never applied (``approval_policy`` least of
+all); the filename comes from the redacted title, since a filename is its own egress
+surface; and incognito or temporary sessions cannot be exported.
 """
 
 from __future__ import annotations
@@ -174,11 +165,8 @@ MSGS = [
 def test_bundle_version_is_not_bumped():
     """The load-bearing compatibility decision, as a gate.
 
-    ``_validate_bundle`` refuses an unrecognised version OUTRIGHT, so bumping to
-    3 would stop every instance that has not updated from receiving anything —
-    while an unknown KEY is dropped silently and costs it nothing. The record
-    below is therefore additive on version 2, and this pins that nobody
-    "tidies" it into a bump later.
+    ``_validate_bundle`` refuses an unknown version outright but drops an unknown key, so
+    a bump to 3 would cut off every peer that has not updated.
     """
     assert BUNDLE_VERSION == 2
     assert _SUPPORTED_BUNDLE_VERSIONS == (1, 2)
@@ -186,13 +174,10 @@ def test_bundle_version_is_not_bumped():
 
 @pytest.mark.asyncio
 async def test_a_peer_that_ignores_the_new_keys_imports_exactly_as_before():
-    """Phase 1's exit criterion: the export round-trips through the tunnel's
-    own importer unchanged.
+    """The export round-trips through the tunnel's own importer unchanged.
 
-    ``_validate_bundle`` IS the peer here — it is what an instance without this
-    change runs — so validating an exported bundle and a plain one and comparing
-    the results is the strongest available statement that the new keys are inert
-    on the receiving side.
+    ``_validate_bundle`` is what a peer without the ``source`` record runs, so equal
+    results show the new keys are inert on the receiving side.
     """
     exported = await build_transfer_bundle_async(
         _state(MSGS), _slot(MSGS), origin="mac", with_source=True
@@ -314,11 +299,9 @@ def test_an_unreadable_registry_does_not_fail_the_export():
 def test_the_policy_is_read_for_the_pinned_session_not_the_slots_current_one():
     """A rebind mid-assembly must not relabel the transcript's provenance.
 
-    The transcript key is pinned before the pre-bundle flush, so the session the
-    shipped turns ran on is already decided. A cron injection landing in that await
-    rebinds the slot's ``linked_session_key``; if the policy were read off a freshly
-    resolved key, the file would claim a policy belonging to a session its messages
-    never ran under -- and a downloaded file cannot correct itself later.
+    The transcript key is pinned before the pre-bundle flush. A cron injection in that
+    await can rebind ``linked_session_key``; reading the policy off the new key would label
+    the file with a session its messages never ran under.
     """
     asked: list[str] = []
 
@@ -567,23 +550,11 @@ async def test_export_carries_no_host_or_login_provenance():
     """A downloaded file can be shared with anyone, so it must carry neither the
     host's identity nor the operator's login.
 
-    Two leaks are pinned here as one class:
+    ``origin`` is empty rather than ``local_instance_label()`` (a hostname can embed the
+    login). ``source.project``, ``source.workspace`` and ``title`` go through
+    ``redact_local_paths``, which the credential/URL scrubs do not replace.
 
-    * ``origin`` -- the file export must NOT stamp ``local_instance_label()``
-      (the machine's hostname, which on a Linux dev host can embed the login
-      and in any case names a machine the recipient cannot act on). The tunnel
-      keeps its label; the file carries an empty ``origin`` so the "(from ...)"
-      import suffix is simply absent.
-    * ``source.project`` / ``source.workspace`` -- a checkout PATH discloses the
-      login and on-disk layout. The credential/URL scrubs miss a bare path, so
-      ``redact_local_paths`` runs over these free-text fields too.
-    * ``title`` -- a title generated after a file operation names a checkout
-      path, so it gets the path scrub too. It is the most visible field in the
-      bundle, and a short label loses nothing by carrying a placeholder.
-
-    The ``/local/home/<login>`` shape is used deliberately: it is the layout of
-    a Linux dev host, one of the roots ``redact_local_paths`` anchors, whose
-    home does not sit under ``/home``.
+    ``/local/home/<login>`` is a root ``redact_local_paths`` anchors outside ``/home``.
     """
     login = "somelogin"
     slot = _slot(
@@ -785,17 +756,9 @@ async def test_any_other_build_failure_is_an_audited_500(monkeypatch):
 async def test_the_export_withholds_layer_b_by_default(monkeypatch):
     """The destination rule, as a gate.
 
-    An export can be shared with another person, so unredacted context must NOT
-    ride along unless the operator asked for it. The RFC's minimum bar for a
-    sensitive payload in a bundle is conjunctive (rfc-s3-backup.md:317-319): a
-    config key OFF by default AND an explicit per-invocation flag. With neither
-    supplied, the export ships the transcript alone, SAYS it withheld context via
-    ``layer_b_skipped`` so a reader is told, and the resolved sid never rides
-    along.
-
-    REVERSE-VERIFY: flip ``_export_layer_b_permitted``'s default to ``True`` and
-    drop the ``and _export_layer_b_requested(...)`` conjunct at the call site and
-    this test goes red -- ``layer_b`` appears and ``layer_b_skipped`` disappears.
+    An export can be shared, so unredacted context needs both a config key (off by
+    default) and a per-request flag (rfc-s3-backup.md:317-319). With neither, the export
+    sets ``layer_b_skipped`` and the resolved sid never rides along.
     """
     import kiro_crew.dashboard.session_transfer as st
 
@@ -827,15 +790,9 @@ async def test_the_export_withholds_layer_b_by_default(monkeypatch):
 async def test_an_export_carries_layer_b_on_explicit_opt_in(monkeypatch):
     """The opt-in path, as a ratchet.
 
-    When the caller is the dashboard operator and BOTH opt-ins hold -- the
-    operator enabled ``dashboard.export_include_layer_b`` AND this request asked
-    with ``?include_layer_b=true`` -- Layer B rides along byte-exact so a session
-    installed from the file resumes through ``session/load`` rather than replaying
-    a lossy prefix. A carried bundle must NOT set ``layer_b_skipped``, or the
-    importer would mark an undegraded copy "transcript only".
-
-    REVERSE-VERIFY: drop either conjunct at the call site (permitted-only, or
-    requested-only) and this test goes red -- ``layer_b`` disappears.
+    For the operator with ``dashboard.export_include_layer_b`` and ``?include_layer_b=true``,
+    Layer B rides byte-exact so the import resumes via ``session/load``. It must not set
+    ``layer_b_skipped``, or the importer would mark the copy "transcript only".
     """
     import kiro_crew.dashboard.session_transfer as st
 
@@ -895,12 +852,8 @@ async def test_an_export_withholds_layer_b_for_a_non_operator_caller(monkeypatch
 async def test_an_export_withholds_when_permitted_but_not_requested(monkeypatch):
     """The conjunction, not one lever.
 
-    The standing config permission ON is not enough on its own: an export that
-    does NOT carry the ``?include_layer_b=true`` flag still withholds. This pins
-    that the RFC's two conditions are not collapsed to one.
-
-    REVERSE-VERIFY: drop the ``and _export_layer_b_requested(...)`` conjunct at
-    the call site and this test goes red -- ``layer_b`` appears.
+    The config permission alone is not enough: without ``?include_layer_b=true`` the
+    export still withholds.
     """
     import kiro_crew.dashboard.session_transfer as st
 
@@ -1069,11 +1022,8 @@ async def test_an_oversized_session_exports_rather_than_being_refused(monkeypatc
 async def test_an_app_cannot_export_a_channel_linked_slot_it_owns():
     """Owning the SLOT is not owning the TRANSCRIPT.
 
-    A channel-linked slot displays a conversation that lives on the channel's own
-    session, and ``get_or_create_slot`` auto-binds that link from a channel-shaped
-    NAME the creating caller supplies. So an app can hold a slot it legitimately
-    owns whose transcript is a channel's. The boundary refuses rather than
-    reasoning about the binding.
+    ``get_or_create_slot`` auto-binds a channel link from a caller-supplied name, so an
+    app can own a slot whose transcript is a channel's. The boundary refuses outright.
     """
     slot = _slot(MSGS, app="my-app")
     slot.linked_session_key = "slack:1700000000.000100"
@@ -1486,21 +1436,9 @@ async def test_a_message_the_parse_cannot_settle_degrades_alone_and_the_export_s
 async def test_the_markdown_export_never_reads_layer_b(monkeypatch):
     """The one asymmetry between the formats, and it fails closed.
 
-    Markdown installs nowhere, so the model's byte-exact unredacted context
-    window has no job in it — and the document's whole purpose is being pasted
-    into a review, a ticket or a chat. The format gate sits AHEAD of the
-    operator's twofold opt-in, so both opt-ins being ON changes nothing here.
-
-    Asserted on the READ and not on the rendered text, because the renderer never
-    emits ``layer_b`` either way: a text assertion would pass with the gate
-    removed and prove nothing. ``include_layer_b=False`` leaves the resolved sid
-    empty, and ``_read_layer_b`` opens nothing for an empty sid — so no snapshot
-    of the unredacted context window is ever staged for a document that cannot
-    carry it.
-
-    REVERSE-VERIFY: drop the ``export_format == _FORMAT_JSON`` conjunct at the
-    call site and this goes red -- the Markdown export starts snapshotting Layer B
-    for an operator who opted in for the JSON one.
+    Markdown installs nowhere and is meant to be pasted, so the format gate sits ahead of
+    both opt-ins. Asserted on the read: the renderer never emits ``layer_b`` anyway, so a
+    text assertion would pin nothing.
     """
     import kiro_crew.dashboard.session_transfer as st
 

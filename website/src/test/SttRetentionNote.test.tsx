@@ -45,4 +45,13 @@ describe('SttRetentionNote', () => {
     const { container } = render(<SttRetentionNote provider={provider} />)
     expect(container.firstChild).toBeNull()
   })
+
+  it('discloses hosted Codex audio and account-dependent access without promising free use', () => {
+    render(<SttRetentionNote provider="codex" />)
+    const note = screen.getByTestId('stt-retention-note')
+    expect(note.textContent).toContain(i18nT('pages.settings.sttSettings.retention_codex'))
+    const detail = i18nT('pages.settings.sttSettings.retention_codex_detail')
+    expect(note.querySelector(`[title="${detail}"]`)).toBeTruthy()
+    expect(screen.queryByRole('link')).toBeNull()
+  })
 })

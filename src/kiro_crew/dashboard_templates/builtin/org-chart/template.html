@@ -164,6 +164,7 @@
     background: color-mix(in oklab, var(--oc-card) 80%, var(--oc-done) 20%); }
   .oc-fbtn[aria-pressed="true"]:before { content: '\2713'; margin-right: 4px; }
   .oc-fn { margin-left: 5px; font-variant-numeric: tabular-nums; opacity: .8; }
+  .oc-empty .oc-fbtn { margin-left: 8px; }
 
   @media (max-width: 520px) {
     .oc { padding: 10px 10px 13px; }
@@ -239,7 +240,7 @@
         blocked_waiting: 'blocked, waiting on someone', asking_conductor: 'asking its conductor',
         open_via: 'open via ', last_report_prefix: 'last report ',
         keys_title: 'The fold aliases a worker\u2019s session key, so the card carries the board and item a host resolves the session from instead.',
-        empty_no_board: 'No board has reached this mate\u2019s record yet, so there is nobody to chart.',
+        empty_no_board: 'No board has reached this bot\u2019s record yet, so there is nobody to chart.',
         scope_leads: ' lead(s) ', scope_subleads: ' sub-lead(s) ', scope_sessions: ' worker session(s)',
         foot_cut: ' task(s) were cut by the fold\u2019s per-board cap, so they are in neither the graph nor the cards.',
         foot_mute: ' session(s) have never reported. Their cards say so rather than showing a silence, which is a different fact.',
@@ -250,7 +251,8 @@
         fold_hint: 'Collapses this group in the graph only. The cards below stay.',
         filter_label: 'Show tasks by state', filter_open: 'Open', filter_closed: 'Closed',
         filter_all: 'All', filter_prefix: 'Tasks:', fact_shown_of: '{n} of {m} shown', scope_filtered: 'filtered', fact_context: 'kept for the tasks under it',
-        filter_none_open: 'No open task to show.', filter_none_closed: 'No closed task to show.'
+        filter_none_open: 'No open task to show.', filter_none_closed: 'No closed task to show.',
+        filter_show_all: 'Show all'
       },
       'zh-CN': {
         oc_title: '\u8c01\u6d3e\u53d1\u4e86\u8c01', oc_last_write: '\u8bb0\u5f55\u6700\u540e\u5199\u5165',
@@ -276,7 +278,7 @@
         blocked_waiting: '\u53d7\u963b\uff0c\u7b49\u5f85\u4ed6\u4eba', asking_conductor: '\u6b63\u5728\u8be2\u95ee\u5176\u6307\u6325',
         open_via: '\u6253\u5f00\u65b9\u5f0f ', last_report_prefix: '\u6700\u540e\u6c47\u62a5 ',
         keys_title: '\u8bb0\u5f55\u4e3a\u6267\u884c\u8005\u7684\u4f1a\u8bdd\u5bc6\u94a5\u8bbe\u7f6e\u4e86\u522b\u540d\uff0c\u6240\u4ee5\u5361\u7247\u6539\u4e3a\u643a\u5e26\u4e3b\u673a\u636e\u4ee5\u89e3\u6790\u4f1a\u8bdd\u7684\u770b\u677f\u4e0e\u6761\u76ee\u3002',
-        empty_no_board: '\u5c1a\u65e0\u770b\u677f\u8fdb\u5165\u8fd9\u4f4d\u961f\u53cb\u7684\u8bb0\u5f55\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u7ed8\u5236\u7684\u5bf9\u8c61\u3002',
+        empty_no_board: '\u5c1a\u65e0\u770b\u677f\u8fdb\u5165\u8fd9\u4e2a Bot \u7684\u8bb0\u5f55\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u7ed8\u5236\u7684\u5bf9\u8c61\u3002',
         scope_leads: ' \u4e2a\u7275\u5934 ', scope_subleads: ' \u4e2a\u6b21\u7ea7\u7275\u5934 ', scope_sessions: ' \u4e2a\u6267\u884c\u8005\u4f1a\u8bdd',
         foot_cut: ' \u4e2a\u4efb\u52a1\u88ab\u8bb0\u5f55\u7684\u5355\u770b\u677f\u4e0a\u9650\u622a\u65ad\uff0c\u56e0\u6b64\u5b83\u4eec\u65e2\u4e0d\u5728\u5173\u7cfb\u56fe\u4e2d\uff0c\u4e5f\u4e0d\u5728\u5361\u7247\u4e2d\u3002',
         foot_mute: ' \u4e2a\u4f1a\u8bdd\u4ece\u672a\u6c47\u62a5\u3002\u5b83\u4eec\u7684\u5361\u7247\u5982\u5b9e\u8bf4\u660e\uff0c\u800c\u975e\u663e\u793a\u4e00\u6bb5\u9759\u9ed8\uff0c\u8fd9\u662f\u4e0d\u540c\u7684\u4e8b\u5b9e\u3002',
@@ -289,7 +291,8 @@
         filter_closed: '\u5df2\u5173\u95ed', filter_all: '\u5168\u90e8',
         filter_prefix: '\u4efb\u52a1\uff1a', fact_shown_of: '{m} \u4e2d\u663e\u793a {n} \u4e2a', scope_filtered: '\u5df2\u7b5b\u9009', fact_context: '\u56e0\u5176\u4e0b\u7684\u4efb\u52a1\u800c\u4fdd\u7559',
         filter_none_open: '\u6ca1\u6709\u8fdb\u884c\u4e2d\u7684\u4efb\u52a1\u3002',
-        filter_none_closed: '\u6ca1\u6709\u5df2\u5173\u95ed\u7684\u4efb\u52a1\u3002'
+        filter_none_closed: '\u6ca1\u6709\u5df2\u5173\u95ed\u7684\u4efb\u52a1\u3002',
+        filter_show_all: '\u663e\u793a\u5168\u90e8'
       }
     };
     function locale() {
@@ -997,12 +1000,14 @@
       if (!graph || !holder || !cardsTitle || !foot || !scope) return;
       /* The rebuild below replaces every fold button, so a reader who toggled one
          from the keyboard would land on the page body at each host push. Note which
-         group's button had focus, and give focus to its replacement. */
+         group's button had focus, and give focus to its replacement. The empty
+         line's Show all button is rebuilt the same way. */
       var focusKey = null;
       for (var fk in foldButtons) {
         if (Object.prototype.hasOwnProperty.call(foldButtons, fk)
             && foldButtons[fk] === document.activeElement) focusKey = fk;
       }
+      var backFocus = !!document.activeElement && document.activeElement.id === 'oc-show-all';
       foldButtons = {};
       graph.textContent = '';
       holder.textContent = '';
@@ -1034,7 +1039,19 @@
          graph nor the cards have a row: a filter can leave cards with no graph root
          to hang them on (a board whose parent task was cut from the fold). */
       if (filterMode !== 'all' && !roots.length && !rows.length) {
-        graph.appendChild(el('div', 'oc-empty', i18n('filter_none_' + filterMode)));
+        var empty = el('div', 'oc-empty', i18n('filter_none_' + filterMode));
+        var back = el('button', 'oc-fbtn', i18n('filter_show_all'));
+        back.type = 'button';
+        back.id = 'oc-show-all';
+        /* The button goes with the line it sits in, so focus moves to the All pill. */
+        back.addEventListener('click', function () {
+          var all = document.querySelector('[data-oc-filter="all"]');
+          all.click();
+          all.focus();
+        });
+        empty.appendChild(back);
+        graph.appendChild(empty);
+        if (backFocus) back.focus({ preventScroll: true });
         cardsTitle.hidden = true;
       }
       for (var i = 0; i < roots.length; i++) drawNode(roots[i], graph, now);
@@ -1079,7 +1096,7 @@
     wireFilter();
     render();
     window.addEventListener('load', render);
-    window.addEventListener('message', function () { setTimeout(render, 0); });
+    window.addEventListener('kirocrew-dashboard', function () { setTimeout(render, 0); });
   }());
   </script>
 </div>

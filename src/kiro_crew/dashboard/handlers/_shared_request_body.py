@@ -233,11 +233,67 @@ async def read_bounded_json(
             return None, web.json_response(
                 {"error": "invalid JSON", "code": "invalid_json"}, status=400
             )
-    if not isinstance(body, dict):
-        return None, web.json_response(
-            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
-        )
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return None, not_object
     return body, None
+
+
+def body_not_object_error(body: object) -> web.Response | None:
+    """The 400 for a parsed JSON body that is not an object, or ``None`` for one that is.
+
+    For a handler that parses with ``await request.json()`` itself and then reads
+    fields with ``body.get()``: a list, string or number body is valid JSON, so
+    the parse succeeds, and the ``.get()`` then raises ``AttributeError`` -- a 500
+    for a client mistake. Return this right after the parse. The answer is the
+    one :func:`read_bounded_json` gives, so the two paths cannot drift apart.
+    """
+    if isinstance(body, dict):
+        return None
+    return web.json_response(
+        {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+    )
+
+
+_NOT_MULTIPART_ERROR = "expected multipart/form-data with a boundary"
+
+
+async def open_multipart(
+    request: web.Request,
+) -> tuple[aiohttp.MultipartReader | None, web.Response | None]:
+    """The request's multipart reader, or the 400 that refuses a body that is not one.
+
+    ``request.multipart()`` asserts a ``multipart/*`` type and raises ``KeyError``,
+    ``AssertionError`` or ``ValueError`` for a missing type, another type, or a
+    missing or over-long boundary -- a 500 for a client that sent JSON to an
+    upload route. The type is checked first so the refusal holds under ``python
+    -O`` too, where the assert is stripped.
+    """
+    if not (request.content_type or "").startswith("multipart/"):
+        return None, web.json_response(
+            {"error": _NOT_MULTIPART_ERROR, "code": "not_multipart"}, status=400
+        )
+    try:
+        return await request.multipart(), None
+    except (AssertionError, KeyError, ValueError):
+        return None, web.json_response(
+            {"error": _NOT_MULTIPART_ERROR, "code": "not_multipart"}, status=400
+        )
+
+
+def string_field_error(field: str, value: object) -> web.Response | None:
+    """The 400 for a body field that should be text but is not, or ``None`` for a string.
+
+    A handler that reads ``body.get(field, "").strip()`` raises ``AttributeError``
+    -- a 500 for a client mistake -- when the field holds a number, list, object,
+    bool or ``null``. Check the value first; a string passes untouched, so every
+    string keeps the answer it gets today.
+    """
+    if isinstance(value, str):
+        return None
+    return web.json_response(
+        {"error": f"{field} must be a string", "code": "invalid_field_type"}, status=400
+    )
 
 
 def bounded_json_error_code(error: web.Response) -> str | None:

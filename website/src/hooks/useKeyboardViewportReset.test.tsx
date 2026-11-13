@@ -12,12 +12,21 @@ function installVisualViewport(height: number) {
   const listeners: Record<string, Listener[]> = {}
   const vv = {
     height,
+    width: 390,
     offsetTop: 0,
     addEventListener: (t: string, l: Listener) => { (listeners[t] ||= []).push(l) },
     removeEventListener: (t: string, l: Listener) => { listeners[t] = (listeners[t] || []).filter((x) => x !== l) },
   }
   Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv })
   return { vv, fire: (t: string) => (listeners[t] || []).forEach((l) => l()) }
+}
+
+function setLayoutWidth(width: number) {
+  Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: width })
+}
+
+function setInnerHeight(height: number) {
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: height })
 }
 
 describe('useKeyboardViewportReset', () => {
@@ -28,6 +37,7 @@ describe('useKeyboardViewportReset', () => {
   let originalInnerHeight: PropertyDescriptor | undefined
   let originalScrollY: PropertyDescriptor | undefined
   let originalScrollTo: typeof window.scrollTo
+  let originalClientWidth: PropertyDescriptor | undefined
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -35,6 +45,8 @@ describe('useKeyboardViewportReset', () => {
     originalInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
     originalScrollY = Object.getOwnPropertyDescriptor(window, 'scrollY')
     originalScrollTo = window.scrollTo
+    originalClientWidth = Object.getOwnPropertyDescriptor(document.documentElement, 'clientWidth')
+    setLayoutWidth(390)
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
     scrollTo = vi.fn()
     window.scrollTo = scrollTo as unknown as typeof window.scrollTo
@@ -51,6 +63,8 @@ describe('useKeyboardViewportReset', () => {
     if (originalInnerHeight) Object.defineProperty(window, 'innerHeight', originalInnerHeight)
     if (originalScrollY) Object.defineProperty(window, 'scrollY', originalScrollY)
     window.scrollTo = originalScrollTo
+    if (originalClientWidth) Object.defineProperty(document.documentElement, 'clientWidth', originalClientWidth)
+    else delete (document.documentElement as { clientWidth?: number }).clientWidth
   })
 
   it('resets scroll once the keyboard closes', () => {
@@ -91,6 +105,124 @@ describe('useKeyboardViewportReset', () => {
   it('undoes a stale pan: a window scroll after the keyboard is gone resets', () => {
     installVisualViewport(800) // keyboard closed throughout
     renderHook(() => useKeyboardViewportReset())
+    window.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('keeps the composer pan on iPhone, where innerHeight shrinks with the keyboard', () => {
+    // iPhone Safari reports the keyboard-reduced height in window.innerHeight
+    // as well as visualViewport.height, so their difference stays ~0 while the
+    // keyboard is up. Reading that as "closed" scrolled the page back to 0,0
+    // and left the composer under the keyboard.
+    const { vv, fire } = installVisualViewport(800)
+    renderHook(() => useKeyboardViewportReset())
+    vv.height = 450 // keyboard opens...
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 450 }) // ...and innerHeight follows
+    fire('resize')
+    window.dispatchEvent(new Event('scroll')) // Safari pans to reveal the composer
+    fire('scroll')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    vv.height = 800 // keyboard closed: the stale pan is still undone
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+    fire('resize')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('leaves a pinch-zoomed page where it is', () => {
+    // Pinch-zoom shrinks the visual viewport (and on iOS innerWidth and
+    // innerHeight with it) but not the layout width. Keying the height record
+    // on the visual width restarted it at the zoomed height, read the zoom as
+    // "keyboard closed" and snapped the zoomed reader back to 0,0 on every pan.
+    const { vv, fire } = installVisualViewport(800)
+    renderHook(() => useKeyboardViewportReset())
+    vv.width = 195
+    vv.height = 400
+    setInnerHeight(400)
+    fire('resize')
+    vv.offsetTop = 120 // the reader pans while zoomed
+    fire('scroll')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    vv.width = 390 // zoomed back out: a stale pan is still undone
+    vv.height = 800
+    vv.offsetTop = 0
+    setInnerHeight(800)
+    fire('resize')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('keeps the composer pan when the phone rotates while typing', () => {
+    const { vv, fire } = installVisualViewport(800)
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    renderHook(() => useKeyboardViewportReset())
+    composer.focus()
+    vv.height = 450 // portrait keyboard opens
+    setInnerHeight(450)
+    fire('resize')
+
+    setLayoutWidth(844) // rotate to landscape with the keyboard still up:
+    vv.width = 844 // the new width's record starts at the keyboard-reduced height
+    vv.height = 200
+    setInnerHeight(200)
+    fire('resize')
+    window.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    composer.blur() // typing ends and the keyboard closes
+    document.dispatchEvent(new Event('focusout'))
+    vv.height = 390
+    setInnerHeight(390)
+    fire('resize')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('keeps the caret pan behind the hardware-keyboard shortcut bar while typing', () => {
+    // An iPad with a hardware keyboard shows only the shortcut bar, far less
+    // than the on-screen keyboard threshold, and pans the page on each
+    // keystroke to keep a low caret above it. Undoing each pan made the
+    // one-row crewmate composer jump up and down while typing.
+    const { vv, fire } = installVisualViewport(800)
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    renderHook(() => useKeyboardViewportReset())
+    composer.focus()
+    vv.height = 745 // the shortcut bar appears: 55px, under the 120px threshold
+    fire('resize')
+    for (let i = 0; i < 5; i++) {
+      window.dispatchEvent(new Event('scroll')) // a keystroke's caret pan
+      vv.offsetTop = 30
+      fire('scroll')
+      vi.advanceTimersByTime(200)
+    }
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    composer.blur() // typing ends and the bar goes away: the pan is undone
+    document.dispatchEvent(new Event('focusout'))
+    vv.height = 800
+    vv.offsetTop = 0
+    fire('resize')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('still undoes a small stale pan when no text field has focus', () => {
+    // The focused-field allowance must not keep a stale pan once typing ends:
+    // a viewport a little short of its rest height, with nothing focused, is
+    // not a keyboard.
+    const { vv, fire } = installVisualViewport(800)
+    renderHook(() => useKeyboardViewportReset())
+    vv.height = 745
+    fire('resize')
     window.dispatchEvent(new Event('scroll'))
     vi.advanceTimersByTime(1000)
     expect(scrollTo).toHaveBeenCalledWith(0, 0)

@@ -1,10 +1,10 @@
 ---
 title: Idle compaction before prompt-cache expiry, an opt-in session setting
-status: draft
+status: in-progress
 author: Pearcekieser, with Kiro
 created: 2026-10-19
-last-audited: 2026-10-19
-audited-at: cea787cbd5
+last-audited: 2026-10-26
+audited-at: 5483f68961
 doc-pr: 22149
 implementation-prs: []
 tracking-issues: [22148]
@@ -13,7 +13,7 @@ superseded-by: []
 ---
 # RFC: Idle compaction before prompt-cache expiry, an opt-in session setting
 
-- Status: draft. Nothing is built.
+- Status: in-progress. Phase 1 is in flight in its implementation pull request; nothing is on main.
 - Author: Pearcekieser, with Kiro
 - Created: 2026-10-19
 - Measured at: `cea787cbd5`
@@ -118,10 +118,10 @@ this data, 1,236 (29%) landed between 255 s and 300 s.
 
 So the setting's minimum context defaults to 50%, above the 41% first-request
 break-even, and the help text says the setting saves credits only on large
-conversations that the user comes back to. The compaction cost is a model; a
-single measured `/compact` with its metering notification logged would replace
-it, and it is the Phase 1 entry criterion (section 6, and section 10,
-question 5).
+conversations that the user comes back to. The Phase 1 entry step measured
+kiro `/compact` from the client (section 6): every client source reported it
+as free, and under the low bound above the measured break-even was 40.5%. The
+high bound is still open (section 10, question 5).
 
 ## 3. Goals
 
@@ -163,7 +163,8 @@ idle_compaction: bool = field(
         "re-sends a summary instead of the full history. It saves credits only "
         "on large chats you come back to: each idle compaction is an extra "
         "model call that costs credits even if you never return, if you return "
-        "just after it starts you wait up to a minute or more for it to finish, "
+        "just after it starts you wait for it to finish, up to the compaction "
+        "wait limit plus about 20 seconds (5 minutes by default), "
         "and the summary loses detail from earlier in the conversation. Only "
         "chats whose context is at least Idle Compaction Minimum Context full "
         "are compacted. Backends with an unknown cache lifetime are skipped.",
@@ -203,10 +204,14 @@ in `src/kiro_crew/dashboard/chat_api/slot_settings.py`, is left for later.
 The table is one constant mapping a backend id to a lifetime resolver, next to
 the capability sets in `src/kiro_crew/agent_sdk/backends_turns.py`. A backend
 absent from it is skipped. The margin, 45 s on lifetimes up to 600 s and 10% on longer
-ones, covers the time from the trigger to the request reaching the provider;
+ones, covers the time from the trigger to the request reaching the provider.
 Anthropic documents that the lifetime is counted from the start of the last
-request, so the margin also absorbs the final response's own duration, which is
-why the timer starts when the last turn ends rather than when it began. The
+request, so the fire time is counted from the start of the turn's last model
+request, not from the turn end: a final response that streams longer than the
+margin would otherwise push the real expiry ahead of the fire. Crew does not see
+that start on the wire, so it uses the latest moment it knows is no later than
+it: the start of the turn, or the end of the turn's last tool call once model
+output follows it (section 5.3). The
 45 s kiro margin is provisional: the Phase 1 entry criterion (section 6)
 re-derives it from the measured return-time distribution and compaction cost.
 
@@ -218,7 +223,18 @@ by default, which is coarser than the kiro window.
 
 - **Arm** at turn end, in the same place `check_context_usage` runs, when the
   setting is on, the key is a `dashboard:` session, the backend has a lifetime,
-  and context use is at or above `idle_compaction_min_context_pct`.
+  and context use is at or above `idle_compaction_min_context_pct`. The timer is
+  anchored to the start of the turn's last request, not to the turn end. The
+  provider's prompt delivery records the stream's start before it sends, and
+  keeps it only once the stream yields model output, so a slash command such as
+  `/context` that makes no model request leaves the previous record. A command
+  kiro runs natively over `_kiro.dev/commands/execute` never moves the record,
+  even though its output arrives as text, because its caller tells the delivery
+  that transport makes no model request. It moves the record to the moment a tool call ended once model output follows
+  that end, since that output comes from a request that started after it. The
+  timer is due at that record plus the fire time in section 5.2, on the
+  monotonic clock. If that moment has already passed at turn end, nothing is
+  armed and the skip is logged once.
 - **Cancel** when the session is next claimed for a turn, when it is reset,
   recycled or removed, and when the setting is turned off.
 - **Fire** by calling a new `compact_if_idle(key)`.
@@ -250,8 +266,18 @@ tests drive it without real time.
 4. Nothing is live: the session semaphore is free, the slot has no running or
    reserved turn and an empty queue, no question card or approval is pending
    for it, no subagent is attached or queued (the existing fail-closed probe),
-   no completion injection is pending, the session is not recycling, and no
-   auto-nudge or monitor loop is armed on the slot.
+   no workflow run for the session is unfinished, no completion injection is
+   pending, the session is not recycling, and no auto-nudge or monitor loop is
+   armed on the slot.
+5. The cache is still warm: the last request's start plus the backend's cache
+   lifetime is still in the future on the timer's clock. A timer callback the
+   event loop delivered late (a paused loop or a suspended host) can run after
+   the cache expired, when a compaction saves nothing and its notice, which
+   says the chat was compacted before its prompt cache expired, would be false.
+   That fire is declined as `expired` and logged once at INFO. The anchor
+   and the timer both run on the monotonic clock, which stands still while
+   the host is suspended, so the check adds the suspended time read from the
+   boot clock (`platform_compat.boottime_now`) since the arm.
 
 Any refusal ends the idle stretch without retrying; the next real turn re-arms.
 On success the coordinator commits `_set_compacting(key, True)` and awaits the
@@ -281,10 +307,126 @@ argument.
   compaction can never run together.
 - An idle compaction's own `/compact` does not re-arm the timer, so an idle
   session is compacted once, not every few minutes.
-- A failure arms the existing cooldown and stops. The idle path never takes the
-  restart-on-failure arm (`_restart_held`), because restarting a session the
-  user is not using to fix a compaction they did not ask for would lose history
-  for nothing.
+- A reported failure arms the existing cooldown and stops. The idle path never
+  takes the threshold's restart-on-failure arm, which starts the successor on a
+  new conversation, because restarting a session the user is not using to fix a
+  compaction they did not ask for would lose history for nothing.
+- A `/compact` that times out or reports no status may still be running, and a
+  turn given the permit then could read its late status and hang. The idle path
+  keeps the permit, cancels the `/compact` through the provider's cancel
+  (bounded at 5 s), and then reads its late status for up to 10 s, or the
+  configured compaction budget `session.compact_wait_secs` when that is lower.
+  A user who returns during that drain waits behind it, as for any in-flight
+  idle compaction above, so at most the compaction budget plus about 20 s. A late `completed` counts as the compaction
+  and a late `failed` as a failure. If neither arrives, the session is kept
+  exactly as it is: the idle path arms the cooldown, reports the idle failure
+  outcome (`compacted_idle` with `success=False`, whose notice says nothing was
+  changed), and releases the permit. If the harness ignores the cancel and
+  completes the compaction after the drain, the conversation is compacted but
+  the user still sees that notice. The context meter keeps its last reading.
+  The idle path never tears the session down or restarts it to recover from a
+  silent harness, because both can lose the conversation it promises to keep.
+  A restart on a kiro chat with Tool Search on starts fresh with a bounded tail
+  replay instead of resuming natively. A resume attempted while the old process
+  still lives can hit its session lock (kiro-cli holds it until it exits) and
+  fall back to a fresh session with a bounded replay.
+
+  Only a backend that reports through `_kiro.dev/compaction/status` records an
+  unresolved terminal. Crew reads this from the backend's `compacts_inline`
+  capability, which is False for kiro. Claude and codex report their terminal
+  inline, so their idle paths do not create a record. The idle path records one
+  unresolved terminal after the quiesce drain returns without a terminal. It
+  does the same when a user Stop ends an idle compaction without a terminal.
+  The abandoned compaction can still complete, and the reader that later drops
+  its status cannot reach the session. So every prompt built while the status
+  is owed carries the session's startup context, and one more prompt does after
+  a reader dropped a `completed`.
+  A threshold Stop does not create a record. The drain happens before the
+  record, so one abandoned compaction increments the count at most once.
+
+  Each status reader keeps a per-reader unresolved count. The count has no time
+  limit. Every queue reader that consumes or discards
+  `_kiro.dev/compaction/status` applies the count first. This includes prompt
+  dispatch, `wait_for_compaction`, the pre-turn drain, MCP readiness waits, MCP
+  initialization drains, and the dedicated client's steer and initialization
+  drains. While the count is more than zero, each reader discards every
+  compaction status. Each discarded terminal decrements the count.
+
+  A shared-runtime compaction status can have no session identifier. The
+  runtime then sends it to each session queue as an ownerless frame. If a
+  handle has an unresolved count, an ownerless terminal decrements that count
+  and is discarded. The terminal can belong to a co-tenant, so it can end the
+  debt early. This is the residual cost of accepting a terminal that provides
+  no session identity. With a zero count, the reader yields the ownerless frame
+  and keeps the existing per-turn ownership guards.
+
+  A discarded `completed` status still proves that native history changed.
+  The reader clears the compaction failure timestamp and resets its prompt
+  statistics only when the discarded frame is owned. It also advances a
+  per-reader delivery generation. A provider
+  delivery layer invalidates essential delivery before its next stream when a
+  generation changed. A discarded `failed` status changes no turn state and
+  arms no failure budget.
+
+  A stream can consume the late `completed` after the provider examined the
+  receipt, for example in the session handle's pre-turn drain. Thus, while a
+  reader behind the provider has an unresolved count, each provider stream
+  invalidates essential delivery before it reads the receipt. That stream sends
+  the complete essential context. The generation rule stays for a completion
+  that a reader consumes after a stream started.
+
+  While a provider has an unresolved count, Crew does not start a compaction on
+  that provider. The threshold coordinator checks before it takes the turn
+  permit. The first threshold refusal for each new debt logs at WARNING.
+  Repeated refusals for the same debt log at INFO. The coordinator returns
+  `busy` without a send, callback, cooldown, or restart. A later threshold
+  reading retries.
+
+  The `stream_command("/compact")` and `compact()` entry points on both ACP
+  provider classes first consume the owed statuses that already wait on an
+  idle reader, without blocking. These are the session handle's queue, and the
+  dedicated client's replay buffer and buffered notifications. Other frames
+  keep their order, and the notification index floors still mark the same
+  frames. A reader inside a turn keeps its frames for that turn. The entry
+  point refuses only when a count stays more than zero after this step.
+
+  A refused `compact()` sends nothing and raises nothing. The next
+  `wait_for_compaction` on that provider returns one `failed` result whose
+  summary states that an earlier compaction has not reported its result. The
+  next dispatch on the provider drops a refusal that no wait collected. The
+  channel `/compact` commands and the channel hard-threshold compactions
+  follow `compact()` with that wait, so they report a plain failure. Their
+  exception arms, which discard the native conversation, do not run. A refused
+  `stream_command("/compact")` raises `AcpError` with the same text. The
+  dashboard presents this as a terminal error notice and does not reset the
+  session. The coordinator checks before it reaches that call.
+
+  A dedicated client whose process is replaced clears its count, its warning
+  bit and its delivery generation, because the new process cannot send the old
+  terminal. The cleared generation causes one more invalidation. A session
+  handle never binds a new native session. A replacement handle starts with a
+  zero count.
+
+  If the harness never sends the terminal, Crew compaction stays refused on
+  that provider until the session is replaced or the dedicated client's process
+  restarts. During that time, each turn sends the complete essential context.
+  A completion that the pre-turn drain consumes also causes one more complete
+  send on the next turn. The entry-point step does not read statuses that are
+  still in the process pipe, or that a pending request holds. A manual compact
+  that arrives before a turn reads them is refused. kiro-cli can still start
+  its own compaction, although no capture shows it doing so. If kiro-cli
+  starts one while the count is more than zero, the next reader discards its
+  statuses as part of the unresolved stream, and that terminal pays the debt.
+  With no such terminal, the session's context can grow to the provider
+  window. A
+  discarded completion resets the context meter and invalidates essential
+  delivery, but Crew does not surface its status. The reader keeps scalar
+  counters and does not retain request data.
+
+  Read by a normal turn without this state, a late `failed` would arm the
+  post-failure turn budget. That budget ends a turn that is silent for 60 s and
+  resets the session. A late `completed` would reset the meter and announce a
+  compaction during the turn.
 - History is not deleted. The transcript Crew keeps is unchanged; the harness
   holds the summary as it does for any compaction.
 
@@ -311,22 +453,39 @@ The setting, the lifetime table, the timer, `compact_if_idle`, the metric label,
 the `config-baseline.json` and `configuration.md` rows, and the session and
 config spec updates. The key is readable from `config.json`; it has no UI yet.
 
-Entry criterion: before the Phase 1 PR leaves draft, one kiro `/compact` is run
-at a known context of at least 50% with its `meteringUsage` notification logged,
-and the result is recorded here. It settles which of the two cost bounds in
-section 2.3 holds. If the low bound holds, the 50% default stands or is moved to
-the measured break-even. If the high bound holds, the first-request saving never
-covers the compaction, and Phase 1 does not ship on kiro: the kiro row of the
-lifetime table is removed so the backend is skipped, and the RFC is revised.
+Entry criterion, measured on 2026-10-29. Fresh kiro-cli chats on
+claude-opus-5.5 with a 1,000,000 token window were grown in a pod to 29.8%,
+49.9%, 69.3% and 84.8% context. At each level path A sent a manual `/compact`
+3 to 4 s after the last turn, then one tiny prompt 335 s later. Path B sent the
+same prompt 335 s after the last request with no compaction. There were 2 runs
+per path at each level and 1 at 84.8%, and repeated runs agreed to within 0.012
+credits. kiro-cli reported 0 credits for every one of the 7 compactions on
+every client source: the next turn's ledger row equalled that turn's own
+`metering_usage`, the kiro-cli session's `metering_usage` sum did not move, and
+Crew's per-session total from `/api/usage/turns` did not move. The modelled
+column below is section 2.3's low bound, 0.087 + 0.0342 credits per context
+point plus 1.6 credits of summary output. kiro-cli keeps the last two exchanges
+verbatim, so context after each compaction was 15.5 to 15.9% and the path A
+totals err toward B.
 
-The same entry step re-checks the 45 s margin on kiro. A later fire time
-shrinks the window where a returning user finds a warm cache and pays for a
-compaction anyway (29% of returns after 255 s landed before 300 s), but leaves
-less room before the cache expires (21% of turns resumed at 290 to 300 s
-already missed). With the measured compaction cost, the expected credit
-result is computed from the section 2.2 and 2.3 data for fire times from 255 s
-to 285 s in 10 s steps, and the fire time with the best result is the one
-Phase 1 ships, recorded here with its numbers.
+| level | warm compaction, reported / modelled | cold prompt after compaction | path A total, reported / modelled | path B | A minus B, reported / modelled |
+|---|---|---|---|---|---|
+| 29.8% | 0 / 2.707 | 1.910 at 15.6% | 1.910 / 4.617 | 3.671 | -1.761 / +0.946 |
+| 49.9% | 0 / 3.393 | 1.916 at 15.6% | 1.916 / 5.309 | 6.134 | -4.218 / -0.825 |
+| 69.3% | 0 / 4.058 | 1.906 at 15.5% | 1.906 / 5.964 | 8.526 | -6.620 / -2.563 |
+| 84.8% | 0 / 4.585 | 1.958 at 15.9% | 1.958 / 6.543 | 10.421 | -8.463 / -3.878 |
+
+Under the reported cost, path A is cheaper than path B at every level. Under
+the modelled low bound, the two break even at 40.5% context for a user who
+always returns after the window, or 39.4% with the measured warm line in place
+of the modelled one. That matches the existing floor of 40, so the floor, the
+50% default and kiro's row of the lifetime table stay. The high bound, a
+compaction request that misses the cache, cannot be told apart from the low one
+on the client and stays open as section 10, question 5.
+
+The fire time stays 255 s. The sweep of fire times from 255 s to 285 s that
+this step planned was not run, because the A/B runs used one fixed 335 s gap, so
+the 45 s margin remains provisional.
 
 Exit criteria, all as tests on a fake clock:
 - Off: no timer is ever armed and no extra compaction runs.
@@ -338,13 +497,34 @@ Exit criteria, all as tests on a fake clock:
 - Each live signal in 5.4 step 4 blocks the fire.
 - Threshold and idle triggers never compact the same session twice.
 - A failed idle compaction arms the cooldown and does not restart the session.
+- An idle `/compact` that reports no status, or reports late, is cancelled and
+  drained for at most 10 s. The configured compaction budget applies when it is
+  lower. With no status, the session is kept. Kiro records one unresolved
+  terminal after the drain. A normal turn discards its terminal status when it
+  arrives. Codex and claude record nothing because their terminals are inline.
+- A user Stop on an idle compaction records one unresolved kiro terminal when
+  no terminal arrived. A threshold Stop records nothing.
+- A threshold compaction returns `busy` without sending while the provider has
+  an unresolved terminal. A manual `stream_command("/compact")` raises
+  `AcpError`. A refused `compact()` sends nothing, and its wait returns one
+  `failed` result, so a channel `/compact` reports a failure and does not
+  discard the conversation. An owed terminal that already waits on an idle
+  reader is consumed before either entry point refuses. After a normal turn
+  discards the late terminal, a later threshold compaction runs and keeps the
+  ordinary restart-on-failure behavior.
+- While a reader owes a terminal, each stream sends the complete essential
+  context, including a stream whose pre-turn drain consumes a late `completed`.
+- A dedicated client's process reset clears its unresolved count.
+- A timer callback delivered after the cache expired declines as `expired`.
+- A final response that streams past the margin arms nothing; a turn with a
+  tool call arms from the tool's end; a plain turn arms from its start.
 - After a simulated restart, nothing is armed until the first turn ends, and
   the timer then arms from that turn end.
 
 ### Phase 2: Settings UI
 
 The Chat settings page control, i18n strings, regenerated settings registry and
-UI index, and the compaction notice wording. Exit criteria: the control
+UI index. Phase 1 already ships the idle compaction notice wording. Exit criteria: the control
 round-trips the value, the settings search finds it, and the i18n checks pass.
 
 Phases may land together if the combined diff stays reviewable.
@@ -394,10 +574,12 @@ compaction per idle stretch per eligible session.
 4. Should a message that arrives while an idle compaction runs cancel it,
    once each compactable harness is shown to leave the conversation intact
    when its `/compact` is cancelled?
-5. What does one kiro `/compact` actually cost? The Phase 1 entry criterion
-   answers it by running one at a known context of at least 50% with its
-   `meteringUsage` notification logged. The result settles the low or high cost
-   bound in section 2.3 and, with it, the 50% default.
+5. What does one kiro `/compact` actually cost? The Phase 1 entry step found
+   0 credits reported on every client source at 29.8% to 84.8% context
+   (section 6), and the low bound's break-even of 40.5% supports the 50%
+   default. Whether the compaction request misses the cache, the high bound in
+   section 2.3, is not visible from the client. Server-side usage for one
+   compaction request, or the kiro-cli team, would settle it.
 6. Would a capped keep-warm ping, one to three requests at warm cost, beat an
    idle compaction for some return-time range? Answering it needs the
    distribution of return times past 300 s, which the measured data in

@@ -237,6 +237,7 @@ class TestStopPodReclaimsTheOverride:
 
         monkeypatch.setattr(rt, "systemctl", _fake)
         monkeypatch.setattr(rt, "loaded_teardown_hook", lambda c, n: False)
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
         return calls

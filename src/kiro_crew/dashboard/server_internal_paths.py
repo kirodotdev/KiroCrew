@@ -2,12 +2,17 @@
 
 Which paths only internal processes may call (loopback plus ``X-Internal-Secret``),
 which the browser may also call, and the constants the deny-audit, CSRF and audit
-layers read with them. Pure data: ``kiro_crew.dashboard.server`` imports every name
-here and is the only module that does, so the server's binding is the one its owners
-read and the one a test rebinds.
+layers read with them. Pure data (a shipped built-in app's exact strict paths, read
+from its host grants, are data too):
+``kiro_crew.dashboard.server`` imports every name here and is the only module that
+does, so the server's binding is the one its owners read and the one a test rebinds.
 """
 
 from __future__ import annotations
+
+from kiro_crew.apps.builtin_host_grants import (
+    strict_internal_paths as _builtin_strict_internal_paths,
+)
 
 # Strict internal API paths — exact paths that ONLY internal processes
 # (mcp-core, doctor, cron) call, never the browser. Access requires loopback
@@ -24,21 +29,23 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/send-message",
         "/api/delete-message",
         "/api/update-message",
-        "/api/browser-event",
-        "/api/browser/frame",
-        "/api/browser/pump-audit",
-        # Native browser command channel (agent->Electron). MACHINE endpoints,
-        # same trust class as ``/api/browser/frame``: the MCP proxy posts commands
-        # and the Electron main process long-polls/returns results, all loopback +
-        # internal-secret. No browser calls them, so STRICT (not mixed). Each
-        # handler re-asserts loopback because a ``local_only=False`` deployment
-        # reclassifies strict paths as mixed.
-        "/api/browser/command",
-        "/api/browser/command-drain",
-        "/api/browser/command-result",
+        # The ``browser`` MCP tool's op leg onto the Browser Harness: the shim posts
+        # one op, the gateway runs it on its supervisor. MCP-only, no browser caller,
+        # so STRICT; the handler re-asserts ``internal_auth``.
+        "/api/browser/op",
+        # Its hand-back poll: the parked tool asks whether the person let go.
+        "/api/browser/handback",
+        # Its quick-ask poll: the parked ``ask`` op asks whether the person answered.
+        # Only an outcome word comes back; the answer itself is the owner's route.
+        "/api/browser/ask/poll",
+        # The forwarding leg of a tool an installed app declares in its manifest
+        # (``apps.app_agent_tools``): the ``kirocrew-core`` server posts the call, the
+        # handler re-asserts ``internal_auth`` and hands it to the declaring app's own
+        # route. One fixed core path for every app, so no app route is admitted here.
+        "/api/app-tools/call",
         # External terminal grant redemption. Its only caller is the desktop
-        # shell's main process, over the same channel as the browser command
-        # drain above; the browser holds the grant but must never redeem it, so
+        # shell's main process, loopback + internal-secret; the browser holds
+        # the grant but must never redeem it, so
         # STRICT (not mixed). The handler re-asserts ``internal_auth`` and
         # loopback because a ``local_only=False`` deployment reclassifies strict
         # paths as mixed.
@@ -53,6 +60,16 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``token_auth.middleware`` treats ``/api/computer-use/invoke/...`` as
         # strict too, which is correct — nothing else lives under it.
         "/api/computer-use/invoke",
+        # Mediated-secret egress. The only legitimate caller is the in-sandbox
+        # ``kirocrew-secrets`` MCP subprocess over loopback with the internal
+        # secret; no browser ever posts to these, and keeping them strict means a
+        # dashboard cookie cannot reach the handler that resolves a vault secret
+        # and performs a credential-bearing egress.
+        "/api/mediated-secret-capability",
+        "/api/mediated-secret-request",
+        # Crew-owned Connection proxy: its only caller is the in-session stdio
+        # bridge over the Unix socket, which adds no token; the gateway injects it.
+        "/api/connection-proxy",
         # Computer use: the live-view (PiP) frame ingress. STRICT for the same
         # reason as ``invoke`` — its body is a frame of the operator's own desktop
         # and its only caller is this gateway's own capture thread, so no browser
@@ -82,6 +99,11 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # session it merely has a tab on, bypassing the unix-socket peer check
         # that makes the declared X-Session-Key trustworthy.
         "/api/session-directive",
+        # Slack code-channel tools: the gateway leg of the code_channel_* MCP
+        # tools. STRICT for the session-directive reason above: the caller is an
+        # MCP subprocess, and the channel acted on is derived from the attested
+        # X-Session-Key, which a browser bearer must not be able to assert.
+        "/api/slack/code-channel/tool",
         # In-app update approval (RFC OQ7 step-up). STRICT: its only legitimate
         # caller is `kirocrew update approve` on the gateway host presenting the
         # trust/-fenced nonce plus X-Local-Secret; no browser ever posts to it —
@@ -90,31 +112,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
-        # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
-        # ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
-        # runs behind a sandbox with its own user namespace, so its shells cannot
-        # connect the systemd user bus every pod verb needs; the gateway holds the
-        # host bus and does the systemd part on the agent's behalf. Without these
-        # entries the tools 403: an agent has no dashboard cookie, the gateway
-        # mints its internal secret in-process and never puts it in an agent's
-        # env, and ``.local_secret`` is on the sensitive-path denylist.
-        #
-        # STRICT, not mixed: no browser calls these. The dashboard's own pod
-        # buttons go to the app backend through the ``/apps/dev-fleet/api/*``
-        # reverse proxy, which is a different surface with cookie auth. Each
-        # handler re-asserts loopback AND ``internal_auth`` itself, because a
-        # ``local_only=False`` deployment reclassifies strict paths as mixed —
-        # same reason ``/api/computer-use/frame`` re-asserts both.
-        #
-        # FOUR EXACT paths, never the ``/api/apps/dev-fleet/pod`` prefix. The
-        # match is ``path == p or path.startswith(p + "/")``, so a prefix entry
-        # would silently admit every future route under that segment — and this
-        # app's neighbourhood includes worktree PRUNE and the Make Live cutover,
-        # which must never become reachable by holding the internal secret.
-        "/api/apps/dev-fleet/pod/up",
-        "/api/apps/dev-fleet/pod/down",
-        "/api/apps/dev-fleet/pod/status",
-        "/api/apps/dev-fleet/pod/list",
+        # The idle check before a restart. STRICT: its only caller is
+        # `kirocrew restart --when-idle` on the gateway host with the local
+        # secret; no browser posts to it. The handler re-asserts host locality.
+        "/api/restart/when-idle",
         "/api/session-tool-policy",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no
@@ -133,7 +134,15 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/pins",
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
+        "/api/slack-history",  # MCP-only (read_slack_history tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
+        # MCP-only crew-scoped session reads (crew= scope on search_chat_history
+        # / list_sessions / get_chat_session). Prefix matching covers
+        # "/api/crew-sessions/search|list|read". No browser caller — the
+        # dashboard's own federated read is the owner-guarded
+        # "/api/instances/search-sessions". Without this entry the tools'
+        # internal-secret calls fall through to cookie auth and are refused.
+        "/api/crew-sessions",
         # MCP-only (session_ledger_read / session_ledger_record tools); no
         # browser caller. Prefix matching covers "/api/session-ledger/record".
         # Without this entry the tools' internal-secret calls fall through to
@@ -224,6 +233,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/continue",
         "/api/session-control/set-model",
         "/api/session-control/set-color",
+        "/api/session-control/set-note",
         "/api/session-control/reload",
         "/api/session-control/rename",
         "/api/session-control/generate-title",
@@ -238,11 +248,17 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/release",
         "/api/session-control/read",
         "/api/session-control/summary",
+        "/api/session-control/queue",
         # MCP-only structured monitor inspection. The caller selects its
         # session identity through X-Session-Key, so cookie authentication can
         # never authorize this leaf.
         "/api/autonudge/session-monitor",
     }
+    # A shipped built-in app's own agent-facing routes, declared in its host grants
+    # (``strict_internal_paths``): leaf paths under that app's own namespace. The seam
+    # refuses any path outside it, so a built-in cannot claim a core route or another
+    # app's; each entry still admits its children here, so a row names leaf verbs only.
+    | _builtin_strict_internal_paths()
 )
 
 
@@ -311,6 +327,10 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/cron-folders",
         "/api/taskrunner",
         "/api/artifacts",
+        # The sandboxed MCP server's Bedrock remote leg: consent must be
+        # evaluated in the gateway process (the sandbox pins the consent
+        # file's inode, so a withdrawal is invisible in-sandbox).
+        "/api/knowledge/remote-search",
         # The 5 artifact_folder_* MCP tools authenticate via X-Internal-Secret.
         # token_auth prefix-matching is (path == p or path.startswith(p + "/")),
         # so "/api/artifact-folders" is NOT covered by the "/api/artifacts"
@@ -323,100 +343,6 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/remote-artifacts",
         "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
         "/api/deploy",  # MCP deploy_artifact tool — server enforces preview-only (confirm/override_scan stripped for internal-secret callers)
-        # Issue Radar investigation record — the ONE app route reachable with the
-        # internal secret, for the ``issue_radar_record_investigation`` MCP tool.
-        # An investigating chat agent has no dashboard token (cookies are
-        # httpOnly, the gateway mints its internal secret in-process and never
-        # puts it in an agent's env, and ``.local_secret`` is on the
-        # ``security.py`` sensitive-path denylist), so the PUT the Investigate
-        # seed prompt asks for would 403 unconditionally and no investigation
-        # could record its findings. Deliberately the FULL path, not the
-        # ``/api/apps/issue-radar`` prefix: prefix-matching here would also admit
-        # the app's GitHub/GitLab WRITE routes (label, close/reopen, comment) to
-        # anything holding the internal secret. This route is local-only triage
-        # state — no forge write, no shared ledger.
-        "/api/apps/issue-radar/investigation",
-        # Ops Mission Control agent surface — the routes the app's SOP-driven
-        # crons and investigation slots call through the ``ops_mission_control_api``
-        # MCP tool (the app's ONLY credentialed agent path; same trust model as
-        # ``/api/apps/issue-radar/investigation`` above: agents hold no cookie,
-        # no gateway IPC secret, and the CLI credential mint is denied by the
-        # builtin ``credential-exfil`` rules — deliberately, see security.py).
-        # Enumerated EXACT paths, never the app prefix: prefix-matching
-        # ``/api/apps/ops-mission-control`` would also admit provider
-        # configuration/secret writes, ``/settings``, the external ``/webhook``
-        # ingest and the human-only ``/incident/proposal/decide`` route to
-        # anything holding the internal secret. Bare ``/incident`` is excluded
-        # for the same reason (this matcher is exact-or-prefix, so admitting it
-        # would admit ``/incident/propose`` and ``/incident/proposal/decide``);
-        # single-incident reads go through ``/incidents?id=`` instead. The
-        # ``/rotation`` and ``/ledger`` entries DO cover their sub-routes
-        # (``/rotation/arm``, ``/ledger/contradictions``, ``/ledger/hygiene``)
-        # — all agent-surface by design.
-        "/api/apps/ops-mission-control/state",
-        "/api/apps/ops-mission-control/signals",
-        "/api/apps/ops-mission-control/incidents",
-        "/api/apps/ops-mission-control/handover",
-        "/api/apps/ops-mission-control/rotation",
-        "/api/apps/ops-mission-control/ledger",
-        "/api/apps/ops-mission-control/dispatch",
-        "/api/apps/ops-mission-control/incident/transition",
-        "/api/apps/ops-mission-control/incident/claim",
-        "/api/apps/ops-mission-control/incident/action",
-        # Issue Radar crew ledger — the read leg and the work-item write leg, for
-        # the ``issue_radar_crew_read`` / ``issue_radar_crew_record`` MCP tools. A
-        # crew agent has no dashboard token (same three reasons as the
-        # investigation entry above), and the ledger is the ONLY thing that
-        # survives its compaction, its per-turn ceiling and a gateway restart, so
-        # without these entries an unattended crew has no memory at all.
-        #
-        # FULL paths, never the ``/api/apps/issue-radar`` prefix — for the reason
-        # spelled out on the investigation entry: prefix-matching there would also
-        # admit the app's GitHub/GitLab WRITE routes (label, close/reopen,
-        # comment) to anything holding the internal secret.
-        #
-        # Read this pair as ONE admission, not two. Matching is
-        # ``path == p or path.startswith(p + "/")``, so the ``/crew`` entry
-        # already covers ``/crew/work`` and EVERY future ``/crew/...`` sub-route:
-        # anything added under that segment becomes agent-reachable the moment it
-        # is routed, with no further edit here. So a forge-write or destructive
-        # route must not live under ``/crew/`` — put it on its own path, or refuse
-        # an internal-secret caller at the handler the way
-        # ``api_skills_discover_install`` does below.
-        "/api/apps/issue-radar/crew",
-        # Redundant under the prefix match above; kept explicit so a reader sees
-        # both routes the crew tools actually call.
-        "/api/apps/issue-radar/crew/work",
-        # Design Tweak thread progress — the ONE app route reachable with the
-        # internal secret, for the ``design_tweak_update_thread`` MCP tool. The
-        # app hands the agent batched click-anchored comments and the agent
-        # applies them, but it cannot update the preview's comment-thread
-        # bubbles: posting to ``/thread`` needs a dashboard credential, and an
-        # agent session holds none (cookies are httpOnly, the gateway mints its
-        # internal secret in-process and never puts it in an agent's env, and
-        # the CLI credential mint is denied by the
-        # builtin ``credential-exfil`` rules — the same trust model as the
-        # ``/api/apps/issue-radar/investigation`` and Ops Mission Control
-        # entries above). So the documented raw POST 403s unconditionally and
-        # the dots never change; this admission is what lets the scoped tool
-        # carry progress through.
-        #
-        # ONE path, never the ``/apps/design-tweak`` prefix. ``internal_path_matches``
-        # admits an entry AND its children (``path == p or path.startswith(p + "/")``),
-        # so this entry admits ``/thread`` and ``/thread/<x>`` — but NOT the app's
-        # sibling state-mutating routes ``/submit``, ``/send``, ``/clear`` (archives
-        # a request and removes its pins), ``/delete``, ``/delete-comment`` or the
-        # project/dev-server management routes, which are separate entries this set
-        # does not list. A ``/thread/<x>`` child is harmless: Design Tweak's backend
-        # matches ``route == "/thread"`` exactly, so a child path 404s there. The
-        # agent only needs to append thread progress, so only ``/thread`` is admitted.
-        #
-        # The path is the gateway's reverse-proxy route ``/apps/{name}/api/{path}``
-        # (``apps/routes_proxy.py`` ``handle_app_api_proxy``), NOT ``/api/apps/...``:
-        # Design Tweak runs its ``_h_thread`` in its own backend process reached
-        # only through that proxy, unlike Issue Radar / Ops Mission Control which
-        # register aiohttp routes directly under ``/api/apps/<name>``.
-        "/apps/design-tweak/api/thread",
         # Registry skill discovery — the READ leg only, for the
         # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
         # the same two routes with cookie auth, hence mixed rather than strict.

@@ -3,55 +3,32 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
-import subprocess
 import sys
+import threading
+import time
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.env import augmented_path
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
+    BUNDLED_KIRO_CLI_ENTRY,
+    BUNDLED_KIRO_CLI_WINDOWS_ENTRY,
+    BUNDLED_KIRO_DIR_ENV,
+    bundled_kiro_cli_dir,
+    bundled_kiro_cli_entry,
+    is_bundled_kiro_cli,
+)
+
+if TYPE_CHECKING:
+    from kiro_crew.kiro_prerequisite import ProcessResult
 
 KIRO_CLI_NAME = "kiro-cli"
-
-#: The directory holding the kiro-cli copy the desktop app ships inside its own
-#: resources. The Electron shell sets it at gateway spawn
-#: (``website/electron/gateway-env.js``) only when the payload actually shipped;
-#: ``packaging/build-desktop.sh`` stages it. Set by the process that starts the
-#: gateway, like ``KIROCREW_KIRO_BIN``, never by a directory an agent can plant
-#: a file in -- which is what lets :func:`pin_kiro_cli` trust it while it still
-#: refuses the inherited ``PATH``. A directory rather than a binary because the
-#: Electron side only stats the directory it staged; the name of the entry
-#: binary inside it lives on this side, in :func:`bundled_kiro_cli_entry`.
-BUNDLED_KIRO_DIR_ENV = "KIROCREW_BUNDLED_KIRO_DIR"
-
-#: The executable the bundled directory is entered through: the chat binary,
-#: not the ``kiro-cli`` launcher. The launcher resolves ``kiro-cli-chat`` via
-#: ``$HOME/.local/bin`` and ``PATH`` and never looks in its own directory, so a
-#: bundle entered through it would silently run whatever copy the USER has
-#: installed and, on a clean machine, fail with "failed to launch
-#: kiro-cli-chat" -- while the launcher answers ``--version`` and ``whoami``
-#: itself, so those probes pass. ``kiro-cli-chat`` is the process every session
-#: is anyway, accepts every subcommand used here (``acp``, ``login``, ``whoami``,
-#: ``mcp``, ``agent``, ``settings``, ``--version``) and finds its own helpers
-#: through its own executable path, so it is self-contained.
-BUNDLED_KIRO_CLI_ENTRY = "kiro-cli-chat"
-BUNDLED_KIRO_CLI_WINDOWS_ENTRY = "kiro-cli.exe"
-
-
-def bundled_kiro_cli_entry(platform_name: str) -> str:
-    """Return the executable staged for *platform_name*.
-
-    Windows' MSI carries one self-contained ``kiro-cli.exe``. POSIX releases
-    stage ``kiro-cli-chat`` directly because their launcher does not resolve a
-    sibling chat binary.
-    """
-    if platform_name == "win32":
-        return BUNDLED_KIRO_CLI_WINDOWS_ENTRY
-    return BUNDLED_KIRO_CLI_ENTRY
 
 
 def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
@@ -140,6 +117,24 @@ _STATE_DB_TIMEOUT_SECS = 5.0
 #: A changelog entry is not a probe; a release nobody ran stays above the floor.
 SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 
+#: Lowest kiro-cli release where a Crew-owned KAS relay spawn passes
+#: ``--auth-method client``.
+#:
+#: From this release an omitted ``--auth-method`` means ``cli``: kiro-cli answers
+#: the engine's ``_kiro/auth/getAccessToken`` from its own store, so Crew's vault
+#: is never asked. ``client`` is what hands that request to Crew. Observed: the
+#: no-flag default is client-owned on 2.35.1 and cli-owned on 2.35.2, 2.37.1 and
+#: 3.0.0. ``client`` parses on 2.35.2; on 2.37.1 and 3.0.0, signed out, it also
+#: forwards the request to the ACP client. Forwarding with kiro-cli signed in has
+#: not been measured.
+#:
+#: The floor errs low on purpose, and an unknown version is treated as at or
+#: above it. A release that lacks the value refuses the flag at argument parse,
+#: before ``initialize``, so a gate that is too generous fails closed. A gate that
+#: is too strict keeps the flag off a release that needs it, and turns run on
+#: kiro-cli's own account instead of the vault's.
+KAS_AUTH_CLIENT_MIN_KIRO_CLI: tuple[int, int, int] = (2, 35, 2)
+
 #: Lowest verified release for both kiro and KAS where deferred Crew tools avoid
 #: the thinking-signature rejection. Older or unknown engines keep Crew tools resident.
 #: Empirical, not a named upstream fix: thinking turns before and after a deferred
@@ -147,6 +142,12 @@ SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 #: (``acp --agent-engine v3``) at 2.27.0. Lowering it needs that same matrix re-run
 #: on both engines at the lower release.
 MANDATORY_MCPS_DROP_MIN_VERSION: tuple[int, int, int] = (2, 27, 0)
+
+#: First kiro-cli release with no launcher. From 3.0.0 the POSIX install is the
+#: standalone archive: ``bin/kiro-cli`` IS the chat binary, with no
+#: ``kiro-cli-chat`` beside it, and no newer launcher bundle ships (kiro-cli
+#: ``scripts/build.py`` ``build_user_archives``; ``cutover.rs`` ``release_answer``).
+STANDALONE_KIRO_CLI_MIN_VERSION: tuple[int, int, int] = (3, 0, 0)
 
 #: ``--version`` is a local read of an already-resolved binary, so it gets the
 #: same short leash the readiness probe puts on its own first execution.
@@ -156,6 +157,92 @@ _VERSION_PROBE_TIMEOUT_SECS = 5
 #: its mtime, so ``kiro-cli update`` swapping the binary invalidates the entry
 #: instead of leaving a whole gateway lifetime on a stale verdict.
 _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
+#: How many runs in a row of one probe on one binary may end with the process tree
+#: unverified before that answer is kept as unknown, the way a timed-out probe's is.
+_UNVERIFIED_PROBE_ATTEMPTS = 3
+_unverified_probe_runs: dict[tuple[str, str, int], int] = {}
+
+
+def _retry_unverified_probe(probe: str, key: tuple[str, int], result: ProcessResult | None) -> bool:
+    """Whether *result* stays out of the cache so that the next reader probes again.
+
+    A run ended because its process tree could not be verified says nothing about
+    the binary, as a sandbox that could not be built says nothing. That run did
+    spawn the binary, though, so only :data:`_UNVERIFIED_PROBE_ATTEMPTS` runs in a
+    row are left uncached; the last one is cached like any other failed probe.
+    """
+    if result is None or not result.tree_unverified:
+        return False
+    runs = _unverified_probe_runs.get((probe, *key), 0) + 1
+    _unverified_probe_runs[(probe, *key)] = runs
+    return runs < _UNVERIFIED_PROBE_ATTEMPTS
+
+
+def _sandboxed_probe(binary: str, args: Sequence[str], timeout_secs: float) -> ProcessResult | None:
+    """Run one fixed-argv kiro-cli probe inside the sandbox; ``None`` if it could not run.
+
+    The pinned install can sit in a directory the sandboxed agent writes as the same
+    account (``~/.local/bin``), so a probe that ran it outside the sandbox would run
+    whatever an agent left there as the gateway itself. The probe goes through
+    ``kiro_prerequisite._run_process`` instead, at the configured tier, as an agent
+    session runs the same binary and as ``agent_sdk.drivers.acp._sandboxed_acp_help``
+    runs a ``PATH`` hit. ``first_party_fixed_argv``: the argv is fixed and the binary
+    is :func:`pin_kiro_cli`'s, so a host with no sandbox backend still runs the probe
+    unconfined, as before. Called on a running event loop, the probe runs in a worker
+    thread and blocks the caller as the plain spawn did. Never raises.
+    """
+    # Imported here: this module is a leaf every setup and launch path imports at boot.
+    import asyncio  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    from kiro_crew.kiro_prerequisite import _run_process  # noqa: PLC0415
+    from kiro_crew.sandbox import (  # noqa: PLC0415
+        configured_sandbox_mode,
+        scrub_agent_subprocess_env,
+    )
+
+    try:
+        if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
+            # Main's plain spawn failed here; the runner's ``env`` hop would instead
+            # exit 127 with a line that reads like the child's own answer.
+            return None
+        probe = _run_process(
+            binary,
+            list(args),
+            # Scrubbed as for a session spawn: on Windows the runner skips the sandbox,
+            # so its own launcher scrub never runs.
+            env=scrub_agent_subprocess_env(dict(os.environ)),
+            timeout_secs=timeout_secs,
+            sandbox_mode=configured_sandbox_mode(),
+            first_party_fixed_argv=True,
+            reap_survivors=True,
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(probe)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, probe).result()
+    except Exception:  # noqa: BLE001 - a probe that could not run is unknown
+        return None
+
+
+def _probe_ran(result: ProcessResult) -> bool:
+    """Whether *result* is the child's own whole answer.
+
+    False for a spawn, sandbox or timeout failure, for a run ended because its
+    process tree could not be verified, and for output that filled the capture
+    bound, which may have lost the line a caller looks for.
+    """
+    from kiro_crew.kiro_prerequisite import _MAX_CAPTURED_OUTPUT  # noqa: PLC0415
+
+    return (
+        result.returncode is not None
+        and not result.timed_out
+        and not result.tree_unverified
+        and result.sandbox_failure is None
+        and len(result.output) < _MAX_CAPTURED_OUTPUT
+    )
 
 
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
@@ -163,35 +250,85 @@ def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
     return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
 
 
-def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
-    """Allow deferral only for the pinned install and its own chat sibling.
+def kas_auth_client_flag_supported(version: tuple[int, int, int] | None) -> bool:
+    """Whether a Crew-owned KAS relay spawn on *version* passes ``--auth-method client``.
 
-    The executable must match the pin or its chat sibling by realpath, and its
-    invoked directory must match the pin's directory. Both pinned executables
-    must meet the version floor; only those paths are probed. Missing spawn
-    paths, pod bundles, and non-pinned launchers keep Crew's servers resident.
-    An edition companion swapping in a direct executable is trusted gateway
-    code and is not compared. Any failure keeps the servers resident; never raises.
-
-    An operator ``KIROCREW_KIRO_BIN`` override also keeps them resident: its
-    directory is the operator's choice, not a known install directory, so no path
-    derived from it is probed (the KAS spawn skips that sibling for the same reason).
+    True unless *version* is known and below the floor. An unknown version is
+    True: a release that lacks the value stops at argument parse, which fails
+    closed, while an omitted flag on a release at or above the floor runs on
+    kiro-cli's own credential.
     """
-    if not spawned_binary or (os.environ.get("KIROCREW_KIRO_BIN") or "").strip():
+    return version is None or version >= KAS_AUTH_CLIENT_MIN_KIRO_CLI
+
+
+def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
+    """Whether a ``kiro-cli`` at *version* is the standalone chat binary, not a launcher."""
+    return version is not None and version >= STANDALONE_KIRO_CLI_MIN_VERSION
+
+
+def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
+    """Whether a spawn of *spawned_binary* may leave Crew's servers to Tool Search.
+
+    Three install shapes can earn deferral, each judged on the file the session
+    is about to run, and each by the version floor alone:
+
+    * **The pinned install and its own chat sibling.** The executable must match
+      the pin or its chat sibling by realpath, and its invoked directory must
+      match the pin's directory. Both pinned executables must meet the floor;
+      only those paths are probed.
+    * **The operator's ``KIROCREW_KIRO_BIN``**, when it is the file spawned. Its
+      version is the answer :func:`kiro_cli_version_at` already gives for the
+      pin, which an absolute override is. No path derived from it is probed (the
+      KAS spawn skips that sibling for the same reason).
+    * **An install found only through ``PATH``**, when it is the file spawned.
+      Its version is read inside the sandbox and never waited for
+      (:mod:`kiro_crew.kiro_cli_path_probe`): while there is no answer, the
+      servers stay resident.
+
+    The last two derive no sibling, so a POSIX ``kiro-cli`` below 3.0.0, a
+    launcher that execs a ``kiro-cli-chat`` nobody probed, stays resident there.
+    Missing spawn paths, pod bundles and every other executable keep Crew's
+    servers resident, and so does every spawn once a request was refused for a
+    changed tool list in this process (:func:`note_tools_list_refusal`).
+    Every check runs on the executables the sandbox wrap will run: the spawned
+    path and the pin both pass through the edition's agent-executable resolver
+    first, so a managed launcher is judged by the install it is swapped for,
+    never by the launcher itself. Any failure keeps the servers resident; never raises.
+    """
+    if not spawned_binary or _tools_list_refused_at is not None:
         return False
     try:
-        pinned = pin_kiro_cli()[0]
+        pinned, unpinned = pin_kiro_cli()
+        # The same resolver sandbox_argv applies to argv[0] before it execs: an
+        # edition may swap a managed launcher (one with no kiro-cli-chat beside it)
+        # for the direct install behind it. Identity on the public build.
+        from kiro_crew.sandbox_argv import _resolve_agent_executable  # noqa: PLC0415
+
+        spawned_binary = _resolve_agent_executable(spawned_binary)
+        if not spawned_binary:
+            return False
+        override = (os.environ.get("KIROCREW_KIRO_BIN") or "").strip()
+        if override:
+            # An absolute override is the pin itself; a pin that is some other
+            # install, or any other file spawned, is not the operator's choice.
+            if pinned is None or not _names_override(pinned, override):
+                return False
+            pinned = _resolve_agent_executable(pinned)
+            if not pinned or not _same_spelling(spawned_binary, pinned):
+                return False
+            return _lone_file_drop_supported(pinned, kiro_cli_version_at(pinned))
         if pinned is None:
+            found = path_only_install() if unpinned else None
+            found = _resolve_agent_executable(found) if found else None
+            if not found or not _same_spelling(spawned_binary, found):
+                return False
+            from kiro_crew import kiro_cli_path_probe  # noqa: PLC0415
+
+            return _lone_file_drop_supported(found, kiro_cli_path_probe.version_if_known(found))
+        pinned = _resolve_agent_executable(pinned)
+        if not pinned:
             return False
         sibling = chat_sibling(pinned)
-        # A POSIX launcher with no sibling in its own directory execs whatever
-        # kiro-cli-chat it finds on PATH, whose version is unknown.
-        if (
-            sibling is None
-            and sys.platform != "win32"
-            and os.path.basename(pinned) == KIRO_CLI_NAME
-        ):
-            return False
         candidates = [pinned, sibling]
         if os.path.normcase(os.path.realpath(spawned_binary)) not in {
             os.path.normcase(os.path.realpath(binary))
@@ -203,6 +340,16 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
             os.path.realpath(os.path.dirname(pinned))
         ):
             return False
+        # A POSIX launcher with no sibling in its own directory execs whatever
+        # kiro-cli-chat it finds on PATH, whose version is unknown. From 3.0.0
+        # no launcher ships: kiro-cli is the chat binary itself, alone.
+        if (
+            sibling is None
+            and sys.platform != "win32"
+            and os.path.basename(pinned) == KIRO_CLI_NAME
+            and not standalone_kiro_cli(kiro_cli_version_at(pinned))
+        ):
+            return False
         return all(
             mandatory_mcps_drop_supported(kiro_cli_version_at(binary))
             for binary in candidates
@@ -210,6 +357,88 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
         )
     except Exception:  # noqa: BLE001 - an unanswerable trust check refuses deferral
         return False
+
+
+def _same_spelling(binary: str, other: str) -> bool:
+    """Whether two paths name one file by spelling alone: no symlink is followed."""
+    return os.path.normcase(os.path.abspath(binary)) == os.path.normcase(os.path.abspath(other))
+
+
+def _names_override(binary: str, override: str) -> bool:
+    """Whether *binary* is the file ``KIROCREW_KIRO_BIN`` names.
+
+    By spelling, as the operator named it; on Windows by real path too, because
+    the resolver hands every candidate back canonical there (an 8.3 short name
+    comes back spelled long).
+    """
+    if _same_spelling(binary, override):
+        return True
+    return sys.platform == "win32" and _same_spelling(binary, os.path.realpath(override))
+
+
+def _lone_file_drop_supported(binary: str, version: tuple[int, int, int] | None) -> bool:
+    """The deferral floor for a file judged alone, with no sibling derived.
+
+    A POSIX ``kiro-cli`` below 3.0.0 is a launcher: it execs a ``kiro-cli-chat``
+    whose version this file's own says nothing about.
+    """
+    if not mandatory_mcps_drop_supported(version):
+        return False
+    launcher_name = sys.platform != "win32" and os.path.basename(binary) == KIRO_CLI_NAME
+    return not launcher_name or standalone_kiro_cli(version)
+
+
+def path_only_install() -> str | None:
+    """The kiro-cli a spawn resolves when it is found through ``PATH`` alone.
+
+    ``None`` when an install is pinned, when the operator named one with
+    ``KIROCREW_KIRO_BIN``, or when none is installed. Resolved the way the ACP
+    spawn resolves it (:func:`resolve_kiro_cli`, made absolute), so the path
+    compares equal to the spawn's ``argv[0]``. Blocking: stats directories.
+    """
+    if (os.environ.get("KIROCREW_KIRO_BIN") or "").strip():
+        return None
+    pinned, unpinned = pin_kiro_cli()
+    if pinned is not None or not unpinned:
+        return None
+    found = resolve_kiro_cli()
+    return os.path.abspath(found) if found else None
+
+
+#: ``time.monotonic()`` of the first request this process saw refused because a
+#: deferred tool load changed the ``tools`` list under a signed thinking block,
+#: else ``None``. Set once and never cleared: from then on every kiro-cli spawn
+#: keeps Crew's servers resident, for the life of the process.
+_tools_list_refused_at: float | None = None
+
+
+def note_tools_list_refusal() -> None:
+    """Record that deferring Crew's tools got a request refused in this process.
+
+    The floor in :data:`MANDATORY_MCPS_DROP_MIN_VERSION` is empirical, so an
+    engine above it can still refuse. The session that hit it is rebuilt by its
+    caller; this makes that rebuild, and every later spawn, send the full tool
+    list. Process-wide rather than per install: a gateway runs one kiro-cli, and
+    keeping too many servers resident is the safe direction.
+
+    shortcut: a process already running keeps the list it started with. A warm-pool
+    process is discarded at claim (:func:`spawned_before_tools_list_refusal`); a
+    process shared between chats (the ``chat_runtime_sharing`` preview) is not, so
+    a rebuilt conversation placed on one still defers. Upgrade by fencing that
+    placement on the same test when the preview leaves preview.
+    """
+    global _tools_list_refused_at
+    if _tools_list_refused_at is None:
+        _tools_list_refused_at = time.monotonic()
+
+
+def spawned_before_tools_list_refusal(spawn_time: float) -> bool:
+    """Whether a process started at *spawn_time* (monotonic) predates the refusal.
+
+    Such a process read its never-defer list before the refusal was known, so it
+    may still be deferring Crew's tools.
+    """
+    return _tools_list_refused_at is not None and spawn_time <= _tools_list_refused_at
 
 
 def spec_permissions_supported(version: tuple[int, int, int] | None) -> bool:
@@ -264,26 +493,20 @@ def kiro_cli_version_at(binary: str) -> tuple[int, int, int] | None:
         return None
     if key in _version_cache:
         return _version_cache[key]
+    result = _sandboxed_probe(binary, ["--version"], _VERSION_PROBE_TIMEOUT_SECS)
+    if result is not None and result.sandbox_failure is not None:
+        # Not cached: a sandbox that could not be built says nothing about the binary.
+        return None
+    if _retry_unverified_probe("version", key, result):
+        return None
     version: tuple[int, int, int] | None = None
-    completed: subprocess.CompletedProcess[str] | None
-    try:
-        completed = subprocess.run(
-            [binary, "--version"],
-            capture_output=True,
-            timeout=_VERSION_PROBE_TIMEOUT_SECS,
-            check=False,
-            # A console-less Windows gateway would otherwise flash a console
-            # window for this child; the constant is 0 elsewhere.
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            # Pinned UTF-8 rather than bare text=True: a platform-locale decode
-            # could mangle the version token and report a supported kiro-cli as
-            # unparseable, which this gate reads as refusing.
-            **UTF8_TEXT,
+    if result is not None and result.ok:
+        # stdout and stderr arrive as one text, so each line is read on its own: a
+        # line after the version would otherwise hide it from the last-token parse.
+        version = next(
+            (v for line in result.output.splitlines() if (v := parse_kiro_cli_version(line))),
+            None,
         )
-    except Exception:  # noqa: BLE001 - see the docstring: unknown, never raising
-        completed = None
-    if completed is not None and completed.returncode == 0:
-        version = parse_kiro_cli_version(completed.stdout or completed.stderr or "")
     _version_cache[key] = version
     return version
 
@@ -304,22 +527,171 @@ def kas_relay_help(binary: str) -> str | None:
     serve KAS at all, and reporting that as "unknown" would let a broken
     configuration pass the readiness check and fail later at spawn instead.
 
+    Call only on :func:`pin_kiro_cli`'s install, or from ``kirocrew doctor`` on the
+    binary it resolved. The probe runs inside the sandbox (:func:`_sandboxed_probe`).
     Local binary, argv list, no shell, no credential involved.
     """
-    try:
-        proc = subprocess.run(  # noqa: S603 - argv list, no shell, local binary
-            [binary, "acp", "--help"],
-            capture_output=True,
-            timeout=_KAS_HELP_PROBE_TIMEOUT_SECS,
-            check=False,
-            # Pinned UTF-8 rather than bare text=True: help output is decoded
-            # here, and a platform-locale decode could mangle the flag name this
-            # probe searches for and report a supported kiro-cli as unreadable.
-            **UTF8_TEXT,
-        )
-    except (OSError, subprocess.SubprocessError):
+    result = _sandboxed_probe(binary, ["acp", "--help"], _KAS_HELP_PROBE_TIMEOUT_SECS)
+    if result is None or not _probe_ran(result):
         return None
-    return f"{proc.stdout}\n{proc.stderr}"
+    return result.output
+
+
+#: Ceiling on the v3 start probe. With stdin closed a v3 engine that runs here
+#: exits on its own once it reads EOF: about ten seconds measured on kiro-cli 3.1.0,
+#: most of it kiro-cli's own start-up work before the engine runs, which is the
+#: path its refusal comes from too. The cap bounds only a start that never exits.
+_KAS_START_PROBE_TIMEOUT_SECS = 30
+#: Start-probe answers, keyed by (path, mtime, argv) like the version cache.
+_kas_start_cache: dict[tuple[str, int, tuple[str, ...]], str] = {}
+
+
+def kas_relay_start_output(binary: str, argv_tail: Sequence[str]) -> str | None:
+    """Output of one ``binary *argv_tail`` start with stdin closed, or ``None`` when it FAILED.
+
+    The KAS engine check behind ``agent_sdk.kas_engine_start_verdict``: kiro-cli's
+    ``acp --help`` lists ``--agent-engine v3`` even on a host where starting that
+    engine is refused, so only a start shows the refusal. It runs through
+    :func:`_sandboxed_probe`, inside the sandbox at the configured tier: the child
+    reads EOF on stdin and serves nothing, its output is bounded, and it leads its
+    own process group under the supervisor, so a start still running at
+    :data:`_KAS_START_PROBE_TIMEOUT_SECS` is ended with the engine it launched.
+    ``None`` means only that nothing is known: the spawn failed, the sandbox
+    refused it, or the start timed out. Cached by path, mtime and argv, so an
+    upgrade in place is re-read.
+
+    Call only on :func:`pin_kiro_cli`'s install, or from ``kirocrew doctor`` on the
+    binary its ``acp --help`` row already ran.
+    Local binary, argv list, no shell, and Kiro Crew passes and reads no credential.
+    Blocking: one bounded spawn on the first call per binary identity.
+    """
+    argv = tuple(argv_tail)
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns, argv)
+    except OSError:
+        return None
+    cached = _kas_start_cache.get(key)
+    if cached is not None:
+        return cached
+    result = _sandboxed_probe(binary, argv, _KAS_START_PROBE_TIMEOUT_SECS)
+    if result is None or not _probe_ran(result):
+        # Not cached: a start that failed, was refused or never exited says nothing
+        # about the host.
+        return None
+    _kas_start_cache[key] = result.output
+    return result.output
+
+
+#: Ceiling on the ``chat --help`` spawn, for the same reason as the ``acp --help`` one.
+_CHAT_HELP_PROBE_TIMEOUT_SECS = 15
+#: ``chat --help`` engine answers, keyed by (path, mtime) like the version cache.
+_chat_engines_cache: dict[tuple[str, int], tuple[str, ...] | None] = {}
+_POSSIBLE_VALUES_RE = re.compile(r"\[possible values:\s*([^\]]*)\]")
+
+
+def chat_agent_engines(help_text: str) -> tuple[str, ...]:
+    """The engines ``chat --help`` lists for ``--agent-engine``, in its own order.
+
+    Empty when the help names no ``--agent-engine`` selector at all (a kiro-cli
+    older than the selector). The values are read from the clap
+    ``[possible values: ...]`` line that follows the flag, not from its prose,
+    because the prose names the default engine and that changes between releases.
+    """
+    at = help_text.find("--agent-engine")
+    if at < 0:
+        return ()
+    # The selector's own block ends where the next long option begins.
+    end = help_text.find("\n      --", at + 1)
+    block = help_text[at : end if end > 0 else len(help_text)]
+    match = _POSSIBLE_VALUES_RE.search(block)
+    if match is None:
+        return ()
+    return tuple(v.strip() for v in match.group(1).split(",") if v.strip())
+
+
+def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
+    """The engines this kiro-cli's ``chat --agent-engine`` accepts, or ``None`` if unknown.
+
+    ``()`` means the probe ran and the binary has no engine selector; ``None``
+    means the probe could not run (absent binary, spawn error, timeout, nonzero
+    exit). Cached by path and mtime, so an upgrade in place is re-read.
+
+    Call only on a path derived from :func:`pin_kiro_cli`. The probe runs inside the
+    sandbox (:func:`_sandboxed_probe`). Blocking: one bounded spawn on the first call
+    per binary identity. Local binary, argv list, no shell, no credential involved.
+    """
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return None
+    if key in _chat_engines_cache:
+        return _chat_engines_cache[key]
+    result = _sandboxed_probe(binary, ["chat", "--help"], _CHAT_HELP_PROBE_TIMEOUT_SECS)
+    if result is not None and result.sandbox_failure is not None:
+        # Not cached: a sandbox that could not be built says nothing about the binary.
+        return None
+    if _retry_unverified_probe("chat", key, result):
+        return None
+    engines: tuple[str, ...] | None = None
+    if result is not None and _probe_ran(result) and result.ok:
+        engines = chat_agent_engines(result.output)
+    _chat_engines_cache[key] = engines
+    return engines
+
+
+#: The engine the Kiro CLI harness drives. Passed explicitly because kiro-cli's
+#: own default is not a contract: 3.0.0's ``acp --help`` says "v2 when neither is
+#: set", yet a bare ``acp`` there answers ``initialize`` with the v3 capability
+#: block (``_meta.kiro.extensionMethods``), while 2.37.1 answers bare with v2.
+KIRO_ACP_ENGINE = "v2"
+#: ``acp --help`` engine answers, keyed by (path, mtime) like the chat cache.
+_acp_engines_cache: dict[tuple[str, int], tuple[str, ...]] = {}
+
+
+def _is_pinned_kiro_cli(binary: str) -> bool:
+    """Whether *binary* is :func:`pin_kiro_cli`'s own install. Stats only; never raises."""
+    try:
+        pinned, _unpinned = pin_kiro_cli()
+        return pinned is not None and os.path.samefile(pinned, binary)
+    except (OSError, ValueError):
+        return False
+
+
+def kiro_acp_engine_args(binary: str) -> list[str]:
+    """``["--agent-engine", "v2"]`` when this kiro-cli's ``acp`` lists v2, else ``[]``.
+
+    The argv tail that pins the Kiro CLI harness to the engine it speaks, the
+    same way the KAS relay pins ``v3`` (``acp.kas_transport``). Empty when the
+    binary is absent or not the pinned install, the probe fails, or the help
+    lists no v2: an unknown flag
+    or value would fail the whole spawn, which is worse than an unpinned one.
+    Cached by path and mtime, so an upgrade in place is re-read.
+
+    Call only on a trusted, resolved kiro-cli path. The probe
+    (:func:`kas_relay_help`) runs inside the sandbox. Blocking: one bounded spawn
+    on the first call per binary identity.
+    """
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return []
+    engines = _acp_engines_cache.get(key)
+    if engines is None:
+        if not _is_pinned_kiro_cli(binary):
+            # A kiro-cli reached only through PATH may sit in an agent-writable
+            # directory; the session runs it inside the sandbox, but this probe
+            # would not. shortcut: such a launch stays bare (the pre-pin argv);
+            # upgrade by running the probe under the sandbox.
+            return []
+        # The KAS floor's own ``acp --help`` probe; the clap ``[possible values:
+        # ...]`` reading is the one ``chat --help`` uses.
+        help_text = kas_relay_help(binary)
+        if help_text is None:
+            # Not cached: a probe that could not run says nothing about the binary.
+            return []
+        engines = chat_agent_engines(help_text)
+        _acp_engines_cache[key] = engines
+    return ["--agent-engine", KIRO_ACP_ENGINE] if KIRO_ACP_ENGINE in engines else []
 
 
 def kiro_cli_state_dbs(
@@ -348,7 +720,9 @@ def api_key_configured(environ: Mapping[str, str] | None = None) -> bool:
     configured host.
 
     Reads the process environment, which by this point also carries anything the
-    credential loader lifted out of Kiro Crew's ``.env``.
+    credential loader lifted out of Kiro Crew's ``.env`` -- except under the
+    Docker scrub (``_KIROCREW_CREDS_SCRUBBED``), where the key stays only in
+    ``.env``; :func:`_data_home_api_key_may_be_set` reads that file.
     """
     env = environ if environ is not None else os.environ
     return bool((env.get(_API_KEY_ENV) or "").strip())
@@ -370,6 +744,180 @@ def mcp_governance_may_apply(
     it does not check is what turns a diagnostic into bad advice.
     """
     return signed_in_via_idc(platform_name, home, environ) or api_key_configured(environ)
+
+
+def _data_home_api_key_may_be_set() -> bool:
+    """Whether the data home's ``.env`` holds ``KIRO_API_KEY``, or cannot be read.
+
+    The Docker entrypoint moves the key into ``.env`` and scrubs it from the
+    process environment (``_KIROCREW_CREDS_SCRUBBED``), and kiro-cli sessions
+    get it back from there, so :func:`api_key_configured` alone misses the key
+    those sessions sign in with. Only presence is inspected. An unreadable file
+    proves nothing and answers True, the same rule
+    :func:`kiro_crew.acp.kas_route.kiro_cli_signed_out` applies.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    definitive: list[bool] = []
+    try:
+        if read_env_file_credential(CRED_KIRO_API_KEY, definitive=definitive).strip():
+            return True
+    except Exception:  # noqa: BLE001 - an unreadable answer proves nothing
+        return True
+    return definitive != [True]
+
+
+# How long a "no admin registry can govern this sign-in" answer is reused. It is
+# asked on every spec write and every kiro-cli session start while registry mode
+# is declared, and the confirming ``whoami`` is a subprocess that can take
+# seconds. The answer is also keyed on the sign-in's own traces (see
+# :func:`_sign_in_fingerprint`), so a sign-in that touches kiro-cli's store or
+# the API-key variable is seen at once rather than at the end of the window.
+_GOVERNANCE_UNREACHABLE_TTL_SECS = 300.0
+_governance_unreachable_cache: tuple[float, object, bool] | None = None
+_governance_unreachable_lock = threading.Lock()
+
+
+def _sign_in_fingerprint(
+    home: Path | None = None, environ: Mapping[str, str] | None = None
+) -> tuple[tuple[tuple[str, int, int] | None, ...], bool, bool]:
+    """What changes when kiro-cli signs in or out: its store files and the API key.
+
+    Only ``stat`` data and the key's presence, in the environment and in the
+    data home's ``.env``, never a value. A sign-in writes
+    ``data.sqlite3`` or its WAL, so a cached answer from before it does not
+    match. Unreadable paths count as absent.
+    """
+    env = environ if environ is not None else os.environ
+    stamps: list[tuple[str, int, int] | None] = []
+    for db in kiro_cli_state_dbs(sys.platform, home if home is not None else Path.home(), env):
+        for path in (db, db.with_name(db.name + "-wal")):
+            try:
+                st = os.stat(path)
+            except OSError:
+                stamps.append(None)
+                continue
+            stamps.append((str(path), st.st_mtime_ns, st.st_size))
+    return (tuple(stamps), api_key_configured(env), _data_home_api_key_may_be_set())
+
+
+def registry_governance_known_unreachable() -> bool:
+    """True only when it is KNOWN that no admin MCP registry can govern this sign-in.
+
+    Both signals must agree: :func:`mcp_governance_may_apply` finds no Identity
+    Center rows and no API key, the data home's ``.env`` holds no API key either
+    (:func:`_data_home_api_key_may_be_set`), AND ``kiro-cli whoami`` names a Builder ID or
+    social account type. The store probe alone cannot decide it, because some
+    kiro-cli builds sign an Identity Center user in without writing the rows it
+    counts. Any doubt answers ``False``: a caller that drops the registry marker
+    on this answer must never drop it on a governed account, where kiro-cli keeps
+    only marked entries.
+
+    The spec writers that ask this are reached from many synchronous paths, and
+    a coroutine can sit above any of them. ``whoami`` can take seconds and runs
+    under a process-wide lock, so on a thread running an event loop the probe
+    never runs it and never waits for that lock: it answers from
+    :func:`_governance_unreachable_on_loop`. The rule turns on the calling
+    thread, not on a claim about the call graph, so a caller added later is
+    covered too.
+    """
+    # Function-local: this module is imported by lightweight path-resolution
+    # callers that must not pay for the atomic-write module's imports.
+    from kiro_crew.atomic_write import on_event_loop
+
+    if on_event_loop():
+        return _governance_unreachable_on_loop()
+    return _governance_unreachable_blocking()
+
+
+def _governance_unreachable_blocking() -> bool:
+    """The full probe, ``whoami`` included. Never called on an event loop thread."""
+    global _governance_unreachable_cache
+    with _governance_unreachable_lock:
+        now = time.monotonic()
+        fingerprint: object
+        try:
+            fingerprint = _sign_in_fingerprint()
+        except Exception:  # noqa: BLE001 - no fingerprint means no reuse
+            fingerprint = object()
+        cached = _governance_unreachable_cache
+        if (
+            cached is not None
+            and cached[1] == fingerprint
+            and now - cached[0] < _GOVERNANCE_UNREACHABLE_TTL_SECS
+        ):
+            return cached[2]
+        try:
+            if mcp_governance_may_apply() or _data_home_api_key_may_be_set():
+                verdict = False
+            else:
+                # Function-local: login_target imports this module at its top.
+                from kiro_crew.cloud.login_target import whoami_names_personal_account
+
+                verdict = whoami_names_personal_account()
+        except Exception:  # noqa: BLE001 - a probe failure is "cannot tell"
+            verdict = False
+        _governance_unreachable_cache = (now, fingerprint, verdict)
+        return verdict
+
+
+# Single-flight flag for the off-loop warm-up. Its lock only guards the flag and
+# is never held across I/O, so taking it on the loop thread cannot stall.
+_governance_warm_running = False
+_governance_warm_flag_lock = threading.Lock()
+
+
+def _governance_unreachable_on_loop() -> bool:
+    """The probe's answer on an event loop thread: cached, or doubt. Never blocks.
+
+    Reads the cache without taking :data:`_governance_unreachable_lock`, which an
+    off-loop probe may hold for the whole ``whoami``. A cached answer is reused
+    while the sign-in fingerprint still matches it, past the reuse window too:
+    switching between a personal and a governed sign-in writes kiro-cli's store
+    or changes the API key, and either changes the fingerprint. Past the window
+    a warm-up re-asks off the loop for the next call.
+
+    With no answer for this sign-in the probe answers ``False``, the doubt
+    answer, which keeps the registry marker, and starts a warm-up so the next
+    spec write knows. A governed account therefore never loses the marker here.
+    """
+    try:
+        fingerprint: object = _sign_in_fingerprint()
+    except Exception:  # noqa: BLE001 - no fingerprint means no reuse
+        fingerprint = object()
+    cached = _governance_unreachable_cache
+    if cached is not None and cached[1] == fingerprint:
+        if time.monotonic() - cached[0] >= _GOVERNANCE_UNREACHABLE_TTL_SECS:
+            _start_governance_warm()
+        return cached[2]
+    _start_governance_warm()
+    return False
+
+
+def _start_governance_warm() -> None:
+    """Run the full probe once on a daemon thread, unless one is already running."""
+    global _governance_warm_running
+    with _governance_warm_flag_lock:
+        if _governance_warm_running:
+            return
+        _governance_warm_running = True
+
+    def _warm() -> None:
+        global _governance_warm_running
+        try:
+            # Catches every probe failure itself and caches it as doubt.
+            _governance_unreachable_blocking()
+        finally:
+            with _governance_warm_flag_lock:
+                _governance_warm_running = False
+
+    try:
+        threading.Thread(target=_warm, name="kirocrew-registry-probe", daemon=True).start()
+    except RuntimeError:
+        # No thread could start (interpreter shutting down): leave the flag clear
+        # so a later call can try again.
+        with _governance_warm_flag_lock:
+            _governance_warm_running = False
 
 
 def signed_in_via_idc(
@@ -455,39 +1003,6 @@ def _open_state_db_readonly(path: Path) -> sqlite3.Connection | None:
 
 def _unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
-
-
-def bundled_kiro_cli_dir(environ: Mapping[str, str]) -> str | None:
-    """The desktop app's bundled kiro-cli directory, or ``None`` when not bundled.
-
-    Whitespace-only and unset both read as "not bundled": a blank value is what
-    an unbundled build leaves behind, never a directory to search.
-    """
-    bundled = environ.get(BUNDLED_KIRO_DIR_ENV, "").strip()
-    return bundled or None
-
-
-def is_bundled_kiro_cli(binary: str, environ: Mapping[str, str]) -> bool:
-    """Whether *binary* is the desktop app's own bundled kiro-cli.
-
-    True only when a bundled directory is declared AND the binary's directory
-    is that directory, compared as normalised strings. The resolver builds the
-    bundled candidate from the same directory string
-    (:func:`find_kiro_cli_candidates`), so a textual compare is exact for
-    anything it produced; a symlinked ``KIROCREW_KIRO_BIN`` override that
-    points into the bundle reads as "not bundled", which keeps the operator's
-    binary on its normal update path. Pure string work -- no ``resolve()``, no
-    stat -- so it is safe to call on the event loop.
-
-    Provenance callers key off this: the setup gate serves the bundled copy's
-    absolute path as the sign-in command (it is not on the user's shell PATH),
-    and the self-update paths skip it (it lives inside a signed, read-only app
-    bundle and is replaced by the next app update, never in place).
-    """
-    bundled_dir = bundled_kiro_cli_dir(environ)
-    if not bundled_dir or not binary:
-        return False
-    return os.path.normpath(os.path.dirname(binary)) == os.path.normpath(bundled_dir)
 
 
 def _windows_program_files(environ: Mapping[str, str]) -> str:
@@ -584,7 +1099,7 @@ def known_kiro_cli_dirs(
         # function's result depend on state outside its arguments, which is exactly
         # what the ACP resolver's "the directories named in a not-found message are
         # the directories that were actually searched" contract relies on it NOT
-        # doing (see acp/client.py's `_resolve_kiro_cli_for_spawn` docstring).
+        # doing (see acp/client_spawn_env.py's `_resolve_kiro_bin_for_spawn` docstring).
         dirs.extend(
             part
             for part in augmented_path(environ.get("PATH", ""), home=str(home)).split(os.pathsep)
@@ -727,6 +1242,10 @@ def pin_kiro_cli() -> tuple[str | None, bool]:
     gateway's unattended paths run this in a thread under a timeout
     (``slack.gateway._pinned_kiro_cli``); a CLI command or a request handler
     already blocking on the spawn itself has nothing to gain from that.
+
+    The Tool Search gate's one read of a ``PATH``-only install, its ``--version``,
+    runs inside the strict sandbox or not at all
+    (:mod:`kiro_crew.kiro_cli_path_probe`); the pin's own read is never used on it.
     """
 
     pinned = resolve_kiro_cli(include_inherited_path=False)

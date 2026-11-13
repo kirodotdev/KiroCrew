@@ -22,6 +22,7 @@ parts of :mod:`kiro_crew.dashboard.chat_persistence_parts`, which
 The rules those consult are composed from :mod:`kiro_crew.dashboard.slot_persistence`:
 ``write_guards`` (the save's refusals and witnesses), ``metadata_codec`` (every
 slot field of the metadata line, written and read back through one table),
+``metadata_values`` (what a value read back from the line must satisfy first),
 ``metadata_line`` (what a save folds against the line on disk before it encodes),
 ``transcript_merge`` (frozen prefix, foreign appends, payload), ``message_entries``
 (row projection), ``restore_inputs`` (restore-time reads and screens) and
@@ -51,7 +52,7 @@ from typing import Any
 from kiro_crew import mcp_apps_render, model_registry  # noqa: F401
 from kiro_crew.agent import kiro_agents_dir_path  # noqa: F401
 from kiro_crew.agent_discovery import agent_model_map  # noqa: F401
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import TRANSCRIPT_REPLACE_BUDGET_SECONDS, atomic_write
 from kiro_crew.chat_attachments import (  # noqa: F401
     ImageBudget,
     persist_inline_images,
@@ -96,6 +97,7 @@ from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
     queue_persist_signature,
     sanitize_restored_queue,
 )
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis, TakeoverNote
 from kiro_crew.dashboard.slot_retention import (
     RESTORE_SLOT_BUDGET,
     crew_bound_on_disk,
@@ -126,21 +128,25 @@ from kiro_crew.execution_context import (  # noqa: F401
     stricter_memory_mode,
 )
 from kiro_crew.history import (  # noqa: F401
+    _FLOCK_ACQUIRE_TIMEOUT_S,
     HUMAN_TURN_META_KEY,
     METADATA_LINE_CORRUPT,
     ROWS_ONLY_DEFERRED_META_KEYS,
     ROWS_ONLY_OWNED_META_KEYS,
     SLOT_OWNED_META_KEYS,
     ConversationLog,
+    HistoryLockTimeout,
     _archive_lines,
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
+    transcript_lock_stems,
     transcript_sort_key,
     update_metadata_off_loop,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty  # noqa: F401
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
@@ -178,6 +184,12 @@ def _transcripts_may_be_remote_only() -> bool:
 #: skip publishing it (the transcript stays on disk; the member-thread
 #: endpoint re-creates and re-binds the slot on the next page open).
 _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
+
+#: Sentinel: the slot is a member key whose binding is intact but names a
+#: crewmate id the Crew config read did not resolve. Not published either, but
+#: the open-tab restore keeps the key in its reopen seed and a later pass
+#: (``dashboard.member_slot_retry``) tries it again.
+_DEFER_MEMBER_RESTORE: tuple[str, str] = ("", "__defer__")
 
 
 # Fallback effort levels — used when no ACP session has reported its config
@@ -336,13 +348,15 @@ def _remember_reasoning_effort_for_restore(level: str) -> None:
     directory = config_dir() / _VALIDATED_EFFORT_DIR
     if directory.parent.is_symlink():
         raise OSError("validated effort parent is a symlink")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(directory)
     if directory.is_symlink():
         raise OSError("validated effort directory is a symlink")
     path = _effort_marker_path(directory, level)
     # Old raw-name markers remain readable after upgrade. Avoid creating a
     # duplicate that would count twice against the durable bound.
-    lock_fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    lock_fd = open_create_or_existing(directory / ".lock", os.O_RDWR, 0o600)
     with os.fdopen(lock_fd, "r+b") as lock_file, file_lock(lock_file.fileno(), required=True):
         if path.is_symlink():
             raise OSError("validated effort marker is a symlink")
@@ -482,7 +496,7 @@ def _coerce_requested_mode(raw: Any) -> Any:
 # way the working-set bounds do.
 _ENTRY_MAX_CACHEABLE_BYTES = 256 * 1024
 _entry_cache_lock = threading.Lock()
-_entry_cache: OrderedDict[str, tuple[dict | None, int]] = OrderedDict()
+_entry_cache: OrderedDict[str, tuple[dict | None, int, str | None]] = OrderedDict()
 _entry_cache_bytes = 0
 
 # Lazily resolved ``(max_entries, max_bytes)`` for the entry cache. Resolved
@@ -628,17 +642,49 @@ def _build_message_entry(m: dict, *, attachments: tuple[Path, str] | None = None
     # Resolve the configured bounds BEFORE taking the cache lock: the first call
     # in the process reads config from disk, and that read must not run under a
     # lock the flush path contends on.
+    _entry_cache_store(key, (entry, size, None))
+    return entry
+
+
+def _entry_cache_store(key: str, value: tuple[dict | None, int, str | None]) -> None:
+    """File *value* under *key* as the newest entry, then evict to the configured bounds."""
+    global _entry_cache_bytes
     max_entries, max_bytes = _entry_cache_bounds()
     with _entry_cache_lock:
         previous = _entry_cache.pop(key, None)
         if previous is not None:
             _entry_cache_bytes -= previous[1]
-        _entry_cache[key] = (entry, size)
-        _entry_cache_bytes += size
+        _entry_cache[key] = value
+        _entry_cache_bytes += value[1]
         while _entry_cache and (len(_entry_cache) > max_entries or _entry_cache_bytes > max_bytes):
-            _, (_evicted_entry, evicted_size) = _entry_cache.popitem(last=False)
-            _entry_cache_bytes -= evicted_size
-    return entry
+            _entry_cache_bytes -= _entry_cache.popitem(last=False)[1][1]
+
+
+def _build_message_line(
+    m: dict, *, attachments: tuple[Path, str], digest: bytes
+) -> tuple[dict | None, str]:
+    """``(entry, line)`` for a slot save, from the entry cache keyed by the row's *digest*.
+
+    *digest* is the save's own raw-message digest (``transcript_merge.row_digests``),
+    so a hit costs no serialization of *m*. The value also holds the entry's
+    written line, ``json.dumps(entry) + "\\n"`` (``""`` for a row that builds no
+    entry), so a hit writes the bytes a rebuild would. Same guards as
+    :func:`_build_message_entry`: one huge row is not cached, and a row whose
+    digest changed during the build is not filed under the old one.
+    """
+    from kiro_crew.dashboard.slot_persistence.transcript_merge import _row_digest
+
+    key = f"{attachments}\x00{digest.hex()}"
+    with _entry_cache_lock:
+        hit = _entry_cache.get(key)
+        if hit is not None and hit[2] is not None:
+            _entry_cache.move_to_end(key)
+            return hit[0], hit[2]
+    entry = _build_message_entry_uncached(m, attachments=attachments)
+    line = "" if entry is None else json.dumps(entry) + "\n"
+    if len(line) <= _ENTRY_MAX_CACHEABLE_BYTES and _row_digest(m) == digest:
+        _entry_cache_store(key, (entry, len(line), line))
+    return entry, line
 
 
 def _build_history_prefix(
@@ -681,7 +727,9 @@ from kiro_crew.dashboard import chat_persistence_parts as _parts  # noqa: E402
 from kiro_crew.dashboard.chat_persistence_parts.member_store import (  # noqa: E402,F401
     _member_private_selection,
     _member_restore_identity,
+    _missing_member_database_repair,
     _pin_private_agent_assignment,
+    _recreate_missing_member_database,
     member_store_ownership_holds,
     pin_private_agent_store,
     release_prewarmed_session,
@@ -698,10 +746,12 @@ from kiro_crew.dashboard.chat_persistence_parts.restore_drivers import (  # noqa
     _carry_unread_slot_keys,
     _display_tail,
     _kept_past_budget,
+    _loop_slot_keys,
     _may_restore_as_row,
     _open_slot_restore_plan,
     _over_restore_budget,
     _prefetch_open_slot_inputs,
+    _recent_row_tail,
     _record_unrestored_open_tabs,
     _recover_mcp_app_claims_async,
     _report_restore_budget,
@@ -723,13 +773,16 @@ from kiro_crew.dashboard.chat_persistence_parts.save_transaction import (  # noq
 )
 from kiro_crew.dashboard.chat_persistence_parts.slot_builders import (  # noqa: E402,F401
     _IDENTITY_UNRESOLVED,
+    _WINDOW_ROWS,
     _apply_recent_session,
     _apply_restored_open_slot,
+    _await_takeover_ordering_settled,
     _load_rehydrated_window,
     _PendingWindow,
     _prefetch_recent_session,
     _prefetch_rehydrate_inputs,
     _rehydrate_slot_from_history,
+    _rehydrate_slot_from_history_noted,
     rehydrate_slot_from_history_async,
 )
 
@@ -744,6 +797,8 @@ _facade_compose(
 )
 
 
+from kiro_crew.dashboard import slot_window_tail as _window_tail  # noqa: E402
+
 # ── Composed owners ─────────────────────────────────────────────────────────────
 # Imported last, once every binding above exists, so loading them leaves the
 # facade's own import order as it was: each owner imports only modules this file
@@ -754,6 +809,9 @@ _facade_compose(
 # too (test_chat_persistence_composition_contract derives that set from the tests).
 from kiro_crew.dashboard.slot_persistence import metadata_codec as _metadata_codec  # noqa: E402
 from kiro_crew.dashboard.slot_persistence import metadata_line as _metadata_line  # noqa: E402
+from kiro_crew.dashboard.slot_persistence import (  # noqa: E402
+    takeover_ordering as _takeover_ordering,
+)
 from kiro_crew.dashboard.slot_persistence import transcript_merge as _transcript_merge  # noqa: E402
 from kiro_crew.dashboard.slot_persistence import write_guards as _write_guards  # noqa: E402
 from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402,F401
@@ -763,18 +821,8 @@ from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402
     remember_unknown_row_fields,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,F401
-    _RETIRED_MODES,
     COLOR_HEX_RE,
-    _rebase_rehydrated_refresh_mark,
-    _rehydrate_slot_title,
-    _rehydrate_title_low_signal,
-    _rehydrate_title_origin,
-    _rehydrate_title_refresh_mark,
-    _restore_dismissed_source_links,
-    _restore_model_fields,
-    _restored_mode,
-    _validate_autocompact_pct,
-    _validate_turn_timeout_secs,
+    _restore_fork_lineage,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F401
     _META_LAST_USER_AT,
@@ -785,6 +833,19 @@ from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F
     _record_pending_memory_mode,
     _tighten_carried_execution,
     pending_slot_memory_mode,
+)
+from kiro_crew.dashboard.slot_persistence.metadata_values import (  # noqa: E402,F401
+    _RETIRED_MODES,
+    _rebase_rehydrated_refresh_mark,
+    _rehydrate_slot_title,
+    _rehydrate_title_low_signal,
+    _rehydrate_title_origin,
+    _rehydrate_title_refresh_mark,
+    _restore_dismissed_source_links,
+    _restore_model_fields,
+    _restored_mode,
+    _validate_autocompact_pct,
+    _validate_turn_timeout_secs,
 )
 from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,F401
     _build_kiro_model_map,
@@ -799,6 +860,12 @@ from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,
     _recover_mcp_app_claims,
     _restored_agent_name,
     _sanitize_open_slot_key,
+    _seed_session_tree,
+)
+from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: E402,F401
+    _slot_closed_before,
+    _transfer_basis_to_worker,
+    _truncation_claim_scope,
 )
 from kiro_crew.dashboard.slot_persistence.transcript_merge import (  # noqa: E402,F401
     _archive_dropped_lines,
@@ -824,11 +891,15 @@ from kiro_crew.dashboard.slot_persistence.turn_marker import (  # noqa: E402,F40
 )
 from kiro_crew.dashboard.slot_persistence.write_guards import (  # noqa: E402,F401
     _FLUSH_SNAPSHOT_RETRIES,
+    DeleteWitness,
+    HeaderUnconfirmed,
     _keep_owed_after_refusal,
     _line_is_this_slots,
     _queue_snapshot_is_stale,
     _stable_durable_queue,
+    append_window_rows,
     register_guarded_history_write,
+    session_delete_witness,
     session_transcript_remains,
     session_was_deleted,
 )

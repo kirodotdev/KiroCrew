@@ -94,8 +94,10 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
+// No parent pointers: nothing here walks upward, and `getText` is always handed
+// its source file. Setting them doubles the parse cost of these graph walks.
 function parse(file: string, source: string): ts.SourceFile {
-  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX)
 }
 
 /**
@@ -317,6 +319,84 @@ function setupFileSpecifiers(config: string): string[] {
   return single ? [single[1]] : []
 }
 
+/**
+ * Extract every static import/export-from and dynamic import specifier from a
+ * source file using a regex rather than the TypeScript compiler API.
+ *
+ * The TypeScript compiler API (`ts.createSourceFile`) is accurate but expensive:
+ * on a loaded CI shard it takes 15 s to parse the hundreds of modules reachable
+ * from `integration/setup.ts` (issue #27747). A regex over raw text is fast
+ * enough that the full-graph walk completes in < 200 ms even under heavy load.
+ *
+ * The regex covers:
+ *   import ... from 'specifier'        (static import)
+ *   export ... from 'specifier'        (re-export)
+ *   import('specifier')                (dynamic import with literal arg)
+ *
+ * Both single and double quotes are matched. A specifier inside a block comment
+ * or template literal can produce a false positive, but such a false positive
+ * only ADDS nodes to the BFS — it never removes a real path — so the worst
+ * outcome is a spurious visit, not a missed catalog.
+ *
+ * Node_modules and bare package specifiers are filtered by `resolveModule`,
+ * which returns null for anything that is not relative or `@/`-aliased.
+ */
+function staticSpecifiersFromText(source: string): string[] {
+  const out: string[] = []
+  // static: import ... from '...' or export ... from '...'
+  for (const m of source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) out.push(m[1])
+  // side-effect: import '...' (no bindings, no `from`) — the form used by
+  // `import './all'` in test helpers and by `import 'somePolyfill'` in entries
+  for (const m of source.matchAll(/\bimport\s+['"]([^'"]+)['"]/g)) out.push(m[1])
+  // dynamic: import('...')
+  for (const m of source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) out.push(m[1])
+  return out
+}
+
+/**
+ * The languages reachable from `entry` via a fast regex-based BFS.
+ *
+ * Unlike `languagesReachedFrom`, this function:
+ *   - reads files as raw text and extracts specifiers with a regex
+ *   - resolves only relative and `@/`-aliased specifiers (same rule as
+ *     `resolveModule`), skipping node_modules and bare package names
+ *   - stays entirely within the `website/` tree; anything that resolves
+ *     outside it (e.g. a node_modules package) is skipped via a
+ *     `relative`-based containment check that is path-separator-agnostic
+ *
+ * The assertion is unchanged: the full transitive static-import graph of
+ * `integration/setup.ts` must reach no catalog file beyond English.
+ */
+function languagesReachedFromFast(entry: string): Set<string> {
+  const reached = new Set<string>()
+  const seen = new Set<string>([entry])
+  const queue = [entry]
+
+  while (queue.length) {
+    const file = queue.pop()!
+    if (file.startsWith(LOCALES) && file.endsWith('.json')) {
+      reached.add(languageCodeOf(file.slice(LOCALES.length + 1)))
+      continue
+    }
+    if (!/\.tsx?$/.test(file)) continue
+    // Only follow files inside the website tree; anything that resolves
+    // to a node_modules path would escape upward. `relative` is used
+    // rather than `startsWith(WEBSITE + sep)` so the check works on every
+    // platform regardless of which separator `resolve` produced.
+    if (relative(WEBSITE, file).startsWith('..')) continue
+    const source = readSource(file)
+    for (const specifier of staticSpecifiersFromText(source)) {
+      const next = resolveModule(file, specifier)
+      if (next && !seen.has(next)) {
+        seen.add(next)
+        queue.push(next)
+      }
+    }
+  }
+
+  return reached
+}
+
 const CALL_SITES = findCallSites()
 
 describe('every entry point that boots i18n registers all languages', () => {
@@ -419,7 +499,7 @@ describe('the vitest setup module graph stays English-only', () => {
       const entry = resolveModule(join(WEBSITE, 'vite.config.ts'), specifier)
       expect(entry, `setupFiles entry '${specifier}' does not resolve to a file`).not.toBeNull()
 
-      const extra = [...languagesReachedFrom(entry!)].filter((code) => code !== 'en').sort()
+      const extra = [...languagesReachedFromFast(entry!)].filter((code) => code !== 'en').sort()
       expect(
         extra,
         `The vitest setup graph statically imports the ${extra.join(', ')} catalog(s). `
@@ -429,6 +509,8 @@ describe('the vitest setup module graph stays English-only', () => {
           + 'in `src/i18n/catalogs.ts`, reached only through `src/i18n/all.ts`, and let '
           + 'a test that needs another language import that entry itself.',
       ).toEqual([])
-    })
+      // The same whole-graph parse as the entry-point walk above, so the same budget:
+      // under a loaded shard the default 15 s timeout cut it off mid-walk.
+    }, 20_000)
   }
 })

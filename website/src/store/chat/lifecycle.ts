@@ -7,8 +7,9 @@ import type { RootState } from '../index'
 import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
+import { crewModeCatalogKnown, crewModeEnabled, newChatCrewModeAgent, setCrewModeCatalog } from '../../lib/crewMode'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
-import { resolveDefaultColor } from '../../utils/sessionColors'
+import { paletteSize, resolveDefaultColor } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
@@ -37,16 +38,57 @@ export const fetchHistory = createAsyncThunk(
   },
 )
 
-const configuredDefaultMemoryMode = () =>
-  resolveDefaultMemoryMode(() => api.dashboardConfig())
+type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unknown }
+
+/**
+ * `dashboard.new_chat_crew_mode`: turn Ultra Mode on for a just-created New chat
+ * the way a press of the composer chip does, by the ordinary agent switch to the
+ * conductor (docs/decisions/2026-10-27-crew-mode-is-a-composer-switch-to-the-conductor-template.md):
+ * the create itself is unchanged. Runs before the create's `fulfilled`, so the chat
+ * opens already switched, and `slot` takes the switch's answer.
+ *
+ * Decided on the created slot, after the server applied any folder or default-folder
+ * agent pin, so only a chat still on the default agent switches
+ * (`newChatCrewModeAgent`). A catalog not yet read (the chat page creating its first
+ * chat at load) is read here first, so that create is not taken for one on a gateway
+ * without Crew Mode. `config` is the read the memory mode already made; a create that
+ * skipped it reads it now. Any failed read or switch leaves the plain chat.
+ *
+ * The create broadcast often lists the plain row before the switch answers, and
+ * `createSlot.fulfilled` skips a row already listed, so the switch is also
+ * patched onto that row (`updateSlot`): a socket that drops before the switch
+ * broadcast would otherwise leave the row showing the plain agent.
+ */
+async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void): Promise<void> {
+  if (!crewModeEnabled() || !slot?.key) return
+  try {
+    const cfg = config ?? await api.dashboardConfig() as NewChatConfig
+    if (cfg?.new_chat_crew_mode !== true) return
+    if (!crewModeCatalogKnown()) {
+      const catalog = await api.agentCatalog(slot.key)
+      setCrewModeCatalog(catalog.crew_mode_agent, catalog.conductor_agents, catalog.default_agent)
+    }
+    const conductor = newChatCrewModeAgent(slot)
+    if (!conductor) return
+    const switched = await api.chatSlotAgent(slot.key, conductor, 'template')
+    if (switched?.agent) {
+      slot.agent = switched.agent
+      slot.agent_kind = switched.agent_kind || 'template'
+      if (switched.workspace) slot.workspace = switched.workspace
+      publish({ key: slot.key, agent: slot.agent, agent_kind: slot.agent_kind, ...(switched.workspace ? { workspace: slot.workspace } : {}) })
+    }
+  } catch {
+    // The plain chat the person asked for is already made; it stays plain.
+  }
+}
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; prefill?: string; automatic?: boolean } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
   { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
-  async (opts, { getState, fulfillWithValue }) => {
+  async (opts, { getState, dispatch, fulfillWithValue }) => {
     const agent = typeof opts === 'string' ? opts : opts?.agent
     // The namespace the agent was picked from; rides with the name so a
     // same-name member and template create different sessions.
@@ -96,8 +138,13 @@ export const createSlot = createAsyncThunk<
     // An explicit Incognito/Temporary menu choice wins. All other dashboard chat
     // entry points resolve the persisted preference here, before the first turn
     // can read or write memory.
-    const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder)
+    let config: NewChatConfig | undefined
+    const memory_mode = requestedMemoryMode || await resolveDefaultMemoryMode(async () => (config = await api.dashboardConfig() as NewChatConfig))
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot)
+    // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
+    // chat entry points pass it, so an app's launch or a hand-off never lands on
+    // the conductor.
+    if (typeof opts === 'object' && opts.crewModeDefault === true) await startNewChatInCrewMode(slot, config, patch => dispatch(updateSlot(patch)))
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -116,18 +163,22 @@ export const createSlot = createAsyncThunk<
       try {
         await api.setSlotColorHex(slot.key, explicitHex)
       } catch (err) {
-        await api.deleteChatSlot(slot.key).catch(() => {})
+        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
         throw err
       }
     } else {
-      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(dashState.sessionDefaultColor, dashState.slots.length)
+      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(
+        dashState.sessionDefaultColor,
+        dashState.slots.length,
+        paletteSize(dashState.sessionColorsPalette),
+      )
       if (ci != null) {
         slot.color_index = ci
         if (explicitColor != null) {
           try {
             await api.setSlotColor(slot.key, ci)
           } catch (err) {
-            await api.deleteChatSlot(slot.key).catch(() => {})
+            await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
             throw err
           }
         } else {
@@ -162,7 +213,7 @@ export const createSlot = createAsyncThunk<
       try {
         await api.chatSlotProject(slot.key, project)
       } catch (err) {
-        await api.deleteChatSlot(slot.key).catch(() => {})
+        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
         throw err
       }
     }
@@ -197,7 +248,7 @@ export const PENDING_OPEN_LEASE_MS = 10_000
 
 export const resumeFromHistory = createAsyncThunk<
   { ok: boolean; key: string; surface: string; nextBefore: number; messages: ReturnType<typeof filterMessages>; hasMore: boolean; total: number; folderId: string },
-  { key: string; title: string },
+  { key: string; title: string; leaveSplit?: boolean },
   { pendingMeta: { startedAt: number }; fulfilledMeta: Required<OriginMeta> }
 >(
   'chat/resumeFromHistory',
@@ -208,7 +259,7 @@ export const resumeFromHistory = createAsyncThunk<
     const origin = captureForkOrigin(getState() as RootState)
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}) }))
+      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}), ...(d.history_key ? { history_key: d.history_key } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
     // Without a cursor this response cannot be paged, so do not advertise more:
@@ -363,6 +414,37 @@ export const forkSlot = createAsyncThunk(
       throw e
     }
     if (d.ok) dispatch(listForkedSlot(d))
+    return d
+  },
+)
+
+// "Keep this chat": promotes an ephemeral (incognito/temporary) slot to
+// persistent by forking its WHOLE transcript into a new persistent slot, and
+// leaves the ephemeral original open and unchanged. The server always makes
+// the new slot persistent, which is addSlotOptimistic's default, so no
+// memory_mode is passed. A refusal rejects with a value so the caller can read
+// the gateway's `code` (see forkSlot).
+export const promoteSlot = createAsyncThunk(
+  'chat/promoteSlot',
+  async ({ slot }: { slot: string }, { dispatch, rejectWithValue }) => {
+    let d
+    try {
+      d = await api.promoteChatSlot(slot)
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status
+      const body = (e as { body?: unknown } | null)?.body
+      if (typeof status === 'number') {
+        return rejectWithValue({
+          status,
+          message: errMessage(e),
+          code: parseErrorCode(typeof body === 'string' ? body : undefined),
+        })
+      }
+      throw e
+    }
+    if (d.ok) {
+      dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, ...(d.pinned ? { pinned: true } : {}) }))
+    }
     return d
   },
 )
@@ -647,7 +729,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         const origin = entry?.origin ?? originFromMeta(state, action.meta)
         if (!latest || !forkMayOpen({ chat: state }, origin)) return
         noteRequestActivation(state, origin)
-        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot }
+        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot, ...(action.meta.arg.leaveSplit ? { leaveSplit: true } : {}) }
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload.key)
         if (state.activeSlot) {
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }

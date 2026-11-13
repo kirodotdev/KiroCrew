@@ -12,13 +12,13 @@
  *     directly — no ChatPage render — because the function is exported and pure
  *     apart from the two callbacks injected into it.
  *
- *  2. The handlers ChatPage hands DOWN to four children that no suite drives:
+ *  2. The handlers ChatPage hands DOWN to children that no suite drives:
  *     `QueueStack` (cancel / interrupt / edit / reorder of a queued message),
- *     `FollowUpCard`'s `onStartInWorktree` (five distinct failure branches plus
- *     the success path), `ChatInput`'s `onScreenshot`, and `SidePanel`'s
- *     `onAddSourceToChat` / `onFileSave` / `onArtifactOpen`. Each of those four
- *     is stubbed as a PROP RECORDER so the callback can be invoked directly;
- *     the children's own rendering is covered by their own suites.
+ *     `ChatInput`'s `onScreenshot`, and `SidePanel`'s `onAddSourceToChat` /
+ *     `onFileSave` / `onArtifactOpen`. Each child is stubbed as a PROP
+ *     RECORDER so the callback can be invoked directly; the children's own
+ *     rendering is covered by their own suites. `FollowUpCard`'s Start
+ *     handlers live in ChatPage.followUpStart.test.tsx, which shares this setup.
  *
  * happy-dom has no layout, so the virtualizer is stubbed to mount every item
  * (the technique ChatPageCoverage.test.tsx uses). Nothing else about the page
@@ -39,7 +39,6 @@ import { store as appStore } from '../store'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 import type { PasteBlock } from '../utils/pasteTokens'
-import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 
 // --- Stubs whose only job is to keep the render tree small -------------------
@@ -71,7 +70,7 @@ vi.mock('../pages/chat', async () => {
   }
 })
 
-// --- Prop recorders for the four children under test ------------------------
+// --- Prop recorders for the children under test -----------------------------
 
 interface QueueProps {
   messages: ChatMessage[]
@@ -92,18 +91,7 @@ vi.mock('../components/QueueStack', async (importOriginal) => {
   }
 })
 
-interface FollowupItem { title: string; prompt: string; description?: string; branch?: string }
-interface FollowupProps {
-  items: FollowupItem[]
-  onAddToSession: (item: FollowupItem) => void
-  onStartInWorktree: (item: FollowupItem) => Promise<void>
-  onStartInNewChat: (item: FollowupItem) => Promise<void>
-  onSkip: (index: number) => void
-}
-let followupProps: FollowupProps | null = null
-vi.mock('../components/FollowUpCard', () => ({
-  default: (props: FollowupProps) => { followupProps = props; return null },
-}))
+vi.mock('../components/FollowUpCard', () => ({ default: () => null }))
 
 interface SidePanelProps {
   onAddSourceToChat: (text: string) => void
@@ -312,7 +300,7 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  const rendered = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -328,7 +316,7 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
       </Provider>
     </QueryClientProvider>,
   )
-  return { store }
+  return { store, ...rendered }
 }
 
 let fetchMock: ReturnType<typeof vi.fn>
@@ -339,7 +327,6 @@ beforeEach(() => {
   // order-dependent.
   queuedSendStash.clear()
   queueProps = null
-  followupProps = null
   sidePanelProps = null
   sidebarProps = null
   inputProps = null
@@ -896,184 +883,6 @@ describe('ChatPage — queued message actions', () => {
     act(() => { queueProps!.onReorder('q2', 'later') })
     act(() => { queueProps!.onReorder('nope', 'later') })
     expect(apiSpy('reorderQueuedMessages')).not.toHaveBeenCalled()
-  })
-})
-
-describe('ChatPage — follow-up "start in worktree"', () => {
-  const ITEM: FollowupItem = { title: 'Add a Retry Guard!', prompt: 'add the retry guard' }
-
-  async function renderWithFollowup() {
-    const out = renderChatPage(
-      [msg('user', 'done?', { ts: '2026-08-12T07:00:00Z' })],
-      {
-        chat: {
-          activeSlot: 'chat-1',
-          followups: { 'chat-1': { items: [ITEM], ts: 1000 } },
-        },
-      },
-    )
-    await waitFor(() => expect(followupProps).not.toBeNull())
-    return out
-  }
-
-  /** chatSlotDetail is the only api call inside `switchSlot`, so failing it for
-   *  one key is how the switch is made to reject without touching the store. */
-  const detailFailsFor = (badKey: string) => {
-    apiMocks.chatSlotDetail.mockImplementation((key: string) =>
-      key === badKey
-        ? Promise.reject(new Error('detail unavailable'))
-        : Promise.resolve({ messages: [], queue: [], has_more: false, total: 0 }),
-    )
-  }
-
-  /** The handler compares the COMMITTED active slot (module-singleton store)
-   *  against the new key to decide whether a switch is needed at all. Seeding it
-   *  to the new key drives the already-in-focus branch — the one that reaches
-   *  the prefill + card-clear tail. */
-  const commitActiveSlot = (key: string) => {
-    appStore.dispatch({ type: 'chat/setActiveSlot', payload: key })
-  }
-
-  it('creates the worktree, hands the prompt over, and clears the card', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-retry' })
-    apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-    const { store } = await renderWithFollowup()
-    commitActiveSlot('chat-2')
-    await act(async () => { await followupProps!.onStartInWorktree(ITEM) })
-    // Branch name slugified from the title under FOLLOWUP_BRANCH_RE's grammar.
-    expect(apiMocks.createWorktree).toHaveBeenCalledWith('/repo/main', 'followup/add-a-retry-guard')
-    // The prompt travels through the prefill channel BEFORE the switch, so the
-    // per-slot draft restore applies it instead of racing it.
-    expect(JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) || '{}')).toMatchObject({
-      slotKey: 'chat-2', prompt: 'add the retry guard',
-    })
-    // Only THIS card is cleared, keyed on the ts that was rendered.
-    expect(store.getState().chat.followups?.['chat-1']).toBeUndefined()
-  })
-
-  it('honours a branch name the agent supplied instead of slugifying', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-x' })
-    apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-    await renderWithFollowup()
-    commitActiveSlot('chat-2')
-    await act(async () => {
-      await followupProps!.onStartInWorktree({ ...ITEM, branch: 'fix/explicit' })
-    })
-    expect(apiMocks.createWorktree).toHaveBeenCalledWith('/repo/main', 'fix/explicit')
-  })
-
-  it('falls back to a placeholder slug when the title has no usable characters', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-y' })
-    apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-    await renderWithFollowup()
-    commitActiveSlot('chat-2')
-    await act(async () => {
-      await followupProps!.onStartInWorktree({ ...ITEM, title: '!!! ???' })
-    })
-    expect(apiMocks.createWorktree).toHaveBeenCalledWith('/repo/main', 'followup/suggestion')
-  })
-
-  it('refuses before creating a session when the worktree returns no path', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ error: 'branch already exists' })
-    await renderWithFollowup()
-    await expect(followupProps!.onStartInWorktree(ITEM)).rejects.toThrow('branch already exists')
-    // Creating the session first would leave an empty one to clean up by hand.
-    expect(apiSpy('createChatSlot')).not.toHaveBeenCalled()
-  })
-
-  it('names the reusable worktree when the session could not be created', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-retry' })
-    apiSpy('createChatSlot').mockRejectedValue(new Error('slot service down'))
-    await renderWithFollowup()
-    await expect(followupProps!.onStartInWorktree(ITEM)).rejects.toThrow(
-      /Worktree created at \/repo\/wt-retry.*could not be opened and scoped/s,
-    )
-  })
-
-  it('fails closed rather than prefilling the wrong session when no key came back', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-retry' })
-    // A fulfilled thunk with no key would otherwise skip every guard below and
-    // prefill whatever session happens to be on screen.
-    apiSpy('createChatSlot').mockResolvedValue({})
-    await renderWithFollowup()
-    await expect(followupProps!.onStartInWorktree(ITEM)).rejects.toThrow(/no session was returned/)
-    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
-  })
-
-  it('reports a ready worktree whose session could not be opened', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-retry' })
-    apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-    await renderWithFollowup()
-    detailFailsFor('chat-2')
-    await expect(followupProps!.onStartInWorktree(ITEM)).rejects.toThrow(
-      /Worktree ready at \/repo\/wt-retry.*could not be opened/s,
-    )
-  })
-
-  it('refuses to prefill when the switch resolved but the session never took focus', async () => {
-    apiSpy('createWorktree').mockResolvedValue({ path: '/repo/wt-retry' })
-    apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-    await renderWithFollowup()
-    // The switch resolves, but the committed active slot never becomes chat-2 —
-    // prefilling here would drop the prompt into an unrelated conversation.
-    await expect(followupProps!.onStartInWorktree(ITEM)).rejects.toThrow(/is not in focus/)
-  })
-
-  describe('the new-chat route (no repository to branch)', () => {
-    it('opens a chat in the origin project without git, hands the prompt over, and clears the card', async () => {
-      apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-      const { store } = await renderWithFollowup()
-      commitActiveSlot('chat-2')
-      await act(async () => { await followupProps!.onStartInNewChat(ITEM) })
-      expect(apiSpy('createWorktree')).not.toHaveBeenCalled()
-      // Scoped to the spawning session's own project directory.
-      expect(apiMocks.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo/main')
-      expect(JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) || '{}')).toMatchObject({
-        slotKey: 'chat-2', prompt: 'add the retry guard',
-      })
-      expect(store.getState().chat.followups?.['chat-1']).toBeUndefined()
-    })
-
-    it('reports a chat that could not be created, and keeps the card', async () => {
-      apiSpy('createChatSlot').mockRejectedValue(new Error('slot service down'))
-      const { store } = await renderWithFollowup()
-      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/new chat could not be opened/)
-      expect(apiSpy('createWorktree')).not.toHaveBeenCalled()
-      expect(store.getState().chat.followups?.['chat-1']).toBeDefined()
-    })
-
-    it('fails closed rather than prefilling the wrong session when no key came back', async () => {
-      apiSpy('createChatSlot').mockResolvedValue({})
-      await renderWithFollowup()
-      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/new chat could not be opened/)
-      expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
-    })
-
-    it('points at the sidebar when the created chat could not be switched to', async () => {
-      apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-      const { store } = await renderWithFollowup()
-      detailFailsFor('chat-2')
-      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/Switch to it in the sidebar/)
-      expect(store.getState().chat.followups?.['chat-1']).toBeDefined()
-    })
-
-    it('refuses to prefill when the switch resolved but the chat never took focus', async () => {
-      apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
-      const { store } = await renderWithFollowup()
-      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/could not be brought into focus/)
-      expect(store.getState().chat.followups?.['chat-1']).toBeDefined()
-    })
-  })
-
-  it('adding to the session merges into the composer draft and clears the card', async () => {
-    const { store } = await renderWithFollowup()
-    act(() => { inputProps!.onChange('half-typed thought') })
-    await waitFor(() => expect(inputProps!.value).toBe('half-typed thought'))
-    act(() => { followupProps!.onAddToSession(ITEM) })
-    await waitFor(() => expect(inputProps!.value).toContain('add the retry guard'))
-    // APPEND, never replace — the half-typed text must survive.
-    expect(inputProps!.value).toContain('half-typed thought')
-    expect(store.getState().chat.followups?.['chat-1']).toBeUndefined()
   })
 })
 

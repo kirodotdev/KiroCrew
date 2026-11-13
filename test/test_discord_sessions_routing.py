@@ -21,6 +21,7 @@ from discord_sessions_helpers import (
 )
 
 from kiro_crew.discord.renderer import session_provenance_tag
+from kiro_crew.discord.session_resume import DiscordSessionResume
 from kiro_crew.messaging import session_resume as session_resume_core
 from kiro_crew.messaging.link import ChannelLink
 
@@ -127,14 +128,9 @@ async def test_resumed_session_without_recorded_agent_falls_back() -> None:
 async def test_option_press_routes_into_resumed_session() -> None:
     """An [OPTIONS:] press on a bound DM is the RESUMED session's turn content.
 
-    The press re-dispatches with ``interpret_commands=False`` because the label is
-    model-authored text that must never execute as a command — but that flag must
-    not also skip resume routing. The buttons were rendered on the bound session's
-    own reply (and carry its provenance tag), so the choice belongs to that
-    session. Before the fix the press ran in the native DM session: the click
-    answered a question nobody asked there, while the bound session kept waiting
-    for its answer (e.g. a merge-approach choice for the bound session would
-    green-light the native session's parked debug plan instead).
+    ``interpret_commands=False`` keeps the model-authored label from running as a
+    command but must not skip resume routing: the buttons carry the bound session's
+    tag, and the native session would answer a question it never asked.
     """
     log = _log()
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
@@ -152,12 +148,8 @@ async def test_option_press_routes_into_resumed_session() -> None:
 async def test_untagged_press_is_refused_fail_closed() -> None:
     """A pre-provenance button (bare ``opt:<i>``) is refused, never routed.
 
-    Discord replays old components indefinitely, so an untagged press can never
-    prove which session it belongs to — and routing it by current binding is
-    exactly the cross-session injection this fix exists to stop (the legacy
-    pass-through never ages out, so it is the same hole with a different door).
-    Fail closed with a type-it-instead
-    notice; no echo, no turn anywhere.
+    Discord replays old components indefinitely, so an untagged press cannot prove
+    its session; routing it by current binding would allow cross-session injection.
     """
     log = _log()
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
@@ -198,18 +190,15 @@ async def test_tagged_press_is_revalidated_after_idle_rotation() -> None:
 async def test_stale_tagged_press_after_rebind_is_refused() -> None:
     """A button minted by session A, pressed after the DM was rebound to B, refuses.
 
-    Discord replays old components indefinitely: A's reply keeps its live buttons
-    after ``!unlink`` + ``!sessions`` rebinds the DM to B. Routing alone would send
-    the press into B — injecting A's model-authored choice into an unrelated
-    transcript. The provenance tag makes the press valid
-    only while the conversation still targets the session that posted it.
+    A's buttons stay live after the rebind, and routing alone would inject A's choice
+    into B. The tag is valid only while the conversation targets the posting session.
     """
     log = _log_with_titles("Alpha plan", "Beta plan")
     log.messages["dashboard:chat-0"] = [{"role": "assistant", "content": "prior a"}]
     log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior b"}]
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
 
-    # Bind A (chat-0) through the real picker, as the incident did.
+    # Bind A (chat-0) through the real picker.
     await dispatcher.handle_message(_message("!sessions Alpha"))
     custom_id, message_id = _picker_button(client)
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
@@ -237,9 +226,7 @@ async def test_press_tagged_for_pre_new_conversation_is_refused() -> None:
     """``!new`` invalidates the previous conversation's buttons.
 
     The native key embeds the generation, so a press carrying the pre-``!new``
-    tag does not match — honest, since the conversation that asked the
-    question is over. Before the tag the press ran silently in the fresh
-    generation, answering a question it never asked.
+    tag does not match: the conversation that asked the question is over.
     """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     old_tag = session_provenance_tag(dispatcher.current_session_key("u1"))
@@ -283,11 +270,8 @@ async def test_stale_press_against_busy_target_is_refused_not_queued() -> None:
 async def test_valid_tagged_press_against_busy_target_is_refused_not_queued_or_steered() -> None:
     """A VALID press whose target is mid-turn refuses — it never enters the queue.
 
-    ``_handle_busy`` enqueues bare text (or steers it mid-turn), and the drain
-    replays queued text WITHOUT the provenance tag — so a ``!new`` or idle
-    rotation between enqueue and drain would execute the model-authored choice
-    in a conversation the tag never named. The busy path is therefore
-    unreachable for any tagged press.
+    The drain replays queued text WITHOUT the tag, so a rotation before the drain
+    would run the choice in a conversation the tag never named.
     """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     tag = session_provenance_tag(dispatcher.current_session_key("u1"))
@@ -329,13 +313,10 @@ async def test_option_press_after_binding_destroyed_is_refused_not_native() -> N
 
 @pytest.mark.asyncio
 async def test_synthetic_dispatch_without_origin_tag_keeps_native_affinity() -> None:
-    """Untagged synthetic turns keep the legacy skip: native session, no routing.
+    """Untagged synthetic turns skip routing and run in the native session.
 
-    Queue drains replay messages the native session accepted while busy, and
-    AutoNudge fires target the native key their loop rotation-checked — routing
-    either into a binding created later would run them in a session that never
-    queued or armed them. This pins that ``interpret_commands=False`` with no
-    ``origin_tag`` still means "skip routing" for those callers.
+    Queue drains and AutoNudge fires belong to the native key; routing them into a
+    later binding would run them in a session that never queued or armed them.
     """
     log = _log()
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
@@ -513,3 +494,14 @@ async def test_new_leaves_resumed_session_and_advances_native_generation() -> No
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert dispatcher._session_key("u1") != old_key
     assert "left the resumed session" in client.sent[-1][0]
+
+
+@pytest.mark.parametrize(
+    ("custom_id", "expected"),
+    [("s:abc:²", ("", -1)), ("s:abc:١", ("", -1)), ("s:abc:3", ("abc", 3))],
+)
+def test_a_picker_press_parses_only_ascii_digit_indexes(
+    custom_id: str, expected: tuple[str, int]
+) -> None:
+    """``"²".isdigit()`` is True but ``int("²")`` raises: refuse it, never crash."""
+    assert DiscordSessionResume._parse_choice(custom_id) == expected

@@ -192,8 +192,7 @@ def test_an_immediate_bypasses_the_coalescing_delay_but_not_the_dedupe_mask():
     dispatches no checks so ``pending`` never drains. That is not a licence to
     repeat.
 
-    ``test_immediate_bypasses_the_coalescing_window`` pins the bypass and the probe's
-    ``test_conflict_wakes_once_per_head`` pins the pairing end to end. The
+    ``test_immediate_bypasses_the_coalescing_window`` pins the bypass. The
     kernel's own mask on an IMMEDIATE -- the half a reader drops by reading "bypasses
     the window" as "bypasses everything" -- is what this pins.
     """

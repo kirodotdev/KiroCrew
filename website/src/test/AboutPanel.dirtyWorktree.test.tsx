@@ -62,7 +62,7 @@ async function pressUpdateNow() {
   const trigger = await screen.findByRole('button', { name: /^Update(?! the gateway)/ })
   fireEvent.click(trigger)
   const dialog = await screen.findByRole('dialog')
-  const apply = await waitFor(() => within(dialog).getByRole('button', { name: /^Update now$/i }))
+  const apply = await waitFor(() => within(dialog).getByRole('button', { name: /^Update when I restart$/i }))
   fireEvent.click(apply)
 }
 

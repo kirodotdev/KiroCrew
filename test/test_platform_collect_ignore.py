@@ -55,6 +55,11 @@ def windows_list(request, monkeypatch):
         monkeypatch.setattr(helpers, "PLATFORM_IGNORED", names)
     else:
         monkeypatch.setattr(plugin, "collect_ignore", sorted(names), raising=False)
+    # Under CI's --file-shard-targets every unlisted path is skipped by design, which
+    # would answer for the platform list here; lift that list for these questions only.
+    shards = request.config.pluginmanager.get_plugin("ci-file-shards")
+    if shards is not None:
+        monkeypatch.setattr(shards, "keep", None)
     return names
 
 

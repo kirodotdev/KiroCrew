@@ -81,6 +81,8 @@ function confirmRemoval(_number = 634) { return screen.getByRole('menuitem', { n
 function unlinkVia(number = 634) { fireEvent.click(removal(number)); fireEvent.click(confirmRemoval(number)) }
 function sessionRow() { return document.querySelector<HTMLElement>('[data-session-row="s1"]')! }
 function rowMenuButton() { return within(sessionRow()).getByRole('button', { name: 'More options' }) }
+// A bare .focus() fires React's onFocus/onBlur (the menu items track their highlight in state), so a test-driven focus move goes through act.
+function moveFocus(el: HTMLElement) { act(() => { el.focus() }) }
 function chip(number = 634) { return sessionRow().querySelector<HTMLAnchorElement>(`a[href="${number === 634 ? PR_URL : ISSUE_URL}"]`) }
 
 describe('source-link removal through the existing session menu', () => {
@@ -164,11 +166,11 @@ describe('source-link removal through the existing session menu', () => {
   it('supports keyboard opening, choosing an entry, and Escape', async () => {
     const user = userEvent.setup()
     renderSidebar()
-    rowMenuButton().focus()
+    moveFocus(rowMenuButton())
     await user.keyboard('{Enter}')
     const trigger = await screen.findByRole(device.touch ? 'button' : 'menuitem', { name: 'Hide a PR or Issue chip' })
     // The first entry is "hide all"; step past it to the first chip.
-    trigger.focus(); await user.keyboard('{ArrowRight}{ArrowDown}')
+    moveFocus(trigger); await user.keyboard('{ArrowRight}{ArrowDown}')
     await waitFor(() => expect(removal()).toHaveFocus())
     await user.keyboard('{Enter}')  // stages
     await user.keyboard('{Enter}')  // confirms
@@ -179,9 +181,9 @@ describe('source-link removal through the existing session menu', () => {
   it('keeps keyboard focus on a neighbour after a removal, and on the parent menu after the last one', async () => {
     const user = userEvent.setup()
     renderSidebar()
-    rowMenuButton().focus()
+    moveFocus(rowMenuButton())
     await user.keyboard('{Enter}')
-    ;(await screen.findByRole('menuitem', { name: 'Hide a PR or Issue chip' })).focus()
+    moveFocus(await screen.findByRole('menuitem', { name: 'Hide a PR or Issue chip' }))
     await user.keyboard('{ArrowRight}{ArrowDown}')
     await waitFor(() => expect(removal()).toHaveFocus())
     await user.keyboard('{Enter}')  // stage #634
@@ -207,7 +209,7 @@ describe('source-link removal through the existing session menu', () => {
     unlinkMock.mockImplementation(() => new Promise((resolve, reject) => { settle = { resolve, reject } }))
     const user = userEvent.setup()
     renderSidebar(); await openMenu()
-    removal().focus(); await user.keyboard('{Enter}')  // stage
+    moveFocus(removal()); await user.keyboard('{Enter}')  // stage
     await user.keyboard('{Enter}')  // confirm
     await waitFor(() => expect(unlinkMock).toHaveBeenCalledWith('s1', PR_IDENTITY, expect.any(String)))
     await act(async () => { settle.reject(new Error('store unavailable')) })
@@ -338,9 +340,9 @@ describe('source-link removal through the existing session menu', () => {
     sourceLinksMock.mockReset().mockImplementation(() => new Promise(resolve => { settlers.push(resolve) }))
     const user = userEvent.setup()
     renderSidebar(list)
-    rowMenuButton().focus()
+    moveFocus(rowMenuButton())
     await user.keyboard('{Enter}')
-    ;(await screen.findByRole('menuitem', { name: 'Hide a PR or Issue chip' })).focus()
+    moveFocus(await screen.findByRole('menuitem', { name: 'Hide a PR or Issue chip' }))
     await user.keyboard('{ArrowRight}')
     await waitFor(() => expect(settlers.length).toBe(1))
     await act(async () => { settlers[0]({ links: rows()[0].source_links, total: 2 }) })

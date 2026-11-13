@@ -118,7 +118,7 @@ export default function LabelsPanel({
           {i18nT('apps.issueRadar.views.tagging.labelsPanel.labels')}
         </div>
         <div className="text-[12px] text-muted opacity-60">
-          {labels.length} {i18nT('apps.issueRadar.views.tagging.labelsPanel.defined_by_open_issue_count')}
+          {i18nT('apps.issueRadar.views.tagging.labelsPanel.labels_defined', { count: labels.length })}
         </div>
 
         <div className="ml-auto flex items-center gap-2.5 flex-wrap">

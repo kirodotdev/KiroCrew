@@ -1,10 +1,10 @@
 ---
 title: Pluggable speech providers
-status: in-progress
+status: implemented
 author: iamwhatever
 created: 2026-10-22
-last-audited: 2026-10-22
-audited-at: 88d73a83b0
+last-audited: 2026-11-06
+audited-at: 7ecc6c93b0
 doc-pr: 22983
 implementation-prs: [22997]
 tracking-issues: [22982]
@@ -13,7 +13,19 @@ superseded-by: []
 ---
 # RFC: Pluggable speech providers
 
-- Status: in-progress
+- Status: implemented. All four phases are on main from
+  [#22997](https://github.com/kirodotdev/KiroCrew/pull/22997), which carried
+  Phase 2 ([#23062](https://github.com/kirodotdev/KiroCrew/pull/23062)) and
+  Phases 3 and 4 ([#23056](https://github.com/kirodotdev/KiroCrew/pull/23056))
+  merged into its branch. Verified at `7ecc6c93b0`. One point diverged:
+  `CONTRACT_VERSION` stayed at `1`, because it is pinned until the first public
+  release (`src/kiro_crew/platform/context.py`), so the bump under *ADD-only
+  guarantees* and *Backward compatibility* did not happen. Four review
+  follow-ups logged on the tracking issue are not in the migration plan and are
+  not done: resolving `stt.provider` once in the loader instead of the boot-time
+  re-read (`bootstrap._refresh_stt_for_edition`), a destination on a provider's
+  sign-in `action`, a per-provider `description` for the TTS help line, and a
+  capability preflight before Meetings opens the live STT socket.
 - Author: iamwhatever
 - Created: 2026-10-22
 - Related: issue [#22982](https://github.com/kirodotdev/KiroCrew/issues/22982), [`docs/system-specs/modules/platform-context.md`](../system-specs/modules/platform-context.md), [`stt-streaming.md`](../system-specs/modules/stt-streaming.md), [`voice-streaming.md`](../system-specs/modules/voice-streaming.md)

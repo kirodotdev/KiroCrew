@@ -37,6 +37,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple
 
+from kiro_crew.dashboard import gateway_notice as gn
+
 
 class ReplayFamily(enum.Enum):
     """The runner's self-queued replays, one per recovery that re-runs a turn."""
@@ -273,6 +275,54 @@ def cancel_notice(family: ReplayFamily, revocation: ReplayRevocation) -> str:
     if policy.label:
         return f"ℹ️ {policy.label} retry cancelled — " + _cancel_reason(revocation)
     return policy.notice
+
+
+def _cancel_reason_name(revocation: ReplayRevocation) -> str:
+    # Same precedence as ``_cancel_reason``.
+    if revocation.rebound and not (revocation.superseded or revocation.stopped):
+        return "rebound"
+    if revocation.superseded:
+        return "superseded"
+    return "stopped"
+
+
+#: The ``meta.notice`` token per cancelled family whose wording is fixed.
+_FIXED_CANCEL_TOKENS: dict[ReplayFamily, str] = {
+    ReplayFamily.SESSION_NOT_FOUND: gn.GATEWAY_NOTICE_SESSION_RECONNECT_CANCELLED,
+    ReplayFamily.IMAGE_HISTORY: gn.GATEWAY_NOTICE_IMAGE_RECOVERY_CANCELLED,
+    ReplayFamily.THINKING_BINDING: gn.GATEWAY_NOTICE_MODEL_SESSION_RECOVERY_CANCELLED,
+}
+#: The ``meta.notice`` token per labelled family and reason.
+_LABELLED_CANCEL_TOKENS: dict[ReplayFamily, dict[str, str]] = {
+    ReplayFamily.MODEL_ACCESS: {
+        "rebound": gn.GATEWAY_NOTICE_FALLBACK_RETRY_CANCELLED_REBOUND,
+        "superseded": gn.GATEWAY_NOTICE_FALLBACK_RETRY_CANCELLED_SUPERSEDED,
+        "stopped": gn.GATEWAY_NOTICE_FALLBACK_RETRY_CANCELLED_STOPPED,
+    },
+    ReplayFamily.CONTENT_FILTER: {
+        "rebound": gn.GATEWAY_NOTICE_FILTER_RETRY_CANCELLED_REBOUND,
+        "superseded": gn.GATEWAY_NOTICE_FILTER_RETRY_CANCELLED_SUPERSEDED,
+        "stopped": gn.GATEWAY_NOTICE_FILTER_RETRY_CANCELLED_STOPPED,
+    },
+}
+
+
+def cancel_notice_token(family: ReplayFamily, revocation: ReplayRevocation) -> str:
+    """The ``meta.notice`` token naming the wording :func:`cancel_notice` returns."""
+    if family is ReplayFamily.CONTINUATION:
+        if revocation.superseded:
+            return gn.GATEWAY_NOTICE_AUTO_CONTINUE_CANCELLED_SUPERSEDED
+        if revocation.rebound:
+            return gn.GATEWAY_NOTICE_AUTO_CONTINUE_CANCELLED_REBOUND
+        return gn.GATEWAY_NOTICE_AUTO_CONTINUE_CANCELLED_STOPPED
+    if family in _LABELLED_CANCEL_TOKENS:
+        return _LABELLED_CANCEL_TOKENS[family][_cancel_reason_name(revocation)]
+    return _FIXED_CANCEL_TOKENS[family]
+
+
+def cancel_notice_meta(family: ReplayFamily, revocation: ReplayRevocation) -> dict[str, object]:
+    """The row ``meta`` for the notice :func:`cancel_notice` returns."""
+    return gn.gateway_notice_meta(cancel_notice_token(family, revocation))
 
 
 def log_args(family: ReplayFamily, revocation: ReplayRevocation) -> tuple[Any, ...]:

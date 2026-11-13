@@ -117,8 +117,8 @@ describe('McpTab Integration Tests', () => {
     renderWithProviders(<McpTab />)
 
     // Expand tool list
-    await waitFor(() => expect(screen.getByText(/1 tools/)).toBeInTheDocument())
-    await user.click(screen.getByText(/1 tools/))
+    await waitFor(() => expect(screen.getByText(/1 tool/)).toBeInTheDocument())
+    await user.click(screen.getByText(/1 tool/))
     await waitFor(() => expect(screen.getByText('ToggleTool')).toBeInTheDocument())
 
     // Click the tool button — should stage a pending change, NOT fire an API call
@@ -161,8 +161,8 @@ describe('McpTab Integration Tests', () => {
     )
 
     renderWithProviders(<McpTab />)
-    await waitFor(() => expect(screen.getByText(/1 tools/)).toBeInTheDocument())
-    await user.click(screen.getByText(/1 tools/))
+    await waitFor(() => expect(screen.getByText(/1 tool/)).toBeInTheDocument())
+    await user.click(screen.getByText(/1 tool/))
     await user.click(await screen.findByText('ToggleTool'))
     await user.click(await screen.findByRole('button', { name: /^apply$/i }))
 
@@ -362,8 +362,8 @@ describe('McpTab Integration Tests', () => {
 
     const { unmount } = renderWithProviders(<McpTab />)
 
-    await waitFor(() => expect(screen.getByText(/1 tools/)).toBeInTheDocument())
-    await user.click(screen.getByText(/1 tools/))
+    await waitFor(() => expect(screen.getByText(/1 tool/)).toBeInTheDocument())
+    await user.click(screen.getByText(/1 tool/))
     await waitFor(() => expect(screen.getByText('T')).toBeInTheDocument())
     await user.click(screen.getByText('T'))
     await waitFor(() => expect(screen.getByText(/pending change/i)).toBeInTheDocument())

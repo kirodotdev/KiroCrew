@@ -9,6 +9,7 @@ import type { useChatPageResourcesController } from '../useChatPageResourcesCont
 import type { useComposerChips } from './composerChips'
 import type { MemoryMode } from '../../../components/MemoryModeChip'
 import { anchorForSlot, sessionSlots, loadLayout } from '../../../hooks/splitLayoutStore'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { CHAT_PANE_MIN_W, sidePanelFillWidth } from '../SidePanel'
 import { useSidePanelDock } from '../../../hooks/useSidePanelDock'
 import { parseStoredSidebarWidth, SIDEBAR_MAX } from '../sidebarWidth'
@@ -17,7 +18,9 @@ import { resolveFolderAgent, resolveFolderProjectDir, isStaleProjectDirError } f
 import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels'
 import { sidePanelDockMotion } from '../sidePanelMount'
 import { errMessage } from '../../../utils/thunkError'
+import { isSplitChord } from '../../../hooks/splitChord'
 import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
+import { forgetSlotSuccession } from '../../../utils/slotSuccession'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
 import { crewWindowShown } from '../crew-window/crewWindowStore'
 import { i18nT } from '../../../i18n/t'
@@ -115,8 +118,9 @@ export function usePaneLayoutState({
     if (!safeSetItem(key, '1')) return
     // Without the Auto-Open Git setting the tab is only created for discovery,
     // so it is automatic: it neither stops Pin Summary's landing nor takes the
-    // focus from a Summary the landing chose.
-    tabsCtl.openView('git', { automatic: !autoOpenGitPanel })
+    // focus from a Summary the landing chose. An Ultra Mode chat keeps the
+    // Board (or the tab the person picked) in front either way.
+    tabsCtl.openView('git', { automatic: !autoOpenGitPanel || tabsCtl.boardFirst })
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
@@ -145,6 +149,9 @@ export function usePaneLayoutState({
   // Leaving abandons the draft. The pin alone closes the editor but keeps it, so a
   // return would revive stale text and a blur could overwrite a newer title.
   useEffect(() => { setEditingTitleSlot(null) }, [activeSlot])
+  // Which side of the anchor the next split view seeds its new pane on. Every
+  // enterSplit sets it, so one entry never carries into the next.
+  const [splitSeedDir, setSplitSeedDir] = useState<SplitDir>('right')
   // Native session grid "split mode": an in-place tiling of the chat surface (NOT an
   // overlay). The flag is EPHEMERAL per mount — nav/refresh lands on single chat —
   // but the LAYOUT persists per anchor slot (splitLayoutStore). So a split is
@@ -152,9 +159,14 @@ export function usePaneLayoutState({
   // chat plus an "in split" badge that re-enters it (β model). `splitAnchor` is the
   // slot whose split we're showing (the one ⌘D'd from, or the badge's target).
   // enterSplit opens Split View for `anchor`: SessionGridView restores anchor's saved
-  // layout if one exists, else seeds [anchor | placeholder]. Closing back down to a
+  // layout if one exists, else seeds [anchor | placeholder] with the placeholder
+  // beside `anchor` ('right', the default) or below it ('down'). Closing back down to a
   // single session dissolves the layout and collapses to native chat (onCollapse).
-  const enterSplit = useCallback((anchor: string | null) => { setSplitAnchor(anchor); setSplitMode(true) }, [setSplitAnchor, setSplitMode])
+  const enterSplit = useCallback((anchor: string | null, dir: SplitDir = 'right') => {
+    setSplitAnchor(anchor)
+    setSplitSeedDir(dir)
+    setSplitMode(true)
+  }, [setSplitAnchor, setSplitMode])
   // Anchor of the persisted split the active session belongs to (>= 2 live sessions),
   // or null — drives the "in split" badge in single chat. Validated against live
   // slots so a stale layout (a member was deleted) never shows a dead badge.
@@ -182,7 +194,7 @@ export function usePaneLayoutState({
   useEffect(() => {
     if (embedMode) return
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+      if (isSplitChord(e)) {
         // A crew window covers the pane: never split the hidden local session.
         if (!splitFeatureEnabled || splitMode || !activeSlot || crewWindowShown()) return
         e.preventDefault()
@@ -194,7 +206,7 @@ export function usePaneLayoutState({
   }, [embedMode, splitMode, enterSplit, splitFeatureEnabled, activeSlot])
   return {
     sidebarPinned, setSidebarPinned, sidebarPinnedRef, sidebarAutoHidden, sidePanelDock, sidePanelDockAnim, sidebarWidth, setSidebarWidth, sidebarDragging, setSidebarDragging, setEditingTitleSlot,
-    editingTitle, enterSplit, splitAnchorForActive, activeIsSplitAnchor,
+    editingTitle, enterSplit, splitAnchorForActive, activeIsSplitAnchor, splitSeedDir,
   }
 }
 
@@ -251,7 +263,7 @@ export function usePanelLayout({
     // it is bound to the ACTIVE slot, so focusing before creation fulfils puts
     // the caret on the old session and loses whatever is typed. See the module.
     // Agent-less: the server stamps the default custom agent (a template).
-    const created = dispatch(createSlot({ mode: mode || '', defaultFolder: true })).unwrap()
+    const created = dispatch(createSlot({ mode: mode || '', defaultFolder: true, crewModeDefault: true })).unwrap()
     focusComposerAfter(created)
     // A failed create must not be a silent no-op: `createSlot.rejected` only
     // clears the pending flag and `focusComposerAfter` swallows the rejection
@@ -347,7 +359,8 @@ export function usePanelLayout({
   // the one on screen, so starting a sibling chat does not require opening the
   // sessions drawer. Resolves agent and project like the drawer's folder "+"
   // (createChatInFolderMutation): nearest folder default_agent, then the global
-  // default; nearest folder project_dir; a stale folder project dir gets the drawer's own message
+  // default; nearest folder project_dir; the folder's own default_prompt;
+  // a stale folder project dir gets the drawer's own message
   // (isStaleProjectDirError). The create itself stays here rather than in
   // createChatInFolderMutation on purpose: that mutation lives inside
   // ChatSidebar with board-column, tab and attempt state this button has none
@@ -376,6 +389,7 @@ export function usePanelLayout({
     // default custom agent (a template), never the default crewmate alias.
     const agent = folderId ? resolveFolderAgent(chatFolders, folderId, '') : undefined
     const project = folderId ? resolveFolderProjectDir(chatFolders, folderId) : undefined
+    const prefill = mobileNewFolder?.default_prompt
     mobileNewSessionInFlightRef.current = true
     setMobileNewSessionBusy(true)
     try {
@@ -384,6 +398,8 @@ export function usePanelLayout({
         mode: mode || '',
         ...(folderId ? { folder_id: folderId } : {}),
         ...(project ? { project } : {}),
+        ...(prefill ? { prefill } : {}),
+        crewModeDefault: true,
       })).unwrap()
       // The current session can sit in a collapsed folder when it was opened
       // from search or a link, and createSlot opens the folder path only for a
@@ -476,6 +492,8 @@ export function usePanelLayout({
       try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch (error) {
         // A rejected delete leaves the moved uploads with the replacement,
         // where the user is, and the old slot keeps its own later work.
+        // The old slot is still alive, so it is no longer replaced.
+        forgetSlotSuccession(activeSlot)
         showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
       }
     }

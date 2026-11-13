@@ -18,10 +18,12 @@ take a path carve-out on the fence: redaction is what makes returning the bytes
 safe.
 
 SCOPE IS THE OTHER HALF OF THAT SAFETY. ``kiro-chat.log`` and the session
-transcripts are deliberately NOT read. Each is a single shared host file per
-gateway, so it interleaves every concurrent session's conversation, and the
-redaction stack is a CREDENTIAL pass that does not narrow prose — an
-agent-callable read would hand session A's private conversation to session B.
+transcripts are deliberately NOT read. Neither is scoped to the calling
+session: the chat log is one shared host file or, where Kiro Crew pins it into
+a kiro-cli's scratch dir, one file per PROCESS, and one process can serve
+several sessions. The redaction stack is a CREDENTIAL pass that does not narrow
+prose — an agent-callable read would hand session A's private conversation to
+session B.
 The mcp/lsp protocol logs are what actually explain a rejected turn, so the
 tool stays there. See ``diagnostics.read_kiro_cli_logs``.
 
@@ -36,58 +38,10 @@ from collections.abc import Callable
 from typing import Any
 
 from kiro_crew import diagnostics, mcp_core
+from kiro_crew.mcp_tools.catalog.logs import (  # noqa: F401
+    schemas,
+)
 from kiro_crew.validation import KIRO_CLI_LOGS_SCHEMA, validate_tool_args
-
-
-def schemas() -> list[dict[str, Any]]:
-    """Descriptor for the kiro-cli log reader."""
-    return [
-        {
-            "name": "kiro_cli_logs",
-            "description": (
-                "Read a REDACTED tail of kiro-cli's OWN protocol logs — the "
-                "runtime you are driving — to diagnose a rejected or failed "
-                "turn. Reads only the mcp/lsp log files, never the fenced "
-                "identity/token store, and NOT the conversation-bearing sources "
-                "(session transcripts, kiro-chat.log): those are one shared host "
-                "file per gateway, so returning them would hand another "
-                "session's private conversation to yours. The output runs "
-                "through the same credential + exfiltration-URL scrubbers the "
-                "diagnostics bundle uses, so live tokens, Authorization headers "
-                "and auth cookies are stripped before you see them. Use it when "
-                "the backend rejected a turn, an ACP request errored, or you "
-                "need first-hand evidence of what kiro-cli did. `tail` bounds "
-                "the number of lines (default 200); `since` keeps lines at/after "
-                'a leading-timestamp prefix like "2026-09-06T16:". Output is '
-                "byte-capped per source AND bounded as a whole; when it does not "
-                "all fit, the OLDEST lines are dropped and the newest are kept, "
-                "with a note saying so. Returns the log text with one section "
-                "per source, or a note when no logs exist."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tail": {
-                        "type": "integer",
-                        "description": (
-                            "Max number of lines to return per source (default "
-                            "200). The output is byte-capped independently, so a "
-                            "large value cannot enlarge the response past the cap."
-                        ),
-                    },
-                    "since": {
-                        "type": "string",
-                        "description": (
-                            "Keep only lines at or after this leading-timestamp "
-                            "prefix (lexical match against the start of each log "
-                            'line), e.g. "2026-09-06" or "2026-09-06T16:". '
-                            "Continuation lines of a kept event ride along."
-                        ),
-                    },
-                },
-            },
-        },
-    ]
 
 
 def kiro_cli_logs(name: str, args: dict[str, Any]) -> str:

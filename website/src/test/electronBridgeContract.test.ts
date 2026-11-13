@@ -12,6 +12,8 @@ const dashboardBridges = [
   'electronAPI',
   'localGatewayAPI',
   'closeActionAPI',
+  'trayIconAPI',
+  'remoteCrewSetupAPI',
   'crashReportsAPI',
   'wslAPI',
   'folderPickAPI',
@@ -25,12 +27,14 @@ const bridgeContracts = {
   electronAPI: { name: 'ElectronAPI', methods: ['onStatus', 'getAppMenuItems', 'setBadgeCount', 'getGlobalHotkey'] },
   localGatewayAPI: { name: 'LocalGatewayAPI', methods: ['get', 'set'] },
   closeActionAPI: { name: 'CloseActionAPI', methods: ['get', 'set'] },
+  trayIconAPI: { name: 'TrayIconAPI', methods: ['get', 'set'] },
+  remoteCrewSetupAPI: { name: 'RemoteCrewSetupAPI', methods: ['available', 'start'] },
   crashReportsAPI: { name: 'CrashReportsAPI', methods: ['get', 'reveal'] },
   wslAPI: { name: 'WslAPI', methods: ['detect'] },
   folderPickAPI: { name: 'FolderPickAPI', methods: ['available', 'pick'] },
   zoomAPI: { name: 'ZoomAPI', methods: ['get', 'set', 'step'] },
-  browserAPI: { name: 'BrowserAPI', methods: ['open', 'navigate', 'setBounds', 'getState', 'control', 'onDidNavigate'] },
-  updateAPI: { name: 'UpdateAPI', methods: ['onState', 'check', 'download', 'install', 'getInfo'] },
+  browserAPI: { name: 'BrowserAPI', methods: ['open', 'navigate', 'setBounds', 'getState', 'annotate', 'onDidNavigate'] },
+  updateAPI: { name: 'UpdateAPI', methods: ['onState', 'check', 'download', 'armsOnQuit', 'install', 'relaunch', 'getInfo'] },
 } as const
 
 function interfaceBody(contract: string, name: string): string {

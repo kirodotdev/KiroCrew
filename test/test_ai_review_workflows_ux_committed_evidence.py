@@ -91,13 +91,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     def test_the_fork_lane_reads_the_media_a_no_write_access_contributor_commits(
         self, tmp_path: Path
     ) -> None:
-        """Execute the ACTUAL fork evidence step against a PR that commits its
-        screenshots. Each image reaches the reviewer as an index-named copy
-        (never the author's filename), the recording is listed, the map records
-        the repository path as the origin, and the text file is skipped by its
-        bytes. Without this the fork lane reviewed a UI change with nothing to
-        look at whenever the author could not attach -- which is every
-        contributor whose permission is READ."""
+        """The fork evidence step reads committed screenshots as index-named copies.
+
+        A contributor with READ permission cannot attach, so committed media is their
+        only evidence. A text file is skipped by its bytes.
+        """
         repo, base = self._repo_committing_evidence(tmp_path)
         shot_list, shot_map, clip_list, _output, attach_dir = self._run_evidence_gate(
             repo,
@@ -226,14 +224,12 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     def test_a_glob_metacharacter_in_a_committed_name_names_that_one_entry(
         self, tmp_path: Path
     ) -> None:
-        """`git ls-tree` takes a pathspec while `git cat-file` takes an exact
-        path, so the mode and size gates must be pinned to the same tree entry
-        `cat-file` reads: with `:(literal)` a `*`, a `[`, a `!` or a `)` in a
-        committed name is that name, not a pattern. Four legitimate images
-        under such names all reach the reviewer, none is dropped as `mode
-        unknown`, and each origin is the exact repository path. The entries
-        are written through the index, so the test does not depend on the
-        platform's filesystem permitting these characters."""
+        """`git ls-tree` reads a glob metacharacter in a name literally, via `:(literal)`.
+
+        `ls-tree` takes a pathspec while `cat-file` takes an exact path, so the mode
+        and size gates must read the same entry. Names go through the index, so the
+        platform's filesystem need not permit them.
+        """
         repo, base = self._repo_committing_evidence(tmp_path)
         hostile = ["!a.png", "*.png", "chip[1].png", "a)b:c?.png"]
         blob = tmp_path / "hostile-blob"
@@ -276,14 +272,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     def test_a_committed_name_with_a_control_character_reaches_no_sink(
         self, tmp_path: Path
     ) -> None:
-        """Git permits a newline, a tab or a carriage return in a tracked
-        filename, and the fork controls the names it commits. The map and the
-        clip list are presented to the reviewer as files the workflow wrote, so
-        a newline inside a recorded path forges extra records in them, and the
-        same byte in a `::warning::` line forges a workflow command. Such a name
-        is refused before the first line that interpolates it: neither data
-        file gains a record, the log shows it only `%q`-quoted, and the valid
-        media beside it are still read."""
+        """A committed name with a newline, tab or CR is refused before any use.
+
+        It would forge records in the map and clip list, or a workflow command in a
+        `::warning::` line. The log shows it only `%q`-quoted.
+        """
         repo, base = self._repo_committing_evidence(tmp_path)
         forged = [
             ("temp-screenshots/topic/a\nforged.gif", self.GIF),
@@ -339,16 +332,9 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     ) -> None:
         """A committed file the script declines has to reach its author.
 
-        An author who commits `after.svg` has followed the instruction to commit
-        evidence, and the reviewer cannot read SVG. Declining it in silence
-        leaves them with a summary saying nothing was found and a lane blocking
-        them for supplying nothing, which is the worst of both. So a name in an
-        unreadable MEDIA format is counted and named with its reason, while a
-        sidecar that was never evidence (a provenance JSON, a README, a
-        dotfile) stays silent -- otherwise every run warns about files nobody
-        offered as a screenshot. A refused name must also cost no object read:
-        it is declined before the blob is materialized, so it cannot consume the
-        read budget.
+        An unreadable media format (`after.svg`) is named with its reason, or the
+        author is blocked for supplying nothing. A sidecar (provenance JSON, README,
+        dotfile) stays silent, or every run warns about files nobody offered.
         """
         repo, base = self._repo_committing_evidence(tmp_path)
         extra = {
@@ -426,16 +412,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     def test_a_screenshot_that_was_only_moved_is_named_as_the_base_not_admitted(
         self, tmp_path: Path
     ) -> None:
-        """A `git mv` of a screenshot the base already holds is a rename to
-        git, and rename detection is on by default, so a listing filtered to
-        additions and modifications never sees the destination: the moved file
-        is neither counted nor warned about, and the author is told nothing was
-        found. The listing here admits every status a path at HEAD can carry and
-        decides the rename by its status: bytes already on the base show the
-        base's rendering, not this revision's, so an unchanged move is refused
-        by name with both paths and counted, while a move whose bytes changed is
-        a modified file under a new name and is read like any other. The
-        summary counts the moved file and says what it was."""
+        """An unchanged `git mv` of a base screenshot is named and counted, not admitted.
+
+        Rename detection is on by default, so an A/M-only listing would miss the move.
+        Unchanged bytes show the base's rendering; a move with changed bytes is read.
+        """
         repo = tmp_path / "repo"
         shots = repo / "temp-screenshots" / "topic"
         shots.mkdir(parents=True)
@@ -570,19 +551,13 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     def test_the_same_repo_design_lane_sources_the_shared_script_and_keeps_no_loop_of_its_own(
         self,
     ) -> None:
-        """The same-repo design lane once re-spelled the committed-media
-        collection inline: its own symlink gate, its own mime table, no size
-        cap, no control-character guard, no skip counting -- and a listing by
-        `--diff-filter=AM` that lost a renamed screenshot, beside a shipped
-        script whose header says that is the shape that loses one. The rule
-        this pins is structural: there is ONE admission contract, the shared
-        script, and the same-repo lane sources it AFTER the attachment script
-        like the fork lanes do. Nothing of the inline copy may return -- not
-        the AM listing, not a `file` call on a working-tree path, not a
-        `-L` test, not a mime table -- and the mime table exists in exactly
-        two files under .github/: the two evidence scripts. The two design
-        lanes' evidence-writing blocks are pinned byte-identical, the way
-        their calibration blocks are, so the report cannot drift by lane."""
+        """The same-repo design lane sources the shared committed-media script, after
+        the attachment script, and keeps no inline copy.
+
+        No `--diff-filter=AM` listing (it loses a renamed screenshot), no working-tree
+        `file` call, no `-L` test. The mime table lives only in the two evidence
+        scripts, and both design lanes' evidence blocks are byte-identical.
+        """
         raw = _workflow("design-review.yml")
         script = _step_script(raw, DESIGN_EVIDENCE_STEP)
         assert ATTACHMENT_SOURCE_LINE in script
@@ -625,8 +600,8 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
         ), "the two design lanes' evidence blocks drifted apart"
 
     def _repo_renaming_its_evidence(self, tmp_path: Path) -> tuple[Path, str]:
-        """The rename case the inline `--diff-filter=AM` listing lost, beside
-        the things the fenced fix refuses. The base tracks two screenshots; the
+        """A rename that a `--diff-filter=AM` listing misses, beside files that must
+        be refused. The base tracks two screenshots; the
         head `git mv`s one untouched and re-captures the other under a new
         name (a rename to git, with a high similarity score), adds a fresh
         image whose NAME says PNG but whose BYTES are JPEG, commits a text file
@@ -673,20 +648,12 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
     def test_both_design_lanes_admit_a_renamed_screenshot_and_refuse_by_mode_and_bytes(
         self, tmp_path: Path, lane: str
     ) -> None:
-        """Execute the ACTUAL "Collect rendered evidence" step of each design
-        lane against a PR that renames its screenshots. First the fixture is
-        shown to be the losing case: `git diff --name-only --diff-filter=AM`
-        does not list the re-captured file's destination. Then the step
-        proves it reaches the reviewer anyway -- the evidence file counts it,
-        the map names its repository path -- while the unchanged move is
-        refused by name as the base's rendering, the symlink is refused by its
-        MODE before any bytes are read, the text file under an image name is
-        refused by its BYTES, the JPEG under a `.png` name is kept under the
-        extension its bytes earn, and the recording is listed. Every count in
-        the file matches what the lists hold. That is the fenced guarantee --
-        no path is called rendered evidence without being established as a
-        regular, byte-typed media file -- now held by execution rather than by
-        the text of an inline loop, and held identically by both lanes."""
+        """Run each design lane's evidence step on a PR that renames its screenshots.
+
+        The fixture is first shown to defeat `--diff-filter=AM`. The re-captured file
+        then reaches the reviewer; the unchanged move, the symlink (by mode) and the
+        text file (by bytes) are refused; the JPEG under `.png` is kept as `.jpg`.
+        """
         repo, base = self._repo_renaming_its_evidence(tmp_path)
         lost = self._git(repo, "diff", "--name-only", "--diff-filter=AM", f"{base}...HEAD")
         assert "temp-screenshots/panel/after.png" not in lost.splitlines(), lost
@@ -780,22 +747,13 @@ class TestUxReviewReadsTheScreenshotsBlindFirstCommittedEvidence(UxEvidenceGateH
         ), self._evidence_stdout
 
     def test_neither_fork_lane_tells_its_reviewer_to_discount_a_committed_image(self) -> None:
-        """The evidence steps hand the reviewer committed media as bytes out of
-        the object store, so the trigger that decides "cannot evaluate" has to
-        count that media as evidence. A trigger that still says a committed
-        image is not evidence on a fork pull request, or that a gap is a
-        control no ATTACHED screenshot shows, instructs the reviewer to block
-        an author for the very evidence the workflow just gave it. The negative
-        assertions name the stale shapes; the positive ones name the rule the
-        trigger states instead. The design trigger is checked in BOTH design
-        lanes because their calibration blocks are pinned identical, so its
-        wording has to be true of a same-repo and a fork pull request alike --
-        which it is only as the one read the shared script performs: bytes out
-        of the object store at the head SHA, never off a working tree. A
-        per-lane split ("in a same-repo checkout as the file at HEAD") names a
-        read the script does not perform. The CANNOT-EVALUATE contract itself is
-        untouched: the point is which evidence counts, not when the lane may
-        refuse."""
+        """The "cannot evaluate" trigger counts committed media as evidence.
+
+        The steps hand the reviewer committed media as object-store bytes, so a
+        trigger discounting it would block the author for evidence given. Both design
+        lanes share one calibration block, so the wording names only the object-store
+        read at the head SHA, true for same-repo and fork PRs alike.
+        """
         for lane in DESIGN_LANES:
             design_prompt = _flat(_step(lane, "Design review (Opus 5.5)")["with"]["prompt"])
             assert "THIS checkout can render" not in design_prompt, lane

@@ -24,7 +24,7 @@ vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-u
 
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
@@ -192,7 +192,8 @@ describe('ChatPanel — optimistic default model', () => {
 
     await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(effortTrigger).not.toHaveAttribute('data-disabled'))
-    resolve({})
+    await act(async () => { resolve({}) })
+    await waitFor(() => expect(kirocrewConfigMock.mock.calls.length).toBeGreaterThanOrEqual(2))
   })
 })
 
@@ -522,6 +523,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     const labels = screen.getAllByRole('option').map(o => o.textContent)
     expect(labels).toContain('claude-opus-4.7-retired')
     expect(labels).toContain('claude-opus-4.8')
-    resolve({})
+    await act(async () => { resolve({}) })
+    await waitFor(() => expect(kirocrewConfigMock.mock.calls.length).toBeGreaterThanOrEqual(2))
   })
 })

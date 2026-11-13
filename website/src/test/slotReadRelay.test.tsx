@@ -603,6 +603,8 @@ describe('slot_read over the dashboard socket', () => {
     const posted: number[] = []
     const fakeParent = { postMessage: (msg: unknown) => { posted.push((msg as { count: number }).count) } }
     const spy = vi.spyOn(window, 'parent', 'get').mockReturnValue(fakeParent as unknown as Window)
+    // The relay posts only to a hub referrer; jsdom has none.
+    const referrer = vi.spyOn(document, 'referrer', 'get').mockReturnValue('http://127.0.0.1:8899/')
     try {
       let st = dashboardReducer(undefined, { type: '@@INIT' })
       st = dashboardReducer(st, markSlotUnread('manual-H'))                                    // manual only
@@ -613,6 +615,7 @@ describe('slot_read over the dashboard socket', () => {
       expect(posted[posted.length - 1]).toBe(1)                                                // manual survives the clear
       expect(st.unreadSlots).toEqual(['manual-H'])
     } finally {
+      referrer.mockRestore()
       spy.mockRestore()
     }
   })

@@ -9,13 +9,16 @@
  * exists, what it is, and whether this app may show it at all.
  *
  * Pure on purpose. The URL shape, the containment rule and the reveal chain are
- * pinned by `fileExplorerDeepLink.test.ts` rather than by driving the page, and
- * the one consumer outside this app (`MarkdownPanel`'s overflow menu) imports
- * the link builder without pulling the page's component graph behind it.
+ * pinned by `fileExplorerDeepLink.test.ts` rather than by driving the page. The
+ * core reaches none of it directly: the page's `builtinRegistry` row declares
+ * `FILE_EXPLORER_PATH_PARAM` as its `opensPathParam`, and `MarkdownPanel`'s
+ * overflow menu builds the link through the generic `apps/pathOpener.ts`.
  */
 
-/** The app's `/api/apps` name, the key the row looks up in the installed list. */
-export const FILE_EXPLORER_APP = 'file-explorer'
+import { parentDir } from '../../utils/parentDir'
+
+export { parentDir }
+
 /** The native route `builtinRegistry` serves the page at. */
 export const FILE_EXPLORER_ROUTE = '/file-explorer'
 /** Query param naming the path to open. */
@@ -45,21 +48,6 @@ export const normPath = (x: string) =>
 export const underRoot = (p: string, r: string) => {
   const [a, b] = [normPath(p), normPath(r).replace(/\/+$/, '')]
   return a === b || a.startsWith(b + '/') || b === ''
-}
-
-/**
- * The directory containing `p`, or `null` at a filesystem root. Separator-aware
- * because the backend prints paths with the host's own separator (`str(Path)`),
- * so on a Windows gateway every one is a backslash; `utils.dirname` is POSIX-only.
- */
-export function parentDir(p: string): string | null {
-  const trimmed = p.replace(/[\\/]+$/, '')
-  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
-  if (cut < 0) return null
-  // `/x` → `/`; `C:\x` → `C:\`. Keep the separator so the root stays a path.
-  if (cut === 0 || /^[a-z]:$/i.test(trimmed.slice(0, cut))) return trimmed.slice(0, cut + 1)
-  const parent = trimmed.slice(0, cut)
-  return parent === trimmed ? null : parent
 }
 
 /**

@@ -109,7 +109,7 @@ class TestCachedness:
     def test_a_malformed_receipt_reads_as_absent(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             folder = _write_media("0.6.0")
-            (folder / ".hosted-clip.mp4.sha256").write_text("not a digest\n")
+            (folder / ".hosted-clip.mp4.sha256").write_text("not a digest\n", encoding="utf-8")
             assert cache_mod.recorded_sha256(folder, "hosted-clip.mp4") == ""
             assert cache_mod.is_cached(_parsed().entries[0], "0.6.0") is False
 

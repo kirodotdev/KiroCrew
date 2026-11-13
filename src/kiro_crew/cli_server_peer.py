@@ -26,7 +26,7 @@ import time
 import urllib.request
 
 from kiro_crew import platform_compat
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.urls import dashboard_socket_path
 from kiro_crew.instances import run_marker
 from kiro_crew.loopback_http import tcp_verified_urlopen, unix_socket_urlopen

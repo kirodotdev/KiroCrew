@@ -20,6 +20,12 @@ export interface InlineComment {
   column?: number
   /** Character offset of the anchor in the rendered text (textContent space). Used to disambiguate repeated occurrences of the same anchor text. */
   startOffset?: number
+  /** The anchor as it reads in the rendered text (`Range.toString()`, the space
+   *  `startOffset` counts in), used only to find it there. It differs from
+   *  `anchor` when the selection crosses table cells, rows or blocks: the
+   *  browser's selection text puts a tab or newline between them, the rendered
+   *  text has none. Absent when the two are the same or it was never measured. */
+  renderedQuote?: string
   /** The anchor was selected inside a code block, whose text is not in that space: no offset exists and the first match elsewhere would be the wrong passage. */
   inCode?: boolean
   /** For an `inCode` anchor: its block, source line and column, packed by `codePassagePosition`. Absent when it could not be packed. */
@@ -110,6 +116,7 @@ function CommentRow({ comment, number, onEdit, onRemove, onEditingChange, draftK
         )}
         {editing ? (
           <input ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)}
+            aria-label={i18nT('components.commentsSidebar.edit_comment_2')}
             {...ime.bindComposition<HTMLInputElement>({ onBlur: commitEdit })}
             onKeyDown={e => {
               if (e.key === 'Enter' && draft.trim()) { if (ime.claimEnter(e)) commitEdit() }
@@ -229,9 +236,6 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
     </div>
   )
 }
-
-// Re-exported so its importers keep one import site.
-export { sliceCodePoints }
 
 // The agent payload is model-facing text, so it lives behind the `.prompt.ts`
 // boundary; re-exported here so its importers keep one import site.

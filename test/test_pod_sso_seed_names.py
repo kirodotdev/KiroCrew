@@ -1,11 +1,8 @@
 """Nothing host-derived is staged into a pod's ``.aws/sso/cache``.
 
-A security review blocked the earlier shape: the carve-out that keeps the pod's
-grant store WRITABLE also made the host's COPIED SSO bearer tokens readable to any
-agent shell inside the pod. Live acceptance had already shown the copy was not
-load-bearing -- sign-in comes from the runtime's own data store
-(``_RUNTIME_AUTH_STORES``) -- so the copy is deleted rather than hidden. These
-tests pin that the seeder creates the corridor and copies NOTHING into it.
+The carve-out that keeps the pod's grant store writable would make copied host SSO
+tokens readable to agent shells, and sign-in comes from ``_RUNTIME_AUTH_STORES``, so
+the seeder creates the corridor and copies NOTHING into it.
 """
 
 from __future__ import annotations
@@ -27,17 +24,10 @@ requires_pinned_walk = pytest.mark.skipif(
 def test_the_seeder_refuses_without_pinned_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The platform-honest contract, on every host the refusal still governs.
+    """Without pinned descriptors the seeder refuses and aborts the boot.
 
-    Building the pod's credential tree by NAME would be exactly the symlink
-    redirect the pinning exists to prevent, so a platform without those
-    descriptors gets a refusal that aborts the boot -- not a degraded copy.
-
-    ``IS_WINDOWS`` is pinned False alongside the capability probe, because win32
-    is the one host where the absence of ``dir_fd`` has a stated substitute
-    (reparse screening plus ``pin_directory`` on each level) rather than no answer
-    at all. The next test asserts that half, so this one asserts the refusal where
-    it is the whole answer.
+    Building the credential tree by name would allow a symlink redirect.
+    ``IS_WINDOWS`` is pinned False: win32 has its own substitute, tested next.
     """
     monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
     monkeypatch.setattr(rt.pinned_fs, "supports_pinned_walk", lambda: False)
@@ -110,7 +100,7 @@ def test_the_corridor_is_owner_only(tmp_path: Path, monkeypatch) -> None:
 def test_boot_flushes_stdout_before_exec() -> None:
     """The probe's own output must survive the exec into the gateway."""
     source = Path(inspect.getsourcefile(rt._boot_unguarded) or "").read_text(encoding="utf-8")
-    probe_at = source.index("_probe_pod_child_bootstrap(pod_env)")
+    probe_at = source.index("_probe_pod_child_bootstrap(pod_env,")
     flush_at = source.index("sys.stdout.flush()", probe_at)
     gateway_at = source.index('argv = ["gateway"]', probe_at)
     assert probe_at < flush_at < gateway_at

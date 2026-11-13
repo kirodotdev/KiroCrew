@@ -99,8 +99,9 @@ async def test_named_scenario_is_found_loaded_and_saved_off_the_loop(
 async def test_unknown_scenario_lists_the_directory_off_the_loop(
     calls: dict[str, list[int]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    await cc._run_eval(_ns(all_scenarios=False, scenarios=["does-not-exist"], judge=False))
-    assert "Available scenarios:" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        await cc._run_eval(_ns(all_scenarios=False, scenarios=["does-not-exist"], judge=False))
+    assert "Available scenarios:" in capsys.readouterr().err
     assert "iterdir" in calls
     assert _on_loop(calls) == {}
     assert not (tmp_path / "eval_results").exists()

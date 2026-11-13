@@ -41,10 +41,12 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_keys_snapshot,
     slack_options_slot,
 )
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
+from kiro_crew.messaging.session_trust import is_session_trusted, trust_permitted
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -69,8 +71,7 @@ from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
-    OPTIONS_CHECKBOXES_ACTION,
-    OPTIONS_SUBMIT_ACTION,
+    OPTIONS_SEVERAL_ACTION,
     SESSION_LINK_ACTION,
     build_options_selected_blocks,
     escape_mrkdwn,
@@ -79,10 +80,14 @@ from kiro_crew.slack.format import (
 from kiro_crew.slack.handler import (
     APPROVAL_INTERACTIVE,
     add_trusted_session,
+    channel_agent_mismatch,
+    channel_pinned_agent,
     handle_interaction,
     handle_message,
     is_allowed_user,
     is_owner,
+    link_agent_mismatch,
+    read_link_record,
     set_allowed_users,
     set_tracking_channels,
 )
@@ -110,6 +115,12 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+#: The action ids of the checkbox + Send OPTIONS card that the one-click card
+#: replaced. Cards posted before the upgrade still carry them.
+_RETIRED_OPTIONS_SEND = frozenset({"options_submit"})
+_RETIRED_OPTIONS_TOGGLE = frozenset({"options_checkboxes"})
+_RETIRED_CARD = "This card has expired. Reply in the thread to answer."
 
 
 def init(orchestrator: GatewayOrchestrator) -> None:
@@ -167,17 +178,24 @@ async def dispatch(payload: dict) -> None:
             resources=action_id,
             error="unauthorized user",
         )
+        from kiro_crew.slack.code_channels import agent_picker, approval_picker
+
+        refusal = "⛔ You are not authorized to use these buttons."
+        if action_id == agent_picker.AGENT_SELECT_ACTION_ID:
+            # Slack Code's agent picker records each change decision as its own.
+            agent_picker.audit_refused_pick(payload, "unauthorized user")
+            refusal = agent_picker.OWNER_ONLY_TEXT
+        elif action_id in (
+            approval_picker.APPROVAL_SELECT_ACTION_ID,
+            approval_picker.APPROVAL_CONFIRM_ACTION_ID,
+        ):
+            approval_picker.audit_refused_pick(payload, "unauthorized user")
+            refusal = approval_picker.OWNER_ONLY_TEXT
         if _orch and _orch.slack and channel and user_id:
             try:
-                await _orch.slack.post_ephemeral(
-                    channel, user_id, "⛔ You are not authorized to use these buttons."
-                )
+                await _orch.slack.post_ephemeral(channel, user_id, refusal)
             except Exception:
                 logger.debug("Failed to send ephemeral rejection", exc_info=True)
-        return
-
-    # ── OPTIONS checkboxes toggle — no-op, wait for Send ──
-    if action_id == OPTIONS_CHECKBOXES_ACTION:
         return
 
     # ── "Open session" deep-link button — no-op ──
@@ -188,13 +206,101 @@ async def dispatch(payload: dict) -> None:
     if action_id == SESSION_LINK_ACTION:
         return
 
-    # ── OPTIONS Send / legacy choice buttons ──
-    # Both RESOLVE an [OPTIONS:] choice: they edit/post the selection to the
-    # channel AND re-dispatch it as a fresh turn. So a ``channels`` policy that
-    # denies ``slack`` must stop them BEFORE that side effect — the re-dispatched
-    # handle_message() is gated, but the message edit/post precedes it. Gate here.
-    # (``_done_`` is a spent-marker no-op that posts nothing, so it stays exempt.)
-    _is_options = action_id == OPTIONS_SUBMIT_ACTION or (
+    # ── Slack Code channel: the wrap-up's Archive button ──
+    # Answered there while slack.code_channels is on (origin-inherited
+    # authorization, SEL-audited); otherwise it falls through as before.
+    from kiro_crew.slack.code_channels.wrapup import ARCHIVE_ACTION_ID, handle_archive_click
+
+    if action_id == ARCHIVE_ACTION_ID:
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel archive dropped: denied by channels governance policy")
+            return
+        if await handle_archive_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the kickoff's agent picker ──
+    # Same shape: answered there while slack.code_channels is on (owner-only,
+    # SEL-audited, switched through the dashboard's agent-switch path).
+    from kiro_crew.slack.code_channels.agent_picker import AGENT_SELECT_ACTION_ID, handle_select
+
+    if action_id == AGENT_SELECT_ACTION_ID:
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info(
+                "slack code channel agent pick dropped: denied by channels governance policy"
+            )
+            return
+        if await handle_select(_orch, payload):
+            return
+
+    # ── Slack Code: approval-card controls (owner-only, audited there) ──
+    from kiro_crew.slack.code_channels.worker_approvals import dispatch_card_click
+
+    if await dispatch_card_click(_orch, payload, action_id):
+        return
+
+    # ── Slack Code channel: the hand-off notice's Turn-on button ──
+    # Owner-only, SEL-audited; writes slack.code_channel_dispatch through the
+    # Settings card's audited save. Falls through when code channels are off.
+    from kiro_crew.slack.code_channels.handoff import HANDOFF_ACTION_ID, handle_handoff_click
+
+    if action_id == HANDOFF_ACTION_ID:
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel hand-off dropped: denied by channels governance policy")
+            return
+        if await handle_handoff_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the restart notice's Resume button ──
+    # Prefix-dispatched like the session-resume buttons below; owner-only and
+    # SEL-audited, it continues the channel's own interrupted work.
+    from kiro_crew.slack.code_channels.resume import (
+        RESUME_ACTION_PREFIX,
+        STOP_ACTION_PREFIX,
+        handle_resume_click,
+        handle_stop_click,
+    )
+
+    if action_id.startswith(RESUME_ACTION_PREFIX):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel resume dropped: denied by channels governance policy")
+            return
+        if await handle_resume_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the automatic-resume notice's Stop button ──
+    # Owner-only and SEL-audited; stops what the restart resumed, as the
+    # dashboard's Stop control does.
+    if action_id.startswith(STOP_ACTION_PREFIX):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel stop dropped: denied by channels governance policy")
+            return
+        if await handle_stop_click(_orch, payload):
+            return
+
+    # ── OPTIONS choice buttons / "Choose several..." menu ──
+    # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show
+    # the answer AND re-dispatches it as a fresh turn. So a ``channels`` policy
+    # that denies ``slack`` must stop it BEFORE that side effect — the
+    # re-dispatched handle_message() is gated, but the message edit precedes it.
+    # Gate here. The menu only opens a modal, whose submission is gated again
+    # before it answers. (``_done_`` is a spent-marker no-op that posts nothing,
+    # so it stays exempt.)
+    _is_options = action_id == OPTIONS_SEVERAL_ACTION or (
         action_id.startswith(OPTIONS_ACTION_PREFIX) and "_done_" not in action_id
     )
     if _is_options:
@@ -205,12 +311,22 @@ async def dispatch(payload: dict) -> None:
             logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
             return
 
-    # ── OPTIONS Send button ──
-    if action_id == OPTIONS_SUBMIT_ACTION:
-        await _handle_options_submit(payload, channel, msg_ts)
+    # ── A checkbox card posted before the one-click card replaced it ──
+    # Its Send cannot answer; say so rather than dropping the press
+    # silently. (Ticking its checkboxes sends events too: those stay silent.)
+    if action_id in _RETIRED_OPTIONS_SEND:
+        _thread = payload.get("message", {}).get("thread_ts") or msg_ts
+        await _tell_user(channel, user_id, _thread, _RETIRED_CARD)
+        return
+    if action_id in _RETIRED_OPTIONS_TOGGLE:
         return
 
-    # ── Legacy OPTIONS choice buttons ──
+    # ── "Choose several..." in an OPTIONS card's ⋯ menu ──
+    if action_id == OPTIONS_SEVERAL_ACTION:
+        await _open_options_several(payload, action, channel, msg_ts)
+        return
+
+    # ── OPTIONS choice buttons ──
     if action_id.startswith(OPTIONS_ACTION_PREFIX):
         if "_done_" in action_id:
             return
@@ -284,6 +400,7 @@ async def dispatch(payload: dict) -> None:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": False,
                         "response_type": "ephemeral",
@@ -355,7 +472,21 @@ async def dispatch(payload: dict) -> None:
                 metadata={"user_id": user_id, "reason": "no_slack_client"},
             )
             return
-        slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
+        try:
+            slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
+        except (ChannelAgentMismatchError, AnchorHandoffRefused) as exc:
+            notice, reason = import_refusal(exc)
+            sel().log_tool_invocation(
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
+                outcome="denied",
+                metadata={"user_id": user_id, "reason": reason},
+            )
+            await _orch.slack.post_message(channel, notice, thread_ts)
+            return
         if not slot:
             sel().log_tool_invocation(
                 session_key="",
@@ -371,6 +502,7 @@ async def dispatch(payload: dict) -> None:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={
                             "replace_original": False,
                             "response_type": "ephemeral",
@@ -393,6 +525,7 @@ async def dispatch(payload: dict) -> None:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": False,
                         "response_type": "ephemeral",
@@ -516,8 +649,8 @@ async def dispatch(payload: dict) -> None:
                 error="unauthorized user",
             )
             return
-        is_trust = action_id.startswith(TOOL_TRUST_ACTION_PREFIX)
-        approved = is_trust or action_id.startswith(TOOL_APPROVE_ACTION_PREFIX)
+        pressed_trust = action_id.startswith(TOOL_TRUST_ACTION_PREFIX)
+        approved = pressed_trust or action_id.startswith(TOOL_APPROVE_ACTION_PREFIX)
         # value / action_id suffix carry the session-namespaced approval token
         # (session_key:request_id) so a click resolves ONLY its own session's
         # pending tool — kiro-cli request ids restart at 1 per session — plus the
@@ -553,12 +686,17 @@ async def dispatch(payload: dict) -> None:
             return
         # Trust grants per-session auto-approve BEFORE resolving, so subsequent
         # tools in this session are auto-approved (mirrors native trust_tool).
-        if is_trust:
+        # The policy is read here, after the channels await, and the label and audit
+        # say "trusted" only when the grant really took: under a ``permission_mode``
+        # deny of ``trust`` the press approves this one tool.
+        is_trust = False
+        if pressed_trust and trust_permitted():
             sess_key = SlackApprovalDecider.session_for(approval_key, nonce=press_nonce)
             # No live prompt answers to this press, so there is no session to widen.
             # Granting on the empty key would escalate whatever later reads it.
             if sess_key:
                 add_trusted_session(sess_key, _orch.sessions if _orch else None)
+                is_trust = is_session_trusted(sess_key)
         resolved = SlackApprovalDecider.resolve_global(approval_key, approved, nonce=press_nonce)
         if not resolved:
             label = "⏱ This approval already expired."
@@ -584,6 +722,13 @@ async def dispatch(payload: dict) -> None:
                 await _orch.slack.update_message(channel, msg_ts, text=label)
             except Exception:
                 logger.debug("Failed to update transport approval message", exc_info=True)
+        return
+
+    # ── A bridged notification's action button (RFC bridge actions) ──
+    # Routed before the generic approval fallthrough, which would look this id up
+    # as a native approval it never was.
+    if action_id.startswith(BRIDGE_SLACK_ACTION_PREFIX):
+        await _handle_bridge_action(payload, action, action_id, channel, user_id)
         return
 
     # ── Tool approval buttons (approve / trust / reject) ──
@@ -656,7 +801,9 @@ async def _handle_resume_choice(
                 try:
                     async with aiohttp.ClientSession() as sess:
                         await sess.post(
-                            response_url, json={"replace_original": True, "text": label}
+                            response_url,
+                            proxy=resolve_proxy(response_url),
+                            json={"replace_original": True, "text": label},
                         )
                 except Exception:
                     pass
@@ -683,6 +830,50 @@ async def _handle_resume_choice(
         tab_closed = ds is not None and is_dash and not ds.slot_exists(slot)
         if mode == "thread":
             target_channel = src_channel
+            # A thread in a channel pinned to an agent is served only by that
+            # agent. A live dashboard slot is checked against it; any other
+            # session (a closed tab, a Slack-born one) has no agent that can be
+            # read here, and its replies would run on its own agent, so in a
+            # pinned channel it is refused. Before anything is posted.
+            _resume_slot = ds.get_slot(slot) if (ds is not None and is_dash) else None
+            # The session the slot's turns run on (a channel-born slot runs on
+            # its linked key), as effective_session_key resolves it.
+            _resume_key = (getattr(_resume_slot, "linked_session_key", "") or "") or session_key
+            # The record the slot's turns run on decides; read once, off the loop,
+            # and reused by the no-await check before the link is published.
+            _resume_record = (
+                await read_link_record(_resume_key)
+                if _resume_slot is not None and channel_pinned_agent(target_channel) is not None
+                else None
+            )
+            # The selection the record was judged with; a switch while the
+            # thread post awaits moves it.
+            _resume_selection = (
+                getattr(_resume_slot, "agent", "") or "",
+                getattr(_resume_slot, "agent_kind", "") or "",
+            )
+            if (
+                link_agent_mismatch(target_channel, _resume_slot, _resume_record)
+                if _resume_slot is not None
+                else channel_pinned_agent(target_channel)
+            ):
+                sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent="kirocrew",
+                    source="slack",
+                    tool_name="session_resume",
+                    tool_kind="interaction",
+                    outcome="denied",
+                    metadata={"user_id": user_id, "reason": "channel_agent_mismatch"},
+                )
+                await _tell_user(
+                    target_channel,
+                    user_id,
+                    "",
+                    "This channel is served by its own agent, so this session cannot be"
+                    " resumed in a thread here. Resume it in a DM instead.",
+                )
+                return
             thread_msg = f"\U0001f9f5 *{title}*\n" + (
                 _RESUME_TAB_CLOSED_MSG
                 if tab_closed
@@ -722,6 +913,45 @@ async def _handle_resume_choice(
         if tab_closed:
             label = f"\u25b6\ufe0f *{title}*: {_RESUME_TAB_CLOSED_MSG}"
 
+        # Read the live slot again with no await before publishing the link:
+        # its agent may have changed while the thread post awaited.
+        if mode == "thread":
+            _late_slot = ds.get_slot(slot) if (ds is not None and is_dash) else None
+            # A slot replaced while the post awaited is not the one judged above.
+            if (
+                channel_pinned_agent(link_channel)
+                and (
+                    _late_slot is not _resume_slot
+                    or (
+                        getattr(_late_slot, "agent", "") or "",
+                        getattr(_late_slot, "agent_kind", "") or "",
+                    )
+                    != _resume_selection
+                )
+            ) or (
+                link_agent_mismatch(link_channel, _late_slot, _resume_record)
+                if _late_slot is not None
+                else channel_pinned_agent(link_channel)
+            ):
+                logger.info("slack session resume: agent changed before linking; not linked")
+                sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent="kirocrew",
+                    source="slack",
+                    tool_name="session_resume",
+                    tool_kind="interaction",
+                    outcome="denied",
+                    metadata={"user_id": user_id, "reason": "channel_agent_mismatch"},
+                )
+                await _tell_user(
+                    link_channel,
+                    user_id,
+                    "",
+                    "This session's agent changed before the thread could be linked, so it"
+                    " was not resumed here. Resume it in a DM instead.",
+                )
+                return
+
         _orch.sessions.set_slack_link(session_key, link_ts, link_channel)
         sel().log_api_access(
             caller=user_id,
@@ -741,9 +971,9 @@ async def _handle_resume_choice(
             sess_dir = data_home() / "sessions"
             stem = session_key.split(":", 1)[-1] if ":" in session_key else session_key
             jsonl = sess_dir / f"{stem}.jsonl"
-            if not jsonl.exists() and not stem.startswith("dashboard_"):
+            if not await asyncio.to_thread(jsonl.exists) and not stem.startswith("dashboard_"):
                 jsonl = sess_dir / f"dashboard_{stem}.jsonl"
-            if jsonl.exists():
+            if await asyncio.to_thread(jsonl.exists):
                 # Whole-transcript read, bounded only by conversation length
                 # (multi-MB for long sessions) — off-loop so it cannot stall
                 # the event loop and its watchdog heartbeat.
@@ -783,6 +1013,7 @@ async def _handle_resume_choice(
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={"replace_original": True, "text": label},
                     )
             except Exception:
@@ -820,8 +1051,14 @@ from kiro_crew.slack.interactions_settings import _handle_channels_select  # noq
 from kiro_crew.slack.interactions_settings import _handle_track_channel  # noqa: E402
 from kiro_crew.slack.interactions_settings import _handle_users_select  # noqa: E402
 from kiro_crew.slack.interactions_options import _handle_options  # noqa: E402
-from kiro_crew.slack.interactions_options import _handle_options_submit  # noqa: E402
+from kiro_crew.slack.interactions_options import _open_options_several  # noqa: E402
+from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402
+from kiro_crew.slack.interactions_options import IMPORT_AGENT_MISMATCH_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_options import IMPORT_CODE_CHANNEL_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_options import ChannelAgentMismatchError  # noqa: E402
+from kiro_crew.slack.interactions_options import import_refusal  # noqa: E402
+from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_inline_stop  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_end  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_new  # noqa: E402
@@ -833,7 +1070,12 @@ from kiro_crew.slack.interactions_approvals import _handle_review_approve  # noq
 from kiro_crew.slack.interactions_approvals import _handle_review_cancel  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_review_edit  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_review_revise  # noqa: E402
+from kiro_crew.slack.interactions_approvals import BRIDGE_ACTION_STALE_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_approvals import _handle_bridge_action  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_tool_approval  # noqa: E402
+from kiro_crew.notifications.bridge_actions import (  # noqa: E402
+    SLACK_ACTION_PREFIX as BRIDGE_SLACK_ACTION_PREFIX,
+)
 
 # isort: on
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -859,19 +1101,24 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_context import ViewHandler  # noqa: F401
     from kiro_crew.slack.interactions_context import _probe_tracked_channel_scope  # noqa: F401
     from kiro_crew.slack.interactions_context import ack_button  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _FENCE_MARKER_NEUTRALIZED  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _FENCE_MARKER_RE  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _FENCE_WORD_JOIN  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _extend_fence_span_left  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _fence_fold  # noqa: F401
+    from kiro_crew.slack.interactions_modals import _PRIVATE_METADATA_CAP  # noqa: F401
+    from kiro_crew.slack.interactions_modals import _SHORTCUT_MAX_FILES  # noqa: F401
+    from kiro_crew.slack.interactions_modals import _fit_private_metadata  # noqa: F401
     from kiro_crew.slack.interactions_modals import _handle_config_submission  # noqa: F401
     from kiro_crew.slack.interactions_modals import _handle_voice_config_submission  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _neutralize_fence_markers  # noqa: F401
     from kiro_crew.slack.interactions_settings import _refresh_channels_modal  # noqa: F401
+    from kiro_crew.slack.interactions_settings import _save_then_apply  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PAYLOAD_CAP  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PREFIX  # noqa: F401
+    from kiro_crew.slack.interactions_options import _ALREADY_ANSWERED  # noqa: F401
+    from kiro_crew.slack.interactions_options import _NOT_AUTHORIZED  # noqa: F401
+    from kiro_crew.slack.interactions_options import _answer_options  # noqa: F401
     from kiro_crew.slack.interactions_options import _extract_selected_value  # noqa: F401
     from kiro_crew.slack.interactions_options import _forget_options_control  # noqa: F401
+    from kiro_crew.slack.interactions_options import _handle_options_several_closed  # noqa: F401
+    from kiro_crew.slack.interactions_options import (  # noqa: F401
+        _handle_options_several_submission,
+    )
     from kiro_crew.slack.interactions_options import _mark_button_clicked  # noqa: F401
     from kiro_crew.slack.interactions_options import _options_block_id  # noqa: F401
     from kiro_crew.slack.interactions_options import _options_choices_from_payload  # noqa: F401
@@ -880,10 +1127,32 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_sessions import _clear_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _record_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_AUTH_DENIED_MSG  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import _REVIEW_ROOT_SUFFIX  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _delete_review_placeholder  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _handle_review_edit_submit  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _handle_review_revise_submit  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _parse_draft_key  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _post_review_auth_error  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import _restore_review_card  # noqa: F401
+    from kiro_crew.slack.format import OPTIONS_SEVERAL_BLOCK  # noqa: F401
+    from kiro_crew.slack.format import OPTIONS_SEVERAL_CALLBACK  # noqa: F401
+    from kiro_crew.slack.format import OPTIONS_SEVERAL_INPUT  # noqa: F401
+    from kiro_crew.slack.format import build_options_answered_blocks  # noqa: F401
+    from kiro_crew.slack.format import build_options_several_modal  # noqa: F401
+    from kiro_crew.slack.outbound import OptionsSeveralRequest  # noqa: F401
+    from kiro_crew.slack.outbound import options_answered  # noqa: F401
+    from kiro_crew.slack.outbound import remember_options_several  # noqa: F401
+    from kiro_crew.slack.outbound import take_options_several  # noqa: F401
+    from kiro_crew.slack.format import ForwardedMessage  # noqa: F401
+    from kiro_crew.slack.format import _FENCE_MARKER_NEUTRALIZED  # noqa: F401
+    from kiro_crew.slack.format import _FENCE_MARKER_RE  # noqa: F401
+    from kiro_crew.slack.format import _FENCE_WORD_JOIN  # noqa: F401
+    from kiro_crew.slack.format import _extend_fence_span_left  # noqa: F401
+    from kiro_crew.slack.format import _fence_fold  # noqa: F401
+    from kiro_crew.slack.format import _neutralize_fence_markers  # noqa: F401
+    from kiro_crew.slack.format import assemble_forward_message  # noqa: F401
+    from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
+    from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
+    from kiro_crew.slack.handler import _SLACK_SECTION_TEXT_LIMIT  # noqa: F401
 # isort: on

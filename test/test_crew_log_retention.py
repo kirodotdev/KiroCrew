@@ -4,10 +4,8 @@ Two layers, in the order they depend on each other: ``remove_unit`` (ownership,
 ordering, identity last, counted failures) and ``sweep_expired`` (which units it
 selects, and every unit it must refuse to touch).
 
-The refusals carry the weight here. A sweep that removes too little costs disk;
-a sweep that removes an OPEN session's log, a crew log, or a unit some writer
-still owns destroys a record nothing can rebuild -- so each of those has its own
-test rather than being covered incidentally by the happy path.
+Each refusal has its own test: removing too little costs disk, but removing an open
+session's log, a crew log or an owned unit destroys a record nothing can rebuild.
 """
 
 from __future__ import annotations
@@ -21,6 +19,7 @@ import time
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_type_helpers import minimal_data
 from off_loop_helpers import off_loop
 
@@ -97,17 +96,9 @@ def _append_at(
 ) -> None:
     """Append *entry_type*, then rewrite its ``time`` to *time_ms*.
 
-    The writer assigns ``time`` from the clock, and these tests need a close that
-    happened months ago. Editing the line afterwards is confined to the test: the
-    entry keeps its real shape, so the sweep still reads it exactly as it reads a
-    genuinely old one.
-
-    *plant* replaces the written entry's ``data`` on disk after the append, for
-    the reader tests that need a line the append path would refuse -- a close with
-    no ``reason``, or one whose ``reason`` is not a string. The append itself
-    still goes through with a valid *data*, so the line keeps a well-formed
-    envelope (seq, thread, header); only the payload the sweep reads is the
-    deliberately-malformed one.
+    The writer stamps ``time`` from the clock; the entry keeps its real shape otherwise.
+    *plant* swaps in a ``data`` the append path would refuse (a close with no or a
+    non-string ``reason``) while the envelope stays well-formed.
     """
     log.append(entry_type, data, src="gateway")
     lines = log.path.read_text(encoding="utf-8").splitlines()
@@ -158,7 +149,7 @@ def _unit_dir(kind: str, unit_id: str):
     return lg.crew_log_root(kind) / _store_name(unit_id)
 
 
-# --- remove_unit: ownership -------------------------------------------------
+# remove_unit: ownership
 
 
 def test_remove_unit_removes_every_file_and_the_directory():
@@ -215,7 +206,7 @@ def _hold_lease(lease_path: str, ready, done) -> None:  # pragma: no cover - chi
 
     path = Path(lease_path)
     path.touch(exist_ok=True)
-    with open(path, "r+") as handle:
+    with open(path, "r+", encoding="utf-8") as handle:
         with file_lock(handle.fileno(), exclusive=True, required=True, wait=False):
             ready.set()
             done.wait(timeout=30)
@@ -244,7 +235,7 @@ def test_a_writer_is_refused_while_a_removal_of_that_unit_is_in_flight():
     lg.lease.release(lg.lease.acquire(lease_path, kind=lg.KIND_SESSION, unit_id=SESSION))
 
 
-# --- remove_unit: ordering and failure -------------------------------------
+# remove_unit: ordering and failure
 
 
 def test_remove_unit_removes_the_lease_file_last():
@@ -384,16 +375,9 @@ def test_a_unit_directory_linked_outside_the_root_is_refused_by_containment(tmp_
 def test_a_linked_unit_directory_never_causes_the_target_to_be_removed():
     """The property, not one line: no link in the root reaches its target's history.
 
-    Built so the link is the ONLY route -- the target directory is moved out of
-    the sessions root, and the link's own name folds to the id its header carries,
-    so containment and the fold-back check both pass and the link itself is all
-    that is left to stop the removal.
-
-    Two guards hold it: the sweep skips a linked child in the listing, and
-    ``remove_unit`` refuses a unit whose directory NAME is a link (``crew_log_dir``
-    returns the RESOLVED path, so by then the caller holds the target). Removing
-    either alone leaves the property standing, so it is asserted as the property
-    and the mutation harness removes both together.
+    The target sits outside the root and the link's name matches its header id, so only
+    the link checks stand in the way. Two guards hold it (the sweep skips linked
+    children; ``remove_unit`` refuses a linked directory name), so either alone suffices.
     """
     hidden = _closed_session("s-hidden", closed_days_ago=400)
     hidden_dir = hidden.path.parent
@@ -412,7 +396,7 @@ def test_a_linked_unit_directory_never_causes_the_target_to_be_removed():
     assert (stash / "log.jsonl").exists()
 
 
-# --- sweep_expired: what it selects ----------------------------------------
+# sweep_expired: what it selects
 
 
 def test_sweep_removes_a_session_closed_before_the_cutoff():
@@ -498,17 +482,8 @@ def test_sweep_reads_the_newest_close_when_a_resumed_session_closed_twice():
 def test_sweep_never_expires_a_session_that_was_REOPENED_after_its_close():
     """Whether a unit is closed is decided by the newest of the lifecycle PAIR.
 
-    A resumed session appends to the crew log it already had, so ``... closed ...
-    opened ...`` is a legitimate file whose session is running RIGHT NOW. Reading
-    the newest close on its own calls it expired and deletes a live
-    conversation's log -- the same rule as "an open session is never touched",
-    for the unit that reaches that state by coming back rather than by never
-    having left.
-
-    Both lifecycle entries are aged past the cutoff, which is the case the rule
-    has to answer: a long-running session revived a year ago and still open is
-    old by every clock in the file, and only the ORDER of the pair says it is
-    live.
+    A resumed session appends to its old log, so ``... closed ... opened ...`` is a live
+    session. Both entries are aged past the cutoff: only their order says it is live.
     """
     log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
     _append_at(log, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 400 * DAY_MS)
@@ -555,11 +530,8 @@ def test_an_in_flight_closer_after_the_teardown_still_reads_as_closed():
 def test_the_sweep_re_decides_inside_the_lease_and_stands_down_on_a_revival():
     """The scan is a SNAPSHOT, and ownership ends between turns.
 
-    So a session can be revived, append, finish its turn and release the lease in
-    the window between the decision and the delete -- after which an unguarded
-    removal takes a live conversation's log while contending with nobody. The
-    re-decision runs inside the removal's own hold, which is the only place the
-    answer is current.
+    A session can be revived and release its lease between decision and delete, so the
+    re-decision runs inside the removal's own hold.
     """
     log = _closed_session(closed_days_ago=90)
     path = log.path
@@ -651,20 +623,9 @@ def test_sweep_leaves_a_torn_tail_to_the_resume_repair():
 def test_sweep_still_collects_a_unit_whose_segments_the_READER_refuses():
     """A crew log too damaged to read is still expired, and that is deliberate.
 
-    Segment provenance is checked on the READ path: a filename whose declared
-    first seq disagrees with the file's first entry makes ``iter_from`` raise
-    ``CODE_BAD_SEGMENT``. Retention does not go through that path -- it reads the
-    header line and a bounded tail directly -- so a unit the reader refuses is
-    still collectable.
-
-    That is the wanted behaviour, not a gap the sweep should close by borrowing
-    the reader's check. Gating removal on readability would make a damaged crew log
-    IMMORTAL: the one unit nothing can use would be the one unit retention could
-    never reclaim, and the corruption would be preserved forever by the very rule
-    meant to protect history. The sweep's own guards do not depend on the entries
-    being readable end to end -- the header id must still match the directory, the
-    tail must be untorn, and the newest lifecycle entry must still be the close --
-    so what it drops is a closed, aged, unowned unit either way.
+    ``iter_from`` raises ``CODE_BAD_SEGMENT`` on a bad segment name, but retention reads
+    the header and tail directly. Gating on readability would make a damaged log
+    immortal; the sweep's own guards (header id, untorn tail, newest entry a close) hold.
     """
     log = _closed_session(closed_days_ago=90)
     directory = log.path.parent
@@ -687,13 +648,8 @@ def test_sweep_still_collects_a_unit_whose_segments_the_READER_refuses():
 def test_sweep_never_scans_crew_logs():
     """Crew logs are out of scope: no writer, and no close to age from.
 
-    Pinned with a crew log carrying a ``session/closed`` line WRITTEN DIRECTLY
-    to the file, aged past the cutoff. It has to be planted rather than appended,
-    because a crew log cannot own a ``session`` type through the API
-    (``event_type_not_owned``) -- and that is exactly the case scoping must answer:
-    this tree is agent-writable, so "no crew log can contain that entry" is a
-    property of the writer, not of the bytes. Without the scoping such a unit
-    reads as an expired session and is removed.
+    The aged ``session/closed`` line is planted because the API refuses it
+    (``event_type_not_owned``); the tree is agent-writable, so the bytes can hold it.
     """
     crew = CrewLog.create(lg.KIND_CREW, CREW)
     crew_path = crew.path
@@ -782,17 +738,9 @@ def test_sweep_is_a_no_op_when_the_log_root_was_never_created():
 def test_sweep_refuses_a_linked_session_root_and_reads_nothing_under_it(tmp_path):
     """The walk resolves the CHECKED root, so a linked kind directory is refused once.
 
-    ``crew_log_dir`` refuses this root, so the removal was never in danger -- but the
-    refusal arrived one unit at a time, AFTER this walk had opened a header and a
-    tail from every file the link named. Reading a file outside the data home is
-    the thing the root guard exists to prevent, so the walk has to be refused too.
-
-    The unit planted under the link is a REAL expired one, which is what makes the
-    return value decide this rather than a mount option: had the walk run, that
-    unit would have been selected and then refused by ``crew_log_dir``, counting one
-    failure. ``(0, 0)`` is reachable only if the root was refused before the walk.
-    An atime probe would not do -- ``relatime`` and ``noatime`` are common enough
-    that "the file was not read" would assert itself.
+    ``crew_log_dir`` would refuse each unit, but only after the walk read files outside
+    the data home. The planted unit is really expired, so only a refusal before the walk
+    yields ``(0, 0)`` (an atime probe would pass under ``relatime``/``noatime``).
     """
     elsewhere = tmp_path / "attacker-writable"
     log = _closed_session(unit_id="s-outside", closed_days_ago=90)
@@ -916,15 +864,8 @@ def test_a_partial_removal_reports_that_the_history_is_already_gone(caplog, monk
 def test_a_partial_removal_keeps_lineage_whose_opening_record_still_reads(monkeypatch):
     """ "Some history went" is not "the opening record went".
 
-    Segments go first, so the ordinary lease-only refusal really does take the opening
-    entry with them. But a refusal on a LATER segment can leave the earliest one -- and
-    the opening entry in it -- readable, and dropping the edge then would lose a valid
-    citation until the process re-seeds. The disk is asked rather than assumed, so this
-    pins the answer for the case where it still yields a record.
-
-    The citation is only the FIRST segment's contribution. A decision is appended later, so
-    the segments this pass did take can be the ones holding it -- which is why a record
-    surviving intact still owes a re-read of the decision.
+    A refusal on a later segment can leave the opening entry readable, so the disk is
+    asked. A decision may sit in a removed later segment, so it is still re-read.
     """
     from kiro_crew.crew_log import session_tree
     from kiro_crew.crew_log import session_tree_projection as stp
@@ -973,11 +914,8 @@ def test_a_partial_removal_downgrades_to_parentless_when_the_creating_segment_we
 ):
     """The creating segment went, later ones survive: the citation goes, the record stays.
 
-    A fresh scan of this unit contributes the slot with NO parent in that case, so a
-    projection still serving the old edge disagrees with the disk it is an image of.
-    Dropping the whole record instead would orphan this unit's CHILDREN, which cite its
-    SLOT -- a slot with no record reads as a creator that never existed, rather than one
-    whose own creator is unknown.
+    A fresh scan gives the slot no parent. Dropping the record would orphan the children
+    that cite this slot, making it read as a creator that never existed.
     """
     from kiro_crew.crew_log import session_tree
     from kiro_crew.crew_log import session_tree_projection as stp
@@ -1107,11 +1045,8 @@ def _newest_lifecycle_type(unit_id: str) -> str:
 def drained_emitter(monkeypatch):
     """The live crew-log emitter for a test that drives a real ``SessionManager``.
 
-    Fresh writer caches and a fresh session tree on the way in. On the way out the
-    writer is drained and retired, and the session tree's debounced checkpoint is
-    cancelled and waited out. Every lifecycle entry that lands arms that checkpoint
-    on the shared maintenance pool, where its worker sleeps out the debounce; left
-    alone, it outlives the test and runs during the next one.
+    On the way out the session tree's debounced checkpoint is cancelled and waited out;
+    left alone it would run during the next test.
     """
     from kiro_crew.crew_log import emit
     from kiro_crew.crew_log import session_tree_projection as stp
@@ -1137,17 +1072,9 @@ def drained_emitter(monkeypatch):
 async def test_destroying_a_session_records_the_teardown_in_its_log():
     """Without this entry NEITHER half of retention can ever collect the unit.
 
-    The emitter holds a destroyed session's cached handle, and the write lease
-    that handle carries, so a removal claiming the lease ``sole`` answers
-    ``owned``; the sweep is blocked from the other side, because a unit whose
-    newest lifecycle entry is not a close reads as OPEN whatever its age. So the
-    close is not bookkeeping -- it is the entry that makes the unit collectable,
-    and ``destroy`` writes it for the same reason the reset route does.
-
-    Driven through the REAL ``destroy`` rather than a stub. A mocked teardown that
-    omits the emit is exactly how this defect stayed invisible: every removal test
-    built its crew log with ``CrewLog.create``, which leaves nothing holding the
-    unit, so they were green while the gateway could not collect a real one.
+    The emitter's cached handle keeps the lease (removal answers ``owned``), and with no
+    close the sweep reads the unit as open. Driven through the real ``destroy``: logs
+    built with ``CrewLog.create`` have no holder and would pass regardless.
     """
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.crew_log import emit
@@ -1159,13 +1086,13 @@ async def test_destroying_a_session_records_the_teardown_in_its_log():
     await manager.get_or_create("thread-doomed")
 
     emit.on_session_opened("acp-torn-down", agent="kirocrew", slot="thread-doomed")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     assert _newest_lifecycle_type("acp-torn-down") == "session/opened"
 
     # ``SessionManager.destroy`` returns None -- it awaits the lifecycle's own
     # destroy and discards its bool -- so the effect is what is asserted.
     await manager.destroy("thread-doomed")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     assert _newest_lifecycle_type("acp-torn-down") == _CLOSED
 
@@ -1189,9 +1116,9 @@ async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep():
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-aged"))
     await manager.get_or_create("thread-aged")
     emit.on_session_opened("acp-aged", agent="kirocrew", slot="thread-aged")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     assert await manager.destroy("thread-aged") is None
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     # Age the close the sweep reads, the same way the fixtures above do.
     path = _unit_dir(lg.KIND_SESSION, "acp-aged") / "log.jsonl"
@@ -1206,17 +1133,11 @@ async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep():
         raise AssertionError("destroy wrote no close to age")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    # No ``reset_caches`` between the close and this sweep, deliberately. The
-    # close entry is what RELEASES the emitter's handle -- ``on_session_closed``
-    # drops it once no turn of that session is pinned -- so by the time the
-    # entry has landed the lease is already free and the ordinary sweep can
-    # claim it. That is the same release the delete funnel's flush waits for,
-    # observed from the other caller.
+    # No ``reset_caches`` here on purpose: ``on_session_closed`` releases the handle, so
+    # the lease is already free.
     #
-    # Off the loop, as ``history`` calls it. Landing the close also wakes the eager
-    # folder, which reads this unit on its own thread; the removal waits for that
-    # batch only off the event-loop thread, and on Windows an unlink of the segment
-    # the fold holds open is refused and the unit reported not removed.
+    # Off the loop, as ``history`` calls it: the close wakes the eager folder, and only
+    # off-loop does removal wait for it (Windows refuses to unlink a segment held open).
     assert off_loop(store.sweep_expired, 30) == (1, 0)
     assert not CrewLog.exists(lg.KIND_SESSION, "acp-aged")
 
@@ -1270,16 +1191,9 @@ def test_only_a_destroy_close_authorizes_collection():
 def test_a_close_that_does_not_end_the_ids_life_is_never_collected(reason):
     """The gateway stopped SERVING the session; the conversation can still come back.
 
-    ``reset`` is the one worth naming, because the intuitive reading is wrong: a
-    reset does cold-start its successor on a new id, but its own ``clear_sid`` is
-    guarded by ``if clear_conversation and session is not None``, so a reset that
-    keeps the conversation writes this close while LEAVING the old id mapped --
-    still resumable, and its log still needed. ``discarded`` clears the sid
-    unconditionally and would qualify on that test, but no path writes it into a
-    crew log today, so admitting it would be a rule about a file nothing produces.
-    A shutdown, a crash, an eviction and an unknown spelling all leave the id
-    mapped too. Retaining costs disk; deleting one of these destroys a live
-    conversation's history.
+    A ``reset`` that keeps the conversation leaves the old id mapped (``clear_sid`` needs
+    ``clear_conversation``), so it is still resumable. ``discarded`` is never written to a
+    crew log. Shutdown, crash, eviction and unknown reasons also leave the id mapped.
     """
     log = _closed_session(closed_days_ago=400, reason=reason)
     del log
@@ -1289,14 +1203,11 @@ def test_a_close_that_does_not_end_the_ids_life_is_never_collected(reason):
 
 
 def test_a_valid_empty_session_map_cannot_authorize_collecting_a_reset_closed_unit():
-    """The exact lever the review found, pinned shut.
+    """An agent-written empty session map cannot authorize a deletion.
 
-    ``session_map.json`` is agent-WRITABLE while the crew log tree is bind-masked, and
-    a VALID empty map is not a failed read: it reads as "no session is revivable",
-    which is a positive answer that would authorize a trusted sweep to delete a
-    fenced unit the writer cannot touch directly. So nothing outside the fence takes
-    part in the decision. The unit here is expired and closed, and its only
-    protection is that its reason does not prove the id is dead.
+    ``session_map.json`` is agent-writable while the crew log tree is bind-masked, and a
+    valid empty map would read as "nothing is revivable". The unit is protected only
+    because its close reason does not prove the id is dead.
     """
     from kiro_crew.config.loader import config_dir
     from kiro_crew.session_map import SESSION_MAP_FILENAME
@@ -1342,11 +1253,8 @@ def test_a_non_string_reason_is_read_as_absent_rather_than_matched():
 def test_the_sweep_reads_no_file_outside_the_log_tree(monkeypatch):
     """Nothing an agent can write takes part in authorizing a deletion.
 
-    The session map was tried for this and removed: it is agent-writable while this
-    tree is bind-masked, and a VALID empty map is not a failed read -- it reads as
-    "nothing is revivable" and hands the trusted sweep a positive answer that
-    authorizes deleting a fenced unit. This test fails if any read reaches outside
-    the crew log root again, which is the only way that lever comes back.
+    Files such as the agent-writable session map would let a valid empty value
+    authorize deleting a fenced unit, so no read may leave the crew log root.
     """
     root = lg.crew_log_root(lg.KIND_SESSION).resolve()
     log = _closed_session(closed_days_ago=90)
@@ -1406,7 +1314,7 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-shared"))
     await manager.get_or_create("thread-shared")
     emit.on_session_opened("acp-shared", agent="kirocrew", slot="thread-shared")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     # A surviving holder of the same sid, exactly as a repeated transfer import
     # produces: a different key, the same session id.
@@ -1414,7 +1322,7 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
         manager._session_map, "find_key_by_sid", lambda _sid: "dashboard_chat-9-900"
     )
     await manager.destroy("thread-shared")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     assert _newest_close_reason("acp-shared") == "destroyed_sid_retained"
     _age_close_entry("acp-shared", days=400)
@@ -1435,14 +1343,14 @@ async def test_an_unreadable_map_also_withholds_the_terminal_reason(monkeypatch)
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-nomap"))
     await manager.get_or_create("thread-nomap")
     emit.on_session_opened("acp-nomap", agent="kirocrew", slot="thread-nomap")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     def _raise(_sid):
         raise RuntimeError("map unreadable")
 
     monkeypatch.setattr(manager._session_map, "find_key_by_sid", _raise)
     await manager.destroy("thread-nomap")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     assert _newest_close_reason("acp-nomap") == "destroyed_sid_retained"
 
@@ -1465,15 +1373,15 @@ async def test_a_session_opened_after_a_destroy_makes_the_unit_uncollectable_aga
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-revived"))
     await manager.get_or_create("thread-revived")
     emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     monkeypatch.setattr(manager._session_map, "find_key_by_sid", lambda _sid: None)
     await manager.destroy("thread-revived")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     assert _newest_close_reason("acp-revived") == "destroyed"
 
     _age_close_entry("acp-revived", days=400)
     emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived", resumed=True)
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     emit.reset_caches()
 
     assert off_loop(store.sweep_expired, 30) == (0, 0)

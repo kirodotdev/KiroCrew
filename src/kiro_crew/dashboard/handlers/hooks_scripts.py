@@ -298,6 +298,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
     # circular import: kiro_crew.hooks pulls dashboard state at module load, so
     # this handler defers the import to call time (matches _get_hook_store above).
     from kiro_crew.hooks import (  # noqa: F811
+        HOOK_EVENT_SESSION_LANE_CHANGED,
         HOOK_EVENT_STOP,
         HOOK_EVENT_USER_PROMPT_SUBMIT,
         run_script_hook,
@@ -339,6 +340,15 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "cwd": os.getcwd(),
             "assistant_text": context,
         }
+    elif hook.event == HOOK_EVENT_SESSION_LANE_CHANGED:
+        # Test has no transition, so the ids here are placeholders.
+        hook_event = {
+            "hook_event_name": hook.event,
+            "cwd": os.getcwd(),
+            "slot": "chat-1",
+            "added": ["done"],
+            "removed": ["review"],
+        }
     result = await run_script_hook(hook, context, hook_event)
     _sel().log_tool_invocation(
         session_key="dashboard:hook_test",
@@ -367,6 +377,33 @@ async def api_hook_test(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+async def api_kiro_hooks_rescan(request: web.Request) -> web.Response:
+    """POST /api/kiro-hooks/rescan — rewrite the agent specs from the hooks folder and config.
+
+    Owner-only: an agent can write a script into the hooks folder, so it must not
+    also be able to make that script run.
+    """
+    # Body-scope import, like the gates above: ``_shared`` reaches back into
+    # sibling handler modules, so a module-scope import would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import (
+        rebuild_agent_spec,
+        require_owner_dashboard_request,
+    )
+
+    denied = await require_owner_dashboard_request(request, "hooks.rescan")
+    if denied is not None:
+        return denied
+    rewritten = await asyncio.to_thread(rebuild_agent_spec, "a hooks rescan")
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="hooks.rescan",
+        outcome="success" if rewritten else "error",
+        source="dashboard",
+        resources=f"agent_spec_rewritten={rewritten}",
+    )
+    return web.json_response({"ok": True, "agent_spec_rewritten": rewritten})
 
 
 #: The ``unsent`` row fields the author wrote, which may hold a credential.
@@ -416,26 +453,44 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
         bundled = raw.get("hooks", {}) if isinstance(raw, dict) else {}
     except (OSError, ValueError):
         bundled = {}
+
+    def _hook_row_key(event: str, entry: object) -> tuple[str, str, str] | None:
+        """``(event, command, matcher)`` for one hook row, or ``None`` to skip it.
+
+        The rows come from user-writable files. A row that is not an object, or whose
+        ``command`` or ``matcher`` is present but not text, is skipped like any other
+        unusable shape, since redacting or hashing such a value would fail the whole page.
+        """
+        if not isinstance(entry, dict):
+            return None
+        # Only an absent or null field reads as empty: a falsy non-text value
+        # (0, false, []) is still a row that cannot be shown.
+        command, matcher = entry.get("command"), entry.get("matcher")
+        command = "" if command is None else command
+        matcher = "" if matcher is None else matcher
+        if not isinstance(command, str) or not isinstance(matcher, str):
+            return None
+        return event, command, matcher
+
     bundled_keys: set[tuple[str, str, str]] = set()
     for event, entries in bundled.items():
         for e in entries if isinstance(entries, list) else []:
-            if isinstance(e, dict):
-                bundled_keys.add((event, e.get("command") or "", e.get("matcher") or ""))
+            if (key := _hook_row_key(event, e)) is not None:
+                bundled_keys.add(key)
     result: dict[str, list[dict]] = {}
     for event, entries in hooks.items():
         if event not in _VALID_HOOK_EVENTS:
             continue  # drop unknown/injected event keys
         tagged = []
         for e in entries if isinstance(entries, list) else []:
-            if isinstance(e, dict):
-                key = (event, e.get("command") or "", e.get("matcher") or "")
+            if (key := _hook_row_key(event, e)) is not None:
                 # Context-aware redact(): runs the exfil-URL + credential passes
                 # and applies a loaded companion's extra regexes (so an internal
                 # token in a hook command is scrubbed on this egress surface too).
                 tagged.append(
                     {
-                        "command": redact(e.get("command") or ""),
-                        "matcher": redact(e.get("matcher") or ""),
+                        "command": redact(key[1]),
+                        "matcher": redact(key[2]),
                         "source": "bundled" if key in bundled_keys else "user",
                     }
                 )

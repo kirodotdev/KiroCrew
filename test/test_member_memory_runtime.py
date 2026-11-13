@@ -21,7 +21,9 @@ from kiro_crew.subagent_persistence import (
 )
 from kiro_crew.testing.wait import await_until
 
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+#: The consolidation tests start background helper turns, which are skipped while the
+#: host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "ample_host_free_memory")
 
 
 @pytest.mark.asyncio
@@ -122,7 +124,7 @@ async def test_private_task_failure_lesson_never_uses_global_provider_or_store(m
         patch.object(runner, "_notify", AsyncMock()),
     ):
         await runner._extract_lesson(task, run)
-    assert llm.await_args.kwargs == {"runtime_key": runtime}
+    assert llm.await_args.kwargs == {"runtime_key": runtime, "agent": ""}
     private_vectors.write_lesson.assert_called_once_with(
         "check inputs", "tool", None, "task_runner"
     )
@@ -477,11 +479,8 @@ async def test_agent_pick_cannot_promote_an_existing_v1_transcript(tmp_path, mem
 async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, member_stores, owner):
     """The agent menu on an empty chat is a grant door, like create-with-agent.
 
-    The transcript file already exists (the slot's metadata was flushed when it
-    was created) but holds no message row: that is an EMPTY chat, and the
-    owner's pick must pin the member's store so the first turn is admitted
-    rather than refused with "no verified assignment". A non-owner pick
-    grants nothing.
+    The transcript exists but has no message row. The owner's pick pins the member's
+    store so the first turn is admitted; a non-owner pick grants nothing.
     """
     from aiohttp.test_utils import TestClient, TestServer
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
@@ -943,6 +942,52 @@ def test_cron_followup_uses_job_authority_not_provider_template_alias(
         ):
             read_session_execution(key, required=True)
         assert read_private_session_store(key) is None
+
+
+def test_crew_scoped_read_is_refused_for_a_private_memory_session(member_stores, monkeypatch):
+    """A member fenced to a private store cannot reach another crew's history.
+
+    No local record can judge a peer key, so the refusal happens before the tunnel: the
+    crew helper is never invoked.
+
+    The store is bound for real (a stubbed resolver would never be consulted), and the
+    control arm checks the fence does not refuse the ordinary caller.
+    """
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import sessions as mcp_sessions
+    from kiro_crew.mcp_tools.sessions import _crew_scope_refusal
+
+    writer, _reviewer = member_stores
+
+    # Pure-function arms: only a NON-EMPTY store name is the fenced case.
+    assert _crew_scope_refusal("") == ""  # ordinary session
+    assert _crew_scope_refusal(writer) != ""  # fenced member
+
+    reached: list = []
+    monkeypatch.setattr(
+        mcp_sessions,
+        "_crew_search_history",
+        lambda *a, **k: reached.append(a) or "REACHED TUNNEL",
+    )
+
+    fenced = "dashboard:writer:project_one"
+    bind_private_session_store(fenced, writer)
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", lambda error: (fenced, ""))
+    out = mcp_sessions.search_chat_history(
+        "search_chat_history", {"query": "anything", "crew": "chick"}
+    )
+    assert "Access denied" in out
+    assert reached == [], "a fenced member reached the peer tunnel"
+
+    # Control: an ordinary session (no private binding) still reaches the tunnel.
+    ordinary = "dashboard:ordinary"
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", lambda error: (ordinary, ""))
+    out = mcp_sessions.search_chat_history(
+        "search_chat_history", {"query": "anything", "crew": "chick"}
+    )
+    assert out == "REACHED TUNNEL"
+    # The key checked is the key put on the wire -- not a re-resolved one.
+    assert reached == [("chick", "anything", 10, ordinary)]
 
 
 @pytest.fixture

@@ -132,6 +132,36 @@ async def test_member_fork_inherits_identity_before_copy_and_keeps_bodies_under_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_vouched", [True, False])
+async def test_member_fork_carries_only_the_vouch_its_source_holds(fork_source, source_vouched):
+    # The fork copies the source's recorded identity, so it may claim own-store
+    # authority only where the gateway already vouches the source for that
+    # member and store. The durable copy follows the in-memory vouch, so the
+    # child keeps it across a restart.
+    from kiro_crew._durable_vouch import read_durable_vouch
+
+    _cfg, state, parent, _store, _peer_store = fork_source
+    parent_key = effective_session_key(parent)
+    if source_vouched:
+        execution.bind_session_execution(
+            parent_key, execution.read_session_execution(parent_key), vouch=True
+        )
+    await chat_persistence.save_slot_off_loop(state, parent)
+
+    status, body = await _fork(state, parent)
+    assert status == 200, body
+    key = effective_session_key(state._slots[body["key"]])
+    inherited = execution.read_session_execution(key)
+    vouched = execution.read_vouched_session_execution(key)
+    if source_vouched:
+        assert vouched == inherited
+        assert read_durable_vouch(key) == inherited.to_record()
+    else:
+        assert vouched is None
+        assert read_durable_vouch(key) is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "damage", ["missing-identity", "malformed-identity", "changed-recorded-store"]
 )
@@ -165,7 +195,7 @@ async def test_private_pin_failure_discards_empty_child_and_keeps_source(fork_so
     restricted = set(state._restricted_keys)
     attempted = []
 
-    def cannot_publish(key, captured):
+    def cannot_publish(key, captured, **_kwargs):
         attempted.append(key)
         raise OSError("binding publication unavailable")
 
@@ -199,11 +229,11 @@ async def test_cancelled_private_fork_drains_binding_and_keeps_landed_proof(
     loop = asyncio.get_running_loop()
     original_bind = execution.bind_session_execution
 
-    def blocked_bind(key, selected_store):
+    def blocked_bind(key, selected_store, **kwargs):
         attempted.append(key)
         loop.call_soon_threadsafe(entered.set)
         assert released.wait(10), "test did not release the binding worker"
-        original_bind(key, selected_store)
+        original_bind(key, selected_store, **kwargs)
         completed.set()
 
     monkeypatch.setattr(execution, "bind_session_execution", blocked_bind)
@@ -276,12 +306,9 @@ async def test_existing_v1_forks_keep_their_unprotected_memory_contract(tmp_path
 async def test_legacy_fork_keeps_the_identity_the_parent_ran_as(tmp_path):
     """A parent with no carrier must fork to the identity its own turns resolved to.
 
-    A ``config.agents`` alias on a slot not stamped ``template`` runs as that
-    crewmate: its template, model pin and store. Stamping the alias as a
-    template id made the forked chat ask kiro-cli for an agent called
-    ``default`` and fail on its first turn. A template-stamped slot, and a name
-    that is no alias (possibly a template only the parent's project declares),
-    stay template sessions under the name as written.
+    A ``config.agents`` alias runs as that crewmate; stamping it as a template id would
+    make kiro-cli look for ``default`` and fail. A template-stamped slot or a non-alias
+    name stays a template session under the name as written.
     """
     from kiro_crew.config.loader import resolve_agent_bindings
     from kiro_crew.session_agent_selection import resolve_session_agent_bindings

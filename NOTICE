@@ -36,6 +36,13 @@ Codex's parse_command.rs (https://github.com/openai/codex, Apache-2.0) in
 TypeScript and Python. No Rust source is copied; the Apache-2.0 notice for
 Codex is reproduced under "Ported rule sets" in THIRD-PARTY-NOTICES.
 
+The browser tool's fast loop (src/kiro_crew/browser_harness/snapshot_walker.js,
+reflex_space.py and reflex_realtime.py) adapts the element table, target guard
+and operation/target decision design of browser-use/jev-ultrafast (MIT,
+Copyright (c) 2026 Browser Use) and reimplements the pipelined decision clock of
+hosseintoussi/jev-flappy-bird (MIT, Copyright (c) 2026 Hossein Toussi). Neither project is a dependency; their MIT
+notices are reproduced under "Ported rule sets" in THIRD-PARTY-NOTICES.
+
 Desktop releases bundle an audio-only build of FFmpeg 7.1.1, licensed under
 the GNU Lesser General Public License v2.1 or later, as a separate executable.
 Its license text and the location of its corresponding source are under

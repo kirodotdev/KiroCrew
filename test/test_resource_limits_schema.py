@@ -30,13 +30,16 @@ from kiro_crew.config.loader import (
 _ALL_KEYS = (
     "max_open_files",
     "max_processes",
+    "max_user_processes",
     "max_memory_mb",
+    "max_address_space_mb",
     "max_cpu_seconds",
     "cpu_weight",
     "max_cpu_percent",
     "max_total_memory_mb",
     "max_total_processes",
     "scope_memory_high_pct",
+    "slice_reclaim_trigger_pct",
     "xdist_auto_cap",
 )
 
@@ -379,7 +382,7 @@ class TestSliceConsumer:
         ):
             mem, tasks = self._limits(raw)
             assert mem == sb._default_max_total_memory_mb()
-            assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+            assert tasks == sb._default_max_total_tasks()
 
 
 class TestRlimitConsumer:
@@ -406,10 +409,23 @@ class TestRlimitConsumer:
         from kiro_crew.security import resource_limit_spec
 
         spec = dict(
-            resource_limit_spec({"resource_limits": {"max_processes": 64, "max_memory_mb": 512}})
+            resource_limit_spec(
+                {"resource_limits": {"max_user_processes": 64, "max_address_space_mb": 512}}
+            )
         )
         assert spec["RLIMIT_NPROC"] == 64
         assert spec["RLIMIT_AS"] == 512 * 1024 * 1024
+
+    def test_max_processes_is_the_scope_task_cap_and_sets_no_rlimit(self):
+        """``max_processes`` sizes the cgroup scope's TasksMax. Applied as
+        RLIMIT_NPROC as well, it capped every process and thread of the
+        gateway's user, so a value sized for one scope stopped spawns from
+        forking. The per-user cap is its own opt-in key."""
+        from kiro_crew.security import resource_limit_spec
+
+        assert "RLIMIT_NPROC" not in dict(
+            resource_limit_spec({"resource_limits": {"max_processes": 64}})
+        )
 
     @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
     def test_a_non_finite_value_no_longer_raises(self, bad):
@@ -419,7 +435,7 @@ class TestRlimitConsumer:
         routed spawn, so one typo in config.json failed every agent launch."""
         from kiro_crew.security import _RLIMIT_DEFAULTS, resource_limit_spec
 
-        spec = dict(resource_limit_spec({"resource_limits": {"max_processes": bad}}))
+        spec = dict(resource_limit_spec({"resource_limits": {"max_user_processes": bad}}))
         assert "RLIMIT_NPROC" not in spec
         # The unrelated keys are untouched by one bad neighbour.
         assert spec["RLIMIT_NOFILE"] == _RLIMIT_DEFAULTS["max_open_files"]

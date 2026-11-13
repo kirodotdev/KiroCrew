@@ -203,15 +203,48 @@ def owed_lanes(repo: str, pr: str, head: str) -> list[str] | None:
     return [name for name in unpublished if name in LANES]
 
 
-def _same_repo_run_id(
-    repo: str, workflow: str, head: str, head_repo: str, head_ref: str
-) -> tuple[str, int] | None:
-    """Newest same-repo ``pull_request`` run of ``workflow`` for ``head``, bound
-    to this PR by (head repository, head ref) -- not by ``.pull_requests``,
-    which is empty on fork runs. Mirrors the readiness lane-run binding.
+def _run_ids_from_check_runs(repo: str, head: str) -> list[int] | None:
+    """The distinct workflow-run ids the head's check-runs name. An Actions
+    job's check-run links its run as
+    ``.../<repo>/actions/runs/<run id>/job/<job id>`` in ``details_url``; a
+    check-run posted through the API links its own page and names no run.
+    ``None`` when the check-runs cannot be read. ``filter=all``: the default
+    (latest) keeps one check-run per name, so a sibling pull request's newer
+    job on a shared head would hide this one's."""
+    pages = _gh_json(
+        [
+            "api",
+            "--method",
+            "GET",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/commits/{head}/check-runs?per_page=100&filter=all",
+        ]
+    )
+    if not isinstance(pages, list):
+        return None
+    marker = f"/{repo}/actions/runs/"
+    ids: set[int] = set()
+    for page in pages:
+        for row in page.get("check_runs") or []:
+            url = row.get("details_url") or ""
+            if marker not in url:
+                continue
+            rid = url.split(marker, 1)[1].split("/", 1)[0]
+            if rid.isdigit():
+                ids.add(int(rid))
+    return sorted(ids)
 
-    Returns ``(run_id, run_attempt)`` -- the attempt count is already in the
-    runs-list payload -- or ``None`` when no matching run is found."""
+
+def _head_runs(repo: str, head: str) -> list | None:
+    """Every ``pull_request`` workflow run for ``head``, or ``None`` when they
+    cannot be read.
+
+    The ``head_sha`` listing is a filtered search that can answer no runs for
+    a head whose runs exist, so an empty listing is not taken as "no runs":
+    the runs the head's own check-runs name are fetched one by one and kept
+    when they ran for this event on this exact head. A named run that cannot
+    be fetched makes the answer unknown (``None``), not empty."""
     data = _gh_json(
         [
             "api",
@@ -225,6 +258,33 @@ def _same_repo_run_id(
         return None
     runs = data.get("workflow_runs")
     if not isinstance(runs, list):
+        return None
+    if runs:
+        return runs
+    ids = _run_ids_from_check_runs(repo, head)
+    if ids is None:
+        return None
+    named = []
+    for rid in ids:
+        run = _gh_json(["api", f"repos/{repo}/actions/runs/{rid}"])
+        if not isinstance(run, dict):
+            return None
+        if run.get("event") == "pull_request" and run.get("head_sha") == head:
+            named.append(run)
+    return named
+
+
+def _same_repo_run_id(
+    repo: str, workflow: str, head: str, head_repo: str, head_ref: str
+) -> tuple[str, int] | None:
+    """Newest same-repo ``pull_request`` run of ``workflow`` for ``head``, bound
+    to this PR by (head repository, head ref) -- not by ``.pull_requests``,
+    which is empty on fork runs. Mirrors the readiness lane-run binding.
+
+    Returns ``(run_id, run_attempt)`` -- the attempt count is already in the
+    runs-list payload -- or ``None`` when no matching run is found."""
+    runs = _head_runs(repo, head)
+    if runs is None:
         return None
     best_id = None
     best_attempt = 1
@@ -254,19 +314,8 @@ def _fork_trigger(repo: str, head: str, head_repo: str, head_ref: str) -> str | 
     such run is found."""
     if not head_repo or not head_ref:
         return None
-    data = _gh_json(
-        [
-            "api",
-            "--method",
-            "GET",
-            "--paginate",
-            f"repos/{repo}/actions/runs?event=pull_request&head_sha={head}&per_page=100",
-        ]
-    )
-    if not isinstance(data, dict):
-        return None
-    runs = data.get("workflow_runs")
-    if not isinstance(runs, list):
+    runs = _head_runs(repo, head)
+    if runs is None:
         return None
     best: dict | None = None
     for run in runs:

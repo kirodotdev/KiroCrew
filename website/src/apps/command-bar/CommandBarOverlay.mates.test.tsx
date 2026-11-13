@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import CommandBarOverlay from './CommandBarOverlay'
 import { i18nT } from '../../i18n/t'
-import { PREVIEW_CREW } from '../../utils/previewFlags'
 
 /**
  * The Command Bar's CREWMATES VIEW.
@@ -26,7 +25,7 @@ const navigate = vi.fn()
 
 const storeState: {
   dashboard: { slots: Record<string, unknown>[]; unreadSlots: string[] }
-  chat: { slotStatusDetail: Record<string, unknown>; activeSlot: string | null }
+  chat: { slotStatusDetail: Record<string, unknown>; activeSlot: string | null; subagentQueued?: Record<string, number> }
 } = {
   dashboard: { slots: [], unreadSlots: [] },
   chat: { slotStatusDetail: {}, activeSlot: null },
@@ -181,17 +180,14 @@ const type = (text: string) => {
  */
 const openMatesView = async () => {
   const mounted = mount()
-  await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
-  fireEvent.mouseDown(rowByText('Search Mates'))
-  await waitFor(() => expect(screen.getByPlaceholderText('Search all mates…')).toBeTruthy())
+  await waitFor(() => expect(hasRow('Search bots')).toBe(true))
+  fireEvent.mouseDown(rowByText('Search bots'))
+  await waitFor(() => expect(screen.getByPlaceholderText('Search all bots…')).toBeTruthy())
   return mounted
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // The gate is OFF by default in the product, so every other test in this file has to
-  // turn it on explicitly -- which is also what keeps the two gate tests above honest.
-  localStorage.setItem(PREVIEW_CREW, '1')
   chatFolders.mockResolvedValue([])
   agentCatalog.mockResolvedValue({ agents: ROSTER, default_agent: '' })
   dispatch.mockReturnValue({ unwrap: () => Promise.resolve('slot-1') })
@@ -199,39 +195,23 @@ beforeEach(() => {
   storeState.chat = { slotStatusDetail: {}, activeSlot: null }
 })
 
-describe('command bar — the mates preview gate', () => {
-  it('advertises NOTHING about mates while the preview is off', async () => {
-    // This bar is an INGRESS to `/members`, and that page is registered with
-    // `previewFlag: PREVIEW_CREW`, so every other door applies this gate. The app ships
-    // `defaultEnabled: true`, so without it a DEFAULT install advertises a page the
-    // operator has not opted into.
-    localStorage.removeItem(PREVIEW_CREW)
+describe('command bar — mates on a default install', () => {
+  it('offers the mates rows with no opt-in, and fetches nothing to do it', async () => {
     mount()
-    await waitFor(() => expect(hasRow('Search Sessions')).toBe(true))
-    expect(hasRow('Search Mates')).toBe(false)
-    // All three rows, because each is independently reachable.
-    type('oncall')
-    await waitFor(() => expect(hasRow('Search sessions for')).toBe(true))
-    expect(hasRow('Search mates for')).toBe(false)
-    // And nothing fetched the roster to decide any of that.
+    await waitFor(() => expect(hasRow('Search bots')).toBe(true))
+    // The root row is local; the roster is fetched only once the view is entered.
     expect(agentCatalog).not.toHaveBeenCalled()
-  })
-
-  it('offers them once the operator turns the preview on', async () => {
-    localStorage.setItem(PREVIEW_CREW, '1')
-    mount()
-    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
     type('oncall')
-    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots for')).toBe(true))
   })
 })
 
 describe('command bar — the root', () => {
-  it('lists Search Mates as a view row on an empty query', async () => {
+  it('lists Search bots as a view row on an empty query', async () => {
     mount()
-    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots')).toBe(true))
     // A `view` row states that it opens a surface rather than acting.
-    expect(rowByText('Search Mates').textContent).toContain('View')
+    expect(rowByText('Search bots').textContent).toContain('View')
   })
 
   it('offers one row for the corpus and never the roster itself', async () => {
@@ -239,7 +219,7 @@ describe('command bar — the root', () => {
     type('oncall')
     // A corpus is entered here, not flattened into the first page — so even an exact
     // crew name must not produce a crewmate row in the root.
-    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots for')).toBe(true))
     expect(hasRow('Watches the pager')).toBe(false)
   })
 
@@ -248,12 +228,12 @@ describe('command bar — the root', () => {
     // rows were added last, so this is the assertion that would catch them landing on
     // top of a row that was already there.
     mount()
-    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots')).toBe(true))
     expect(hasRow('Search Sessions')).toBe(true)
     expect(hasRow('Search Artifacts')).toBe(true)
     expect(hasRow('Search Folders')).toBe(true)
     type('oncall')
-    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots for')).toBe(true))
     expect(hasRow('Search sessions for')).toBe(true)
     expect(hasRow('Search artifacts for')).toBe(true)
     expect(hasRow('Search folders for')).toBe(true)
@@ -264,14 +244,14 @@ describe('command bar — the root', () => {
     // Crewmates page reaches for "agent", and the row has to answer to it.
     mount()
     type('agent')
-    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots')).toBe(true))
   })
 
   it('carries a typed query into the mates view instead of dead-ending', async () => {
     mount()
     type('acc')
-    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
-    fireEvent.mouseDown(rowByText('Search mates for'))
+    await waitFor(() => expect(hasRow('Search bots for')).toBe(true))
+    fireEvent.mouseDown(rowByText('Search bots for'))
     // The query survives the hand-off: the view opens already narrowed, so the reader
     // does not retype what they just typed. The count is what says "narrowed" — the
     // view arriving on its full listing would also show `accountant`.
@@ -282,9 +262,9 @@ describe('command bar — the root', () => {
 
   it('builds the root WITHOUT fetching the catalog, which is the launcher invariant', async () => {
     mount()
-    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots')).toBe(true))
     type('oncall')
-    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots for')).toBe(true))
     // The whole reason the roster is a view and not a root group: `useAgents` fetches
     // this endpoint on mount, and the root promises never to issue a request.
     expect(agentCatalog).not.toHaveBeenCalled()
@@ -384,6 +364,21 @@ describe('command bar — mates view, listing and search', () => {
     expect(rowByText('oncall').textContent).toContain(BUSY)
   })
 
+  it('counts a mate whose only children are QUEUED as working', async () => {
+    // A child held behind the spawn caps has not started, so the frame says
+    // subagents_running false; the gateway still refuses a turn on that session.
+    storeState.dashboard = {
+      slots: [
+        { key: 'member-oncall', mode: 'member', agent: 'oncall', running: false, subagents_running: false },
+      ],
+      unreadSlots: [],
+    }
+    storeState.chat = { slotStatusDetail: {}, activeSlot: null, subagentQueued: { 'member-oncall': 2 } }
+    await openMatesView()
+    await waitFor(() => expect(hasRow('oncall')).toBe(true))
+    expect(rowByText('oncall').textContent).toContain(BUSY)
+  })
+
   it('ignores a running slot that is not a member thread', async () => {
     // An ordinary chat running the same agent is not that crewmate's own thread, and
     // reporting it as the mate working would tell the reader not to interrupt a mate
@@ -440,10 +435,10 @@ describe('command bar — mates view, listing and search', () => {
     // looks like a link", so the one thing they came to do had no affordance.
     agentCatalog.mockResolvedValue({ agents: [], default_agent: '' })
     await openMatesView()
-    await waitFor(() => expect(hasRow('No mates yet')).toBe(true))
+    await waitFor(() => expect(hasRow('No bots yet')).toBe(true))
     // A ROW, so the keyboard reaches it without leaving the list.
     expect(rowCount()).toBe(1)
-    fireEvent.mouseDown(rowByText('No mates yet'))
+    fireEvent.mouseDown(rowByText('No bots yet'))
     // No `?member=`: there is no crewmate to open.
     expect(navigate).toHaveBeenCalledWith('/members')
   })
@@ -458,7 +453,7 @@ describe('command bar — mates view, listing and search', () => {
     // away on its own. A deliberate fresh Enter still goes where the row says.
     agentCatalog.mockResolvedValue({ agents: [], default_agent: '' })
     await openMatesView()
-    await waitFor(() => expect(hasRow('No mates yet')).toBe(true))
+    await waitFor(() => expect(hasRow('No bots yet')).toBe(true))
     const input = screen.getByRole('combobox')
     fireEvent.change(input, { target: { value: 'anyone' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -482,7 +477,7 @@ describe('command bar — mates view, listing and search', () => {
     await waitFor(() => expect(rowCount()).toBe(3))
     const input = screen.getByRole('combobox')
     fireEvent.change(input, { target: { value: 'zzzznope' } })
-    await waitFor(() => expect(hasRow('No mates match')).toBe(true))
+    await waitFor(() => expect(hasRow('No bots match')).toBe(true))
     fireEvent.change(input, { target: { value: 'zzzznopq' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect((input as HTMLInputElement).value).toBe('zzzznopq')
@@ -494,9 +489,9 @@ describe('command bar — mates view, listing and search', () => {
     let release: (v: unknown) => void = () => {}
     agentCatalog.mockReturnValue(new Promise(r => { release = r }))
     await openMatesView()
-    expect(hasRow('No mates yet')).toBe(false)
+    expect(hasRow('No bots yet')).toBe(false)
     release({ agents: [], default_agent: '' })
-    await waitFor(() => expect(hasRow('No mates yet')).toBe(true))
+    await waitFor(() => expect(hasRow('No bots yet')).toBe(true))
   })
 
   it('EXCLUDES templates from the view, since they have no chat thread', async () => {
@@ -565,7 +560,7 @@ describe('command bar — mates view, listing and search', () => {
     await openMatesView()
     await waitFor(() => expect(hasRow('oncall')).toBe(true))
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Backspace' })
-    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search bots')).toBe(true))
     expect(hasRow('Watches the pager')).toBe(false)
   })
 })

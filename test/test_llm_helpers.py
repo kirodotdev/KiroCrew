@@ -21,6 +21,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     TurnUsage,
 )
+from kiro_crew.history import ConversationLog
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
@@ -154,42 +155,40 @@ class TestParseLlmJsonList:
         assert parse_llm_json_list("not json") is None
 
 
+def _turn_rows(log: ConversationLog, key: str) -> list[tuple]:
+    return [
+        (m["role"], m["content"], m.get("source_thread"), m.get("source_user"))
+        for m in log.read_messages(key)
+    ]
+
+
 class TestSaveConversationTurn:
-    def test_saves_user_and_assistant(self) -> None:
-        log = MagicMock()
+    def test_saves_user_and_assistant(self, tmp_path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
         save_conversation_turn(log, "key1", "hello", "world")
-        assert log.append.call_count == 2
-        log.append.assert_any_call(
-            "key1", "user", "hello", source_thread=None, source_user=None, agent=None
-        )
-        log.append.assert_any_call(
-            "key1", "assistant", "world", source_thread=None, source_user=None
-        )
+        assert _turn_rows(log, "key1") == [
+            ("user", "hello", None, None),
+            ("assistant", "world", None, None),
+        ]
 
-    def test_saves_with_provenance(self) -> None:
-        log = MagicMock()
+    def test_saves_with_provenance(self, tmp_path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
         save_conversation_turn(log, "key1", "hello", "world", source_thread="t1", source_user="u1")
-        log.append.assert_any_call(
-            "key1", "user", "hello", source_thread="t1", source_user="u1", agent=None
-        )
-        log.append.assert_any_call(
-            "key1", "assistant", "world", source_thread="t1", source_user="u1"
-        )
+        assert _turn_rows(log, "key1") == [
+            ("user", "hello", "t1", "u1"),
+            ("assistant", "world", "t1", "u1"),
+        ]
 
-    def test_skips_empty_assistant(self) -> None:
-        log = MagicMock()
+    def test_skips_empty_assistant(self, tmp_path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
         save_conversation_turn(log, "key1", "hello", "")
-        assert log.append.call_count == 1
-        log.append.assert_called_once_with(
-            "key1", "user", "hello", source_thread=None, source_user=None, agent=None
-        )
+        assert _turn_rows(log, "key1") == [("user", "hello", None, None)]
 
-    def test_saves_with_agent(self) -> None:
-        log = MagicMock()
+    def test_saves_with_agent(self, tmp_path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
         save_conversation_turn(log, "key1", "hello", "world", agent="ops")
-        log.append.assert_any_call(
-            "key1", "user", "hello", source_thread=None, source_user=None, agent="ops"
-        )
+        assert log.get_metadata("key1")["agent"] == "ops"
+        assert [m["role"] for m in log.read_messages("key1")] == ["user", "assistant"]
 
 
 class TestToolApprovalPolicy:

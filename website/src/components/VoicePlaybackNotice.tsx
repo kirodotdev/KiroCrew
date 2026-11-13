@@ -6,9 +6,12 @@ import ErrorNotice from './ErrorNotice'
 import { SettingsLink } from './SettingsLink'
 
 /** Playback can fail after the synthesize HTTP request has already succeeded. */
-export default function VoicePlaybackNotice({ slot, onBlockedSlotChange }: {
+export default function VoicePlaybackNotice({ slot, onBlockedSlotChange, askAgent = true }: {
   slot: string | null | undefined
   onBlockedSlotChange?: (slot: string | null) => void
+  /** Offer the Ask the agent hand-off. A pane holding an unsent composer
+   *  draft (a crewmate's chat) turns it off, as its other notices do. */
+  askAgent?: boolean
 }) {
   // Subscribes to language switches: a parent compiled by the React Compiler
   // caches this element while its props are unchanged, so without its own
@@ -53,7 +56,7 @@ export default function VoicePlaybackNotice({ slot, onBlockedSlotChange }: {
       message={message}
       report={currentFailure?.report}
       onDismiss={() => setFailure(null)}
-      askAgent
+      askAgent={askAgent}
     />
     {currentFailure?.code !== 'voice_playback_blocked' && (
       <SettingsLink

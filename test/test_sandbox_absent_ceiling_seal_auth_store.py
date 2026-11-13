@@ -556,3 +556,93 @@ class TestTheLegacyAuthStoreTempSweep:
                 f"{fn.__name__} does not sweep legacy auth-store temps, so an orphan "
                 "holding the signing key stays readable on that platform"
             )
+
+
+@_POSIX_ONLY
+class TestTheLegacyAuthStoreSweepRemembersACleanRoot:
+    """A clean live data-home root is not listed again on every spawn.
+
+    The live root holds every session token mapping, so listing it costs time that grows
+    with the number of sessions. A clean pass over it is remembered by directory identity:
+    it is masked, and this build's publisher never stages at a root-level name. Every other
+    root is still listed on every pass, because a sandbox can write into an unmasked unused
+    home and the sweep must keep reporting what it finds there. The listing count is
+    observed through ``os.listdir`` on the pinned descriptor.
+    """
+
+    @pytest.fixture
+    def listings(self, crew_home, monkeypatch, tmp_path):
+        """Count the root listings, keyed by the directory each descriptor names."""
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        counts: dict[tuple[int, int], int] = {}
+        real_listdir = os.listdir
+
+        def _counting_listdir(path=None):
+            if isinstance(path, int):
+                info = os.fstat(path)
+                key = (info.st_dev, info.st_ino)
+                counts[key] = counts.get(key, 0) + 1
+            return real_listdir(path) if path is not None else real_listdir()
+
+        monkeypatch.setattr(os, "listdir", _counting_listdir)
+
+        def _count_for(directory: Path) -> int:
+            info = os.stat(directory)
+            return counts.get((info.st_dev, info.st_ino), 0)
+
+        return _count_for
+
+    def _orphan(self, home: Path) -> Path:
+        return home / f"{sandbox._AUTH_STORE_LEGACY_TEMP_PREFIX}4242.deadbeefcafe0123.tmp"
+
+    def test_a_clean_live_home_is_listed_once_across_spawns(self, crew_home, listings):
+        (crew_home / sandbox._AUTH_STORE_PUBLISHED_KEY_LEAF).write_bytes(b"k" * 32)
+        for i in range(3):
+            # The root keeps changing, as it does when every session spawn publishes a
+            # token mapping into it; the live home's memo must survive that.
+            (crew_home / f"session_token_{i}.sig").write_text("x", encoding="utf-8")
+            assert sandbox._sweep_legacy_auth_store_temps() == []
+
+        assert listings(crew_home) == 1, (
+            "the live data-home root was listed on every spawn although the first pass "
+            "found no legacy temp, so each spawn pays for every token mapping in it"
+        )
+
+    def test_a_live_home_orphan_is_still_reported_on_every_spawn(self, crew_home, listings, caplog):
+        """A pass that FOUND something is never remembered, so a kept orphan keeps warning."""
+        orphan = self._orphan(crew_home)
+        orphan.write_bytes(b"k" * 32)
+
+        with caplog.at_level(logging.WARNING):
+            sandbox._sweep_legacy_auth_store_temps()
+            sandbox._sweep_legacy_auth_store_temps()
+
+        reports = [r for r in caplog.records if orphan.name in r.getMessage()]
+        assert len(reports) == 2, "a kept orphan stopped being reported after one spawn"
+        assert listings(crew_home) == 2
+
+    def test_an_UNUSED_home_is_listed_on_every_spawn_and_reports_a_later_file(
+        self, crew_home, listings, tmp_path, caplog
+    ):
+        """An unused home is masked by nothing while absent, so a sandbox may write there.
+
+        So its clean pass is not remembered: the root is listed on every spawn, and a
+        legacy-shaped file written after a clean pass is reported and kept, as before.
+        """
+        unused = tmp_path / ".kirocrew"
+        unused.mkdir()
+        sandbox._sweep_legacy_auth_store_temps()
+        sandbox._sweep_legacy_auth_store_temps()
+        assert listings(unused) == 2, "an unused home's clean pass was remembered"
+
+        planted = self._orphan(unused)
+        planted.write_bytes(b"agent")
+        with caplog.at_level(logging.WARNING):
+            sandbox._sweep_legacy_auth_store_temps()
+
+        assert listings(unused) == 3
+        assert any(planted.name in r.getMessage() for r in caplog.records), (
+            "a legacy-shaped file written into an unused home after a clean pass went "
+            "unreported, so a memo blinded the sweep to a sandbox-created file"
+        )
+        assert planted.exists(), "the key is absent there, so the file must be kept"

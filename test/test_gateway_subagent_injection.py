@@ -25,6 +25,7 @@ from test_gateway_subagent_wiring import (
     _LOST_RUN_SECS,
     _Done,
     _RecordingAsyncio,
+    _Slot,
     _until,
     harness,
     make_info,
@@ -48,6 +49,21 @@ def _owner_calls(done: _Done) -> list[Any]:
     return [c for c in done.calls if c[0] in ("acquire", "reset", "cancel", "release", "sleep")]
 
 
+def _known(done: _Done, *infos: Any) -> None:
+    """Make the manager answer *infos* as its live records, as ``get`` does."""
+    records = {info.id: info for info in infos}
+    done.mgr.get = MagicMock(side_effect=records.get)
+
+
+def _returned_in_a_landed_turn(info: Any) -> None:
+    """Mark *info* returned inline by a ``spawn_sub_agents`` reply whose turn has
+    since landed, as the release of that turn leaves it (``_settle_inline``). A
+    mark whose turn has not landed is parked or delivered instead, which
+    ``test_spawn_sub_agents_settle_at_release`` pins."""
+    info._collected_inline = True
+    info._inline_state = "confirmed"
+
+
 # ── the tab: blocking-tool collection ────────────────────────────────────────
 
 
@@ -58,8 +74,11 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     slot._pending_synthesis = True
+    slot._synthesis_armers = {"a1"}
     slot._subagents_inline_collected = {"a1"}
     info = make_info()
+    _returned_in_a_landed_turn(info)
+    _known(done, info)
 
     # Skipped before the tab's running turn is waited on, and never counted in flight.
     delivery = asyncio.ensure_future(done.on_done(info))
@@ -75,15 +94,90 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
 
 
 @pytest.mark.asyncio
+async def test_a_returned_completion_never_arms_the_synthesis_turn(done: _Done) -> None:
+    """The model already synthesized a returned result inline: a dedicated
+    synthesis turn for it would be one more redundant turn. Another returned
+    member still on the slot keeps the skip from disarming it, so only the arm
+    guard prevents it."""
+    slot = done.tab("main")
+    slot._pending_synthesis = False
+    slot._subagents_inline_collected = {"a1", "a2"}
+    info = make_info()
+    _returned_in_a_landed_turn(info)
+    _known(done, info)
+
+    await done.done(info)
+
+    assert slot._pending_synthesis is False
+    assert slot._subagents_inline_collected == {"a2"}
+    assert done.chats == []
+
+
+@pytest.mark.asyncio
 async def test_a_partial_inline_collection_keeps_synthesis_armed(done: _Done) -> None:
     slot = done.tab("main")
     slot._pending_synthesis = True
     slot._subagents_inline_collected = {"a1", "a2"}
+    info = make_info()
+    _returned_in_a_landed_turn(info)
+    _known(done, info)
 
-    await done.done(make_info())
+    await done.done(info)
 
     assert slot._subagents_inline_collected == {"a2"}
     assert slot._pending_synthesis is True
+
+
+@pytest.mark.asyncio
+async def test_an_inline_skip_keeps_a_synthesis_another_child_armed(done: _Done) -> None:
+    slot = done.tab("main")
+    slot._pending_synthesis = True
+    slot._synthesis_armers = {"b1"}
+    slot._subagents_inline_collected = {"a1"}
+    info = make_info()
+    _returned_in_a_landed_turn(info)
+    _known(done, info)
+
+    await done.done(info)
+
+    assert slot._subagents_inline_collected == set()
+    assert slot._pending_synthesis is True
+    assert slot._synthesis_armers == {"b1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "order", [("a1", "b1"), ("b1", "a1")], ids=["wave-first", "background-first"]
+)
+async def test_a_background_completion_keeps_its_arm_when_an_inline_sibling_also_armed(
+    done: _Done, order: tuple[str, str]
+) -> None:
+    slot = done.tab("main")
+    slot.running = True
+    current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    slot.task = current
+    infos = {child: make_info(child) for child in order}
+    _known(done, *infos.values())
+
+    # Both arm at entry and wait behind the running turn, in either order; the
+    # blocking tool's collection of a1 lands during that wait.
+    deliveries = []
+    for count, child in enumerate(order, start=1):
+        deliveries.append(asyncio.ensure_future(done.on_done(infos[child])))
+        await _until(
+            lambda n=count: slot._subagent_deliveries_inflight == n,
+            f"{child} waiting behind the turn",
+        )
+    assert slot._synthesis_armers == {"a1", "b1"}
+    _returned_in_a_landed_turn(infos["a1"])
+    slot._subagents_inline_collected.add("a1")
+    current.set_result(None)
+    await asyncio.wait_for(asyncio.gather(*deliveries), _LOST_RUN_SECS)
+
+    assert infos["a1"]._report_delivered is True
+    assert len(slot.queued) == 1
+    assert slot._pending_synthesis is True
+    assert slot._synthesis_armers == {"b1"}
 
 
 @pytest.mark.asyncio
@@ -93,10 +187,12 @@ async def test_a_result_collected_inline_while_waiting_is_not_queued(done: _Done
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     info = make_info()
+    _known(done, info)
 
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
     slot._subagents_inline_collected.add("a1")
+    _returned_in_a_landed_turn(info)
     current.set_result(None)
     await asyncio.wait_for(delivery, _LOST_RUN_SECS)
 
@@ -115,10 +211,12 @@ async def test_a_result_collected_inline_during_the_wait_is_skipped_on_an_idle_t
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     info = make_info()
+    _known(done, info)
 
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
     slot._subagents_inline_collected.add("a1")
+    _returned_in_a_landed_turn(info)
     slot.running = False
     current.set_result(None)
     await asyncio.wait_for(delivery, _LOST_RUN_SECS)
@@ -168,7 +266,7 @@ async def test_a_turn_that_fails_while_awaited_frees_the_tab_for_the_completion(
     await done.drain()
 
     assert [s for s, _text, _kw in done.chats] == [slot]
-    assert slot.queued == []
+    assert slot._queue == []
 
 
 @pytest.mark.asyncio
@@ -191,42 +289,222 @@ async def test_a_tab_still_busy_after_the_wait_queues_and_counts_one_turn(
     assert slot._subagent_deliveries_inflight == 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last", [True, False], ids=["last-result", "sibling-running"])
+async def test_only_the_completion_that_arms_the_synthesis_carries_the_final_note(
+    done: _Done, last: bool
+) -> None:
+    """The batch's last result tells the model so, letting that turn write the
+    consolidated report the fire gate then counts as the synthesis."""
+    from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+    slot = done.tab("main")
+    slot.running = True
+    if not last:
+        done.mgr.running_agents_for = MagicMock(return_value=["b1"])
+
+    await done.done(make_info())
+
+    ((text, _kind, _meta),) = slot.queued
+    assert text.startswith(gw_mod.SUBAGENT_COMPLETION_PREFIX)
+    assert text.endswith(f"\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}") is last
+    assert slot._pending_synthesis is last
+
+
+def test_the_final_note_is_conditional_and_promises_no_end_of_batch() -> None:
+    """The arm sees in-memory state only, so a sibling queued in the store may
+    still be out: the note must not tell the model the batch is finished."""
+    from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+    note = SUBAGENT_FINAL_COMPLETION_NOTE.lower()
+    assert "may be the last" in note
+    assert "if no other sub-agent of this batch is still queued or running" in note
+    assert "this is the last" not in note
+    assert "no separate synthesis" not in note
+
+
 # ── the tab: the turn ────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_the_tab_turn_runs_as_the_sub_agent_and_owes_its_delivery(done: _Done) -> None:
+async def test_an_idle_tab_queues_the_completion_and_drains_it_at_once(done: _Done) -> None:
+    """The idle tab takes the queue drain's admission path, not a turn of its own."""
     slot = done.tab("main")
     info = make_info()
 
     await done.done(info)
     await done.drain()
 
-    ((turn_slot, text, kwargs),) = done.chats
+    ((text, kind, meta),) = slot.queued
+    assert kind == gw_mod.SUBAGENT_COMPLETION_KIND
+    assert sorted(meta) == [gw_mod.SUBAGENT_COMPLETION_META_KEY]
+    assert text.startswith(gw_mod.SUBAGENT_COMPLETION_PREFIX)
+    # The drain settles the delivery once the announce is consumed.
+    assert [content for content, _ids in slot.owed] == [text]
+    assert info._delivery_queued is True
+    assert done.drains == [slot]
+    assert [(s, t) for s, t, _kw in done.chats] == [(slot, text)]
     assert done.turn_is_slot_task == [True]
-    assert len(done.state._background_tasks.added) == 1
-    assert done.state._background_tasks == set()
-    assert turn_slot is slot and text.startswith(gw_mod.SUBAGENT_COMPLETION_PREFIX)
-    assert kwargs["_directive_user_origin"] is False
-    assert kwargs["_turn_actor"] == "subagent"
-    assert callable(kwargs["_on_consumed"])
+    assert slot._queue == [] and slot.task is None
+    assert slot._turn_admission_reserved is False
     assert slot._synthesis_completion_turns == 1
-    assert slot.task is None
-    gw_mod._arm_queued_delivery_settlement.assert_called_once()
-    assert gw_mod._arm_queued_delivery_settlement.call_args.args[3] == [text]
+    assert slot._subagent_deliveries_inflight == 0
     done.state.push_slots_update.assert_called_once_with()
 
 
 @pytest.mark.asyncio
 async def test_a_failed_solo_run_owes_nothing_to_the_tab_turn(done: _Done) -> None:
-    done.tab("main")
+    slot = done.tab("main")
 
     await done.done(make_info(error="boom"))
     await done.drain()
 
-    ((_slot, _text, kwargs),) = done.chats
-    assert "_on_consumed" not in kwargs
-    gw_mod._arm_queued_delivery_settlement.assert_not_called()
+    assert len(done.chats) == 1
+    assert [ids for _content, ids in slot.owed] == [[]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("_stop_state", "soft_pending"),
+        ("_stopping", True),
+        ("_last_turn_auth_required", True),
+        ("_turn_admission_reserved", True),
+    ],
+)
+async def test_an_idle_tab_that_cannot_admit_a_turn_keeps_the_completion_queued(
+    done: _Done, field: str, value: Any
+) -> None:
+    """A Stop being resolved, a sign-in hold or a send's reservation: the
+    completion waits as a card for the next drain."""
+    slot = done.tab("main")
+    setattr(slot, field, value)
+    info = make_info()
+
+    await done.done(info)
+    await done.drain()
+
+    assert done.chats == [] and done.drains == []
+    assert [entry["kind"] for entry in slot._queue] == [gw_mod.SUBAGENT_COMPLETION_KIND]
+    assert [content for content, _ids in slot.owed] == [slot._queue[0]["content"]]
+    assert info._delivery_queued is True
+    assert slot._subagent_deliveries_inflight == 0
+    done.state.push_slots_update.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["closing", "replaced"])
+async def test_a_tab_that_closes_while_the_completion_waits_gets_the_bell(
+    done: _Done, change: str
+) -> None:
+    """A closing tab drops a kinded queue entry with the slot, so the completion
+    is not queued there: it rings the bell, as for a tab already gone."""
+    slot = done.tab("main")
+    info = make_info()
+
+    async with slot._lock:
+        delivery = asyncio.ensure_future(done.on_done(info))
+        await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait for the lock")
+        if change == "closing":
+            slot.is_closing = True
+        else:
+            done.registry["main"] = _Slot("main")
+    await asyncio.wait_for(delivery, _LOST_RUN_SECS)
+
+    assert slot.queued == [] and slot.owed == [] and done.chats == []
+    assert slot._synthesis_completion_turns == 0
+    assert slot._subagent_deliveries_inflight == 0
+    assert info._report_delivered is True
+    ((args, kwargs),) = done.notices()
+    assert args[0] == "subagent" and kwargs == {"meta": {"slot": "main"}}
+
+
+@pytest.mark.asyncio
+async def test_a_completion_the_drain_refuses_stays_queued(done: _Done) -> None:
+    """Shutdown and memory preparation are refused inside the drain."""
+    slot = done.tab("main")
+    done.drain_refuses = True
+    info = make_info()
+
+    await done.done(info)
+    await done.drain()
+
+    assert done.drains == [slot] and done.chats == []
+    assert [entry["kind"] for entry in slot._queue] == [gw_mod.SUBAGENT_COMPLETION_KIND]
+    assert slot._turn_admission_reserved is False
+    done.mgr.notify_injection_failed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_system_entry_already_queued_runs_before_the_completion(done: _Done) -> None:
+    """A cron notice parked in the queue keeps its place; the completion waits
+    behind it, and that turn's failure is not reported as this completion's."""
+    slot = done.tab("main")
+    slot.queue_append("parked earlier", kind=gw_mod.CRON_NOTIFICATION_KIND)
+    done.chat_error = RuntimeError("the parked turn failed")
+    info = make_info()
+
+    await done.done(info)
+    await done.drain()
+
+    assert [t for _s, t, _kw in done.chats] == ["parked earlier"]
+    assert [entry["kind"] for entry in slot._queue] == [gw_mod.SUBAGENT_COMPLETION_KIND]
+    done.mgr.notify_injection_failed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_that_starts_no_turn_drains_what_it_held(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While a completion waits behind a turn, that turn's end keeps a held user
+    message queued. When the completion then turns out to be collected inline, the
+    last delivery out drains the idle tab, or the message would wait for the next
+    send."""
+    kick = AsyncMock()
+    monkeypatch.setattr(gw_mod, "drain_idle_parent_queue_for_stall", kick)
+    slot = done.tab("main")
+    slot.queue_append("sent while the children ran")
+    slot.running = True
+    current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    slot.task = current
+
+    info = make_info()
+    _known(done, info)
+    delivery = asyncio.ensure_future(done.on_done(info))
+    await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
+    _returned_in_a_landed_turn(info)
+    slot._subagents_inline_collected.add("a1")
+    slot.running = False
+    current.set_result(None)
+    await asyncio.wait_for(delivery, _LOST_RUN_SECS)
+    await done.drain()
+
+    kick.assert_awaited_once_with(done.state, "dashboard:main")
+    assert [entry["content"] for entry in slot._queue] == ["sent while the children ran"]
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_that_started_its_turn_does_not_drain_again(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kick = AsyncMock()
+    monkeypatch.setattr(gw_mod, "drain_idle_parent_queue_for_stall", kick)
+    slot = done.tab("main")
+    slot.queue_append("sent while the children ran")
+    gate = asyncio.Event()
+
+    async def _held_turn(_state: Any, _slot: Any, text: str, **_kw: Any) -> None:
+        done.chats.append((_slot, text, _kw))
+        await gate.wait()
+
+    done._run_chat = _held_turn  # type: ignore[method-assign]
+    await done.done(make_info())
+    try:
+        kick.assert_not_awaited()
+    finally:
+        gate.set()
+        await done.drain()
 
 
 @pytest.mark.asyncio
@@ -277,6 +555,7 @@ async def test_a_closed_tab_gets_the_bell_with_its_slot_and_counts_as_delivered(
 async def test_each_channel_attempt_builds_the_parent_turn_from_its_session(
     done: _Done,
 ) -> None:
+    done.claim_is_new = True
     info = make_info(parent="slack:C1:1700000000.1")
 
     await done.done(info)
@@ -290,6 +569,7 @@ async def test_each_channel_attempt_builds_the_parent_turn_from_its_session(
         "provider_type": done.orch._cfg.agent.provider,
         "context_provider": done.client,
         "resumed": False,
+        "skill_trigger_text": "",
     }
     assert ("stream", f"built:{args[0]}") in done.calls
     assert info._report_delivered is True
@@ -370,9 +650,39 @@ async def test_a_cron_parent_gets_the_redacted_reply_and_its_session_reset(
         ("release", key),
         ("reset", key),
     ]
-    done.orch.cron_svc.clear_active_session_key.assert_called_once_with("j1", key)
+    done.orch.cron_svc.retire_finished_session_key.assert_called_once_with("j1", key)
     assert done.orch._cron_injecting == {}
     assert info._report_delivered is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ended", ["before the claim", "while the claim waited"])
+async def test_a_cron_parent_whose_session_is_gone_is_told_by_the_bell_alone(
+    done: _Done, ended: str
+) -> None:
+    """A ``cron:`` key is stateless, so a session started for it holds none of the
+    run. No prompt is sent to one, a session the claim started is reset before its
+    release, the bell carries the result and the report stays undelivered."""
+    key = "cron:j1:r1"
+    if ended == "before the claim":
+        done.parent_live = False
+        claim = []
+    else:
+        done.claim_is_new = True
+        claim = [("acquire", key), ("reset", key), ("cancel", key), ("release", key)]
+    info = make_info(parent=key)
+
+    await done.done(info)
+
+    # The last ``reset`` is the route's own cleanup, finding no session left.
+    assert _owner_calls(done) == [*claim, ("reset", key)]
+    assert not any(c[0] in ("build", "stream") for c in done.calls)
+    done.orch._deliver_cron_response.assert_not_awaited()
+    ((args, _kwargs),) = done.notices()
+    assert args[0] == "subagent" and "the result" in args[2]
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
+    assert done.orch._cron_injecting == {}
 
 
 @pytest.mark.asyncio
@@ -396,7 +706,7 @@ async def test_a_queued_sibling_keeps_the_cron_session(
     await done.done(make_info(parent="cron:j1:r1"))
 
     assert not any(c[0] == "reset" for c in done.calls)
-    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -405,7 +715,29 @@ async def test_a_failed_reset_keeps_the_cron_key_registered(done: _Done) -> None
 
     await done.done(make_info(parent="cron:j1:r1"))
 
-    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_that_begins_before_the_deferred_reset_keeps_the_cron_key(
+    done: _Done,
+) -> None:
+    # Another completion's hand-off raises the count after this delivery read
+    # it as zero. The reset sees it under its own lock and declines, and the
+    # key is left to that delivery's own reset.
+    key = "cron:j1:r1"
+
+    async def _reset(reset_key: str, **kwargs: Any) -> bool:
+        done.calls.append(("reset", reset_key))
+        done.orch._cron_injecting[reset_key] = 1
+        return not kwargs.get("skip_if_injecting")
+
+    done.sessions.reset = AsyncMock(side_effect=_reset)
+
+    await done.done(make_info(parent=key))
+
+    done.sessions.reset.assert_awaited_once_with(key, skip_if_busy=True, skip_if_injecting=True)
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -466,3 +798,227 @@ async def test_a_silent_run_rings_no_bell_and_still_counts_as_delivered(done: _D
 
     assert done.notices() == []
     assert info._report_delivered is True
+
+
+# ── a cron parent whose tab is open ──────────────────────────────────────────
+
+
+class _WatchedFuture(asyncio.Future):  # type: ignore[type-arg]
+    """A turn stand-in that records when something starts waiting on it."""
+
+    watched = False
+
+    def add_done_callback(self, fn: Any, *, context: Any = None) -> None:
+        self.watched = True
+        super().add_done_callback(fn, context=context)
+
+
+def _cron_tab(done: _Done, parent: str = "cron:j1:r1") -> Any:
+    done.tabs[parent] = "cron-j1"
+    return done.tab("cron-j1")
+
+
+@pytest.mark.asyncio
+async def test_an_open_cron_tab_takes_the_turn_and_the_cron_session_still_resets(
+    done: _Done,
+) -> None:
+    slot = _cron_tab(done)
+    info = make_info(parent="cron:j1:r1")
+
+    await done.done(info)
+    await done.drain()
+
+    assert [c[0] for c in done.chats] == [slot]
+    assert not any(c[0] == "acquire" for c in done.calls)
+    done.sessions.reset.assert_awaited_once_with(
+        "cron:j1:r1", skip_if_busy=True, skip_if_injecting=True
+    )
+    done.orch.cron_svc.retire_finished_session_key.assert_called_once_with("j1", "cron:j1:r1")
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_on_done_returns_while_the_cron_tab_turn_holds_the_session(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cron_tab(done)
+    release: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    started: list[str] = []
+
+    async def _held_turn(_state: Any, _slot: Any, text: str, **_kw: Any) -> None:
+        started.append(text)
+        await release
+
+    monkeypatch.setattr(done, "_run_chat", _held_turn)
+    delivery = asyncio.ensure_future(done.on_done(make_info(parent="cron:j1:r1")))
+    await _until(lambda: bool(started), "the tab turn")
+    await _until(delivery.done, "on_done returning after the tab hand-off")
+    delivery.result()
+
+    # A cron fire that ends now reads this count and defers its own reset.
+    assert not release.done()
+    assert done.orch._cron_injecting == {"cron:j1:r1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    release.set_result(None)
+    await done.drain()
+
+    assert ("reset", "cron:j1:r1") in done.calls
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cron_tab_turn_keeps_the_reset_deferred_past_injection_timeout(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cron_tab(done)
+    monkeypatch.setattr(gw_mod, "INJECTION_TIMEOUT", 0.01)
+    release: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    started: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    async def _held_turn(_state: Any, _slot: Any, _text: str, **_kw: Any) -> None:
+        started.set_result(None)
+        await release
+
+    monkeypatch.setattr(done, "_run_chat", _held_turn)
+    delivery = asyncio.ensure_future(done.on_done(make_info(parent="cron:j1:r1")))
+    await _until(started.done, "the cron tab turn")
+    await _until(delivery.done, "on_done returning after the tab hand-off")
+    delivery.result()
+
+    beyond_bound: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    asyncio.get_running_loop().call_later(
+        gw_mod.INJECTION_TIMEOUT * 2, beyond_bound.set_result, None
+    )
+    await asyncio.wait_for(beyond_bound, _LOST_RUN_SECS)
+
+    assert done.orch._cron_injecting == {"cron:j1:r1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    release.set_result(None)
+    await done.drain()
+
+    done.sessions.reset.assert_awaited_once_with(
+        "cron:j1:r1", skip_if_busy=True, skip_if_injecting=True
+    )
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_queued_sibling_keeps_the_cron_session_behind_an_open_tab(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cron_tab(done)
+    monkeypatch.setattr(gw_mod, "_subagent_queued_count", AsyncMock(return_value=1))
+
+    await done.done(make_info(parent="cron:j1:r1"))
+    await done.drain()
+
+    assert len(done.chats) == 1
+    assert not any(c[0] == "reset" for c in done.calls)
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_completion_queued_behind_a_busy_cron_tab_resets_after_the_tab_goes_idle(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _cron_tab(done, parent="cron:j1")
+    monkeypatch.setattr(gw_mod, "INJECTION_TIMEOUT", 0.01)
+    loop = asyncio.get_running_loop()
+    running: asyncio.Future[None] = loop.create_future()
+    slot.running = True
+    slot.task = running
+
+    await done.done(make_info(parent="cron:j1"))
+
+    assert done.chats == [] and len(slot.queued) == 1
+    assert done.orch._cron_injecting == {"cron:j1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    # The drain starts the queued card's turn before the running one completes.
+    queued_turn = _WatchedFuture(loop=loop)
+    slot._queue.pop(0)
+    slot.task = queued_turn
+    running.set_result(None)
+    await _until(lambda: queued_turn.watched, "the settlement waiting on the queued turn")
+    assert done.orch._cron_injecting == {"cron:j1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    slot.running = False
+    slot.task = None
+    queued_turn.set_result(None)
+    await done.drain()
+
+    done.sessions.reset.assert_awaited_once_with(
+        "cron:j1", skip_if_busy=True, skip_if_injecting=True
+    )
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_parked_cron_completion_leaves_the_session_for_its_turn(done: _Done) -> None:
+    slot = _cron_tab(done, parent="cron:j1")
+    done.drain_refuses = True
+
+    await done.done(make_info(parent="cron:j1"))
+    await done.drain()
+
+    assert done.chats == [] and len(slot._queue) == 1
+    assert not any(c[0] == "reset" for c in done.calls)
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_counted_cron_completion_holds_its_count_through_the_tab_turn(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A parked completion re-routed after its inline turn released arrives
+    # already counted; the tab's cron route takes that count over and keeps it
+    # until the tab turn ends, however long that is.
+    slot = _cron_tab(done, parent="cron:j1")
+    monkeypatch.setattr(gw_mod, "INJECTION_TIMEOUT", 0.01)
+    release: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    started: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    async def _held_turn(_state: Any, _slot: Any, _text: str, **_kw: Any) -> None:
+        started.set_result(None)
+        await release
+
+    monkeypatch.setattr(done, "_run_chat", _held_turn)
+    done.orch._cron_injecting["cron:j1"] = 1
+    info = make_info(parent="cron:j1")
+    route = asyncio.ensure_future(
+        done.orch._route_completion(
+            info,
+            announce="announce",
+            body="body",
+            title="title",
+            sub_meta={},
+            carried=(),
+            flush_only=False,
+            parent_key="cron:j1",
+            slot_name="cron-j1",
+            slot=slot,
+            event_slot="cron-j1",
+            injection_counted=True,
+        )
+    )
+    await _until(started.done, "the cron tab turn")
+    assert await asyncio.wait_for(route, _LOST_RUN_SECS) == "tab"
+
+    beyond_bound: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    asyncio.get_running_loop().call_later(
+        gw_mod.INJECTION_TIMEOUT * 2, beyond_bound.set_result, None
+    )
+    await asyncio.wait_for(beyond_bound, _LOST_RUN_SECS)
+    assert done.orch._cron_injecting == {"cron:j1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    release.set_result(None)
+    await done.drain()
+
+    assert ("reset", "cron:j1") in done.calls
+    assert done.orch._cron_injecting == {}

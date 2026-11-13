@@ -83,7 +83,10 @@ function findKirocrewBin(
     //    points at a build-agent path (D:\a\KiroCrew\...) that does not
     //    exist on the user's machine. The .cmd shim resolves the
     //    interpreter via %~dp0 and is the only relocatable launcher of the
-    //    two. Ranking them the other way round both broke the build-time
+    //    two. (Both bundle writers delete that .exe and put a
+    //    Scripts\kirocrew.cmd copy of this shim in its place, but a bundle
+    //    built without that step still carries it.) Ranking them the other
+    //    way round both broke the build-time
     //    resolver gate and, had the gate not caught it, would have shipped
     //    an app whose backend could never start.
     path.join(resourcesPath || "", "backend-dist", "kirocrew-backend", "bin", "kirocrew.cmd"),
@@ -103,8 +106,8 @@ function findKirocrewBin(
     //    it, so in a shipped bundle it points at a path that does not exist)
     //    but still ABOVE the user-level install paths below: a bundled app
     //    must prefer its own backend over whatever happens to be installed on
-    //    the machine. It is correct for a bundle built where it runs (a local
-    //    `make desktop`), which is why it is probed at all.
+    //    the machine. The bundle writers replace it with Scripts\kirocrew.cmd,
+    //    so it is probed only for a bundle built without that step.
     candidates.push(
       path.join(resourcesPath || "", "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe"),
       path.resolve(dirname, "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe")

@@ -88,7 +88,7 @@ STEP_UI = "ui"
 STEP_COMMIT = "commit"
 
 #: Caps on a guide's pre-filled name and goal: a proposal short enough to read
-#: at a glance in the New crewmate card's Name and "What it looks after"
+#: at a glance in the New crewmate card's Name and "Goal"
 #: fields, which accept at least this much (they set no shorter limit).
 _GOAL_MAX_CHARS = 200
 _NAME_MAX_CHARS = 24
@@ -247,18 +247,22 @@ _GUIDE_TEXT_URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)")
 
 
 def _has_markdown_link(text: str) -> bool:
-    """Recognize the prohibited link shape in one pass over delimiters."""
-    label_open = False
+    """Recognize the prohibited link shape in one pass over delimiters.
+
+    Brackets are counted, not toggled: link text may hold balanced brackets, as in
+    ``[the [new] page](target)``, and an inner ``]`` must not end the label.
+    """
+    depth = 0
     target_open = False
     for i, char in enumerate(text):
         if char == ")" and target_open:
             return True
         if char == "[":
-            label_open = True
-        elif char == "]":
-            if label_open and text[i + 1 : i + 2] == "(":
+            depth += 1
+        elif char == "]" and depth:
+            depth -= 1
+            if text[i + 1 : i + 2] == "(":
                 target_open = True
-            label_open = False
     return False
 
 
@@ -382,12 +386,12 @@ ACTIONS: dict[str, ActionDef] = {
     ),
     ACTION_CREWMATE_CREATE: ActionDef(
         id=ACTION_CREWMATE_CREATE,
-        title="Create a mate",
+        title="Create a Bot",
         description=(
-            "Open the New mate card with an optional name and goal "
+            "Open the New Bot card with an optional name and goal "
             "pre-filled, then point at its Create button. Nothing is created "
             "until the user clicks Create; completion reports the new "
-            "mate's id."
+            "Bot's id."
         ),
         steps=(StepDef("create", STEP_COMMIT),),
         params_schema={
@@ -442,7 +446,7 @@ ACTIONS: dict[str, ActionDef] = {
                     "type": "string",
                     "maxLength": _FIND_LABEL_MAX_CHARS,
                     "description": (
-                        "Optional: the name of the one item the user named (crewmate "
+                        "Optional: the name of the one item the user named (Bot "
                         "'Helper', job 'Morning summary') when the guide first has them "
                         "choose one; the tab outlines only that item."
                     ),
@@ -480,7 +484,7 @@ ACTIONS: dict[str, ActionDef] = {
                     "maxLength": _FIND_ROUTE_MAX_CHARS,
                     "description": (
                         "The page, as find_ui returns it (e.g. '/schedule' or "
-                        "'/capabilities?tab=mcp'). Omit for a control on every page."
+                        "'/settings/connections'). Omit for a control on every page."
                     ),
                 },
                 "label": {
@@ -1057,7 +1061,7 @@ def _route_pathname(route: str) -> str:
     return route.split("?", 1)[0].split("#", 1)[0]
 
 
-# Query parameters that choose which page a path shows (``/capabilities?tab=mcp``).
+# Query parameters that choose which page a path shows (``/capabilities?tab=skills``).
 _PAGE_IDENTITY_PARAMS = ("tab",)
 
 
@@ -1066,7 +1070,7 @@ def _route_compatible(asked: str, other: str) -> bool:
 
     The paths match (trailing slashes aside) and every page-identity query
     parameter *asked* sets has the same value in *other*: ``/capabilities``
-    with ``?tab=crews`` is another page than with ``?tab=mcp``. A parameter
+    with ``?tab=crews`` is another page than with ``?tab=skills``. A parameter
     *asked* leaves out does not tell pages apart.
     """
     if _route_pathname(asked).rstrip("/") != _route_pathname(other).rstrip("/"):

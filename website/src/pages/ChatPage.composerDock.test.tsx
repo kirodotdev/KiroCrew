@@ -30,7 +30,10 @@ vi.mock('../components/PendingQuestionCard', () => ({ default: () => null }))
 vi.mock('../components/FlyingQuote', () => ({ default: () => null }))
 vi.mock('../components/QueueStack', () => ({ default: () => null, SubagentDeliveryProgress: () => null }))
 vi.mock('../components/MemoryModeChip', () => ({ MemoryModeChip: () => null }))
-vi.mock('../chat-core/composer/Composer', () => ({ Composer: forwardRef(({ children }: { children: ReactNode }, _ref) => <>{children}</>) }))
+// The dock is driven by props here; the Crew Mode root read is a store/query hook.
+vi.mock('../components/crew/useCrewRoot', () => ({ useCrewRoot: () => ({ rootClosed: false, rootTitle: '', workers: undefined, failed: false }) }))
+vi.mock('../chat-core/composer/Composer', () => ({ useComposerDraftText: () => null, Composer: forwardRef(({ children }: { children: ReactNode }, _ref) => <>{children}</>) }))
+vi.mock('../composerActions/useComposerActionItems', () => ({ useComposerActionItems: () => [] }))
 vi.mock('./chat/SubagentProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/TaskProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/WorkflowProgressBar', () => ({ default: () => null }))
@@ -168,5 +171,13 @@ describe('ComposerDockView', () => {
     expect(handleResumeSession).toHaveBeenLastCalledWith('chat-9-1785440411', 'chat-9-1785440411')
     fireEvent.keyDown(options[1], { key: 'Enter' })
     expect(handleResumeSession).toHaveBeenLastCalledWith('chat-8-1785440400', 'chat-8-1785440400')
+  })
+
+  it('hands the transcript quote jump to the composer, so the staged card jumps like a sent one (#34335)', () => {
+    const onJumpToQuote = vi.fn()
+    render(<ComposerDockView {...dockProps({ onJumpToQuote })} />)
+    const quote = { role: 'user' as const, text: 'q', ts: 't1' }
+    act(() => { (seen.chatInput!.onJumpToQuote as (q: typeof quote) => void)(quote) })
+    expect(onJumpToQuote).toHaveBeenCalledWith(quote)
   })
 })

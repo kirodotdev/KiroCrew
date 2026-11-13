@@ -61,6 +61,7 @@ class TestCronApprovalModeGateway:
         gw._owner_id = "U000"
         gw.subagent_mgr = None
         gw._cron_injecting = {}
+        gw._cron_runs_holding = set()
         gw._no_crons = False
         gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
         gw.sessions.release = MagicMock()
@@ -108,10 +109,13 @@ class TestCronApprovalModeGateway:
 
         return captured
 
-    def test_auto_mode_passes_auto_approve_and_no_callback(self) -> None:
+    def test_auto_mode_passes_auto_approve_and_a_live_auto_check(self) -> None:
         captured = self._run_cron_callback("auto")
         assert captured["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
-        assert captured["on_tool_approval"] is None
+        # The callback approves while ``auto`` holds; a mid-turn policy deny asks
+        # instead (RFC LTS edition D9).
+        approve = captured["on_tool_approval"]
+        assert asyncio.run(approve(MagicMock())) is True
 
     def test_empty_mode_passes_hook_based_and_callback(self) -> None:
         captured = self._run_cron_callback("")
@@ -139,6 +143,7 @@ class TestCronApprovalModeExtraEnv:
         gw._owner_id = "U000"
         gw.subagent_mgr = None
         gw._cron_injecting = {}
+        gw._cron_runs_holding = set()
         gw._no_crons = False
 
         captured_kwargs: dict = {}
@@ -257,10 +262,10 @@ class TestCronApprovalModeValidation:
                 "cron_add",
                 {"name": "test", "message": "go", "every": 300, "approval_mode": "auto"},
             )
-        assert "v1" in result
-        # #391: approval_mode is folded into add_job's single locked save, not
-        # mutated onto the returned job -- assert it was passed INTO add_job.
-        assert mock_svc.return_value.add_job.call_args.kwargs["approval_mode"] == "auto"
+        # 'auto' is the owner's switch (Schedule page): a tool call is refused
+        # before anything is written.
+        assert result.startswith("Error: approval_mode 'auto' can only be turned on by the owner")
+        mock_svc.return_value.add_job.assert_not_called()
 
     def test_valid_empty(self) -> None:
         with patch("kiro_crew.mcp_cron.CronService") as mock_svc:
@@ -479,9 +484,11 @@ class TestCronSubagentInjection:
         gw.dashboard_state = None
         gw._owner_id = "U000"
         gw._cron_injecting = {}
+        gw._cron_runs_holding = set()
         gw._cfg = MagicMock()
         gw._cfg.agent.max_subagents = 5
-        gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        # The cron run's live session: a completion continues it (``is_new`` False).
+        gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
         gw.sessions.release = MagicMock()
         gw.sessions.reset = AsyncMock()
         gw.sessions.cancel_current = AsyncMock()
@@ -546,7 +553,9 @@ class TestCronSubagentInjection:
 
         gw.sessions.get_or_create.assert_awaited_once_with("cron:daily-prep")
         gw.sessions.release.assert_called_once_with("cron:daily-prep")
-        gw.sessions.reset.assert_awaited_once_with("cron:daily-prep")
+        gw.sessions.reset.assert_awaited_once_with(
+            "cron:daily-prep", skip_if_busy=True, skip_if_injecting=True
+        )
         assert gw._cron_injecting == {}
 
     def test_cron_injection_defers_reset_when_others_running(self) -> None:

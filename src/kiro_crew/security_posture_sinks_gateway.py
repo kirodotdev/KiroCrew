@@ -16,7 +16,7 @@ from __future__ import annotations
 
 _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
-        "Interrupted work in a mate reply",
+        "Interrupted work in a Bot reply",
         "dashboard/responsive_chat.py",
         "The bounded interrupted-turn reference passed to the next model prompt. "
         "Structural markers are neutralized, then exfiltration URLs and "
@@ -54,10 +54,10 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes the credential redactor before it reaches the card.",
     ),
     (
-        "Mate goals",
+        "Bot goals",
         "member_goals.py",
-        "The goals, key results and their readings a mate may write "
-        "about itself, on their way to the Goals tab, the mate's tools and its "
+        "The goals, key results and their readings a Bot may write "
+        "about itself, on their way to the Goals tab, the Bot's tools and its "
         "saved goal reports. Each string passes the "
         "exfiltration-URL then the credential redactor before it leaves the record.",
     ),
@@ -87,6 +87,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "rather than returned.",
     ),
     (
+        "A remote crew's reply to a conductor's session tool",
+        "dashboard/handlers/remote_dispatch_routes.py",
+        "What a connected crew answers when a conductor drives a worker there with "
+        "`crew=` on session_create, session_send, session_read_message, "
+        "session_stop or session_close, on its way into the conductor's model "
+        "context. The reply must be JSON within the proxy's buffer cap and is "
+        "redacted whole with the peer-text chain, keys included, before any field "
+        "of it is read; one that cannot be redacted is refused, never returned.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "
@@ -103,7 +113,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "than emitting it unredacted.",
     ),
     (
-        "Fold values filled into a mate's dashboard page",
+        "Fold values filled into a Bot's dashboard page",
         "dashboard/handlers/member_dashboard.py",
         "Every string a template's fold paths resolve to, on its way into the page's "
         "own data island. A fold value is whatever a conductor wrote into the crew "
@@ -118,6 +128,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "same traversal drops `worker_session_key` and empties a `bind` event's "
         "text, which covers the fields known to be secrets and says nothing about "
         "prose that happens to contain one.",
+    ),
+    (
+        "A crew's work-item copy read by a hub",
+        "dashboard/handlers/remote_work_item.py",
+        "Every key and string in the worker-owned fields and event tail of a hub's "
+        "work item on this crew, on its way to the hub over its proxy (remote "
+        "dispatch, a Feature Preview). The worker wrote them and nothing between "
+        "that write and this read inspects them. It reuses the Crew page's "
+        "`_redact_deep`, which runs `redact_via_context`, so both scanners run in "
+        "the shared order.",
     ),
     (
         "Conductor work items shown on the Crew page",
@@ -232,7 +252,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "
         "safe_view applies redact_via_context before serialization and masks credential "
-        "map values while preserving their structure. A crewmate's in-place editor "
+        "map values while preserving their structure. A Bot's in-place editor "
         "(`mate_capabilities`) returns through the same safe_view. Retained secret "
         "values and source-content digests remain server-side.",
     ),
@@ -248,6 +268,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "body passes the shared exfiltration-URL then credential chain in the "
         "emitter rather than at its call sites, so a new call site cannot forget, "
         "and a redaction that fails writes the empty string instead of the input.",
+    ),
+    (
+        "Live browser metadata broadcasts",
+        "browser_harness/live_hub.py",
+        "Every textual value of the browser_live websocket event, including page "
+        "URLs, titles, step labels and nested quick-ask text, passes the platform-aware "
+        "credential and exfiltration-URL redactor at publish time. A scanner failure "
+        "drops the event. The replay routes (handlers/browser_recordings.py) pass "
+        "their turn list and turn detail JSON through the same function. Browser "
+        "state and binary pixel frames are unchanged.",
     ),
     (
         "Subagent wait broadcasts",
@@ -288,6 +318,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Selected facts, experiences, corrections, and owner-selected copy results "
         "returned to the dashboard or the memory_recall tool. Nested fields pass "
         "through the shared credential + exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Bedrock Knowledge Base retrieval queries",
+        "knowledge/connectors/bedrock_kb.py",
+        "The user's knowledge-search query text as sent to the AWS Bedrock "
+        "Retrieve API -- an off-host egress boundary. A query pasted with a "
+        "credential-shaped token or an exfiltration-shaped URL would land in "
+        "a third-party service's request log, so the query runs the shared "
+        "credential + exfiltration-URL chain immediately before the client "
+        "call, once per remote search.",
     ),
     (
         "Managed-venv update failures",
@@ -334,7 +374,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Provider observations are arbitrary nested JSON and can quote credentials "
         "or exfiltration URLs, so every string key and value in the monitor mapping "
         "passes through the platform-aware redaction chain before the response leaves "
-        "the backend.",
+        "the backend. A loop's own text fields -- `message` and `stopped_reason` -- go "
+        "through the same chain on `GET /api/autonudge`, its per-loop detail and the "
+        "`POST`/`PATCH` replies, because several producers reach `svc.add` without the "
+        "arming authorizer and a hand-edited `autonudge.json` skips it too. Every value "
+        "is scrubbed except four: `id` and `slot_key`, which address the row; "
+        "`goal_token`, random hex the popover sends back as `expect_fingerprint`; and "
+        "`monitor`, walked above. Dicts and lists are walked, so `judge` keeps its shape. "
+        "The ungated `autonudge_state` WebSocket frame, built in "
+        "`slack/gateway_runtime/nudge_wiring.py`, applies this module's per-field rule.",
     ),
     (
         "Project-scan warning reasons",
@@ -362,42 +410,6 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "role ARN, and an endpoint override can carry an inline-credential URL -- "
         "so the first stderr line goes through the shared credential + "
         "exfiltration-URL chain at the source, before it is put on an `Identity`.",
-    ),
-    (
-        "Browser CLI install failures",
-        "browser_cli/install.py",
-        "The stderr of a failed `npm install -g @playwright/cli` / browser download, "
-        "which reaches TWO surfaces: a `logger.warning` line (durable, and pasted "
-        "into bug reports via `kirocrew logs`) and the Settings > Browser error card. "
-        "npm quotes the command's own environment back on failure, so the text can "
-        "carry a registry `_authToken`, an inline-credential proxy URL, or a "
-        "`*_TOKEN=` echo -- shapes the shared credential family does NOT match, so "
-        "this sink adds its own npm patterns on top of the shared two-pass and "
-        "redacts at the source rather than at either boundary.",
-    ),
-    (
-        "Browser install job failure detail",
-        "browser_cli/install_job.py",
-        "The `error_detail` of the gateway's browser install job, returned by "
-        "`GET /api/browser/install` and in every 409 `install_already_running` "
-        "body. Failed-step output is redacted by `install._step` at the source; "
-        "exception and error fallbacks are not. `bounded_detail` re-redacts every "
-        "carrier on the FULL text before the 2000-character cut, using only "
-        "`redact_install_output` (the shared two-pass plus npm patterns), so a "
-        "pre-redaction cut cannot split a credential past its matching anchor.",
-    ),
-    (
-        "Browser panel launch failures",
-        "browser_cli/launcher.py",
-        "The CLI's own words when the Browser panel's address bar could not open a "
-        "page (`playwright-cli -s=panel-… open|goto` failing), shown VERBATIM in the "
-        "panel's failure card; the gateway log gets only the session name and the "
-        "exit code, never the text. The daemon's stack quotes its "
-        "environment and the URL the human typed, so the text can carry a "
-        "query-string credential or a `*_TOKEN=` echo; `_error_text` distills the "
-        "message and runs the shared credential + exfiltration-URL chain on the "
-        "kept lines BEFORE the cap, so a truncated head cannot leak what the tail "
-        "would have matched.",
     ),
     (
         "Azure DevOps comment bodies",
@@ -714,10 +726,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Auto-Improvement PR prose",
-        "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py",
-        "The pull-request TITLE and BODY are agent-authored prose published by `gh pr "
-        "create`, and a PR description cannot be un-published. Redacted in place because "
-        "prose survives rewriting; the DIFF beside it is instead detected-and-refused by "
+        "apps/builtins/auto_improvement/profiles/pr_recipe_base.py",
+        "The pull/merge-request TITLE and BODY are agent-authored prose published by "
+        "`gh pr create` or `glab mr create`, and a published description cannot be "
+        "un-published. Redacted in place because prose survives rewriting; the DIFF "
+        "beside it is instead detected-and-refused by "
         "`spine/push_policy.py:scan_content_for_secrets`, since rewriting a patch would "
         "corrupt the fix the gate proved.",
     ),
@@ -815,8 +828,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Reply-thread stream and store",
         "dashboard/chat_threads.py",
-        "Three boundaries of a reply thread on a mate chat message: the "
-        "StreamRedactor on the mate's live reply (as the side panel's), the "
+        "Three boundaries of a reply thread on a Bot chat message: the "
+        "StreamRedactor on the Bot's live reply (as the side panel's), the "
         "thread envelope (parent, surrounding chat and prior replies, which "
         "kiro-cli persists into its own session file), and every stored reply "
         "and quoted parent on its way out of the sidecar to the browser.",
@@ -828,6 +841,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "and detail responses. Document CONTENT is deliberately NOT redacted: it "
         "populates the tab's editor and is written straight back on save, so "
         "redacting it would overwrite the user's own file with markers.",
+    ),
+    (
+        "Per-chat steering list",
+        "dashboard/handlers/chat_steering.py",
+        "Display paths in the /api/chat/slots/{slot}/steering listing, through the "
+        "Steering tab's _redact_meta. No document body leaves this route.",
     ),
     (
         "Telemetry spend ranking",
@@ -842,5 +861,71 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
+    ),
+    (
+        "An Ultra Mode root's worker list and timeline",
+        "dashboard/handlers/crew_workers.py",
+        "The side panel's worker cards (a closed worker's saved title, the ledger "
+        "line through the board's deep redactor) and every timeline bar and mark "
+        "label, which are slices of transcript rows: each passes exfiltration-URL "
+        "and credential redaction (the display battery for timeline labels) "
+        "before it reaches the browser.",
+    ),
+    (
+        "One crew member's in-place recap",
+        "dashboard/handlers/crew_worker_recap.py",
+        "The Bot Sessions tab's recap: the work item's title, report summary, "
+        "decision, artifacts, PR link and pending approval tool names, each passed "
+        "through the work-ledger board's deep redactor before it reaches the browser.",
+    ),
+    (
+        "Remote session Git views",
+        "coder/session_browse.py",
+        "Git status, log and diff output and error text pass the shared "
+        "exfiltration-URL and credential redactor at the gateway before reaching "
+        "the dashboard, preserving record separators and patch framing.",
+    ),
+    (
+        "Agent spec chooser descriptions",
+        "agent_spec_pin_ops.py",
+        "Each claimant's `description` and package label, read from a spec file an "
+        "agent may have written, pass the exfiltration-URL and credential redactors "
+        "before they are carried in the chat metadata of the spec chooser card.",
+    ),
+    (
+        "Fork merge-back summaries",
+        "dashboard/chat_merge_back.py",
+        "The summary the background model writes of a fork's new messages, on its way "
+        "to the merge dialog, where the person edits it before Merge writes it into "
+        "the parent chat, and the fork's title the merge card shows. Both pass through "
+        "the active credential policy before they leave the gateway; the summary is cut "
+        "to the merge limit only after that.",
+    ),
+    (
+        "Settings changed outside Kiro Crew",
+        "config/loosening_provenance.py",
+        "The before and after values in the changed-key diff of a hand-edited "
+        "settings file, on their way to the owner's Settings -> Security pending "
+        "card in the browser. Runs the credential redactor "
+        "only, as a test: a string it would alter is withheld from the diff and "
+        "the row is marked redacted, as is any value under a credential-like key, "
+        "an env or headers section, an over-long string or a nested value.",
+    ),
+    (
+        "Session reload failure notice",
+        "dashboard/system_notices.py",
+        "The error a reload's failed respawn raised, as `session_reload_failed_notice` "
+        "writes it into the chat row that closes the reload's notice. That row is kept "
+        "in the slot's transcript and broadcast to every connected browser, so the "
+        "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
+    ),
+    (
+        "Worktree create refusals",
+        "dashboard/handlers/worktree.py",
+        "git's own line saying why it cannot open a project as a work tree, returned "
+        "as the `detail` of the 400 a follow-up card's worktree create gets and shown "
+        "under the suggestion. The line can echo a `gitdir:` path from a `.git` file "
+        "whoever can write the folder chose, so it passes `redact_via_context` "
+        "before it leaves the gateway.",
     ),
 )

@@ -68,8 +68,7 @@ def _patch_aws_on_path(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the module-wide argv pin of test_voice_reply.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _no_argv_prefixers(monkeypatch):
+def _no_argv_prefixers(_floor_monkeypatch):
     """Strip the host-dependent argv prefixes for every test in this module.
 
     Two layers sit between the command these tests build and the
@@ -86,8 +85,8 @@ def _no_argv_prefixers(monkeypatch):
     the same host dependence. A test specifically about resource limits or cgroup
     scoping should patch the real function back.
     """
-    monkeypatch.setattr("kiro_crew.voice_reply.cgroup_scope_argv", lambda argv: list(argv))
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr("kiro_crew.voice_reply.cgroup_scope_argv", lambda argv: list(argv))
+    _floor_monkeypatch.setattr(
         "kiro_crew.voice_reply.create_subprocess_limited",
         lambda *argv, **kw: asyncio.create_subprocess_exec(*argv, **kw),
     )

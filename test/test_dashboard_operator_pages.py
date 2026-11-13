@@ -93,9 +93,7 @@ def _env(tmp_path, _floor_monkeypatch):
     yield
 
 
-# --------------------------------------------------------------------------
 # the catalog
-# --------------------------------------------------------------------------
 
 
 def test_an_operator_page_is_served_with_origin_user() -> None:
@@ -198,9 +196,7 @@ def test_a_page_directory_and_a_panel_template_file_never_collide() -> None:
     assert all(name != "my-panel.html" for name, _ in found.problems)
 
 
-# --------------------------------------------------------------------------
 # rendering
-# --------------------------------------------------------------------------
 
 
 def test_an_operator_page_is_renderable() -> None:
@@ -249,17 +245,9 @@ def test_trusted_page_refuses_an_operator_page_that_was_removed() -> None:
 def test_the_served_page_is_framed_exactly_like_a_built_in_one() -> None:
     """Same composition, so the same frame head, CSP and sandbox apply.
 
-    The gateway sends a BODY; the dashboard frame builds the head and its CSP and
-    mounts it through one sandbox function. So "same CSP and sandbox" is two facts: the
-    body composed for a user page is byte-identical to a built-in one with the same
-    markup, and the frame never branches on where a page came from.
-
-    The grant a page gets is not always the same STRING -- a page whose owner the admin
-    ceiling denies egress is mounted with none of it -- so the pin is the function and
-    its argument rather than the literal: every mount calls the one helper, and every
-    mount hands it the server's own answer. A page cannot be wrapped more loosely than
-    its sibling by naming a different spelling, nor by passing a literal that skips the
-    server.
+    The user page's body is byte-identical to a built-in one, and every mount calls the
+    one sandbox helper with the server's own answer. The grant string varies (a page
+    denied egress gets none), so the pin is the helper and its argument, not a literal.
     """
     _operator_page("my-board")
     instance.adopt(SLUG, "fixture-board", session_id="")
@@ -312,9 +300,7 @@ def test_the_served_page_is_framed_exactly_like_a_built_in_one() -> None:
     ), "the frame reads a page's provenance, so a user page could be framed differently"
 
 
-# --------------------------------------------------------------------------
 # the five fences, pinned for a page file one directory down
-# --------------------------------------------------------------------------
 
 
 def _page_file() -> str:

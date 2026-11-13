@@ -29,6 +29,7 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_bundle, crewmate_carried, crewmate_stage
 from kiro_crew.crewmate_bundle import crewmate_import_params, read_crewmate_file
 from kiro_crew.dashboard import change_cards as cards
+from kiro_crew.dashboard.agent_name_segment import agent_route_name
 from kiro_crew.dashboard.change_cards import (
     CARD_TTL_SECONDS,
     MAX_LIVE_CARDS_PER_SLOT,
@@ -507,7 +508,7 @@ def _import_app(world, store: CardStore, writes: _Writes, monkeypatch, tmp_path)
                 job_id = f"job{len(writes.calls)}"
                 return web.json_response({"ok": True, "id": job_id, "revision": f"fp-{job_id}"})
             if key == "delete_crew":
-                writes.crews.pop(request.match_info["name"], None)
+                writes.crews.pop(agent_route_name(request), None)
             if key == "delete_cron":
                 expect = request.get(routes.REQ_CARD_UNDO_CRON_EXPECT)
                 writes.calls[-1] = (method, request.path, {"expect": expect})
@@ -531,6 +532,7 @@ def _import_app(world, store: CardStore, writes: _Writes, monkeypatch, tmp_path)
     app["avatars"] = avatars
     app.router.add_post("/api/agents", route("POST", "create"))
     app.router.add_delete("/api/agents/{name}", route("DELETE", "delete_crew"))
+    app.router.add_delete("/api/agents/b64/{name_b64}", route("DELETE", "delete_crew"))
     app.router.add_put("/api/members/{slug}/goals/long-term", route("PUT", "goal"))
     app.router.add_put("/api/members/{slug}/rules", route("PUT", "rules"))
     app.router.add_post("/api/crons", route("POST", "cron"))
@@ -858,7 +860,7 @@ def test_a_failed_later_step_lands_partial_with_a_working_undo(world, monkeypatc
     assert [(s["method"], s["path"]) for s in undo] == [
         ("DELETE", "/api/members/m1/import-files"),
         ("PUT", "/api/members/m1/rules"),
-        ("DELETE", "/api/agents/Release%20Captain"),
+        ("DELETE", "/api/agents/b64/UmVsZWFzZSBDYXB0YWlu"),
     ]
     assert undone == [200, 200, 200]
     assert store.get(card_id)["status"] == "undone" and writes.crews == {}
@@ -1001,7 +1003,7 @@ def test_the_partial_line_names_the_import_part_that_failed(params, part):
     line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
     assert (
         line
-        == f"Created mate “Q” without {part} or anything after it. Undo removes the mate and what was saved"
+        == f"Created Bot “Q” without {part} or anything after it. Undo removes the Bot and what was saved"
     )
 
 
@@ -1035,6 +1037,77 @@ def test_skills_land_under_the_workspace_and_a_linked_skills_folder_is_refused(t
     assert exc.value.code == "workspace_link"
     with pytest.raises(files_route._Refused):
         files_route._skills_root(cfg, SimpleNamespace(workspace="nope"))
+
+
+def _on_windows_paths(monkeypatch, real: dict[str, str], fn, *args):
+    """``fn(*args)`` under Windows path rules: its value, its refusal, or its error.
+
+    ``realpath`` answers *real*'s spelling of a path, and ``commonpath`` over those
+    spellings is ``ntpath``'s, which raises ``ValueError`` for two drives, as on
+    Windows. Both patch the one shared ``os.path``, so they forward every other call
+    and end before this returns.
+    """
+    import ntpath
+
+    # Bound before the patch: on Windows ``os.path`` IS ``ntpath``, so a lookup at
+    # call time would find the patched function and recurse.
+    resolve, common, nt_common = os.path.realpath, os.path.commonpath, ntpath.commonpath
+
+    def windows_commonpath(paths):
+        paths = list(paths)
+        owned = all(p in real.values() for p in paths)
+        return (nt_common if owned else common)(paths)
+
+    with monkeypatch.context() as m:
+        m.setattr(files_route.os.path, "commonpath", windows_commonpath)
+        m.setattr(
+            files_route.os.path,
+            "realpath",
+            lambda p, *a, **kw: real.get(os.fspath(p)) or resolve(p, *a, **kw),
+        )
+        try:
+            return fn(*args)
+        except files_route._Refused as exc:
+            return exc.status, exc.code
+        except ValueError as exc:
+            return repr(exc)
+
+
+@pytest.mark.parametrize(
+    "outside", ["C:\\elsewhere\\skills", "D:\\elsewhere\\skills"], ids=["same-drive", "other-drive"]
+)
+def test_a_skills_folder_resolving_outside_the_workspace_is_refused_on_any_drive(
+    tmp_path, monkeypatch, outside
+):
+    """A skills folder on another drive is outside the workspace: a 409, never a raise."""
+    from kiro_crew.config.loader import WorkspaceConfig
+
+    ws = tmp_path / "member-ws"
+    ws.mkdir()
+    cfg = SimpleNamespace(workspaces={"mine": WorkspaceConfig(dir=str(ws))})
+    agent = SimpleNamespace(workspace="mine")
+    root = ws / ".kiro" / "skills"
+    real = {str(ws): "C:\\ws", str(root): "C:\\ws\\.kiro\\skills"}
+    assert _on_windows_paths(monkeypatch, real, files_route._skills_root, cfg, agent) == root
+    real[str(root)] = outside
+    outcome = _on_windows_paths(monkeypatch, real, files_route._skills_root, cfg, agent)
+    assert outcome == (409, "workspace_link")
+
+
+@pytest.mark.parametrize(
+    "outside", ["C:\\elsewhere\\mate", "D:\\elsewhere\\mate"], ids=["same-drive", "other-drive"]
+)
+def test_a_script_folder_resolving_outside_crons_is_refused_on_any_drive(monkeypatch, outside):
+    """The same for ``crons/imported/<slug>``, refused as ``scripts_dir_link``."""
+    from kiro_crew.config.paths import config_dir
+
+    crons = config_dir() / "crons"
+    target = crons / files_route.IMPORTED_SCRIPTS_DIR / "mate"
+    real = {str(crons): "C:\\home\\crons", str(target): "C:\\home\\crons\\imported\\mate"}
+    assert _on_windows_paths(monkeypatch, real, files_route._scripts_dir, "mate") == target
+    real[str(target)] = outside
+    outcome = _on_windows_paths(monkeypatch, real, files_route._scripts_dir, "mate")
+    assert outcome == (409, "scripts_dir_link")
 
 
 def test_the_picture_commits_through_the_editor_avatar_path(monkeypatch):

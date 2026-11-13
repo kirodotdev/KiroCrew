@@ -19,7 +19,13 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from kiro_crew.config.loader import read_local_secret
-from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz
+from kiro_crew.cron import (
+    compute_next_run_ts,
+    format_schedule,
+    get_local_tz,
+    job_zone_name,
+    load_cron_folders,
+)
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -238,6 +244,8 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
     """
     kept = jobs[:_JSON_MAX_JOBS]
     stats, unavailable = _fetch_history_stats([j.id for j in kept])
+    # Read once, read-only: the dashboard owns cron_folders.json.
+    folder_names = {f["id"]: f["name"] for f in load_cron_folders()}
 
     records: list[dict[str, Any]] = []
     used = 0
@@ -250,7 +258,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
             "name": _sanitize(job.name or "")[:_MSG_PREVIEW_LEN],
             "mode": _job_kind(job),
             "enabled": bool(getattr(job, "enabled", True)),
-            "schedule": format_schedule(job.schedule, tz_name=job.timezone or ""),
+            "schedule": format_schedule(job.schedule, tz_name=job_zone_name(job)),
             "every_secs": getattr(job.schedule, "every_secs", None),
             "minimal_context": bool(job.minimal_context),
             "persistent_session": bool(job.persistent_session),
@@ -265,6 +273,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
             # has not been shown to be idle, and a consumer must be able to
             # tell those two apart.
             "history": history,
+            "folder": _json_folder(getattr(job, "folder_id", "") or "", folder_names),
         }
         # Measure what this record actually costs SERIALIZED, then decide. The
         # alternative -- assemble everything and check at the end -- has no way
@@ -290,6 +299,25 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
+def _json_folder(folder_id: str, names: dict[str, str]) -> dict[str, Any] | None:
+    """A job's Schedule-page folder as a JSON record: ``{id, name}``, or None if ungrouped.
+
+    ``name`` is None when the id names no folder the store holds (deleted, or
+    the store is unreadable), so a consumer never mistakes a raw id for a name.
+    """
+    if not folder_id:
+        return None
+    if len(folder_id) > _MSG_PREVIEW_LEN:
+        # Minted ids are 8 hex; a longer one came from a hand-edited store and
+        # would blow the record past the byte budget. Say so, never cut it.
+        return {"id": None, "name": None, "error": "stored folder id is too long"}
+    name = names.get(folder_id)
+    return {
+        "id": folder_id,
+        "name": _sanitize(name)[:_MSG_PREVIEW_LEN] if name else None,
+    }
+
+
 def _job_kind(job: Any) -> str:
     """Return 'script' / 'command' / 'agent' for a cron job."""
     if getattr(job, "script", ""):
@@ -313,7 +341,7 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
     tz_name, local_tz = get_local_tz()
     for j in jobs:
         status = "✅ active" if j.enabled else "⏸️ paused"
-        sched = format_schedule(j.schedule, tz_name=j.timezone or tz_name)
+        sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
         san_msg = _sanitize(j.message)
@@ -365,7 +393,7 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
     tz_name, local_tz = get_local_tz()
     for j in jobs:
         status = "✅" if j.enabled else "⏸️"
-        sched = format_schedule(j.schedule, tz_name=j.timezone or tz_name)
+        sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
         san_sched = _sanitize(sched)

@@ -19,6 +19,7 @@ import json
 from typing import TYPE_CHECKING
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.knowledge.store_parts.entity_graph import ENTITY_ALIAS_INDEX, index_entity_aliases
 from kiro_crew.knowledge.store_parts.fulltext_index import FTS_INDEX_VERSION
 from kiro_crew.knowledge.store_parts.source_rows import _without_sync_status
 
@@ -74,6 +75,26 @@ def _init_schema(self: KnowledgeStore):
             );
 
             CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+
+            -- One row per (casefolded alias, entity): the indexed alias lookup
+            -- find_entity uses instead of parsing every entity's aliases. The
+            -- key is Python's str.casefold(), which SQL cannot compute, so the
+            -- writers of entities.aliases (add_entity, add_entity_aliases,
+            -- import_bundle) write it through index_entity_aliases; the
+            -- trigger drops an entity's rows with the entity, whoever deletes
+            -- it. Its key index is created only by _ensure_entity_alias_index,
+            -- after a full fill: see there.
+            CREATE TABLE IF NOT EXISTS entity_aliases (
+                alias_key TEXT NOT NULL,
+                entity_id TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity ON entity_aliases(entity_id);
+
+            CREATE TRIGGER IF NOT EXISTS entity_aliases_del AFTER DELETE ON entities
+            FOR EACH ROW BEGIN
+                DELETE FROM entity_aliases WHERE entity_id = old.id;
+            END;
 
             CREATE TABLE IF NOT EXISTS entity_relations (
                 id TEXT PRIMARY KEY,
@@ -266,6 +287,12 @@ _SEARCH_INDEXES = (
     # find_entity's case-insensitive fallback; without it every query term
     # that misses the exact name scans the whole table.
     "CREATE INDEX IF NOT EXISTS idx_entities_name_lower ON entities(LOWER(name))",
+    # find_entity's alias fallback, run for every query term no name matches.
+    # Partial on the fallback's own predicate, so it holds only the entities
+    # that carry aliases (none on most libraries) and the fallback stops
+    # scanning every entity.
+    "CREATE INDEX IF NOT EXISTS idx_entities_with_aliases ON entities(aliases) "
+    "WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')",
     # The graph leg counts mentions by entity_id; the primary key leads with
     # item_id, so without this every search scans every mention.
     "CREATE INDEX IF NOT EXISTS idx_mentions_entity_item ON mentions(entity_id, item_id)",
@@ -288,6 +315,7 @@ def has_pending_one_time_work(self: KnowledgeStore) -> bool:
         row[0] for row in self.db.execute("SELECT name FROM sqlite_schema WHERE type = 'index'")
     }
     wanted = {stmt.split(" IF NOT EXISTS ", 1)[1].split()[0] for stmt in self._SEARCH_INDEXES}
+    wanted.add(ENTITY_ALIAS_INDEX)
     if not wanted <= names:
         return True
     version = self.db.execute("PRAGMA user_version").fetchone()[0]
@@ -309,6 +337,43 @@ def ensure_search_indexes(self: KnowledgeStore) -> None:
     for stmt in self._SEARCH_INDEXES:
         self.db.execute(stmt)
     self.db.commit()
+    self._ensure_entity_alias_index()
+
+
+def _ensure_entity_alias_index(self: KnowledgeStore) -> None:
+    """Fill ``entity_aliases`` from every entity row, then index it. Once per library.
+
+    Every writer of ``entities.aliases`` keeps the table current from the moment
+    it exists, but a library that predates it holds entities whose aliases were
+    never copied in. Until this has run ``find_entity`` keeps its old scan, so
+    results never depend on it: the index is created in the SAME transaction as
+    the fill, and its presence is the only signal that the table is complete.
+    The fill starts from an empty table so rows the writers already added are
+    not doubled. O(entities with aliases) the first time, a metadata read after.
+    """
+    if self.entity_alias_index_ready():
+        return
+    self.db.execute("BEGIN IMMEDIATE")
+    try:
+        if not self.entity_alias_index_ready():
+            self.db.execute("DELETE FROM entity_aliases")
+            rows = self.db.execute(
+                "SELECT id, aliases FROM entities "
+                "WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')"
+            ).fetchall()
+            for row in rows:
+                try:
+                    aliases = json.loads(row["aliases"])
+                except (TypeError, ValueError, RecursionError):
+                    # A damaged legacy value indexes nothing.
+                    continue
+                if isinstance(aliases, list):
+                    index_entity_aliases(self.db, row["id"], aliases, replace=False)
+            self.db.execute(f"CREATE INDEX {ENTITY_ALIAS_INDEX} ON entity_aliases(alias_key)")
+        self.db.execute("COMMIT")
+    except BaseException:
+        self.db.execute("ROLLBACK")
+        raise
 
 
 #: Columns the vector leg's candidate query reads or filters on. A write that
@@ -430,57 +495,25 @@ def _migrate(self: KnowledgeStore):
     src_cols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)").fetchall()}
     if "sync_status" not in src_cols:
         self.db.execute("ALTER TABLE sources ADD COLUMN sync_status TEXT DEFAULT 'pending'")
-    # ONE pass over the rows that still carry a blob copy of the status:
-    # repair the column where it was never written, then retire the copy.
-    # After this pass no row has a copy at all, so on a store that has
-    # already opened once the scan matches nothing.
+    # One pass over rows that still carry a blob copy of the status: repair
+    # the column where it was never written, then retire the copy, so later
+    # opens find nothing to do.
     #
-    # An INITIAL state is repaired onto a column still at its un-written
-    # 'pending' default (rows inserted before the column was written on
-    # INSERT). The dashboard picks the row's control from the column, so a
-    # divergent row renders Pause instead of Confirm and the source cannot be
-    # started. Only 'pending' rows are candidates: any row a handler has
-    # transitioned already had its column written, so a repair never
-    # overwrites a live state.
+    # An INITIAL state is repaired only onto a column still at its 'pending'
+    # default: the dashboard picks the row's control from the column, and any
+    # row a handler has moved already had its column written.
     #
-    # A LIFECYCLE value in the blob is deliberately NOT promoted, not even
-    # 'error'. It cannot be ordered against the column: a pre-column
-    # ``_record_failure`` wrote 'error' to the blob alone, and a later
-    # successful re-ingest wrote 'synced' to the column alone, so the two
-    # copies carry no evidence of which happened last. Promoting would mark a
-    # recovered source errored and, since the copy is retired in the same
-    # pass, nothing would correct it. Not promoting costs at most ONE sync
-    # attempt: ``_record_failure`` reads ``consecutive_failures`` from the
-    # blob, which such a row already has at or above its threshold, so the
-    # first attempt that fails writes the column and quiesces the source for
-    # good -- while an attempt that SUCCEEDS is the right outcome for a source
-    # that had recovered. The column is authoritative; a value that cannot be
-    # ordered against it does not get to overrule it.
+    # A LIFECYCLE value (even 'error') is NOT promoted: it cannot be ordered
+    # against the column, and promoting could mark a recovered source errored
+    # with nothing to correct it. The cost is at most one sync attempt, since
+    # ``_record_failure`` reads ``consecutive_failures`` from the blob.
     #
-    # The copy is then RETIRED. This runs on EVERY open, so leaving the key in
-    # place would make the repair above a standing reader of a value that goes
-    # stale the moment a column-only writer moves the row. Retiring makes it a
-    # one-time repair instead.
-    #
-    # The repair is compare-and-set on the row as READ -- the blob AND the
-    # column -- so a concurrent writer wins and the row is converged by the
-    # next open instead. The retirement predicates on the blob ALONE, which
-    # is the only field it writes: a column-only transition is what every
-    # live writer does, and requiring the column to be unmoved would abandon
-    # the copy for exactly the transitions that are expected to happen.
-    # No SQL prefilter on the blob text. A raw substring match cannot decide
-    # membership here: JSON escapes are legal inside a KEY, so a blob stored
-    # as {"sync_\u0073tatus": "paused"} parses to the very key this pass
-    # converges while `properties LIKE '%sync_status%'` never matches it. The
-    # key only exists once decoded, so the decision has to be made on the
-    # PARSED value. `sources` holds one row per knowledge source, so parsing
-    # each one is bounded and cheap -- and after this pass no row carries a
-    # copy at all, so later opens parse and skip.
-    #
-    # Nothing in-tree can write that escaped form any more (`json.dumps`
-    # never escapes ASCII, and `_without_sync_status` re-serializes on every
-    # insert and update), but a row imported by an early `import_bundle` --
-    # which stored properties text verbatim -- can still hold one.
+    # The repair is compare-and-set on blob AND column, so a concurrent writer
+    # wins; the retirement predicates on the blob alone, because live writers
+    # move only the column.
+    # No SQL LIKE prefilter: JSON escapes are legal in a key
+    # ({"sync_\u0073tatus": ...}), so only the parsed value decides. Rows
+    # imported verbatim by an early `import_bundle` can still hold that form.
     blob_copies = self.db.execute("SELECT id, properties, sync_status FROM sources").fetchall()
     for row in blob_copies:
         try:

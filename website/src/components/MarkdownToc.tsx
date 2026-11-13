@@ -3,6 +3,8 @@ import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { i18nT } from '../i18n/t'
 import { useTouchReplay } from '../hooks/useTouchReplay'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 export interface TocEntry { level: number; text: string; index: number }
 
 /** Extract TOC entries from rendered DOM headings — guarantees consistency with what the user sees */
@@ -90,6 +92,10 @@ const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: 
   const clipRef = useRef<HTMLDivElement>(null)
   const stripRef = useRef<HTMLDivElement>(null)
   const flyoutRef = useRef<HTMLDivElement>(null)
+  // A long outline is cut at the flyout's 80% cap, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK).
+  const [attachFlyoutList, flyoutListEdges, remeasureFlyoutList] = useScrollEdgesY<HTMLDivElement>()
   // While a click-initiated scroll is animating, freeze the active index so the
   // IntersectionObserver doesn't light up every heading the viewport passes
   // through on the way to the target. Our animation releases it deterministically.
@@ -216,6 +222,10 @@ const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: 
     flyout.querySelector<HTMLElement>(sel)?.scrollIntoView({ block: 'nearest' })
   }, [expanded, active, focused])
 
+  // New headings grow the list inside a box that stays capped, which no
+  // observer on the scroller reports.
+  useEffect(() => { remeasureFlyoutList() }, [entries, remeasureFlyoutList])
+
   useEffect(() => () => { clearTimeout(closeTimer.current); animCancel.current?.() }, [])
 
   // A touch tap's replayed mouseenter (and the focus its mousedown gives the
@@ -279,12 +289,16 @@ const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: 
         ref={clipRef}
         className={`absolute inset-y-0 right-3 overflow-hidden transition-opacity duration-150 ${expanded ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'}`}
       >
-        <div ref={stripRef} className="flex flex-col items-end gap-[6px] will-change-transform">
+        {/* On a coarse pointer the ticks are the only tap targets (a touch tap
+            never opens the flyout), so each tick's button grows to the whole
+            12px row pitch and 24px wide. Same pitch as the mouse layout, the
+            visible tick stays the 2px bar pinned right, so nothing moves. */}
+        <div ref={stripRef} className="flex flex-col items-end gap-[6px] pointer-coarse:gap-0 will-change-transform">
           {entries.map((entry, i) => (
             <button
               key={entry.index}
               type="button"
-              className="group flex items-center h-[6px] cursor-pointer bg-transparent border-none p-0"
+              className="group flex items-center justify-end h-[6px] pointer-coarse:h-[12px] pointer-coarse:w-[24px] cursor-pointer bg-transparent border-none p-0"
               onClick={() => jumpTo(entry, i)}
               onFocus={() => setFocused(i)}
               title={entry.text}
@@ -305,25 +319,30 @@ const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: 
           `focused` highlight via the focusable ticks behind it. */}
       <div
         ref={flyoutRef}
-        className={`${expanded ? 'pointer-events-auto opacity-100 translate-x-0' : 'opacity-0 translate-x-2'} absolute top-1/2 right-2 -translate-y-1/2 w-[230px] max-h-[80%] overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl py-1.5 transition-all duration-150`}
+        className={`${expanded ? 'pointer-events-auto opacity-100 translate-x-0' : 'opacity-0 translate-x-2'} absolute top-1/2 right-2 -translate-y-1/2 w-[230px] max-h-[80%] flex flex-col rounded-lg border border-border bg-bg-elevated shadow-xl transition-all duration-150`}
         aria-hidden
       >
-        <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">{i18nT('components.markdownToc.contents')}</div>
-        {entries.map((entry, i) => (
-          <button
-            key={entry.index}
-            type="button"
-            tabIndex={-1}
-            data-active={active === i}
-            data-focused={focused === i}
-            className={`w-full text-left text-[12px] leading-tight pr-2 py-1.5 rounded-r cursor-pointer transition-colors truncate border-l-2 ${active === i ? 'border-[var(--accent)] text-accent font-medium' : 'border-transparent text-muted hover:text-text'} ${focused === i ? 'bg-bg-hover ring-1 ring-inset ring-[var(--accent)]' : 'bg-transparent hover:bg-bg-hover'}`}
-            style={{ paddingLeft: `${(entry.level - minLevel) * 12 + 12}px` }}
-            onClick={() => jumpTo(entry, i)}
-            title={entry.text}
-          >
-            {entry.text}
-          </button>
-        ))}
+        {/* The fade sits on this inner scroller, not the flyout: a mask clips
+            everything outside the masked box, so on the flyout it would also
+            erase the border and the drop shadow. */}
+        <div ref={attachFlyoutList} data-testid="markdown-toc-flyout-list" className={`min-h-0 overflow-y-auto py-1.5 ${flyoutListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
+          <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">{i18nT('components.markdownToc.contents')}</div>
+          {entries.map((entry, i) => (
+            <button
+              key={entry.index}
+              type="button"
+              tabIndex={-1}
+              data-active={active === i}
+              data-focused={focused === i}
+              className={`w-full text-left text-[12px] leading-tight pr-2 py-1.5 rounded-r cursor-pointer transition-colors truncate border-l-2 ${active === i ? 'border-[var(--accent)] text-accent font-medium' : 'border-transparent text-muted hover:text-text'} ${focused === i ? 'bg-bg-hover ring-1 ring-inset ring-[var(--accent)]' : 'bg-transparent hover:bg-bg-hover'}`}
+              style={{ paddingLeft: `${(entry.level - minLevel) * 12 + 12}px` }}
+              onClick={() => jumpTo(entry, i)}
+              title={entry.text}
+            >
+              {entry.text}
+            </button>
+          ))}
+        </div>
       </div>
     </nav>
   )

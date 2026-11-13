@@ -22,6 +22,7 @@ function usage(days: Day[], billing: NormalizedUsage['billing']): NormalizedUsag
       thisMonth: period,
       avgMsgsPerSession: 0,
       refusedTranscripts: 0,
+      unreadableSessionDirs: 0,
       dailyHistory: days,
     },
     billing,
@@ -169,5 +170,36 @@ describe('UsageTab Daily History credits columns (#3371)', () => {
     current = usage([{ date: '2026-09-22', sessions: 1, messages: 1, toolCalls: 0, credits: 12.5 }], null)
     mount()
     expect(await phoneLines()).toEqual(['Credits used: 12.50 · \u2014'])
+  })
+})
+
+describe('UsageTab Daily History cost column (#35250)', () => {
+  it('adds a Cost column when a day carries dollars, with dashes for the credit columns of a dollar-billed day', async () => {
+    current = usage(
+      [
+        { date: '2026-09-21', sessions: 2, messages: 10, toolCalls: 4, credits: 12.5 },
+        { date: '2026-09-22', sessions: 1, messages: 3, toolCalls: 0, costUsd: 2395.5 },
+      ],
+      plan,
+    )
+    mount()
+    const table = await screen.findByRole('table')
+    const headers = within(table).getAllByRole('columnheader').map(h => h.textContent)
+    expect(headers).toEqual(['Date', 'Sessions', 'Messages', 'Tool Calls', 'Credits used', 'Credits used (%)', 'Cost'])
+    expect(await rows()).toEqual([
+      ['2026-09-22', '1', '3', '0', '\u2014', '\u2014', '$2,395.50'],
+      ['2026-09-21', '2', '10', '4', '12.50', '0.1%', '\u2014'],
+    ])
+    expect(await phoneLines()).toEqual([
+      'Credits used: \u2014 \u00b7 \u2014Cost: $2,395.50',
+      'Credits used: 12.50 \u00b7 0.1%Cost: \u2014',
+    ])
+  })
+
+  it('leaves the Cost column out when no day carries dollars', async () => {
+    current = usage([{ date: '2026-09-22', sessions: 1, messages: 1, toolCalls: 0, credits: 1 }], plan)
+    mount()
+    expect(screen.queryByRole('columnheader', { name: 'Cost' })).toBeNull()
+    expect(await phoneLines()).toEqual(['Credits used: 1.00 \u00b7 0.0%'])
   })
 })

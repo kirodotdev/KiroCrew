@@ -313,6 +313,8 @@ def test_repeating_the_same_reading_leaves_nothing_to_flush(tmp_path, monkeypatc
     assert writes.call_count == 1
 
     state.broadcast_context_usage("s1", {"slot": "s1", "pct": 11.4})
+    assert state._context_snapshots_dirty is False
+    assert _snapshot(state) == {"pct": 11.4, "model": "claude-opus-5"}
     _flush(state)
 
     assert writes.call_count == 1  # still one — the repeat was a no-op

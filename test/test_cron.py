@@ -23,6 +23,8 @@ from kiro_crew.cron import (
     CronStoreUnreadable,
     _job_tz,
     _RunClaim,
+    apply_job_update,
+    build_job,
     compute_next_run_ts,
     cron_expr_matches,
     validate_cron_expr,
@@ -76,6 +78,27 @@ class TestValidateCronExpr:
         assert not validate_cron_expr("bad")
         assert not validate_cron_expr("* * *")
         assert not validate_cron_expr("")
+
+    def test_alias_valid(self) -> None:
+        assert validate_cron_expr("@daily")
+        assert validate_cron_expr("@yearly")
+        assert validate_cron_expr("@midnight")
+
+    def test_seconds_field_rejected(self) -> None:
+        # Six fields: croniter reads one, but is_due never fires a job twice
+        # in the same UTC minute, so the second run the expression advertises
+        # would never happen.
+        assert not validate_cron_expr("* * * * * *")
+        assert not validate_cron_expr("0 0 * * * *")
+
+    def test_seconds_expr_refused_at_create_and_update(self) -> None:
+        # The writers funnel through validate_cron_expr (fields.py); both
+        # creation and update must refuse the shape the scheduler cannot run.
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            build_job(name="t", message="m", cron_expr="* * * * * *")
+        job = build_job(name="t", message="m", cron_expr="*/5 * * * *")
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            apply_job_update(job, {"cron_expr": "* * * * * *"}, None)
 
 
 class TestCronService:
@@ -605,13 +628,8 @@ class TestLastResultTimestamp:
     def test_merge_job_result_persists_the_stamp(self, tmp_path: Path) -> None:
         """The run-result merge is the writer a real run goes through.
 
-        ``_merge_job_result`` ``_sync()``s first, so it copies field by field
-        onto a RELOADED job object rather than saving the in-memory one. A stamp
-        left out of that copy list was never persisted for the run that produced
-        it: the disk record paired the new result with a PREVIOUS run's stamp, so
-        after a reload ``/to-chat`` rendered a header the executor never wrote
-        and ``append_if_absent`` appended a duplicate instead of collapsing onto
-        the existing row.
+        ``_merge_job_result`` ``_sync()``s first and copies fields onto a reloaded job, so
+        a stamp missing from that copy list would pair the new result with an older stamp.
         """
         svc1 = CronService(base_dir=tmp_path)
         svc1._load()
@@ -952,14 +970,9 @@ class TestJobCompletionRearmsTimer:
 class TestRunJobIsolatedPreambleFailure:
     """A run that dies BEFORE its try/finally must still release its claim.
 
-    The timer path stores the job's claim -- the job's occupancy, the tracked
-    task -- with no awaiter, so the only release that claim ever gets is
-    ``_run_job_isolated``'s own ``finally``. Bookkeeping ahead of the ``try``
-    -- the generation, the fire counter -- is outside that protection: an
-    exception there leaves the claim stored, the due-scan skips the job and the
-    manual-run endpoint refuses it with 409 "job is already running", until the
-    reaper sweep, the run route or ``cancel()`` meets the finished task and
-    drops the leftovers. The run itself must not leave them.
+    The timer path's claim has no awaiter, so ``_run_job_isolated``'s ``finally`` is its
+    only release. A raise in the bookkeeping before the ``try`` would leave the job
+    refused with 409 "job is already running".
     """
 
     @pytest.mark.asyncio
@@ -1024,15 +1037,9 @@ class TestRunJobIsolatedPreambleFailure:
 class TestCancelAgainstFinishedTask:
     """``cancel()`` must not act on a run whose task has already finished.
 
-    ``cancel()`` gates on the job's claim, which a finished task can leave
-    standing. Trusting it against a ``done()`` task kills nothing, answers
-    True, writes a "Cancelled by user after Ns" history row for a run that
-    ended long ago, and -- because only the runner's ``finally`` discards
-    ``RunClaims.cancelled``, and that ``finally`` never runs for the finished task
-    -- leaves that marker set, so the job's NEXT real run is treated as
-    cancelled: its result is neither merged to the store nor recorded. The
-    guard must ask ``discard_finished_run`` first, release the leftovers, and
-    answer "not running" honestly.
+    A finished task can leave its claim standing. Cancelling it would write a false
+    history row and leave ``RunClaims.cancelled`` set, dropping the next real run's
+    result. ``cancel()`` asks ``discard_finished_run`` first and answers "not running".
     """
 
     @pytest.mark.asyncio
@@ -1471,16 +1478,9 @@ class TestTimezoneScheduling:
     def test_job_tz_never_loads_the_config_file(self, monkeypatch) -> None:
         """Resolution reads the published snapshot, never ``config.json``.
 
-        ``_job_tz`` runs on the event loop from two directions:
-        ``CronService._on_timer``'s due-scan reaches it for EVERY
-        cron-expression job on every tick, and ``CronJob.set_run_result``
-        reaches it again when a completed run renders its stamp. A
-        ``KiroCrewConfig.load()`` here stats and validates ``config.json`` on
-        the loop, which ``no-blocking-call-on-event-loop`` forbids.
-
-        Asserted on a recorded call rather than by raising from the fake:
-        ``_job_tz`` catches ``Exception`` to degrade to UTC, so a raise would be
-        swallowed and show up only as a wrong return value.
+        ``_job_tz`` runs on the event loop every tick, where ``no-blocking-call-on-event-loop``
+        forbids ``KiroCrewConfig.load()``. Recorded, not raised: ``_job_tz`` swallows
+        exceptions to degrade to UTC.
         """
         loads: list[int] = []
 
@@ -1622,14 +1622,9 @@ class TestTimezoneScheduling:
     def test_is_due_spring_forward_skipped_hour(self) -> None:
         """During spring forward, a job targeting the skipped hour fires exactly once.
 
-        On the spring-forward day, Toronto clocks jump 2:00 AM EST -> 3:00 AM EDT at 07:00 UTC,
-        so the wall-clock 2:30 AM never occurs. The invariant we care about is
-        that the daily job is NOT silently lost for the day and NOT doubled: it
-        fires once, in the resumed hour, and never before the jump. We assert
-        that invariant rather than the exact resolved instant, because the precise
-        UTC minute(s) croniter maps the skipped wall-time to are
-        croniter-version-specific (e.g. 2.0.7 matches a two-minute window at
-        07:29-07:30 UTC, both instants of the same occurrence).
+        Toronto jumps 2:00 EST -> 3:00 EDT at 07:00 UTC, so 2:30 never occurs. Asserts
+        once, after the jump, not the exact instant: croniter versions differ (2.0.7
+        matches 07:29-07:30 UTC).
         """
         job = CronJob(
             id="j1",

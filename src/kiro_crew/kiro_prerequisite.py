@@ -25,6 +25,9 @@ change.
 
 What remains is detection, and detection alone: every subprocess this module
 spawns is one of the two read-only probes above, sandboxed, with a fixed argv.
+An LTS build's sign-in check may re-run those two probes through the
+sandbox's first-party carve-out on a host with no sandbox backend, for the
+sign-in verdict only.
 No command, argument, URL, or filesystem target is accepted from an HTTP
 request, and the dashboard exposes only a ``status`` read plus the agent-spec
 repair write (which touches Kiro Crew's own files, never the CLI).
@@ -161,6 +164,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         current_identity_fingerprint,
         identity_changed_since_probe,
         identity_changed_since_sessions,
+        identity_read_other_than,
         note_absence_swept,
         note_sessions_reconciled,
         read_spawn_identity,
@@ -180,10 +184,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AuditWriter,
         _audited_identity_probe,
         _audited_probe,
+        _binary_stamp,
+        _drop_too_old_off_relay,
         _latch_login_only,
         _probe,
         _probe_acp_support,
         _probe_failure_text,
+        _relay_route_configured,
         _run_auth_command,
         _set_terminal_audit,
         _stamp_probe,
@@ -195,6 +202,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_process import (  # noqa: F401
         _MAX_CAPTURED_OUTPUT,
+        _NOT_IN_CREW_SANDBOX_ERROR,
         _PROCESS_GROUP_SUPERVISOR,
         _PROCESS_GROUP_SUPERVISOR_CODE,
         _PROCESS_GROUP_SUPERVISOR_ERROR,
@@ -221,11 +229,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SETUP_COMPLETE_FILENAME,
         _WARM_UP_DELAY_SECS,
         KiroPrerequisiteService,
+        _configured_backend_is_kas,
         _established_installation,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,
         logger,
+        mark_registered_cli_too_old,
         register_turn_auth_service,
     )
     from kiro_crew.kiro_prerequisite_spawn_identity import (  # noqa: F401
@@ -245,19 +255,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_status import (  # noqa: F401
         _LEGACY_IDLE_OPERATION,
-        _LOGIN_TAIL,
         _MAX_VISIBLE_DETAIL,
         _POWERSHELL_SINGLE_QUOTES,
-        _SSO_LOGIN_TAIL,
         BUNDLED_CLI_UPDATE_REFUSAL,
         FAKE_ACP_TEST_MODE_ENV,
-        KIRO_CLI_LOGIN_COMMAND,
-        KIRO_CLI_SSO_LOGIN_COMMAND,
         KIRO_CLI_UPDATE_COMMAND,
         OFFICIAL_INSTALL_DOCS_URL,
         PrerequisiteStatus,
         _cmd_launcher_prefix,
-        _is_off_path_override,
         _platform_label,
         _powershell_single_quoted,
         _sanitize_detail,
@@ -338,6 +343,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         is_bundled_kiro_cli,
         known_kiro_cli_dirs,
     )
+    from kiro_crew.kiro_cli_bundle import (  # noqa: F401
+        _LOGIN_TAIL,
+        _SSO_LOGIN_TAIL,
+        KIRO_CLI_LOGIN_COMMAND,
+        KIRO_CLI_SSO_LOGIN_COMMAND,
+        _is_off_path_override,
+        login_commands,
+    )
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         mcp_entry_is_registry_governed,
     )
@@ -352,6 +365,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         resource_limit_supervisor_argv,
         sandboxed_spawn_argv,
         shielded_prepare_off_loop,
+        wrapped_by_crew_sandbox,
     )
     from kiro_crew.security import (  # noqa: F401
         redact,

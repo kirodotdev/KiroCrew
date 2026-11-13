@@ -1,21 +1,29 @@
 """Tests for process tree tracking, recursive kill, and session cleanup."""
 
+import ast
 import asyncio
 import inspect
+import subprocess
 import sys
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
+from kiro_crew.acp import runtime_process_tree as rpt
 from kiro_crew.acp.client import (
     AcpClient,
     _direct_children,
     _get_child_pids,
     _is_our_child,
     _kill_escaped_children,
+    _read_basename,
 )
+from kiro_crew.testing.wait import await_until, wait_until
 
 if sys.platform != "win32":
     import signal
@@ -89,6 +97,18 @@ class TestKillEscapedChildren:
             patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             _kill_escaped_children({42: 100})
+
+        # The same sweep, unpatched, on a child this test spawned and recorded.
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            wait_until(lambda: _read_basename(child.pid) == b"sleep")
+            record = (platform_compat.get_process_start_id(child.pid), b"sleep")
+            _kill_escaped_children({child.pid: record})
+            assert child.wait(timeout=10) == -signal.SIGKILL
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
 
     def test_skips_recycled_pid(self):
         kills = []
@@ -172,7 +192,15 @@ class TestIsOurChild:
 
 
 class TestDirectChildren:
-    def test_proc_children_parsed(self):
+    @pytest.fixture(autouse=True)
+    def _posix(self, _floor_monkeypatch):
+        """Every case here takes a POSIX branch, so Windows runners pin it too."""
+        _floor_monkeypatch.setattr(
+            "kiro_crew.acp.client.platform_compat", SimpleNamespace(IS_WINDOWS=False)
+        )
+
+    def test_proc_children_parsed(self, monkeypatch):
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
         with (
             patch("kiro_crew.acp.client.sys") as mock_sys,
             patch("kiro_crew.acp.client.Path") as mock_path_cls,
@@ -190,11 +218,355 @@ class TestDirectChildren:
             result = _direct_children(100)
         assert result == [200, 300]
 
+    @staticmethod
+    def _proc_with(children_files):
+        """A fake /proc/<pid>/task tree: one task per entry.
+
+        An entry is the children text, or an exception the task's read raises (a
+        task that exited mid-scan).
+        """
+        mock_path = MagicMock()
+        tids = []
+        for text in children_files:
+            child_file = MagicMock()
+            if isinstance(text, BaseException):
+                child_file.read_text.side_effect = text
+            else:
+                child_file.read_text.return_value = text
+            tid = MagicMock()
+            tid.__truediv__ = lambda self, x, f=child_file: f
+            tids.append(tid)
+        mock_path.iterdir.return_value = tids
+        return mock_path
+
+    @staticmethod
+    def _spawner(out=b""):
+        """A stand-in for the facade's subprocess module; records every spawn."""
+        sub = MagicMock()
+        sub.check_output.return_value = out
+        return sub
+
+    def test_an_empty_children_file_is_the_answer_without_pgrep(self, monkeypatch):
+        """A leaf's empty list is authoritative: no pgrep spawn per leaf per walk."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=self._proc_with(["", "\n"])),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == []
+        sub.check_output.assert_not_called()
+
+    def test_a_kernel_without_children_files_still_falls_back_to_pgrep(self, monkeypatch):
+        """No children interface on this kernel, so /proc says nothing: ask pgrep."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", False)
+        sub = self._spawner(b"4242\n")
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [4242]
+        assert sub.check_output.call_args[0][0][:2] == ["pgrep", "-P"]
+
+    def test_a_task_vanishing_mid_walk_keeps_the_children_already_read(self, monkeypatch):
+        """A task that exits mid-scan costs neither the children read nor a pgrep."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner()
+        sub.check_output.side_effect = subprocess.TimeoutExpired(["pgrep"], 2)
+        proc = self._proc_with(["200", FileNotFoundError()])
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200]
+        assert proc.iterdir.call_count == 2
+        sub.check_output.assert_not_called()
+
+    def test_a_pid_exiting_before_the_relist_keeps_the_first_pass(self, monkeypatch):
+        """The re-list after a vanished task finds the pid gone: the first pass stands."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        proc = self._proc_with(["200", FileNotFoundError()])
+        first = proc.iterdir.return_value
+        proc.iterdir.side_effect = [first, FileNotFoundError()]
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200]
+        sub.check_output.assert_not_called()
+
+    def test_an_empty_relist_keeps_the_children_the_first_pass_read(self, monkeypatch):
+        """The re-list sees the parent as a zombie with empty files: the first pass's pid stays."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        proc = self._proc_with(["200", FileNotFoundError()])
+        first = proc.iterdir.return_value
+        second = self._proc_with([""]).iterdir.return_value
+        proc.iterdir.side_effect = [first, second]
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200]
+        assert proc.iterdir.call_count == 2
+        sub.check_output.assert_not_called()
+
+    def test_a_child_read_by_both_passes_appears_once(self, monkeypatch):
+        """Children found on the re-list join the first pass's, each pid listed once."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"999\n")
+        proc = self._proc_with(["200", FileNotFoundError()])
+        first = proc.iterdir.return_value
+        second = self._proc_with(["200 300"]).iterdir.return_value
+        proc.iterdir.side_effect = [first, second]
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=proc),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == [200, 300]
+        sub.check_output.assert_not_called()
+
+    def test_a_vanished_pid_is_a_leaf_without_pgrep(self, monkeypatch):
+        """A pid with no /proc entry has exited: it has no children to ask pgrep about."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        sub = self._spawner(b"777\n")
+        gone = MagicMock()
+        gone.iterdir.side_effect = FileNotFoundError()
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", return_value=gone),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            assert _direct_children(100) == []
+        sub.check_output.assert_not_called()
+
+    def test_a_full_tree_walk_spawns_nothing(self, monkeypatch):
+        """300 roots with 5 leaves each, walked through _get_child_pids: every pid, no spawn."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", True)
+        top = 1
+        roots = list(range(1000, 1300))
+        tree = {top: roots}
+        for i, root in enumerate(roots):
+            tree[root] = [10_000 + i * 5 + j for j in range(5)]
+
+        def fake_path(path):
+            pid = int(str(path).split("/")[2])
+            return self._proc_with([" ".join(map(str, tree.get(pid, [])))])
+
+        sub = self._spawner(b"999\n")
+        with (
+            patch("kiro_crew.acp.client.sys") as mock_sys,
+            patch("kiro_crew.acp.client.Path", side_effect=fake_path),
+            patch("kiro_crew.acp.client.subprocess_mod", sub),
+        ):
+            mock_sys.platform = "linux"
+            pids = _get_child_pids(top)
+        assert len(pids) == 300 + 300 * 5
+        assert len(set(pids)) == len(pids)
+        assert sub.method_calls == []
+
+    def test_the_interface_check_reads_the_real_kernel_once(self, monkeypatch):
+        """The answer comes from /proc/self, never the walk's Path, and is cached."""
+        monkeypatch.setattr(rpt, "_CHILDREN_INTERFACE", None)
+        kernel_os = MagicMock()
+        kernel_os.path.exists.return_value = True
+        exists = kernel_os.path.exists
+        monkeypatch.setattr(rpt, "_kernel_os", kernel_os)
+        with patch("kiro_crew.acp.client.Path") as walk_path:
+            assert rpt._children_interface() is True
+            assert rpt._children_interface() is True
+        walk_path.assert_not_called()
+        exists.assert_called_once()
+        assert exists.call_args[0][0].startswith("/proc/self/task/")
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="reads the real /proc children files")
+    def test_a_real_leaf_process_answers_from_proc(self):
+        """Against the live kernel: a childless process reads back [] with no spawn."""
+        import subprocess
+        from pathlib import Path
+
+        leaf = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+        )
+        try:
+            if not (Path(f"/proc/{leaf.pid}/task/{leaf.pid}/children")).exists():
+                pytest.skip("kernel built without /proc/<pid>/task/<tid>/children")
+            sub = self._spawner(b"999\n")
+            with patch("kiro_crew.acp.client.subprocess_mod", sub):
+                assert _direct_children(leaf.pid) == []
+            sub.check_output.assert_not_called()
+        finally:
+            leaf.stdin.close()
+            leaf.wait(timeout=30)
+
 
 # ── 5. _snapshot_process_tree: captures full descendant tree ──
 
 
+@pytest.fixture
+def walk_sees_descendants(monkeypatch):
+    """Pin the POSIX answer, so a faked walk is recorded on a Windows runner too."""
+    monkeypatch.setattr(rpt, "walk_observes_descendants", lambda: True)
+
+
+@pytest.fixture
+def walk_sees_nothing(monkeypatch):
+    """The Windows answer on every runner: the walk cannot see a descendant."""
+    monkeypatch.setattr("kiro_crew.acp.client.platform_compat", SimpleNamespace(IS_WINDOWS=True))
+
+
+class TestWalkCapability:
+    """One statement of whether the walk can see a descendant, asked by every caller."""
+
+    def test_posix_walks_and_windows_does_not(self, monkeypatch):
+        fake = SimpleNamespace(IS_WINDOWS=False)
+        monkeypatch.setattr("kiro_crew.acp.client.platform_compat", fake)
+        assert rpt.walk_observes_descendants() is True
+        fake.IS_WINDOWS = True
+        assert rpt.walk_observes_descendants() is False
+
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    def test_the_walk_itself_answers_from_the_capability(self):
+        assert _direct_children(4321) == []
+        assert _get_child_pids(4321) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_a_runtime_spawn_scan_neither_walks_nor_waits(self):
+        """The spawn's own call: no walk, no retry scheduled, nothing awaited."""
+        r = _snapshot_runtime()
+
+        with patch("kiro_crew.acp.runtime._get_child_pids") as scan:
+            await r._snapshot_descendants(retry_when_empty=True)
+
+        scan.assert_not_called()
+        assert getattr(r, "_descendant_rescan_task", None) is None
+        assert r._child_pids == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_a_failed_start_records_nothing_without_walking(self):
+        r = _snapshot_runtime()
+
+        with patch("kiro_crew.acp.runtime._get_child_pids") as scan:
+            assert await r._record_tree_before_failed_start_kill() == {}
+
+        scan.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_a_client_snapshot_neither_walks_nor_waits(self):
+        client = AcpClient.__new__(AcpClient)
+        client._pid = 100
+        client._child_pids = {}
+
+        with patch("kiro_crew.acp.client._get_child_pids") as scan:
+            await client._snapshot_process_tree()
+
+        scan.assert_not_called()
+        assert client._child_pids == {}
+
+
+#: Far beyond any test: a wait this long can only return by not being taken.
+_NEVER = 3600.0
+
+#: The names a function reads when it walks a process tree for its records.
+_TREE_WALKS = frozenset({"_get_child_pids", "_direct_children", "guarded_tree_pass"})
+
+
+def _sleeps_beside_a_tree_walk() -> list[str]:
+    """Every function under ``src/kiro_crew`` that walks the tree and sleeps itself."""
+    src = Path(rpt.__file__).resolve().parents[1]
+    found = []
+    for path in sorted(src.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if not any(name in text for name in _TREE_WALKS):
+            continue
+        for fn in ast.walk(ast.parse(text)):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+            names |= {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
+            if names & _TREE_WALKS and "sleep" in names:
+                found.append(f"{path.relative_to(src).as_posix()}:{fn.name}")
+    return found
+
+
+class TestWaitForDescendants:
+    """The one place a wait for the tree walk may sleep, and the one that asks first."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_it_answers_no_at_once_where_the_walk_sees_nothing(self):
+        waited = await await_until(asyncio.ensure_future(rpt.wait_for_descendants(_NEVER)))
+        assert waited is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_descendants")
+    async def test_it_waits_then_answers_yes_where_the_walk_can_see(self):
+        pending = asyncio.ensure_future(rpt.wait_for_descendants(_NEVER))
+        await asyncio.sleep(0)
+        assert not pending.done(), "the wait returned before its delay"
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert await rpt.wait_for_descendants(0) is True
+
+    def test_the_runtime_retry_and_the_client_retry_share_one_delay(self):
+        assert rt.AcpRuntime._DESCENDANT_RESCAN_DELAY == rpt.EMPTY_WALK_RETRY_DELAY
+
+    def test_no_function_sleeps_beside_the_tree_walk_itself(self):
+        """A caller that walks waits through ``wait_for_descendants``, never on its own."""
+        assert _sleeps_beside_a_tree_walk() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_a_scheduled_runtime_retry_neither_waits_nor_walks(self):
+        r = _snapshot_runtime()
+        r._DESCENDANT_RESCAN_DELAY = _NEVER
+
+        with patch("kiro_crew.acp.runtime._get_child_pids") as scan:
+            await await_until(asyncio.ensure_future(r._rescan_descendants_later()))
+
+        scan.assert_not_called()
+
+
+@pytest.mark.usefixtures("walk_sees_descendants")
 class TestSnapshotProcessTree:
+    @pytest.mark.asyncio
+    async def test_an_empty_first_walk_is_read_once_more(self, tmp_path, monkeypatch):
+        """Where the walk can see, the client still gives its children one retry."""
+        monkeypatch.setattr(rpt, "EMPTY_WALK_RETRY_DELAY", 0)
+        client = AcpClient.__new__(AcpClient)
+        client._pid = 100
+        client._child_pids = {}
+        walks = [[], [200]]
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", side_effect=lambda pid: walks.pop(0)),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+            patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: str(p * 10)),
+        ):
+            await client._snapshot_process_tree()
+
+        assert client._child_pids == {200: (2000, b"proc200")}
+        assert walks == []
+
     @pytest.mark.asyncio
     async def test_tracks_all_descendants(self, tmp_path):
         client = AcpClient.__new__(AcpClient)
@@ -279,6 +651,7 @@ def _snapshot_runtime(pid: int = 100) -> rt.AcpRuntime:
     return r
 
 
+@pytest.mark.usefixtures("walk_sees_descendants")
 class TestRuntimeSnapshotDescendants:
     """The runtime registers its spawn root; the tree under it must be tracked too.
 
@@ -322,10 +695,39 @@ class TestRuntimeSnapshotDescendants:
         assert _book(tmp_path) == {"200:100:2000", "400:100:4000"}
 
     @pytest.mark.asyncio
-    async def test_retries_once_when_the_first_scan_is_empty(self, tmp_path, monkeypatch):
-        """A scan racing a cold start sees nothing; the spawn call gets one retry."""
-        monkeypatch.setattr(rt.AcpRuntime, "_DESCENDANT_RESCAN_DELAY", 0)
+    async def test_an_empty_spawn_scan_returns_at_once_and_leaves_one_retry(self, tmp_path):
+        """The spawn call never waits for a tree to appear.
+
+        The retry's delay is set far beyond the test, so the scan can only come
+        back because it did not wait for it.
+        """
         r = _snapshot_runtime()
+        r._DESCENDANT_RESCAN_DELAY = 3600.0
+        walks = [[], []]
+
+        with (
+            patch("kiro_crew.acp.runtime._get_child_pids", side_effect=lambda pid: walks.pop(0)),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+        ):
+            await r._snapshot_descendants(retry_when_empty=True)
+            retry = r._descendant_rescan_task
+            assert retry is not None and not retry.done()
+            assert walks == [[]], "the caller walked more than once"
+            assert r._child_pids == {}
+
+            # A second empty scan while the retry is pending adds no second one.
+            await r._snapshot_descendants(retry_when_empty=True)
+            assert r._descendant_rescan_task is retry
+
+        retry.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await retry
+
+    @pytest.mark.asyncio
+    async def test_the_retry_records_what_the_root_forked_since(self, tmp_path):
+        """The one more look is an ordinary pass, run off the caller's path."""
+        r = _snapshot_runtime()
+        r._DESCENDANT_RESCAN_DELAY = 0
         walks = [[], [200], [200]]
 
         with (
@@ -335,9 +737,58 @@ class TestRuntimeSnapshotDescendants:
             patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
         ):
             await r._snapshot_descendants(retry_when_empty=True)
+            assert r._child_pids == {}
+            await r._descendant_rescan_task
 
         assert r._child_pids == {200: (2000, b"proc200")}
+        assert _book(tmp_path) == {"200:100:2000"}
         assert walks == []
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_scan_that_finds_the_tree_schedules_no_retry(self, tmp_path):
+        r = _snapshot_runtime()
+
+        with (
+            patch("kiro_crew.acp.runtime._get_child_pids", return_value=[200]),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+        ):
+            await r._snapshot_descendants(retry_when_empty=True)
+
+        assert getattr(r, "_descendant_rescan_task", None) is None
+        assert r._child_pids == {200: (2000, b"proc200")}
+
+    @pytest.mark.asyncio
+    async def test_only_the_spawn_scan_asks_for_a_retry(self, tmp_path):
+        """A session start that sees no descendant is answered by the next one."""
+        r = _snapshot_runtime()
+
+        with (
+            patch("kiro_crew.acp.runtime._get_child_pids", return_value=[]),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+        ):
+            await r._snapshot_descendants()
+
+        assert getattr(r, "_descendant_rescan_task", None) is None
+
+    @pytest.mark.asyncio
+    async def test_the_retry_records_nothing_for_a_root_that_is_gone(self, tmp_path):
+        """The retry is an ordinary pass: the root's identity brackets it."""
+        r = _snapshot_runtime()
+        r._DESCENDANT_RESCAN_DELAY = 0
+
+        with (
+            patch("kiro_crew.acp.runtime._get_child_pids", return_value=[]) as scan,
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+        ):
+            await r._snapshot_descendants(retry_when_empty=True)
+            r._root_identity_holds = lambda: False  # type: ignore[method-assign]
+            await r._descendant_rescan_task
+
+        assert scan.call_count == 1, "the retry walked from a root it could not prove"
+        assert r._child_pids == {}
+        assert not (tmp_path / "kiro_pids.txt").exists()
 
     @pytest.mark.asyncio
     async def test_no_descendants_writes_nothing(self, tmp_path):
@@ -404,6 +855,7 @@ class TestRuntimeSnapshotDescendants:
         assert write_threads and all(t is not loop_thread for t in write_threads)
 
 
+@pytest.mark.usefixtures("walk_sees_descendants")
 class TestRuntimeSnapshotDurability:
     """Nothing reports a descendant's exit — it is a grandchild, so there is no
     SIGCHLD to catch. Every pass re-reads the tree and writes the whole answer,
@@ -570,21 +1022,21 @@ class TestRuntimeSnapshotDurability:
         assert answers == []
 
     @pytest.mark.asyncio
-    async def test_a_cancellation_is_not_swallowed(self, tmp_path, monkeypatch):
+    async def test_a_cancellation_is_not_swallowed(self, tmp_path):
         """A cancel is not a failed scan.
 
         It must reach the caller's cleanup guard, which owns the half-built
         runtime or session that has to be torn down.
         """
-        monkeypatch.setattr(rt.AcpRuntime, "_DESCENDANT_RESCAN_DELAY", 0)
         r = _snapshot_runtime()
 
-        async def _cancel(_delay):
+        def _cancel():
             raise asyncio.CancelledError
+
+        r._root_identity_holds = _cancel  # type: ignore[method-assign]
 
         with (
             patch("kiro_crew.acp.runtime._get_child_pids", return_value=[]),
-            patch("kiro_crew.acp.runtime.asyncio.sleep", side_effect=_cancel),
             patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -627,6 +1079,7 @@ class TestRuntimeSnapshotDurability:
         assert peak <= 2, "a second pass walked before the first one wrote"
 
 
+@pytest.mark.usefixtures("walk_sees_descendants")
 class TestOneGuardedPassServesBothPaths:
     """The runtime snapshot and the client refresh run the same guarded pass, so a
     guard added to one cannot be missing from the other."""
@@ -656,6 +1109,7 @@ class TestOneGuardedPassServesBothPaths:
         assert modes == [True, False], "a path walks its tree outside the shared pass"
 
 
+@pytest.mark.usefixtures("walk_sees_descendants")
 class TestRuntimeRootIdentity:
     """The root's own number can be reused, and a walk from a recycled root
     enumerates a stranger's whole tree."""
@@ -780,6 +1234,7 @@ class TestSessionCleanupOnCancellation:
         """All sessions with the run prefix get cancelled and reset."""
         run = MagicMock()
         run.task_id = "abc123"
+        run.error = None
         keys = ["taskrunner:abc123:task0", "taskrunner:abc123:task1", "taskrunner:abc123:task2"]
         tr = self._make_mock_taskrunner(keys)
 
@@ -798,28 +1253,45 @@ class TestSessionCleanupOnCancellation:
             # keeps a later edit from turning this back into a process recycle, which
             # would leave a cancelled run's children going.
             tr._sessions.reset.assert_any_await(key, ends_conversation=True)
+        assert run.error is None, "a cleanup whose every reset succeeded reported a failure"
 
     @pytest.mark.asyncio
     async def test_cleanup_ignores_other_runs(self):
         """Sessions from other runs are not touched."""
-        run = MagicMock()
-        run.task_id = "abc123"
-        keys = ["taskrunner:abc123:task0", "taskrunner:other:task0"]
-        tr = self._make_mock_taskrunner(keys)
+        from session_helpers import _mock_provider_factory
 
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.session import SessionManager
         from kiro_crew.taskrunner import TaskRunner
 
-        await TaskRunner._cleanup_run_sessions(tr, run)
+        run = MagicMock()
+        run.task_id = "abc123"
+        run.error = None
+        cfg = KiroCrewConfig()
+        cfg.session.timeout_secs = 2
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        keys = ["taskrunner:abc123:task0", "taskrunner:other:task0"]
+        for key in keys:
+            await mgr.get_or_create(key)
+            mgr.release(key)
+        tr = MagicMock()
+        tr._sessions = mgr
+        tr._release_run_runtime = AsyncMock()
+        try:
+            await TaskRunner._cleanup_run_sessions(tr, run)
 
-        # Only 1 key matches prefix "taskrunner:abc123:"
-        assert tr._sessions.cancel_current.call_count == 1
-        assert tr._sessions.reset.call_count == 1
+            # Only the key under the "taskrunner:abc123:" prefix is gone.
+            assert [mgr.has_session(k) for k in keys] == [False, True]
+            assert run.error is None
+        finally:
+            await mgr.close_all()
 
     @pytest.mark.asyncio
     async def test_cleanup_handles_cancel_failure(self):
         """If cancel_current raises, reset is still called."""
         run = MagicMock()
         run.task_id = "abc123"
+        run.error = None
         keys = ["taskrunner:abc123:task0"]
         tr = self._make_mock_taskrunner(keys)
         tr._sessions.cancel_current = AsyncMock(side_effect=Exception("boom"))
@@ -830,6 +1302,7 @@ class TestSessionCleanupOnCancellation:
 
         # reset still called despite cancel failure
         tr._sessions.reset.assert_awaited_once()
+        assert run.error is None, "a failed cancel was reported as a failed reset"
 
 
 # ── 7. _track_pid / _untrack_pid file operations ──

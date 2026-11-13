@@ -156,6 +156,9 @@ const fakeElectron = new Proxy(
 const originalLoad = Module._load;
 Module._load = function loadWithFakeElectron(request, parent, isMain) {
   if (request === "electron") return fakeElectron;
+  // Electron's unpatched fs is a runtime built-in; plain Node's fs is that
+  // module without the asar layer, which is exactly what it is.
+  if (request === "original-fs") return originalLoad.call(this, "fs", parent, isMain);
   return originalLoad.call(this, request, parent, isMain);
 };
 

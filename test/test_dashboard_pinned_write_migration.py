@@ -1,22 +1,8 @@
 """Regression tests for the descriptor-pinned dashboard write migration.
 
-Covers the steering create/update/delete blocking transactions and the file-write
-blocking transaction after their move onto ``pinned_fs``:
-
-* create/delete address the leaf relative to a pinned parent descriptor and keep
-  their error tokens (``exists``/``writefailed``/``notfound``/``deletefailed``);
-* update and file-write route their ``atomic_write`` through the pinned-parent
-  mode while preserving the ACL carry, byte-exactness (``newline=""``) and mode;
-* the by-name floor still produces the same results when the capability probe is
-  forced False (the Windows path).
-
-NOT EXECUTED IN THE INTEGRATIONS_ONLY SANDBOX. Importing the dashboard handler
-modules pulls ``aiohttp`` (uninstallable offline, pip 403) and the ``croniter`` /
-``snowballstemmer`` chain, so these run in CI only.
-
-CI invocation:
-
-    python -m pytest test/test_dashboard_pinned_write_migration.py
+Steering create/update/delete and file-write go through ``pinned_fs``, keep their error
+tokens, ACL carry, ``newline=""`` and mode, and give the same results on the by-name
+floor (the Windows path). They need ``aiohttp``, so they run in CI only.
 """
 
 from __future__ import annotations
@@ -82,13 +68,8 @@ def test_steering_create_by_name_floor(tmp_path, monkeypatch):
 def test_a_transient_identity_probe_failure_still_leaves_no_name_behind(tmp_path, monkeypatch):
     """A one-off ``fstat`` failure is re-asked through the descriptor, so the name goes.
 
-    The rollback verifies identity, so it needs one — and capturing it is a syscall
-    that can fail (EIO, ESTALE on a network filesystem). The descriptor is still open
-    at that point, so the identity is asked for once more through it; an EIO on a
-    network filesystem is usually transient, and the second answer puts the rollback
-    back on its verified arm instead of stranding the ``O_EXCL`` name for every retry
-    to trip over. The re-probe addresses a DESCRIPTOR, so it can never answer with a
-    different object.
+    EIO on a network filesystem is usually transient, and a second probe through the
+    still-open descriptor cannot answer for a different object.
     """
     _needs_openat()
     target = tmp_path / "steering" / "rules.md"
@@ -117,12 +98,8 @@ def test_a_transient_identity_probe_failure_still_leaves_no_name_behind(tmp_path
 def test_no_identity_at_all_leaves_an_empty_document_and_never_unlinks(tmp_path, monkeypatch):
     """With BOTH probes failing there is no identity, so nothing is unlinked by name.
 
-    This is the one arm that cannot reach a verified unlink, and the two demands on it
-    are opposed: removing the name spares the caller a permanent ``exists``, and not
-    removing it spares a rival's file. Only one of them is a data loss, so the name
-    stays — and what it costs is bounded to an EMPTY document, because the identity
-    probe precedes the first ``os.write``. No partial or truncated body can survive
-    here, which is the property the other rollback arms buy with their unlink.
+    An unverified unlink could delete a rival's file, so the name stays. The identity
+    probe precedes the first ``os.write``, so what stays is an empty document.
     """
     _needs_openat()
     target = tmp_path / "steering" / "rules.md"
@@ -190,14 +167,8 @@ def test_no_identity_at_all_spares_a_rivals_replacement(tmp_path, monkeypatch):
 def test_the_create_rollback_does_not_delete_a_rivals_replacement(tmp_path, monkeypatch):
     """The rollback removes the inode it created, not whatever answers to the name.
 
-    The cleanup addresses ``target.name`` under a descriptor, and a descriptor pins
-    the DIRECTORY, not the name inside it. A rival that unlinks our ``O_EXCL`` leaf
-    and creates its own inside the failure window would lose its file to a bare
-    ``os.unlink`` — a silent data loss in the arm that exists to prevent one.
-    Verifying ``(st_dev, st_ino)`` makes the cleanup remove this object or nothing.
-
-    The rival is injected at the moment of failure: the ``os.write`` that fails is
-    what swaps the leaf, so no timing is involved.
+    A descriptor pins the directory, not the name, so cleanup checks ``(st_dev, st_ino)``.
+    The failing ``os.write`` itself swaps the leaf, so no timing is involved.
     """
     _needs_openat()
     target = tmp_path / "steering" / "rules.md"
@@ -221,14 +192,8 @@ def test_the_create_rollback_does_not_delete_a_rivals_replacement(tmp_path, monk
 def test_a_create_whose_close_fails_leaves_no_partial_file(tmp_path, monkeypatch):
     """A close() error runs the cleanup arm, so a retry is a create and not "exists".
 
-    ``close`` is where a deferred write error surfaces — ENOSPC once the last block
-    is flushed, EIO on NFS — so it is not covered by guarding the write loop alone.
-    With the close in a ``finally`` it raises AFTER the cleanup arm is skipped, and
-    the partial body stays under the ``O_EXCL`` name: every retry then answers
-    ``exists`` forever over a truncated document, with no way out through the API.
-
-    The failure is injected only for the leaf's own descriptor, so the pinned parent
-    fd and every unrelated close still work.
+    Deferred write errors (ENOSPC, EIO on NFS) surface at ``close``. The failure is
+    injected only for the leaf's own descriptor.
     """
     _needs_openat()
     target = tmp_path / "steering" / "rules.md"
@@ -384,18 +349,9 @@ def test_file_write_by_name_floor(tmp_path, monkeypatch):
 def test_a_grandparent_swapped_after_canonicalization_is_refused(tmp_path, surface, expected):
     """Every surface handed a canonical path REFUSES a since-linked ancestor.
 
-    These three receive a path their validation already ran through ``realpath`` /
-    ``resolve(strict=True)``, so ``pinned_fs.pin_parent`` can walk that recorded
-    chain with ``O_NOFOLLOW`` per component and refuse a component that has become
-    a link. ``open_dir_pinned`` would call ``realpath`` AGAIN at pin time and follow
-    the link instead -- a second resolution cannot be more faithful than the first,
-    only less -- and the write, or the unlink, would land in the attacker's tree
-    while every caller comment claimed the parent was pinned.
-
-    The swap is at the GRANDparent on purpose. The leaf's own parent is the final
-    component of either walk and carries ``O_NOFOLLOW`` either way, so it is the
-    component ABOVE it where a fresh resolution and the recorded chain disagree.
-    Reverting any of the three call sites to ``open_dir_pinned`` reds this.
+    ``pinned_fs.pin_parent`` walks the recorded chain with ``O_NOFOLLOW``, while
+    ``open_dir_pinned`` would resolve again and follow the link. The swap is at the
+    grandparent because the leaf's parent carries ``O_NOFOLLOW`` in either walk.
     """
     _needs_openat()
     if not hasattr(os, "O_NOFOLLOW"):  # pragma: no cover - POSIX-only assertion
@@ -437,16 +393,9 @@ def test_the_mode_and_acl_source_is_opened_through_the_pinned_directory(
 ):
     """A directory replaced at the pinned name cannot supply the replacement's mode.
 
-    Pinning the parent buys nothing if the leaf is then addressed BY NAME again,
-    and the metadata read is a leaf reference like any other. With the source
-    opened by name, a directory swapped in at the parent's name between the pin and
-    that open supplies the mode and the ACL, while ``atomic_write`` still publishes
-    through the pinned descriptor into the ORIGINAL directory -- so the real
-    document is handed back carrying permissions chosen by whoever did the swap.
-
-    The swap is injected exactly in that window by wrapping ``pin_parent``: it
-    returns the genuine descriptor and only then renames the directories, so the
-    production code is untouched and the race is deterministic rather than timed.
+    Read by name, the swapped-in directory would supply the mode and ACL for the real
+    document. Wrapping ``pin_parent`` renames the directories right after the pin, so the
+    race is deterministic.
     """
     _needs_openat()
     named = tmp_path / "named"
@@ -498,18 +447,9 @@ def test_a_publish_that_cannot_be_pinned_degrades_to_the_by_name_floor(
 ):
     """Without the descriptor-relative rename the caller passes None, not a descriptor.
 
-    ``atomic_write`` REFUSES a ``parent_dir_fd`` it cannot publish through, so a
-    caller that gated only on the pinned WALK would raise on every save on a
-    platform where the two capabilities disagree. Both are asked, and the answer is
-    the unchanged by-name write.
-
-    The disagreement is emulated by removing ``os.rename`` from
-    ``os.supports_dir_fd`` -- the platform FACT both probes read -- rather than by
-    patching either module's binding of the probe. A binding patch would only
-    convince one of the two callers of it and leave the other computing the host's
-    real answer, which is how a test like this passes while the branch it names is
-    never taken. ``os.open`` stays a member, so the pinned WALK is still supported
-    and the two probes genuinely disagree, which is the case under test.
+    ``atomic_write`` refuses a ``parent_dir_fd`` it cannot publish through. Removing
+    ``os.rename`` from ``os.supports_dir_fd`` changes the fact both probes read; patching
+    one module's probe would leave the other on the host's real answer.
     """
     monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd - {os.rename})
     target = tmp_path / "doc.md"
@@ -561,11 +501,8 @@ class _ThreadRecordingSkills:
 async def test_skill_crud_handlers_do_not_run_on_the_event_loop(monkeypatch):
     """create/update/delete are offloaded, so a slow filesystem cannot stall the loop.
 
-    Each of the three walks a pinned parent chain, and update additionally stages a
-    temp file, carries the ACL and renames it into place. On network-backed storage
-    a single call can outlast ``dashboard.loop_stall_exit_after_secs``, at which
-    point the watchdog kills the gateway for every session -- so the thread the
-    work runs on is the property worth pinning, not the syscall count.
+    On network storage one call can outlast ``dashboard.loop_stall_exit_after_secs``, and
+    the watchdog then kills the gateway.
     """
     recorder = _ThreadRecordingSkills()
     monkeypatch.setattr(prompts_mod, "_get_skills", lambda _state: recorder)

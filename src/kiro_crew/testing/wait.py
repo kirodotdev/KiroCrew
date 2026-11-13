@@ -184,21 +184,17 @@ def wait_until(
 ) -> _T:
     """Poll ``predicate`` until it returns a truthy value, and return that value.
 
-    The predicate is read at least once, and once more at or after the
-    deadline, so a condition that becomes true exactly at the deadline still
-    passes. On timeout it raises ``AssertionError`` naming the predicate, the
-    elapsed time, the number of polls and ``describe()`` -- the state the test
-    needs to see. An exception in ``ignoring`` counts as "not yet"; the last one
-    becomes the error's ``__cause__``. Anything else propagates at once.
+    The predicate is read once more at or after the deadline, so a condition
+    true exactly at the deadline passes. On timeout it raises ``AssertionError``
+    naming the predicate, elapsed time, poll count and ``describe()``. An
+    exception in ``ignoring`` means "not yet" (the last one is ``__cause__``);
+    anything else propagates. A falsy-but-valid result keeps it waiting: use
+    ``lambda: f() is not None``.
 
-    A falsy-but-valid result (``0``, ``""``) keeps it waiting: wrap such a
-    predicate as ``lambda: f() is not None``.
-
-    Refused on a thread running an event loop (``RuntimeError``), where it
-    would block the very producer it waits for, and for a predicate that returns
-    an awaitable (``TypeError``), which would read as true at once. A predicate
-    that blocks is not interrupted: the deadline is checked between reads, so
-    keep each read short (D8).
+    Refused on a thread running an event loop (``RuntimeError``: it would block
+    its own producer) and for a predicate returning an awaitable (``TypeError``:
+    it would read as true at once). A blocking read is not interrupted, so keep
+    each read short (D8).
     """
     _refuse_running_loop("wait_until")
     if inspect.iscoroutinefunction(predicate):
@@ -245,16 +241,13 @@ async def async_wait_until(
     predicate and ``describe`` through ``asyncio.to_thread``: use it for a
     predicate that touches a store, a file or a lock, which must never run on
     the loop, and pass a plain function (one that returns an awaitable is a
-    ``TypeError``). Leave it ``False`` for a predicate over loop-confined state
-    (asyncio primitives are not thread-safe). Every evaluation is bounded by
-    the remaining deadline, or by ``max(interval, timeout / 4)`` for the read at
-    the deadline, and one still running then fails the test by name; the worker
-    thread itself is not killed. So the worst case is ``timeout + 2 *
-    max(interval, timeout / 4)`` (the deadline, the read at it, and
-    ``describe()`` off the loop): 1.5 times the timeout whenever the interval is
-    at most a quarter of it, which the default timeout keeps at three quarters
-    of the test's timeout. A predicate that blocks ON the loop cannot be
-    bounded, so never pass one (D8).
+    ``TypeError``). Leave it ``False`` for loop-confined state (asyncio
+    primitives are not thread-safe). Each evaluation is bounded by the remaining
+    deadline (``max(interval, timeout / 4)`` for the read at it); one still
+    running fails the test by name, though its thread is not killed. Worst case:
+    ``timeout + 2 * max(interval, timeout / 4)``, which the default timeout keeps
+    at three quarters of the test's timeout. A predicate that blocks ON the loop
+    cannot be bounded, so never pass one (D8).
     """
     budget = _resolve_timeout(timeout)
     _check_seconds(interval, "interval", positive=True)
@@ -505,10 +498,9 @@ async def await_until(
 
     A state with no event or future behind it is :func:`async_wait_until`.
 
-    ``timeout`` is a lost-run bound, not the barrier: by default half of the running
-    test's timeout (:func:`default_timeout`), never a number tuned to the host. When
-    it expires the ``AssertionError`` names ``what`` (or the kind of signal) and the
-    elapsed time, so a hang fails by name instead of killing the worker.
+    ``timeout`` is a lost-run bound, not the barrier: by default half the running
+    test's timeout (:func:`default_timeout`), never tuned to the host. On expiry the
+    ``AssertionError`` names ``what`` and the elapsed time, so a hang fails by name.
     """
     budget = _resolve_timeout(timeout)
     if isinstance(signal, asyncio.Event):
@@ -554,21 +546,16 @@ async def finished(coro: Awaitable[_T], what: str, *, timeout: float | None = No
 class LoopHop:
     """Run loop-side coroutines from an off-loop hook, and fail the TEST on a hang.
 
-    A hook under test calls :meth:`run` while the handler awaits the hook off the
-    loop. An exception raised inside the hook reaches the framework that called it
-    (aiohttp, an executor), not pytest: a ``TimeoutError`` becomes a bodiless 504
-    and anything else a 500, so the test would read a status instead of a cause.
-    So an expired bound is recorded here with the elapsed time and the last step
-    the coroutine noted, the hook still raises (the handler must not continue as if
-    the hop landed), and the test calls :meth:`check` right after its request to
-    fail on that record.
+    An exception raised inside the hook reaches its caller (aiohttp, an executor),
+    not pytest, and turns into a 504 or 500 with no cause. So an expired bound is
+    recorded here with the elapsed time and the last noted step, the hook still
+    raises (the handler must not continue as if the hop landed), and the test
+    calls :meth:`check` right after its request to fail on that record.
 
     The bound is a lost-run ceiling, not a race to tune: half the running test's
-    timeout (:func:`default_timeout`). The hop waits for the loop to finish
-    real durable work -- a session delete is a SQLite commit, a WAL checkpoint, an
-    fsync and sidecar unlinks -- and takes 0.03 s per call on a quiet 32-core Linux
-    host while exceeding 5 s on the Windows runner, so the Windows worst case is
-    "over 5 s", not a number.
+    timeout (:func:`default_timeout`). The hop waits for real durable work (a
+    session delete commits SQLite, checkpoints the WAL, fsyncs), which takes
+    0.03 s on a quiet Linux host and over 5 s on the Windows runner.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:

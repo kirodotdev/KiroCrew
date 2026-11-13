@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { Download, Sparkles } from 'lucide-react'
@@ -19,12 +19,14 @@ import {
   downloadRatio,
   FALLBACK_PROVIDERS,
   FALLBACK_STREAMING_PROVIDERS,
+  FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS,
   CODE_PROVIDER_UNAVAILABLE,
   INSTALLED_BUT_REFUSED_CODES,
   languageOptionLabel,
   localeLanguage,
   nextTranscribeLanguages,
   PROVIDER_LOCAL,
+  PROVIDER_CODEX,
   PROVIDER_TRANSCRIBE,
   providerLabel,
   unavailableMessage,
@@ -53,6 +55,8 @@ import {
 } from '../../lib/pushToTalk'
 
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 
@@ -76,7 +80,10 @@ interface SttConfig {
   threads_env?: string | null
   endpointing?: boolean
   submit_on_release?: boolean
+  slide_to_send?: boolean
   dictation_panel?: boolean
+  /** End a message holding dictated words with a note telling the agent so. Off by default. */
+  dictation_note?: boolean
   transcribe_region?: string
   transcribe_profile?: string
   /** Amazon Transcribe custom vocabulary name; '' for none. */
@@ -97,6 +104,8 @@ interface SttConfig {
   /** Served provider entries (see lib/speechProviders). An older gateway sends bare names. */
   providers?: unknown[]
   streaming_providers?: string[]
+  /** Providers that identify languages among `transcribe_languages`. An older gateway omits it. */
+  language_identification_providers?: string[]
   language_codes?: string[]
   prereqs: string[]
   transcribe_unsupported?: boolean
@@ -313,7 +322,7 @@ interface SttVocabularies {
 /** The only vocabulary state Amazon Transcribe opens a stream with. */
 const VOCABULARY_READY = 'READY'
 
-/** The listing's refusal code with an IAM fix of its own, from `transcribe.py`. */
+/** The listing's refusal code with an IAM fix of its own, from `transcribe_aws.py`. */
 const VOCABULARIES_ACCESS_DENIED = 'stt_vocabularies_access_denied'
 
 /**
@@ -459,6 +468,7 @@ function TranscribeVocabularyPicker({
         <ErrorNotice
           variant="inline"
           className="-mt-1 mb-1"
+          actionPlacement="below-on-phone"
           testId="stt-vocabularies-error"
           report={reportForError(listError)}
           message={accessDenied
@@ -714,7 +724,7 @@ function PushToTalkConfig() {
         onChange={v => patch({ enabled: v })}
       />
       {saveError && (
-        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" />
+        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" actionPlacement="below-on-phone" />
       )}
 
       <SettingsSelect
@@ -755,7 +765,7 @@ function PushToTalkConfig() {
       {cfg.enabled && cfg.mode === 'hybrid' && (
         <SettingsStepper
           label={i18nT('pages.settings.sttSettings.ptt_hold_threshold')}
-          description={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
+          hint={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
           value={i18nT('pages.settings.sttSettings.ptt_hold_seconds', { secs: toSeconds(cfg.holdMs) })}
           onIncrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs + HOLD_MS_STEP) })}
           onDecrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs - HOLD_MS_STEP) })}
@@ -818,6 +828,9 @@ export default function SttSettings({ cardIndex }: {
   // Which row the refusal is about, so that row is marked invalid: its box keeps
   // the refused text for correction, and must not read as saved.
   const [customErrField, setCustomErrField] = useState<'path' | 'sha' | ''>('')
+  // Held by identity: the status query keeps an unchanged `download` object across
+  // re-reads, so only a new answer shows the failure row again.
+  const [dismissedDownload, setDismissedDownload] = useState<SttDownload>()
 
   // Microphone input-device picker (browser-local; persisted in localStorage,
   // applied via getUserMedia constraints). Device labels are blank until the
@@ -874,28 +887,33 @@ export default function SttSettings({ cardIndex }: {
         : false,
   })
 
-  const initRef = useRef(false)
-  useEffect(() => {
-    if (sttQ.data && !initRef.current) {
-      initRef.current = true
-      setLocalProfile(sttQ.data.transcribe_profile || '')
-      setLocalRegion(sttQ.data.transcribe_region || '')
-      setLocalCustomPath(sttQ.data.custom_model_path || '')
-      setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
-      // Already-configured weights keep their rows open, so what is in force is
-      // visible without hunting for the option that reveals it.
-      if (sttQ.data.custom_model_path || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
-      // Intent survives a reload in exactly two shapes the served config can prove:
-      // custom is in force, or HALF a pair is stored. A half pair is a custom model
-      // someone started and did not finish, which is the state whose selection
-      // silently degraded. A COMPLETE pair with a catalog model in force is NOT
-      // intent — that is a deliberate switch back, and telling that user "both are
-      // needed" would be false.
-      const halfPair =
-        Boolean(sttQ.data.custom_model_path) !== Boolean(sttQ.data.custom_model_sha256)
-      if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
-    }
-  }, [sttQ.data])
+  // The served config seeds the editable rows ONCE, in the render that first has
+  // it. Setting state during render is React's shape for state derived from a
+  // value that just arrived: the in-progress output is discarded and the
+  // component re-renders before anything commits, so the commit that shows the
+  // model select is the same one that shows what the config implies — rows open,
+  // a half pair explained. Seeding from an effect instead commits one frame
+  // where the select is on screen but these still read as empty and unintended.
+  const [seeded, setSeeded] = useState(false)
+  if (sttQ.data && !seeded) {
+    setSeeded(true)
+    setLocalProfile(sttQ.data.transcribe_profile || '')
+    setLocalRegion(sttQ.data.transcribe_region || '')
+    setLocalCustomPath(sttQ.data.custom_model_path || '')
+    setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
+    // Already-configured weights keep their rows open, so what is in force is
+    // visible without hunting for the option that reveals it.
+    if (sttQ.data.custom_model_path || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
+    // Intent survives a reload in exactly two shapes the served config can prove:
+    // custom is in force, or HALF a pair is stored. A half pair is a custom model
+    // someone started and did not finish, which is the state whose selection
+    // silently degraded. A COMPLETE pair with a catalog model in force is NOT
+    // intent — that is a deliberate switch back, and telling that user "both are
+    // needed" would be false.
+    const halfPair =
+      Boolean(sttQ.data.custom_model_path) !== Boolean(sttQ.data.custom_model_sha256)
+    if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
+  }
 
   // The consent gate's own cache entry (same key, same fetch), read here because
   // the vocabulary list exists only once Amazon Transcribe is confirmed: until
@@ -960,8 +978,13 @@ export default function SttSettings({ cardIndex }: {
     mutationFn: (model: string) => api.sttPrepare(model),
     onMutate: () => setErr(''),
     // The transfer outlives the request, so the response only says it started.
-    // Progress arrives through the polled status query.
-    onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
+    // Progress arrives through the polled status query. A retry can fail the same
+    // way before any poll sees it running, leaving that answer unchanged, so the
+    // dismissal ends once the re-read lands.
+    onSettled: async () => {
+      await qc.invalidateQueries({ queryKey: ['sttStatus'] })
+      setDismissedDownload(undefined)
+    },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
   const [restarting, setRestarting] = useState(false)
@@ -973,14 +996,23 @@ export default function SttSettings({ cardIndex }: {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
+  const restartRefusal = useRestartRefusal(detail => {
+    setRestarting(false)
+    setErr(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
+  })
   const restartMut = useMutation({
     mutationFn: () => api.restartGateway(),
+    onMutate: () => restartRefusal.begin(),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
       // Restarting normally resets the connection before a response arrives.
-      // Only a structured server rejection is a real failure.
-      if (e instanceof ApiError) setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
-      else setRestarting(true)
+      // Only a structured server rejection is a real failure. A declined
+      // "work is running" confirmation is a quiet cancel, not one.
+      if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
+      if (e instanceof ApiError) {
+        restartRefusal.end()
+        setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+      } else setRestarting(true)
     },
   })
 
@@ -1006,6 +1038,7 @@ export default function SttSettings({ cardIndex }: {
         <ErrorNotice
           message={errMessage(sttQ.error) || i18nT('pages.settings.sttSettings.config_load_failed')}
           askAgent
+          actionPlacement="below-on-phone"
         />
       ) : (
         <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
@@ -1028,8 +1061,14 @@ export default function SttSettings({ cardIndex }: {
   const canStream = streamingProviders.includes(provider)
   const defaultLanguage = provider === PROVIDER_LOCAL ? 'auto' : 'en-US'
   const languageOptions = stt.language_codes?.length ? stt.language_codes : [defaultLanguage]
+  // Gated on the served capability like streaming, so an edition provider that
+  // identifies languages gets the picker without core naming it.
+  const identifyingProviders = stt.language_identification_providers?.length
+    ? stt.language_identification_providers
+    : FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS
+  const identifiesLanguages = identifyingProviders.includes(provider)
   const transcribeLanguages = stt.transcribe_languages ?? []
-  const mixedLanguagesOn = isTranscribe && transcribeLanguages.length >= stt.transcribe_languages_min
+  const mixedLanguagesOn = identifiesLanguages && transcribeLanguages.length >= stt.transcribe_languages_min
   // The languages each Transcribe path runs in. A live stream identifies between
   // the candidates once mixed languages are on; a voice message, and dictation
   // with streaming off, always run in the one language above.
@@ -1180,6 +1219,7 @@ export default function SttSettings({ cardIndex }: {
         onDismiss={() => setErr('')}
         className="mb-4 animate-rise"
         askAgent={awsDraftsSaved}
+        actionPlacement="below-on-phone"
       />
       <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} hint={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
@@ -1233,7 +1273,7 @@ export default function SttSettings({ cardIndex }: {
             disabled state is status text. */}
         {!available && unavailableText && !providerNotice && (
           INSTALLED_BUT_REFUSED_CODES.has(status?.code ?? '')
-            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
+            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" actionPlacement="below-on-phone" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
             : <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
         )}
         {/* The probe itself failed: the badge above is then showing the config's
@@ -1243,6 +1283,7 @@ export default function SttSettings({ cardIndex }: {
           <ErrorNotice
             variant="inline"
             className="-mt-1 mb-1"
+            actionPlacement="below-on-phone"
             message={errMessage(statusQ.error) || i18nT('pages.settings.sttSettings.status_unavailable')}
             askAgent
           />
@@ -1372,6 +1413,7 @@ export default function SttSettings({ cardIndex }: {
                       <ErrorNotice
                         variant="inline"
                         className="mt-1"
+                        actionPlacement="below-on-phone"
                         message={selectedModel?.error ?? ''}
                         askAgent
                         testId="stt-custom-model-missing"
@@ -1439,6 +1481,7 @@ export default function SttSettings({ cardIndex }: {
                   <ErrorNotice
                     variant="inline"
                     className="-mt-1 mb-1"
+                    actionPlacement="below-on-phone"
                     id={CUSTOM_MODEL_ERROR_ID}
                     message={customErr}
                     askAgent
@@ -1475,20 +1518,22 @@ export default function SttSettings({ cardIndex }: {
             ) : null}
             {/* A finished-and-failed transfer (the job's own `error`). Status
                 panel with nothing editable in this block → hand-off on. */}
-            {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
+            {download?.step === DOWNLOAD_STEP_FAILED && download.error && download !== dismissedDownload && (
               <ErrorNotice
                 variant="inline"
                 className="-mt-1 mb-1"
+                actionPlacement="below-on-phone"
                 message={download.model === CUSTOM_MODEL
                   ? download.error
                   : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
                 askAgent
+                onDismiss={() => setDismissedDownload(download)}
               />
             )}
           </>
         )}
 
-        <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />
+        {provider !== PROVIDER_CODEX && <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />}
         {/* Still editable: voice messages and dictation with streaming off keep
             using it, so the line says where it applies rather than greying it out. */}
         {mixedLanguagesOn && (
@@ -1499,7 +1544,7 @@ export default function SttSettings({ cardIndex }: {
 
         {/* Beside the language it overrides, because the two answer one question:
             which language dictation is heard in. */}
-        {isTranscribe && (
+        {identifiesLanguages && (
           <TranscribeLanguagesPicker
             value={transcribeLanguages}
             candidates={languageOptions.filter(code => code !== 'auto')}
@@ -1512,11 +1557,12 @@ export default function SttSettings({ cardIndex }: {
 
         {/* Kept on the surface, not in Advanced, because it is the one setting here
             that changes where the words GO: the transcript (never the audio) leaves
-            this machine. The description stays inline for the same reason -- consent
-            a user has to hover to read is not consent. */}
+            this machine. The short description says exactly that, on the row, for the
+            same reason -- consent a user has to hover to read is not consent. The tip
+            only adds what the tidy-up does to the text. */}
         <SettingsToggle
           label={i18nT('pages.settings.sttSettings.polish')}
-          description={i18nT('pages.settings.sttSettings.polish_desc')}
+          description={i18nT('pages.settings.sttSettings.polish_desc_summary')} hint={i18nT('pages.settings.sttSettings.polish_desc')}
           checked={!!stt.polish}
           onChange={v => set({ polish: v })}
           disabled={saving}
@@ -1571,7 +1617,15 @@ export default function SttSettings({ cardIndex }: {
               apart from Auto-submit above, which judges the speech itself. */}
           <SettingsToggle label={i18nT('pages.settings.sttSettings.submit_on_release')} hint={i18nT('pages.settings.sttSettings.submit_on_release_desc')} checked={!!stt.submit_on_release} onChange={v => set({ submit_on_release: v })} disabled={saving} configKey="stt.submit_on_release" />
 
+          {/* The phone hold bar's up-right send. Opt-in: with it off, sliding up
+              any way cancels, which is the gesture people already know. It only
+              applies while letting go keeps a draft, so it is greyed out while
+              the toggle above already makes letting go send. */}
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.slide_to_send')} hint={i18nT('pages.settings.sttSettings.slide_to_send_desc')} checked={!!stt.slide_to_send} onChange={v => set({ slide_to_send: v })} disabled={saving || !!stt.submit_on_release} configKey="stt.slide_to_send" />
+
           <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_note')} hint={i18nT('pages.settings.sttSettings.dictation_note_desc')} checked={!!stt.dictation_note} onChange={v => set({ dictation_note: v })} disabled={saving} configKey="stt.dictation_note" />
 
           {/* The thread picker is the local provider's alone: the others run their
               recogniser somewhere this setting cannot reach. Its options come from

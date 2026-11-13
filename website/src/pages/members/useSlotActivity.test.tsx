@@ -35,7 +35,7 @@ describe('useSlotActivity (the header pill and the chat status line share this r
     expect(run(store, { running: true })).toMatchObject({ kind: 'tool', text: 'Checking the triage queue' })
   })
 
-  it('reads as thinking once the call has returned (its output is in the tool log)', () => {
+  it('reads as thinking once the call has returned (the store moves the status line)', () => {
     const store = makeStore()
     call(store, 'tc-1', 'gh issue list', 'Checking the triage queue')
     store.dispatch(sseToolResult({ slot: SLOT, output: '', tool_call_id: 'tc-1' }))

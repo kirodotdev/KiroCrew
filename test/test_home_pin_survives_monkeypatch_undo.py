@@ -231,6 +231,126 @@ def test_an_operator_chosen_home_is_left_alone() -> None:
     assert out.stdout.strip() == chosen
 
 
+def _probe_inherited_home(tmp_path: Path, *, agent: bool) -> "tuple[Path, Path, str]":
+    """Import the rootdir conftest in a child whose ``KIROCREW_HOME`` is its live home.
+
+    The child's ``HOME`` is a directory under ``tmp_path``, so the "live" home it
+    inherits is that fake home's ``.kiro/crew`` and the operator's real one is never
+    named. ``agent`` adds the ``KIROCREW_SCRATCH`` every gateway-spawned agent carries.
+    Returns the fake live home, the child's ``TMPDIR`` and the ``KIROCREW_HOME`` the
+    child ended up with.
+    """
+    home = tmp_path / "h"
+    live = home / ".kiro" / "crew"
+    live.mkdir(parents=True)
+    tmpdir = tmp_path / "t"
+    tmpdir.mkdir()
+    probe = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import conftest, os\n"
+        "print(os.environ['KIROCREW_HOME'])\n" % str(_REPO_ROOT)
+    )
+    env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SCRATCH"}
+    env.update({"HOME": str(home), "KIROCREW_HOME": str(live), "TMPDIR": str(tmpdir)})
+    if agent:
+        env["KIROCREW_SCRATCH"] = str(tmpdir)
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        **UTF8_TEXT,
+        cwd=str(_REPO_ROOT),
+        env=env,
+        timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    return live, tmpdir, out.stdout.strip()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="TMPDIR is the POSIX temp variable")
+def test_an_agent_that_inherits_the_live_home_gets_a_floor_under_tmpdir(tmp_path: Path) -> None:
+    """An agent's shell hands every run the live home; the run gets its own instead.
+
+    Refusing here sent agents to ``HOME=/tmp/<name>``, and each fake ``HOME`` rebuilt
+    the uv, npm and bytecode caches in ``/tmp`` until its inodes ran out. The floor
+    lands under ``TMPDIR``, the agent's own reclaimed scratch, not in ``/tmp``.
+    """
+    live, tmpdir, chosen = _probe_inherited_home(tmp_path, agent=True)
+    floor = Path(chosen)
+    assert floor.parent.resolve() == tmpdir.resolve()
+    assert floor.name.startswith("kc-pytest-")
+    assert live.resolve() not in floor.resolve().parents
+    assert not floor.exists(), "the child's atexit handler removes its floor"
+
+
+def test_a_person_who_exports_the_live_home_still_reaches_the_refusal(tmp_path: Path) -> None:
+    """Without ``KIROCREW_SCRATCH`` the value is a choice, so it is kept for the guard to refuse."""
+    live, _tmpdir, chosen = _probe_inherited_home(tmp_path, agent=False)
+    assert chosen == str(live)
+
+
+def test_a_floor_inside_a_managed_scratch_tree_passes_the_guard() -> None:
+    """An agent's ``TMPDIR`` sits under ``<home>/scratch/<tree>``; a home there is not live data.
+
+    xdist workers inherit the controller's floor through the environment, so the guard
+    must accept it by location, not by identity with this process's own floor. The
+    scratch ROOT itself is still refused: it holds every other session's tree.
+    """
+    root = _load_root_conftest()
+    floor_home = sys.modules["conftest_floor_home"]
+    live = _GUARDED_HOMES[0]
+    own = live / "scratch" / "runtime-0"
+    other = live / "scratch" / "runtime-1"
+    with mock.patch.object(floor_home, "_OWN_SCRATCH_DIRS", (own.resolve(),)):
+        with mock.patch.dict(os.environ, {"KIROCREW_HOME": str(own / "kc-pytest-u-1-home-x")}):
+            root._refuse_a_real_data_home()
+        # Another session's tree is live data to this run: the suite deletes there.
+        with mock.patch.dict(os.environ, {"KIROCREW_HOME": str(other / "kc-pytest-u-2-home-y")}):
+            with pytest.raises(pytest.UsageError, match="env -u KIROCREW_HOME"):
+                root._refuse_a_real_data_home()
+    with mock.patch.object(floor_home, "_OWN_SCRATCH_DIRS", ((live / "scratch").resolve(),)):
+        with mock.patch.dict(os.environ, {"KIROCREW_HOME": str(live / "scratch")}):
+            with pytest.raises(pytest.UsageError, match="env -u KIROCREW_HOME"):
+                root._refuse_a_real_data_home()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no password database on Windows")
+def test_a_faked_home_still_guards_the_accounts_real_data_home(tmp_path: Path) -> None:
+    """A fake ``HOME`` must not move the guard off the home an inherited value names."""
+    import pwd
+
+    real = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".kiro" / "crew"
+    probe = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import conftest\n"
+        "print('\\n'.join(str(p) for p in conftest._REAL_DATA_HOMES))\n" % str(_REPO_ROOT)
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        **UTF8_TEXT,
+        cwd=str(_REPO_ROOT),
+        env={**os.environ, "HOME": str(tmp_path)},
+        timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    guarded = {Path(line) for line in out.stdout.splitlines() if line}
+    assert real in guarded
+    assert tmp_path / ".kiro" / "crew" in guarded
+
+
+def test_a_faked_home_keeps_the_bytecode_cache_on_the_real_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bytecode and hypothesis caches resolve under the account's home, not a fake one."""
+    configure = sys.modules["conftest_floor_configure"]
+    account = tmp_path / "account"
+    monkeypatch.setattr(configure, "_account_home", lambda: account)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    assert configure._shared_cache_root() == str(account / ".cache")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert configure._shared_cache_root() == str(tmp_path / "xdg")
+
+
 # ── Barrier 3: the session refuses a real data home ──────────────────────────
 
 
@@ -309,7 +429,15 @@ def test_the_guarded_homes_match_what_the_product_resolves() -> None:
         paths._resolved_home = None
         default_home = paths._default_home()
     assert default_home.resolve() in {p.resolve() for p in root._REAL_DATA_HOMES}
-    assert set(root._REAL_DATA_HOMES) == set(_GUARDED_HOMES)
+    expected = set(_GUARDED_HOMES)
+    if os.name != "nt":
+        import pwd
+
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        if account_home.resolve() != Path.home().resolve():
+            expected.update((account_home / ".kiro" / "crew", account_home / ".kirocrew"))
+    # Equality catches both a missing live-home guard and an unintended extra refusal root.
+    assert expected == set(root._REAL_DATA_HOMES)
 
 
 def test_the_guard_is_reached_from_the_one_pytest_configure() -> None:

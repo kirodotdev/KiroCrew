@@ -8,10 +8,15 @@ carry both; an existing spec is given each set ONCE, the way the defaults would
 have, so a user who later removes either keeps that choice. Each set has its own
 marker: an install that already received the guide still receives the mate set
 the first time it rebuilds on a build that ships it.
+
+An edition-supplied server (``extra_mcp_servers()``) gets the same treatment per
+server: one the edition starts supplying after the first install gains its
+``@name`` ref in ``tools`` once, recorded by name, and never again after.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from kiro_crew import agent as agent_mod
@@ -20,6 +25,8 @@ from kiro_crew import agent as agent_mod
 GUIDE_GRANT_MARKER = "guide_platform_granted.json"
 #: One-time marker for :func:`grant_mate_platform_once`, under the data home.
 MATE_GRANT_MARKER = "mate_platform_granted.json"
+#: The edition servers :func:`grant_edition_refs_once` has offered, under the data home.
+EDITION_REFS_MARKER = "edition_mcp_refs_offered.json"
 
 
 def _marker(name: str):
@@ -114,3 +121,82 @@ def grant_mate_platform_once(config: dict[str, Any], *, fresh_install: bool) -> 
 def mark_mate_platform_granted() -> None:
     """Record that :func:`grant_mate_platform_once` has run on a written spec."""
     _mark(MATE_GRANT_MARKER)
+
+
+def _offered_edition_servers() -> set[str] | None:
+    """The edition servers already offered, or ``None`` when the record is unreadable.
+
+    An unreadable record grants nothing: re-offering every server would re-add a
+    ref the user removed.
+    """
+    path = _marker(EDITION_REFS_MARKER)
+    if not path.exists():
+        return set()
+    try:
+        names = json.loads(path.read_text(encoding="utf-8")).get("servers")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(names, list):
+        return None
+    return {n for n in names if isinstance(n, str)}
+
+
+def grant_edition_refs_once(
+    config: dict[str, Any],
+    *,
+    fresh_install: bool,
+    gated_off: frozenset[str],
+    mounted_aliases: dict[str, str],
+) -> list[str]:
+    """Reference each newly supplied edition server in ``tools``, once.
+
+    A fresh build's ref comes from ``managed_mcp.register_managed_refs``; an
+    existing spec gains ``@<name>`` (never an ``allowedTools`` grant) the first
+    rebuild the server is mounted, gated off and ``opt_in`` servers excluded the way
+    emission excludes them. Returns the names to record: the caller records them
+    only after the spec is written, so a failed write offers them again.
+    """
+    from kiro_crew.agent_materialization import managed_mcp
+
+    offered = _offered_edition_servers()
+    tools = config.get("tools")
+    if offered is None or not isinstance(tools, list):
+        return []
+    mounted = config.get("mcpServers") or {}
+    pending = [
+        name
+        for name, spec in agent_mod._extra_mcp_servers().items()
+        if name not in offered
+        and name not in agent_mod._MANAGED_MCP_SERVERS
+        and mounted_aliases.get(name, name) in mounted
+        and managed_mcp._mcp_server_emission_eligible(name, spec, gated_off=gated_off)
+    ]
+    if fresh_install:
+        return pending
+    # A server the user still refs, whole or as ``@name/<tool>``, keeps its refs.
+    added = [
+        f"@{alias}"
+        for alias in (mounted_aliases.get(name, name) for name in pending)
+        if not any(
+            isinstance(t, str) and (t == f"@{alias}" or t.startswith(f"@{alias}/")) for t in tools
+        )
+    ]
+    tools.extend(added)
+    if added:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation="mcp_tools_added",
+            outcome="ok",
+            source="install_agent",
+            resources=f"{', '.join(added)} added to tools (edition server newly supplied)",
+        )
+    return pending
+
+
+def mark_edition_refs_offered(names: list[str]) -> None:
+    """Record that :func:`grant_edition_refs_once` offered *names* on a written spec."""
+    from kiro_crew.atomic_write import atomic_write
+
+    offered = _offered_edition_servers() or set()
+    doc = {"version": 1, "servers": sorted(offered | set(names))}
+    atomic_write(_marker(EDITION_REFS_MARKER), json.dumps(doc) + "\n")

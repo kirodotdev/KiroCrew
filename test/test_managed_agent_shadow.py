@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import agent as agent_mod
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp import client as client_mod
@@ -179,7 +180,6 @@ def test_an_agents_tree_too_large_to_check_is_refused(tmp_path, monkeypatch):
     assert refusal is not None and "too many to check" in refusal
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX hardlink")
 def test_a_spec_the_hardened_reader_refuses_is_not_read_as_its_filename(tmp_path):
     """A hardlinked spec cannot be read, so its declaration cannot be ruled out."""
     shadow = _project_spec(tmp_path, "anything.json", {"name": "kirocrew", "tools": ["*"]})
@@ -294,7 +294,7 @@ def test_a_markdown_file_named_after_a_managed_agent_is_refused_without_frontmat
 # ── Symlinked directories ──
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory symlink")
+@requires_symlinks
 def test_a_symlinked_subdirectory_is_scanned(tmp_path):
     """kiro-cli follows a linked directory when it loads nested agents."""
     target = tmp_path / "elsewhere"
@@ -307,7 +307,7 @@ def test_a_symlinked_subdirectory_is_scanned(tmp_path):
     assert refusal is not None and "'kirocrew'" in refusal
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory symlink")
+@requires_symlinks
 def test_a_directory_symlink_loop_is_walked_once(tmp_path):
     _project_spec(tmp_path, "reviewer.json", {"name": "reviewer"})
     agents = tmp_path / ".kiro" / "agents"
@@ -316,7 +316,7 @@ def test_a_directory_symlink_loop_is_walked_once(tmp_path):
     assert managed_agent_shadow_refusal("reviewer", tmp_path) is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory symlink")
+@requires_symlinks
 def test_a_symlinked_directory_into_a_protected_tree_is_refused_unlisted(tmp_path, monkeypatch):
     from kiro_crew import hooks
     from kiro_crew.acp import managed_agent_shadow as mod
@@ -344,7 +344,7 @@ def test_a_symlinked_directory_into_a_protected_tree_is_refused_unlisted(tmp_pat
     assert str(link) not in listed and str(protected) not in listed
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory symlink")
+@requires_symlinks
 def test_every_link_is_screened_before_anything_follows_it(tmp_path, monkeypatch):
     """A follow-link probe on a link to a share is the outbound connection itself."""
     from kiro_crew import hooks
@@ -376,7 +376,7 @@ def test_every_link_is_screened_before_anything_follows_it(tmp_path, monkeypatch
         assert followed and all(i > screened for i in followed)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory symlink")
+@requires_symlinks
 def test_an_agents_directory_linked_to_a_protected_location_is_refused_unlisted(
     tmp_path, monkeypatch
 ):

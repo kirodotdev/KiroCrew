@@ -16,6 +16,8 @@ type Channel = {
    *  keystroke. */
   publishStake: (atStake: boolean, publisher: object) => void
   subscribeStake: (listener: (atStake: boolean) => void) => () => void
+  /** The published stake right now, read without prompting. */
+  stakeNow: () => boolean
 }
 
 /** Null outside a provider, so both hooks below degrade to no-ops for a surface
@@ -116,6 +118,7 @@ export function NavigationLeaveGuardProvider({ children }: { children: React.Rea
       listener(stake.current)
       return () => { stakeListeners.current.delete(listener) }
     },
+    stakeNow: () => stake.current,
   }), [])
   return (
     <NavigationLeaveGuardContext.Provider value={channel}>
@@ -168,6 +171,25 @@ export function usePublishNavigationStake(atStake: boolean) {
 }
 
 const ALWAYS_MAY_LEAVE = () => true
+const NOTHING_AT_STAKE = () => false
+
+/**
+ * Read whether any surface is publishing a stake right now, without prompting.
+ *
+ * For a caller that asks the guard and then navigates LATER, after an await:
+ * the guard answers only a boolean, so it cannot say whether the user was
+ * actually asked or nothing was at stake. Read this just before the ask. A
+ * stake at that moment plus a granted ask means the user agreed to discard
+ * that work, so the delayed navigate should carry `leaveGranted` instead of
+ * asking the same question again. No stake means nobody was asked, and the
+ * delayed navigate must ask the live guard for work started in the meantime.
+ * `false` outside a provider, and for a page that registers a guard without
+ * publishing a stake.
+ */
+export function useNavigationStakeNow(): () => boolean {
+  const channel = React.useContext(NavigationLeaveGuardContext)
+  return channel?.stakeNow ?? NOTHING_AT_STAKE
+}
 
 /** Ask the page on screen before an action that navigates away from it. */
 export function useMayLeaveForNavigation(): () => boolean {
@@ -223,6 +245,25 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
     // catches and logs).
     void perform()
   }, [mayLeave, isCurrentUrl])
+}
+
+/**
+ * A navigate that asks the page on screen at the moment it runs, and says
+ * whether it went. For a navigation that follows an await, such as
+ * `showCreatedChat` after a create: asking before the create would be asking
+ * about a page that may hold nothing yet, and the user can start a draft
+ * during the seconds the create takes. A refusal leaves the user where they
+ * are and returns `false`, so the caller can skip whatever depends on the
+ * destination being shown.
+ */
+export function useAskingNavigate(): (route: string) => boolean {
+  const navigate = useNavigate()
+  const mayLeave = useMayLeaveForNavigation()
+  return React.useCallback((route: string) => {
+    if (!mayLeave()) return false
+    navigate(route)
+    return true
+  }, [navigate, mayLeave])
 }
 
 /* `TrapEntryState` / `isTrapEntry` live in `lib/routeHistoryPosition.ts`: the

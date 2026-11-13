@@ -11,10 +11,20 @@ from __future__ import annotations
 import fnmatch
 import glob
 import json
+import os
 import re
 import time
 from collections.abc import Callable, Iterable
 from typing import NamedTuple
+
+#: Built-in file-write tools whose one target path is the whole scope of a path
+#: grant ("trust this tool on this file"). KAS's ids; kiro-cli's ``fs_write``
+#: shares the name and shape. Its other arguments (the text written) are not part
+#: of the grant: the person trusts the tool to change that one file.
+#: shortcut: writes only, because KAS's ``read_file`` resolves a path that does
+#: not exist to a near spelling of it, so a read grant could reach another file;
+#: add reads when Crew can see the path KAS resolved.
+PATH_TRUST_TOOLS = frozenset({"fs_write", "fs_append", "str_replace", "delete_file"})
 
 ENV_ASSIGNMENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -90,6 +100,63 @@ def canonical_non_shell_trust_key(mcp_server_name: str, tool_name: str) -> str:
     return f"mcp-trust:v1:{server}:{tool}"
 
 
+def path_trust_target(tool_name: str, mcp_server_name: str, raw_tool_params: object) -> str:
+    """The one file a path grant for this call may name, or ``""`` when none may.
+
+    Only a built-in on :data:`PATH_TRUST_TOOLS` (no MCP server) whose arguments
+    name exactly ONE path, absolute and already in normal form, so the grant names
+    the same string the card shows and the tool opens. Anything else -- a relative
+    path, ``..`` or a doubled separator, two paths, a scan that hit its cap -- gets
+    no path grant, and the call keeps asking.
+    """
+    if mcp_server_name or tool_name not in PATH_TRUST_TOOLS:
+        return ""
+    if not isinstance(raw_tool_params, dict):
+        return ""
+    # Imported here: kiro_crew.platform's package import reaches
+    # kiro_crew.security, which imports this module, so a top-level import
+    # breaks a first import of this module.
+    from kiro_crew.platform.tool_paths import target_paths
+
+    paths = target_paths(raw_tool_params)
+    if paths.truncated or len(paths) != 1:
+        return ""
+    path = paths[0]
+    if (
+        not os.path.isabs(path)
+        or os.path.normpath(path) != path
+        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path)
+    ):
+        return ""
+    return path
+
+
+def path_trust_key(tool_name: str, path: str) -> str:
+    """The internal durable-trust key for one tool on one file.
+
+    Hex-encoded like :func:`canonical_non_shell_trust_key`, so no separator or
+    fnmatch character in a path reaches the matcher. The path is NOT lowered:
+    the matcher lowers both sides, and hex digits are already lower case, so
+    ``/w/A`` and ``/w/a`` stay two grants on a case-sensitive file system.
+    """
+    tool = _trust_identity_component(tool_name)
+    target = path.encode("utf-8", "surrogatepass").hex()
+    return f"path-trust:v1:{tool}:{target}"
+
+
+def path_trust_unresolved(path: str) -> bool:
+    """Whether *path* names a link, or sits under one, on this host.
+
+    Blocking (it reads the file system): call it off the event loop. A path grant
+    is offered and honoured only when this is False, so a link swapped in under a
+    granted path makes the call ask again rather than write where the link points.
+    """
+    try:
+        return os.path.realpath(path) != path
+    except (OSError, ValueError):
+        return True
+
+
 def approval_command(
     tool_input: str,
     *,
@@ -97,12 +164,18 @@ def approval_command(
     tool_name: str = "",
     mcp_server_name: str = "",
     raw_tool_params: dict | None = None,
+    path_scope_trusted: bool = False,
 ) -> str:
     """Return the server-authoritative INTERNAL key a trust click may bind.
 
     Shell scope comes only from the provider's structured ``tool_input``.  A
     non-shell event is grantable only when it has no structured input and both
-    halves of its ACP-cached server/tool identity are present.  Both the rendered
+    halves of its ACP-cached server/tool identity are present, or when it is a
+    file-write built-in naming one file (:func:`path_trust_target`), whose key
+    binds that tool to that file and nothing wider.  The path form needs
+    ``path_scope_trusted``: the tool name and arguments came from the harness's
+    own frames (the tool_call caches), never a permission payload's inline copy.
+    Both the rendered
     ``tool_input`` and the structured params are checked; the structured params
     persist across a same-call re-prompt even if a provider omits rendered input.
     Display text is intentionally absent from this API so it cannot become
@@ -112,6 +185,11 @@ def approval_command(
         return extract_bash_command(tool_input) if tool_input else ""
     if not tool_input and not isinstance(raw_tool_params, dict):
         return canonical_non_shell_trust_key(mcp_server_name, tool_name)
+    path = (
+        path_trust_target(tool_name, mcp_server_name, raw_tool_params) if path_scope_trusted else ""
+    )
+    if path:
+        return path_trust_key(tool_name, path)
     return ""
 
 
@@ -122,6 +200,7 @@ def approval_display_command(
     tool_name: str = "",
     mcp_server_name: str = "",
     raw_tool_params: dict | None = None,
+    path_scope_trusted: bool = False,
 ) -> str:
     """Return the user-visible consent label for :func:`approval_command`.
 
@@ -136,11 +215,18 @@ def approval_display_command(
         tool_name=tool_name,
         mcp_server_name=mcp_server_name,
         raw_tool_params=raw_tool_params,
+        path_scope_trusted=path_scope_trusted,
     )
     if not trust_key:
         return ""
     if is_shell:
         return trust_key
+    path = (
+        path_trust_target(tool_name, mcp_server_name, raw_tool_params) if path_scope_trusted else ""
+    )
+    if path:
+        # The card's label IS the grant's scope: the tool and the whole path.
+        return f"{tool_name} {path}"
     return canonical_non_shell_tool(mcp_server_name, tool_name)
 
 

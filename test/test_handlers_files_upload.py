@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
+import os
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -279,6 +281,45 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "content_type"),
+    [
+        (".dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template"),
+        (".xltx", "application/vnd.openxmlformats-officedocument.spreadsheetml.template"),
+        (".potx", "application/vnd.openxmlformats-officedocument.presentationml.template"),
+    ],
+)
+async def test_upload_ooxml_template_is_accepted_and_zip_checked(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+    extension: str,
+    content_type: str,
+) -> None:
+    """An OOXML template uploads like its base format, under the same ZIP check."""
+    async with TestClient(TestServer(_make_app())) as client:
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", _minimal_docx_bytes(), filename=f"brand{extension}", content_type=content_type
+        )
+        with caplog.at_level(logging.INFO, logger="kiro_crew.dashboard.handlers.files"):
+            resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        saved = Path((await resp.json())["paths"][0])
+        assert mimetypes.guess_type(saved.name)[0] == content_type
+        diagnostic = [m for r in caplog.records if "upload.file diagnostic" in (m := r.getMessage())]
+        assert diagnostic and "is_zipfile=True" in diagnostic[0], diagnostic
+
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", b"<html>not a zip</html>", filename=f"fake{extension}", content_type=content_type
+        )
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        assert "does not match its type" in (await resp.json())["error"]
+
+
+@pytest.mark.asyncio
 async def test_upload_har_is_accepted_as_plain_text(
     upload_dir: Path,
     caplog: pytest.LogCaptureFixture,
@@ -466,6 +507,47 @@ async def test_upload_cnab_rem_ret_is_accepted_as_text(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "payload"),
+    [
+        (".php", b"<?php echo '<script>alert(1)</script>'; ?>\n"),
+        (".sql", b"SELECT id, name FROM users WHERE id = 1;\n"),
+        (".kt", b'fun main() { println("hi") }\n'),
+        (".swift", b'print("hi")\n'),
+        (".cs", b'class P { static void Main() { System.Console.WriteLine("hi"); } }\n'),
+        (".vue", b"<template><div>{{ msg }}</div></template>\n<script>export default {}</script>\n"),
+        (".toml", b'[package]\nname = "demo"\nversion = "0.1.0"\n'),
+    ],
+    ids=[".php", ".sql", ".kt", ".swift", ".cs", ".vue", ".toml"],
+)
+async def test_upload_source_and_config_text_is_accepted_as_text(
+    upload_dir: Path,
+    mock_sel,
+    extension: str,
+    payload: bytes,
+) -> None:
+    """Source and config files with no magic-byte signature upload as text.
+
+    The ``.php`` and ``.vue`` payloads carry markup on purpose: the upload
+    boundary stores the bytes exactly as sent and does not interpret them.
+    """
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename=f"sample{extension}",
+        content_type="application/octet-stream",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith(f"_sample{extension}")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 async def test_upload_unrelated_extension_still_rejected(
     upload_dir: Path,
     mock_sel,
@@ -553,6 +635,51 @@ async def test_upload_jpeg_that_is_heic_names_the_conversion_remedy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["IMG_0001.HEIC", "photo.heif"])
+async def test_upload_unconverted_heic_names_the_reload_remedy(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """A HEIC the browser did not convert (a page loaded before conversion
+    shipped, or another client) is still refused -- no model reads HEIC --
+    with the unsupported-type code and a sentence naming the way past it."""
+    form = aiohttp.FormData()
+    form.add_field("file", _HEIC_HEAD, filename=filename, content_type="image/heic")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "unsupported_file_type"
+    assert body["error"].startswith(f"Unsupported file type: {Path(filename).suffix.lower()}.")
+    assert "reload the page" in body["error"]
+    assert "JPEG" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["deck.key", "Essay.PAGES", "budget.numbers"])
+async def test_upload_iwork_document_names_the_export_remedy(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """An Apple iWork document is still refused -- nothing here reads its
+    format -- but the refusal names the export that does upload."""
+    form = aiohttp.FormData()
+    form.add_field("file", _minimal_docx_bytes(), filename=filename)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "unsupported_file_type"
+    assert body["error"].startswith(f"Unsupported file type: {Path(filename).suffix.lower()}.")
+    assert "File > Export To" in body["error"]
+    assert "PowerPoint, Word, Excel or PDF" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_upload_html_under_an_image_extension_is_still_refused(
     upload_dir: Path,
     mock_sel,
@@ -571,3 +698,228 @@ async def test_upload_html_under_an_image_extension_is_still_refused(
     assert "not really a .png image" in body["error"]
     assert "re-export" in body["error"]
     assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_upload_fits_a_file_system_with_a_short_name_limit(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+) -> None:
+    """On eCryptfs (NAME_MAX 143) a name under the fixed 200-byte cap still fits."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.files._name_max", lambda _directory: 143, raising=False
+    )
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename="a" * 111 + ".txt", content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    stored_name = Path(stored).name
+    assert len(stored_name.encode("utf-8")) <= 143
+    assert stored_name.endswith(".txt")
+
+
+@pytest.mark.asyncio
+async def test_a_relabelled_upload_still_fits_a_short_name_limit(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+) -> None:
+    """A .jpg whose bytes are WebP is stored as .webp, one byte longer, and must still fit."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.files._name_max", lambda _directory: 143, raising=False
+    )
+    form = aiohttp.FormData()
+    form.add_field("file", _WEBP_HEAD, filename="p" * 130 + ".jpg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    stored_name = Path(stored).name
+    assert stored_name.endswith(".webp")
+    assert len(stored_name.encode("utf-8")) <= 143
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_video_temp_name_fits_a_short_name_limit(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+) -> None:
+    """A streamed part is written under the stored name plus ".part"; that must fit too."""
+    from kiro_crew.dashboard import part_stream
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.files._name_max", lambda _directory: 143, raising=False
+    )
+    temp_names: list[str] = []
+    real_init = part_stream._TempSink.__init__
+
+    def recording_init(self, dest: Path) -> None:
+        real_init(self, dest)
+        temp_names.append(self.tmp.name)
+
+    monkeypatch.setattr(part_stream._TempSink, "__init__", recording_init)
+    mp4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00" + bytes(range(256)) * 4
+    form = aiohttp.FormData()
+    form.add_field("file", mp4, filename="v" * 120 + ".mp4", content_type="video/mp4")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+
+    [temp_name] = temp_names
+    assert len(temp_name.encode("utf-8")) <= 143
+
+
+def test_the_stored_name_cap_follows_the_file_system_limit() -> None:
+    from kiro_crew.dashboard.file_api.uploads import _fit_stored_name
+
+    # 33 bytes of UUID prefix before the tail, 5 for a streamed part's ".part" after it.
+    assert len(_fit_stored_name("a" * 150 + ".txt", 143)) == 143 - 33 - 5
+    assert _fit_stored_name("a" * 150 + ".txt", 1024) == "a" * 150 + ".txt"
+    assert len(_fit_stored_name("a" * 230 + ".txt", 1024)) == 200
+
+
+def test_name_max_falls_back_when_the_file_system_cannot_say(tmp_path: Path, monkeypatch) -> None:
+    from kiro_crew.dashboard.file_api.uploads import _name_max
+
+    def refuse(_path: str, _name: str) -> int:
+        raise OSError("not supported")
+
+    assert _name_max(tmp_path) > 0
+    monkeypatch.setattr(os, "pathconf", refuse, raising=False)
+    assert _name_max(tmp_path) == 255
+    monkeypatch.delattr(os, "pathconf", raising=False)
+    assert _name_max(tmp_path) == 255
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filename",
+    ["a" * 230 + ".txt", "文件名" * 27 + ".md"],
+    ids=["ascii-230", "cjk-243-bytes"],
+)
+async def test_upload_with_a_name_past_the_file_system_limit_is_stored_shortened(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """A long name is shortened to fit, keeping its extension, instead of a 500."""
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename=filename, content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    stored_name = Path(stored).name
+    assert len(stored_name.encode("utf-8")) <= 255
+    assert stored_name.endswith(Path(filename).suffix)
+    assert Path(stored).read_bytes() == b"body\n"
+
+
+def test_a_short_name_is_kept_as_it_is() -> None:
+    from kiro_crew.dashboard.file_api.uploads import _fit_stored_name
+
+    assert _fit_stored_name("notes.md") == "notes.md"
+    assert _fit_stored_name("é" * 150 + ".txt") == "é" * 98 + ".txt"
+
+
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        ("cafe\u0301.txt", "caf\u00e9.txt"),  # NFD from macOS: composed, not "cafe_"
+        ("Bjo\u0308rk n\u0303.png", "Bj\u00f6rk_\u00f1.png"),  # every composable accent
+        # A mark with no composed form is kept: the image-path grammar reads it.
+        ("\u0939\u093f\u0902\u0926\u0940.png", "\u0939\u093f\u0902\u0926\u0940.png"),
+        ("a\ufe0f\u034f\U000e0100.png", "a___.png"),  # a mark that draws nothing is not kept
+        ("my report (v2).pdf", "my_report__v2_.pdf"),  # replaced exactly as before
+    ],
+    ids=["nfd-latin", "nfd-several", "devanagari-kept", "invisible-marks", "ascii-punctuation"],
+)
+def test_upload_name_composes_accents(filename: str, expected: str) -> None:
+    from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
+
+    assert _safe_upload_name(filename) == expected
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["cafe\u0301.png", "\u0939\u093f\u0902\u0926\u0940.png", "\u6587\u4ef6.jpg", "x\u0338.png"],
+)
+@pytest.mark.parametrize(
+    ("grammar", "uploads"),
+    [
+        ("_POSIX_PATH_RE", "/home/u/.kiro/crew/uploads/"),
+        ("_WINDOWS_PATH_RE", "C:\\Users\\u\\.kiro\\crew\\uploads\\"),
+    ],
+    ids=["posix", "windows"],
+)
+def test_a_sanitized_image_name_is_still_read_as_an_image_path(
+    filename: str, grammar: str, uploads: str
+) -> None:
+    """Each host's path grammar must read the stored path, or the picture never reaches the model."""
+    from kiro_crew import image_refs
+    from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
+
+    stored = f"{uploads}{'0' * 32}_{_safe_upload_name(filename)}"
+
+    match = getattr(image_refs, grammar).search(stored)
+    assert match is not None and match.group(1) == stored, ascii(stored)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../../etc/passwd",
+        "..",
+        "a\\b.txt",
+        "..\\..\\x.txt",
+        "x\x00y.txt",
+        "x\ny.txt",
+        "evil\u202etxt.exe",  # right-to-left override
+        "a\u2066b\u2069.txt",  # bidi isolates
+        "a\u200bb.txt",  # zero-width space
+        "\uff0e\uff0e\uff0fx.txt",  # fullwidth dots and solidus
+        "\u0338.txt",  # a combining overlay with no base letter
+    ],
+)
+def test_upload_name_keeping_marks_still_drops_separators_and_controls(
+    filename: str, tmp_path: Path
+) -> None:
+    """Keeping combining marks must not let a separator, control or bidi character through."""
+    import unicodedata
+
+    from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
+
+    out = _safe_upload_name(Path(filename).name)
+
+    assert "/" not in out and "\\" not in out
+    assert not any(unicodedata.category(ch)[0] in "CZ" for ch in out), ascii(out)
+    assert unicodedata.normalize("NFC", out) == out
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    dest = upload_dir / f"{'0' * 32}_{out}"
+    assert dest.resolve().parent == upload_dir.resolve()
+
+
+@pytest.mark.asyncio
+async def test_upload_with_a_decomposed_accent_is_stored_composed(upload_dir: Path, mock_sel) -> None:
+    # Built by hand: a browser sends the name as raw UTF-8, while
+    # aiohttp.FormData would percent-encode it before it reached the handler.
+    body = (
+        b'--b0undary\r\nContent-Disposition: form-data; name="file"; filename="'
+        + "cafe\u0301.txt".encode("utf-8")
+        + b'"\r\nContent-Type: text/plain\r\n\r\nbody\n\r\n--b0undary--\r\n'
+    )
+    headers = {"Content-Type": "multipart/form-data; boundary=b0undary"}
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=body, headers=headers)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    assert Path(stored).name.endswith("caf\u00e9.txt"), ascii(Path(stored).name)

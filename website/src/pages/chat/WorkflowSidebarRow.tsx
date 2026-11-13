@@ -17,6 +17,7 @@ import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 export interface WfRunRow {
   run_id: string
@@ -74,7 +75,7 @@ const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRu
           />
         </div>
         <div className="text-[10px] text-muted mt-0.5 font-mono truncate">
-          {row.run_id} · {row.event_count ?? 0} {i18nT('pages.chat.workflowSidebarRow.events')}
+          {row.run_id} · {i18nT('pages.chat.workflowSidebarRow.events_count', { count: row.event_count ?? 0, n: fmtNumber(row.event_count ?? 0) })}
         </div>
         {!expanded && row.status === 'running' && lastLog && (
           <div className="text-[11px] text-muted italic mt-0.5 truncate">

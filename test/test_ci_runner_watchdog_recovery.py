@@ -302,13 +302,9 @@ def test_recovery_classifies_the_oldest_in_window_runs_within_its_read_cap() -> 
 def test_a_cancelled_run_too_short_lived_to_hold_an_orphan_is_excluded_for_free() -> None:
     """Pins the recovery pass's zero-read exclusion to the CLASSIFIER, not to a number.
 
-    The exclusion skips a cancelled run whose lifetime is under ``orphan_after``
-    without spending a job read. That is only sound if such a run can never be
-    classified as an orphan, so the classifier is driven here with the most
-    favourable job the lifetime permits -- created with the run, still queueing
-    when the run was cancelled -- and must find nothing. The paired case lifts
-    the lifetime to the threshold and the same job does fingerprint, proving the
-    exclusion tracks the classifier rather than a hardcoded bound.
+    A run shorter-lived than ``orphan_after`` is skipped without a job read, which is
+    sound only if the classifier never calls it an orphan. The most favourable job is
+    driven at and just under the threshold, so the exclusion tracks the classifier.
     """
     policy = _policy()
 
@@ -589,11 +585,9 @@ def test_a_pull_request_run_at_its_open_head_is_healed() -> None:
 def test_a_pr_keyed_workflow_orphan_is_healed_on_its_pull_request_run() -> None:
     """`code-review.yml` is PR-keyed and declared safe for pull-request runs only.
 
-    Both orphan shapes are healed on a pull-request run, and the revision gate --
-    read from the real workflow file, whose group is
-    `code-review-${{ github.event.pull_request.number }}` -- admits it because the
-    run's EVENT reaches that read. A push-shaped orphan of the same workflow is
-    exempt: there the PR number is empty and the group a constant.
+    The real workflow's group is `code-review-${{ github.event.pull_request.number }}`,
+    so the revision gate admits a pull-request run. A push-shaped orphan is exempt:
+    there the PR number is empty and the group a constant.
     """
     cancelled = _run(
         1,
@@ -631,12 +625,9 @@ def test_a_pr_keyed_workflow_orphan_is_healed_on_its_pull_request_run() -> None:
 def test_two_pull_requests_sharing_a_head_branch_do_not_supersede_each_other() -> None:
     """The case a branch-name successor check cannot handle.
 
-    Two pull requests open on `shared` (different bases) both have head SHA `sha-1`.
-    Each carries its own run at that SHA, and the branch listing shows the OTHER
-    request's run as newer. By branch name run 1 would read superseded and its
-    cancelled orphan left behind a green `skipped-superseded`; by head SHA it is
-    current -- the SHA is an open head -- and, the two payloads naming disjoint
-    pull requests, the newer run is a sibling's and not a successor: run 1 is re-run.
+    Two pull requests on `shared` both have head SHA `sha-1`, and the listing shows the
+    OTHER request's run as newer. By head SHA run 1 is current, and the payloads name
+    disjoint pull requests, so the newer run is a sibling, not a successor: run 1 is re-run.
     """
     mine = _run(
         1,

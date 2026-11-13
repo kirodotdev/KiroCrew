@@ -4,10 +4,12 @@
  *    (⟳ on the running-card); fresh tool/chunk activity clears it.
  *  - sseSubagentDone with `stopped: true` renders a neutral 'stopped' terminal
  *    state (no error), preserving the user-stop-is-not-a-failure semantics.
+ *  - sseSubagentDone clears the stall fields, so a finished card is not
+ *    ranked as stalled.
  */
 import { describe, it, expect } from 'vitest'
 import { createTestStore } from './helpers'
-import { sseSubagentSpawn, sseSubagentTool, sseSubagentBatchChunks, sseSubagentRetrying, sseSubagentDone } from '../store/chatSlice'
+import { setActiveSlot, sseSubagentSpawn, sseSubagentTool, sseSubagentBatchChunks, sseSubagentBatchUpdate, sseSubagentRetrying, sseSubagentSnapshot, sseSubagentStalled, sseSubagentDone } from '../store/chatSlice'
 
 const ID = 'a1b2c3d4'
 
@@ -42,6 +44,32 @@ describe('subagent turn-resilience reducers', () => {
     store.dispatch(sseSubagentRetrying({ slot: SLOT, id: ID }))
     store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: SLOT, id: ID, text: 'back alive' }] }))
     expect(sub(store).retrying).toBe(false)
+  })
+
+  it('a stall after a retry shows the stall, never both', () => {
+    const store = createTestStore()
+    // A snapshot without an owning slot is dropped, so give the chat a key.
+    store.dispatch(setActiveSlot('chat-a'))
+    const SLOT = spawn(store)
+    store.dispatch(sseSubagentRetrying({ slot: SLOT, id: ID, attempt: 2 }))
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: true, idle_secs: 200 }))
+    expect(sub(store)).toMatchObject({ stalled: true, retrying: false })
+
+    store.dispatch(sseSubagentRetrying({ slot: SLOT, id: ID, attempt: 3 }))
+    store.dispatch(sseSubagentBatchUpdate({ updates: [{ slot: SLOT, id: ID, stalled: true }] }))
+    expect(sub(store)).toMatchObject({ stalled: true, retrying: false })
+
+    store.dispatch(sseSubagentRetrying({ slot: SLOT, id: ID, attempt: 4 }))
+    store.dispatch(sseSubagentSnapshot({ slot: SLOT, id: ID, task: 'do a thing', agent: 'kirocrew', streaming: '', last_tool: 'shell', started: 1, tool_count: 1, stalled: true }))
+    expect(sub(store)).toMatchObject({ stalled: true, retrying: false })
+  })
+
+  it('an un-stall frame leaves a live retry in place', () => {
+    const store = createTestStore()
+    const SLOT = spawn(store)
+    store.dispatch(sseSubagentRetrying({ slot: SLOT, id: ID, attempt: 2 }))
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: false }))
+    expect(sub(store)).toMatchObject({ stalled: false, retrying: true })
   })
 
   it('sseSubagentRetrying guards prototype-pollution ids', () => {
@@ -115,5 +143,17 @@ describe('subagent turn-resilience reducers', () => {
     const SLOT = spawn(store)
     store.dispatch(sseSubagentDone({ slot: SLOT, id: ID, elapsed: 3, stopped: true }))
     expect(sub(store).status).toBe('stopped')
+  })
+
+  it('done clears the stall fields', () => {
+    const store = createTestStore()
+    const SLOT = spawn(store)
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: true, idle_secs: 240 }))
+    store.dispatch(sseSubagentDone({ slot: SLOT, id: ID, elapsed: 300, outcome: 'completed' }))
+    const a = sub(store)
+    expect(a.status).toBe('done')
+    expect(a.stalled).toBe(false)
+    expect(a.idleSecs).toBeUndefined()
+    expect(a.stalledAt).toBeUndefined()
   })
 })

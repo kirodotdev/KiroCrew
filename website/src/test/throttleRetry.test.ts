@@ -92,4 +92,14 @@ describe('j helper 429 mapping', () => {
     expect((err as ApiError).status).toBe(500)
     expect((err as ApiError).message).toBe('plain boom')
   })
+
+  it('says a proxy\'s HTML 502 page is temporary, not a bare status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>',
+      { status: 502 },
+    )))
+    const err = await api.kiroUsage().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).message).toBe('The server is temporarily unavailable (HTTP 502)')
+  })
 })

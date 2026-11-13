@@ -24,6 +24,7 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+from kiro_crew.testing.wait import await_until
 from kiro_crew.webex import transport_dispatch as webex_dispatch
 
 # ------------------------------------------------------------------
@@ -110,14 +111,14 @@ class TestGroupSpaceRouting:
         d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg_group())
         with mock.patch.object(type(d), "_bot_name", lambda self: "Kiro"):
             key = d._session_key(webex_dispatch._route_of(_space()))
+            webex_dispatch._APPROVALS.reserve(key, 1)
             task = asyncio.create_task(
                 webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
             )
             await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
             await d.handle_message(_space("Kiro 1"))
 
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is True
+        assert (await await_until(task, what="the approval decision"))[0] is True
         assert provider.steered == []
 
     @pytest.mark.asyncio

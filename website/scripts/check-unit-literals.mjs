@@ -40,7 +40,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
 
-import { ALL_LINES, parseAddedLines } from './check-i18n-strings.mjs'
+import { ALL_LINES, parseAddedLines, renameSources } from './check-i18n-strings.mjs'
 import { inScope, unitLiteralHits, walk } from './lib/unit-literals.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -125,12 +125,15 @@ function computeScope() {
     .filter(inScope)
     .sort()
 
+  // A file this branch MOVED is measured against its base-side source, not as new.
+  const renamedFrom = renameSources(git(['diff', '--name-status', '-M', '--diff-filter=R', from, '--', 'website/src']))
+
   return {
     written,
     touched,
     readBase: (rel) => {
       try {
-        return execFileSync('git', ['show', `${from}:${PREFIX}${rel}`], {
+        return execFileSync('git', ['show', `${from}:${renamedFrom.get(PREFIX + rel) ?? PREFIX + rel}`], {
           cwd: REPO,
           encoding: 'utf-8',
           maxBuffer: 128 * 1024 * 1024,

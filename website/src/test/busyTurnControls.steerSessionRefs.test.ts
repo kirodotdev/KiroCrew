@@ -52,6 +52,8 @@ function setup(opts: { text: string; refs: SessionRef[] }) {
     messageQuote: { consume: () => ({ quote: null }), recoverInto: (t: string) => t } as never,
     composerRef: ref(null),
     composerSlotRef: ref<string | null>(SLOT),
+    composerMountedRef: ref(true),
+    forkUnavailable: false,
     inputRef: ref(opts.text),
     setInput,
     stores,

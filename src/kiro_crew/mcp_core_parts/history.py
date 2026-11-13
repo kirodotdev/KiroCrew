@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.history_search import snippet_needle_tiers, tiered_first_hit
 from kiro_crew.platform import redact_via_context as redact
@@ -23,11 +22,14 @@ _SNIPPET_RADIUS = 120  # chars of context kept on each side of a match
 _SNIPPET_MAX_LEN = 320  # hard cap on a returned snippet
 
 
-# Upper bound on ranked candidates pulled from the backend per search. Bound to
-# the backend's own scan window (imported, not copied) so we consider every
-# ranked match (bounded I/O) and post-filtering can't starve a caller whose hits
-# rank past a small page — and the two can't silently drift apart.
-_SEARCH_HISTORY_SCAN = SEARCH_SCAN_WINDOW
+def _search_history_scan(query: str = "") -> int:
+    """Upper bound on ranked candidates pulled from the backend for *query*.
+
+    See :func:`kiro_crew.history_search.search_candidate_cap`.
+    """
+    from kiro_crew.history_search import search_candidate_cap
+
+    return search_candidate_cap(query)
 
 
 def _history_is_incognito(meta: dict) -> bool:
@@ -182,13 +184,16 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
     # folds (ß→ss), leaving a selected-but-unwrapped snippet with no
     # <<<...>>>.
     span = _casefold_match_span(seg, needle_cf)
+    lead = "…" if start > 0 else ""
     if span:
         s, e = span
         seg = seg[:s] + "<<<" + seg[s:e] + ">>>" + seg[e:]
-    seg = ("…" if start > 0 else "") + seg + ("…" if end < len(content) else "")
+    seg = lead + seg + ("…" if end < len(content) else "")
     result = seg[:_SNIPPET_MAX_LEN]
     # If the hard cap sliced through the match delimiters (possible with a
     # long query), re-close so the consumer never sees a dangling "<<<".
-    if "<<<" in result and ">>>" not in result:
+    # Judged from where the markers were inserted, not by searching the
+    # text: the transcript may hold its own "<<<" or ">>>".
+    if span and len(lead) + s + 3 <= _SNIPPET_MAX_LEN < len(lead) + e + 6:
         result = result[: _SNIPPET_MAX_LEN - 3] + ">>>"
     return result

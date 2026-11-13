@@ -1,5 +1,6 @@
-"""The Usage page's session activity: the kiro-cli sessions on disk, the parse cached and
-run off the event loop, and the snapshot a request waits for only briefly.
+"""The Usage page's session activity: the kiro-cli and KAS sessions on disk and the
+sessions of other harnesses from their usage rows, the parse cached and run off the
+event loop, and the snapshot a request waits for only briefly.
 
 An owner of :mod:`kiro_crew.dashboard.handlers.usage`: callers and tests import and
 patch these names through that facade, which mirrors a patch into every module of the
@@ -17,11 +18,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.dashboard.handlers.usage_spend import daily_credits
+from kiro_crew import platform_compat
+from kiro_crew.dashboard.handlers.usage_spend import daily_spend, spend_key_for_slot
 from kiro_crew.dashboard.handlers.usage_store import (
     _SESSIONS_HISTORY_DAYS,
+    _SHARD_COUNTED_HARNESSES,
+    _SHARD_COUNTED_PROVIDERS,
     _parse_row_day,
+    _parse_row_ts,
     _sessions_dir,
+    _shards_in_window,
+    is_session_slot,
 )
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
@@ -53,6 +60,234 @@ _SESSIONS_CACHE_TS: float = 0.0
 _SESSIONS_CACHE_LOCK = LoopBoundLock()
 
 
+# Per-transcript counts from the last parse, keyed on the resolved path and
+# checked against ``(st_mtime_ns, st_size)``: a refresh reads again only the
+# transcripts that changed since. Each parse replaces the whole map with the
+# entries it saw, so a deleted transcript leaves it on the next parse.
+_TRANSCRIPT_COUNTS: dict[str, tuple[int, int, str | None, int, int]] = {}
+
+
+def _kas_transcripts(kas_root: Path, cli_dir: Path) -> tuple[list[Path], int]:
+    """The KAS ``messages.jsonl`` paths under ``kas_root`` and the unread directory count.
+
+    The KAS harness writes one record per session as
+    ``<kas_root>/<id>/sess_<uuid>/messages.jsonl``, beside kiro-cli's flat ``cli``
+    directory, and deletes the record when it tears the session down. A directory
+    that disappears during the listing is skipped. One that exists but cannot be
+    listed, or a root the path check refuses, leaves its sessions out of the totals
+    and is therefore counted as a directory that did not load. How many transcripts
+    it holds is unknown, so it is not counted as a transcript.
+
+    Each record directory is opened through the pin that :func:`_pin_listing_dir`
+    takes on the root. A link at the name fails that open and is skipped without a
+    listing.
+    """
+    try:
+        root = _pin_listing_dir(kas_root)
+    except (FileNotFoundError, NotADirectoryError):
+        return [], 0
+    except OSError:
+        return [], 1
+    if root is None:
+        # Refused by the path check, as a home on an untrusted network share is:
+        # its sessions did not load, so it counts like an unreadable root.
+        return [], 1
+    found: list[Path] = []
+    unread_dirs = 0
+    with root:
+        try:
+            names = root.names()
+        except (FileNotFoundError, NotADirectoryError):
+            return [], 0
+        except OSError:
+            return [], 1
+        for name in names:
+            if name == cli_dir.name:
+                continue
+            try:
+                child = root.child_if_real_dir(name)
+                if child is None:
+                    continue
+                with child:
+                    records = child.names()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError:
+                unread_dirs += 1
+                continue
+            found.extend(
+                Path(child.path) / r / "messages.jsonl" for r in records if r.startswith("sess_")
+            )
+    return found, unread_dirs
+
+
+def _pin_listing_dir(path: Path) -> platform_compat.PinnedDirectory | None:
+    """A pin on *path* for listing it, or ``None`` when *path* fails the path check.
+
+    The pin opens the canonical path that :func:`validate_file_path` returns, once
+    the check has passed. On Windows, opening or listing a link to a UNC share sends
+    an SMB authentication request to the share's host. The check therefore fails
+    such a link before any open. A link planted at the name after the check fails
+    the pin's open instead, and while the pin is held, the directory and its
+    ancestors cannot be renamed.
+
+    Only a reparse point that stands for another name is refused (``links_only``),
+    so a Windows cloud-files or dedup directory is listed as the directory it is.
+    The children that the listing opens through the pin are pinned with
+    ``links_only`` too.
+
+    Raises ``OSError`` when the directory does not open, for example when it does
+    not exist.
+    """
+    canonical = validate_file_path(str(path))
+    if canonical is None:
+        return None
+    pinned = platform_compat.pin_directory(canonical, links_only=True)
+    return platform_compat.PinnedDirectory(pinned, canonical, links_only=True)
+
+
+def _count_row(obj: dict, kas: bool) -> tuple[int, int]:
+    """The (messages, tool calls) counts that a transcript row adds.
+
+    A kiro-cli row states its kind in a top-level ``kind`` field, and a KAS row
+    states it in ``payload.type``. KAS assistant rows include reasoning steps, and of
+    those rows a message is one whose ``operationType`` is ``Say``.
+    """
+    if not kas:
+        kind = obj.get("kind", "")
+        if kind in ("Prompt", "AssistantMessage"):
+            return 1, 0
+        return (0, 1) if kind == "ToolResults" else (0, 0)
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return 0, 0
+    row_type = payload.get("type")
+    if row_type == "user" or (row_type == "assistant" and payload.get("operationType") == "Say"):
+        return 1, 0
+    return (0, 1) if row_type == "tool_call" else (0, 0)
+
+
+def _count_transcript(path: Path, kas: bool) -> tuple[str | None, int, int] | None:
+    """A transcript's (day, messages, tool calls), or ``None`` when it cannot be read.
+
+    The day is the local day of the first row that carries a timestamp, or ``None``
+    when no row carries one.
+    """
+    day = None
+    msgs = 0
+    tools = 0
+    try:
+        with path.open("rb") as fh:
+            for line in bounded_records(fh, path, label="usage.sessions"):
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if day is None:
+                    day = _parse_row_day(obj.get("timestamp"))
+                row_msgs, row_tools = _count_row(obj, kas)
+                msgs += row_msgs
+                tools += row_tools
+    except (OSError, UnicodeDecodeError):
+        return None
+    return day, msgs, tools
+
+
+#: The ``surface`` prefix of a background one-liner's row (a title, a tag, a
+#: folder suggestion; ``llm_helpers_parts/background_turns.py``). Such a call is
+#: no turn of any session, whatever slot it borrows.
+_BACKGROUND_CALL_SURFACE_PREFIX = "bg:"
+
+
+#: The text :func:`_shard_sessions` tests a line for before parsing it: a row a
+#: counted provider or harness wrote names it in one of these spellings. A row's
+#: ``harness`` is matched as its whole JSON member, because a bare id such as
+#: ``pi`` is a substring of most rows (``input``).
+_SHARD_COUNTED_NEEDLES = tuple(sorted(_SHARD_COUNTED_PROVIDERS)) + tuple(
+    f'"harness": "{harness}"' for harness in sorted(_SHARD_COUNTED_HARNESSES)
+)
+
+
+def _row_messages(obj: dict) -> int:
+    """Messages one usage row stands for: the user's prompt, and the reply.
+
+    The same two transcript rows :func:`_count_row` counts for a kiro-cli turn. A
+    row marked ``delivered: false`` produced no reply, so it is the prompt alone; a
+    row without the field (an older shard) counts both.
+    """
+    return 1 if obj.get("delivered") is False else 2
+
+
+def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
+    """Sessions of :data:`_SHARD_COUNTED_PROVIDERS` and :data:`_SHARD_COUNTED_HARNESSES`
+    over the last *days*, from the usage rows.
+
+    ``{session: (day, messages)}``. A session is the row's ``acp_session_id``, else
+    its ``transcript`` key, else its ``slot``. Its day is the local day of its earliest row in the window, the
+    way a transcript is filed under its first row's day. A row outside the per-row
+    epoch cutoff, with no parseable day, with no key, written by a
+    background one-liner (:data:`_BACKGROUND_CALL_SURFACE_PREFIX`), or whose slot
+    is not a session in its own right (:func:`is_session_slot`, which leaves out
+    subagents) is skipped. A shard that cannot be read costs only its own rows.
+    """
+    cutoff = time.time() - (days * 86400)
+    first: dict[str, tuple[float, str]] = {}
+    messages: Counter = Counter()
+    for path in _shards_in_window(days):
+        try:
+            with path.open("rb") as fh:
+                for line in bounded_records(fh, path, label="usage"):
+                    # A cheap text test before the parse: most rows are kiro-cli or
+                    # KAS turns, and a row whose text holds none of these needles
+                    # cannot carry a counted ``provider`` or ``harness``.
+                    if not any(needle in line for needle in _SHARD_COUNTED_NEEDLES):
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except (ValueError, RecursionError):  # past the nesting limit
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    if (
+                        obj.get("provider") not in _SHARD_COUNTED_PROVIDERS
+                        and obj.get("harness") not in _SHARD_COUNTED_HARNESSES
+                    ):
+                        continue
+                    surface = obj.get("surface")
+                    if isinstance(surface, str) and surface.startswith(
+                        _BACKGROUND_CALL_SURFACE_PREFIX
+                    ):
+                        continue
+                    ts_raw = obj.get("ts")
+                    ts_epoch = _parse_row_ts(str(ts_raw or ""))
+                    if ts_epoch is None or ts_epoch < cutoff:
+                        continue
+                    slot = obj.get("slot")
+                    if isinstance(slot, str) and slot and not is_session_slot(slot):
+                        continue
+                    day = _parse_row_day(ts_raw)
+                    # One conversation per ACP session, as kiro-cli writes one
+                    # transcript per session: a cron job or a channel thread reuses
+                    # its slot for every run. A row from before the field falls back
+                    # to its transcript key, then to its slot (a bare dashboard slot
+                    # filed under the session key its chat's transcript rows carry).
+                    key = (
+                        obj.get("acp_session_id")
+                        or obj.get("transcript")
+                        or (spend_key_for_slot(slot) if isinstance(slot, str) and slot else None)
+                    )
+                    if day is None or not isinstance(key, str) or not key:
+                        continue
+                    messages[key] += _row_messages(obj)
+                    if key not in first or ts_epoch < first[key][0]:
+                        first[key] = (ts_epoch, day)
+        except (OSError, UnicodeDecodeError):
+            continue
+    return {key: (first[key][1], messages[key]) for key in first}
+
+
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
@@ -65,11 +300,16 @@ def _parse_sessions() -> dict:
     total_msgs = 0
     total_tools = 0
     all_time_sessions = 0
-    # Count of transcripts that did NOT load for any reason (validator refusal,
-    # stat failure, read failure) -- surfaced so the page can say the totals are
-    # incomplete instead of rendering a silent under-count. The name matches the
-    # payload/frontend contract; it is the did-not-load total.
+    # Count of transcript FILES that did not load for any reason (validator
+    # refusal, stat failure, read failure) -- surfaced so the page can say the
+    # totals are incomplete instead of rendering a silent under-count. The name
+    # matches the payload/frontend contract; it is the did-not-load total.
     refused_transcripts = 0
+    # Count of session DIRECTORIES that did not load: the refused sessions/cli
+    # directory, and a KAS root or record directory that was refused or could not
+    # be listed. The number of transcripts inside such a directory is unknown, so
+    # it is reported apart from ``refused_transcripts`` rather than added to it.
+    unreadable_session_dirs = 0
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
 
@@ -79,7 +319,17 @@ def _parse_sessions() -> dict:
     # degraded answer, it is a differently-shaped one.
     read_error: dict[str, str] = {}
     try:
-        entries = list(sessions_dir.iterdir())
+        pinned = _pin_listing_dir(sessions_dir)
+        if pinned is None:
+            # The path check refuses the directory itself when the home is on a
+            # network share the UNC gate does not trust. Its transcripts did not
+            # load, which the warning reports; an ``error`` here would make the
+            # frontend drop the billing that does not depend on transcripts.
+            entries = []
+            unreadable_session_dirs += 1
+        else:
+            with pinned:
+                entries = [Path(pinned.path) / name for name in pinned.names()]
     except FileNotFoundError:
         # First-run homes have no transcript directory yet; use the same
         # complete zero statistics as an existing, empty directory.
@@ -94,26 +344,37 @@ def _parse_sessions() -> dict:
             "code": "sessions_dir_unreadable",
         }
 
-    for f in entries:
-        if f.suffix != ".jsonl":
-            continue
+    transcripts = [(f, False) for f in entries if f.suffix == ".jsonl"]
+    kas_paths, unread_kas_dirs = _kas_transcripts(sessions_dir.parent, sessions_dir)
+    unreadable_session_dirs += unread_kas_dirs
+    transcripts += [(f, True) for f in kas_paths]
+
+    global _TRANSCRIPT_COUNTS
+    previous_counts = _TRANSCRIPT_COUNTS
+    seen_counts: dict[str, tuple[int, int, str | None, int, int]] = {}
+
+    for f, kas in transcripts:
         # Validate path through hooks.py (resolves symlinks, checks sensitive)
         resolved_str = validate_file_path(str(f))
         if resolved_str is None:
             # Counted, not swallowed: a refusal here is indistinguishable
-            # from an idle account in the rendered numbers, and on a
-            # roaming-profile (UNC) home EVERY transcript lands in this branch --
-            # so the page reports a confident zero with nothing anywhere to say
-            # why. Aggregated after the loop rather than logged per file, because
-            # that failure mode refuses all of them. Admitting the transcript dir
-            # to the UNC gate -- which is what would make the count correct
-            # rather than merely explained -- is deferred; it needs a resolution
-            # that refuses links atomically first.
+            # from an idle account in the rendered numbers. Aggregated after the
+            # loop rather than logged per file. A roaming-profile (UNC) home is
+            # refused one level up, at the directory listing, and counted in
+            # ``unreadable_session_dirs``.
             refused_transcripts += 1
             continue
         resolved = Path(resolved_str)
         try:
-            mtime = resolved.stat().st_mtime
+            st = resolved.stat()
+        except FileNotFoundError:
+            if kas:
+                # A KAS record without a messages file is not a failed load: the
+                # record holds only its session.json, or the harness deleted it at
+                # teardown after the listing.
+                continue
+            refused_transcripts += 1
+            continue
         except OSError:
             # A transcript that validated but cannot be stat'd did not load, so
             # it is dropped from the counts exactly like a refusal. Count
@@ -121,76 +382,99 @@ def _parse_sessions() -> dict:
             # so every did-not-load branch must feed it, not just the UNC refusal.
             refused_transcripts += 1
             continue
-        all_time_sessions += 1
+        mtime = st.st_mtime
         if mtime < cutoff:
+            all_time_sessions += 1
             continue
 
-        day = None  # derive from first JSONL entry's timestamp
-        msgs = 0
-        tools = 0
-        try:
-            with resolved.open("rb") as fh:
-                for line in bounded_records(fh, resolved, label="usage.sessions"):
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(obj, dict):
-                        continue
-                    if day is None:
-                        day = _parse_row_day(obj.get("timestamp"))
-                    kind = obj.get("kind", "")
-                    if kind in ("Prompt", "AssistantMessage"):
-                        msgs += 1
-                    elif kind == "ToolResults":
-                        tools += 1
-        except (OSError, UnicodeDecodeError):
-            # Same as the stat branch above: a transcript that could not be read
-            # did not load, so it counts toward the incomplete-data warning
-            # rather than vanishing from the totals.
-            refused_transcripts += 1
-            continue
+        key = str(resolved)
+        cached = previous_counts.get(key)
+        if cached is not None and cached[:2] == (st.st_mtime_ns, st.st_size):
+            seen_counts[key] = cached
+            day, msgs, tools = cached[2], cached[3], cached[4]
+        else:
+            parsed = _count_transcript(resolved, kas)
+            if parsed is None:
+                # Same as the stat branch above: a transcript that could not be
+                # read did not load, so it counts toward the incomplete-data
+                # warning rather than vanishing from the totals.
+                refused_transcripts += 1
+                continue
+            day, msgs, tools = parsed
+            seen_counts[key] = (st.st_mtime_ns, st.st_size, day, msgs, tools)
 
         if day is None:
             day = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
 
         daily[day] += 1
         total_sessions += 1
+        all_time_sessions += 1
         daily_msgs[day] += msgs
         daily_tools[day] += tools
         total_msgs += msgs
         total_tools += tools
 
+    _TRANSCRIPT_COUNTS = seen_counts
+
+    # Sessions on a harness that writes none of the transcripts above (Claude
+    # Code) are counted from their usage rows, into the same totals. Those rows
+    # carry no tool-call count, so such a session adds no tool calls.
+    for day, msgs in _shard_sessions(_SESSIONS_HISTORY_DAYS).values():
+        daily[day] += 1
+        total_sessions += 1
+        all_time_sessions += 1
+        daily_msgs[day] += msgs
+        total_msgs += msgs
+
     if refused_transcripts:
         # Server-side only: %s of a Path is a filesystem path, which the
-        # returned payload deliberately never carries (see the iterdir handler
-        # above). Counts every did-not-load branch (validator refusal, stat
-        # failure, read failure), not just the UNC refusal.
+        # returned payload deliberately never carries (see the listing handler
+        # above). Counts every transcript did-not-load branch (validator
+        # refusal, stat failure, read failure).
         logger.warning(
             "usage: %d transcript(s) could not be loaded in %s; "
             "the reported session counts exclude them",
             refused_transcripts,
             sessions_dir,
         )
+    if unreadable_session_dirs:
+        logger.warning(
+            "usage: %d session dir(s) under %s could not be read; "
+            "the reported session counts exclude their transcripts",
+            unreadable_session_dirs,
+            sessions_dir.parent,
+        )
 
-    # Build daily history sorted by date. Credits come from the per-turn usage
+    # Build daily history sorted by date. Spend comes from the per-turn usage
     # shards, not the transcripts, so a day can carry spend without a transcript
     # (a background slot, a refused file): such a day still gets a row, with
     # zero sessions, so that spend is shown rather than dropped. Counter lookups
     # on those days read 0 without inserting a key.
-    credits_by_day = daily_credits(_SESSIONS_HISTORY_DAYS)
-    all_days = sorted(set(daily.keys()) | set(credits_by_day.keys()))
+    spend_by_day = daily_spend(_SESSIONS_HISTORY_DAYS)
+    all_days = sorted(set(daily.keys()) | set(spend_by_day.keys()))
     history: list[dict[str, Any]] = []
     for d in all_days:
-        history.append(
-            {
-                "date": d,
-                "sessions": daily[d],
-                "messages": daily_msgs[d],
-                "tool_calls": daily_tools[d],
-                "credits": round(credits_by_day.get(d, 0.0), 2),
-            }
-        )
+        spend = spend_by_day.get(d, {})
+        credits = spend.get("credits", 0.0)
+        cost = spend.get("cost", 0.0)
+        row: dict[str, Any] = {
+            "date": d,
+            "sessions": daily[d],
+            "messages": daily_msgs[d],
+            "tool_calls": daily_tools[d],
+        }
+        # Every row records both fields, so presence cannot tell a credit-billed
+        # turn from a dollar-billed one. A day whose only spend is dollars (a
+        # Claude Code day) leaves ``credits`` off, so the page shows a dash rather
+        # than a 0.00 that reads as "nothing was spent". A day with no spend at
+        # all keeps its 0.00, as before.
+        if credits or not cost:
+            row["credits"] = round(credits, 2)
+        if cost:
+            # Unrounded: formatCost rounds for display, and a round here would
+            # double-round a total or turn a fraction of a cent into zero.
+            row["cost_usd"] = cost
+        history.append(row)
 
     # Compute period summaries
     week_start = (now_dt - timedelta(days=now_dt.weekday())).strftime("%Y-%m-%d")
@@ -223,13 +507,16 @@ def _parse_sessions() -> dict:
         },
         "avg_msgs_per_session": round(total_msgs / max(total_sessions, 1), 1),
         "avg_tools_per_session": round(total_tools / max(total_sessions, 1), 1),
-        # How many transcripts the path validator refused. Carried in
-        # the payload -- not just the server log -- so the page can say the
-        # count is incomplete instead of rendering a confident zero. On a
-        # roaming-profile (UNC) home this is every transcript, so a zero
-        # session count with a positive refusal count is the exact silent
-        # failure this field makes visible.
+        # How many transcript files did not load. Carried in the payload -- not
+        # just the server log -- so the page can say the count is incomplete
+        # instead of rendering a confident zero.
         "refused_transcripts": refused_transcripts,
+        # How many session directories did not load. On a roaming-profile (UNC)
+        # home the path check refuses both session directories, so a zero
+        # session count with a positive count here is the silent failure this
+        # field makes visible. The page reports it without a number, because the
+        # transcripts inside those directories were never counted.
+        "unreadable_session_dirs": unreadable_session_dirs,
         # Present only when the directory read itself failed. ``api_kiro_usage``
         # keys its no-cache decision on this, and the zeros above are then a
         # SHAPE, not a measurement -- which is why the message has to travel with
@@ -292,6 +579,7 @@ def _empty_session_summary() -> dict[str, Any]:
         "avg_msgs_per_session": 0.0,
         "avg_tools_per_session": 0.0,
         "refused_transcripts": 0,
+        "unreadable_session_dirs": 0,
     }
 
 

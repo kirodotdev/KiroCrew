@@ -439,9 +439,10 @@ def test_load_longmemeval_file_records_its_path(tmp_path) -> None:
     corpus = load_longmemeval_file(path, variant="oracle")
 
     assert corpus.source_path == str(path)
-    assert corpus.fingerprint() == load_longmemeval(
-        _evidence_only_raw(), variant="oracle"
-    ).fingerprint()
+    assert (
+        corpus.fingerprint()
+        == load_longmemeval(_evidence_only_raw(), variant="oracle").fingerprint()
+    )
 
 
 # ── `answer` is not always a string in the real file ─────────────────────────

@@ -215,6 +215,19 @@ def list_shares(account: str = "") -> list[dict[str, Any]]:
     return sorted(entries, key=lambda e: e.get("createdAt", ""), reverse=True)
 
 
+def list_shares_strict(account: str = "") -> list[dict[str, Any]]:
+    """Live shares for a check that refuses on a doubt, not a display.
+
+    The same rows as :func:`list_shares`, read with :func:`_load_for_update`, so an
+    unreadable or corrupt ledger raises (``OSError`` or ``json.JSONDecodeError``)
+    instead of reading as "nothing is shared".
+    """
+    entries = _prune(_load_for_update())
+    if account:
+        entries = [e for e in entries if e.get("account") == account]
+    return entries
+
+
 def forget_share(share_id: str) -> Optional[dict[str, Any]]:
     """Remove one record from the ledger (the link itself lives to expiry)."""
     lock_path = _store_path().with_suffix(".lock")

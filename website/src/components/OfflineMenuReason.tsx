@@ -2,6 +2,10 @@ import { useConnected } from '../hooks/useConnected'
 
 import { i18nT } from '../i18n/t'
 
+/** A reason row in a content-sized host (a menu, a popover) takes no width of its
+ *  own, then the host's: the sentence wraps instead of widening the host offline. */
+export const REASON_ROW_WIDTH = 'w-0 min-w-full'
+
 /**
  * A natively disabled row carries `pointer-events-none`, so it fires no event and
  * opens no tooltip — an explanation gated on activation cannot reach it.
@@ -15,7 +19,7 @@ export default function OfflineMenuReason({ testId = 'menu-offline-reason' }: { 
   const connected = useConnected()
   if (connected) return null
   return (
-    <div role="status" data-testid={testId} className="px-2 py-1 text-[11px] text-muted">
+    <div role="status" data-testid={testId} className={`${REASON_ROW_WIDTH} px-2 py-1 text-[11px] text-muted`}>
       {i18nT('utils.offline.menu_reason')}
     </div>
   )

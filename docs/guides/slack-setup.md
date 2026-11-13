@@ -291,34 +291,235 @@ always returns false, and the channel-join allowlist prompt is a no-op. A
 
 ### Reaction Emojis
 
-Kiro Crew adds phase-aware emoji reactions during message processing (queued → thinking → coding → done). Customize or disable:
+Kiro Crew shows that it picked up your message without a trail of reactions:
+
+- Where Slack shows the bot's native thread status ("Kiro Crew is working on your request…", e.g. in the assistant DM), that status is the progress signal and your message gets no reaction.
+- Where it does not, your message gets a single 👀 while it is being answered. It is removed when the reply lands: the reply itself is the done signal.
+- A turn that fails gets 😱, on either surface.
+
+Customize or disable:
 
 ```json
 {
   "slack": {
     "reactions": {
-      "done": "sparkle",
-      "thinking": "brain",
-      "coding": "computer"
+      "queued": "hourglass_flowing_sand",
+      "error": "warning"
     },
     "reactions_enabled": true
   }
 }
 ```
 
-Set `reactions_enabled` to `false` to disable all phase reactions. Valid keys: `queued`, `thinking`, `coding`, `browsing`, `tool`, `done`, `error`.
+Set `reactions_enabled` to `false` to disable both. Valid keys: `queued` (the ack) and `error`. Set either to `null` to suppress it. Keys from the older per-phase trail (`thinking`, `coding`, `browsing`, `tool`, `done`) are accepted and ignored.
 
-To suppress a single phase (keep the others at their defaults), set it to `null`. For example, to keep the working/browsing/tool reactions but hide the terminal `🦞` on every message:
+---
 
-```json
-{
-  "slack": {
-    "reactions": { "done": null }
-  }
-}
-```
+## Slack Code: Agent Sessions and Code Channels
 
-A suppressed phase removes any prior reaction but adds nothing new; stall reactions (`🥱` / `😨`) are unaffected.
+Settings → Messaging Channels → Slack → **Slack Code** has two opt-in switches, **Agent
+sessions** and **Code channels**. Turning either on needs a few more permissions for your
+Slack app, so an app you already installed needs an update and a reinstall. Until the app
+has the new permissions, a switch changes nothing even when it is on, and the **Update
+your Slack app** panel says what is missing.
+
+**Code channels** is marked **Preview**. You can turn it off again, render the manifest
+without those lines and save that in Slack.
+
+Slack's own availability, as documented by Slack: the scope
+([`code_channels:manage`](https://docs.slack.dev/reference/scopes/code_channels.manage)),
+the manifest block
+([`features.code_channels`](https://docs.slack.dev/reference/app-manifest)), the event
+([`agent_session_stopped`](https://docs.slack.dev/reference/events/agent_session_stopped/))
+and the methods such as
+[`agents.conversations.listViews`](https://docs.slack.dev/reference/methods/agents.conversations.listViews/)
+are public ([Slack Code](https://docs.slack.dev/ai/slack-code/),
+[changelog](https://docs.slack.dev/changelog/2026/10/07/slack-code-for-devs)). Slack is
+rolling Slack Code out gradually, though: its
+[Help Center](https://slack.com/help/articles/54310833022355-Build-with-AI-as-a-team-using-Slack-Code)
+lists the supported agents, and
+[`agents.conversations.create`](https://docs.slack.dev/reference/methods/agents.conversations.create)
+answers `feature_disabled` when Slack does not yet recognize the app as an agent app or
+the user does not have the feature. A workspace in that state sees **Workspace not
+enabled** in the panel, and Slack keeps working as before.
+
+| Switch | Manifest additions |
+|---|---|
+| Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`; event `agent_session_stopped` |
+
+> **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
+> `assistant_view` once the manifest is saved in Slack.
+
+To update an existing app:
+
+1. Turn the switch on in Settings and **Save**.
+2. In the **Update your Slack app** panel, select **Copy manifest YAML**, then **Open App
+   Manifest** (or **App Config → App Manifest** on <https://api.slack.com/apps>).
+3. Replace the YAML with the copied manifest and select **Save Changes**. The copied
+   manifest keeps your app's slash command. Only if you edited the app in Slack by hand:
+   add just the lines the panel lists instead, because replacing the YAML replaces the
+   app's whole configuration.
+4. Reinstall when Slack asks (**Install App → Reinstall to Workspace**). The bot token
+   usually stays the same; if Slack issues a new one, paste it in Settings.
+5. Select **Check again**. The panel reads **Up to date**, and the line under the switch
+   reads **Slack app prepared**. No gateway restart is needed.
+
+`kirocrew manifest` renders the same manifest for the switches saved in `config.json`.
+If the panel reads **Workspace not enabled**, the app has the scopes but Slack has not
+turned code channels on for your workspace; a workspace admin has to enable it.
+
+For code channels you can also set a default folder, agent, model, reasoning effort and
+approval mode for new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
+With nothing set, code channels go into a **Code channels** sidebar folder, created the first
+time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
+choose **New folder…** in the folder list to create one there.
+
+A conductor only plans and hands off work, so in a code channel it needs **Let code channels
+start helper agents** (`slack.code_channel_dispatch`), the sub-toggle under **Code channels**. It
+is off by default and turning Code channels on does not turn it on. Helpers work in the code
+channel's folder and ask you before changing files, unless that channel is set to approve
+automatically (Trust). When on, the channel's conductor can
+create worker sessions and follow them on its work ledger, only on your own messages, only for
+workers it created, one level deep, filed beside the conductor in its folder and nested under it in the sidebar. Channels shared outside the
+workspace (Slack Connect) never qualify. It applies on the next call, with no restart. If `config.local.json` sets
+`slack.code_channel_dispatch`, that file wins: the toggle is disabled and says so, and you change
+it there.
+
+When the conductor tries to hand off work while this is off, it tells you where the toggle is
+(**Settings → Channels → Slack → Code channels → Let code channels start helper agents**), and the
+channel gets one short notice with a **Turn on helper agents for all code channels** button. Only you,
+the owner, can press it; anyone else is told so privately. It asks you to confirm, then saves
+the same setting the toggle saves (it turns helper agents on for every code channel) and the notice
+changes to "Helper agents are on. Send your request again." Nothing is retried for you: send your
+request to the conductor again. The notice is posted once per channel while helper agents stay off.
+
+While its workers run, the conductor can tell you each one's state (working, idle, queued,
+waiting on an approval, closed or lost) and how long since it last did anything, with a link
+to the worker's chat in the dashboard. It never reads a worker's transcript into the channel,
+and the link carries no sign-in: opening it still asks you to sign in to the dashboard.
+
+If the gateway restarts while a code channel is working, it picks the work up by itself once
+Slack reconnects -- the channel's own conversation and the workers it started -- and says so in
+the channel. It does that only once per interrupted piece of work: if that work is cut off
+again, the channel instead gets a **Resume** button that only you can press.
+
+### Choosing each code channel's agent
+
+A new code channel starts on the default agent: the **Agent** set here, else the default
+folder's own default agent, else `kirocrew-conductor`. To run a channel on a different
+agent, use either of these in the channel:
+
+- **The picker in the first message.** The message Kiro Crew posts when a channel opens has
+  an **Agent for this channel** menu, set to the agent the channel runs. Pick another one
+  and the channel's session switches to it. The message then shows the new agent and who
+  picked it.
+- **`/<command> agent <name>`.** Switches the channel to `<name>`. If no agent has that
+  name, the reply lists the agents you can pick. `/<command> agent` with no name shows the
+  channel's current agent and the list. In a code channel this command switches only that
+  channel. Anywhere else it works as before (see [Slash Commands](#slash-commands)).
+
+Both list every agent a code channel can run: your own agents, `kirocrew-conductor` and the
+coding agents. Agents that can't run a channel are left out: `kirocrew-lite` (no tools),
+`kirocrew-guest`, the dashboard manager and the background heartbeat agent. This is the
+same list the **Agent** menu above shows. Model and reasoning effort stay as the channel
+started with them; only the agent changes.
+
+If a turn is running when you pick, nothing changes and you get a message asking you to
+try again when the turn ends. Only the owner can change a channel's agent. Anyone else gets
+a message only they can see, and nothing changes. Each change, and each refused one, is
+recorded in the security event log.
+
+### Approval mode for code channels
+
+A code channel is driven from Slack, where nobody may be watching the dashboard to answer
+an approval prompt. **Approval mode** on the Code channels card
+(`slack.code_channel_defaults.approval_mode`) picks the mode each new code channel's
+session starts in:
+
+| Picker | Config value | A new code channel's session |
+|---|---|---|
+| Normal (default) | `ask` (or unset) | looks things up on its own (file reads, web searches, read-only shell commands); asks for everything else, as before |
+| Reads | `trust_reads` | also searches memory, past chats, skills and the knowledge library without asking; asks for everything else |
+| Trust | `trust` | runs every tool without asking |
+
+> **Trust is a real grant.** With Trust, anyone allowed to talk to the bot in that channel
+> drives an agent whose tools run without prompts, and sessions the agent spawns inherit
+> that posture. Pick it only for channels whose members you would hand a shell.
+
+The mode is applied once, when the code channel's dashboard session is created, through
+the same per-session approval the dashboard's approval picker sets, and is recorded in the
+security event log as `mode_change:<mode>` by `slack:code_channel`. It never turns on
+YOLO and never ends a YOLO grant. After that the session is an ordinary one: change its
+mode in the session's own approval picker at any time. Like every session's approval mode
+it is held in memory, so after a gateway restart the session asks again until someone
+picks a mode on it. A change to this setting applies to the next new code channel;
+existing ones keep the mode they have.
+
+There is no per-channel override hook: Crew's script hooks (`AgentSpawn`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) run once a turn is under way
+and can only add context or decide one tool call, not choose a session's approval mode.
+To keep one channel on Normal, change the mode on that channel's session. If that session
+is closed, the channel's next message opens a new session, which starts in the configured
+mode again.
+
+**Changing it from the channel.** Only you (the bot's owner) can change a channel's mode
+from Slack, two ways, using the dashboard's own mode names:
+
+- **The picker in the first message.** Below **Agent for this channel**, the kickoff has an
+  **Approval mode** menu (Normal / Reads / Trust), showing the session's mode as of the
+  last time the message was drawn: a change made on the dashboard, or a gateway restart,
+  does not redraw it. A line under the menu says what each mode does. Picking Normal
+  switches at once. Picking Reads or Trust first sends you a private message naming the
+  mode and what it does, with a **Switch to Reads** / **Switch to Trust** button (good for
+  10 minutes); nothing changes until you press it. The message then shows the new mode and
+  who set it, until the next change to either menu.
+- **`/<command> approval normal|reads|trust`** (code channels only). `normal` sets Normal,
+  `reads` Reads, `trust` Trust. **Trust this channel** asks you to confirm first, as the **Approval mode** menu does for Reads and Trust, since they reach the
+  helper sessions the channel's agent starts too, including ones already running.
+  `/<command> approval` with nothing after it shows the channel's current mode. Outside a code channel it is not a command (you get the help list).
+
+Both go through the same audited change as the session's own approval picker on the
+dashboard. Switching to Trust either way posts a warning line in the channel. Normal also
+ends a YOLO grant if one is on, as Normal does on the dashboard; YOLO covers every
+session, so the reply says so, and while YOLO is on the first message carries a line
+saying tools run without asking whatever the menu shows. Anyone else gets a message only
+they can see, and nothing changes.
+
+**Approval prompts in the channel.** When a code channel's session needs an approval, the
+**Tool approval requested** card is posted in the channel itself, where the agent's
+replies go, not in a thread. Besides **Approve** and **Reject** it has **Trust this
+channel**: only you (the bot's owner) can use it, and it approves that call and puts the
+channel's session on Trust, through the same audited change as the dashboard's Trust
+button. The channel then gets a one-line warning that tools run without asking, for the
+agent and any helper sessions it starts, including ones already running. Anyone else who clicks it is told
+they can't, and nothing changes. A card answered by a switch to Trust (yours or a
+helper session's) changes in place to say it ran under Trust, and its buttons go. A card answered
+some other way while the switch was being made never claims that. The card shows a command once: the
+command line, plus the other arguments only when there are any.
+
+**Workers follow the channel's mode.** Changing the channel's approval mode from the first
+message, `/<command> approval normal|reads|trust` or a **Trust this channel** button changes it
+for the workers the channel's agent is already running as well, each change recorded like
+the dashboard's. A raise reaches only the workers still following the channel, under the
+same rules as raising a session on the dashboard: a worker whose own mode someone set
+keeps it. A lowering reaches every worker above the new mode. Lowering the channel also lowers anything those
+workers started in turn, since a session starts with its creator's mode; nothing below
+the agent's own workers is ever raised. If a worker can't be changed, the reply names it.
+A session whose creator has already closed is no longer counted as under the channel, so
+a lowering doesn't reach it; change its mode from the dashboard. Raising to Trust also answers their waiting tool
+prompts, as switching a session to Trust does on the dashboard. A person-only question
+from a worker is never answered for you. Sessions the agent did not start are left alone.
+
+**Workers ask in the channel too.** When the channel's agent starts worker sessions, a
+worker's approval prompt is also posted in the channel, headed with the worker's title
+(for example **A helper session this channel started (Fix #21964)** wants to run:). The card shows the tool and its
+arguments, with secrets and suspicious links redacted, and nothing from the worker's
+conversation. Only you can answer it: **Approve** and **Reject** answer the worker's
+prompt exactly as the dashboard's buttons do, and **Trust this channel** approves it and
+puts the whole channel on Trust, this worker and its siblings included. If the prompt is
+answered in the dashboard or nobody answers in time, the card changes to say so and its
+buttons go.
 
 ---
 
@@ -457,7 +658,8 @@ The slash command name is configurable via `slack.command` in config (default: `
 | `/<command> dashboard 2h` | Dashboard link with custom duration (cap 20h) |
 | `/<command> yolo` | Toggle auto-approve all tool calls |
 | `/<command> agent` | Show agent selector dropdown |
-| `/<command> agent <name>` | Switch to a named agent |
+| `/<command> agent <name>` | Switch to a named agent (in a code channel: switch that channel's agent) |
+| `/<command> approval normal\|reads\|trust` | Code channels only: set that channel's approval mode (Normal / Reads / Trust) |
 | `/<command> voice` | Configure TTS voice settings |
 | `/<command> config` | Manage tracked channels (owner-only; multi-user access is disabled) |
 | `/<command> users` | Report that multi-user access is disabled |

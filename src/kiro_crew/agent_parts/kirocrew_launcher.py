@@ -154,13 +154,15 @@ def _kirocrew_bin_subpath(root: Path) -> Path:
     .../bin/kirocrew``). Branch on the platform so both layouts resolve.
 
     On Windows a relocatable ``bin\\kirocrew.cmd`` shim is preferred over the
-    pip-generated ``Scripts\\kirocrew.exe`` when it exists. The desktop bundle
-    (``packaging/build-desktop.sh``) ships BOTH: pip drops a console-script
-    ``.exe`` in ``Scripts\\``, but distlib embeds the ABSOLUTE interpreter path
-    of the machine that built it, so inside a shipped bundle that ``.exe``
-    points at a build-agent path that does not exist on the user's machine.
-    The ``.cmd`` shim resolves the interpreter via ``%~dp0`` and is the only
-    relocatable launcher of the two. The Electron resolver
+    pip-generated ``Scripts\\kirocrew.exe`` when it exists. pip drops a
+    console-script ``.exe`` in ``Scripts\\``, but distlib embeds the ABSOLUTE
+    interpreter path of the machine that built it, so inside a shipped bundle
+    that ``.exe`` points at a build-agent path that does not exist on the
+    user's machine. The ``.cmd`` shim resolves the interpreter via ``%~dp0``
+    and is the only relocatable launcher of the two. The desktop bundle
+    (``packaging/build-desktop.sh``) deletes that ``.exe`` and writes a
+    ``Scripts\\kirocrew.cmd`` copy of the shim instead; a bundle built
+    without that step still carries it. The Electron resolver
     (``website/electron/find-bin.js``) ranks them the same way — keep the two
     in sync. Plain pip installs ship no ``bin\\kirocrew.cmd``, so they keep
     resolving ``Scripts\\kirocrew.exe`` via the fallback.
@@ -528,6 +530,116 @@ def ensure_kirocrew_on_path(
     return str(link)
 
 
+def refresh_own_kirocrew_link() -> str | None:
+    """Point ``<crew home>/kirocrew-bin/kirocrew`` at the install this gateway runs.
+
+    ``env.augmented_path`` puts that directory ahead of ``~/.local/bin`` on every PATH it builds,
+    so an agent's ``kirocrew`` reaches this install even when ``~/.local/bin``
+    holds another one. Unlike :func:`ensure_kirocrew_on_path`, this link is
+    private to the crew home, so it is always repointed: no other install reads
+    it. A link already naming the target is left alone. The link is replaced
+    atomically, so a concurrent lookup sees the old link or the new one.
+
+    The link names the running tree's launcher, not the managed venv's stable
+    link: an update promotes the stable link before this gateway restarts, and
+    an agent's ``kirocrew`` must run the version its gateway runs. The running
+    tree stays alive under its liveness lock while this process runs.
+
+    On Windows the entry is a ``kirocrew.cmd`` forwarder instead of a link
+    (:func:`_refresh_windows_forwarder`).
+
+    Returns the link path when it was written, else ``None``. Best-effort:
+    never raises.
+    """
+    from kiro_crew.config.paths import data_home  # noqa: PLC0415  import cycle
+    from kiro_crew.env_own_kirocrew import OWN_KIROCREW_DIR  # noqa: PLC0415  import cycle
+
+    target = _resolve_kirocrew_bin()
+    resolved = os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)
+    try:
+        directory = data_home() / OWN_KIROCREW_DIR
+        if platform_compat.is_link_or_junction(directory):
+            logger.warning(
+                "Not linking kirocrew: %s is a link, not the sealed directory", directory
+            )
+            return None
+        if platform_compat.IS_WINDOWS:
+            return _refresh_windows_forwarder(directory, target if resolved else None)
+        if not resolved:
+            return None
+        mkdirs_owner_only(directory)
+        link = directory / "kirocrew"
+        if link.is_symlink() and os.readlink(link) == target:
+            return None
+        staged = directory / f".kirocrew.{os.getpid()}.tmp"
+        staged.unlink(missing_ok=True)
+        staged.symlink_to(target)
+        os.replace(staged, link)
+    except OSError as exc:
+        logger.warning("Could not link this install's kirocrew into the crew home: %s", exc)
+        return None
+    logger.info("Linked this install's kirocrew for agent shells: %s -> %s", link, target)
+    return str(link)
+
+
+def _refresh_windows_forwarder(directory: Path, target: str | None) -> str | None:
+    """Write ``<directory>\\kirocrew.cmd`` forwarding to *target*, the running launcher.
+
+    A forwarder, not a link: a symlink needs a privilege an ordinary Windows
+    session lacks, and a copy of the launcher would break any launcher that
+    finds its interpreter relative to itself. Rewritten only when its bytes
+    differ, through :func:`atomic_write`, so a concurrent lookup reads the old
+    forwarder or the new one.
+
+    Unlike a POSIX link to a removed tree, which every lookup skips, a forwarder
+    is found whether or not its target still exists. So when no forwarder can be
+    written for this install (*target* is ``None``, cannot be quoted, or lies in
+    *directory* itself, which would make the forwarder call itself), an existing
+    one is removed and the lookup falls through to the rest of PATH. A target
+    under a non-ASCII directory (a user profile such as ``C:\\Users\\José``) is
+    written by its 8.3 short name, which names the same file in ASCII; a volume
+    without short names gets no forwarder. Raises ``OSError`` for the caller to
+    log.
+    """
+    from kiro_crew.atomic_write import atomic_write  # noqa: PLC0415  kept with the call
+    from kiro_crew.env_own_kirocrew import (  # noqa: PLC0415  import cycle
+        WINDOWS_FORWARDER_NAME,
+        windows_forwarder,
+    )
+
+    forwarder = directory / WINDOWS_FORWARDER_NAME
+    body = None
+    if target is not None:
+        inside = os.path.normcase(os.path.dirname(os.path.abspath(target))) == os.path.normcase(
+            os.path.abspath(directory)
+        )
+        if not inside:
+            body = windows_forwarder(target)
+            if body is None and not target.isascii():
+                short = platform_compat.short_path_name(target)
+                body = windows_forwarder(short) if short else None
+    if body is None:
+        if forwarder.is_file():
+            logger.warning(
+                "Removing %s: no forwarder can be written for this install's kirocrew (%s)",
+                forwarder,
+                target,
+            )
+            forwarder.unlink()
+        return None
+    mkdirs_owner_only(directory)
+    try:
+        if forwarder.read_bytes() == body:
+            return None
+    except FileNotFoundError:
+        pass
+    atomic_write(forwarder, body)
+    logger.info(
+        "Wrote this install's kirocrew forwarder for agent shells: %s -> %s", forwarder, target
+    )
+    return str(forwarder)
+
+
 # One-time migrations performed automatically on gateway first-run (so the
 # desktop app, which never runs `kirocrew setup`, still gets them). Lazy
 # accessors (same import-side-effect reason as _user_dir in spec_build).
@@ -573,6 +685,9 @@ def run_first_run_setup() -> None:
             logger.info("First-run: linked kirocrew shim at %s", shim)
     except Exception:
         logger.warning("First-run: shim install failed", exc_info=True)
+    # 1b. The crew-home link agent shells resolve `kirocrew` through, refreshed
+    #     on every start so it follows this install. Never raises.
+    refresh_own_kirocrew_link()
 
     # 2. Admission-policy seed — one-time, self-guarded by its OWN marker.  Run
     #    BEFORE the stale-MCP early return below so an EXISTING install (which

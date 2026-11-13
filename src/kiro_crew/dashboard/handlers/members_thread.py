@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _member_names_for_slug,
     _sel,
 )
+from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.members import MemberSlugError
 
@@ -102,7 +103,9 @@ async def _bind_member_workspace(
     slot.workspace = member_workspace
     slot.project = project
     if old_project != project:
-        slot._pending_reset_history_key = effective_session_key(slot)
+        from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+        arm_project_reset(state, slot, effective_session_key(slot))
     slot._dirty = True
     state.push_slots_update()
 
@@ -280,7 +283,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 )
     if not member_name:
         return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            {"error": "no Bot for this slug", "code": "member_not_found"}, status=404
         )
 
     slot = state._slots.get(slot_key)
@@ -392,21 +395,12 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
     # The thread is named after its crewmate, as a final title no background
     # path rewrites (see chat_title.name_member_thread). The first crewmate with no
-    # display name reads "Mate", as it does in the sidebar.
-    from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, is_assistant_member
+    # display name reads "Bot", as it does in the sidebar.
+    from kiro_crew.agent_files import member_label
     from kiro_crew.dashboard.chat_title import name_member_thread
 
     named_crew = cfg.agents[member_name]
-    name_member_thread(
-        state,
-        slot,
-        getattr(named_crew, "display_name", "")
-        or (
-            ASSISTANT_DEFAULT_DISPLAY_NAME
-            if is_assistant_member(member_name, named_crew)
-            else member_name
-        ),
-    )
+    name_member_thread(state, slot, member_label(member_name, named_crew))
 
     if not minted:
         # Live (restart-restored) and rehydrated threads alike: the fresh mint
@@ -609,24 +603,12 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
     """
     if slot._member_approval_seeded:
         return
+    from kiro_crew.approval_mode_policy import verdict_pending
+
+    if verdict_pending():
+        # The policy answer is not final yet: seed on a later open or turn, rather
+        # than commit a passing deny as this thread's mode.
+        return
     slot._member_approval_seeded = True
     effective = mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
-    if effective == "normal" or slot._trust or slot._trust_reads or slot._trust_scope:
-        return
-    key = effective_session_key(slot)
-    for sharing in state._slots.values():
-        if effective_session_key(sharing) == key:
-            if effective == "trust":
-                sharing._trust = True
-            else:
-                sharing._trust_reads = True
-    state.sessions.set_approval_policy(key, "auto" if effective == "trust" else "")
-    try:
-        _sel().log_api_access(
-            caller="dashboard:member_profile",
-            operation=f"mode_change:{effective}",
-            outcome="enabled",
-            resources=slot.key,
-        )
-    except Exception:  # pragma: no cover - audit must never change the outcome
-        logger.warning("SEL audit failed for member approval seed", exc_info=True)
+    seed_slot_approval(state, slot, effective, caller="dashboard:member_profile", sel=_sel)

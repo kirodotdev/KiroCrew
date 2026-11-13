@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         AGENT_FILENAME,
         AppOwnershipUnreadable,
         ConfigReadError,
+        PendingEditBlocksSave,
         _agent_file_lock,
         _drop_unbacked_app_entries,
         _err500,
@@ -519,6 +520,9 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # Restart kiro-cli sessions so new config takes effect
             await _h._reset_all_sessions(request)
             return web.json_response({"ok": True, "applied": True})
+        except PendingEditBlocksSave:
+            # A pending config.json change: the dashboard chain answers it 409.
+            raise
         except Exception as exc:
             return _err500(exc)
     # GET
@@ -527,17 +531,29 @@ async def api_agent_config(request: web.Request) -> web.Response:
         # Prefer installed config (what kiro-cli reads); fall back to defaults.
         # Runs in a worker thread: the stats (including the one resolving the
         # defaults path) and the read are filesystem calls, and on the event
-        # loop a slow disk would stall every session.
+        # loop a slow disk would stall every session. The retrying read rides
+        # out the Windows window in which a writer's ``os.replace`` makes the
+        # open fail with ``PermissionError``; the retry only sleeps off the loop.
+        from kiro_crew.atomic_write import read_bytes_with_retry
+
         if installed_path.is_file():
             path = installed_path
         else:
             path = _h._find_agent_config()
         try:
-            return loads_user_json(path.read_text(encoding="utf-8"))
+            return loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
         except FileNotFoundError:
             return {}
 
-    data = await asyncio.to_thread(_read_agent_config)
+    try:
+        data = await asyncio.to_thread(_read_agent_config)
+    except PermissionError:
+        # Still contended after the retry budget, or genuinely unreadable: a
+        # retryable 503 rather than an opaque 500 or a silent empty config.
+        logger.warning("agent config read stayed unreadable after retries", exc_info=True)
+        return web.json_response(
+            {"error": "agent config is busy; retry", "code": "config_busy"}, status=503
+        )
     # A pre-registered Connections client projects its secret into the installed
     # spec for kiro-cli; this read is not kiro-cli, and any dashboard subject can
     # make it. Mask the value (the PUT branch restores the marker from disk).

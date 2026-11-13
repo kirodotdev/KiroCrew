@@ -119,9 +119,7 @@ class TestProtectedIdsSurviveEviction:
         # Now a flood of unrelated cancels arrives, each protecting only the
         # still-live "victim" (models _live_request_ids while it stays queued).
         for i in range(1000):
-            _remember_cancelled_id(
-                ids, order, f"noise-{i}", cap=cap, protected={"victim"}
-            )
+            _remember_cancelled_id(ids, order, f"noise-{i}", cap=cap, protected={"victim"})
         # The victim's cancellation flag is still present -- the queued call
         # will be dropped at dispatch instead of executing.
         assert "victim" in ids
@@ -142,9 +140,7 @@ class TestProtectedIdsSurviveEviction:
         ids, order = _fresh()
         cap = 8
         for i in range(1000):
-            _remember_cancelled_id(
-                ids, order, f"noise-{i}", cap=cap, protected={"keepme"}
-            )
+            _remember_cancelled_id(ids, order, f"noise-{i}", cap=cap, protected={"keepme"})
         # No "keepme" was ever added, so nothing is protected -> strict bound.
         assert len(ids) == cap
 

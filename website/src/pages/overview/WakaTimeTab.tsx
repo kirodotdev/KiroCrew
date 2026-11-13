@@ -8,6 +8,7 @@ import { api } from '../../api/client'
 import type { WakaTimeStats, WakaTimeStatsEntry } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration } from '../../i18n/format'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 // Ranges the stats endpoint accepts, in the order shown in the toolbar. The
 // value is the API's named range; labelKey is the full literal i18n key so the
@@ -132,14 +133,14 @@ export default function WakaTimeTab() {
       <p className="text-muted text-[12.5px] -mt-1">{i18nT('pages.overview.wakatimeTab.subtitle')}</p>
       {/* Toolbar: range control + export */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex rounded-md border border-border overflow-hidden" role="group"
-          aria-label={i18nT('pages.overview.wakatimeTab.range_label')}>
+        <RadioChipGroup className="inline-flex rounded-md border border-border overflow-hidden"
+          ariaLabel={i18nT('pages.overview.wakatimeTab.range_label')}>
           {RANGES.map(r => (
             <button
               key={r.value}
               type="button"
               onClick={() => setRange(r.value)}
-              aria-pressed={range === r.value}
+              {...radioChip(range === r.value)}
               className={`px-3 py-1.5 text-[12.5px] border-r border-border last:border-r-0 transition-colors ${
                 range === r.value ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text'
               }`}
@@ -147,7 +148,7 @@ export default function WakaTimeTab() {
               {i18nT(r.labelKey)}
             </button>
           ))}
-        </div>
+        </RadioChipGroup>
         <button
           type="button"
           onClick={() => download('csv')}

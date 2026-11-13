@@ -1,13 +1,8 @@
 """The recipe zip, and that it reuses the Fargate lane's recipe rather than copying it.
 
-The clause these tests exist for is "reuse the packaging and recipe code; do not
-write a second bundle format". So the first things asserted are not behaviours of
-this module at all. They are that the Dockerfile in the zip IS the Fargate lane's
-``Dockerfile.crew``, that the bundle layout checked is that Dockerfile's own
-``COPY`` list, and that the bundle digest the image cache keys on IS
-``packaging.build``'s function. Each of those, implemented a second time, would be
-a second answer to a question one lane has already answered -- and the looser
-answer is the one that ships the wrong content.
+The zip's Dockerfile IS the Fargate lane's ``Dockerfile.crew``, the bundle layout is
+that Dockerfile's own ``COPY`` list, and the cache's bundle digest IS ``packaging.build``'s
+function. A second copy of any of them could ship the wrong content.
 """
 
 from __future__ import annotations
@@ -22,7 +17,6 @@ import pytest
 
 from kiro_crew.cloud.microvm import recipe as recipe_module
 from kiro_crew.cloud.microvm.recipe import (
-    CREW_DOCKERFILE,
     DOCKERFILE_NAME,
     REQUIRED_BUNDLE_DIR,
     REQUIRED_BUNDLE_MEMBERS,
@@ -31,13 +25,36 @@ from kiro_crew.cloud.microvm.recipe import (
     assemble,
     bundle_digest_of,
     check_layout,
+    runtime_path,
 )
+
+CREW_DOCKERFILE = runtime_path("CREW_DOCKERFILE")
 
 BASE = "arn:aws:lambda:us-east-1:123456789012:microvm-image/al2023-base"
 #: The base image the build RUNS on. Recorded in the recipe; it is not what
 #: identifies the base content, because this lane concatenates the base's own
 #: layers into the Dockerfile rather than starting from a built base image.
 #: :func:`base_recipe_digest` is what says which base content.
+
+
+class _FakeRuntime:
+    """A ``crew_runtime`` seam provider serving *runtime_dir*, with no bundle builder."""
+
+    def __init__(self, runtime_dir: Path) -> None:
+        self.runtime_dir = runtime_dir
+
+    def bundle_digest(self, bundle_dir: Path) -> str:
+        raise AssertionError("this fixture runtime has no bundle builder")
+
+
+def _provide_runtime(monkeypatch, runtime_dir: Path) -> None:
+    """Serve *runtime_dir* through the ``crew_runtime`` seam for one test."""
+    from kiro_crew.apps import seams
+
+    seams.crew_runtime()  # the shipped providers load first, so this one replaces theirs
+    monkeypatch.setitem(
+        seams._providers, seams.SEAM_CREW_RUNTIME, ("test", _FakeRuntime(runtime_dir))
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -292,17 +309,9 @@ class TestAssemble:
     ):
         """The bytes installed must be exactly the bytes that were signed.
 
-        ``packaging.build`` writes the bundle's digest into its manifest, and the
-        guest recomputes it from what it is about to install before trusting it.
-        Both hash every file except the top-level manifest, so ANY file this
-        assembly adds under the bundle prefix changes the recompute, the
-        comparison fails, and the supervisor refuses the bundle at boot -- after
-        which every turn reports the crew as unreachable, which reads like a
-        network fault rather than a signature one.
-
-        This runs the guest's own ``_content_digest`` over the extracted bundle,
-        not a local reimplementation, so the thing asserted is the comparison the
-        guest actually makes.
+        Any extra file under the bundle prefix breaks the guest's digest recompute, and
+        the refused bundle then looks like a network fault. This runs the guest's own
+        ``_content_digest`` over the extracted bundle.
         """
         import json
         import sys
@@ -333,15 +342,15 @@ class TestAssemble:
             for name in archive.namelist():
                 if name.startswith("container/") or name.startswith("vendor/"):
                     continue
-                if name in ("Dockerfile", recipe_module.SSM_AGENT_CONFIG.name):
+                if name in ("Dockerfile", recipe_module.runtime_path("SSM_AGENT_CONFIG").name):
                     continue
                 archive.extract(name, installed)
 
-        sys.path.insert(0, str(recipe_module.RUNTIME_DIR))
+        sys.path.insert(0, str(recipe_module.runtime_path("RUNTIME_DIR")))
         try:
             from container.supervisor.bundle import _content_digest
         finally:
-            sys.path.remove(str(recipe_module.RUNTIME_DIR))
+            sys.path.remove(str(recipe_module.runtime_path("RUNTIME_DIR")))
 
         assert _content_digest(installed) == signed, (
             "the assembled bundle does not hash to the digest its manifest was "
@@ -358,12 +367,9 @@ class TestAssemble:
     ):
         """A crew that ships no skills is a SUPPORTED bundle, and it has to build.
 
-        ``packaging.build`` advertises exactly this shape -- a valid bundle with
-        the crew's persona only -- but a zip carries no empty directories, so
-        ``skills/`` vanished from the build context and the image's own
-        ``COPY ... skills /app/crew-bundle/skills`` failed to checksum ``/skills``.
-        Because the image name is the recipe digest, that failure was permanent
-        for that content.
+        A zip carries no empty directories, so without care ``skills/`` vanishes and
+        ``COPY ... skills /app/crew-bundle/skills`` fails. The image name is the recipe
+        digest, so that failure would be permanent for that content.
         """
         for leaf in (bundle / "skills" / "demo" / "SKILL.md",):
             leaf.unlink()
@@ -687,9 +693,14 @@ class TestTheConcatenatedDockerfile:
     def test_it_refuses_a_crew_layer_it_does_not_recognise(self, tmp_path, monkeypatch):
         """A silently mis-assembled recipe is a build that succeeds and produces
         the wrong image, so an unrecognised shape fails here instead."""
-        fake = tmp_path / "Dockerfile.crew"
-        fake.write_text("FROM scratch\nCOPY manifest.json /\n")
-        monkeypatch.setattr(recipe_module, "CREW_DOCKERFILE", fake)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        for name in ("Dockerfile", "Dockerfile.microvm"):
+            (runtime / name).write_bytes(
+                (recipe_module.runtime_path("RUNTIME_DIR") / name).read_bytes()
+            )
+        (runtime / "Dockerfile.crew").write_text("FROM scratch\nCOPY manifest.json /\n")
+        _provide_runtime(monkeypatch, runtime)
         with pytest.raises(RecipeRefused, match="no longer starts"):
             recipe_module.assemble_dockerfile("sha256:deadbeef")
 
@@ -697,11 +708,8 @@ class TestTheConcatenatedDockerfile:
 class TestARedirectingEntryIsRefused:
     """A link in the bundle would travel the bytes it points at into the zip.
 
-    ``zipfile.write`` FOLLOWS a link, so a bundle carrying
-    ``agent.json -> ~/.aws/credentials`` would upload those bytes to S3 and bake
-    them into an image. ``packaging.build``'s digest refuses to sign a redirect
-    for the same reason, so refusing here is also what keeps the two in step: a
-    redirect the digest will not cover must not be one this zip carries.
+    ``zipfile.write`` FOLLOWS a link, so ``agent.json -> ~/.aws/credentials`` would bake
+    those bytes into an image. ``packaging.build``'s digest refuses redirects too.
     """
 
     def test_a_symlinked_bundle_file_is_refused(self, bundle, wheel, tmp_path):
@@ -758,13 +766,9 @@ class TestARedirectingEntryIsRefused:
 class TestTheImageBakesTheStrictPosture:
     """Every crew route on this lane authenticates, and the IMAGE is what says so.
 
-    A MicroVM carries its own internet-reachable HTTPS endpoint that no network
-    connector closes, so the container is the only boundary. A value supplied at
-    launch is one a caller can omit, and a posture that depends on every launch
-    remembering to ask for it is not a posture. These tests read the ASSEMBLED
-    recipe -- what Lambda actually builds -- rather than the layer file alone,
-    because a line in a Dockerfile the concatenation drops is a line that ships
-    nowhere.
+    A MicroVM has an internet-reachable HTTPS endpoint, so the container is the only
+    boundary, and a launch-time value could be omitted. These read the ASSEMBLED recipe,
+    because a line the concatenation drops ships nowhere.
     """
 
     def test_the_assembled_dockerfile_sets_the_flag(self, bundle, wheel, tmp_path):
@@ -782,7 +786,7 @@ class TestTheImageBakesTheStrictPosture:
         """``ARG`` is consumed at build time and is gone from the running VM;
         ``ENV`` is part of the image, so a VM started from it has the flag
         whatever the launch said."""
-        text = recipe_module.MICROVM_DOCKERFILE.read_text(encoding="utf-8")
+        text = recipe_module.runtime_path("MICROVM_DOCKERFILE").read_text(encoding="utf-8")
         env_block = text.split("ENV ", 1)[1].split("\n\n", 1)[0]
         assert "SMC_REQUIRE_AUTH_ALL_ROUTES=1" in env_block
         assert "ARG SMC_REQUIRE_AUTH_ALL_ROUTES" not in text
@@ -790,33 +794,33 @@ class TestTheImageBakesTheStrictPosture:
     def test_the_guest_reads_that_exact_name(self):
         """The image and the container must agree on the spelling, or the flag is
         set and nothing reads it."""
-        config = (recipe_module.CONTAINER_DIR / "common" / "config.py").read_text(encoding="utf-8")
+        config = (recipe_module.runtime_path("CONTAINER_DIR") / "common" / "config.py").read_text(
+            encoding="utf-8"
+        )
         assert '"SMC_REQUIRE_AUTH_ALL_ROUTES"' in config
 
     def test_the_fargate_layers_do_not_set_it(self):
         """Fargate's default is unchanged: that lane's flag stays absent, which is
         what its private subnet and zero-ingress security group already assert."""
-        for recipe in (recipe_module.BASE_DOCKERFILE, recipe_module.CREW_DOCKERFILE):
+        for recipe in (
+            recipe_module.runtime_path("BASE_DOCKERFILE"),
+            recipe_module.runtime_path("CREW_DOCKERFILE"),
+        ):
             assert "SMC_REQUIRE_AUTH_ALL_ROUTES" not in recipe.read_text(encoding="utf-8")
 
 
 class TestTheRunAsUserIsOneValue:
     """Registration and image must name the same POSIX user.
 
-    ``cloud/ssm.py`` wraps every in-guest command as ``sudo -u <run_as> -i``, so a
-    user the guest does not have makes the command exit with ``sudo: unknown
-    user``. The first such command is the dashboard's token mint, and a failed
-    mint takes the tunnel with it -- leaving a crew that is online, registered and
-    unreachable, with nothing in the control plane saying why.
-
-    Read from the files rather than restated, so a rename in any one of the three
-    places fails here instead of on a live VM.
+    ``cloud/ssm.py`` runs every in-guest command as ``sudo -u <run_as> -i``; an unknown
+    user fails the token mint and leaves a registered crew unreachable. Read from the
+    files, so a rename in any of the three places fails here.
     """
 
     def test_the_image_runs_the_crew_as_that_user(self):
         """The base recipe's own ``USER``, which the supervisor and its children
         inherit."""
-        text = recipe_module.BASE_DOCKERFILE.read_text(encoding="utf-8")
+        text = recipe_module.runtime_path("BASE_DOCKERFILE").read_text(encoding="utf-8")
         users = [
             line.split(None, 1)[1].strip() for line in text.splitlines() if line.startswith("USER ")
         ]
@@ -826,7 +830,9 @@ class TestTheRunAsUserIsOneValue:
     def test_the_guest_wraps_its_own_commands_in_that_user(self):
         """``hooks.py`` spawns the supervisor as this user, so the processes that
         exist in the VM are its processes."""
-        hooks = (recipe_module.CONTAINER_DIR / "microvm" / "hooks.py").read_text(encoding="utf-8")
+        hooks = (recipe_module.runtime_path("CONTAINER_DIR") / "microvm" / "hooks.py").read_text(
+            encoding="utf-8"
+        )
         assert f'CREW_USER = "{recipe_module.GUEST_RUN_AS}"' in hooks
 
     def test_the_registration_names_that_user(self):
@@ -860,13 +866,13 @@ class TestTheFrontPortIsOneValue:
     """
 
     def test_the_front_port_matches_the_image(self):
-        env_line = recipe_module.MICROVM_DOCKERFILE.read_text(encoding="utf-8")
+        env_line = recipe_module.runtime_path("MICROVM_DOCKERFILE").read_text(encoding="utf-8")
         assert f"SMC_FRONT_PORT={recipe_module.GUEST_FRONT_PORT}" in env_line
 
     def test_it_is_not_the_hook_port(self):
         """The platform's hook listener owns that port, and the two cannot share
         one."""
-        text = recipe_module.MICROVM_DOCKERFILE.read_text(encoding="utf-8")
+        text = recipe_module.runtime_path("MICROVM_DOCKERFILE").read_text(encoding="utf-8")
         assert f"SMC_HOOK_PORT={recipe_module.GUEST_FRONT_PORT}" not in text
 
     def test_the_registration_targets_it(self):
@@ -879,16 +885,9 @@ class TestTheFrontPortIsOneValue:
 class TestTheStagedWheelCarriesNoDashboard:
     """The dashboard SPA must not reach the recipe, and the lane must say so if it does.
 
-    Not a size optimisation. Measured on one build, the assets are 53.26 MB of an
-    89.93 MB wheel against a 64 MiB ceiling, so a checkout that has ever built the
-    dashboard -- which ``kirocrew pod provision`` does -- cannot build an image at
-    all. The crew here serves one turn route and a liveness answer and starts no page
-    server, so none of it is reachable in the guest.
-
-    The ceiling is monkeypatched small in the end-to-end case below. The property is
-    "removing these assets is what brings the zip under the ceiling", and it holds at
-    any scale; asserting it at the real one would mean building a real 90 MB wheel in
-    a unit test.
+    The assets were 53.26 MB of an 89.93 MB wheel against a 64 MiB ceiling, and the guest
+    starts no page server. The end-to-end case monkeypatches the ceiling small, since the
+    property holds at any scale.
     """
 
     def _wheel_with_dashboard(self, tmp_path: Path, asset_bytes: int) -> Path:
@@ -1030,15 +1029,9 @@ class TestTheStagedWheelCarriesNoDashboard:
 class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
     """``container/`` is a package tree, so a bare file name does not locate a file.
 
-    It holds ``microvm/hooks.py``, ``front/app.py`` and an ``__init__.py`` per
-    package. Hashed under its bare name, a file moved between packages left the
-    digest unchanged while changing the image -- so the cache hit on an image
-    built from the old tree. The digest is half the image's name, and nothing
-    compares further once the name matches.
-
-    ``CONTAINER_DIR`` is pointed at a fixture tree here rather than at the real
-    one, because the property is about the walk and the real tree cannot be
-    rearranged inside a test.
+    Hashed under bare names, a file moved between packages would leave the digest, and so
+    the image name, unchanged. ``CONTAINER_DIR`` is a fixture tree because the real tree
+    cannot be rearranged inside a test.
     """
 
     @pytest.fixture()
@@ -1050,23 +1043,27 @@ class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
         two are indistinguishable, so the stream says nothing about where either
         of them is.
         """
-        root = tmp_path / "container"
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        for name in ("Dockerfile", "Dockerfile.crew", "Dockerfile.microvm"):
+            (runtime / name).write_bytes(
+                (recipe_module.runtime_path("RUNTIME_DIR") / name).read_bytes()
+            )
+        ssm = recipe_module.runtime_path("SSM_AGENT_CONFIG")
+        (runtime / ssm.name).write_bytes(ssm.read_bytes())
+        root = runtime / "container"
         (root / "front").mkdir(parents=True)
         (root / "microvm").mkdir(parents=True)
         (root / "front" / "__init__.py").write_text("")
         (root / "microvm" / "__init__.py").write_text("")
         (root / "microvm" / "hooks.py").write_text("def run(): ...\n")
-        monkeypatch.setattr(recipe_module, "CONTAINER_DIR", root)
+        _provide_runtime(monkeypatch, runtime)
         return root
 
     def test_moving_a_package_file_changes_the_digest(self, container, wheel):
         """``microvm/__init__.py`` moves to ``microvm/deep/__init__.py``.
 
-        Chosen so the sequence of (bare name, bytes) pairs is byte-for-byte
-        unchanged -- same names, same contents, same order -- while the tree is
-        not. A hash over bare names alone answers "nothing changed" for that
-        rearrangement, and the reuse it produces is silent: the image name
-        matches, so nothing compares further.
+        Chosen so the (bare name, bytes) sequence is unchanged while the tree is not.
         """
         before = recipe_module.base_recipe_digest(wheel)
         (container / "microvm" / "deep").mkdir()
@@ -1095,23 +1092,19 @@ class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
     def test_the_real_hooks_source_is_inside_the_walked_tree(self):
         """The fixture above proves the mechanism; this proves it applies to the
         file that matters, which the fixture cannot."""
-        hooks = recipe_module.CONTAINER_DIR / "microvm" / "hooks.py"
+        hooks = recipe_module.runtime_path("CONTAINER_DIR") / "microvm" / "hooks.py"
         assert hooks.is_file(), hooks
 
 
 class TestTheStagedWheelIsBuiltReproducibly:
     """``python -m build`` dates each wheel member from the clock by default.
 
-    :func:`base_recipe_digest` hashes the wheel's bytes and that digest is half
-    the image cache's key, so a wheel that varies run to run makes every restage
-    of unchanged code a cache miss and a full multi-minute image build charged to
-    the owner. ``SOURCE_DATE_EPOCH`` is the convention ``wheel`` and setuptools
-    already honour, which is why it is the fix rather than a pass that rewrites
-    timestamps afterwards.
+    :func:`base_recipe_digest` hashes the wheel's bytes for the image cache key, so a
+    varying wheel makes every restage a full image build. ``SOURCE_DATE_EPOCH`` is the
+    convention ``wheel`` and setuptools honour.
 
-    The CLI is loaded from its path because ``scripts/`` is not an importable
-    package, and the build subprocess is replaced: what is under test is the
-    environment handed to it.
+    The CLI is loaded from its path (``scripts/`` is not a package), and the build
+    subprocess is replaced: the environment handed to it is what is under test.
     """
 
     @pytest.fixture()
@@ -1235,3 +1228,48 @@ class TestTheRecipeStampsTheGuestsPins:
         assert b"123456789012" not in blob
         assert b"ENV SMC_MICROVM_ACCOUNT" not in blob
         assert b"SMC_MICROVM_REGION=" not in blob
+
+
+class TestTheRuntimeComesFromTheCrewRuntimeSeam:
+    """The runtime is the one an app provides, so ``cloud`` never imports that app."""
+
+    def test_the_shipped_runtime_is_the_directory_the_lane_always_read(self):
+        """The aws-control app provides it, as the app's ``crew/runtime`` directory."""
+        from kiro_crew.apps import seams
+
+        seams.crew_runtime()
+        assert seams._providers[seams.SEAM_CREW_RUNTIME][0] == "aws-control"
+        src = Path(recipe_module.__file__).resolve().parents[2]
+        expected = src / "apps" / "builtins" / "aws_control" / "crew" / "runtime"
+        assert recipe_module.runtime_path("RUNTIME_DIR") == expected
+        assert recipe_module.runtime_path("CREW_DOCKERFILE") == expected / "Dockerfile.crew"
+        assert recipe_module.runtime_path("CONTAINER_DIR") == expected / "container"
+
+    def test_with_no_provider_every_runtime_read_is_refused(self, monkeypatch, bundle):
+        """A missing runtime is a refusal naming the cause, never a substitute path."""
+        from kiro_crew.apps import seams
+
+        seams.crew_runtime()
+        monkeypatch.delitem(seams._providers, seams.SEAM_CREW_RUNTIME)
+        for name in ("RUNTIME_DIR", "CREW_DOCKERFILE", "CONTAINER_DIR"):
+            with pytest.raises(RecipeRefused, match="no crew runtime is installed"):
+                runtime_path(name)
+        with pytest.raises(RecipeRefused, match="no crew runtime is installed"):
+            bundle_digest_of(bundle)
+
+    def test_the_layout_check_needs_no_runtime(self, monkeypatch, bundle):
+        """Checking a bundle reads only the bundle, so it answers without the app."""
+        from kiro_crew.apps import seams
+
+        seams.crew_runtime()
+        monkeypatch.delitem(seams._providers, seams.SEAM_CREW_RUNTIME)
+        check_layout(bundle)
+
+    def test_an_unknown_name_is_refused_by_name(self):
+        with pytest.raises(KeyError, match="NOT_A_RUNTIME_FILE"):
+            runtime_path("NOT_A_RUNTIME_FILE")
+
+    def test_the_runtime_paths_are_not_module_attributes(self):
+        """Served by a function, so this module mirrors no surface through ``__getattr__``."""
+        assert not hasattr(recipe_module, "__getattr__")
+        assert not hasattr(recipe_module, "CREW_DOCKERFILE")

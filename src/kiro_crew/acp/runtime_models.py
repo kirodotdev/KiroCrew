@@ -45,36 +45,19 @@ def advertised_model_ids(entries: object) -> list[str]:
 def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
     """True when *advertised* is known and excludes *model_id*.
 
-    The counterpart to :func:`_model_is_unentitled`, moved BEFORE the wire: that
-    one explains a rejection after the fact, this one declines to send a model
-    the backend already told us the account cannot run. Deliberately ONE shared
-    predicate rather than a copy per call site — the same reason that keeps the
-    formatter and the retry classifier share a discriminator: two spellings of
-    "can this account use it" would eventually disagree.
+    The before-the-wire counterpart to :func:`_model_is_unentitled`. Keep it the
+    ONE shared predicate: per-call-site copies would drift apart.
 
-    Returns False — allow the send — whenever entitlement is unknowable: an
-    empty/None advertised set (no session yet, or a backend that omits
-    ``models``) must not be read as "nothing is allowed", which would withhold
-    every model on a backend that simply does not advertise.
+    Returns False (allow) when *advertised* is empty or None: a backend that
+    does not advertise ``models`` must not have every model withheld.
 
-    Only meaningful where the advertised ids share a namespace with *model_id*,
-    and callers gate on that. kiro-cli's advertised ids are exactly the ids
-    ``session/set_model`` accepts, so an id absent from the list is genuinely
-    unusable. The claude backend advertises BARE ids (``claude-opus-4-8[1m]``)
-    while the configured model is the prefixed provider id
-    (``global.anthropic.claude-opus-4-8[1m]``), so comparing those two
-    namespaces would call every legitimate model unusable; that backend
-    announces its own substitutions through the ``session/new`` advisory
-    instead (see ``_new_session_following_substitution``).
-
-    A pin carrying a stale ``<namespace>::<bare-id>`` qualifier (stored when a
-    catalog advertised the qualified spelling, judged against one advertising
-    the bare id) is the one comparable mismatch, and it is deliberately NOT
-    folded here: this predicate's permissive answer feeds the wire sites, and
-    a still-qualified id on the wire is a spelling the backend never
-    advertised. :func:`resolve_pin_spelling` is the shared fold for that case —
-    it answers with the advertised spelling, so a caller can compare AND send
-    one consistent id.
+    Callers only use it where advertised ids share *model_id*'s namespace. The
+    claude backend advertises bare ids (``claude-opus-4-8[1m]``) against a
+    prefixed configured id, so it reports substitutions through the
+    ``session/new`` advisory instead (``_new_session_following_substitution``).
+    A stale ``<namespace>::`` qualifier is NOT folded here, because this answer
+    feeds the wire; use :func:`resolve_pin_spelling` to get the advertised
+    spelling to compare and send.
     """
     if not advertised:
         return False
@@ -85,63 +68,32 @@ def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
 def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str:
     """The advertised spelling *model_id* resolves to, or ``""`` when none.
 
-    The companion to :func:`model_is_unusable` for values that arrive from
-    storage rather than from the live picker: a persisted pin can carry a
-    ``<namespace>::<bare-id>`` qualifier from the catalog that advertised it
-    (for example ``openrouter::z-ai/glm-5.3-flash``), while the session being
-    judged advertises the BARE id. The literal membership test then misses for
-    a model the backend fully serves. This fold recovers the match without
-    per-provider exemptions: the full id is tried first, and only on a miss is
-    ONE leading ``<namespace>::`` qualifier peeled and the tail retried — so a
-    pin the backend genuinely does not serve still resolves to ``""`` under
-    either spelling, and an id advertised verbatim (qualifier and all) never
-    gets peeled at all.
+    For values from storage: a persisted pin can carry a ``<namespace>::``
+    qualifier (``openrouter::z-ai/glm-5.3-flash``) while the session advertises
+    the bare id. The full id is tried first; only on a miss is ONE leading
+    ``<namespace>::`` peeled, so an id advertised verbatim is never peeled.
 
     When the peel misses too, both sides are folded with
-    :func:`model_registry.catalog_key` — the same fold
-    :func:`model_registry.namespace_vocabulary` judges nativeness with. That
-    fold strips an inference-profile prefix, the ``[1m]`` window marker and an
-    effort suffix, so a pin spelled in another namespace's provider-id form
-    (``global.anthropic.claude-opus-4-8[1m]``) meets the bare id this harness
-    advertises for the same model (``claude-opus-4.8``). Without it the two
-    sides fold with different functions: the vocabulary side calls the pin
-    native, this side finds no spelling, and the cold start reports an
-    entitlement problem for what is a spelling one. The fold is a SPELLING fold,
-    not a model fold: a candidate the static registry places as a DIFFERENT
-    canonical model from the pin (``claude-opus-4-8`` at 200K against a pin
-    naming the 1M ``claude-opus-4.8``) is rejected even though ``catalog_key``
-    folds the window marker away -- see
-    :func:`model_registry.same_registered_model` -- so a pin never resolves to
-    its neighbour with another context window. EFFORT is refused on the same
-    ground and needs its own rule, because ``catalog_key`` folds the effort
-    suffix on purpose -- right for judging nativeness, where the dial is not
-    part of the identity, and wrong for choosing a spelling to SEND. A harness
-    in ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` advertises one row per model x
-    effort while its ``model`` option takes only the bare id, so the pin stored
-    for it names no effort and every advertised row names one: folding across
-    that gap let the tie-break pick a row by LENGTH, and
-    :func:`_push_model_via_effort_split` then applied that row's bracket as
-    ``reasoning_effort``. A candidate whose effort half differs from the pin's
-    (:func:`model_registry.split_effort_suffix`, which reports no effort for a
-    ``[1m]`` WINDOW suffix) is therefore not a spelling of it. Several
-    advertised spellings of the SAME model at the SAME effort can remain (a base
-    and a 1M variant the registry lists as one model); the winner is
-    :func:`model_registry.preferred_advertised_spelling`, the tie-break
-    :func:`model_registry.resolve_wire_model_id` applies, so two candidates this
-    fold admits cannot be ordered differently by the wire fold.
+    :func:`model_registry.catalog_key`, the fold
+    :func:`model_registry.namespace_vocabulary` judges nativeness with, so
+    ``global.anthropic.claude-opus-4-8[1m]`` meets ``claude-opus-4.8``. Using a
+    different fold here would call the pin native yet find no spelling for it.
+    It is a SPELLING fold, not a model fold: a candidate the registry places as
+    a different model (another context window, see
+    :func:`model_registry.same_registered_model`) or whose effort half differs
+    (:func:`model_registry.split_effort_suffix`; a ``[1m]`` window is not an
+    effort) is rejected. Effort matters because harnesses in
+    ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` advertise one row per model x effort,
+    and :func:`_push_model_via_effort_split` applies the chosen row's bracket as
+    ``reasoning_effort``. Remaining ties go to
+    :func:`model_registry.preferred_advertised_spelling`, the same tie-break
+    :func:`model_registry.resolve_wire_model_id` uses.
 
-    Returns the ADVERTISED spelling of the match, not the caller's: the result
-    is meant to be sent on the wire (``session/set_model`` accepts advertised
-    ids), and it keeps the display verdict and the wire withhold answering from
-    one fold so the two cannot disagree about what "usable" means. Matching is
-    case/whitespace-insensitive on both sides, mirroring
-    :func:`model_is_unusable`.
-
-    An empty/unknown *advertised* set returns ``""`` — NOT as a "withheld"
-    answer, but as "nothing to resolve against": callers must keep routing the
-    withhold decision itself through :func:`model_is_unusable`, whose
-    empty-set-means-allow contract (harness-parity H12) this function does not
-    replace.
+    Returns the ADVERTISED spelling, case/whitespace-insensitive, so the
+    display verdict and the wire send come from one fold. An empty *advertised*
+    set returns ``""`` meaning "nothing to resolve against", not "withheld":
+    the withhold decision stays with :func:`model_is_unusable`, whose
+    empty-set-means-allow contract (harness-parity H12) this does not replace.
     """
     ids = [m.strip() for m in (advertised or []) if m and m.strip()]
     if not ids:
@@ -335,36 +287,17 @@ def resolve_usable_model(
 def pick_served_default(current: str, advertised: Sequence[str] | None) -> str:
     """The served model a session on *current* must switch to, or ``""``.
 
-    ``session/new`` picks the model itself and reports it as
-    ``currentModelId``, and that choice is the backend's own default rather
-    than anything Crew asked for. A partition does not have to serve the model
-    its backend defaults to: an account whose region omits ``"auto"`` can be
-    handed ``"auto"`` at birth, and then every ``session/prompt`` dies with
-    "your account does not have access to model 'auto'". So inheriting the
-    backend default is only safe when the inherited model is one the same
-    response advertised, and this answers which served model to move to when it
-    is not.
+    ``session/new`` reports the backend's own default as ``currentModelId``, and
+    a partition need not serve it: an account whose region omits ``"auto"`` can
+    be handed ``"auto"`` and then fail every ``session/prompt``.
 
-    Returns ``""`` — nothing to do, keep inheriting — whenever the question
-    cannot be answered or the answer is already right:
-
-      - ``advertised`` empty/None: entitlement is unknowable, exactly
-        :func:`model_is_unusable`'s empty-set-means-allow contract. Reading an
-        absent list as "nothing is served" would switch every session on a
-        backend that simply does not advertise;
-      - empty ``current``: the backend echoed no model, so there is no evidence
-        it picked an unserved one. Fail open rather than override a default we
-        cannot see;
-      - ``current`` served, under its own spelling or under a peeled
-        ``<namespace>::`` one (:func:`resolve_pin_spelling`, the shared fold):
-        the session is already on a model the account can run.
-
-    Otherwise the default is genuinely unserved and the session needs a real
-    model: ``"auto"`` when the backend advertises it — the same
-    "let the backend choose" id ``resolve_usable_model`` and the dashboard's
-    ``_wire_model_id`` send — else the FIRST advertised id, because a served
-    model chosen for the user beats a session that cannot answer a single
-    prompt.
+    Returns ``""`` (keep inheriting) when ``advertised`` is empty (the
+    :func:`model_is_unusable` empty-set-means-allow contract), when ``current``
+    is empty (no evidence of an unserved pick), or when ``current`` is served
+    under its own or a peeled ``<namespace>::`` spelling
+    (:func:`resolve_pin_spelling`). Otherwise returns ``"auto"`` if advertised
+    (the id ``resolve_usable_model`` and ``_wire_model_id`` send), else the first
+    advertised id: any served model beats a session that cannot answer.
     """
     ids = [m for m in (advertised or []) if m and m.strip()]
     if not ids:

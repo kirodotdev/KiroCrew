@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.frontend import FrontendBuildResult
+
 
 def _init_repo(path) -> None:
     """Make *path* the top level of a real git working tree.
@@ -641,12 +643,66 @@ class TestUpdateDispatch:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
         )
+        # The fake `subprocess.run` cannot answer the repo-config probe; that refusal
+        # is covered against a real repo in test_host_git_repo_exec_neutralization.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
+        )
 
         # The function will call git rev-parse, then git fetch, then git diff.
         # After git diff returns 0 (no new commits), it prints "Already up to date!"
         cs._update()
         git_calls = [c for c in calls if c[0] == "git"]
         assert any("rev-parse" in c for c in git_calls)
+
+    def test_a_source_checkout_with_no_project_dir_takes_the_git_path(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Run outside its clone with no saved project dir, a checkout still updates by git.
+
+        With KIROCREW_PROJECT_DIR unset, the checkout the package loads from is the
+        install root, so the update fetches there instead of checking the release feed.
+        """
+        proj = tmp_path / "project"
+        proj.mkdir()
+        _init_repo(proj)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+
+        import kiro_crew.cli_server as cs
+
+        # raising=False: without the fallback the test still reaches its assertion.
+        monkeypatch.setattr(cs, "_source_checkout_root", lambda: proj, raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: root == str(proj),
+        )
+
+        def _no_wheel(_layout):  # pragma: no cover - must not be called
+            raise AssertionError("a source checkout must not take the release-feed path")
+
+        monkeypatch.setattr(cs, "_update_wheel", _no_wheel)
+        calls: list[tuple[list[str], object]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs.get("cwd")))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = f"{proj}\n" if "--show-toplevel" in args else "main\n"
+            return result
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.resolve_remote_url", lambda *a, **k: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
+        )
+
+        cs._update()
+        assert any(args[:2] == ["git", "fetch"] and cwd == str(proj) for args, cwd in calls)
 
 
 class TestUpdateDivergenceGuard:
@@ -691,6 +747,9 @@ class TestUpdateDivergenceGuard:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
         )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
+        )
 
         import kiro_crew.cli_server as cs
 
@@ -712,6 +771,9 @@ class TestUpdateDivergenceGuard:
                 elif "--verify" in args:
                     # The upstream pin every later judgment and the reset name.
                     result.stdout = "0123456789abcdef0123456789abcdef01234567\n"
+                elif "diff" in args and "--name-status" in args:
+                    # The changed-path listing: BYTES, exit 0.
+                    result.stdout = b""
                 elif "diff" in args:
                     # Non-zero: the upstream has new commits, so the update
                     # proceeds past the up-to-date early return.
@@ -746,7 +808,12 @@ class TestUpdateDivergenceGuard:
         # before these steps, and they are not what these tests assert on.
         monkeypatch.setattr("kiro_crew.cli_server.shutil.which", lambda *_: None)
         monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *_: None)
-        monkeypatch.setattr("kiro_crew.cli_server.build_frontend_sync", lambda *_: None)
+        # The update puts the recorded node dirs first on PATH; restore it at teardown.
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.build_frontend_sync",
+            lambda *_: FrontendBuildResult("built"),
+        )
         monkeypatch.setattr("kiro_crew.cli_server.dep_sync.sync_or_reinstall", lambda *a, **k: 0)
         monkeypatch.setattr("builtins.input", lambda *_: answer)
 

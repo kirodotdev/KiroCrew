@@ -114,11 +114,8 @@ async function shoot(mode, route, file, selector) {
       if (path === '/api/apps/registries') return json(r, { registries: [] }), true
       return false
     },
+    localStorageEntries: { 'mc-onboarded': '1', 'mc-theme-mode': mode },
   })
-  await page.addInitScript((m) => {
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-theme-mode', m)
-  }, mode)
 
   await page.goto(`${base}${route}`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector(selector, { timeout: 15000 }).catch(() => {})

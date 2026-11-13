@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -614,6 +615,7 @@ def _stage_skill_update(
     triggers: str,
     procedure_md: str,
     scripts: "list[dict] | None" = None,
+    rejected_scripts: "dict[str, list[str]] | None" = None,
     guard_publication: bool = False,
     commit_state: _RunCommitState | None = None,
     refusal: ClaimRefusal | None = None,
@@ -624,8 +626,9 @@ def _stage_skill_update(
     requirement (bridged from this worker thread onto the captured loop,
     90s, fail-open); (c) use the redacted merge as the proposed body, else
     fall back to the candidate's own procedure (also on oversize); (d) stage
-    under ``<target-slug>-update`` with ``kind='update'`` metadata; (e) SEL
-    audit with outcome ``staged_update``."""
+    under a fresh ``<target-slug>-update-<8 hex>`` with ``kind='update'``
+    metadata, which replaces any unchanged queued update for the same target;
+    (e) SEL audit with outcome ``staged_update``."""
     loader = self._skills_loader
     if loader is None:
         return
@@ -712,12 +715,14 @@ def _stage_skill_update(
             used_merge = True
 
     provenance = AutoSkillProvenance(session_key=key, created_at=AutoSkillProvenance.now_iso())
-    # The slug pattern caps at 64 chars, and our own generation prompt permits
-    # up to 60, so `<target>-update` can overflow and be REJECTED by staging —
-    # silently dropping the learning, because consolidation advances its
-    # message offset regardless of candidate outcome. Reserve room for
-    # "-update" (7) plus the "-2".."-50" collision suffix (3).
-    _update_slug = f"{target_slug[:54].rstrip('-')}-update"
+    # Every update gets a name of its own, so a name freed by a replaced or
+    # dismissed candidate is never handed to a different one. The slug pattern
+    # caps at 64 chars and our own generation prompt permits up to 60, so an
+    # untruncated target would overflow and be REJECTED by staging, silently
+    # dropping the learning (consolidation advances its message offset whatever
+    # the outcome). Reserve room for "-update-" (8), 8 hex (8) and the
+    # "-2".."-50" collision suffix (3).
+    _update_slug = f"{target_slug[:45].rstrip('-')}-update-{uuid.uuid4().hex[:8]}"
     # Approval writes the candidate's frontmatter over the live skill, so the
     # candidate must carry the MERGED metadata, not just its own. The body is
     # merged by the LLM turn above; description/triggers were not, and the
@@ -745,6 +750,7 @@ def _stage_skill_update(
             target=target_key,
             base_version=base_version,
             refusal=refusal,
+            rejected_scripts=rejected_scripts,
         )
         if name:
             publication.mark_committed()
@@ -826,6 +832,9 @@ def _process_auto_skills(
         # only individually-clean scripts survive. A script-bearing
         # candidate ALWAYS routes to approval (never auto-published).
         valid_scripts: list[dict] = []
+        # Validator findings per refused script, kept for the reviewer: the
+        # candidate's ``.meta.json`` says why a script its body cites is absent.
+        rejected_scripts: dict[str, list[str]] = {}
         scripts_supplied = False
         if self._generate_scripts:
             raw_scripts = new_skill.get("scripts")
@@ -845,6 +854,7 @@ def _process_auto_skills(
                             fn,
                             "; ".join(_findings),
                         )
+                        rejected_scripts[fn or "<unnamed>"] = [_redact(f) for f in _findings]
         if not (slug and description and procedure_md):
             # Required fields missing (or stripped empty by redaction).
             # Audit the rejection so operators can see that a create
@@ -880,6 +890,33 @@ def _process_auto_skills(
                 except Exception:
                     _target_is_live = False
                 if not _target_is_live:
+                    # A queued UPDATE candidate names a live skill of its own:
+                    # an update to that candidate is an update to its target,
+                    # provided that target is live.
+                    _pending_slug = target.split("/", 1)[-1]
+                    try:
+                        _pending = list(self._skills_loader.list_pending_skills())
+                    except Exception:
+                        _pending = []
+                    _redirect = next(
+                        (
+                            p.get("target")
+                            for p in _pending
+                            if p.get("slug") == _pending_slug and p.get("kind") == "update"
+                        ),
+                        None,
+                    )
+                    if isinstance(_redirect, str) and _redirect:
+                        try:
+                            _redirect_live = (
+                                self._skills_loader.read_auto_skill_body(_redirect) is not None
+                            )
+                        except Exception:
+                            _redirect_live = False
+                        if _redirect_live:
+                            target = _redirect
+                            _target_is_live = True
+                if not _target_is_live:
                     self._logger.info(
                         "Auto-skill UPDATE target '%s' is not live (pending candidate); "
                         "staging '%s' as a new candidate instead of dropping it",
@@ -914,6 +951,7 @@ def _process_auto_skills(
                     triggers=triggers,
                     procedure_md=procedure_md,
                     scripts=valid_scripts or None,
+                    rejected_scripts=rejected_scripts or None,
                     guard_publication=guard_publication,
                     commit_state=commit_state,
                     refusal=refusal,
@@ -923,6 +961,31 @@ def _process_auto_skills(
                     session_key=key,
                     created_at=AutoSkillProvenance.now_iso(),
                 )
+                # Imported here, not at module top: every top-level name of this
+                # module is served by the ``kiro_crew.history`` facade.
+                from kiro_crew import skills_script_refs
+
+                # A cited script that did not ship (never emitted, or refused
+                # by the validator above) is marked on its citing line. An
+                # annotation that would push the body past the size cap is
+                # dropped so the candidate is not refused for it; the staged
+                # metadata still names every missing script.
+                marked_md, missing_scripts = skills_script_refs.reconcile_script_references(
+                    procedure_md,
+                    (
+                        s["filename"]
+                        for s in valid_scripts
+                        if skills_script_refs.shippable_script_name(s["filename"])
+                    ),
+                )
+                if missing_scripts:
+                    self._logger.info(
+                        "Auto-skill candidate %s cites scripts it does not ship: %s",
+                        slug,
+                        ", ".join(missing_scripts),
+                    )
+                    if len(marked_md) <= AUTO_SKILL_MAX_PROCEDURE_CHARS:
+                        procedure_md = marked_md
                 if scripts_supplied and not valid_scripts and not self._approval_required:
                     # The user opted out of prose review, but this candidate
                     # attempted to add executable content and every script
@@ -963,6 +1026,8 @@ def _process_auto_skills(
                             provenance=provenance,
                             scripts=valid_scripts or None,
                             refusal=refusal,
+                            missing_scripts=missing_scripts or None,
+                            rejected_scripts=rejected_scripts or None,
                         )
                         if name:
                             publication.mark_committed()

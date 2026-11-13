@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import json
+import logging
 import os
 import select
 import sys
@@ -11,7 +13,10 @@ import threading
 
 import pytest
 
+from kiro_crew import sandbox as kc_sandbox
+from kiro_crew import sandbox_launch_mark
 from kiro_crew.cloud import aws
+from kiro_crew.slack.gateway_runtime import service_boot
 
 
 class TestBuildArgv:
@@ -76,6 +81,37 @@ class TestRunAws:
 
         assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "out", "err")
 
+    def test_the_aws_child_gets_no_python_interpreter_settings(self, monkeypatch):
+        """A Python ``aws`` (aws-cli v1) must not import the gateway's packages.
+
+        This chokepoint is also the Polly consent gate's account probe, so an
+        inherited ``PYTHONPATH`` breaks consent before any synthesis runs.
+        """
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout):
+                return "out", "err"
+
+        seen: dict = {}
+
+        def fake_popen(*a, **k):
+            seen["env"] = k.get("env")
+            return FakeProc()
+
+        monkeypatch.setenv("PYTHONPATH", "/bundle/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/bundle")
+        monkeypatch.setenv("KC_UNRELATED_SETTING", "kept")
+        monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
+        monkeypatch.setattr(aws, "popen_limited", fake_popen)
+
+        assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "out", "err")
+        env = seen["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env.get("KC_UNRELATED_SETTING") == "kept"
+
     def test_spawn_gets_widened_path_for_credential_process(self, monkeypatch, tmp_path):
         """A GUI-launched gateway's minimal PATH must not hide ``credential_process``.
 
@@ -89,6 +125,7 @@ class TestRunAws:
         head = str(bin_dir / "aws")
         monkeypatch.setattr(aws, "resolve_aws_bin", lambda: head)
         monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(bin_dir),))
+        monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(bin_dir), str(bin_dir)),))
         monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
         monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)
@@ -193,6 +230,21 @@ class TestRunAws:
         assert proc.killed is False
 
 
+@pytest.mark.parametrize(
+    ("answer", "want"),
+    [((0, "eu-west-1\n", ""), "eu-west-1"), ((1, "", ""), ""), (aws.CloudActionDenied("x"), "")],
+)
+def test_configured_region_is_the_profiles_own_setting_or_empty(monkeypatch, answer, want):
+    def run_aws(args, profile="", region=""):
+        assert (args, profile, region) == (["configure", "get", "region"], "dev", "")
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(aws, "run_aws", run_aws)
+    assert aws.configured_region("dev") == want
+
+
 class TestAccessDeniedParsing:
     def test_is_access_denied_true(self):
         assert aws.is_access_denied("An error occurred (AccessDenied) when calling ...")
@@ -240,6 +292,24 @@ class TestChecked:
         assert "grant `ec2:RunInstances`" in str(ei.value)
         assert ei.value.returncode == 255
 
+    @pytest.mark.parametrize(
+        ("denial", "remedy"),
+        [
+            (" is not authorized to perform: ec2:DescribeVpcs", "grant `ec2:DescribeVpcs`"),
+            (" UnauthorizedOperation", "add the missing permission"),
+        ],
+    )
+    def test_failure_leads_with_the_remedy(self, monkeypatch, denial, remedy):
+        # The dashboard keeps a launch error's first 400 characters; a long role
+        # ARN alone fills them, so a remedy after the raw text never shows there.
+        err = "User: arn:aws:sts::123456789012:assumed-role/" + "r" * 400 + denial
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (254, "", err))
+        with pytest.raises(aws.AWSError) as ei:
+            aws.checked(["ec2", "describe-vpcs"], "dev", action="ec2:DescribeVpcs")
+        assert str(ei.value).startswith(
+            f"ec2:DescribeVpcs failed: {remedy} (see `kirocrew cloud iam-policy`) and retry — "
+        )
+
     def test_failure_non_auth_has_no_missing_action(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (2, "", "Parameter validation failed"))
         with pytest.raises(aws.AWSError) as ei:
@@ -272,6 +342,98 @@ class TestCheckedJson:
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "not json", ""))
         with pytest.raises(aws.AWSError):
             aws.checked_json(["ec2", "describe-vpcs"], "dev", action="ec2:DescribeVpcs")
+
+
+_REAL_AGENT_CONFINEMENT = getattr(aws, "_agent_confinement", None)
+
+
+class TestAgentSessionSignals:
+    """``_in_agent_session`` reads every marker Kiro Crew sets on an agent tree,
+    not only ``KIROCREW_SESSION_KEY``: a worker on the shared runtime has no
+    session key but carries the runtime and launcher markers, the remembered
+    sandbox marker, and (on Linux) the agents cgroup. Any one of them must refuse
+    a cloud mutation."""
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_signal(self, _floor_monkeypatch):
+        monkeypatch = _floor_monkeypatch
+        for name in (
+            "KIROCREW_SESSION_KEY",
+            "KIROCREW_SPAWNED",
+            "KIROCREW_RUNTIME_AGENT",
+            "KIROCREW_HOST_PID",
+            sandbox_launch_mark.SANDBOX_MARKER,
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(sandbox_launch_mark, "_launched_in_sandbox", False)
+        monkeypatch.setattr(kc_sandbox, "agent_confinement_evidence", lambda *a, **k: None)
+        # test/conftest.py pins this off for every other test; run the real one here.
+        monkeypatch.setattr(aws, "_agent_confinement", _REAL_AGENT_CONFINEMENT, raising=False)
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: pytest.fail("must not spawn aws"))
+
+    def test_bare_terminal_is_human(self):
+        assert aws._in_agent_session() is False
+        aws.assert_human_action("iam:CreatePolicyVersion")  # must not raise
+
+    def test_worker_without_session_key_is_refused(self, monkeypatch):
+        # The shape seen in a gateway chat worker: no KIROCREW_SESSION_KEY.
+        monkeypatch.setenv("KIROCREW_SPAWNED", "1")
+        monkeypatch.setenv("KIROCREW_RUNTIME_AGENT", "kirocrew-worker")
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("iam:CreatePolicyVersion")
+        with pytest.raises(aws.CloudActionDenied):
+            aws.run_aws(["iam", "create-policy-version", "--policy-arn", "arn:x"])
+
+    @pytest.mark.parametrize("name", ["KIROCREW_RUNTIME_AGENT", "KIROCREW_HOST_PID"])
+    def test_each_spawn_marker_alone_is_refused(self, monkeypatch, name):
+        monkeypatch.setenv(name, "1")
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("ec2:StopInstances")
+
+    def test_spawned_marker_alone_stays_human(self, monkeypatch):
+        # An app backend, or a gateway one restarted (Dev Fleet foreground
+        # restart), carries only KIROCREW_SPAWNED. The owner's dashboard cloud
+        # actions run there, so that marker alone must not refuse them.
+        monkeypatch.setenv("KIROCREW_SPAWNED", "1")
+        assert aws._in_agent_session() is False
+        aws.assert_human_action("ec2:StopInstances")  # must not raise
+
+    def test_sandbox_marker_dropped_by_cli_main_is_remembered(self, monkeypatch):
+        # cli.main notes then pops KIROCREW_SANDBOX_ACTIVE before the subcommand.
+        monkeypatch.setattr(sandbox_launch_mark, "_launched_in_sandbox", True)
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("cloudformation:DeleteStack")
+
+    def test_confinement_evidence_alone_is_refused(self, monkeypatch):
+        # Env scrubbed (``env -u``) but still in the agents cgroup.
+        monkeypatch.setattr(
+            kc_sandbox, "agent_confinement_evidence", lambda *a, **k: "agents cgroup"
+        )
+        with pytest.raises(aws.CloudActionDenied):
+            aws.assert_human_action("ssm:StartSession")
+
+    def test_a_gateway_started_from_an_agent_session_warns_once(self, monkeypatch, caplog):
+        # A restart run from an agent's shell: the child inherits its session key.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:abc")
+        with caplog.at_level(logging.WARNING, logger=aws.logger.name):
+            assert aws.warn_if_started_from_agent_session() is True
+        warnings = [r for r in caplog.records if r.name == aws.logger.name]
+        assert len(warnings) == 1
+        assert "Restart the gateway from a normal terminal" in warnings[0].getMessage()
+
+    def test_a_gateway_started_from_a_terminal_does_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=aws.logger.name):
+            assert aws.warn_if_started_from_agent_session() is False
+        assert not [r for r in caplog.records if r.name == aws.logger.name]
+
+
+def test_the_gateway_warns_after_readiness_off_the_loop():
+    source = inspect.getsource(service_boot.run)
+    warns = "for _warn in (warn_if_running_from_git_checkout, warn_if_started_from_agent_session):"
+    assert warns in source
+    assert source.index('print(f"KIROCREW_READY:') < source.index(warns)
+    assert "asyncio.create_task(asyncio.to_thread(_warn))" in source
 
 
 class TestChokepointHumanActionGuard:
@@ -347,14 +509,10 @@ class TestChokepointHumanActionGuard:
 
 
 # --------------------------------------------------------------------------- #
-# A timed-out ``aws`` call must return promptly even while a process the CLI
-# started still holds the piped stdout/stderr: ``proc.kill()`` stops only the
-# CLI, so the drain after it is bounded. The reproducer runs the real
-# ``run_aws`` and the real ``popen_limited`` on real children; only the argv
-# builder, the sandbox wrappers, the chokepoint guard and the env builder are
-# stubbed, and none of those is part of the wait. The stand-in CLI and its
-# helper block reading a pipe the test holds, so they live until the test
-# closes it: no sleep decides how long anything runs.
+# A timed-out ``aws`` call returns promptly even while a child of the CLI holds the
+# pipes: ``proc.kill()`` stops only the CLI, so the drain is bounded. Real ``run_aws``
+# and ``popen_limited``; the stand-ins block on a pipe the test holds, so no sleep
+# decides how long anything runs.
 # --------------------------------------------------------------------------- #
 _JOIN_BOUND_SECS = 8
 

@@ -154,7 +154,9 @@ def test_b3_safe_builtins_exclude_nondeterminism_and_io() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("exc", ["Exception", "ValueError", "KeyError", "RuntimeError", "TypeError"])
+@pytest.mark.parametrize(
+    "exc", ["Exception", "ValueError", "KeyError", "RuntimeError", "TypeError"]
+)
 def test_common_exceptions_are_available(exc: str) -> None:
     """A workflow may catch/raise common exceptions — they must be in the sandbox
     (regression: agent scripts using ``except Exception`` died with NameError)."""
@@ -238,6 +240,38 @@ def test_entrypoint_must_take_ctx() -> None:
     assert validate(script).ok is False
 
 
+@pytest.mark.parametrize(
+    ("signature", "names"),
+    [
+        ("ctx, x", ["'x'"]),
+        ("ctx, x, y=1", ["'x'"]),
+        ("ctx, /, x", ["'x'"]),
+        ("ctx, *, limit", ["'limit'"]),
+        ("ctx, a, *, b", ["'a'", "'b'"]),
+    ],
+)
+def test_entrypoint_parameter_the_runner_cannot_fill_rejected(
+    signature: str, names: list[str]
+) -> None:
+    """The runner calls ``workflow(ctx)``: a further required parameter is a
+    TypeError at launch, so it is refused when the script is checked."""
+    script = f'META = {{"name": "x"}}\nasync def workflow({signature}):\n    return {{}}\n'
+    res = validate(script)
+    assert res.ok is False
+    [error] = [e for e in res.errors if "called with 'ctx' only" in e]
+    assert all(name in error for name in names)
+
+
+@pytest.mark.parametrize(
+    "signature",
+    ["ctx", "ctx, /", "ctx, x=1", "ctx, *args", "ctx, **kwargs", "ctx, *, limit=3"],
+)
+def test_entrypoint_parameters_the_runner_can_fill_accepted(signature: str) -> None:
+    script = f'META = {{"name": "x"}}\nasync def workflow({signature}):\n    return {{}}\n'
+    res = validate(script)
+    assert res.ok is True, res.errors
+
+
 def test_entrypoint_required() -> None:
     assert validate('META = {"name": "x"}\n').ok is False
 
@@ -279,10 +313,10 @@ def test_sync_ctx_method_without_await_ok() -> None:
 @pytest.mark.parametrize(
     "expr",
     [
-        '(await ctx.agent("cr")).get("cr_url", "X")',      # attribute .get on await agent
-        '(await ctx.parallel([ctx.agent("a")]))[0]',        # subscript on await parallel
-        '(await ctx.pipeline([1], f)).get("k")',            # attribute on await pipeline
-        '(await ctx.agent("x")).result',                    # plain attribute on await agent
+        '(await ctx.agent("cr")).get("cr_url", "X")',  # attribute .get on await agent
+        '(await ctx.parallel([ctx.agent("a")]))[0]',  # subscript on await parallel
+        '(await ctx.pipeline([1], f)).get("k")',  # attribute on await pipeline
+        '(await ctx.agent("x")).result',  # plain attribute on await agent
     ],
 )
 def test_unguarded_none_deref_of_awaited_result_rejected(expr: str) -> None:
@@ -313,7 +347,7 @@ def test_bound_then_subscript_not_flagged() -> None:
         'META = {"name": "x", "description": "d"}\n'
         "async def workflow(ctx):\n"
         "    reads = await ctx.parallel([ctx.agent('a')])\n"
-        '    x = reads[0]\n'
+        "    x = reads[0]\n"
         '    return {"x": x}\n'
     )
     assert validate(script).ok, validate(script).errors

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -105,10 +104,16 @@ def test_delete_removes_token(tmp_path: Path):
 
 
 def test_delete_missing_is_noop(tmp_path: Path):
-    TokenStore(tmp_path).delete("social")  # no store yet — must not raise
+    store = TokenStore(tmp_path)
+    store.delete("social")  # no store yet — must not raise
+    assert store.load("social") is None
+    # Deleting a missing identity must leave the other identities' tokens alone.
+    store.save(_token("builder_id"))
+    store.delete("social")
+    kept = store.load("builder_id")
+    assert kept is not None and kept.access_token == "at-value"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")
 def test_delete_waits_for_the_identity_refresh_lock(tmp_path: Path):
     """``delete`` serializes with a refresh holding the identity's lock, so a
     logout can never land in the middle of a refresh's read-renew-save and be
@@ -136,7 +141,6 @@ def test_delete_waits_for_the_identity_refresh_lock(tmp_path: Path):
     assert store.load("social") is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")
 def test_save_waits_for_the_identity_refresh_lock(tmp_path: Path):
     """A sign-in landing a NEW account in a slot is ordered against a refresh of
     the OLD one, so the refresher's save cannot overwrite it; the refresher itself

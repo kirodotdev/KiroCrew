@@ -21,6 +21,7 @@ export interface TreePayload {
   hiddenOnlyDirectories?: string[]
   unreadableDirectories?: string[]
   linkedDirectories?: string[]
+  nestedRepoDirectories?: string[]
 }
 
 /** One folder's listing: the payload plus the folder it lists. */
@@ -29,11 +30,13 @@ export interface FolderListing extends TreePayload {
 }
 
 /**
- * Most folder listings one tree mount keeps. Each holds up to the whole cap, so
- * an unbounded set would hand the tree an unbounded path list; past this the
- * oldest listing is dropped and its folder shows as cut again.
+ * Most folder listings one tree mount keeps. The tree reads one level per
+ * request, so every folder the user opens is a listing; most are small, and
+ * `MAX_FOLDER_LISTING_ROWS` is what bounds their rows together. Past this count
+ * the oldest CLOSED listing is dropped (`withFolder`), and an open one only
+ * when every listing is open.
  */
-export const MAX_FOLDER_LISTINGS = 20
+export const MAX_FOLDER_LISTINGS = 64
 
 const union = (...lists: Array<readonly string[] | undefined>): string[] => {
   const out = new Set<string>()
@@ -83,6 +86,13 @@ export function mergeFolderListings(base: TreePayload, listings: readonly Folder
     hiddenOnlyDirectories: union(base.hiddenOnlyDirectories, ...own.map(listing => listing.hiddenOnlyDirectories)),
     unreadableDirectories: union(base.unreadableDirectories, ...own.map(listing => listing.unreadableDirectories)),
     linkedDirectories: union(base.linkedDirectories, ...own.map(listing => listing.linkedDirectories)),
+    // A nested repository is listed on its own when opened, so a folder whose
+    // listing is loaded is no longer one to load; a repository inside a loaded
+    // listing is named by that listing.
+    nestedRepoDirectories: union(
+      base.nestedRepoDirectories,
+      ...own.map(listing => listing.nestedRepoDirectories),
+    ).filter(dir => !listed.has(dir)).sort(),
   }
 }
 
@@ -110,9 +120,27 @@ export function foldersOverRowBudget(listings: readonly FolderListing[]): string
   return listings.filter(listing => !keep.has(listing.dir)).map(listing => listing.dir)
 }
 
-/** *folders* with *folder* added last, oldest dropped past `MAX_FOLDER_LISTINGS`. */
-export function withFolder(folders: readonly string[], folder: string): string[] {
+/**
+ * *folders* with *folder* added last. Past `MAX_FOLDER_LISTINGS` the oldest
+ * folder *isOpen* says is closed is dropped, so an open folder keeps its rows;
+ * when every older folder is open, the oldest goes.
+ */
+export function withFolder(folders: readonly string[], folder: string, isOpen: (folder: string) => boolean = () => false): string[] {
   if (folders.includes(folder)) return [...folders]
   const next = [...folders, folder]
-  return next.length > MAX_FOLDER_LISTINGS ? next.slice(next.length - MAX_FOLDER_LISTINGS) : next
+  while (next.length > MAX_FOLDER_LISTINGS) {
+    const closed = next.findIndex(f => f !== folder && !isOpen(f))
+    next.splice(closed >= 0 ? closed : 0, 1)
+  }
+  return next
+}
+
+/**
+ * Whether the payload holds less than the whole project: cut by the row cap,
+ * or holding folders listed only when opened (the tree reads one level per
+ * request). A filter over such a payload can only find the rows it holds, so
+ * a host sends the name query to the server search instead.
+ */
+export function treeIsPartial(tree: Pick<TreePayload, 'truncated' | 'nestedRepoDirectories'> | null | undefined): boolean {
+  return tree?.truncated === true || (tree?.nestedRepoDirectories?.length ?? 0) > 0
 }

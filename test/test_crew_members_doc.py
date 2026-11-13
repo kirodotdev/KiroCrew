@@ -1,17 +1,8 @@
 """The packaged Crew Members page's code-coupled claims are pinned to the code.
 
-``scripts/docs_lint.py`` gates a doc's paths and links, never what it claims, so
-``src/kiro_crew/docs/crew-members.md`` is free to name a tool that was renamed, a
-config field that was dropped, or a matching threshold that moved, with the lint
-green. The claims most exposed to that are the ones an agent ACTS on — the two
-routing tool names, the ``crew=`` spawn argument, the refusal code a delegation
-comes back with, and the 0.7 trigger overlap — because each is a literal the
-reader copies into a call.
-
-Each assertion below is paired with the sentence in the page that states it, and
-asserted against the code rather than against a second copy of the prose: where
-the claim is about a VALUE the code owns, the value is imported; where it is
-about a name the tool table declares, the declaration is read.
+``scripts/docs_lint.py`` checks paths and links only, so these pin the literals an agent
+copies into a call (routing tool names, ``crew=``, the refusal code, the 0.7 overlap)
+against the code: values are imported, tool names read from the declarations.
 """
 
 from pathlib import Path
@@ -48,11 +39,8 @@ def test_spawn_still_takes_the_crew_argument_the_page_insists_on(doc_text: str) 
 def test_the_bound_block_the_page_lists_is_what_select_crew_returns(doc_text: str) -> None:
     """The page names `select_crew`'s four `bound` fields and which of them are resolved.
 
-    Pinned by executing the tool body against a temporary config rather than by
-    reading its source: the page tells an agent what to expect back, and the only
-    honest check of that is the payload itself. `model` is asserted to be the
-    configured pin verbatim, which is the half the page has to keep distinguishing
-    from the three resolved ones.
+    Runs the tool against a temporary config and reads the payload. `model` is the
+    configured pin verbatim; the other three are resolved.
     """
     import json
 

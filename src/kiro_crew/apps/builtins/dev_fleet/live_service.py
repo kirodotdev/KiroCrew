@@ -189,8 +189,7 @@ def _foreground_backend() -> "gateway_service.ForegroundBackend | None":
     this exists for (no drivable systemd/launchd) are Linux and macOS; Windows
     keeps the manual-restart advisory. Whether a restart can actually be
     attempted is the backend's ``status()``, not this constructor — callers
-    must gate on both :data:`gateway_service.FOREGROUND_ELIGIBLE` and
-    ``status() == ok``.
+    must gate on both :func:`_foreground_eligible` and ``status() == ok``.
     """
     if sys.platform not in ("linux", "darwin"):
         return None
@@ -278,8 +277,14 @@ async def _gateway_start_id() -> str | None:
 
 
 def _foreground_eligible(status: str) -> bool:
-    """True when *status* permits the foreground last resort."""
-    return status in gateway_service.FOREGROUND_ELIGIBLE
+    """True when *status* permits the foreground last resort.
+
+    Never for a gateway a generated service definition launched: the detached
+    restart would run in the unit's cgroup and be stopped with the gateway.
+    """
+    from kiro_crew.config.loader import launched_as_managed_service
+
+    return status in gateway_service.FOREGROUND_ELIGIBLE and not launched_as_managed_service()
 
 
 # --- make-live: switch the live gateway to another worktree ---

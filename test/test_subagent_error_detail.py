@@ -68,6 +68,49 @@ class TestDescribeException:
             rendered = _describe_exception(outer)
         assert rendered == "RuntimeError: wrapper <- caused by KeyError: 'lessons'"
 
+    def test_a_cause_its_wrapper_already_quotes_is_named_not_repeated(self):
+        """The KAS refusal wraps one sentence twice; the remedy must read once.
+
+        ``install_pinned_engine`` folds ``KasHostUnsupported``'s text into a
+        ``KasBundleError``, and the KAS harness folds that into an
+        ``AcpRuntimeError``. Each wrapper quotes its cause, so rendering every
+        link's message writes the same remedy three times.
+        """
+        from kiro_crew.acp import kas_bundle, kas_engine_install, session_handle
+
+        inner = "This host's glibc 2.26 is older than the 2.28 the KAS engine needs."
+        try:
+            try:
+                try:
+                    raise kas_bundle.KasHostUnsupported(inner)
+                except kas_bundle.KasHostUnsupported as host:
+                    raise kas_bundle.KasBundleError(
+                        kas_engine_install.offline_install_message(str(host))
+                    ) from host
+            except kas_bundle.KasBundleError as bundle:
+                raise session_handle.AcpRuntimeError(f"route. {bundle}") from bundle
+        except session_handle.AcpRuntimeError as outer:
+            rendered = _describe_exception(outer)
+            outer_message = str(outer)
+
+        assert rendered == (
+            f"kiro_crew.acp.session_handle.AcpRuntimeError: {outer_message} <- caused by "
+            "kiro_crew.acp.kas_bundle.KasBundleError <- caused by "
+            "kiro_crew.acp.kas_bundle.KasHostUnsupported"
+        )
+        assert rendered.count(inner) == 1
+
+    def test_a_short_cause_that_appears_in_its_wrapper_by_chance_keeps_its_text(self):
+        """``'0'`` is inside ``'step 10 failed'`` without the wrapper quoting it."""
+        try:
+            try:
+                raise KeyError(0)
+            except KeyError as key:
+                raise RuntimeError("step 10 failed") from key
+        except RuntimeError as outer:
+            rendered = _describe_exception(outer)
+        assert rendered == "RuntimeError: step 10 failed <- caused by KeyError: 0"
+
     def test_suppressed_context_is_not_reported_as_a_cause(self):
         """``from None`` means the author said the context is unrelated."""
         try:

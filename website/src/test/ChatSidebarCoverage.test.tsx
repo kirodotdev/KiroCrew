@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
@@ -37,7 +38,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -76,6 +84,7 @@ const mocks = vi.hoisted(() => ({
   chatTags: vi.fn(),
   tagColumns: vi.fn(),
   kirocrewConfig: vi.fn(),
+  models: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -95,6 +104,9 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { requestSlotReveal } from '../store/chatSlice'
+import { sseSlots, updateSlot } from '../store/dashboardSlice'
+import { stubAppConfirm } from './appConfirmStub'
+import { turnOnCrewModePreview } from './crewModePreview'
 
 interface TestSlot {
   key: string
@@ -121,6 +133,9 @@ const FOLDERS: ChatFolder[] = [
   { id: 'f1', name: 'Alpha', order: 0 },
   { id: 'f2', name: 'Beta', order: 1 },
 ]
+
+// The query client of the sidebar the test last rendered, for `settleSidebarReads`.
+let sidebarClient: QueryClient | undefined
 
 function renderSidebar(opts: {
   slots?: TestSlot[]
@@ -187,6 +202,7 @@ function renderSidebar(opts: {
   // by default because the board-lane tests here depend on their queries
   // refetching.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  sidebarClient = qc
   qc.setQueryData(['chat-folders'], folders)
   qc.setQueryData(['tag-columns'], [])
   const view = render(
@@ -212,9 +228,16 @@ function openHeaderMenu() {
   fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
 }
 
+/** Wait out the reads an opened panel starts, so their state updates land inside the wait: the
+ *  model roster the Switch All panel fetches when it opens. */
+async function settleSidebarReads() {
+  await waitFor(() => expect(sidebarClient?.isFetching()).toBe(0), namedCeiling('SIDEBAR_READS_SETTLED', 5000))
+}
+
 async function openHeaderPanel(itemText: string) {
   openHeaderMenu()
   fireEvent.click(await screen.findByText(itemText))
+  await settleSidebarReads()
 }
 
 /** Expand the Older Sessions pane. */
@@ -239,6 +262,7 @@ beforeEach(() => {
   mocks.chatTags.mockResolvedValue([])
   mocks.tagColumns.mockResolvedValue([])
   mocks.kirocrewConfig.mockResolvedValue({ dashboard: { recent_tint_count: 3 } })
+  mocks.models.mockResolvedValue([])
 })
 afterEach(() => {
   vi.clearAllMocks()
@@ -259,6 +283,10 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(7, '', true))
     fireEvent.click(screen.getByText('1 day'))
     await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(1, '', true))
+    fireEvent.click(screen.getByText('14 days'))
+    await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(14, '', true))
+    fireEvent.click(screen.getByText('30 days'))
+    await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(30, '', true))
   })
 
   it('says so when nothing is stale, and keeps Archive disabled', async () => {
@@ -287,8 +315,58 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Clean up sessions')
     fireEvent.click(await screen.findByText('Archive 1 session'))
-    expect(await screen.findByText('1 session(s) failed to archive')).toBeTruthy()
+    expect(await screen.findByText('1 session failed to archive')).toBeTruthy()
     expect(screen.getByText('Clean Up Sessions')).toBeTruthy()
+  })
+
+  it('words the partial-failure count through the catalog plural', async () => {
+    const two: TestSlot[] = [
+      ...SLOTS,
+      { key: 'k-stale-2', title: 'Stale two', running: false, messages: 2, last_ts: '2020-01-01T00:00:00Z' },
+    ]
+    mocks.cleanupSessions.mockImplementation((_days: number, _active: string, dry?: boolean) =>
+      Promise.resolve(dry
+        ? { ok: true, archived: 0, keys: ['k-stale', 'k-stale-2'], failed: [], active_is_stale: false }
+        : { ok: true, archived: 0, keys: [], failed: ['k-stale', 'k-stale-2'] }))
+    renderSidebar({ slots: two })
+    await openHeaderPanel('Clean up sessions')
+    fireEvent.click(await screen.findByText('Archive 2 sessions'))
+    expect(await screen.findByText('2 sessions failed to archive')).toBeTruthy()
+  })
+
+  it('marks only the chosen inactivity window as pressed', async () => {
+    mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: [], failed: [], active_is_stale: false })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Clean up sessions')
+    const chip = (label: string) => screen.getByRole('radio', { name: label })
+    await screen.findByText('7 days')
+    // The panel opens on the 3-day window.
+    expect(chip('3 days').getAttribute('aria-checked')).toBe('true')
+    for (const other of ['1 day', '7 days', '14 days', '30 days']) {
+      expect(chip(other).getAttribute('aria-checked')).toBe('false')
+    }
+    fireEvent.click(chip('14 days'))
+    expect(chip('14 days').getAttribute('aria-checked')).toBe('true')
+    expect(chip('3 days').getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('exposes the Show/Hide list toggle as an expandable control', async () => {
+    mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: ['k-stale'], failed: [], active_is_stale: false })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Clean up sessions')
+    const toggle = await screen.findByRole('button', { name: /^Show 1 session/ })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const listId = toggle.getAttribute('aria-controls')
+    expect(listId).toBeTruthy()
+    fireEvent.click(toggle)
+    const open = screen.getByRole('button', { name: /^Hide 1 session/ })
+    expect(open.getAttribute('aria-expanded')).toBe('true')
+    const list = document.getElementById(listId!)
+    expect(list).toBeTruthy()
+    expect(within(list!).getByText('Stale one')).toBeTruthy()
+    fireEvent.click(open)
+    expect(screen.getByRole('button', { name: /^Show 1 session/ }).getAttribute('aria-expanded')).toBe('false')
+    expect(document.getElementById(listId!)).toBeNull()
   })
 
   it('closes the panel when every archive succeeds', async () => {
@@ -348,15 +426,182 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
   })
 
-  it('reports a partial failure and keeps the panel open', async () => {
+  it('names the sessions a partial failure missed and offers to retry them on the model that failed (#11231)', async () => {
+    mocks.models.mockResolvedValue([{ model_name: 'auto', description: 'Default' }, { model_name: 'opus-4.8', description: 'Opus' }])
     mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Switch all to model…')
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
     await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
-    expect(await screen.findByText('1 session failed to switch')).toBeTruthy()
+    expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
     expect(screen.getByText('Switch All Sessions')).toBeTruthy()
+    // Idle A on Auto is all Switch would send, so it reads as that retry.
+    expect(screen.getByText(/^Retry 1 failed session$/)).toBeTruthy()
+    // Another model is a new request, not a retry, though it reaches the same session.
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(screen.getByText(/^Switch 1 session$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    expect(screen.getByText(/^Retry 1 failed session$/)).toBeTruthy()
+    // Unticking Skip adds Busy B, a session that did not fail: a plain switch again.
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(screen.getByText(/^Switch 2 sessions$/)).toBeTruthy()
+    expect(screen.queryByText(/failed session/)).toBeNull()
+  })
+
+  it('keeps every failed session name in a bounded scrolling notice above Retry', async () => {
+    const slots = Array.from({ length: 20 }, (_, index) => ({
+      key: `failed-${index}`,
+      title: `Session ${index}: investigating the model switch failure across the entire project`,
+      running: false,
+      messages: 1,
+    }))
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: slots.map(slot => slot.key) })
+    renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 20 sessions' }))
+
+    const notice = await screen.findByTestId('bulk-model-error')
+    expect(notice).toHaveClass('max-h-32')
+    const message = within(notice).getByText(/20 sessions failed to switch:/)
+    expect(message).toHaveClass('min-h-0', 'overflow-y-auto')
+    for (const slot of slots) expect(message).toHaveTextContent(slot.title)
+    const retry = screen.getByRole('button', { name: 'Retry 20 failed sessions' })
+    expect(retry).toBeEnabled()
+    expect(notice.contains(retry)).toBe(false)
+    expect(notice.nextElementSibling).toContainElement(retry)
+    expect(within(notice.nextElementSibling as HTMLElement).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
+  it('names a failed session the list hides, a Crew Mode worker, by its title (#11231)', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
+    ] as TestSlot[]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-w'] })
+    renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    expect(await screen.findByText('1 session failed to switch: Worker W')).toBeTruthy()
+  })
+
+  it('counts a hidden Crew Mode worker in the failed-session retry label', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
+    ]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-root', 'k-w'] })
+    renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.queryByText('Worker W')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('2 sessions failed to switch: Crew root and Worker W')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 2 failed sessions' })).toBeEnabled()
+  })
+
+  it('keeps Retry enabled when the only failed session is a hidden Crew Mode worker (#11231)', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
+    ] as TestSlot[]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-w'] })
+    const view = renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('1 session failed to switch: Worker W')).toBeTruthy()
+
+    // The root switched, so every listed session is already on Auto.
+    act(() => { view.store.dispatch(updateSlot({ key: 'k-root', model: 'auto' })) })
+    view.rerender(
+      <QueryClientProvider client={sidebarClient!}>
+        <Provider store={view.store}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatSidebar
+                slots={slots.map(s => (s.key === 'k-root' ? { ...s, model: 'auto' } : s))} activeSlot={null} unreadSlots={[]}
+                history={[]} historyHasMore={false}
+                defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
+              />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const retry = screen.getByRole('button', { name: 'Retry 1 failed session' })
+    expect(retry).toBeEnabled()
+    mocks.chatSlotsModel.mockClear()
+    fireEvent.click(retry)
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+  })
+
+  it('does not label a switch as a retry when a non-chat-page member DM becomes eligible', async () => {
+    const visible = { key: 'k-a', title: 'Idle A', running: false, messages: 1 }
+    const member = { key: 'member-helper', title: 'Helper DM', surface: 'member', running: true, messages: 1 }
+    const peer = { key: 'peer-chat', title: 'Remote chat', peer_id: 'other-crew', running: false, messages: 1 }
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
+    const { store } = renderSidebar({ slots: [visible] })
+    act(() => { store.dispatch(sseSlots([visible, member, peer])) })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.queryByText('Helper DM')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 1 failed session' })).toBeEnabled()
+
+    act(() => { store.dispatch(updateSlot({ key: member.key, running: false })) })
+    expect(screen.queryByRole('button', { name: 'Retry 1 failed session' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Switch 1 session' })).toBeEnabled()
+    expect(screen.queryByText('Helper DM')).toBeNull()
+
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a', member.key] })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('2 sessions failed to switch: Idle A and Helper DM')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 2 failed sessions' })).toBeEnabled()
+  })
+
+  it('does not label a switch as a retry when a hidden Crew Mode worker becomes eligible (#11231)', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-a', title: 'Idle A', running: false, messages: 1 },
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, model: 'auto', crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: true, messages: 1, crew_root: 'k-root' },
+    ] as TestSlot[]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
+    const view = renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.queryByText('Worker W')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 1 failed session' })).toBeTruthy()
+
+    // An idle W joins the next request, so it is not a retry.
+    act(() => { view.store.dispatch(updateSlot({ key: 'k-w', running: false })) })
+    view.rerender(
+      <QueryClientProvider client={sidebarClient!}>
+        <Provider store={view.store}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatSidebar
+                slots={slots.map(s => ({ ...s, running: false }))} activeSlot={null} unreadSlots={[]}
+                history={[]} historyHasMore={false}
+                defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
+              />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByText('Worker W')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry 1 failed session' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Switch 1 session' })).toBeEnabled()
   })
 
   it('closes when the switch fully succeeds', async () => {
@@ -658,33 +903,31 @@ describe('ChatSidebar — Older Sessions pane', () => {
   })
 
   it('deletes one history session behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     expect(mocks.deleteSession).not.toHaveBeenCalled()
-    confirmSpy.mockReturnValue(true)
+    confirmSpy.mockImplementation(() => Promise.resolve(true))
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('h1'))
-    confirmSpy.mockRestore()
   })
 
   it('clears all closed sessions behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     const { store } = renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
     await waitFor(() => expect(mocks.sessions).toHaveBeenCalled())
     expect(store.getState().chat.undeletableHistory).toBeNull()
-    confirmSpy.mockRestore()
   })
 
   // The gateway answers a partial clear with 200 and `ok: false`. A handler
   // that only awaits the call reads that as success; the shortfall must reach
   // the shared refused-delete notice.
   it('reports a Delete all that left sessions behind', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     mocks.clearSessions.mockResolvedValueOnce({
       ok: false, cleared: 1, skipped: 0, failed: 2, undeletable: [],
     })
@@ -694,7 +937,6 @@ describe('ChatSidebar — Older Sessions pane', () => {
     await waitFor(() => expect(store.getState().chat.undeletableHistory).toEqual({
       key: '', title: '', code: '', bulk: { left: 2, cleared: 1, rows: [] },
     }))
-    confirmSpy.mockRestore()
   })
 
   it('loads another page when more history exists', async () => {

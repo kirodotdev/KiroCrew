@@ -20,11 +20,12 @@ import os
 import subprocess
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
 import pytest
+from loopback_servers import LoopbackThreadingHTTPServer
 from real_adapter_gate import MEASURED_OPENCODE_VERSION, require_real_adapter
 
 from kiro_crew import acp_tool_gate
@@ -686,7 +687,7 @@ class _FakeModel:
                     }
                 )
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = LoopbackThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 

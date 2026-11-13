@@ -114,14 +114,18 @@ def test_every_scheduled_workflow_is_watched_or_self_reporting() -> None:
     )
 
 
-def test_the_three_self_reporting_workflows_are_the_ones_left_out() -> None:
+def test_the_self_reporting_workflows_are_the_ones_left_out() -> None:
     """The exclusions are a measured fact about the tree, pinned so a workflow
-    that drops its own issue step is picked up here, not by its next red run."""
+    that drops its own issue step is picked up here, not by its next red run.
+
+    "GUI User Test" also files its own report issue, but its ``schedule:`` is
+    commented out, so it is not a scheduled workflow. Add it back here when
+    that schedule is restored."""
     scheduled = _scheduled_workflows()
     self_reporting = {
         name for name, path in scheduled.items() if _files_an_issue_on_failure(_load(path))
     }
-    assert self_reporting == {"Add Contributor", "Fix Loop Analysis", "GUI User Test"}
+    assert self_reporting == {"Add Contributor", "Fix Loop Analysis"}
 
 
 def test_the_watched_list_has_no_duplicates() -> None:
@@ -134,6 +138,27 @@ def test_the_watched_list_has_no_duplicates() -> None:
 
 def test_the_watcher_fires_only_on_completion() -> None:
     assert _triggers(_load(WATCHER))["workflow_run"]["types"] == ["completed"]
+
+
+def test_the_trigger_is_filtered_to_the_default_branch() -> None:
+    """The job admits only `workflow_run.event == 'schedule'`, and a scheduled
+    run always runs on the default branch, so a dispatch from any other branch
+    can only evaluate that gate as false. Dropping the filter silently restores
+    a dispatch on every PULL-REQUEST run of a watched workflow -- CodeQL and
+    Fork PR Label fire on each one -- which is thousands of runs a day that
+    exist only to skip. Pinned because the gate it depends on sits elsewhere in
+    the file, so neither one reads as load-bearing on its own.
+
+    Compared against ci.yml's filter rather than a literal branch name. A
+    `branches:` filter cannot evaluate `${{ }}`, so both files write the name
+    out; tying them together means a default-branch rename that misses the
+    watcher fails here, instead of leaving this test green while the filter
+    quietly drops every scheduled run."""
+    central_gate = _triggers(_load(WORKFLOWS / "ci.yml"))["pull_request"]["branches"]
+    assert (
+        central_gate
+    ), "ci.yml declares no pull_request branch filter; this test must not pass vacuously"
+    assert _triggers(_load(WATCHER))["workflow_run"]["branches"] == central_gate
 
 
 def test_the_job_is_gated_on_a_red_or_timed_out_scheduled_run() -> None:
@@ -177,7 +202,10 @@ def test_the_watcher_never_checks_out_or_runs_source_code() -> None:
     for job in document["jobs"].values():
         for step in job["steps"]:
             assert "uses" not in step, step
-        assert job["runs-on"] == "ubuntu-latest"
+        assert job["runs-on"] == (
+            "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core'"
+            " || 'ubuntu-latest' }}"
+        )
 
 
 def test_a_running_watcher_is_never_killed_by_the_next_completion() -> None:

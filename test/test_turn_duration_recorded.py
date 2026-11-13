@@ -113,8 +113,9 @@ EXPECTED_SITES = {
     "subagent_manager/run_lifecycle.py": 0,
     "subagent_manager/run_records.py": 0,
     "subagent_manager/run_start.py": 0,
-    "subagent_manager/run_turn.py": 1,
+    "subagent_manager/run_turn.py": 0,  # its nested _persist_usage_row calls usage_row
     "subagent_manager/run_yields.py": 0,
+    "subagent_manager/usage_row.py": 1,
     "workflows/agent_exec.py": 1,
 }
 

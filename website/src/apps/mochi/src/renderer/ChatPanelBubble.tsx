@@ -27,6 +27,7 @@ import { familyGrantIsDistinct, trustBasePattern, truncateCommandLabel } from '.
 import Markdown from 'react-markdown'
 import { capWhitespaceRuns } from '../../../../utils/markdownDepthBound'
 import { mdImageDestToPath } from '../../../../utils/fileTokens'
+import { WINDOWS_ABS_PATH_RE } from '../../../../utils/urlTransform'
 import { copyToClipboard } from '../../../../utils/clipboard'
 import type { ChatMessage } from '../shared/types'
 import { WidgetFrame, parseWidgets, hasWidgets } from './WidgetFrame'
@@ -354,9 +355,10 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                     if (mdImgMatch) {
                       return <LocalImage key={i} path={mdImageDestToPath(mdImgMatch[1])} onClickImage={onImageClick} />
                     }
-                    // Detect bare image file paths — line starts with / and ends with image extension.
+                    // Detect bare image file paths — line starts with / or a drive
+                    // letter (`C:\…`, `C:/…`) and ends with image extension.
                     const trimmed = line.trim()
-                    if (trimmed.startsWith('/') && /\.(?:png|jpg|jpeg|gif|webp)$/i.test(trimmed)) {
+                    if ((trimmed.startsWith('/') || WINDOWS_ABS_PATH_RE.test(trimmed)) && /\.(?:png|jpg|jpeg|gif|webp)$/i.test(trimmed)) {
                       return <LocalImage key={i} path={trimmed} onClickImage={onImageClick} />
                     }
                     return <React.Fragment key={i}>{i > 0 && '\n'}{line}</React.Fragment>
@@ -364,11 +366,13 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                 </span>
               : (() => {
                   // Extract image paths from markdown ![](path) and bare /path.png references.
-                  // Paths may contain spaces so match broadly: / ... .ext
-                  const imgRe = /!\[[^\]]*\]\(`?(\/[^`\n]+\.(?:png|jpg|jpeg|gif|webp))`?\)/gi
+                  // Paths may contain spaces so match broadly: / ... .ext. A drive path
+                  // (`C:\…`, `C:/…`) is matched from its letter, so the capture keeps the drive.
+                  const imgRe = /!\[[^\]]*\]\(`?((?:[A-Za-z]:[\\/]|\/)[^`\n]+\.(?:png|jpg|jpeg|gif|webp))`?\)/gi
                   const images: string[] = []
                   let cleanText = text.replace(imgRe, (_, p) => { images.push(p.trim()); return '' })
-                  const bareRe = /`?(\/[^`\n]+\.(?:png|jpg|jpeg|gif|webp))`?/gi
+                  // `\b`: the last letter of a URL scheme (`https://`) is not a drive.
+                  const bareRe = /`?((?:\b[A-Za-z]:[\\/]|\/)[^`\n]+\.(?:png|jpg|jpeg|gif|webp))`?/gi
                   cleanText = cleanText.replace(bareRe, (_, p) => { images.push(p.trim()); return '' }).trim()
 
                   // Render mcwidget blocks inline

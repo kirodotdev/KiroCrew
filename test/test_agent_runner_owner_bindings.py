@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import importlib
 import json
 import logging
 import os
@@ -44,6 +43,8 @@ from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as facad
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_agent_runner_owner_bindings")
+
+SHARED_BINDINGS_CHECKS = ("leaf_test_scope_derives_this_file_as_a_corpus_gate",)
 
 _PACKAGE = "kiro_crew.apps.builtins.auto_improvement.spine"
 _FACADE = f"{_PACKAGE}.agent_runner"
@@ -67,6 +68,7 @@ _DEFINED: dict[str, frozenset[str]] = {
             "_governance_denial",
             "_refusal",
             "_requested_command",
+            "_segments",
             "_shell_words",
             "_tool_permitted",
             "shell_command_refusal",
@@ -403,16 +405,6 @@ def test_a_patch_through_the_facade_lands_on_every_owner_and_is_undone(
     assert {m.__name__: vars(m)[name] for m in holders} == before
     assert (name in vars(facade)) is bound_here
     assert getattr(facade, name) is before[holders[0].__name__]
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the test trees as data, so a test-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
 
 
 #: Loads the runner the way the gateway's app backend reaches it, under the app loader's own

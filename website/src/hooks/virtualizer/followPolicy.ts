@@ -48,6 +48,7 @@ import type { ScrollToIndexOptions } from './types'
 import type { ReadingPositionEntry } from './readingPosition'
 import type { ResizeBatch } from './measurement'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
+import { releaseReadingPosition } from '../../utils/panelSlide'
 
 /** How a programmatic write must be accounted for by the follow guard. */
 export type WriteScrollTop = (
@@ -728,6 +729,12 @@ export function usePinning<T>(ctx: {
       lastWriteTopRef.current = el.scrollTop
       lastWriteClientHRef.current = el.clientHeight
     }
+    // An in-flight smooth pin owns the position, exactly as in pinAuto: its
+    // mid-glide scrollTop would read as a scroll-up and release follow, and its
+    // arrival re-targets the bottom anyway (kirodotdev/KiroCrew#29818). One at
+    // rest on its target has no arrival coming (a glide that never moves fires
+    // no scroll event), so it falls through and this re-pin's write disarms it.
+    if (smoothPinActiveRef.current && !isSelfScroll(el.scrollTop, lastWriteTopRef.current)) return
     // FOLLOWED reader: re-target the bottom PRE-PAINT in the same commit
     // that repriced the tree. pinAuto also does this, but post-paint --
     // which leaves ONE visible frame when a large reprice lands (idle
@@ -776,7 +783,7 @@ export function usePinning<T>(ctx: {
   }, [
     writeScrollTop, releaseFollowBaseline,
     stickRef, lastHardInputAtRef, pinCascadeUntilRef, lastWriteClientHRef, lastWriteTopRef, runActiveRef, settleGateRef,
-    lastUpwardInputAtRef,
+    lastUpwardInputAtRef, smoothPinActiveRef,
   ])
 
   const onFollowScroll = useCallback((el: HTMLDivElement, geom: ScrollGeom) => {
@@ -1094,9 +1101,12 @@ export function usePinning<T>(ctx: {
         // only re-anchors a reader this branch would otherwise strand; it
         // writes no scroll of its own — pinAuto owns the write.
         const el = scrollerRef.current
+        // Never mid-glide: a glide sits below its own write on the way down,
+        // and re-baselining there leaves its landing unrecognised.
         if (
           el
           && genuineResize && tailRowResized && stickRef.current
+          && !smoothPinActiveRef.current
           && lastWriteTopRef.current >= 0
           && el.scrollTop <= lastWriteTopRef.current
         ) {
@@ -1106,7 +1116,7 @@ export function usePinning<T>(ctx: {
         pinAuto()
       }
     }
-  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef])
+  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef, smoothPinActiveRef])
 
   // ---- scrollToIndex / scrollToBottom imperative APIs ----
 
@@ -1116,6 +1126,8 @@ export function usePinning<T>(ctx: {
       if (!el) return
       const count = itemsRef.current.length
       if (count === 0) return
+      // Explicit navigation owns the position from here (utils/panelSlide).
+      releaseReadingPosition(el)
       const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
       setWindowRange(computeJumpWindow(t, count, overscan))
       requestAnimationFrame(() => {
@@ -1151,6 +1163,8 @@ export function usePinning<T>(ctx: {
       // `RESTORE.OK idx=5 n=40` followed by a burst of `WRITE bottom`, landing a
       // reader who had left 24,600px from the end at `to-end 0px`.
       if (restoreOwnsPosition()) return
+      // Explicit navigation owns the position from here (utils/panelSlide).
+      releaseReadingPosition(el)
       // Mount the tail so the bottom items have real heights, then force-pin.
       // The tail covers the viewport (bottomPinWindow): a bare overscan-sized
       // tail unmounted the rows on screen and showed the spacer's placeholder

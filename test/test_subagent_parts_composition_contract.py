@@ -17,8 +17,11 @@ they define on the facade's globals. These tests pin what that composition promi
   except ``SpawnApprovalUnreachable``, which reports the facade's;
 * nothing but ``kiro_crew.subagent`` imports a module of ``subagent_parts`` at runtime,
   except ``manager.py``, which imports the ``*_surface`` modules its class binds and
-  ``run_limits`` for its default arguments; an owner imports the facade only for type
-  checking, and no owner carries an agent-sdk boundary edge;
+  ``run_limits`` for its default arguments, and ``kiro_crew.subagent_standalone``, which
+  imports the two owners that work before the facade is loaded; an owner imports the
+  facade only for type checking, and no owner carries an agent-sdk boundary edge;
+* the two standalone owners bind every global their functions read, load without the
+  facade, and are called through one object on both sides of the facade's load;
 * every import the facade keeps only for the owners is read by one;
 * ``SubagentManager`` keeps every member of the one-module class with its kind and
   signature, each binding IS its collaborator's function, and no bound function needs
@@ -48,6 +51,11 @@ import kiro_crew.subagent as subagent
 from kiro_crew import subagent_parts
 from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="subagent_parts_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_sweep_reports_a_global_the_namespace_does_not_bind",)
 
 _FACADE = subagent.__name__
 _SRC = Path(subagent.__file__).resolve().parents[1]
@@ -161,6 +169,10 @@ def _family_edges(module: str) -> bool:
     )
 
 
+#: Owners that also run before the facade is loaded (``kiro_crew.subagent_standalone``).
+_STANDALONE_OWNERS = ("host_memory", "spawn_allowlists")
+_STANDALONE = "kiro_crew/subagent_standalone.py"
+
 #: Owner functions the sweeps must find (a floor, so a sweep that finds nothing fails).
 _MIN_OWNER_FUNCTIONS = 300
 
@@ -236,7 +248,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
     ),
     "agent_policy": (
-        ("UNADVERTISED_AGENTS", "value", "frozenset"),
         ("AGENT_NOT_FOUND_CODE", "value", "str"),
         ("AGENT_NOT_AVAILABLE_CODE", "value", "str"),
         ("AGENT_INTERNAL_CODE", "value", "str"),
@@ -246,14 +257,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(requested: 'str', available: 'list[str]') -> 'str'",
         ),
         ("_AGENT_GLOB_RE", "value", "Pattern"),
-        (
-            "visible_agent_names",
-            "function",
-            "(names: 'Iterable[str]', *, exclude: 'Container[str]' = <frozenset>, limit: 'int | None' = None) -> 'tuple[list[str], int]'",
-        ),
         ("_MAX_AVAILABLE_IN_ERROR", "value", "int"),
-        ("_MAX_AVAILABLE_AGENTS_GLOBS", "value", "int"),
-        ("_MAX_AVAILABLE_AGENTS_GLOB_CHARS", "value", "int"),
         ("_available_agents_hint", "function", "(available: 'list[str]') -> 'str'"),
         ("_validate_app_agent_ownership", "function", "(agent: 'str', app: 'str') -> 'str'"),
         ("AgentCheck", "value", "GenericAlias"),
@@ -270,8 +274,49 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_vet_spawn_governance",
             "function",
-            "(parent_session_key: 'str', agent: 'str', app: 'str' = '') -> 'str | None'",
+            "(parent_session_key: 'str', agent: 'str', app: 'str' = '', "
+            "parent_agent: 'str' = '') -> 'str | None'",
         ),
+        ("_parent_project_resolver", "value", "NoneType"),
+        (
+            "set_parent_project_resolver",
+            "function",
+            "(resolver: \"Callable[[str], 'Iterable[str | Path]'] | None\") -> 'None'",
+        ),
+        ("parent_project_dirs", "function", "(parent_session_key: 'str') -> 'tuple[str, ...]'"),
+        (
+            "parent_template_allowlists",
+            "function",
+            "(parent_session_key: 'str', template: 'str', accepted_dirs: 'object' = ()) -> 'tuple[tuple[str, ...], ...] | None'",
+        ),
+        ("ParentRecordUnreadable", "class", ""),
+        ("_parent_template_for_spawn", "function", "(parent_session_key: 'str') -> 'str'"),
+        ("ParentSpawnPolicy", "value", "GenericAlias"),
+        (
+            "parent_spawn_policy",
+            "function",
+            "(parent_session_key: 'str', accepted_dirs: 'object' = ()) -> 'ParentSpawnPolicy'",
+        ),
+        (
+            "_vet_parent_available_agents",
+            "function",
+            "(policy: 'ParentSpawnPolicy', agent: 'str', *, app: 'str' = '') -> 'str | None'",
+        ),
+        (
+            "validate_cwd",
+            "function",
+            "(cwd: 'str', allowed_roots: 'list[str]') -> 'tuple[str, str]'",
+        ),
+    ),
+    "spawn_allowlists": (
+        ("UNADVERTISED_AGENTS", "value", "frozenset"),
+        (
+            "visible_agent_names",
+            "function",
+            "(names: 'Iterable[str]', *, exclude: 'Container[str]' = <frozenset>, limit: 'int | None' = None) -> 'tuple[list[str], int]'",
+        ),
+        ("_MAX_AVAILABLE_AGENTS_GLOBS", "value", "int"),
+        ("_MAX_AVAILABLE_AGENTS_GLOB_CHARS", "value", "int"),
         ("spawn_allowlist", "function", "(spec: 'Mapping[str, Any]') -> 'tuple[str, ...] | None'"),
         (
             "agent_matches_allowlist",
@@ -291,13 +336,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_UNRESOLVED_PARENT_WARNED", "value", "set"),
         ("_UNRESOLVED_PARENT_WARNED_MAX", "value", "int"),
-        ("_parent_project_resolver", "value", "NoneType"),
-        (
-            "set_parent_project_resolver",
-            "function",
-            "(resolver: \"Callable[[str], 'Iterable[str | Path]'] | None\") -> 'None'",
-        ),
-        ("parent_project_dirs", "function", "(parent_session_key: 'str') -> 'tuple[str, ...]'"),
         (
             "_surface_unresolved_parent_spec",
             "function",
@@ -308,26 +346,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_scan_parent_spawn_allowlists",
             "function",
-            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents') -> '_ScopeAllowlists'",
-        ),
-        (
-            "parent_template_allowlists",
-            "function",
-            "(parent_session_key: 'str', template: 'str') -> 'tuple[tuple[str, ...], ...] | None'",
-        ),
-        ("ParentRecordUnreadable", "class", ""),
-        ("_parent_template_for_spawn", "function", "(parent_session_key: 'str') -> 'str'"),
-        ("ParentSpawnPolicy", "value", "GenericAlias"),
-        ("parent_spawn_policy", "function", "(parent_session_key: 'str') -> 'ParentSpawnPolicy'"),
-        (
-            "_vet_parent_available_agents",
-            "function",
-            "(policy: 'ParentSpawnPolicy', agent: 'str', *, app: 'str' = '') -> 'str | None'",
-        ),
-        (
-            "validate_cwd",
-            "function",
-            "(cwd: 'str', allowed_roots: 'list[str]') -> 'tuple[str, str]'",
+            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents', *, pins: 'Mapping[str, str] | None' = None) -> '_ScopeAllowlists'",
         ),
     ),
     "model_choice": (
@@ -370,7 +389,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "check_memory_available",
             "function",
-            "(min_gb: 'float' = 2.0, *, path: 'str' = '/proc/meminfo') -> 'tuple[bool, float]'",
+            "(min_gb: 'float' = 2.0, *, path: 'str' = '/proc/meminfo', measured_only: 'bool' = False)"
+            " -> 'tuple[bool, float]'",
         ),
         (
             "_proc_subtree_sample",
@@ -388,7 +408,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(total: 'Optional[int]', sharers: 'int', previous: 'Optional[int]') -> 'Optional[int]'",
         ),
         ("_LEGACY_DEFAULT_MAX", "value", "int"),
-        ("_available_memory_gb", "function", "() -> 'float'"),
+        ("_available_memory_gb", "function", "(*, measured_only: 'bool' = False) -> 'float'"),
         ("_host_available_gb", "function", "() -> 'float'"),
         ("_macos_vm_reclaimable_pages", "function", "() -> 'Optional[int]'"),
         ("_macos_available_memory_gb", "function", "() -> 'float'"),
@@ -410,8 +430,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "() -> 'list[tuple[PurePosixPath, PurePosixPath, bool]]'",
         ),
-        ("_cgroup_available_gb", "function", "() -> 'float'"),
-        ("_container_cgroup_available_gb", "function", "() -> 'float'"),
+        ("_cgroup_available_gb", "function", "(*, measured_only: 'bool' = False) -> 'float'"),
+        (
+            "_container_cgroup_available_gb",
+            "function",
+            "(*, measured_only: 'bool' = False) -> 'float'",
+        ),
         ("_agents_slice_available_gb", "function", "() -> 'float'"),
         ("_auto_ceiling", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
         ("_configured_max_subagents", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
@@ -571,7 +595,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_clear_tool_dispatch": ("staticmethod", "(info: 'SubagentInfo') -> 'None'"),
     "_continue_prelude": (
         "method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int] | None'\" = None, *, _execution_context=None, _captured_state=Ellipsis) -> \"'SubagentInfo | dict[str, Any] | None'\"",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, *, _execution_context=None, _captured_state=Ellipsis) -> \"'SubagentInfo | dict[str, Any] | None'\"",
     ),
     "_conversation_busy": ("method", "(self, conv_key: 'str') -> 'SubagentInfo | None'"),
     "_create_shared_session": (
@@ -615,6 +639,8 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, agent_id: 'str', info: 'SubagentInfo', elapsed: 'float', *, reason: 'str' = '') -> 'None'",
     ),
     "_forget_pending_start": ("method", "(self, agent_id: 'str') -> 'None'"),
+    "_take_spawn_attempt": ("method", "(self, agent_id: 'str') -> 'Any'"),
+    "carry_spawn_attempt": ("method", "(self, agent_id: 'str', token: 'Any') -> 'None'"),
     "_forget_pressure_clock": ("method", "(self, agent_id: 'str') -> 'None'"),
     "_gate_exit_reset": ("method", "(self, info: 'SubagentInfo') -> 'Callable[..., None]'"),
     "_gate_wait_mark": ("method", "(self, info: 'SubagentInfo') -> 'Callable[..., None]'"),
@@ -639,6 +665,10 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "_keep_recorded_on_disk": ("method", "(self, key: 'str') -> 'bool'"),
     "_kill_orphan_pid": ("async staticmethod", "(pid: 'int') -> 'str | None'"),
+    "_leave_for_next_start": (
+        "method",
+        "(self, info: 'SubagentInfo', *, stop_reason: 'str | None' = None) -> 'bool'",
+    ),
     "_leave_startup": ("method", "(self, info: 'SubagentInfo') -> 'None'"),
     "_live_shared_count": (
         "method",
@@ -693,7 +723,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_release_slot": ("method", "(self, info: 'SubagentInfo') -> 'bool'"),
     "_report_queued_stop": (
         "method",
-        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False) -> \"'asyncio.Task[bool] | None'\"",
+        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False, gate: \"'asyncio.Future[bool] | None'\" = None) -> \"'asyncio.Task[bool] | None'\"",
     ),
     "_report_terminal": (
         "async method",
@@ -828,7 +858,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "cancel_for_parent": ("async method", "(self, parent_session_key: 'str') -> 'tuple[int, int]'"),
     "cancel_for_teardown": (
         "async method",
-        "(self, agent_ids: \"'Sequence[str]'\", *, parent_session_key: 'str', verb: 'str' = '') -> 'int'",
+        "(self, agent_ids: \"'Sequence[str]'\", *, parent_session_key: 'str', verb: 'str' = '', reason: 'str' = '') -> 'int'",
     ),
     "cancel_queued": (
         "async method",
@@ -843,11 +873,11 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "consume_report_hold": ("method", "(self, batch_id: 'str', agent_id: 'str') -> 'None'"),
     "continue_conversation": (
         "method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None) -> 'SubagentInfo | None'",
     ),
     "continue_conversation_async": (
         "async method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, *, approval_mode: 'str | None' = None, silent: 'bool' = False) -> 'SubagentInfo | None'",
     ),
     "count": ("property", ""),
     "dependency_coordinator": ("method", "(self) -> 'Any'"),
@@ -888,6 +918,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, task: 'str', **kwargs: 'Any') -> \"'SubagentInfo | PreparedSpawn | MemoryReadPoint | None'\"",
     ),
     "published_queued_depths": ("method", "(self) -> 'dict[str, int]'"),
+    "published_queued_labels": ("method", "(self) -> 'dict[str, dict[str, object]]'"),
     "queued_count": ("property", ""),
     "queued_count_for": ("method", "(self, parent_session_key: 'str') -> 'int'"),
     "queued_count_for_async": ("async method", "(self, parent_session_key: 'str') -> 'int'"),
@@ -945,7 +976,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "spawn": (
         "method",
-        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, failover_from: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None, _root_session_key: 'str | None' = None, _card_turn: 'bool' = False) -> 'SubagentInfo | None'",
     ),
     "spawn_async": (
         "async method",
@@ -953,11 +984,16 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "start_reaper": ("method", "(self) -> 'None'"),
     "steer_run": ("async method", "(self, agent_id: 'str', message: 'str') -> 'tuple[bool, str]'"),
+    "suppress_retired_delivery": (
+        "method",
+        "(self, info: 'SubagentInfo', members: 'Iterable[str]' = ()) -> 'bool'",
+    ),
     "task_memory_rows": ("method", "(self) -> 'list[dict[str, object]]'"),
     "update_completion_keep": ("method", "(self, mode: 'str', max_chars: 'int') -> 'None'"),
     "user_max_concurrent": ("property", ""),
     "wait_taskq_ready": ("async method", "(self) -> 'None'"),
     "wave_has_live_nested_spawns": ("method", "(self, batch_id: 'str') -> 'bool'"),
+    "wave_has_live_nested_spawns_async": ("async method", "(self, batch_id: 'str') -> 'bool'"),
 }
 
 
@@ -976,15 +1012,6 @@ def test_the_owners_define_functions_for_the_sweeps_to_check() -> None:
 def test_every_owner_function_runs_on_the_facade_globals() -> None:
     elsewhere = [label for label, fn in _owner_functions() if fn.__globals__ is not vars(subagent)]
     assert elsewhere == []
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:
@@ -1237,7 +1264,12 @@ def test_the_moved_exception_reports_the_facade_module() -> None:
 
 def test_the_owners_log_through_the_facade_logger() -> None:
     assert subagent.logger.name == _FACADE
-    assert [o.__name__ for o in _owners() if "logger" in vars(o)] == []
+    # A standalone owner logs before the facade exists, so it binds that logger by name.
+    binders = {
+        o.__name__.rpartition(".")[2]: vars(o)["logger"] for o in _owners() if "logger" in vars(o)
+    }
+    assert sorted(binders) == sorted(_STANDALONE_OWNERS)
+    assert all(logger is subagent.logger for logger in binders.values())
     assert any("logger" in set(_global_names(fn.__code__)) for _label, fn in _owner_functions())
 
 
@@ -1331,14 +1363,22 @@ def test_the_importer_check_sees_every_spelling(source: str, flagged: bool) -> N
 
 def test_nothing_but_the_facade_imports_an_owner() -> None:
     importers = sorted(
-        str(path.relative_to(_SRC))
+        path.relative_to(_SRC).as_posix()
         for path in sorted((_SRC / "kiro_crew").rglob("*.py"))
         if path.parent != _PARTS_DIR
         and path.name != "subagent.py"
         and "subagent_parts" in (text := path.read_text(encoding="utf-8"))
         and _imports_an_owner(text)
     )
-    assert importers == []
+    assert importers == [_STANDALONE]
+    imported = {
+        mod
+        for _line, mod in _runtime_imports(
+            ast.parse((_SRC / _STANDALONE).read_text(encoding="utf-8"))
+        )
+        if mod.startswith(f"{subagent_parts.__name__}.")
+    }
+    assert imported == {f"{subagent_parts.__name__}.{name}" for name in _STANDALONE_OWNERS}
 
 
 def _boundary_gate():

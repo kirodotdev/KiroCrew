@@ -142,6 +142,48 @@ class TestDriveTurn:
         assert provider.prompts == ["hi"], "the message still lands in the session"
         assert renderer.shown == [] and renderer.started == 0 and renderer.closed == 0
 
+    def test_a_sender_refused_after_the_claim_never_reaches_the_provider(self) -> None:
+        provider = ScriptedProvider(answer())
+        sessions = FakeSessions(provider)
+        renderer = RecordingRenderer()
+        persisted: list[Any] = []
+        turn = _channel_turn(
+            renderer,
+            # Revoked once the driver opens the turn, after every pipeline await.
+            still_admitted=lambda: renderer.started < 2,
+            persist=lambda u, r, n: persisted.append((u, r, n)),
+        )
+        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder()))
+        assert provider.prompts == [] and sessions.count("begin_turn") == 0
+        assert renderer.shown == [] and renderer.closed == 0 and persisted == []
+        assert sessions.count("release") == 1 and sessions.held == 0
+
+    def test_a_sender_refused_inside_the_provider_gets_no_prompt_or_reply(self) -> None:
+        admitted = [True]
+
+        class _Reloading(ScriptedProvider):
+            async def stream(self, message: str, *, prompt_gate: Any = None) -> Any:
+                # Revoked while the provider awaits its pending MCP change.
+                admitted[0] = False
+                if prompt_gate is not None:
+                    prompt_gate()
+                async for event in super().stream(message):
+                    yield event
+
+        provider = _Reloading(answer())
+        sessions = FakeSessions(provider)
+        renderer = RecordingRenderer()
+        persisted: list[Any] = []
+        turn = _channel_turn(
+            renderer,
+            still_admitted=lambda: admitted[0],
+            persist=lambda u, r, n: persisted.append((u, r, n)),
+        )
+        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=RecordingCtxBuilder()))
+        assert provider.prompts == [] and sessions.count("begin_turn") == 1
+        assert renderer.shown == [] and renderer.closed == 0 and persisted == []
+        assert sessions.count("release") == 1 and sessions.held == 0
+
     def test_the_origin_conversation_is_bound_off_the_loop(self) -> None:
         threads: list[int] = []
 

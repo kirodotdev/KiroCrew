@@ -277,14 +277,13 @@ class TestRejectedAgentSpecsNarrowReadiness:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_kiro_prerequisite*.py modules calls monkeypatch.undo()
-    def _isolate_agents_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_agents_dir(self, tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
         """Keep the ownership guard in ``agent.py`` from declining under a worktree.
 
         These tests supply their specs through ``spec_lister`` (see ``_service``),
         so all this needs to do is keep the env from pointing at the real home.
         """
-        monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
+        _floor_monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
 
     @staticmethod
     def _spec_dir(tmp_path: Path) -> Path:

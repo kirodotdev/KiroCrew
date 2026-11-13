@@ -23,6 +23,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
+from kiro_crew.discovery_featured import featured_entries
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
@@ -31,6 +32,8 @@ from kiro_crew.skill_providers.base import (
     ProviderRegistry,
     SkillProvider,
     SkillProviderError,
+    SkillSearchResponse,
+    SkillSearchResult,
     provider_available,
 )
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
@@ -184,8 +187,33 @@ def _get_registry() -> ProviderRegistry:
     return _registry
 
 
+def _featured_response(
+    registry: ProviderRegistry, provider_filter: str | None, limit: int
+) -> SkillSearchResponse:
+    """The bundled featured skills, as a search response with no provider calls.
+
+    Only rows whose provider is registered AND available are kept, so a
+    discovery policy that refuses a provider also hides its featured rows.
+    """
+    admitted = set(registry.available_provider_names)
+    rows = [
+        SkillSearchResult(
+            id=e["id"],
+            name=e["name"],
+            description=e.get("description", ""),
+            provider=e["provider"],
+            repo_url=e.get("repo_url", ""),
+            author=e.get("author", ""),
+        )
+        for e in featured_entries("skills")
+        if e["provider"] in admitted
+        and (provider_filter is None or e["provider"] == provider_filter)
+    ]
+    return SkillSearchResponse(results=rows[:limit], provider_outcomes=[])
+
+
 async def api_skills_discover(request: web.Request) -> web.Response:
-    """GET /api/skills/-/discover?q=<query>[&provider=<name>][&limit=N]
+    """GET /api/skills/-/discover?q=<query>[&provider=<name>][&limit=N][&featured=1]
 
     Multi-provider skill search. Fans out to all available providers
     (or a specific one if ``provider`` param is given) and returns
@@ -221,7 +249,11 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     except ValueError:
         limit = 20
 
-    if not query:
+    # ``featured=1`` with no query asks for the dialog's starting list.
+    # Without the flag an empty query keeps its old empty answer, so no other
+    # caller of this route changes behavior.
+    featured = not query and request.query.get("featured") == "1"
+    if not query and not featured:
         return web.json_response({"results": [], "providers": []})
 
     registry = await asyncio.to_thread(_get_registry)
@@ -233,9 +265,12 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     all_skills = await asyncio.to_thread(skills.list_skills)
     local_keys = {s["key"] for s in all_skills}
 
-    search_response = await registry.search_with_outcomes(
-        query, provider=provider_filter, limit=limit
-    )
+    if featured:
+        search_response = _featured_response(registry, provider_filter, limit)
+    else:
+        search_response = await registry.search_with_outcomes(
+            query, provider=provider_filter, limit=limit
+        )
 
     # Resolve installed state and build response items.
     registered_names = set(registry.provider_names)
@@ -304,19 +339,21 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         if outcome.code
     )
 
-    _sel().log_tool_invocation(
-        session_key=request.get("session_key", "dashboard"),
-        tool_name="discover_skills",
-        tool_kind="skill_provider_search",
-        outcome="success",
-        metadata={
-            "query": query,
-            "provider_filter": provider_filter or "all",
-            "result_count": str(len(items)),
-            "failed_provider_count": str(failed_provider_count),
-            **({"failure_codes": failure_codes} if failure_codes else {}),
-        },
-    )
+    # The featured list reads a bundled file and calls no provider: nothing to audit.
+    if not featured:
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="discover_skills",
+            tool_kind="skill_provider_search",
+            outcome="success",
+            metadata={
+                "query": query,
+                "provider_filter": provider_filter or "all",
+                "result_count": str(len(items)),
+                "failed_provider_count": str(failed_provider_count),
+                **({"failure_codes": failure_codes} if failure_codes else {}),
+            },
+        )
     return web.json_response(
         {
             "results": items,
@@ -366,7 +403,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {
                 "error": (
                     "Installing a registry skill is a user action — do it from "
-                    "Settings → Skills → Discover. Use skill_fetch to read a "
+                    "Customize → Skills → Add Skill. Use skill_fetch to read a "
                     "skill without installing it."
                 ),
                 "code": "human_only",
@@ -381,14 +418,20 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        return web.json_response({"error": "Invalid JSON body", "code": "invalid_json"}, status=400)
     # Shape validation: valid JSON like `[]` has no .get(), and a non-string
     # field ({"provider": 1}) has no .strip() — either would 500. 400 instead.
     if not isinstance(body, dict):
-        return web.json_response({"error": "Request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "Request body must be a JSON object", "code": "body_not_object"},
+            status=400,
+        )
     for _field in ("provider", "skill_id", "name"):
         if not isinstance(body.get(_field, ""), str) and body.get(_field) is not None:
-            return web.json_response({"error": f"'{_field}' must be a string"}, status=400)
+            return web.json_response(
+                {"error": f"'{_field}' must be a string", "code": "invalid_field_type"},
+                status=400,
+            )
 
     provider_name = (body.get("provider") or "").strip()
     skill_id = (body.get("skill_id") or "").strip()
@@ -398,19 +441,30 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     # explicitly false-like value into consent to delete local edits.
     overwrite_raw = body.get("overwrite", False)
     if not isinstance(overwrite_raw, bool):
-        return web.json_response({"error": "'overwrite' must be a boolean"}, status=400)
+        return web.json_response(
+            {"error": "'overwrite' must be a boolean", "code": "invalid_field_type"},
+            status=400,
+        )
     overwrite = overwrite_raw
 
     if not provider_name or not skill_id:
         return web.json_response(
-            {"error": "Both 'provider' and 'skill_id' are required"}, status=400
+            {
+                "error": "Both 'provider' and 'skill_id' are required",
+                "code": "provider_and_skill_id_required",
+            },
+            status=400,
         )
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None or not provider_available(provider):
         return web.json_response(
-            {"error": f"Provider '{provider_name}' is not available"}, status=404
+            {
+                "error": f"Provider '{provider_name}' is not available",
+                "code": "provider_unavailable",
+            },
+            status=404,
         )
 
     # Determine the local slug for the installed skill. An explicit user-supplied
@@ -418,7 +472,8 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     slug = _slugify(custom_name) if custom_name else _install_slug(provider, skill_id, skill_id)
     if not slug or not _SAFE_SLUG_RE.match(slug):
         return web.json_response(
-            {"error": f"Cannot derive safe slug from '{skill_id}'"}, status=400
+            {"error": f"Cannot derive safe slug from '{skill_id}'", "code": "invalid_slug"},
+            status=400,
         )
 
     # Conflict check BEFORE the (slow) provider fetch: if the target skill
@@ -477,7 +532,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             downstream_service=provider_name,
             error="timeout",
         )
-        return web.json_response({"error": "Fetch timed out"}, status=504)
+        return web.json_response({"error": "Fetch timed out", "code": "fetch_timeout"}, status=504)
     except SkillProviderError as exc:
         # The provider could not fetch and said why. Show that reason instead of
         # the generic "not found or empty" so the user can act on it.
@@ -507,11 +562,17 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             downstream_service=provider_name,
             error=scrubbed,
         )
-        return web.json_response({"error": "Failed to fetch skill from provider"}, status=502)
+        return web.json_response(
+            {"error": "Failed to fetch skill from provider", "code": "fetch_failed"}, status=502
+        )
 
     if not bundle and not content:
         return web.json_response(
-            {"error": f"Skill '{skill_id}' not found or empty on {provider_name}"}, status=404
+            {
+                "error": f"Skill '{skill_id}' not found or empty on {provider_name}",
+                "code": "skill_not_found",
+            },
+            status=404,
         )
 
     # Size guard: total bundle must not exceed 5 MiB.
@@ -520,10 +581,13 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         total_size = sum(len(c.encode("utf-8")) for _, c in bundle)
         if total_size > max_bundle_size:
             return web.json_response(
-                {"error": "Skill bundle exceeds size limit (5 MiB)"}, status=413
+                {"error": "Skill bundle exceeds size limit (5 MiB)", "code": "skill_too_large"},
+                status=413,
             )
     elif content and len(content.encode("utf-8")) > max_bundle_size:
-        return web.json_response({"error": "Skill content exceeds size limit"}, status=413)
+        return web.json_response(
+            {"error": "Skill content exceeds size limit", "code": "skill_too_large"}, status=413
+        )
 
     # Write to local skills directory.
     file_count = 0
@@ -547,7 +611,11 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 candidate.relative_to(skills_root)
             except ValueError:
                 logger.warning("Refusing bundle install outside skills root: %s", skill_dir)
-                return 0
+                # Raised, not returned: the caller turns an OSError into a failed
+                # install, and a plain return would report success with nothing written.
+                raise PermissionError(
+                    errno.EPERM, "the install path is outside the skills folder", key
+                ) from None
             # Link defense: if the skill dir itself is a link, every containment
             # check below resolves against the link TARGET, so a pre-planted one
             # would redirect the whole bundle write outside the skills root
@@ -564,9 +632,12 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             # `unlink_link_or_junction` detaches a junction with `rmdir`, so the
             # target's contents are left alone exactly as `unlink` leaves a
             # symlink's.
-            if platform_compat.is_link_or_junction(skill_dir):
-                logger.warning("Replacing linked skill dir: %s", skill_dir)
-                platform_compat.unlink_link_or_junction(skill_dir)
+            #
+            # The link is moved aside only once the new bundle has verified (below,
+            # just before the swap): the bundle is built in a sibling stage that
+            # never passes through it, and an install that fails, at the bundle or
+            # at the publish, must leave the existing install in place, linked or
+            # not. Only after the publish is the old link itself detached.
             # Build the new bundle in a dot-prefixed sibling (the loader skips
             # dot dirs); the old install is only swapped out once it verifies.
             skill_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -574,6 +645,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             stage = skill_dir.with_name(f".{skill_dir.name}.{secrets.token_hex(6)}")
             stage.mkdir()
             aside: Path | None = None
+            aside_is_link = False
             try:
                 resolved_root = stage.resolve()
                 # Belt-and-suspenders: the staging dir must itself land under
@@ -582,8 +654,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     resolved_root.relative_to(skills_root)
                 except ValueError:
                     logger.warning("Refusing bundle write outside skills root: %s", skill_dir)
-                    stage.rmdir()
-                    return 0
+                    raise PermissionError(
+                        errno.EPERM, "the install path is outside the skills folder", key
+                    ) from None
                 written = 0
                 for rel_path, file_content in bundle:
                     if ".." in rel_path or rel_path.startswith("/") or rel_path.startswith("./.."):
@@ -613,9 +686,16 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     (stage / "SKILL.md").write_text(agents_content, encoding="utf-8", newline="")
                 if not (stage / "SKILL.md").is_file():
                     raise FileNotFoundError(errno.ENOENT, "bundle has no SKILL.md", "SKILL.md")
+                old = stage.with_name(stage.name + ".old")
+                aside_is_link = platform_compat.is_link_or_junction(skill_dir)
+                if aside_is_link:
+                    # Moved aside, never followed: os.rename renames the link
+                    # itself, so a failed publish below puts it back unchanged.
+                    logger.warning("Replacing linked skill dir: %s", skill_dir)
+                    os.rename(skill_dir, old)
+                    aside = old
                 # No-replace publish: without consent an existing install (even empty) stays.
-                if overwrite and skill_dir.exists():
-                    old = stage.with_name(stage.name + ".old")
+                elif overwrite and skill_dir.exists():
                     os.rename(skill_dir, old)
                     aside = old
                 platform_compat.publish_dir_noreplace(stage, skill_dir)
@@ -630,7 +710,14 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     shutil.rmtree(stage, ignore_errors=True)
                 raise
             if aside is not None:
-                shutil.rmtree(aside, ignore_errors=True)
+                if aside_is_link:
+                    # Detach the old link only; its target is the user's own folder.
+                    try:
+                        platform_compat.unlink_link_or_junction(aside)
+                    except OSError:
+                        logger.warning("Could not remove the old link for %s", key)
+                else:
+                    shutil.rmtree(aside, ignore_errors=True)
             return written
 
         try:
@@ -672,7 +759,10 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     else:
         created = await asyncio.to_thread(skills.create_skill, key, content)
         if not created:
-            return web.json_response({"error": f"Failed to create skill at '{key}'"}, status=500)
+            return web.json_response(
+                {"error": f"Failed to create skill at '{key}'", "code": "skill_create_failed"},
+                status=500,
+            )
         kind = "created"
         file_count = 1
 
@@ -783,13 +873,20 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     skill_id = request.query.get("id", "").strip()
 
     if not provider_name or not skill_id:
-        return web.json_response({"error": "Both 'provider' and 'id' are required"}, status=400)
+        return web.json_response(
+            {"error": "Both 'provider' and 'id' are required", "code": "provider_and_id_required"},
+            status=400,
+        )
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None or not provider_available(provider):
         return web.json_response(
-            {"error": f"Provider '{provider_name}' is not available"}, status=404
+            {
+                "error": f"Provider '{provider_name}' is not available",
+                "code": "provider_unavailable",
+            },
+            status=404,
         )
 
     _empty = {"description": "", "name": "", "content": "", "files": [], "file_count": 0}

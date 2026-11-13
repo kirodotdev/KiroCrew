@@ -292,6 +292,10 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
               key={vi.key}
               ref={virt.measureRef(vi.index)}
               data-display-index={vi.index}
+              // One display item is one turn (or one loose row): the image
+              // viewer pages a reply's images together with its file cards
+              // inside it (dispatchLightbox).
+              data-image-turn=""
               data-pinned-standin={hidden ? (hiddenRowStripUncovered ? 'folding' : '') : undefined}
               style={hidden ? { visibility: 'hidden' } : undefined}
             >

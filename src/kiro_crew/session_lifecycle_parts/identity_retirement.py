@@ -32,6 +32,47 @@ if TYPE_CHECKING:
     from kiro_crew.session_lifecycle import SessionLifecycleService
 
 
+def holds_kiro_process_of_unknown_account(self: SessionLifecycleService, live: str) -> bool:
+    """Whether a claimable Kiro-backed process has a stamp that proves neither *live* nor
+    another account.
+
+    Such a stamp is, for example, empty, has a store or vault source that is empty on one
+    side only, or has an API key that differs on a child that receives the key. The stamp
+    check acts only on a proven mismatch, and the warm-pool claim already refuses a
+    provider older than the sweep's identity epoch. A busy companion or background runtime
+    is left out because the sweep cannot retire it until it is idle, and it counts again
+    once idle.
+    """
+    owner = self._owner
+
+    def _of_unknown_account(holder: object | None) -> bool:
+        return (
+            holder is not None
+            and self._deps.provider_uses_kiro_identity_store(holder)
+            and not spawned_under(holder, live)
+            and not identity_stamp_mismatch(spawn_identity_of(holder), live)
+        )
+
+    def _provably_busy(runtime: Any) -> bool:
+        try:
+            return bool(runtime.has_active_or_initializing_sessions())
+        except Exception:
+            return False
+
+    for session in tuple(owner._sessions.values()):
+        if not session.retire_on_identity_change and _of_unknown_account(session.provider):
+            return True
+    for runtime in tuple(owner._subagent_runtimes.values()):
+        if _of_unknown_account(runtime) and not _provably_busy(runtime):
+            return True
+    if _of_unknown_account(owner._bg_runtime) and not _provably_busy(owner._bg_runtime):
+        return True
+    for provider in owner.warm_providers():
+        if _of_unknown_account(provider):
+            return True
+    return False
+
+
 async def flag_identity_stamp_mismatches(self: SessionLifecycleService, live: str) -> list[str]:
     """Mark sessions -- and retire idle companion runtimes -- whose child
     PROVABLY spawned under a different account.
@@ -320,7 +361,8 @@ async def retire_kiro_identity_sessions(
                         self._origin_links.pop(key, None)
                         self.state.stop_requests.pop(key, None)
                         self._discard_replay_gap(key)
-                        self.state.orphaned_holders.pop(key, None)
+                        # ``orphaned_holders`` is kept, as in ``remove``: a holder an
+                        # earlier reset recorded still owes its late release.
                         retired_keys.append(key)
                         invalidated_keys.append(key)
                         teardown_children_by_key[key] = self._snapshot_parent_children(key)
@@ -471,7 +513,7 @@ async def retire_kiro_identity_sessions(
                             self._origin_links.pop(key, None)
                             self.state.stop_requests.pop(key, None)
                             self._discard_replay_gap(key)
-                            self.state.orphaned_holders.pop(key, None)
+                            # ``orphaned_holders`` is kept, as in ``remove``.
                             # Selection only -- the committed fence is already open
                             # (promoted above); re-opening it would discard the
                             # concurrent admissions it carries.

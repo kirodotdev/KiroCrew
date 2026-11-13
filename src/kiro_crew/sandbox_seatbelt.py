@@ -13,6 +13,7 @@ spawn, writes the text to ``<config_dir>/run`` and wraps the command in
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,18 +28,70 @@ _SEATBELT_PROFILE = """\
 
 
 def _quoted(path: str) -> str:
-    """*path* with its double quotes escaped for a ``"..."`` profile string."""
+    """Escape *path* so it stays one literal SBPL string.
+
+    Double quotes are always escaped. Backslashes are escaped wherever they are a
+    filename character (every host that runs ``sandbox-exec``); on Windows they are the
+    path separator and no profile is ever executed, so they are left as the paths spell
+    them and the rendered text reads like the paths do.
+    """
+    if os.sep == "/":
+        path = path.replace("\\", "\\\\")
     return path.replace('"', '\\"')
+
+
+def _metadata_allows(directories: tuple[str, ...]) -> list[str]:
+    """Stat-only allows for the masked directories ``realpath`` walks through.
+
+    ``realpath`` lstat()s every component, so a file re-opened inside a masked tree is
+    unreachable by a program that canonicalizes its path first (a Node CLI resolving the
+    ``--mcp-config`` it was handed) unless each masked directory above it may be stat'ed.
+    Metadata only, literal paths only: no directory becomes listable and no sibling
+    readable. Emitted after the mask's own denies, because an allow wins only over the
+    denies before it.
+    """
+    return [f"(allow file-read-metadata (literal {json.dumps(d)}))" for d in directories]
 
 
 def render_seatbelt_profile(plan: ConfinementPlan) -> str:
     """Render *plan* as a Seatbelt profile.
 
     Rule order is part of the contract: Seatbelt is deny-wins across deny rules and
-    last-match-wins between an allow and a deny, so the write carve-outs come last and
-    override only the runtime parent's write seal.
+    last-match-wins between an allow and a deny, so the operator's read-only layer comes
+    first (every crew rule after it decides where both match) and the write carve-outs
+    come last and override only the runtime parent's write seal.
     """
     rules: list[str] = []
+    # The operator's read-only directories and their exceptions come FIRST: every crew
+    # rule below is emitted later, so wherever one matches the same path it decides,
+    # and the operator's layer can never re-open a crew mask or seal. Within the layer
+    # the rules run shallowest path first, so each nested entry decides over the one
+    # holding it -- ``/X`` read-only, ``/X/Docs`` writable, ``/X/Docs/Taxes`` read-only
+    # again -- the same answer the Linux mount order gives. ``file-link`` stops a
+    # hardlink giving a read-only file a writable second name (an exception re-allows
+    # links to its own, already writable, files), and the literal write
+    # denies on each read-only directory and its ancestors come after every allow, so a
+    # rename cannot move a read-only tree out from under its path rule even when one of
+    # those ancestors is itself a writable exception.
+    layer = [(path, False) for path in plan.operator_readonly]
+    layer += [(path, True) for path in plan.operator_writable]
+    for path, writable in sorted(layer, key=lambda entry: (entry[0].count("/"), entry[0])):
+        escaped = _quoted(path)
+        if writable:
+            rules.append(f'(allow file-write* (subpath "{escaped}"))')
+            rules.append(f'(allow file-link (subpath "{escaped}"))')
+        else:
+            rules.append(f'(deny file-write* (subpath "{escaped}"))')
+            rules.append(f'(deny file-link (subpath "{escaped}"))')
+    for target in plan.operator_ancestor_guards:
+        rules.append(f'(deny file-write* (literal "{_quoted(target)}"))')
+    # Each exception's OWN name too, in every spelling the plan carries: its subpath
+    # allow matches the directory itself, so without this the agent could move the
+    # exception aside and plant a link to a read-only sibling under its name, which
+    # the next plan would re-open. Writes inside the exception are other paths and
+    # stay allowed.
+    for target in plan.operator_writable:
+        rules.append(f'(deny file-write* (literal "{_quoted(target)}"))')
     for mask in plan.masks:
         if mask.origin != "tier":
             continue
@@ -50,12 +103,9 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
             predicate = f"(require-all (subpath {json.dumps(mask.path)}) {exceptions})"
             for operation in ("file-read*", "file-write*", "file-link"):
                 rules.append(f"(deny {operation} {predicate})")
-            # ...but stat on the masked directories ABOVE each window stays allowed:
-            # ``realpath`` of the window lstat()s every component, so a harness that
-            # canonicalizes its $TMPDIR would otherwise fail on its own window. Metadata
-            # only, literal paths only: no sibling becomes listable or readable.
-            for ancestor in mask.window_ancestors:
-                rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
+            # ...but stat on the masked directories ABOVE each window stays allowed, so a
+            # harness that canonicalizes its $TMPDIR does not fail on its own window.
+            rules.extend(_metadata_allows(mask.window_ancestors))
             continue
         if mask.cancelled:
             # A lifted governance cache stays READ-only: the write and hardlink denies
@@ -100,6 +150,7 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         if mask.literal_write_sealed and not mask.exposed:
             rules.append(f'(deny file-read* (literal "{escaped}"))')
             rules.append(f'(deny file-link (literal "{escaped}"))')
+        rules.extend(_metadata_allows(mask.exposed_ancestors))
 
     # The voice image lives below ``run``. That parent stays readable (the launcher is
     # stored there), but every write through both spellings is denied, and literal
@@ -142,8 +193,8 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
             for operation in ("file-write*", "file-link"):
                 rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
-            for ancestor in mask.window_ancestors:
-                rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
+            ancestors = (*mask.window_ancestors, *mask.exposed_ancestors)
+            rules.extend(_metadata_allows(tuple(dict.fromkeys(ancestors))))
             continue
         if mask.cancelled:
             continue
@@ -163,6 +214,7 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         rules.append(f'(deny file-read* (literal "{escaped}"))')
         rules.append(f'(deny file-write* (literal "{escaped}"))')
         rules.append(f'(deny file-link (literal "{escaped}"))')
+        rules.extend(_metadata_allows(mask.exposed_ancestors))
 
     if plan.hide_ssh:
         # Deny all access except reading known_hosts; hardlinking any key out of the
@@ -175,6 +227,25 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         )
         rules.append(f'(deny file-write* (subpath "{ssh_escaped}"))')
         rules.append(f'(deny file-link (subpath "{ssh_escaped}"))')
+
+    # Host UNIX sockets the agent must not connect to. ``(allow default)`` lets a
+    # sandboxed process connect() to any socket its uid can reach, and these listeners
+    # trust that uid alone. No rule below allows network-outbound, so nothing re-opens
+    # them. The ``#"..."`` form is a raw string: a regex backslash stays one backslash.
+    for pattern in plan.denied_socket_patterns:
+        if '"' in pattern or "\n" in pattern:
+            # The producer escapes both; refusing here keeps a stray one from ending the
+            # raw string early and turning the rest of the pattern into profile syntax.
+            raise ValueError(f"unrenderable socket deny pattern: {pattern!r}")
+        rules.append(f'(deny network-outbound (remote unix-socket (path-regex #"{pattern}")))')
+    # A connect deny matches the path, so a socket in an agent-writable dir must not be
+    # renamed (``file-write*`` covers the unlink of the old name) or hard-linked
+    # (``file-link`` fires on the target) to a name the deny does not match.
+    for pattern in plan.sealed_socket_patterns:
+        if pattern not in plan.denied_socket_patterns:
+            raise ValueError(f"sealed socket pattern is not denied: {pattern!r}")
+        rules.append(f'(deny file-write* (regex #"{pattern}"))')
+        rules.append(f'(deny file-link (regex #"{pattern}"))')
 
     # Write carve-outs, validated against every seal above and emitted LAST. The
     # subtree's ``file-link`` deny stays in force: a probe scratch dir never needs to

@@ -63,6 +63,28 @@ class TestKiroInternalSandboxExclusion:
         self._write_settings(tmp_path, monkeypatch, "{not json")
         assert kiro_internal_sandbox_enabled() is False
 
+    def test_several_values_read_by_the_first(self, tmp_path, monkeypatch):
+        """kiro-cli reads the first of several JSON values, so this must too."""
+        import kiro_crew.sandbox_delegation as delegation
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        monkeypatch.setattr(delegation, "_kiro_settings_concat_warned", False)
+        self._write_settings(
+            tmp_path,
+            monkeypatch,
+            '{"sandbox": true}\n{"sandbox": false}\n{"sandbox": false}\n',
+        )
+        assert kiro_internal_sandbox_enabled() is True
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": false}\n{"sandbox": true}\n')
+        assert kiro_internal_sandbox_enabled() is False
+
+    def test_value_then_garbage_is_disabled(self, tmp_path, monkeypatch):
+        """Only whole JSON values after the first are read past; junk is not."""
+        from kiro_crew.sandbox import kiro_internal_sandbox_enabled
+
+        self._write_settings(tmp_path, monkeypatch, '{"sandbox": true}\n{oops')
+        assert kiro_internal_sandbox_enabled() is False
+
     def test_missing_key_is_disabled(self, tmp_path, monkeypatch):
         from kiro_crew.sandbox import kiro_internal_sandbox_enabled
 
@@ -422,6 +444,9 @@ class TestMacOsNestingDetection:
         # unconditionally — that would brick in-sandbox spawns wherever the probe
         # is unavailable.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # Unknown outer tier, so a `strict` request proves no downgrade and the argv
+        # passes through unchanged; a host `standard` would add the env-scrub wrap.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         with patch("kiro_crew.sel.sel"):
             result, _ = wrap_argv(["kiro-cli", "acp"], mode="strict")

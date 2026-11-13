@@ -11,19 +11,25 @@ import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from kiro_crew.dashboard.cache_rewrite import note_turn_cache
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import row_mid
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.llm_helpers import (
     _NO_PRIOR_STATS,
+    engine_attributed_model,
     provider_active_model,
-    record_interaction_event,
     usage_has_billing,
 )
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
+from kiro_crew.metrics.harness import HARNESS_UNKNOWN, harness_of
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
+from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER, trigger_for_dashboard_turn
 from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
     is_monitor_completion_evidence,
 )
+from kiro_crew.parent_turns import note_turn_landed
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -32,6 +38,7 @@ if TYPE_CHECKING:
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TOOL_STALL,
         STOP_RECOVERY_MAX_RETRIES,
+        DashboardState,
         RefusalInfo,
         TurnUsage,
         _ChatSlot,
@@ -45,8 +52,10 @@ if TYPE_CHECKING:
         read_context_tokens,
         read_effective_agent,
         read_turn_model,
+        record_interaction_event,
         telemetry_channel_of,
     )
+    from kiro_crew.dashboard.chat_turn.file_changes import _turn_rows
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
     from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
     from kiro_crew.dashboard.chat_turn.native_cards import (
@@ -56,6 +65,79 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
+
+
+def _last_reply_row(
+    slot: "_ChatSlot", turn_boundary: int, turn_start_mid: str | None
+) -> dict[str, Any] | None:
+    """The last reply row the runner appended this turn, or None when it appended none.
+
+    The one identity walk, which ``_attach_file_changes`` also calls to place the
+    turn's file chips: only rows this turn appended (``_turn_rows``), and among
+    them only a reply the runner recorded (``slot._turn_reply_mids``), because
+    an assistant row another writer injects mid-turn, such as a workflow or
+    sub-agent completion envelope, is not this turn's reply. A system notice
+    (``is_system_notice``: a compaction or session-reload status row) is written
+    under the assistant role but is not a reply either: a failed compaction
+    appends its notice after the text the user read. A slot that tracks no
+    identities (a test double without the list) keeps the position rule.
+    """
+    reply_mids = getattr(slot, "_turn_reply_mids", None)
+    for m in reversed(_turn_rows(slot, turn_boundary, turn_start_mid)):
+        if m.get("role") != "assistant" or is_system_notice("assistant", m.get("meta")):
+            continue
+        if isinstance(reply_mids, list) and row_mid(m) not in reply_mids:
+            continue
+        return m
+    return None
+
+
+def _completed_reply_row(
+    slot: "_ChatSlot", turn_boundary: int, turn_start_mid: str | None
+) -> dict[str, Any] | None:
+    """The row a completed turn's footer lands on.
+
+    ``_last_reply_row`` once the runner recorded a reply this turn, so a workflow
+    or sub-agent envelope another writer appended after the reply does not take
+    the turn's figures. A turn that recorded none keeps the position rule, the
+    newest assistant row of the turn that is not a system notice: a slash
+    command's confirmation is appended as a plain assistant row, and a slot
+    double built without the list records nothing.
+    """
+    reply_mids = getattr(slot, "_turn_reply_mids", None)
+    if isinstance(reply_mids, list) and reply_mids:
+        return _last_reply_row(slot, turn_boundary, turn_start_mid)
+    for m in reversed(_turn_rows(slot, turn_boundary, turn_start_mid)):
+        if m.get("role") == "assistant" and not is_system_notice("assistant", m.get("meta")):
+            return m
+    return None
+
+
+def _broadcast_turn_stats(
+    state: "DashboardState", slot: "_ChatSlot", row: dict[str, Any], stats: dict[str, Any]
+) -> None:
+    """Send the footer just put on ``row`` to open clients.
+
+    A turn that ends delivers its footer through the refresh its ``chat_done``
+    triggers. An abnormal end can hand the slot straight to a queued recovery,
+    which sends no ``chat_done`` until it finishes, so the stats go out on the
+    ``chat_message_update`` patch, which the client merges into the row's meta.
+    Keyed on the row's ``mid`` where it has one, since two rows can share a
+    ``ts``. Best-effort: a client that misses it reads the stats from the next
+    refresh.
+    """
+    meta = row.get("meta")
+    mid = meta.get("mid") if isinstance(meta, dict) else None
+    ts = str(row.get("ts") or "")
+    if not ts and not (isinstance(mid, str) and mid):
+        return
+    payload: dict[str, Any] = {"slot": slot.key, "ts": ts, "meta": {"turn_stats": stats}}
+    if isinstance(mid, str) and mid:
+        payload["mid"] = mid
+    try:
+        state.broadcast_ws("chat_message_update", payload)
+    except Exception:
+        logger.debug("Broadcasting the reply footer failed for slot %s", slot.key, exc_info=True)
 
 
 def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
@@ -100,6 +182,45 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
     return payload
 
 
+# The fewest seconds between two mid-turn context readings one turn broadcasts.
+_LIVE_CONTEXT_MIN_INTERVAL_S = 2.0
+
+
+def _broadcast_live_context(turn: "_ChatTurn", clock: Callable[[], float] = time.monotonic) -> None:
+    """Broadcast the context reading while the turn runs, throttled.
+
+    ``usage_update`` frames move the provider's counts mid-turn but emit no
+    event, and ``_turn_context_usage`` broadcasts only after the turn settles,
+    so a long tool-calling turn left the meter on its old reading until the end.
+    The stream loop calls this once per event: it sends a frame only for a
+    MEASURED reading (used and window both known) that differs from the last one
+    this turn sent, at most once per ``_LIVE_CONTEXT_MIN_INTERVAL_S``. A
+    reading with no counts is never sent mid-turn, because its payload is a
+    ``reset`` that would wipe the stored counts. The turn-end frame stays the
+    final, authoritative reading.
+    """
+    client = turn.client
+    try:
+        window = client.context_window_tokens() if hasattr(client, "context_window_tokens") else 0
+        used = client.context_used_tokens() if hasattr(client, "context_used_tokens") else 0
+        if not (window and used):
+            return
+        reading = (used, window)
+        if reading == turn._live_context_reading:
+            return
+        now = clock()
+        if now - turn._live_context_at < _LIVE_CONTEXT_MIN_INTERVAL_S:
+            return
+        turn._live_context_reading = reading
+        turn._live_context_at = now
+        turn.state.broadcast_context_usage(
+            turn.slot.key, _context_usage_payload(turn.slot.key, client)
+        )
+    except Exception:
+        # A display nicety: never let it break the turn's stream.
+        logger.debug("Live context broadcast failed for slot %s", turn.slot.key, exc_info=True)
+
+
 def _attach_turn_stats(
     slot: "_ChatSlot",
     elapsed_ms: int,
@@ -108,8 +229,11 @@ def _attach_turn_stats(
     turn_boundary: int = 0,
     model: str = "",
     ttft_ms: int = 0,
+    turn_start_mid: str | None = None,
+    retries: int = 0,
+    cache_rewrite: bool = False,
 ) -> bool:
-    """Attach per-turn stats to the last assistant message's meta.
+    """Attach per-turn stats to the turn's last reply row.
 
     Returns whether a row received them, so a caller can tell a saved row from
     a turn that had none (a denied tool with no text), whose recovery still has
@@ -131,61 +255,33 @@ def _attach_turn_stats(
     Zero/empty fields are omitted so the frontend renders only what the
     provider actually reported.
 
-    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start: only
-    messages appended DURING this turn are candidates. Without it, an
-    error/refusal-only turn (which appends no assistant message) would walk
-    back into the PREVIOUS turn's assistant message and overwrite its stats
-    with the failed turn's numbers. No-op when the turn produced no assistant
+    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start and
+    ``turn_start_mid`` the identity of the row at the window's tail then: only
+    messages appended DURING this turn are candidates (``_turn_rows``). Without
+    the boundary, an error/refusal-only turn (which appends no assistant
+    message) would walk back into the PREVIOUS turn's assistant message and
+    overwrite its stats with the failed turn's numbers. Among the turn's rows
+    the footer lands on the reply the runner recorded (``_completed_reply_row``),
+    not on a workflow or sub-agent envelope another writer appended after it,
+    and never on a system notice. No-op when the turn produced no assistant
     message or when there is nothing to show.
-    """
-    return _attach_owned_turn_stats(
-        slot,
-        elapsed_ms,
-        credits,
-        cost_usd,
-        turn_boundary=turn_boundary,
-        model=model,
-        ttft_ms=ttft_ms,
-        reply_mids=None,
-    )
 
-
-def _attach_owned_turn_stats(
-    slot: "_ChatSlot",
-    elapsed_ms: int,
-    credits: float,
-    cost_usd: float,
-    *,
-    turn_boundary: int,
-    model: str,
-    ttft_ms: int,
-    reply_mids: list[str] | None,
-    retries: int = 0,
-) -> bool:
-    """``_attach_turn_stats``, narrowed to rows the runner in flight appended.
-
-    ``reply_mids`` is ``slot._turn_reply_mids``: a workflow or sub-agent result
-    another writer appends into the window mid-turn is skipped, so it never
-    takes this turn's figures. ``None`` keeps the plain boundary scan.
     ``retries`` is how many times the user turn was re-sent after a pre-output
     transient error (``slot._turn_retries``), recorded only when positive.
+    ``cache_rewrite`` marks a turn that rebuilt the prompt cache (see ``dashboard/cache_rewrite.py``).
     """
-    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
+    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model, cache_rewrite=cache_rewrite)
     if stats is None:
         return False
     if ttft_ms > 0:
         stats["ttft_ms"] = int(ttft_ms)
     if retries > 0:
         stats["retries"] = int(retries)
-    boundary = max(0, turn_boundary)
-    for m in reversed(slot.messages[boundary:]):
-        if m.get("role") != "assistant":
-            continue
-        if reply_mids is not None and row_mid(m) not in reply_mids:
-            continue
-        m.setdefault("meta", {})["turn_stats"] = stats
-        return True
-    return False
+    row = _completed_reply_row(slot, turn_boundary, turn_start_mid)
+    if row is None:
+        return False
+    row.setdefault("meta", {})["turn_stats"] = stats
+    return True
 
 
 class _FirstVisibleClock:
@@ -244,6 +340,21 @@ def _turn_clock(
     return clock
 
 
+def _session_selected_auto(slot: Any) -> str:
+    """``"auto"`` when this slot's live session was allocated with Auto selected.
+
+    The footer's fallback for a turn whose provider chain reported no model.
+    ``slot._session_requested_model`` is the allocation's own selection (its
+    stamp, else the turn's request), so an exact ``auto`` there means Auto was
+    chosen for the session that served the turn. A harness that keeps neither a
+    request nor a resolved id on its handle (KAS) otherwise leaves an Auto turn
+    blank. A blank or concrete selection says nothing about Auto and stays
+    ``""``: only the chain names a concrete id.
+    """
+    selected = getattr(slot, "_session_requested_model", None)
+    return "auto" if isinstance(selected, str) and selected.strip().lower() == "auto" else ""
+
+
 def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
     """Map an EVENT_COMPLETE stop_reason to a low-cardinality turn outcome.
 
@@ -256,6 +367,114 @@ def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
     return turn_outcome(stop_reason, exhausted=exhausted)
 
 
+def _kiro_cli_kept_the_prompt(turn: _ChatTurn) -> bool:
+    """Whether kiro-cli kept the prompt this turn sent, so its native session holds it.
+
+    The one definition of the rule the first-turn history settle in
+    ``_turn_settle_debts`` (chat_turn/prompt_assembly.py) applies
+    (``_first_turn_history_delivered``, whose comment there gives the premise
+    and the exclusions) and the merge-card consumption reads through
+    ``_merge_cards_reached_the_model``.
+    """
+    _compaction_completed = turn._compaction_completed
+    _had_empty_response_verdict = turn._had_empty_response_verdict
+    _recovering_compaction = turn._recovering_compaction
+    _stop_reason = turn._stop_reason
+    _terminal_synthetic = turn._terminal_synthetic
+    _turn_emitted = turn._turn_emitted
+    return (
+        (
+            _stop_reason == STOP_REASON_END_TURN
+            and not _terminal_synthetic
+            and not _had_empty_response_verdict
+        )
+        or (
+            _turn_emitted
+            and _stop_reason != STOP_REASON_CANCELLED
+            and not _had_empty_response_verdict
+        )
+        or (_recovering_compaction and _compaction_completed)
+    )
+
+
+def _native_session_lacks_the_prompt(turn: _ChatTurn) -> bool:
+    """Whether the native session the next turn runs on does NOT hold this turn's prompt.
+
+    kiro-cli appends a prompt to its log only once the model has answered
+    it (``replay.py``'s ``build_interrupted_turn_preamble`` states the
+    contract), so a conversation reloaded or replaced mid-answer lacks the
+    prompt even when output had streamed. That is the case when the native
+    conversation is discarded, when the session is reset before the model
+    reached a real ``end_turn`` (the first clause of
+    ``_kiro_cli_kept_the_prompt``), or when the stream ended with the
+    retryable ``failed`` stop class, the ``error:`` family whose runtime
+    the next claim replaces without any reset flag. A reset AFTER a real
+    ``end_turn`` (an agent switch recorded once the answer landed) keeps
+    the prompt: the reloaded session holds it. Derived here, from facts the
+    turn already records, so no recovery arm has to remember the card rule.
+    Read by ``_merge_cards_reached_the_model`` only.
+    """
+    _had_empty_response_verdict = turn._had_empty_response_verdict
+    _stop_reason = turn._stop_reason
+    _terminal_synthetic = turn._terminal_synthetic
+    needs_conversation_discard = turn.needs_conversation_discard
+    needs_session_reset = turn.needs_session_reset
+    model_finished_answering = (
+        _stop_reason == STOP_REASON_END_TURN
+        and not _terminal_synthetic
+        and not _had_empty_response_verdict
+    )
+    runtime_died_under_the_turn = classify_stop_reason(_stop_reason).retryable
+    return (
+        needs_conversation_discard
+        or (needs_session_reset and not model_finished_answering)
+        or runtime_died_under_the_turn
+    )
+
+
+def _merge_cards_reached_the_model(turn: _ChatTurn) -> bool:
+    """Whether the prompt carrying this turn's merge-card frames stays in the native session.
+
+    The frames went out inside the prompt, so the question is whether
+    kiro-cli kept it (``_kiro_cli_kept_the_prompt``), landed or not, and
+    whether the session the next turn runs on still holds it
+    (``_native_session_lacks_the_prompt``). An exit that kept the prompt
+    on a session that stays in place (a promise-only turn, a leaked tool
+    call, a capacity retry or a backend error after output streamed, a
+    completed compaction) must not restore its cards: that would prepend
+    the same frame to a session that already holds it. An exit that did
+    not keep it (a Stop, an empty-response re-queue), or whose reset,
+    discard or runtime death leaves the next session without it, restores
+    them, so the recovery turn's bare requeue carries the frame once more.
+    ``_turn_lands`` is read as well: a landed turn whose consumption stamp
+    write was cancelled (a Stop pressed during
+    ``_record_consumed_merge_contexts``) reaches the finally as cancelled,
+    yet its prompt was answered and kept. A retrying empty-response verdict
+    restores its cards, and a landed empty-response give-up restores them
+    when its own attempt leaves the prompt unanswered. A productive empty
+    attempt has already flushed text, run a tool or thought, so its give-up
+    consumes its cards. Productivity is read from this attempt alone, never
+    from the recovery episode, whose slot state outlives a discarded
+    continuation: a give-up after an earlier productive attempt restores the
+    card, and the next turn repeats a frame the session holds rather than
+    losing one it lacks. A reset or discard before a real ``end_turn`` wins over
+    landing: a vetoed agent switch on a pinned member thread breaks the
+    stream mid-answer with no terminal, so the turn lands while the
+    finally's reset kills a runtime that may still be answering, and the
+    reloaded session may lack the prompt. The card is delivered again
+    rather than lost. The kept-prompt clause is the Kiro contract, so it
+    counts only on kiro-cli and KAS (which runs the Kiro CLI pick); any other
+    harness consumes a card only on a landed turn, so a wrong guess there
+    repeats the card.
+    """
+    provider = getattr(turn, "client", None)
+    on_kiro = any(getattr(provider, n, None) is True for n in ("is_kiro_backend", "is_kas_backend"))
+    return (
+        (turn._turn_lands and not turn._empty_verdict_left_prompt_unanswered)
+        or (on_kiro and _kiro_cli_kept_the_prompt(turn))
+    ) and not _native_session_lacks_the_prompt(turn)
+
+
 def _emit_turn_metric(
     duration_ms: int | float | None,
     stop_reason: str | None,
@@ -266,8 +485,16 @@ def _emit_turn_metric(
     usage: object = None,
     model: str = "",
     provider: str = "",
+    harness: str = HARNESS_UNKNOWN,
+    trigger: str = TRIGGER_OTHER,
 ) -> None:
     """Emit this turn's OTEL samples (best-effort).
+
+    ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
+
+    ``harness`` labels the duration and usage samples (see
+    :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
+    from the turn's live client.
 
     Thin delegate to :func:`kiro_crew.metrics.turns.emit_turn_duration` and
     :func:`~kiro_crew.metrics.turns.emit_turn_usage`. The family is emitted for
@@ -299,6 +526,8 @@ def _emit_turn_metric(
         elapsed_ms=elapsed_ms,
         model=model,
         provider=provider,
+        harness=harness,
+        trigger=trigger,
     )
     emit_turn_usage(
         input_tokens=getattr(usage, "input_tokens", 0),
@@ -307,7 +536,28 @@ def _emit_turn_metric(
         cost_usd=getattr(usage, "cost_usd", 0.0),
         model=model,
         provider=provider,
+        harness=harness,
     )
+
+
+def _dashboard_turn_trigger(turn: object) -> str:
+    """``trigger_source`` for a dashboard turn; never raises.
+
+    Read from the actor the turn entry bound (``turn._crew_log_actor``). A
+    ``user`` actor is the entry's fallback for a turn no dispatch claimed, so it
+    counts as ``user`` only when the turn also carries a person's send -- the
+    authenticated-human or channel-origin directive -- and is not a queue row
+    restored after a restart, whose provenance is gone. Otherwise ``other``.
+    """
+    try:
+        return trigger_for_dashboard_turn(
+            getattr(turn, "_crew_log_actor", None),
+            user_origin=bool(getattr(turn, "_directive_user_origin", False)),
+            channel_origin=bool(getattr(turn, "_directive_channel_origin", False)),
+            provenance_restored=bool(getattr(turn, "_turn_provenance_restored", False)),
+        )
+    except Exception:
+        return TRIGGER_OTHER
 
 
 def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
@@ -342,7 +592,12 @@ def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
 
 
 def turn_stats_meta(
-    elapsed_ms: int, credits: float, cost_usd: float, model: str = ""
+    elapsed_ms: int,
+    credits: float,
+    cost_usd: float,
+    model: str = "",
+    *,
+    cache_rewrite: bool = False,
 ) -> dict[str, Any] | None:
     """The ``meta.turn_stats`` value the footer renders, or None for nothing to show.
 
@@ -352,6 +607,8 @@ def turn_stats_meta(
     A non-finite number is omitted too: ``json.dumps`` writes it as a bare
     ``Infinity``/``NaN`` that no browser parses. The provider-reported model id is
     scrubbed like every ACP-controlled string (``_redact_acp_string``) and dropped past ``_MAX_MODEL_ID_LEN``, because the row is retained.
+    ``cache_rewrite`` adds ``"cache": "rewrite"``, so a turn that rebuilt the prompt
+    cache says why it cost more; every other payload keeps its shape.
     """
     if elapsed_ms <= 0:
         return None
@@ -364,6 +621,8 @@ def turn_stats_meta(
         safe_model = _redact_acp_string(model)
         if len(safe_model) <= _MAX_MODEL_ID_LEN:
             stats["model"] = safe_model
+    if cache_rewrite:
+        stats["cache"] = "rewrite"
     return stats
 
 
@@ -404,7 +663,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     _turn_t0 = turn._turn_t0
     _wt_pending_coding = turn._wt_pending_coding
     _wt_pending_dropped = turn._wt_pending_dropped
-    agent_model = turn.agent_model
     client = turn.client
     monitor_completion = turn.monitor_completion
     session_key = turn.session_key
@@ -564,7 +822,7 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # two are different facts and a blank footer conflates them
     # with a missing measurement. Still never guesses: an
     # unattributable turn stays "" and the footer omits the field.
-    _turn_model = read_turn_model(client)
+    _turn_model = read_turn_model(client) or _session_selected_auto(slot)
     turn._turn_model = _turn_model
     _turn_stats_captured = True
     turn._turn_stats_captured = _turn_stats_captured
@@ -654,7 +912,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # the `model_source` walk — no worse than the blank it would
     # write anyway.
     _provider_name = capabilities_of(client).provider_seam
-    _record_model = slot.model
     # A model pick can land on the slot mid-turn: api_chat_slot_model's
     # deferred branch writes slot.model and marks _deferred_model_switch_key
     # for the turn boundary to apply. The live session is NOT switched then, so
@@ -664,8 +921,18 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # slot.model — which would overwrite the pending pick, replacing an Auto
     # pick's "" with the served id and silently undoing it.
     _deferred_model_pick = bool(slot._deferred_model_switch_key)
-    if _deferred_model_pick:
-        _record_model = _turn_model or provider_active_model(client)
+    # The model Crew put this turn on: the pin, the served id under a deferred
+    # pick, or while either fallback mechanism is active, the provider's, never
+    # written into slot.model. A move the engine made inside the prompt then
+    # wins over all three (`engine_attributed_model`, the cron, heartbeat and
+    # sub-agent rows' rule): the engine's target is what answered.
+    if slot._active_fallback_model or slot._refusal_fallback_primary:
+        _crew_model = provider_active_model(client)
+    elif _deferred_model_pick:
+        _crew_model = _turn_model or provider_active_model(client)
+    else:
+        _crew_model = slot.model
+    _record_model = engine_attributed_model(_crew_model, client)
     # Occupancy is read ABOVE the billing gate, beside the other locals
     # the turn closer needs. Two reasons, and either alone decides it:
     # the closer runs for EVERY completed turn, so a name bound only
@@ -677,11 +944,15 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # elsewhere. `read_context_tokens` never raises and answers (0, 0)
     # for a provider without the accessors.
     _ctx_used, _ctx_window = read_context_tokens(client)
-    if slot._active_fallback_model or slot._refusal_fallback_primary:
-        # Either fallback mechanism active ⇒ the model that SERVED
-        # this turn is the provider's, not the pin; attribute usage
-        # to it without ever writing it into slot.model.
-        _record_model = provider_active_model(client)
+    # A synthesized completion (cancel, timeout) carries partial counts, and a
+    # turn that compacted, by `/compact` or automatically mid-turn, writes its new
+    # smaller prefix once, so both only move the remembered context size and are
+    # never flagged.
+    turn._turn_cache_rewrite = (
+        note_turn_cache(slot, client, _ctx_used, event.usage.cache_creation_tokens)
+        and not event.synthetic_completion
+        and not turn._compaction_completed
+    )
     # One shared predicate across every persist gate: a
     # claude-seam turn ending via a synthetic EVENT_COMPLETE
     # (timeout, tool-stall, cancel-unacked) can carry cost or cache
@@ -727,6 +998,10 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         usage=event.usage,
         model=_turn_model or _record_model,
         provider=_provider_name,
+        # The EFFECTIVE harness, read off the client that ran the
+        # turn (a per-session acp_backend override included).
+        harness=harness_of(client),
+        trigger=_dashboard_turn_trigger(turn),
     )
     if usage_has_billing(_u):
         # Claim the turn's single usage row BEFORE the persist await
@@ -751,21 +1026,13 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         # slot.model may still be empty here even though the
         # provider learned the model mid-turn. Read it back
         # before persisting so tokens.jsonl is never tagged
-        # with a blank model for CC sessions.
-        #
-        # The `_active_fallback_model` clause guards the slot.model
-        # WRITE, not the row's value: the provider reports the
-        # FALLBACK, and writing it into slot.model would make the
-        # temporary swap a permanent pin (same guard as the pre-turn
-        # site). Kept as its own condition rather than folded into the
-        # `_record_model` check above, so the write's safety does not
-        # depend on whether the live provider happened to report a
-        # served model.
+        # with a blank model for CC sessions. Only the row is
+        # refined: a slot with no pick of its own, Bot pin or not,
+        # is never written (the pre-turn site's rule), so it keeps
+        # following its Bot's model and the default.
         #
         # _record_model / _provider_name are already resolved above
-        # the gate; this only refines the model, and only here
-        # because the slot.model WRITE must not run for a turn that
-        # billed nothing.
+        # the gate; this only refines the model.
         if (
             not _record_model
             and not slot._active_fallback_model
@@ -774,11 +1041,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         ):
             _canonical = _backfill_canonical_model(client, _provider_name)
             if _canonical:
-                # Same rule as the pre-turn backfill: a slot that
-                # inherits (no crew pin either) is recorded but
-                # never pinned.
-                if agent_model:
-                    slot.model = _canonical
                 _record_model = _canonical
         await asyncio.shield(
             persist_token_record_async(
@@ -803,6 +1065,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 # without becoming readable by whoever recreates its
                 # name.
                 app=getattr(slot, "_app", "") or "",
+                # A closed linked tab's transcript cannot be found from
+                # its name, and this row outlives the tab.
+                transcript=slot_history_key(slot),
                 # Same wall clock the turn-duration histogram below is
                 # given, so the row store and the histogram can never
                 # disagree about one turn. acp reports 0 here.
@@ -814,6 +1079,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 # effective session key reach the histogram; this call
                 # must not also sample, so it opts out.
                 emit_metric=False,
+                # Final: no text chunk can arrive after the terminal event.
+                delivered=turn._saw_text_chunk,
             )
         )
     # The turn's crew log closers are STASHED, not emitted here. This
@@ -908,14 +1175,8 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
     from kiro_crew.dashboard import responsive_chat
 
     _escalation = turn._escalation
-    _noticed_leak = turn._noticed_leak
-    _recovering_compaction = turn._recovering_compaction
-    _recovering_infra = turn._recovering_infra
-    _recovering_promise = turn._recovering_promise
     _responsive_owner = turn._responsive_owner
     _responsive_turn = turn._responsive_turn
-    _retrying_empty = turn._retrying_empty
-    _stop_reason = turn._stop_reason
     client = turn.client
     session_key = turn.session_key
     slot = turn.slot
@@ -933,14 +1194,7 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         state.sessions.check_context_usage(session_key, client)
     pct = client.context_usage_pct()
     state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
-    if (
-        _stop_reason != STOP_REASON_CANCELLED
-        and not _retrying_empty
-        and not _recovering_promise
-        and not _recovering_compaction
-        and not _noticed_leak
-        and not _recovering_infra
-    ):
+    if turn._turn_lands:
         # An unacted turn (promise-only, or a tool call leaked as text) is
         # deliberately NOT recorded as a landed success: it announced or
         # serialized work it never did, so counting it would tell the
@@ -961,6 +1215,14 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         # must NOT restore the one-shot flag.
         _turn_landed = True
         turn._turn_landed = _turn_landed
+        if turn._stop_reason == STOP_REASON_END_TURN:
+            # Only a turn that ran to its end, as every engine notes it: this
+            # attempt's release then confirms the inline results the turn
+            # received (``kiro_crew.parent_turns``), so a child it read back
+            # plays no second turn on any tab. Any other end
+            # revokes them and the completion is delivered. A recovery this
+            # turn re-queues is its own claim, so it never confirms these.
+            note_turn_landed(state.sessions, session_key)
         # Per-interaction telemetry (PlatformContext seam) — shared helper so
         # the payload shape and model reflection cannot drift across surfaces.
         record_interaction_event(client, session_key, "dashboard")
@@ -1035,6 +1297,7 @@ async def _persist_abnormal_turn_usage(
     stop_reason: str,
     since: object = _NO_PRIOR_STATS,
     usage: TurnUsage | None = None,
+    delivered: bool | None = None,
 ) -> bool:
     """Write the usage row for a turn ending without ``EVENT_COMPLETE``.
 
@@ -1077,6 +1340,9 @@ async def _persist_abnormal_turn_usage(
     ``usage`` is the turn's billing when the caller already read it (the Stop
     footer shares the one read, because ``provider_last_turn_usage`` consumes
     the accumulated total); ``None`` reads it here.
+
+    ``delivered`` is whether the turn streamed any reply text, as on the
+    complete path's row; ``None`` leaves the field off.
     """
     try:
         if usage is None:
@@ -1096,8 +1362,10 @@ async def _persist_abnormal_turn_usage(
             context_used=_ctx_used,
             context_window=_ctx_window,
             app=getattr(slot, "_app", "") or "",
+            transcript=slot_history_key(slot),
             elapsed_ms=elapsed_ms,
             model_source=client,
+            delivered=delivered,
             # Abnormal-turn histogram sampling is out of this change's scope
             # (the usage ROW is the deliverable); opt the row's persist out of
             # the metric so it does not file a sample under slot.key, which for a

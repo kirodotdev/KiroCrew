@@ -569,6 +569,14 @@ class TestKiroPrerequisiteWorkflowSupervisor:
             assert root_handle == 9002
             return {}
 
+        # 9002 is a fake handle. Without this stub the real GetExitCodeProcess
+        # runs on Windows, and a worker that holds a live process handle at
+        # that value keeps the descendant "alive" forever.
+        monkeypatch.setattr(
+            platform_compat,
+            "process_handle_active",
+            lambda _handle: False,
+        )
         monkeypatch.setattr(
             platform_compat,
             "descendant_termination_handles_async",

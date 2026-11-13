@@ -30,14 +30,18 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import _facade_mirror, mcp_core
 from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
+from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
 from kiro_crew.spawn_label import normalize_spawn_label
-from kiro_crew.subagent import (
+from kiro_crew.subagent import (  # noqa: F401 - the last two are read by spawn_parts.schemas
     AGENT_INTERNAL_CODE,
     AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
+    agent_matches_allowlist,
+    parent_spawn_allowlists,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE
@@ -110,6 +114,11 @@ def _collapse_effort_verdicts(
 class _SpawnRunStep(DeferredTool):
     """Submit one task per pool step, then return the background-run receipt."""
 
+    #: Seconds between two heartbeats while the batch is submitted: the session
+    #: keepalive, naming this call, restarts its silence timer on the ACP side.
+    #: Each is bounded like a lost report, since it shares the step's thread.
+    KEEPALIVE_SECS = 30.0
+
     def __init__(
         self,
         *,
@@ -130,6 +139,7 @@ class _SpawnRunStep(DeferredTool):
         self._unsubmitted_closed = False
         self.phase = "submit"
         self.next_due = mcp_core.time.monotonic()
+        self.next_ping = self.next_due + self.KEEPALIVE_SECS
 
     def _close_unsubmitted(self) -> None:
         """Reconcile every task this call never posted, exactly once.
@@ -157,6 +167,17 @@ class _SpawnRunStep(DeferredTool):
         return self.next_due
 
     def step(self) -> str | None:
+        now = mcp_core.time.monotonic()
+        if now >= self.next_ping:
+            self.next_ping = now + self.KEEPALIVE_SECS
+            try:
+                mcp_core._post(
+                    "/api/session-keepalive",
+                    heartbeat_fields(self.phase),
+                    timeout=_LOST_REPORT_TIMEOUT_SECS,
+                )
+            except Exception:  # noqa: BLE001 - keepalive is best-effort
+                pass
         if self._submit_index < self.task_count:
             self._submit_one(self._submit_index)
             self._submit_index += 1
@@ -248,6 +269,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     backend = args.get("backend") or ""
     label = normalize_spawn_label(args.get("label"))
     keep = bool(args.get("keep"))
+    silent = args.get("silent") is True
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
     inc_memory = args.get("include_memory", True) is not False
@@ -371,6 +393,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["label"] = t_label
         if keep:
             body["keep"] = True
+        if silent:
+            # Forwarded, not just accepted: a schema field the handler drops
+            # makes the documented flag a silent no-op (the `crew` rule above).
+            body["silent"] = True
         if not inc_memory:
             body["include_memory"] = False
         if not inc_lessons:
@@ -431,6 +457,14 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
         if d.get("runtime_note"):
             runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
+        if d.get("failover_from"):
+            # The run is not on the backend this call named: say where it went.
+            runtime_notes.append(
+                (
+                    str(d.get("id", "?")),
+                    ("", _failover_note(str(d["failover_from"]), str(d.get("backend") or "?"))),
+                )
+            )
 
     def _receipt() -> str:
         return _spawn_run_receipt(
@@ -457,6 +491,14 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         submit_one=_submit_one,
         receipt=_receipt,
         reconcile_lost=_reconcile_lost,
+    )
+
+
+def _failover_note(requested: str, ran_on: str) -> str:
+    """The receipt line for a run ``agent.acp_failover`` moved off the backend asked for."""
+    return (
+        f"backend {requested!r} could not start; running on {ran_on!r} instead"
+        " (agent.acp_failover). The prompt goes to that backend's vendor and bill."
     )
 
 
@@ -607,12 +649,14 @@ def _spawn_run_receipt(
                 spawn_lines.append(
                     "\nAdvance only your ready, non-overlapping parent work for a short bounded "
                     "step (at most one minute), then END YOUR TURN so queued completion events "
-                    "can be delivered. If no such work remains, END YOUR TURN now. "
+                    "can be delivered. If no such work remains, reply with one line saying what you "
+                    "started, then END YOUR TURN. "
                     "Do not poll, duplicate child work, or claim the task is complete."
                 )
             else:
                 spawn_lines.append(
-                    "\nEND YOUR TURN now: this caller has no confirmed parent-work delivery "
+                    "\nReply with one line saying what you started, then END YOUR TURN: this "
+                    "caller has no confirmed parent-work delivery "
                     "boundary. Wait for the [Subagent completion event] messages. "
                     "Dispatch is not completion."
                 )
@@ -648,7 +692,7 @@ def spawn_continue(name: str, args: dict[str, Any]) -> str:
     return (
         f"Continued conversation {conv} as run {d.get('id', '?')}. "
         "The result will arrive as a [Subagent completion event] — "
-        "END YOUR TURN and wait for it."
+        "reply with one line saying what you continued, then END YOUR TURN and wait for it."
     )
 
 
@@ -739,6 +783,22 @@ def _live_adaptive_state() -> dict[str, Any] | None:
     return None
 
 
+def _caller_runs_remotely() -> bool:
+    """Whether the calling session is bound to a remote workspace; False if unknown.
+
+    Read from the durable placement choice, which this tool server can see, so
+    the spawn floor is not reported as holding children the gate prices without
+    it (``admission/gate.py``, ``remote_child``).
+    """
+    try:
+        from kiro_crew.session_environment import session_attached_remotely
+
+        return session_attached_remotely(mcp_core._resolve_session_key())
+    except Exception:
+        logger.debug("resource_status: session placement unreadable", exc_info=True)
+        return False
+
+
 def resource_status(name: str, args: dict[str, Any]) -> str:
     rstatus = host_status.probe()
     out = rstatus.summary_lines()
@@ -759,6 +819,12 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
                 f"  Sub-agent ceiling: {cap} (configured max; the cap actually in "
                 "force could not be read from the gateway)"
             )
+    out.extend(session_memory_lines())
+    # The posture reads a looser figure than the spawn gate and knows nothing of
+    # ``agent.spawn_min_memory_gb``, so it can read AMPLE while every start waits.
+    spawn = host_status.spawn_floor_reading(remote=_caller_runs_remotely())
+    out.append(spawn.summary_line())
+    blocked = spawn.blocked_sentence()
     if rstatus.posture == "critical":
         out.append(
             "\nGuidance: memory is critically low — do NOT start heavy work "
@@ -770,6 +836,9 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: memory is tight — prefer the lighter path (targeted "
             "tests, fewer sub-agents, deferred builds) for heavy work."
         )
+    elif blocked:
+        out.append(f"\nGuidance: {blocked}.")
+        blocked = ""  # said once, as the guidance itself
     elif rstatus.memory_pressure_held:
         # The posture is figure-based and can read AMPLE while the macOS kernel
         # reports pressure; the AMPLE guidance would then contradict the gate.
@@ -787,6 +856,14 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: headroom could not be measured on this host — "
             "proceed with normal caution."
         )
+    if blocked:
+        out.append(f"Spawning: {blocked}.")
+    # After the memory guidance, which stays about memory alone: a full /tmp
+    # fails a test run with ENOSPC however much RAM is free.
+    temp_lines = host_status.temp_headroom_lines()
+    if temp_lines:
+        out.append("")
+        out.extend(temp_lines)
     return "\n".join(out)
 
 
@@ -810,10 +887,12 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
 #
 #   ``spawn_parts.schemas`` -- every spawn descriptor and the agent roster they name.
 #   ``spawn_parts.listing`` -- spawn_list, spawn_status and the queued-wait wording.
+#   ``spawn_parts.session_memory`` -- resource_status's block on the caller's own memory.
 #   ``spawn_parts.wave`` -- spawn_sub_agents: submit a batch, wait for it off the MCP worker.
 _OWNERS = (
     "kiro_crew.mcp_tools.spawn_parts.schemas",
     "kiro_crew.mcp_tools.spawn_parts.listing",
+    "kiro_crew.mcp_tools.spawn_parts.session_memory",
     "kiro_crew.mcp_tools.spawn_parts.wave",
 )
 for _owner in _OWNERS:
@@ -828,21 +907,36 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why  # noqa: F401
     from kiro_crew.mcp_tools.spawn_parts.schemas import (  # noqa: F401
+        _CORE,
         _MAX_ROSTER_NAMES,
+        _SPAWN,
         _agent_roster_hint,
         _parent_allowlist_filter,
         _parent_template_for_roster,
+        _subagent_reader,
         schemas,
     )
+    from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
+        _MEMORY_HEADER,
+        _memory_count,
+        _memory_mb,
+        _memory_runtime_line,
+        render_session_memory,
+    )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
+        _HELD_READS,
         _OWNER_UNRESOLVED_PREFIX,
+        _TASK_STORE_UNAVAILABLE_CODE,
         RESUME_HOLD_SECS,
         _audit_owner,
+        _carried_in_reply,
         _held_by_a_deferral,
         _ResumeHold,
         _SubAgentsStep,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
+    from kiro_crew import subagent_standalone  # noqa: F401
+    from kiro_crew.agent_discovery import list_agents  # noqa: F401
     from kiro_crew.constants import (  # noqa: F401
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,
@@ -850,20 +944,24 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
+    from kiro_crew.mcp_core_parts.identity import _resolve_session_key  # noqa: F401
+    from kiro_crew.mcp_listing_relay import built_for_a_tool_server  # noqa: F401
+    from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS  # noqa: F401
+    from kiro_crew.mcp_tools.catalog import loaded_binding  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401
     from kiro_crew.subagent import (  # noqa: F401
-        agent_matches_allowlist,
         format_subagent_usage,
         is_internal_agent_spec,
-        parent_spawn_allowlists,
         visible_agent_names,
     )
-    from kiro_crew.subagent_persistence import agent_dir_for_display  # noqa: F401
+    from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         MAX_MEDIUM_STRING,
+        MAX_RESPONSE_LEN,
         MAX_SHORT_STRING,
         SPAWN_SUB_AGENTS_SCHEMA,
+        sanitize_string,
     )

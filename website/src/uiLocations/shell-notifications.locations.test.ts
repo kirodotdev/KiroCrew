@@ -43,7 +43,6 @@ const page = (entry: string, requires: Req[]): P => ({ surface: 'notifications',
 type Expect = { kind: string; labelKey: string; aliasKeys?: string[]; source: string; en: string; zh: string; placements: P[] }
 
 const EXPECTED: Record<string, Expect> = {
-  'shell.developer': { kind: 'button', labelKey: 'app.developer', source: APP_SRC, en: 'Developer', zh: '开发者', placements: railAndMenu('developer_mode') },
   'shell.terminal': { kind: 'toggle', labelKey: 'app.terminal', source: APP_SRC, en: 'Terminal', zh: '终端', placements: railAndMenu('terminal_enabled') },
   // The docked terminal panel's ⋯ menu and its dock-position item (side by side).
   'shell.terminal-more': {

@@ -5,8 +5,10 @@ import type { ReactNode } from 'react'
 
 const state = vi.hoisted(() => ({
   poolCalls: [] as Array<{ poolOptions: Record<string, unknown>; highlighterOptions: Record<string, unknown> }>,
-  managers: [] as Array<{ workers: FakeWorker[]; terminate: ReturnType<typeof vi.fn> }>,
+  managers: [] as Array<{ workers: FakeWorker[]; terminate: ReturnType<typeof vi.fn>; setRenderOptions: ReturnType<typeof vi.fn> }>,
   componentProps: [] as Array<Record<string, unknown>>,
+  /** What `useOptionalTheme` hands the surfaces; null is no ThemeProvider. */
+  theme: null as unknown,
 }))
 
 class FakeWorker {
@@ -43,6 +45,7 @@ vi.mock('@pierre/diffs/worker', () => ({
     terminate = vi.fn(() => {
       for (const worker of this.workers) worker.terminate()
     })
+    setRenderOptions = vi.fn(() => Promise.resolve())
 
     constructor(poolOptions: { poolSize: number; workerFactory: () => FakeWorker }, highlighterOptions: Record<string, unknown>) {
       state.poolCalls.push({ poolOptions, highlighterOptions })
@@ -54,6 +57,11 @@ vi.mock('@pierre/diffs/worker', () => ({
       return Promise.resolve()
     }
   },
+}))
+
+vi.mock('../hooks/useTheme', async importOriginal => ({
+  ...await importOriginal<typeof import('../hooks/useTheme')>(),
+  useOptionalTheme: () => state.theme,
 }))
 
 vi.mock('@pierre/diffs', () => ({
@@ -95,6 +103,7 @@ beforeEach(() => {
   state.poolCalls.length = 0
   state.managers.length = 0
   state.componentProps.length = 0
+  state.theme = null
   diffProps.last = undefined
   localStorage.clear()
 })
@@ -134,6 +143,45 @@ async function failPoolToUnavailable() {
   state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
   await Promise.resolve()
 }
+
+/** The active installed pack `odp`, carrying the given `codeTheme`. */
+function packWithCodeTheme(codeTheme: { dark?: string; light?: string }) {
+  return { colorTheme: 'custom-odp', customThemeDataMap: new Map([['odp', { assets: { codeTheme } }]]) }
+}
+
+describe('a theme pack code scheme', () => {
+  it('starts the pool on the pack pair, falls back per mode, and re-themes the pool on a switch', async () => {
+    state.theme = packWithCodeTheme({ dark: 'one-dark-pro', light: 'not-a-bundled-scheme' })
+    const { module, view } = await startPool()
+    const firstPair = { dark: 'one-dark-pro', light: 'pierre-light' }
+    expect(state.poolCalls[0].highlighterOptions.theme).toEqual(firstPair)
+    expect((state.componentProps.at(-1)?.options as { theme?: unknown }).theme).toEqual(firstPair)
+    expect(state.managers[0].setRenderOptions).not.toHaveBeenCalled()
+
+    state.theme = packWithCodeTheme({ dark: 'dracula', light: 'one-light' })
+    await act(async () => {
+      view.rerender(<module.PierreCodeImpl file={FILE} />)
+      await Promise.resolve()
+    })
+    expect(state.managers[0].setRenderOptions).toHaveBeenCalledOnce()
+    expect(state.managers[0].setRenderOptions).toHaveBeenCalledWith({ theme: { dark: 'dracula', light: 'one-light' } })
+  })
+
+  it('starts the next generation on the applied pair when a re-theme fails', async () => {
+    state.theme = packWithCodeTheme({ dark: 'one-dark-pro' })
+    const { module, view } = await startPool()
+    state.managers[0].setRenderOptions.mockImplementationOnce(() => Promise.reject(new Error('chunk load failed')))
+    state.theme = packWithCodeTheme({ dark: 'dracula' })
+    await act(async () => {
+      view.rerender(<module.PierreCodeImpl file={FILE} />)
+      await Promise.resolve()
+    })
+
+    state.managers[0].workers[0].emit('error', { message: 'worker failed' })
+    await vi.advanceTimersByTimeAsync(250)
+    expect(state.poolCalls[1].highlighterOptions.theme).toEqual({ dark: 'one-dark-pro', light: 'pierre-light' })
+  })
+})
 
 describe('Pierre highlight worker pool recovery', () => {
   it('classifies worker error events', async () => {

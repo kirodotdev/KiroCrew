@@ -489,6 +489,15 @@ class TestSanitizedPath:
         assert tc._within(str(inside), roots) is True
         assert tc._within(str(root), roots) is True
 
+    def test_a_drive_root_contains_every_path_below_it(self, tmp_path):
+        # A project dir at a drive root (`H:\`, or `/`) keeps its trailing separator
+        # through `realpath`; `root + os.sep` would then prefix nothing, and every
+        # agent-writable PATH entry below it would count as outside.
+        inside = tmp_path / "repo" / "bin"
+        inside.mkdir(parents=True)
+        drive_root = os.path.splitdrive(os.path.realpath(str(tmp_path)))[0] + os.sep
+        assert tc._within(str(inside), (drive_root,)) is True
+
     def test_an_undetermined_root_set_refuses_every_entry(self, tmp_path, monkeypatch):
         # Fail CLOSED: a lookup that failed must not quietly drop the root it could
         # not resolve, because that admits exactly the tree the filter exists for.
@@ -1180,9 +1189,14 @@ class TestRunProbe:
         # test_sandbox_gradle_daemon.py::test_sets_the_flag_when_gradle_opts_is_absent.
         # `KIROCREW_SANDBOX_TOOL` is the tool-tree marker the chokepoint stamps on every
         # tree it spawns, for the runtime reconciler to read back.
+        # `_KIROCREW_USERNS_FAILURE` is the Linux launcher's permanent userns verdict,
+        # written only when this process recorded one (a sandboxed host, or one whose
+        # kernel refuses unshare). `_set_inherited_userns_failure` overwrites or drops
+        # any parent value, so it never carries an inherited one.
         sandbox_injected = {"KIROCREW_HOST_PID", "KIROCREW_SANDBOX_ACTIVE",
                             "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SANDBOX_TOOL",
-                            "KIROCREW_SPAWNED", "GIT_SSH_COMMAND", "GRADLE_OPTS"}
+                            "KIROCREW_SPAWNED", "GIT_SSH_COMMAND", "GRADLE_OPTS",
+                            "_KIROCREW_USERNS_FAILURE"}
         shell_added = {"PWD", "SHLVL", "_"}
         # macOS injects __CF_USER_TEXT_ENCODING into every spawned process
         # unconditionally (CoreFoundation per-user encoding preference). This is

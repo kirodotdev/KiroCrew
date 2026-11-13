@@ -1,8 +1,9 @@
 //
 // Contract under test: the usage page must not render a confident zero when
-// the sessions scan refused transcripts (#6733). On a Windows roaming-profile
-// (UNC) home EVERY transcript is refused by path validation, so the backend
-// reports total=0 with a positive refusedTranscripts count. The page has to
+// the sessions scan did not load transcripts (#6733). A refused transcript file
+// is counted in refusedTranscripts. On a Windows roaming-profile (UNC) home the
+// path validator refuses the session directories themselves, so the backend
+// reports total=0 with a positive unreadableSessionDirs count. The page has to
 // say the counts are incomplete instead of showing 0 as a fact.
 //
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -10,9 +11,9 @@ import { render, screen, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { NormalizedUsage } from '../providers'
 
-// Build a NormalizedUsage with a controllable refusal count. Everything else is
-// a zeroed baseline -- the silent-failure shape the fix targets.
-function usage(refusedTranscripts: number): NormalizedUsage {
+// Build a NormalizedUsage with controllable did-not-load counts. Everything else
+// is a zeroed baseline -- the silent-failure shape the fix targets.
+function usage(refusedTranscripts: number, unreadableSessionDirs = 0): NormalizedUsage {
   const period = { sessions: 0, messages: 0, toolCalls: 0 }
   return {
     sessions: {
@@ -22,6 +23,7 @@ function usage(refusedTranscripts: number): NormalizedUsage {
       thisMonth: period,
       avgMsgsPerSession: 0,
       refusedTranscripts,
+      unreadableSessionDirs,
       dailyHistory: [],
     },
     billing: null,
@@ -85,6 +87,27 @@ describe('UsageTab refused-transcript warning (#6733)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Session Activity/i)).toBeInTheDocument()
     })
+    expect(screen.queryByText(/couldn't load/i)).toBeNull()
+    expect(screen.queryByTestId('usage-unreadable-session-dirs')).toBeNull()
+  })
+
+  it('says the chat history could not be read, with no count, when a session directory did not load', async () => {
+    // A refused directory hides an unknown number of chats, so the directory
+    // count must not be rendered as a number of chats.
+    current = usage(0, 2)
+    mount()
+    const notice = await screen.findByTestId('usage-unreadable-session-dirs')
+    expect(notice).toHaveTextContent(/couldn't read your chat history/i)
+    expect(notice).toHaveTextContent(/incomplete/i)
+    expect(notice.textContent).not.toMatch(/\d/)
+    expect(screen.queryByText(/couldn't load/i)).toBeNull()
+  })
+
+  it('shows only the directory warning when transcripts and directories both did not load', async () => {
+    current = usage(3, 1)
+    mount()
+    const notice = await screen.findByTestId('usage-unreadable-session-dirs')
+    expect(notice.textContent).not.toMatch(/\d/)
     expect(screen.queryByText(/couldn't load/i)).toBeNull()
   })
 })

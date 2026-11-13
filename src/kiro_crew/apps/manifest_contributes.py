@@ -1,7 +1,8 @@
 """The ``contributes`` block: rows an app adds to surfaces the host renders.
 
 Session controls in the composer, Command Bar commands and the one argument a command
-may collect, chat side-panel tabs, and file-menu rows, plus ``Contributes``, which holds
+may collect, chat side-panel tabs, file-menu rows, link previews, message actions,
+link opening, composer actions and selection actions, plus ``Contributes``, which holds
 them. Every contribution is declarative data the host interprets -- no app code crosses
 into a host surface -- and the dashboard reader mirrors the caps and grammars it relies on
 (``contributedCommands.ts``, ``panelTabRegistry.ts``, ``fileMenuContributions.tsx``), so
@@ -16,6 +17,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+from kiro_crew.apps.app_hosts import HOST_RE as _HOST_RE
+from kiro_crew.apps.app_hosts import host_list_errors, normalize_host
 
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
@@ -132,7 +136,6 @@ _MAX_ARGUMENT_HOSTS = 20
 
 #: A literal hostname, optionally with a leading dot meaning "this domain or any
 #: subdomain of it". Fixed and host-owned: it is never built from manifest input.
-_HOST_RE = re.compile(r"^\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
 
 #: Most commands one app may contribute, mirroring `MAX_COMMANDS_PER_APP` in
 #: `contributedCommands.ts`. Not a layout limit -- the group is display-capped anyway
@@ -645,6 +648,673 @@ class PanelTabConfig:
         return errors
 
 
+#: One link-preview provider per app. The host runs one hover detector for every
+#: provider, and a link matches the FIRST provider whose hosts list it, so a second
+#: provider in the same app would only ever shadow or be shadowed by the first.
+MAX_LINK_PREVIEWS_PER_APP = 1
+#: Host patterns per provider. Bounded because the detector tests every hovered link
+#: against every pattern of every enabled app.
+_MAX_LINK_PREVIEW_HOSTS = 64
+#: Plain-text patterns per provider, and the longest pattern source. Every pattern
+#: of every enabled app scans every rendered chat message, so both are small. The
+#: dashboard refuses a pattern whose backtracking it cannot bound before it ever
+#: meets message text (`website/src/linkPreview/textPatterns.ts`).
+MAX_LINK_PREVIEW_TEXT_PATTERNS = 16
+MAX_LINK_PREVIEW_TEXT_PATTERN_LEN = 200
+#: JavaScript regex flags an entry may carry; `g` is implied. No repeats.
+_TEXT_PATTERN_FLAGS_RE = re.compile(r"^(?!.*(.).*\1)[giu]*$")
+_TEXT_PATTERN_KEYS = frozenset({"pattern", "flags", "id", "defaultOff"})
+
+
+@dataclass
+class LinkPreviewConfig:
+    """A link-preview provider: the app shows its own card when a link is hovered.
+
+    The host owns detection -- which links, the hover delay, leave and dismissal --
+    and never runs app code until a link on one of ``hosts`` is hovered. Then it
+    creates a sandboxed, opaque-origin frame (``apps/app_frame.py``) that
+    imports ``entry`` and calls the module's ``activate(ctx)`` once; the returned
+    provider receives ``show`` with the hovered URL or text and the anchor's rect,
+    ``leave`` and ``hide``, over ``postMessage``. The card never runs in the
+    dashboard's document.
+
+    Declarative for the reason ``panelTabs`` is: core reads ``hosts`` without
+    importing app code, so a disabled or broken app costs nothing on hover.
+    """
+
+    id: str = ""  # stable id, unique within the app
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    # Exact hostnames, or a leading dot for "this domain and every subdomain"
+    # (``.example.dev``). https links only; the host refuses every other scheme.
+    hosts: list[str] = field(default_factory=list)
+    #: ``hosts`` present but not a list. Not serialized.
+    bad_hosts: bool = False
+    # Optional: plain text in chat messages that also opens a card, as
+    # ``{"pattern": <JS regex source>, "flags"?: "giu" subset, "id"?: <slug>,
+    # "defaultOff"?: bool}``. The host wraps each match in a hoverable span (never
+    # a link) and, on hover, hands the provider the matched text. ``id`` is what the
+    # app's module names when it switches patterns off (``ctx.setTextPatternsOff``).
+    textPatterns: list[dict[str, Any]] = field(default_factory=list)  # noqa: N815
+    #: ``textPatterns`` present but not a list, or an entry that was not an object
+    #: of two strings. Not serialized.
+    bad_text_patterns: bool = False
+    # Optional: hand the module the hovered URL whole. By default the host strips
+    # the query and fragment, which can carry signed tokens or other secrets.
+    fullUrl: bool = False  # noqa: N815
+    #: ``fullUrl`` present but not a boolean. Not serialized.
+    bad_full_url: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.entry:
+            d["entry"] = self.entry
+        if self.hosts:
+            d["hosts"] = list(self.hosts)
+        if self.textPatterns:
+            # Serialized, so it is part of the signing payload: a pattern decides
+            # which text in a transcript the app's module is shown.
+            d["textPatterns"] = [dict(p) for p in self.textPatterns]
+        if self.fullUrl:
+            d["fullUrl"] = True
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LinkPreviewConfig:
+        raw_hosts = data.get("hosts", [])
+        raw_patterns = data.get("textPatterns", [])
+        patterns: list[dict[str, Any]] = []
+        bad_patterns = "textPatterns" in data and not isinstance(raw_patterns, list)
+        for p in raw_patterns if isinstance(raw_patterns, list) else []:
+            if (
+                isinstance(p, dict)
+                and "pattern" in p
+                and set(p) <= _TEXT_PATTERN_KEYS
+                and all(isinstance(p[k], str) for k in ("pattern", "flags", "id") if k in p)
+                and isinstance(p.get("defaultOff", False), bool)
+            ):
+                patterns.append({k: p[k] for k in sorted(p)})
+            else:
+                bad_patterns = True
+        return cls(
+            id=str(data.get("id", "")),
+            entry=str(data.get("entry", "")),
+            # Normalized (lowercase, no trailing dot, IDNA), so what is matched, signed
+            # and granted is one form. A value that does not normalize is kept
+            # lowercased for ``validate`` to refuse by name.
+            hosts=(
+                [normalize_host(h) or str(h).lower() for h in raw_hosts]
+                if isinstance(raw_hosts, list)
+                else []
+            ),
+            bad_hosts="hosts" in data and not isinstance(raw_hosts, list),
+            textPatterns=patterns,
+            bad_text_patterns=bad_patterns,
+            fullUrl=data.get("fullUrl") is True,
+            bad_full_url="fullUrl" in data and not isinstance(data.get("fullUrl"), bool),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.linkPreviews[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.linkPreviews: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_PREVIEW_HOSTS))
+        if self.bad_full_url:
+            errors.append(f"{where}: fullUrl must be true or false")
+        if self.bad_text_patterns:
+            errors.append(
+                f"{where}: textPatterns must be an array of "
+                "{pattern, flags?, id?, defaultOff?} objects"
+            )
+        if len(self.textPatterns) > MAX_LINK_PREVIEW_TEXT_PATTERNS:
+            errors.append(
+                f"{where}: {len(self.textPatterns)} textPatterns exceeds the limit of "
+                f"{MAX_LINK_PREVIEW_TEXT_PATTERNS}"
+            )
+        for i, tp in enumerate(self.textPatterns):
+            source = tp["pattern"]
+            if not source:
+                errors.append(f"{where}: textPatterns[{i}] pattern is empty")
+            elif len(source) > MAX_LINK_PREVIEW_TEXT_PATTERN_LEN:
+                errors.append(
+                    f"{where}: textPatterns[{i}] pattern exceeds "
+                    f"{MAX_LINK_PREVIEW_TEXT_PATTERN_LEN} characters"
+                )
+            if not _TEXT_PATTERN_FLAGS_RE.fullmatch(tp.get("flags", "")):
+                errors.append(f"{where}: textPatterns[{i}] flags must be a subset of 'giu'")
+            if "id" in tp and not _PANEL_TAB_ID_RE.fullmatch(tp["id"]):
+                errors.append(f"{where}: textPatterns[{i}] id must be a storage-safe slug")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
+#: Message actions per app. Every action of every enabled app adds a row to each
+#: message's More menu, so the count is small.
+MAX_MESSAGE_ACTIONS_PER_APP = 2
+#: The longest message text an action can be handed, in UTF-16 units (what the
+#: dashboard measures). Also the default.
+MAX_MESSAGE_ACTION_CHARS = 32000
+#: The longest menu label, in UTF-16 units.
+_MAX_MESSAGE_ACTION_TITLE = 40
+#: Which messages an action may be offered on. Each role is its own grant: a user
+#: message can hold what the user pasted, an assistant reply what the agent read.
+MESSAGE_ACTION_ROLES = ("assistant", "user")
+#: How the message reaches the frame: the rendered plain text, or the markdown
+#: source. ``markdown`` is a wider grant (it carries link targets and anything the
+#: renderer hides).
+MESSAGE_ACTION_FORMATS = ("plain", "markdown")
+#: Popover bounds in CSS px, and the defaults.
+_MESSAGE_ACTION_POPOVER_WIDTH = (200, 480, 360)
+_MESSAGE_ACTION_POPOVER_HEIGHT = (120, 600, 480)
+_MESSAGE_ACTION_KEYS = frozenset({"id", "title", "entry", "roles", "format", "maxChars", "popover"})
+_POPOVER_KEYS = frozenset({"width", "maxHeight"})
+
+
+def _strict_int(value: Any) -> int | None:
+    """``value`` when it is a JSON integer (never a bool or a float), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@dataclass
+class MessageActionConfig:
+    """A button on one chat message: the app gets that one message's text.
+
+    The host draws the item in the message's More menu, labelled with the app's
+    name. On a click it opens a popover anchored to the message and creates a
+    sandboxed, opaque-origin frame in it (``apps/app_frame.py``) that imports
+    ``entry`` and calls the module's ``activate(ctx)`` once; the returned handler's
+    ``invoke`` receives that message's text, as rendered plain text unless
+    ``format`` is ``markdown``. No other message, no session identity and no DOM
+    ever reach the frame. Copy and Open are buttons the host draws under the frame.
+
+    ``roles`` and ``format`` are grants (``apps/message_action_grants.py``): an
+    update that adds ``user`` or switches to ``markdown`` waits for the owner.
+    """
+
+    id: str = ""  # stable id, unique within the app
+    title: str = ""  # the menu label
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    roles: list[str] = field(default_factory=lambda: ["assistant"])
+    format: str = "plain"
+    maxChars: int = MAX_MESSAGE_ACTION_CHARS  # noqa: N815
+    popoverWidth: int = _MESSAGE_ACTION_POPOVER_WIDTH[2]  # noqa: N815
+    popoverMaxHeight: int = _MESSAGE_ACTION_POPOVER_HEIGHT[2]  # noqa: N815
+    #: Field names present with the wrong JSON type, and unknown keys. A wrong
+    #: type is refused, never coerced. Not serialized.
+    bad_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        # Every field, defaults included: the serialized entry is signed, and what
+        # it grants (roles, format) must read the same whether or not it was spelled.
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.entry:
+            d["entry"] = self.entry
+        d["roles"] = list(self.roles)
+        d["format"] = self.format
+        d["maxChars"] = self.maxChars
+        d["popover"] = {"width": self.popoverWidth, "maxHeight": self.popoverMaxHeight}
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MessageActionConfig:
+        bad: list[str] = sorted(f"unknown key {k!r}" for k in set(data) - _MESSAGE_ACTION_KEYS)
+        out = cls()
+        for key in ("id", "title", "entry", "format"):
+            if key not in data:
+                continue
+            if isinstance(data[key], str):
+                setattr(out, key, data[key])
+            else:
+                bad.append(key)
+        if "roles" in data:
+            roles = data["roles"]
+            if isinstance(roles, list) and all(isinstance(r, str) for r in roles):
+                out.roles = list(roles)
+            else:
+                bad.append("roles")
+        if "maxChars" in data:
+            n = _strict_int(data["maxChars"])
+            if n is None:
+                bad.append("maxChars")
+            else:
+                out.maxChars = n
+        if "popover" in data:
+            pop = data["popover"]
+            if not isinstance(pop, dict) or set(pop) - _POPOVER_KEYS:
+                bad.append("popover")
+            else:
+                for key, attr in (("width", "popoverWidth"), ("maxHeight", "popoverMaxHeight")):
+                    if key not in pop:
+                        continue
+                    n = _strict_int(pop[key])
+                    if n is None:
+                        bad.append(f"popover.{key}")
+                    else:
+                        setattr(out, attr, n)
+        out.bad_fields = bad
+        return out
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.messageActions[{self.id or '?'}]"
+        for bad in self.bad_fields:
+            errors.append(
+                f"{where}: {bad}"
+                if bad.startswith("unknown")
+                else f"{where}: {bad} has the wrong type"
+            )
+        if not self.id:
+            errors.append("contributes.messageActions: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.title:
+            errors.append(f"{where}: missing title")
+        elif _mirrored_len(self.title) > _MAX_MESSAGE_ACTION_TITLE:
+            got = _mirrored_len(self.title)
+            errors.append(f"{where}: title exceeds {_MAX_MESSAGE_ACTION_TITLE} characters ({got})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        if not self.roles:
+            errors.append(f"{where}: roles must list at least one of {list(MESSAGE_ACTION_ROLES)}")
+        for role in self.roles:
+            if role not in MESSAGE_ACTION_ROLES:
+                errors.append(f"{where}: unknown role {role!r}")
+        if len(set(self.roles)) != len(self.roles):
+            errors.append(f"{where}: roles repeats an entry")
+        if self.format not in MESSAGE_ACTION_FORMATS:
+            errors.append(f"{where}: format must be one of {list(MESSAGE_ACTION_FORMATS)}")
+        if not 1 <= self.maxChars <= MAX_MESSAGE_ACTION_CHARS:
+            errors.append(f"{where}: maxChars must be 1 to {MAX_MESSAGE_ACTION_CHARS}")
+        for name, value, (lo, hi, _default) in (
+            ("popover.width", self.popoverWidth, _MESSAGE_ACTION_POPOVER_WIDTH),
+            ("popover.maxHeight", self.popoverMaxHeight, _MESSAGE_ACTION_POPOVER_HEIGHT),
+        ):
+            if not lo <= value <= hi:
+                errors.append(f"{where}: {name} must be {lo} to {hi}")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
+#: One link-open entry per app, for the reason there is one link-preview provider:
+#: a click opens the FIRST app that claims the link's host.
+MAX_LINK_OPEN_PER_APP = 1
+#: Host patterns per entry; the click handler tests every claimed link against them.
+_MAX_LINK_OPEN_HOSTS = 64
+
+
+@dataclass
+class LinkOpenConfig:
+    """A link-open entry: a plain click on a claimed link can open it in the app.
+
+    The host owns the click. A plain left click on an ``https:`` link in a chat
+    message whose host one of ``hosts`` claims is held, and the host asks whether to
+    open it in the app or in the browser; "Always" remembers the answer for this
+    entry and that one host. Opening in the app creates a sandboxed, opaque-origin
+    frame (``apps/app_frame.py``, registered by ``apps/link_open_frame.py``) in a
+    host-drawn dialog, which imports ``entry`` and calls the module's ``activate(ctx)``; the returned provider's ``open`` receives
+    that one URL. Every other click, and every link nobody claims, behaves as it
+    did.
+
+    Declarative for the reason ``linkPreviews`` is: core reads ``hosts`` without
+    importing app code, so a disabled or broken app costs nothing on a click.
+    """
+
+    id: str = ""  # stable id, unique within the app
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    # Exact hostnames, or a leading dot for "this domain and every subdomain".
+    # https links only. Same rules as ``linkPreviews.hosts`` (``app_hosts``).
+    hosts: list[str] = field(default_factory=list)
+    #: ``hosts`` present but not a list. Not serialized.
+    bad_hosts: bool = False
+    # Optional: hand the module the clicked URL whole. By default the host strips
+    # the query and fragment, which can carry signed tokens or other secrets.
+    fullUrl: bool = False  # noqa: N815
+    #: ``fullUrl`` present but not a boolean. Not serialized.
+    bad_full_url: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.entry:
+            d["entry"] = self.entry
+        if self.hosts:
+            d["hosts"] = list(self.hosts)
+        if self.fullUrl:
+            d["fullUrl"] = True
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LinkOpenConfig:
+        raw_hosts = data.get("hosts", [])
+        return cls(
+            id=str(data.get("id", "")),
+            entry=str(data.get("entry", "")),
+            # Normalized, as ``LinkPreviewConfig`` does, so what is matched, signed and
+            # granted is one form.
+            hosts=(
+                [normalize_host(h) or str(h).lower() for h in raw_hosts]
+                if isinstance(raw_hosts, list)
+                else []
+            ),
+            bad_hosts="hosts" in data and not isinstance(raw_hosts, list),
+            fullUrl=data.get("fullUrl") is True,
+            bad_full_url="fullUrl" in data and not isinstance(data.get("fullUrl"), bool),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.linkOpen[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.linkOpen: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        # The rule every host-claiming point shares (``app_hosts``).
+        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_OPEN_HOSTS))
+        if self.bad_full_url:
+            errors.append(f"{where}: fullUrl must be true or false")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
+#: Composer actions per app. Each is a row in the composer's "+" menu, a menu every
+#: enabled app shares, so the cap keeps one app from crowding the others out.
+MAX_COMPOSER_ACTIONS_PER_APP = 2
+#: A row's label: short, because it shares the "+" menu with the host's own rows.
+MAX_COMPOSER_ACTION_TITLE = 40
+_COMPOSER_ACTION_ICON_RE = re.compile(r"^[A-Z][A-Za-z0-9]{0,39}$")
+_COMPOSER_ACTION_POPOVER = {"width": (200, 480), "maxHeight": (120, 600)}
+_COMPOSER_ACTION_KEYS = frozenset({"id", "title", "icon", "entry", "popover"})
+#: The longest string an action field may hold, in characters. Checked before the
+#: value is kept: path normalization would accept a padded ``entry`` such as
+#: ``"./" * 500000 + "a.mjs"`` and then serve all of it.
+MAX_COMPOSER_ACTION_STRING = 512
+
+
+@dataclass
+class ComposerActionConfig:
+    """A button in the composer's "+" menu: the app returns text, the person sends it.
+
+    On a click the host opens a sandboxed, opaque-origin frame (the shared frame model,
+    ``apps/app_frame.py``) that imports ``entry`` and calls the module's
+    ``invoke`` once. The app is handed nothing from the composer: not the draft, not
+    the selection, not the session. It offers text; the host inserts it only into
+    an empty composer, and only text that would resolve nothing (no command,
+    mention, skill or path), and never sends it.
+    """
+
+    id: str = ""
+    title: str = ""
+    icon: str = ""
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    #: The frame popover's width and greatest height, in CSS pixels.
+    popover: dict[str, int] = field(default_factory=dict)
+    #: Field names present with the wrong JSON type, or unknown. Not serialized.
+    bad_fields: list[str] = field(default_factory=list)
+    #: String fields longer than ``MAX_COMPOSER_ACTION_STRING``; never kept. Not serialized.
+    long_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.icon:
+            d["icon"] = self.icon
+        if self.entry:
+            d["entry"] = self.entry
+        if self.popover:
+            d["popover"] = dict(self.popover)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ComposerActionConfig:
+        bad = sorted(k for k in data if k not in _COMPOSER_ACTION_KEYS)
+        strings: dict[str, str] = {}
+        long: list[str] = []
+        for key in ("id", "title", "icon", "entry"):
+            value = data.get(key, "")
+            if isinstance(value, str) and len(value) > MAX_COMPOSER_ACTION_STRING:
+                long.append(key)
+                strings[key] = ""
+            elif isinstance(value, str):
+                strings[key] = value
+            else:
+                # Refused, never coerced: ``str(5)`` would install as a working id.
+                bad.append(key)
+                strings[key] = ""
+        popover_raw = data.get("popover", {})
+        popover: dict[str, int] = {}
+        if not isinstance(popover_raw, dict) or set(popover_raw) - set(_COMPOSER_ACTION_POPOVER):
+            bad.append("popover")
+        else:
+            for key, value in popover_raw.items():
+                if isinstance(value, bool) or not isinstance(value, int):
+                    bad.append("popover")
+                    break
+                popover[key] = value
+        return cls(
+            id=strings["id"],
+            title=strings["title"],
+            icon=strings["icon"],
+            entry=strings["entry"],
+            popover=popover,
+            bad_fields=bad,
+            long_fields=long,
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.composerActions[{self.id or '?'}]"
+        for name in self.bad_fields:
+            errors.append(f"{where}: {name} is not a known field of the right type")
+        for name in self.long_fields:
+            errors.append(f"{where}: {name} exceeds {MAX_COMPOSER_ACTION_STRING} characters")
+        if not self.id:
+            errors.append("contributes.composerActions: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.title:
+            errors.append(f"{where}: missing title")
+        elif _mirrored_len(self.title) > MAX_COMPOSER_ACTION_TITLE:
+            got = _mirrored_len(self.title)
+            errors.append(f"{where}: title exceeds {MAX_COMPOSER_ACTION_TITLE} characters ({got})")
+        if self.icon and not _COMPOSER_ACTION_ICON_RE.fullmatch(self.icon):
+            errors.append(f"{where}: icon must be a glyph name ({self.icon!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        for key, (lo, hi) in _COMPOSER_ACTION_POPOVER.items():
+            if key in self.popover and not lo <= self.popover[key] <= hi:
+                errors.append(f"{where}: popover.{key} must be between {lo} and {hi}")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
+#: Selection actions per app. Each one is a row in the selection toolbar of every
+#: chat reply, so an app cannot crowd it.
+MAX_SELECTION_ACTIONS_PER_APP = 2
+#: The most selected text any item is handed, in UTF-16 units.
+MAX_SELECTION_TEXT = 8000
+_MAX_SELECTION_TITLE = 40
+#: Where a selection can come from. A source is a typed adapter in the dashboard
+#: (`website/src/selectionActions/selectionSources.ts`), never generic DOM selection,
+#: and a new one widens the grant.
+SELECTION_SOURCES = ("chat",)
+#: What a frame may offer for the host's own buttons (Copy, Open).
+SELECTION_EFFECTS = ("copy", "open")
+#: A name in the host glyph set (``website/src/components/AppIcon.tsx``, e.g. ``Star``);
+#: an unknown name draws the host's own glyph.
+_SELECTION_ICON_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
+_SELECTION_POPOVER_WIDTH = (200, 480, 360)
+_SELECTION_POPOVER_HEIGHT = (120, 600, 480)
+
+
+def _int_field(data: dict[str, Any], key: str, default: int, bad: list[str]) -> int:
+    """An integer field, or ``default`` when absent. A bool or a float is refused."""
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        bad.append(key)
+        return default
+    return value
+
+
+def _name_list(
+    data: dict[str, Any], key: str, default: tuple[str, ...], bad: list[str]
+) -> list[str]:
+    """A list of strings, or ``default`` when absent. Any other shape is refused."""
+    if key not in data:
+        return list(default)
+    value = data[key]
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        bad.append(key)
+        return []
+    return list(value)
+
+
+@dataclass
+class SelectionActionConfig:
+    """An item an app adds to the toolbar over text the user selected in a chat reply.
+
+    The host owns the trigger: the user selects text in one message and picks the
+    item. Only then does the host create a sandboxed, opaque-origin frame
+    (``apps/link_preview_frame.py``, the frame every frame-backed point shares)
+    that imports ``entry`` and calls ``activate(ctx)``; the returned handler gets
+    ``invoke`` with the selected text and nothing else. The frame cannot write the
+    clipboard or open a window: it offers a value for the host's Copy or Open
+    button (``effects``).
+    """
+
+    id: str = ""
+    title: str = ""
+    #: A host glyph-set name (``AppIcon``); an unknown one draws the host glyph.
+    icon: str = ""
+    #: ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    sources: list[str] = field(default_factory=lambda: list(SELECTION_SOURCES))
+    #: The item shows only for a selection of at least ``minLength`` units, and is
+    #: handed at most ``maxLength`` (the rest is cut and ``truncated`` set).
+    minLength: int = 1  # noqa: N815
+    maxLength: int = MAX_SELECTION_TEXT  # noqa: N815
+    effects: list[str] = field(default_factory=list)
+    popoverWidth: int = _SELECTION_POPOVER_WIDTH[2]  # noqa: N815
+    popoverMaxHeight: int = _SELECTION_POPOVER_HEIGHT[2]  # noqa: N815
+    #: Fields present with the wrong JSON type. Not serialized.
+    bad_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        # Every field is written in its resolved form, so the signing payload and
+        # the grant read one shape whether a default was spelled out or not.
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.icon:
+            d["icon"] = self.icon
+        if self.entry:
+            d["entry"] = self.entry
+        d["sources"] = list(self.sources)
+        d["minLength"] = self.minLength
+        d["maxLength"] = self.maxLength
+        d["effects"] = list(self.effects)
+        d["popover"] = {"width": self.popoverWidth, "maxHeight": self.popoverMaxHeight}
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SelectionActionConfig:
+        bad: list[str] = []
+        for key in ("id", "title", "icon", "entry"):
+            if key in data and not isinstance(data[key], str):
+                bad.append(key)
+        raw_popover = data.get("popover", {})
+        if not isinstance(raw_popover, dict):
+            bad.append("popover")
+            raw_popover = {}
+        return cls(
+            id=data["id"] if isinstance(data.get("id"), str) else "",
+            title=data["title"] if isinstance(data.get("title"), str) else "",
+            icon=data["icon"] if isinstance(data.get("icon"), str) else "",
+            entry=data["entry"] if isinstance(data.get("entry"), str) else "",
+            sources=_name_list(data, "sources", SELECTION_SOURCES, bad),
+            minLength=_int_field(data, "minLength", 1, bad),
+            maxLength=_int_field(data, "maxLength", MAX_SELECTION_TEXT, bad),
+            effects=_name_list(data, "effects", (), bad),
+            popoverWidth=_int_field(raw_popover, "width", _SELECTION_POPOVER_WIDTH[2], bad),
+            popoverMaxHeight=_int_field(
+                raw_popover, "maxHeight", _SELECTION_POPOVER_HEIGHT[2], bad
+            ),
+            bad_fields=bad,
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.selectionActions[{self.id or '?'}]"
+        # Refused rather than coerced: a wrong-typed field would install as its
+        # default, which is a different item from the one the author wrote.
+        for key in self.bad_fields:
+            errors.append(f"{where}: {key} has the wrong type")
+        if not self.id:
+            errors.append("contributes.selectionActions: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.title:
+            errors.append(f"{where}: missing title")
+        elif _mirrored_len(self.title) > _MAX_SELECTION_TITLE:
+            errors.append(f"{where}: title exceeds {_MAX_SELECTION_TITLE} characters")
+        if self.icon and not _SELECTION_ICON_RE.fullmatch(self.icon):
+            errors.append(f"{where}: icon must be a host icon name ({self.icon!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        if not self.sources:
+            errors.append(f"{where}: sources must name at least one source")
+        for source in self.sources:
+            if source not in SELECTION_SOURCES:
+                errors.append(
+                    f"{where}: unknown source {source!r} (expected one of {list(SELECTION_SOURCES)})"
+                )
+        if len(set(self.sources)) != len(self.sources):
+            errors.append(f"{where}: sources repeats an entry")
+        for effect in self.effects:
+            if effect not in SELECTION_EFFECTS:
+                errors.append(
+                    f"{where}: unknown effect {effect!r} (expected some of {list(SELECTION_EFFECTS)})"
+                )
+        if len(set(self.effects)) != len(self.effects):
+            errors.append(f"{where}: effects repeats an entry")
+        for key, value in (("minLength", self.minLength), ("maxLength", self.maxLength)):
+            if not 1 <= value <= MAX_SELECTION_TEXT:
+                errors.append(f"{where}: {key} must be 1 to {MAX_SELECTION_TEXT}")
+        if self.minLength > self.maxLength:
+            errors.append(f"{where}: minLength exceeds maxLength")
+        lo, hi, _ = _SELECTION_POPOVER_WIDTH
+        if not lo <= self.popoverWidth <= hi:
+            errors.append(f"{where}: popover.width must be {lo} to {hi}")
+        lo, hi, _ = _SELECTION_POPOVER_HEIGHT
+        if not lo <= self.popoverMaxHeight <= hi:
+            errors.append(f"{where}: popover.maxHeight must be {lo} to {hi}")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
 @dataclass
 class FileMenuWhen:
     """Declarative visibility predicate for a contributed file-menu row.
@@ -858,6 +1528,31 @@ class Contributes:
     #: How many entries of a well-formed ``fileMenuItems`` array were not objects. Not
     #: serialized.
     dropped_file_menu_items: int = 0
+    linkPreviews: list[LinkPreviewConfig] = field(default_factory=list)  # noqa: N815
+    #: ``linkPreviews`` present but not a list / entries that were not objects. Same
+    #: reasoning as the flags above. Not serialized.
+    bad_link_previews: bool = False
+    dropped_link_previews: int = 0
+    messageActions: list[MessageActionConfig] = field(default_factory=list)  # noqa: N815
+    #: ``messageActions`` present but not a list / entries that were not objects.
+    #: Same reasoning as the flags above. Not serialized.
+    bad_message_actions: bool = False
+    dropped_message_actions: int = 0
+    selectionActions: list[SelectionActionConfig] = field(default_factory=list)  # noqa: N815
+    #: ``selectionActions`` present but not a list / entries that were not objects.
+    #: Not serialized.
+    bad_selection_actions: bool = False
+    dropped_selection_actions: int = 0
+    composerActions: list[ComposerActionConfig] = field(default_factory=list)  # noqa: N815
+    #: ``composerActions`` present but not a list / entries that were not objects.
+    #: Same reasoning as the flags above. Not serialized.
+    bad_composer_actions: bool = False
+    dropped_composer_actions: int = 0
+    linkOpen: list[LinkOpenConfig] = field(default_factory=list)  # noqa: N815
+    #: ``linkOpen`` present but not a list / entries that were not objects. Not
+    #: serialized.
+    bad_link_open: bool = False
+    dropped_link_open: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -878,6 +1573,21 @@ class Contributes:
         kept_items = [i for i in items if i]
         if kept_items:
             d["fileMenuItems"] = kept_items
+        previews = [p.to_dict() for p in self.linkPreviews]
+        kept_previews = [p for p in previews if p]
+        if kept_previews:
+            d["linkPreviews"] = kept_previews
+        if self.messageActions:
+            d["messageActions"] = [a.to_dict() for a in self.messageActions]
+        if self.selectionActions:
+            d["selectionActions"] = [a.to_dict() for a in self.selectionActions]
+        if self.composerActions:
+            # Serialized, so signed: an entry is an ESM module the frame imports.
+            d["composerActions"] = [a.to_dict() for a in self.composerActions]
+        opens = [o.to_dict() for o in self.linkOpen]
+        kept_opens = [o for o in opens if o]
+        if kept_opens:
+            d["linkOpen"] = kept_opens
         return d
 
     @classmethod
@@ -909,7 +1619,41 @@ class Contributes:
         tab_entries = tabs_raw if isinstance(tabs_raw, list) else []
         items_raw = data.get("fileMenuItems", [])
         item_entries = items_raw if isinstance(items_raw, list) else []
+        previews_raw = data.get("linkPreviews", [])
+        preview_entries = previews_raw if isinstance(previews_raw, list) else []
+        actions_raw = data.get("messageActions", [])
+        action_entries = actions_raw if isinstance(actions_raw, list) else []
+        selection_raw = data.get("selectionActions", [])
+        selection_entries = selection_raw if isinstance(selection_raw, list) else []
+        composer_raw = data.get("composerActions", [])
+        composer_entries = composer_raw if isinstance(composer_raw, list) else []
+        opens_raw = data.get("linkOpen", [])
+        open_entries = opens_raw if isinstance(opens_raw, list) else []
         return cls(
+            messageActions=[
+                MessageActionConfig.from_dict(a) for a in action_entries if isinstance(a, dict)
+            ],
+            bad_message_actions="messageActions" in data and not isinstance(actions_raw, list),
+            dropped_message_actions=sum(1 for a in action_entries if not isinstance(a, dict)),
+            selectionActions=[
+                SelectionActionConfig.from_dict(a) for a in selection_entries if isinstance(a, dict)
+            ],
+            bad_selection_actions="selectionActions" in data
+            and not isinstance(selection_raw, list),
+            dropped_selection_actions=sum(1 for a in selection_entries if not isinstance(a, dict)),
+            composerActions=[
+                ComposerActionConfig.from_dict(a) for a in composer_entries if isinstance(a, dict)
+            ],
+            bad_composer_actions="composerActions" in data and not isinstance(composer_raw, list),
+            dropped_composer_actions=sum(1 for a in composer_entries if not isinstance(a, dict)),
+            linkOpen=[LinkOpenConfig.from_dict(o) for o in open_entries if isinstance(o, dict)],
+            bad_link_open="linkOpen" in data and not isinstance(opens_raw, list),
+            dropped_link_open=sum(1 for o in open_entries if not isinstance(o, dict)),
+            linkPreviews=[
+                LinkPreviewConfig.from_dict(p) for p in preview_entries if isinstance(p, dict)
+            ],
+            bad_link_previews="linkPreviews" in data and not isinstance(previews_raw, list),
+            dropped_link_previews=sum(1 for p in preview_entries if not isinstance(p, dict)),
             commands=[CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)],
             panelTabs=[PanelTabConfig.from_dict(t) for t in tab_entries if isinstance(t, dict)],
             fileMenuItems=[
@@ -1031,4 +1775,117 @@ class Contributes:
                     # row's activation would target the first row's endpoint.
                     errors.append(f"contributes.fileMenuItems: duplicate id {item.id!r}")
                 seen_items.add(item.id)
+        if self.bad_link_previews:
+            errors.append(
+                "contributes.linkPreviews must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any card"
+            )
+        if self.dropped_link_previews:
+            errors.append(
+                f"contributes.linkPreviews: {self.dropped_link_previews} entr"
+                f"{'y' if self.dropped_link_previews == 1 else 'ies'} must be an object"
+            )
+        if len(self.linkPreviews) > MAX_LINK_PREVIEWS_PER_APP:
+            errors.append(
+                f"contributes.linkPreviews: {len(self.linkPreviews)} providers exceeds the "
+                f"limit of {MAX_LINK_PREVIEWS_PER_APP}"
+            )
+        for preview in self.linkPreviews:
+            errors.extend(preview.validate())
+        if self.bad_message_actions:
+            errors.append(
+                "contributes.messageActions must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any button"
+            )
+        if self.dropped_message_actions:
+            errors.append(
+                f"contributes.messageActions: {self.dropped_message_actions} entr"
+                f"{'y' if self.dropped_message_actions == 1 else 'ies'} must be an object"
+            )
+        if len(self.messageActions) > MAX_MESSAGE_ACTIONS_PER_APP:
+            errors.append(
+                f"contributes.messageActions: {len(self.messageActions)} actions exceeds the "
+                f"limit of {MAX_MESSAGE_ACTIONS_PER_APP}"
+            )
+        action_ids: set[str] = set()
+        for action in self.messageActions:
+            errors.extend(action.validate())
+            if action.id:
+                if action.id in action_ids:
+                    # The id keys the grant and the frame's point: two would share both.
+                    errors.append(f"contributes.messageActions: duplicate id {action.id!r}")
+                action_ids.add(action.id)
+        if self.bad_composer_actions:
+            errors.append(
+                "contributes.composerActions must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any row"
+            )
+        if self.dropped_composer_actions:
+            errors.append(
+                f"contributes.composerActions: {self.dropped_composer_actions} entr"
+                f"{'y' if self.dropped_composer_actions == 1 else 'ies'} must be an object"
+            )
+        if len(self.composerActions) > MAX_COMPOSER_ACTIONS_PER_APP:
+            errors.append(
+                f"contributes.composerActions: {len(self.composerActions)} actions exceeds "
+                f"the limit of {MAX_COMPOSER_ACTIONS_PER_APP}"
+            )
+        composer_ids: set[str] = set()
+        for composer in self.composerActions:
+            errors.extend(composer.validate())
+            if composer.id:
+                if composer.id in composer_ids:
+                    # One id is one grant entry and one frame route: the second would
+                    # answer for the first.
+                    errors.append(f"contributes.composerActions: duplicate id {composer.id!r}")
+                composer_ids.add(composer.id)
+        if self.bad_link_open:
+            errors.append(
+                "contributes.linkOpen must be an array -- a non-array value passes as "
+                "empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any effect on a click"
+            )
+        if self.dropped_link_open:
+            errors.append(
+                f"contributes.linkOpen: {self.dropped_link_open} entr"
+                f"{'y' if self.dropped_link_open == 1 else 'ies'} must be an object"
+            )
+        if len(self.linkOpen) > MAX_LINK_OPEN_PER_APP:
+            errors.append(
+                f"contributes.linkOpen: {len(self.linkOpen)} entries exceeds the "
+                f"limit of {MAX_LINK_OPEN_PER_APP}"
+            )
+        for link_open in self.linkOpen:
+            errors.extend(link_open.validate())
+        errors.extend(self._validate_selection_actions())
+        return errors
+
+    def _validate_selection_actions(self) -> list[str]:
+        errors: list[str] = []
+        if self.bad_selection_actions:
+            errors.append(
+                "contributes.selectionActions must be an array -- a non-array value "
+                "passes as empty, so the app author sees neither an error nor any item"
+            )
+        if self.dropped_selection_actions:
+            errors.append(
+                f"contributes.selectionActions: {self.dropped_selection_actions} entr"
+                f"{'y' if self.dropped_selection_actions == 1 else 'ies'} must be an object"
+            )
+        if len(self.selectionActions) > MAX_SELECTION_ACTIONS_PER_APP:
+            errors.append(
+                f"contributes.selectionActions: {len(self.selectionActions)} items exceeds "
+                f"the limit of {MAX_SELECTION_ACTIONS_PER_APP}"
+            )
+        ids: set[str] = set()
+        for action in self.selectionActions:
+            errors.extend(action.validate())
+            if action.id:
+                if action.id in ids:
+                    # The id names the grant entry and the frame: two would share both.
+                    errors.append(f"contributes.selectionActions: duplicate id {action.id!r}")
+                ids.add(action.id)
         return errors

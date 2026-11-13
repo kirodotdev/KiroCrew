@@ -50,7 +50,9 @@ def _runtime(tmp_path, monkeypatch, backend: str) -> AcpRuntime:
         return SpawnPlan(argv=argv)
 
     monkeypatch.setattr(rt, "_resolve_spawn_plan", _plan)
-    monkeypatch.setattr(skill_projection, "prepare_native_skill_projection", lambda _wd: None)
+    monkeypatch.setattr(
+        skill_projection, "prepare_native_skill_projection", lambda _wd, **_kw: None
+    )
     return rt
 
 

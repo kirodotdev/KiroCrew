@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -51,6 +52,9 @@ const GRANTED = ['/api/chat', '/api/chat/slots', EMBED_UPLOAD_PATH]
 const UNGRANTED = ['/api/chat', '/api/chat/slots']
 
 beforeEach(() => {
+  // These tests are about the busy send that queues; the steer side is
+  // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+  setBusySendDefault('queue')
   vi.clearAllMocks()
   resetEmbedRecoveryForTests()
   // A Once-queued response a failed test never consumed must not leak.

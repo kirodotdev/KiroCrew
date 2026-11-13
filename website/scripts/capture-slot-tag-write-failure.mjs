@@ -55,13 +55,10 @@ const extra = async (path, route) => {
 await stubDashboardApi(page, {
   slots: [{ key: SLOT, messages: 3, running: false, agent: 'kirocrew', mode: '', tags: [], tags_revision: 'rev-1' }],
   extra,
+  // Pin the locale: without it the SPA picks one from the environment and the
+  // shot comes out in whatever language the runner happens to negotiate.
+  localStorageEntries: { 'mc-active-slot': SLOT, 'mc-lang': 'en' },
 })
-// Pin the locale: without it the SPA picks one from the environment and the
-// shot comes out in whatever language the runner happens to negotiate.
-await page.addInitScript(slot => {
-  localStorage.setItem('mc-active-slot', slot)
-  localStorage.setItem('mc-lang', 'en')
-}, SLOT)
 await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2500)
 
@@ -74,7 +71,7 @@ await page.getByRole('menuitem', { name: /^tags/i }).first().click()
 // and the inline notice appears. The notice is an `ErrorNotice` alert region —
 // wait for it rather than sleeping, so the shot cannot race the render.
 const dialog = page.getByRole('dialog')
-await dialog.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+await dialog.getByRole('option', { name: /Review/ }).click()
 await dialog.getByRole('alert').filter({ hasText: FAILURE }).first()
   .waitFor({ state: 'visible', timeout: 5000 })
 

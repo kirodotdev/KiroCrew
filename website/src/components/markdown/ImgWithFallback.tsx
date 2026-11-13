@@ -1,9 +1,11 @@
 import React, { useContext, useEffect, useRef, useState } from 'react'
 import type { ExtraProps } from 'react-markdown'
-import { Check, Copy, Image as ImageIcon, ImageOff } from 'lucide-react'
+import { Check, Copy, Film, Image as ImageIcon, ImageOff, Music } from 'lucide-react'
+import type { Element as HastElement } from 'hast'
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
 import { ImageCommentCtx } from '../../utils/imageComments'
 import { ImageCommentLayer } from '../ImageCommentLayer'
+import { mediaKindOf } from '../../utils/mediaExts'
 import { WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../../utils/urlTransform'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../ErrorNotice'
@@ -11,6 +13,7 @@ import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdBlockStartCtx, MdSour
 import { useTitleCuedCopy } from './copyFeedback'
 import { basenameOf } from './pathReferences'
 import {
+  DeferredMedia,
   GatewayMediaRefused,
   REMOTE_MEDIA_CHIP_CLASS,
   RemoteHostFact,
@@ -20,6 +23,57 @@ import {
   useApprovalFocus,
 } from './remoteMedia'
 import { dispatchLightbox } from './Lightbox'
+
+/** A deep stand-in for the document's folder. URL resolution stops at the root,
+ *  so `..` past a shallow base would make `../d.png` and `../../d.png` look the
+ *  same; a relative path that climbs out of this base resolves to null instead. */
+const IMAGE_LINK_BASE_ROOT = '/d0/'
+const IMAGE_LINK_BASE = 'http://image.invalid' + Array.from({ length: 64 }, (_, i) => `/d${i}`).join('') + '/'
+
+function resolveImageLink(value: string): string | null {
+  let absolute = value.startsWith('/')
+  try {
+    new URL(value)
+    absolute = true
+  } catch { /* relative */ }
+  const url = new URL(value, IMAGE_LINK_BASE)
+  if (!absolute && !url.pathname.startsWith(IMAGE_LINK_BASE_ROOT)) return null
+  return url.href
+}
+
+/** Whether a link around an image points at that same image, the common
+ *  "click to enlarge" shape. Both sides are resolved against one fixed base,
+ *  so `./d.png` and `d.png` match. Any other link (a heading, an artifact, a
+ *  session, another file or web page) keeps its own click. */
+function linkIsTheImage(href: string | null, src: string | undefined): boolean {
+  if (!href || !src) return false
+  try {
+    const a = resolveImageLink(href)
+    return a !== null && a === resolveImageLink(src)
+  } catch {
+    return false
+  }
+}
+
+/** One click does one thing. Markdown often wraps an image in a link to the
+ *  image (`[![d](d.png)](d.png)`), and that link opens in a new tab, so a
+ *  click left to bubble opened the viewer here AND a new tab. A plain click
+ *  on such an image opens only the viewer. A modified click (Cmd/Ctrl/Shift/
+ *  Alt) is left to the link, and so is any click on an image whose link goes
+ *  somewhere else. */
+function onImageClick(e: React.MouseEvent<HTMLImageElement>, src: string | undefined): void {
+  const img = e.currentTarget
+  const link = img.closest('a[href]')
+  if (link) {
+    const modified = e.metaKey || e.ctrlKey || e.shiftKey || e.altKey
+    if (modified || !linkIsTheImage(link.getAttribute('href'), src)) return
+    // Stop the anchor's own handlers too: a local-path link would otherwise
+    // open the file beside the viewer.
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  dispatchLightbox(img)
+}
 
 /** Markdown image with a React-rendered fallback chip when the URL is broken
  *  (see `BrokenImage`). The fallback is React-rendered rather than a hand-built
@@ -45,7 +99,7 @@ import { dispatchLightbox } from './Lightbox'
  * probed: a cross-origin HEAD says nothing reliable and the generic wording
  * is already honest there.
  */
-function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; probeUrl?: string }) {
+function BrokenImage({ path, alt, probeUrl, media }: { path: string; alt?: string; probeUrl?: string; media?: 'video' | 'audio' }) {
   // Names the path's tail, as the path chip does, so the reader knows WHICH
   // image's path failed to copy (#14294).
   const { copied, press, failureBubble } = useTitleCuedCopy(path, i18nT('components.markdownRenderer.couldnt_copy_the_image_path_label', { label: basenameOf(path.replace(/[\\/]+$/, '')) || path }))
@@ -74,9 +128,20 @@ function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; prob
   const idle = alt
     ? `${path}\n${i18nT('components.markdownRenderer.click_to_copy')}`
     : i18nT('components.markdownRenderer.click_to_copy')
-  const failure = confirmedGone
-    ? i18nT('components.markdownRenderer.image_file_no_longer_exists')
-    : i18nT('components.markdownRenderer.image_failed_to_load')
+  // A video or audio reference states the failure as media, not as an image:
+  // the reader wrote a clip, and "image" would name the wrong thing.
+  const failure = media
+    ? (confirmedGone
+      ? i18nT('components.markdownRenderer.media_file_no_longer_exists')
+      : i18nT('components.markdownRenderer.media_failed_to_load'))
+    : (confirmedGone
+      ? i18nT('components.markdownRenderer.image_file_no_longer_exists')
+      : i18nT('components.markdownRenderer.image_failed_to_load'))
+  const chipIcon = media === 'video'
+    ? <Film size={14} aria-hidden="true" className="shrink-0" />
+    : media === 'audio'
+      ? <Music size={14} aria-hidden="true" className="shrink-0" />
+      : <ImageOff size={14} aria-hidden="true" className="shrink-0" />
   // The load failure renders through ErrorNotice like every other failure
   // (errors-use-error-notice); the chip beside it keeps the one recovery the
   // transcript itself can offer, copying the on-disk path.
@@ -92,7 +157,7 @@ function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; prob
         title={copied ? i18nT('components.markdownRenderer.copied') : idle}
         data-testid="md-broken-image-chip"
       >
-        <ImageOff size={14} aria-hidden="true" className="shrink-0" />
+        {chipIcon}
         <span className="truncate">{alt || path}</span>
         {copied
           ? <Check size={12} aria-hidden="true" className="shrink-0 text-ok" />
@@ -153,6 +218,14 @@ export function pendingImageBoxStyle(compact: boolean): React.CSSProperties {
  *  the 404s a genuinely missing image costs. */
 const MAX_SITE_ROOT_ANCESTORS = 8
 
+/** `path` with its last component cut off, or `path` unchanged when it has no
+ *  separator. `\` counts as a separator only on a drive-rooted Windows path
+ *  (`windows`, read from the path itself unless the caller pins it for a walk
+ *  up from one file); on POSIX a backslash is a legal file-name character. */
+function parentDirOf(path: string, windows = WINDOWS_ABS_PATH_RE.test(path)): string {
+  return windows ? path.replace(/[\\/][^\\/]*$/, '') : path.replace(/\/[^/]*$/, '')
+}
+
 /** Fallback on-disk paths for a root-relative image (`/images/a.png`) in a
  *  previewed file, nearest directory first.
  *
@@ -167,14 +240,12 @@ const MAX_SITE_ROOT_ANCESTORS = 8
  *  reading resolves against the gateway's own drive, which need not be the
  *  previewed file's.
  *
- *  `\` counts as a separator only when the file itself sits on a drive-rooted
- *  Windows path; on POSIX a backslash is a legal file-name character. */
+ *  Separators follow `parentDirOf`. */
 export function siteRootImageCandidates(filePath: string, rootRelative: string): string[] {
   const rel = rootRelative.replace(/^\/+/, '')
   if (!rel) return []
-  const parentOf = WINDOWS_ABS_PATH_RE.test(filePath)
-    ? (p: string) => p.replace(/[\\/][^\\/]*$/, '')
-    : (p: string) => p.replace(/\/[^/]*$/, '')
+  const windows = WINDOWS_ABS_PATH_RE.test(filePath)
+  const parentOf = (p: string) => parentDirOf(p, windows)
   let dir = parentOf(filePath)
   // No separator at all: there is no directory to walk from.
   if (dir === filePath) return []
@@ -188,6 +259,75 @@ export function siteRootImageCandidates(filePath: string, rootRelative: string):
     dir = next
   }
   return out
+}
+
+/** Media kind of a remote http(s) reference, read from the URL's pathname so a
+ *  query string (`?v=.mp4`) or fragment never decides it. */
+function remoteMediaKind(url: string): 'video' | 'audio' | null {
+  if (!isRemoteMediaUrl(url)) return null
+  try { return mediaKindOf(new URL(url).pathname) } catch { return null }
+}
+
+/** The hast element a raw-HTML `<video src controls>` would parse to, so a
+ *  markdown media reference reaches `DeferredMedia` in the same shape and the
+ *  remote-media gate sees exactly one URL to disclose. */
+function remoteMediaNode(tag: 'video' | 'audio', src: string, alt?: string): HastElement {
+  return {
+    type: 'element',
+    tagName: tag,
+    properties: { src, controls: true, preload: 'metadata', ...(alt ? { alt } : {}) },
+    children: [],
+  }
+}
+
+/** Range-capable stream URL for a local clip; same image-version parameter as
+ *  the /api/file-raw URL, so a rewritten file is not served from cache. */
+function localMediaUrl(path: string, version: string | null): string {
+  return `/api/file-stream?path=${encodeURIComponent(path)}${version ? `&v=${encodeURIComponent(version)}` : ''}`
+}
+
+/** Inline player for a local video or audio file referenced with image syntax.
+ *  Same size caps as a transcript image, so a clip takes the space a
+ *  screenshot would. A `<span>` wrapper because it renders inside a `<p>`. */
+function LocalMedia({ kind, src, label, title, compact, onError }: {
+  kind: 'video' | 'audio'
+  src: string
+  label: string
+  title: string
+  compact: boolean
+  onError: () => void
+}) {
+  return (
+    <span className="block my-2">
+      {kind === 'video'
+        ? (
+          // eslint-disable-next-line jsx-a11y/media-has-caption -- local files carry no track sidecar; captions are out of scope
+          <video
+            controls
+            preload="metadata"
+            src={src}
+            aria-label={label}
+            title={title}
+            onError={onError}
+            className={compact
+              ? 'ms-auto block max-w-[240px] max-h-[180px] rounded-md border border-border bg-bg-elevated'
+              : 'block max-w-[min(100%,760px)] max-h-[60vh] rounded-md border border-border bg-bg-elevated'}
+          />
+        )
+        : (
+          // eslint-disable-next-line jsx-a11y/media-has-caption -- local files carry no track sidecar; captions are out of scope
+          <audio
+            controls
+            preload="metadata"
+            src={src}
+            aria-label={label}
+            title={title}
+            onError={onError}
+            className={compact ? 'ms-auto block w-[240px] max-w-full' : 'block w-full max-w-md'}
+          />
+        )}
+    </span>
+  )
 }
 
 export function ImgWithFallback({
@@ -296,7 +436,7 @@ export function ImgWithFallback({
     const rawUrl = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}${version ? `&v=${encodeURIComponent(version)}` : ''}`
     let candidatePaths: string[]
     if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
-      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
+      const resolved = parentDirOf(basePath) + '/' + localPath
       diskPath = resolved
       candidatePaths = [resolved]
     } else {
@@ -333,6 +473,42 @@ export function ImgWithFallback({
     url = src
   }
   if (isGatewayRouteMediaUrl(url)) return <GatewayMediaRefused />
+  // Markdown has no video syntax, so `![clip](demo.mp4)` is how a message
+  // references a recording. An <img> cannot play it (and /api/file-raw refuses
+  // a non-image body), so a video or audio extension renders a player instead.
+  const mediaKind = isLocal ? mediaKindOf(diskPath) : remoteMediaKind(url)
+  if (mediaKind && !isLocal) {
+    // A remote clip goes through the same click-to-load gate as a raw-HTML
+    // <video>/<audio>, so nothing is fetched from the host before consent.
+    // A failed remote clip states the failure through the same chip and
+    // ErrorNotice as a local one. No probe: a HEAD to the host would be a
+    // second fetch the reader never approved.
+    if (errored) return <BrokenImage path={src} alt={alt} media={mediaKind} />
+    return <DeferredMedia tag={mediaKind} node={remoteMediaNode(mediaKind, src, alt)} onError={() => setErrored(true)} />
+  }
+  if (mediaKind) {
+    if (errored) {
+      // Probe the endpoint the player asked: /api/file-raw refuses every
+      // non-image body, so only /api/file-stream can confirm a 404.
+      return <BrokenImage path={diskPath} alt={alt} probeUrl={localMediaUrl(diskPath, version)} media={mediaKind} />
+    }
+    // Same bounded candidate walk as an image: a root-relative clip in a
+    // previewed file is tried at its absolute path, then at the directories
+    // above the file, before the failure chip is shown.
+    return (
+      <LocalMedia
+        kind={mediaKind}
+        src={localMediaUrl(loadingPath, version)}
+        label={alt || basenameOf(diskPath.replace(/[\\/]+$/, '')) || diskPath}
+        title={alt || src}
+        compact={compact}
+        onError={() => {
+          if (attempt + 1 < candidateUrls.length) setAttempt(attempt + 1)
+          else setErrored(true)
+        }}
+      />
+    )
+  }
   if (isRemoteMediaUrl(url) && !remoteApproved) {
     return (
       <button
@@ -470,8 +646,10 @@ export function ImgWithFallback({
           ? 'ms-auto max-w-[240px] max-h-[180px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'
           : 'max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'}`}
         style={imgStyle}
-        onClick={(e) => dispatchLightbox(e.currentTarget)}
+        onClick={(e) => onImageClick(e, src)}
         data-lightbox-image=""
+        // Pages with the turn's file cards (see dispatchLightbox).
+        data-lightbox-turn=""
         title={alt || src}
         onLoad={(e) => {
           const el = e.currentTarget

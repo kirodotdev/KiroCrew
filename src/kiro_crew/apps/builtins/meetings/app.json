@@ -40,7 +40,8 @@
       "/api/ws/stt"
     ],
     "network": true,
-    "storage": true
+    "storage": true,
+    "agentTurns": true
   },
   "backend": {
     "routes": "backend.routes:register_routes"

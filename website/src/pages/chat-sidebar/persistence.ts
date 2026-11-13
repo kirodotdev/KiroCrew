@@ -4,7 +4,7 @@
  *  `SESSION_FILTERS` in ./filters. */
 import { DEFAULT_RECENT_WINDOW_MS } from '../recentWindow'
 import { DEFAULT_STALE_COLLAPSE_MS } from '../staleCollapse'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import type { SidebarLane } from './types'
 
 // Recency window for the "Recent" filter: surfaces sessions whose last activity
@@ -52,6 +52,8 @@ export function readStoredStaleCollapse(): number {
 
 /** Whether the filter menu's Folders section is rolled up to its heading. */
 export const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
+/** The filter menu's "Group by kind" option: '1' on, anything else off. */
+export const GROUP_BY_KIND_LS_KEY = 'mc-session-group-by-kind'
 // A status chip's HIDE state ('1' = drop its matching rows). One per chip that
 // can hide; referenced from that chip's `SESSION_FILTERS` entry in ./filters.
 export const UNREAD_HIDDEN_LS_KEY = 'mc-session-unread-hidden'
@@ -189,9 +191,9 @@ const CONDUCTOR_SUPERSEDED_COLLAPSED_LS_KEY = 'mc-sidebar-conductor-collapsed'
  * "not one of mine".
  */
 export function readStoredLane(): SidebarLane {
-  const stored = localStorage.getItem(SIDEBAR_LANE_LS_KEY)
+  const stored = safeGetItem(SIDEBAR_LANE_LS_KEY)
   if (stored === 'tree' || stored === 'flat' || stored === 'conductor') return stored
-  return localStorage.getItem(FLAT_VIEW_LS_KEY) === '1' ? 'flat' : 'tree'
+  return safeGetItem(FLAT_VIEW_LS_KEY) === '1' ? 'flat' : 'tree'
 }
 
 /** The conductor rows the user has OPENED, or an empty set when the value is

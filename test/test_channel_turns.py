@@ -654,8 +654,13 @@ class TestAToolLessGuestTurn:
 
     def test_a_spec_the_pre_spawn_read_refuses_never_starts_a_session(self, monkeypatch) -> None:
         """Starting the session would run what the spec names, so a failed
-        pre-spawn read refuses before ``get_or_create``."""
+        pre-spawn read the repair cannot restore refuses before ``get_or_create``."""
         monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: False)
+
+        async def _not_restored(_sessions: Any, _key: str) -> tuple[bool, int]:
+            return False, D._guest_spec_repair_count()
+
+        monkeypatch.setattr(D, "_repair_toolless_spec", _not_restored)
         provider = ScriptedProvider()
         sessions = FakeSessions(provider)
         renderer = RecordingRenderer()
@@ -666,6 +671,80 @@ class TestAToolLessGuestTurn:
         assert sessions.calls("get_or_create") == [] and provider.spec_reads == []
         assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE]
         assert sessions.count("release") == 0
+
+    def test_a_spec_the_repair_restores_runs_the_turn(self, monkeypatch) -> None:
+        """A failed pre-spawn read hands the spec to the repair, whose read after
+        its rewrite decides the turn."""
+        monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: False)
+        repaired: list[str] = []
+
+        async def _restored(_sessions: Any, key: str) -> tuple[bool, int]:
+            repaired.append(key)
+            return True, D._guest_spec_repair_count()
+
+        monkeypatch.setattr(D, "_repair_toolless_spec", _restored)
+        sessions = FakeSessions(ScriptedProvider(answer()))
+
+        outcome = _answer(_turns(sessions), asker=self._guest())
+
+        assert outcome.verdict is Verdict.ANSWERED and repaired == [self._KEY]
+
+    def test_a_repair_during_the_spawn_refuses_the_turn(self, monkeypatch) -> None:
+        """Another guest turn started a repair while this session was starting: its
+        resets did not reach this session, so the read after the start, of a file
+        the repair may have restored, does not vouch for it."""
+        from kiro_crew.messaging import dispatch_tools
+
+        provider = ScriptedProvider(answer())
+        sessions = FakeSessions(provider)
+        start = sessions.get_or_create
+
+        async def _repaired_during_spawn(key: str, **kw: Any) -> Any:
+            for name in ("_guest_spec_repairs_started", "_guest_spec_repairs_finished"):
+                monkeypatch.setattr(dispatch_tools, name, getattr(dispatch_tools, name) + 1)
+            return await start(key, **kw)
+
+        monkeypatch.setattr(sessions, "get_or_create", _repaired_during_spawn)
+        renderer = RecordingRenderer()
+
+        outcome = _answer(_turns(sessions), asker=self._guest(), renderer=renderer)
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+        assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE]
+        assert sessions.count("reset") == 1
+
+    def test_a_repair_started_during_the_pre_spawn_read_refuses_the_turn(self, monkeypatch) -> None:
+        """The count is read before the read that vouches for the spawn, so a repair
+        that starts while that read runs leaves it unconfirmed."""
+        from kiro_crew.messaging import dispatch_tools
+
+        def _read_during_a_repair(_key: str) -> bool:
+            for name in ("_guest_spec_repairs_started", "_guest_spec_repairs_finished"):
+                monkeypatch.setattr(dispatch_tools, name, getattr(dispatch_tools, name) + 1)
+            return True
+
+        monkeypatch.setattr(D, "_toolless_spec_before_spawn", _read_during_a_repair)
+        provider = ScriptedProvider(answer())
+
+        outcome = _answer(_turns(FakeSessions(provider)), asker=self._guest())
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+
+    def test_a_repair_still_running_refuses_the_turn(self, monkeypatch) -> None:
+        """A repair that has rewritten the file but not yet reset every guest
+        session: a warm session it has not reached may hold the injected server, so
+        no turn is vouched for until it finishes."""
+        from kiro_crew.messaging import dispatch_tools
+
+        started = dispatch_tools._guest_spec_repairs_finished + 1
+        monkeypatch.setattr(dispatch_tools, "_guest_spec_repairs_started", started)
+        provider = ScriptedProvider(answer())
+        sessions = FakeSessions(provider)
+
+        outcome = _answer(_turns(sessions), asker=self._guest())
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+        assert sessions.count("reset") == 1
 
     def test_an_owner_turn_never_reads_the_guest_spec(self) -> None:
         provider = ScriptedProvider(answer(), toolless=False)
@@ -1253,6 +1332,23 @@ class TestCompactionRecovery:
         assert recorder.surfaced == 0 and sessions.count("set_channel") == 1
         assert outcome.is_new is False
 
+    def test_a_replay_ends_the_abandoned_attempt_before_its_reset(self) -> None:
+        """The abandoned turn never landed, so its attempt ends before the reset
+        and what it received inline is revoked before the replay runs."""
+
+        class _Settling(FakeSessions):
+            def settle_turn(self, key: str) -> None:
+                self.ledger.append(("settle_turn", key))
+
+        first = ScriptedProvider(_abandoned(), transient=True, name="first")
+        sessions = _Settling(first, ScriptedProvider(answer("the reply"), name="second"))
+
+        _answer(_turns(sessions))
+
+        names = sessions.names()
+        assert names.count("settle_turn") == 1
+        assert names.index("settle_turn") < names.index("reset")
+
     def test_identity_is_published_before_every_attempts_build(self) -> None:
         sessions = FakeSessions(
             ScriptedProvider(_abandoned(), transient=True), ScriptedProvider(answer())
@@ -1460,6 +1556,23 @@ class _Hook:
 class TestAMonitorWake:
     def _wake(self, hook: _Hook, *, current: bool = True) -> MonitorWake:
         return MonitorWake(hook, lambda: current)  # type: ignore[arg-type]
+
+    def test_only_a_wake_builds_an_unattended_tool_gate(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        built: list[bool] = []
+        real = dispatch.build_tool_gate
+
+        def _recording(*args: Any, unattended: bool = False, **kwargs: Any) -> Any:
+            built.append(unattended)
+            return real(*args, unattended=unattended, **kwargs)
+
+        monkeypatch.setattr(dispatch, "build_tool_gate", _recording)
+        sessions = FakeSessions(ScriptedProvider(answer(), answer()))
+        turns = _turns(sessions, drift=DISCORD_DRIFT)
+        _answer(turns, asker=_asker(route=None), monitor=self._wake(_Hook()))
+        _answer(turns, asker=_asker(route=None))
+        assert built == [True, False]
 
     def test_a_wake_claims_without_waiting_and_composes_no_ceiling(self, one_turn_ceiling):
         sessions = FakeSessions(ScriptedProvider(answer(), answer()))

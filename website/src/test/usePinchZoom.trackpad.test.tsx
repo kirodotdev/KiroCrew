@@ -213,7 +213,7 @@ describe('trackpad magnification, in the image viewer', () => {
   // here is what stops the image viewer being the one that silently lacks it —
   // which is exactly how the diagram viewer shipped without a pinch.
   it('zooms an open image on ctrl+wheel', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => openImage())
     const img = container.querySelector('img') as HTMLElement
     sizeBox(img)
@@ -224,7 +224,7 @@ describe('trackpad magnification, in the image viewer', () => {
   })
 
   it('claims the event there too', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => openImage())
     const img = container.querySelector('img') as HTMLElement
     sizeBox(img)
@@ -232,7 +232,7 @@ describe('trackpad magnification, in the image viewer', () => {
   })
 
   it('claims a pinch on the backdrop around a small image', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => openImage())
     const img = container.querySelector('img') as HTMLElement
     sizeBox(img)

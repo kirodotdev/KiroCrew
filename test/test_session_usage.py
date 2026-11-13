@@ -1,17 +1,9 @@
-"""Tests for the credit-usage helpers in
-kiro_crew.dashboard.handlers.sessions: _parse_usage, _redact_strings, and the
-_fetch_usage_bg gating/redaction logic.
+"""Tests for the credit-usage helpers in kiro_crew.dashboard.handlers.sessions.
 
-This file pins the usage parsers, the transient-failure cache, string redaction,
-the refresh's text-scrape path with its environment scrub and child reaping, the
-refresh's overall deadline, the API-primary path, the API-key fail-fast, whoami
-parsing, the guard that keeps a scrape from replacing a richer API value, and the
-identity coupling rule. The per-refresh account proof is in
-test_session_usage_account_proof.py; when the scrape runs and parks, the
-unavailable reason, the children's no-window flag and the scrape's engine pin are
-in test_session_usage_scrape.py; the poll interval and the refresh route are in
-test_session_usage_refresh_routes.py. session_usage_helpers.py holds what they
-share.
+Covers the parsers, the failure cache, redaction, the scrape path, the refresh deadline,
+the API path and the identity coupling rule. The account proof, scrape scheduling and
+refresh routes have their own test_session_usage_*.py files; session_usage_helpers.py
+holds what they share.
 """
 
 from __future__ import annotations
@@ -101,6 +93,25 @@ class TestParseUsage:
 
     def test_no_bonus_fields_without_section(self):
         assert "bonus_credits" not in _parse_usage(SAMPLE_USAGE)
+
+    def test_parses_the_current_kiro_cli_bonus_format(self):
+        # kiro-cli's current /usage: a header with no colon, and
+        # "name: used/total credits used, expires in N days".
+        raw = (
+            "Estimated Usage | resets on 2026-12-01 | KIRO FREE\n"
+            "Bonus credits\n"
+            "kiroween-2026: 100.54/4000 credits used, expires in 49 days\n"
+            "Credits (0.00 of 50 covered in plan), 0.0%\n"
+        )
+        r = _parse_usage(raw)
+        assert r["credits_plan"] == 50.0
+        assert r["bonus_credits"] == [
+            {"name": "kiroween-2026", "used": 100.54, "total": 4000.0, "days_left": 49}
+        ]
+
+    def test_a_line_that_only_mentions_bonus_credits_is_not_the_header(self):
+        raw = "Estimated Usage\nYou have no bonus credits this month\n"
+        assert "bonus_credits" not in _parse_usage(raw)
 
     def test_parses_every_bounded_bonus_grant_in_dash_format(self):
         assert _parse_usage(SAMPLE_USAGE_WITH_BONUS)["bonus_credits"] == [
@@ -441,11 +452,9 @@ class TestFetchUsageBg:
     async def test_timeout_reaps_the_scrape_before_the_adjacent_whoami(self):
         """The wedged child dies BEFORE the identity re-resolve, not after it.
 
-        The adjacent whoami is itself a kiro-cli subprocess of up to its own
-        timeout; reaping only in ``finally`` let the scrape outlive the deadline
-        by that much, holding the agent lock and its sandbox scope. The order is
-        the assertion, on a recording fake; the top-of-refresh whoami is the
-        first event, the reap must precede the second.
+        The whoami is its own subprocess with its own timeout, so reaping in
+        ``finally`` would let the scrape outlive the deadline holding the agent lock.
+        The first event is the top-of-refresh whoami; the reap must precede the second.
         """
         events: list[str] = []
         proc = _mock_proc(b"")
@@ -538,11 +547,8 @@ class TestFetchUsageBg:
 class TestFetchUsageDeadline:
     """A hung refresh must release the in-flight guard, not park it forever.
 
-    `_usage_fetching` gates every refresh, and it is only cleared in
-    `_fetch_usage_bg`'s `finally`. That `finally` does run on cancellation — but
-    not on a hang, so without an overall deadline one wedged call leaves the
-    guard True for the process lifetime: the cache is never populated and the
-    dashboard's credit pill shows "Checking usage..." indefinitely.
+    `_usage_fetching` is cleared only in `_fetch_usage_bg`'s `finally`, which a hang
+    never reaches; without a deadline the pill shows "Checking usage..." forever.
     """
 
     @pytest.fixture(autouse=True)
@@ -891,17 +897,12 @@ class TestFetchUsageBgApi:
         assert sessions_mod._usage_cache["credits_plan"] == 10.0
 
 
-class TestApiKeyAuthFailFast:
-    """API-key accounts short-circuit the usage refresh entirely.
+class TestApiKeyAuthUsesScrape:
+    """API-key accounts skip the GetUsageLimits API but DO use the ``/usage`` scrape.
 
-    ``kiro-cli whoami`` reports ``accountType=ApiKey`` for API-key auth. Such
-    accounts hold no SSO/OIDC bearer token, so ``fetch_usage_limits`` would burn
-    its full timeout walking credential stores that cannot contain one — and
-    with the text scrape disabled (the production default) no EXPLANATORY
-    terminal state ever reached the frontend: the credits panel spun through
-    the timeout and then hid itself with no explanation, every refresh. The
-    fix publishes a reasoned unavailable marker straight after the identity
-    read, BEFORE any credential search or billed scrape.
+    ``accountType=ApiKey`` accounts hold no bearer token, so ``fetch_usage_limits``
+    could only 403 after its timeout. kiro-cli answers ``/usage`` locally, so the
+    scrape still supplies the number.
     """
 
     @pytest.fixture(autouse=True)
@@ -915,7 +916,9 @@ class TestApiKeyAuthFailFast:
         _reset_usage_globals()
 
     @pytest.mark.asyncio
-    async def test_api_key_auth_short_circuits_before_usage_api(self):
+    async def test_api_key_auth_skips_api_but_scrapes(self):
+        # The API is NOT called (it can only 403 for API-key auth), yet the
+        # scrape runs and its parsed credits are published.
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
             patch.object(
@@ -924,51 +927,146 @@ class TestApiKeyAuthFailFast:
                 AsyncMock(return_value={"email": "a@b.com", "account_type": "ApiKey"}),
             ),
             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch,
+            patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode())),
+            ),
         ):
             await sessions_mod._fetch_usage_bg()
         fetch.assert_not_called()
-        assert sessions_mod._usage_cache == {"available": False, "reason": "api_key_auth"}
+        assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
+        assert sessions_mod._usage_cache.get("source") == "text"
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_with_no_identity_publishes_the_scrape(self):
+        # A real API-key whoami carries NO identity (no email / start URL /
+        # profile ARN), so the before/after whoami pair is `unproven`. The
+        # scrape is kiro-cli's own `/usage` for the signed-in key, so it must be
+        # PUBLISHED, not discarded as it is for a non-API-key unproven account.
+        # The other tests here add an email, which takes the proven path and
+        # would hide a regression on this one.
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(return_value={"account_type": "ApiKey"}),
+            ),
+            patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch,
+            patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode())),
+            ),
+        ):
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_not_called()
+        assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
+        assert sessions_mod._usage_cache.get("source") == "text"
+        assert sessions_mod._usage_cache.get("available") is not False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "switched_to",
+        [
+            {"account_type": "ExternalIdP", "email": ""},
+            {"account_type": "BuilderId"},
+            {},
+        ],
+    )
+    async def test_api_key_switch_to_identity_less_sign_in_publishes_nothing(self, switched_to):
+        # The top-of-refresh whoami is ApiKey, but the sign-in changes before
+        # the scrape to another identity-less one (ExternalIdP, a lapsed
+        # type-only sign-in, signed out). That pair is also `unproven`, so the
+        # API-key carve-out must not apply: the scrape could be the other
+        # account's balance.
+        whoami = AsyncMock(side_effect=[{"account_type": "ApiKey"}] + [switched_to] * 5)
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(sessions_mod, "_fetch_whoami", whoami),
+            patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch,
+            patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode())),
+            ),
+        ):
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_not_called()
+        assert sessions_mod._usage_cache.get("credits_plan") is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("reported", ["apikey", "APIKEY", " ApiKey ", "API_KEY", "Api-Key"])
     async def test_account_type_comparison_tolerates_respelling(self, reported):
-        # The enum spelling is upstream's to change; a drift must degrade to the
-        # old slow path at worst, and these spellings must all still fail fast.
+        # The enum spelling is upstream's to change; every spelling must still be
+        # recognized as API-key and route to the scrape without calling the API.
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
             patch.object(
-                sessions_mod, "_fetch_whoami", AsyncMock(return_value={"account_type": reported})
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(return_value={"email": "a@b.com", "account_type": reported}),
             ),
             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch,
+            patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode())),
+            ),
         ):
             await sessions_mod._fetch_usage_bg()
         fetch.assert_not_called()
-        assert sessions_mod._usage_cache == {"available": False, "reason": "api_key_auth"}
+        assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
 
     @pytest.mark.asyncio
-    async def test_api_key_auth_never_spawns_the_scrape(self, monkeypatch):
-        # An API-key account must not reach the text scrape: the harm being
-        # prevented, asserted directly.
-        spawn = AsyncMock()
+    async def test_api_key_auth_does_not_call_the_usage_api(self, monkeypatch):
+        # The API call is the wasted work being skipped; assert it directly, and
+        # that the refresh clears its in-flight flag.
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
             patch.object(
-                sessions_mod, "_fetch_whoami", AsyncMock(return_value={"account_type": "ApiKey"})
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(return_value={"email": "a@b.com", "account_type": "ApiKey"}),
             ),
             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch,
             patch("asyncio.create_subprocess_exec", spawn),
         ):
             await sessions_mod._fetch_usage_bg()
         fetch.assert_not_called()
-        spawn.assert_not_called()
-        assert sessions_mod._usage_cache == {"available": False, "reason": "api_key_auth"}
+        assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
         assert sessions_mod._usage_fetching is False
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_with_no_v2_engine_spawns_nothing_and_does_not_misadvise(
+        self, monkeypatch
+    ):
+        # On a kiro-cli with no engine that answers `/usage` locally (V2 retired),
+        # `_usage_scrape_argv` returns None so `_run_scrape` spawns nothing. An
+        # API-key account skips the API too, so the refresh ends with no reading
+        # -- and that marker must NOT carry `signin_required`: the account is
+        # signed in fine, it just has no local usage source.
+        monkeypatch.setattr(sessions_mod, "pin_kiro_cli", lambda: ("/bin/kiro", False))
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", lambda binary: ("v3", "v1"))
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        with (
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
+            patch.object(
+                sessions_mod,
+                "_fetch_whoami",
+                AsyncMock(return_value={"email": "a@b.com", "account_type": "ApiKey"}),
+            ),
+            patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch,
+            patch("asyncio.create_subprocess_exec", spawn),
+        ):
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_not_called()
+        assert spawn.await_count == 0
+        assert sessions_mod._usage_cache.get("available") is False
+        assert sessions_mod._usage_cache.get("reason") != "signin_required"
 
     @pytest.mark.asyncio
     async def test_sso_account_types_still_reach_the_usage_api(self):
         # Negative control pinning the branch's condition: a non-ApiKey account
-        # takes the normal API path. Removing the fail-fast branch flips the
-        # short-circuit tests red; widening its match flips this one red.
+        # takes the normal API path. Widening the ApiKey match flips this red.
         api_dict = {"credits_used": 1.0, "credits_plan": 10.0, "source": "api"}
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
@@ -1072,11 +1170,8 @@ class TestFetchWhoami:
 class TestIdentityAccountCoupling:
     """An identity may only be shown next to credits it provably belongs to.
 
-    fetch_usage_limits picks whichever candidate credential the API accepts
-    (IDE cache first, then the kiro-cli store) while whoami always reports
-    kiro-cli's identity -- so with two accounts signed in they can disagree.
-    Attaching the wrong email to an overage bill is a misattribution, so the
-    merge is refused unless the accounts provably match.
+    fetch_usage_limits may use the IDE cache's credential while whoami reports
+    kiro-cli's identity, so with two accounts signed in they can disagree.
     """
 
     @pytest.mark.parametrize(

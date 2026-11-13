@@ -18,6 +18,8 @@ import { store as globalStore } from '../store'
 import { setActiveSlot, clearSlotState } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
+// Through `/all` so a non-English catalog is registered for the locale case.
+import { i18next } from '../i18n/all'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -180,6 +182,30 @@ describe('useWebSocket lands each frame as one stream flush', () => {
     expect(status(BG[1])).toMatchObject({ kind: 'thinking', label: 'Working step 6' })
   })
 
+  it('stores the generic thinking status without a label so the row localizes', () => {
+    // The server sends a single fixed English phrase for the thinking state.
+    // Storing it as a verbatim `label` paints English in a non-English UI (the
+    // sidebar row), because `toolStatusLabel` paints any `label` as-is and
+    // never falls through to the catalog key. Dropping the label here lets the
+    // row resolve `pages.chatSidebar.thinking` in the current language instead.
+    const generic = i18next.t('pages.chatSidebar.thinking', { lng: 'en' })
+    const { ws } = mount()
+    act(() => { ws.simulateMessage(chatStatus(BG[0], generic)) })
+    runFrames()
+    const detail = status(BG[0])
+    expect(detail?.kind).toBe('thinking')
+    expect((detail as { label?: string }).label).toBeUndefined()
+  })
+
+  it('keeps a distinct server status label verbatim', () => {
+    // Only the generic thinking phrase is stripped; a genuinely different
+    // server-supplied status still carries its own label through unchanged.
+    const { ws } = mount()
+    act(() => { ws.simulateMessage(chatStatus(BG[0], 'Compacting…')) })
+    runFrames()
+    expect(status(BG[0])).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
+  })
+
   it('does not merge a tool refinement into a line a buffered label replaced', () => {
     const { ws } = mount()
     act(() => { ws.simulateMessage(toolCall(BG[0], 'call-1')) })
@@ -247,5 +273,29 @@ describe('useWebSocket lands each frame as one stream flush', () => {
     act(() => { ws.simulateMessage(thought(BG[0], 'next')) })
     runFrames()
     expect(status(BG[0])?.kind).toBe('thinking')
+  })
+
+  it('a refinement that follows its call\'s final result does not put the finished call back', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage(toolCall(OPEN, 'call-1')) })
+    act(() => { ws.simulateMessage({ type: 'tool_result', data: { slot: OPEN, output: 'ok', tool_call_id: 'call-1' } }) })
+    runFrames()
+    expect(status(OPEN)?.kind).toBe('thinking')
+    act(() => {
+      ws.simulateMessage({ type: 'tool_call', data: { slot: OPEN, tool: 'make test', kind: 'execute', input_preview: 'make test', tool_call_id: 'call-1', is_update: true, is_shell: true } })
+    })
+    runFrames()
+    expect(status(OPEN)?.kind).toBe('thinking')
+  })
+
+  it('a refinement while its call still runs keeps updating the line', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage(toolCall(OPEN, 'call-1')) })
+    act(() => { ws.simulateMessage({ type: 'tool_result', data: { slot: OPEN, output: 'partial', tool_call_id: 'call-1', final: false } }) })
+    act(() => {
+      ws.simulateMessage({ type: 'tool_call', data: { slot: OPEN, tool: 'make test', kind: 'execute', input_preview: 'make test', tool_call_id: 'call-1', is_update: true, is_shell: true } })
+    })
+    runFrames()
+    expect(status(OPEN)).toMatchObject({ kind: 'tool', toolCallId: 'call-1' })
   })
 })

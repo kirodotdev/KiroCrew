@@ -286,6 +286,7 @@ def test_the_generator_is_launched_by_the_path_which_found(
     found = str(repo / "bin" / "npm.CMD")
     launched: list[list[str]] = []
     real_run = subprocess.run
+    real_which = rs.shutil.which
 
     def fake_run(args, *rest, **kwargs):
         if args and args[0] == found:
@@ -293,7 +294,9 @@ def test_the_generator_is_launched_by_the_path_which_found(
             return subprocess.CompletedProcess(args, 0, "", "")
         return real_run(args, *rest, **kwargs)
 
-    monkeypatch.setattr(rs.shutil, "which", lambda name: found if name == "npm" else None)
+    monkeypatch.setattr(
+        rs.shutil, "which", lambda name: found if name == "npm" else real_which(name)
+    )
     monkeypatch.setattr(rs.subprocess, "run", fake_run)
     entry = _entry(["gen/out.txt"], NOOP)
     entry["argv"] = ["npm", "--prefix", "website", "run", "gen:ui"]
@@ -327,6 +330,16 @@ def test_missing_base_and_non_repo_are_environment_errors(tmp_path: Path, repo: 
     plain = tmp_path / "plain"
     plain.mkdir()
     assert rs.regen(str(plain), "main", [])[0] == 2
+
+
+def test_a_remote_ref_as_the_base_names_the_branch_to_pass(repo: Path) -> None:
+    """``upstream/main`` from a fork clone: the fetch hint cannot work, the branch name does."""
+    _git(repo, "update-ref", "refs/remotes/upstream/main", "HEAD")
+    code, lines = rs.regen(str(repo), "upstream/main", [])
+    assert code == 2
+    assert "pass the branch name instead: main" in lines[0]
+    assert "git fetch origin upstream/main" not in lines[0]
+    assert "run: git fetch origin release/1" in rs.regen(str(repo), "release/1", [])[1][0]
 
 
 def _cli(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

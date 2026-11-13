@@ -144,7 +144,7 @@ def _read_mcp_json_unlocked(*, strict: bool = False) -> dict[str, Any]:
         return {}
     try:
         return loads_mcp_config(_mcp_json_path().read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         if strict:
             raise
         logger.warning("Failed to read mcp.json: %s", exc)

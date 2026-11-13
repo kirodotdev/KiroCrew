@@ -190,9 +190,10 @@ describe('the badge', () => {
     expect(screen.getByTestId('tool-risk-badge-wrong-jev')).toHaveAttribute('title', 'Jev read the risk wrong')
   })
 
-  it('names what the thumbs rate, visibly and not only to a screen reader', () => {
+  it('says in visible text that a vote is feedback only, without repeating Jev', () => {
     render(<ToolRiskBadge record={record} />)
-    expect(screen.getByTestId('tool-risk-badge-rate-label-jev').textContent).toBe('Jev')
+    expect(screen.getByTestId('tool-risk-badge-rate-label-jev').textContent).toBe('Feedback only')
+    expect(screen.getByTestId('tool-risk-badge').textContent!.split('Jev')).toHaveLength(2)
   })
 
   it('surfaces a refused verdict beside the thumbs rather than silently reverting', async () => {

@@ -15,7 +15,9 @@ checkout the gateway executes:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -26,6 +28,7 @@ from kiro_crew.service.live_target import (
     _FILENAME,
     EXEC_MARKER,
     InvalidTarget,
+    _no_cwd_entries,
     maybe_reexec,
     pointer_path,
     read_previous_target,
@@ -215,6 +218,47 @@ class TestReadTargetReason:
         monkeypatch.setattr(os, "execve", lambda *a, **k: execs.append(a))
         maybe_reexec(["gateway"])  # must not raise
         assert execs == []
+
+    @pytest.mark.parametrize("site", ["checkout", "entry point", "src/kiro_crew"])
+    def test_checkout_stat_permission_error_is_ignored(self, tmp_path, monkeypatch, site):
+        """A checkout the gateway cannot stat is an ignored pointer, not a crash.
+
+        On Python 3.12 ``Path.is_dir``/``is_file`` re-raise an access error, so
+        each of ``validate``'s stats is fed one.
+        """
+        checkout = _make_valid_checkout(tmp_path)
+        denied = {
+            "checkout": checkout,
+            "entry point": target_bin(checkout),
+            "src/kiro_crew": checkout / "src" / "kiro_crew",
+        }[site].resolve()
+        for name in ("is_dir", "is_file"):
+            real = getattr(Path, name)
+
+            def check(self, _real=real):
+                if self == denied:
+                    raise PermissionError(13, "Access is denied", str(self))
+                return _real(self)
+
+            monkeypatch.setattr(Path, name, check)
+        pointer_path().write_text(json.dumps({"checkout": str(checkout)}))
+        monkeypatch.delenv(EXEC_MARKER, raising=False)
+        mock_execve = MagicMock()
+        monkeypatch.setattr(os, "execve", mock_execve)
+        log = MagicMock()
+
+        try:
+            target, reason = read_target_reason()
+            maybe_reexec(["gateway"], log=log)
+        except OSError as exc:
+            pytest.fail(f"a checkout stat error escaped the live-target read: {exc!r}")
+
+        assert target is None
+        assert reason is not None
+        assert "cannot be read" in reason and str(checkout.resolve()) in reason
+        mock_execve.assert_not_called()
+        args = log.warning.call_args[0]
+        assert "ignoring" in args[0] % args[1:]
 
     def test_invalid_json_returns_none_with_reason(self, tmp_path):
         path = pointer_path()
@@ -671,6 +715,22 @@ class TestMaybeReexec:
         maybe_reexec(["gateway"])
         mock_execve.assert_not_called()
 
+    def test_marker_is_not_inherited_by_a_restart_replacement(self, tmp_path, monkeypatch):
+        """The exec'd gateway drops the marker, so a restart's replacement follows the pointer."""
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        monkeypatch.setattr(sys, "argv", ["/other/bin/kirocrew", "gateway"])
+        monkeypatch.setenv(EXEC_MARKER, "1")
+        mock_execve = MagicMock()
+        monkeypatch.setattr(os, "execve", mock_execve)
+        monkeypatch.setattr(os, "chdir", MagicMock())
+        maybe_reexec(["gateway"])
+        mock_execve.assert_not_called()
+        assert EXEC_MARKER not in os.environ
+        # The replacement inherits this environment and boots through the same bootstrap.
+        maybe_reexec(["gateway"])
+        mock_execve.assert_called_once()
+
     def test_returns_without_exec_when_no_pointer(self, monkeypatch):
         """No pointer file -> stay here."""
         mock_execve = MagicMock()
@@ -736,7 +796,46 @@ class TestMaybeReexec:
         path_entries = exec_env["PATH"].split(os.pathsep)
         assert path_entries[0] == str(kcbin.parent)
 
-    def test_execve_oserror_is_swallowed(self, tmp_path, monkeypatch):
+    def test_the_default_path_keeps_no_current_directory_entry(self):
+        """Windows' ``os.defpath`` is ``.;C:\\bin``: its ``.`` (and any empty entry)
+        names the current directory, so the fallback drops it on every platform."""
+        sep = os.pathsep
+        windows_like = sep.join([".", "C:\\bin"])
+        assert _no_cwd_entries(windows_like) == "C:\\bin"
+        assert _no_cwd_entries(sep.join(["", "/bin", ".", "/usr/bin", ""])) == sep.join(
+            ["/bin", "/usr/bin"]
+        )
+
+    @pytest.mark.parametrize("inherited", [None, ""], ids=["unset", "empty"])
+    def test_an_empty_inherited_path_adds_no_current_directory_entry(
+        self, tmp_path, monkeypatch, inherited
+    ):
+        """No inherited PATH: the exec searches the default path, as a process with no
+        PATH does, and never an empty or ``.`` entry, which names the working
+        directory (the target checkout after the chdir)."""
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        monkeypatch.setattr(sys, "argv", ["/usr/bin/kirocrew", "gateway"])
+        monkeypatch.delenv(EXEC_MARKER, raising=False)
+        if inherited is None:
+            monkeypatch.delenv("PATH", raising=False)
+        else:
+            monkeypatch.setenv("PATH", inherited)
+        mock_execve = MagicMock()
+        monkeypatch.setattr(os, "execve", mock_execve)
+        monkeypatch.setattr(os, "chdir", MagicMock())
+        maybe_reexec(["gateway"])
+        entries = mock_execve.call_args[0][2]["PATH"].split(os.pathsep)
+        assert entries[0] == str(target_bin(checkout.resolve()).parent)
+        assert "" not in entries and "." not in entries
+        expected = [p for p in os.defpath.split(os.pathsep) if p not in ("", ".")]
+        assert entries[1:] == expected
+        # The commands the new gateway runs by bare name still resolve.
+        system_sh = shutil.which("sh", path=os.defpath)
+        if system_sh:
+            assert shutil.which("sh", path=os.pathsep.join(entries)) == system_sh
+
+    def test_execve_oserror_is_swallowed(self, tmp_path, monkeypatch, caplog):
         """Fail-safe: OSError from execve does not propagate."""
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
@@ -748,8 +847,31 @@ class TestMaybeReexec:
 
         monkeypatch.setattr(os, "execve", raise_oserror)
         monkeypatch.setattr(os, "chdir", MagicMock())
-        # Must NOT raise — the caller keeps booting
-        maybe_reexec(["gateway"])
+        log = logging.getLogger("test_live_target.reexec")
+        # Must NOT raise — the caller keeps booting, and says why.
+        with caplog.at_level(logging.WARNING, logger=log.name):
+            maybe_reexec(["gateway"], log=log)
+        messages = [r.getMessage() for r in caplog.records if r.name == log.name]
+        failed = [m for m in messages if m.startswith("live-target: could not execute ")]
+        assert len(failed) == 1, messages
+        assert failed[0].endswith(": exec failed")
+
+    def test_a_failed_exec_boots_from_the_directory_it_started_in(self, tmp_path, monkeypatch):
+        """An exec that fails falls back to the installed build, in its own cwd."""
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        start = tmp_path / "start"
+        start.mkdir()
+        monkeypatch.chdir(start)
+        monkeypatch.setattr(sys, "argv", ["/other/bin/kirocrew", "gateway"])
+        monkeypatch.delenv(EXEC_MARKER, raising=False)
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("exec failed")
+
+        monkeypatch.setattr(os, "execve", raise_oserror)
+        maybe_reexec(["gateway"], log=MagicMock())
+        assert Path(os.getcwd()).resolve() == start.resolve()
 
     def test_chdir_failure_warned_but_exec_still_happens(self, tmp_path, monkeypatch):
         """A cwd we cannot enter is warned, not fatal — the exec still fires."""

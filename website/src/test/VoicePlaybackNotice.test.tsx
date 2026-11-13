@@ -70,6 +70,17 @@ describe('voice playback error notice', () => {
     expect(recentErrors()[0]).toMatchObject({ code: 'voice_consent_required', endpoint: '/api/voice/synthesize' })
   })
 
+  it('names an Amazon Polly rejection instead of the generic failure', () => {
+    renderNotice('chat-a')
+    act(() => { reportVoiceFailure({ slot: 'chat-a', code: 'voice_polly_rejected' }) })
+    const notice = screen.getByTestId('voice-playback-error')
+    expect(notice).toHaveTextContent(
+      'Amazon Polly does not offer the selected voice or engine in the selected AWS region. In the Text-to-speech settings, pick a different Voice, Engine, or Region.',
+    )
+    expect(notice).not.toHaveTextContent('Read aloud failed')
+    expect(recentErrors()[0]).toMatchObject({ code: 'voice_polly_rejected', endpoint: '/api/voice/synthesize' })
+  })
+
   it('keeps errors and retry cleanup scoped to the visible conversation', () => {
     const { rerender } = renderNotice('chat-a')
     emit('voice-error', 'chat-b')

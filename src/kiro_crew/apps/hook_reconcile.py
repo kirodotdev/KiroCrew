@@ -149,6 +149,18 @@ def _clear_inflight(app_name: str, task: asyncio.Task) -> None:
         _inflight_app_tasks.pop(app_name, None)
 
 
+def _prune_inflight_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop per-app tasks bound to a loop other than the running one.
+
+    The registry outlives its loop (a test loop per test). A task whose loop was
+    torn down never finishes and never runs :func:`_clear_inflight`, so its app
+    would be skipped on every tick as still in flight.
+    """
+    for app_name, task in list(_inflight_app_tasks.items()):
+        if task.get_loop() is not loop:
+            del _inflight_app_tasks[app_name]
+
+
 # The gateway services an enable/disable needs, captured at watcher start so the
 # reconciler can build the same AppContext the boot and dashboard paths do.
 _cron_service: Any = None
@@ -504,6 +516,7 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
     # task is SKIPPED this tick (it is retried once the straggler finishes and its
     # done-callback clears the entry). At most one reconcile per app is ever live.
     app_tasks: dict[asyncio.Task, str] = {}
+    _prune_inflight_from_other_loops(asyncio.get_running_loop())
     for name in candidates:
         existing = _inflight_app_tasks.get(name)
         if existing is not None and not existing.done():
@@ -707,6 +720,7 @@ async def stop_hook_reconciler() -> None:
         # racing the sweep. Not cancelled (a teardown mid-on_shutdown must finish);
         # bounded so a genuine hang cannot exceed the shutdown budget -- process
         # exit reclaims it.
+        _prune_inflight_from_other_loops(asyncio.get_running_loop())
         inflight = [t for t in _inflight_app_tasks.values() if not t.done()]
         if inflight:
             try:

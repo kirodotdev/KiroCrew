@@ -12,6 +12,8 @@ refused with no second card. With the flag on the request is its card, as ever.
 from __future__ import annotations
 
 import asyncio
+import errno
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -299,6 +301,23 @@ def test_an_offer_is_reserved_once():
     assert mate_tool_access.entry(ORDINARY)["held"] == {"params": {}}
 
 
+def test_an_unreadable_store_refuses_the_offer_and_keeps_every_record(monkeypatch):
+    assert mate_tool_access.reserve_offer("other", {"params": {}}) is True
+    path = mate_tool_access._path()
+    before = path.read_bytes()
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    with pytest.raises(PermissionError):
+        mate_tool_access.reserve_offer(ORDINARY, {"params": {}})
+    assert path.read_bytes() == before
+
+
 def test_a_held_request_waits_for_its_own_crewmates_flag(off, proposals):
     """Raised from an apply, so the caller's flag check is made here."""
     seen, statuses = proposals
@@ -395,3 +414,13 @@ def test_the_off_prompts_ask_with_request_capabilities_as_before_the_preview():
         text = crewmate_prompts.text(key)
         assert "request_capabilities" in text and "find_capabilities" not in text
         assert "ask_tool_access" not in text
+
+
+def test_the_manual_identity_raises_the_opt_in_card_rather_than_a_profile_toggle():
+    """With Dynamic capabilities off, the mate must RAISE the opt-in card by calling
+    request_capabilities itself, not tell the user to go toggle it in their Profile
+    (the live miss: the mate listed a manual Profile step instead of the card)."""
+    text = crewmate_prompts.text("conductor.mate_tools_identity_manual")
+    assert "request_capabilities" in text
+    # It names the card as the on-switch and warns off the manual-Profile framing.
+    assert "do not tell the user to go turn Dynamic capabilities on in their Profile" in text

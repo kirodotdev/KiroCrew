@@ -2,6 +2,8 @@ import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from './types'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isNoteRow } from '../../lib/noteContract'
+import { isSystemNoticeRow } from './CompactionCard'
+import { injectOpensTurn } from './RecoveryCard'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT
  *  here: it carries real content and renders as its own standalone block (a
@@ -67,9 +69,87 @@ export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 's
 export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
 
 /**
+ * Whether a row starts a turn in the grouping: an opener role, or an `inject`
+ * row whose kind dispatched a turn of its own (`injectOpensTurn`: a cron
+ * delivery, an app message, an automation notice, a synthesis).
+ *
+ * A session driven by cron deliveries has no `user` rows between its turns.
+ * Without the inject branch, every row after its last typed prompt is one turn
+ * item, and the virtualizer mounts that item whole: thousands of rows in one
+ * commit on a long-running patrol session.
+ *
+ * A `recovery` or `user_replay` inject continues the turn above it, and an
+ * unstamped inject (a note, a hook or policy notice) dispatches nothing, so
+ * neither opens a turn here.
+ *
+ * Mirrored by `_orphan_in_current_turn` in
+ * `src/kiro_crew/dashboard/chat_handlers.py` (`_TURN_OPENER_ROLES` plus
+ * `TURN_OPENING_INJECT_KINDS`).
+ */
+export const opensDisplayTurn = (msg: ChatMessage): boolean =>
+  TURN_OPENER_ROLES.has(msg.role) || injectOpensTurn(msg)
+
+/**
+ * A steer the turn never took, whose own queued turn has since written a fresh
+ * row with the same text (`steerState: 'superseded'`, see `chat_delivery.py`).
+ * The row stays in the transcript for history; drawing it would show the
+ * message twice. A `user` row is a person's or a peer's steer, and a `nudge`
+ * row is an automation steer (a work-ledger wake).
+ */
+export function isSupersededSteerRow(m: ChatMessage): boolean {
+  const meta = m.meta as { steer?: unknown; steerState?: unknown } | undefined
+  return (m.role === 'user' || m.role === 'nudge') && meta?.steer === true && meta.steerState === 'superseded'
+}
+
+/**
+ * The index of the row drawn in place of the superseded steer at `idx`, or -1
+ * when that row is not in `messages`.
+ *
+ * The server names the successor by `meta.supersededBy` (its `mid`,
+ * `superseded_steer._retire_superseded_steer_row`). An ID match also requires a
+ * non-steer row with the superseded row's own role and the same text. A caller
+ * can supply `mid`, and a fork can copy `supersededBy`. These checks prevent an
+ * unrelated row from replacing the copied steer: a `user` row never takes a
+ * `nudge` steer's place, and a `nudge` row never takes a `user` steer's place.
+ * Rows that fail the checks do not stop the scan.
+ *
+ * In a live tab the successor of a `user` steer is the row `queue_pop`
+ * rebuilt. It has no `mid` until a refresh, so the fallback is the first later
+ * non-steer row with the same role, no `mid` and the same text. The server
+ * supersedes a row only when the drained text equals it.
+ */
+export function supersededSuccessorIdx(messages: ChatMessage[], idx: number): number {
+  const row = messages[idx]
+  if (!row || !isSupersededSteerRow(row)) return -1
+  const next = (row.meta as Record<string, unknown> | undefined)?.supersededBy
+  if (typeof next !== 'string' || !next) return -1
+  for (let i = idx + 1; i < messages.length; i++) {
+    const m = messages[i]
+    const meta = m.meta as Record<string, unknown> | undefined
+    if (m.role === row.role && !meta?.steer && meta?.mid === next && m.content === row.content) return i
+  }
+  for (let i = idx + 1; i < messages.length; i++) {
+    const m = messages[i]
+    const meta = m.meta as Record<string, unknown> | undefined
+    if (m.role === row.role && !meta?.steer && !meta?.mid && m.content === row.content) return i
+  }
+  return -1
+}
+
+/**
+ * Whether the row at `idx` is left undrawn: a superseded steer whose successor
+ * is in the same list. The successor always comes later, so any view that cuts
+ * it off (a fork made above it, a bounded page) still draws the old row, the
+ * only copy of the text in that view.
+ */
+export function isHiddenSupersededSteer(messages: ChatMessage[], idx: number): boolean {
+  return supersededSuccessorIdx(messages, idx) >= 0
+}
+
+/**
  * The synthesis injection that closes a sub-agent fan-out.
  *
- * `_run_pending_synthesis` (chat_runner.py) appends this row before dispatching
+ * `_run_pending_synthesis` (chat_turn/queue_cycle.py) appends this row before dispatching
  * the one turn that folds every sub-agent's result into a single answer, and
  * stamps `meta.injectKind = 'synthesis'` on it. Its presence is therefore proof
  * that everything the agent emitted since the user's prompt was INTERIM: the
@@ -78,13 +158,15 @@ export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
  * Keyed on the meta, not on the prompt's text: the prose is a backend constant
  * that may be reworded, the meta key is a wire contract.
  */
-const isSynthesisInjection = (msg: ChatMessage): boolean =>
+export const isSynthesisInjection = (msg: ChatMessage): boolean =>
   msg.role === 'inject' &&
   (msg.meta as Record<string, unknown> | undefined)?.injectKind === 'synthesis'
 
 /**
- * The last assistant row of a COMPLETED turn, identified by the per-turn stats
- * the runner stamps on exactly that row (`_attach_turn_stats`, chat_runner.py).
+ * The row a turn that ENDED carries its per-turn stats on: its last
+ * assistant-role row for a completed turn (`_attach_turn_stats`), the newest
+ * reply the runner recorded for any other end (`_persist_partial_reply`,
+ * chat_turn/turn_reply_seams.py).
  *
  * This is how the region walk finds where a synthesis turn ENDED. A synthesis
  * row opens a turn whose answer is real, user-facing content no later synthesis
@@ -98,11 +180,65 @@ const isSynthesisInjection = (msg: ChatMessage): boolean =>
  * an answer still streaming. Both are handled by the caller degrading to the
  * previous behaviour (leave the region unfolded) rather than guessing a
  * boundary, because a wrong guess hides an answer behind a toggle that promises
- * a repeat below.
+ * a repeat below. A reply an error cut short DOES carry stats (the runner stamps
+ * every turn end), so where a `recovery` inject resumes that turn the answer
+ * runs on past it: see `answerEndIndex`.
  */
 export const isTurnEnd = (msg: ChatMessage): boolean =>
   msg.role === 'assistant' &&
   !!(msg.meta as Record<string, unknown> | undefined)?.turn_stats
+
+/** A `recovery` inject: the runner resuming the SAME turn after it ended
+ *  abnormally (`build_recovery_requeue`), not a prompt of its own. */
+export const isRecoveryInjection = (msg: ChatMessage): boolean =>
+  msg.role === 'inject' &&
+  (msg.meta as Record<string, unknown> | undefined)?.injectKind === 'recovery'
+
+/** A row that reports on the turn above it rather than starting anything: an
+ *  error card, or a system notice (`isSystemNoticeRow`: a compaction or
+ *  session-reload status row, written under the assistant role). */
+export const isTurnStatusRow = (msg: ChatMessage): boolean =>
+  msg.role === 'error' || isSystemNoticeRow(msg)
+
+/** An assistant-role envelope another writer appends into the window while a
+ *  turn runs: a workflow result (`kind` `workflow_result`) or a sub-agent
+ *  completion. The runner never records one as its reply, so after a stamped
+ *  answer it is neither the next reply nor the answer's end. */
+export const isEnvelopeRow = (msg: ChatMessage): boolean =>
+  msg.role === 'assistant' &&
+  ((msg.kind ?? (msg.meta?.kind as string | undefined)) === 'workflow_result' ||
+    isSubagentCompletionMessage(msg))
+
+/**
+ * Index in `items` of the row that ends a synthesis answer, or -1 when it cannot
+ * be located. A stamped reply ends the answer, and so does an error card or a
+ * system notice drawn after it before any other reply: it reports on the turn
+ * that wrote the answer, as the rows between them belong to it. Another
+ * writer's envelope in between is passed over. When the first reply-or-inject
+ * row after that is a `recovery` inject, the turn was cut short and resumed, the
+ * recovered remainder is still the answer, and the end is the next stamped
+ * reply. A resumed answer with no stamped reply yet has no locatable end. The
+ * runner's own status lines (an approval that timed out unattended, an agent
+ * switch) carry no marker, so one after the stamped answer reads as the next
+ * reply.
+ */
+function answerEndIndex(items: readonly TurnItem[]): number {
+  let end = -1
+  let resumed = false
+  for (let k = 0; k < items.length; k++) {
+    const t = items[k]
+    if (t.kind !== 'single') continue
+    if (end < 0 || resumed) {
+      if (isTurnEnd(t.msg)) { end = k; resumed = false }
+      continue
+    }
+    if (isRecoveryInjection(t.msg)) { resumed = true; continue }
+    if (isTurnStatusRow(t.msg)) { end = k; continue }
+    if (isEnvelopeRow(t.msg)) continue
+    if (t.msg.role === 'assistant' || t.msg.role === 'streaming' || t.msg.role === 'inject') return end
+  }
+  return resumed ? -1 : end
+}
 
 /**
  * An injected row that is NOT part of the fan-out, and whose presence therefore
@@ -122,12 +258,14 @@ export const isTurnEnd = (msg: ChatMessage): boolean =>
  * the fan-out toggle would hide content on the promise that something below
  * repeats it, which nothing does. An `mcp_app` row (an embedded MCP App's
  * ui/message delivery) is here for the same reason: the user's own click
- * landed it, and nothing in the fold repeats it.
+ * landed it, and nothing in the fold repeats it. A `workflow` follow-up is the
+ * same again: its answer is about a workflow run, not the fan-out; and so is a
+ * `heartbeat` prompt, whose answer is about the heartbeat task.
  *
  * `recovery` is deliberately NOT here: a tool-stall recovery inside a fan-out is
  * a continuation of the very work being folded.
  */
-const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app'])
+const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app', 'workflow', 'heartbeat'])
 const isForeignInjection = (msg: ChatMessage): boolean => {
   if (msg.role !== 'inject') return false
   if (isNoteRow(msg)) return true
@@ -205,6 +343,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // it, the user does not. One it CAN parse renders as a compact outcome row,
     // which is the only scrollback record that a wave's results arrived.
     if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+    if (isHiddenSupersededSteer(messages, i)) continue
     if (GROUPABLE.has(messages[i].role)) {
       if (!group.length) groupStart = i
       group.push(messages[i])
@@ -289,7 +428,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
    */
   const settlePendingSynthesisAnswer = () => {
     if (!pendingSynthesisAnswer) return
-    const end = turnItems.findIndex(t => t.kind === 'single' && isTurnEnd(t.msg))
+    const end = answerEndIndex(turnItems)
     if (end >= 0) {
       flushTurn(turnItems.slice(0, end + 1), true)
       turnItems = turnItems.slice(end + 1)
@@ -342,8 +481,10 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // turn's prompt. Without this it gets swallowed into the previous turn's
     // collapsed step group and the cycle chip disappears. A sub-agent
     // completion is the same case: the gateway injects it as the next turn's
-    // input, so the agent's reply belongs BELOW the card, not beside it.
-    if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
+    // input, so the agent's reply belongs BELOW the card, not beside it. A
+    // turn-dispatching inject (a cron delivery, an app message) is the same
+    // case again: it is the prompt of the turn below it.
+    if (item.kind === 'single' && opensDisplayTurn(item.msg)) {
       // A `subagent` completion opener flushes the open batch WITHOUT resetting
       // the region (the completions are part of the interim work), so an answer
       // still sitting in that batch has to be settled here too -- otherwise it
@@ -354,12 +495,18 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       turns.push(item)
       // A user/nudge prompt begins a fresh interim region; a sub-agent
       // completion belongs to the one already open.
-      if (item.msg.role !== 'subagent') {
+      if (item.msg.role !== 'subagent' && item.msg.role !== 'inject') {
         regionStart = turns.length
         regionHasForeign = false
         // The prompt ends the previous fan-out outright: any synthesis answer it
         // left behind is now in a region no later fold can reach.
         pendingSynthesisAnswer = false
+      } else if (isForeignInjection(item.msg)) {
+        // An inject opener stays in the open region, as it did before it
+        // opened a turn: a cron reply drained mid-wave is still not something
+        // the synthesis restates. The settle above re-derives the flag from the
+        // rows it kept, which do not include this row, so set it again.
+        regionHasForeign = true
       }
       continue
     }

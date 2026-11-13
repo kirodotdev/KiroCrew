@@ -23,8 +23,6 @@ from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp.skill_projection_parts.side_files import (
     _LEGACY_ALIAS_NAME_RE,
     _PROJECTION_LEASE_MAX_BYTES,
-    _metadata_dirs,
-    _path_exists,
     _projection_metadata_dir,
 )
 from kiro_crew.acp.skill_projection_parts.view_publication import _ALIAS_DESCRIPTION_MAX_CHARS
@@ -249,19 +247,8 @@ def _is_legacy_projected_view(path: Path, alias_raw: bytes) -> bool:
 def _managed_metadata_for_alias(
     directory: Path, path: Path, alias_raw: bytes
 ) -> tuple[dict[str, Any], Path | None, tuple[int, int] | None, bytes | None] | None:
-    """Load the ownership record bound to the alias at *path*, from either records dir.
-
-    This home's own metadata directory is consulted first, then the legacy one in
-    *directory* (:func:`_metadata_dirs`). A directory that HAS an entry by that
-    name decides: a record there that does not bind these bytes is ``None`` and
-    the legacy directory is not consulted, so a stale legacy record can never
-    stand in for a current one that failed to bind. Only an ABSENT entry falls
-    through to the next directory.
-    """
-    for metadata_dir in _metadata_dirs(directory):
-        if _path_exists(metadata_dir / f"{path.stem}.json"):
-            return _managed_metadata_in(metadata_dir, path, alias_raw)
-    return None
+    """Load the ownership record bound to the alias at *path* from this home's records."""
+    return _managed_metadata_in(_projection_metadata_dir(), path, alias_raw)
 
 
 def _managed_metadata_in(
@@ -328,23 +315,17 @@ def _sidecar_record(
     this does not bind the record to alias bytes: it answers who wrote the
     record, for the two callers that need exactly that -- a pair whose alias
     bytes moved, and a sidecar whose alias is gone.
-
-    Reads this home's records directory first and the legacy one in *directory*
-    second (:func:`_metadata_dirs`); the first directory that has ANY entry by
-    that name answers, and the returned ``path`` is in that directory.
     """
-    for metadata_dir in _metadata_dirs(directory):
-        answer = _sidecar_record_in(metadata_dir, stem)
-        if answer[2] is not None:
-            return answer
-    # Absent everywhere: the path names where this home WOULD record it.
-    return None, _projection_metadata_dir() / f"{stem}.json", None
+    return _sidecar_record_in(_projection_metadata_dir(), stem)
 
 
 def _sidecar_record_in(
     metadata_dir: Path, stem: str
 ) -> tuple[dict[str, Any] | None, Path, tuple[int, int] | None]:
     """:func:`_sidecar_record` over ONE records directory."""
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     path = metadata_dir / f"{stem}.json"
     directory_info = pinned_fs.lstat_by_name(metadata_dir)
     if directory_info is None:
@@ -363,7 +344,7 @@ def _sidecar_record_in(
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
             opened = os.fstat(fd)
-            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+            raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
         finally:
             os.close(fd)
     except OSError:

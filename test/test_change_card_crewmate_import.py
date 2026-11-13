@@ -186,7 +186,7 @@ def test_import_shares_the_create_state_read_and_partial_line():
     line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
     assert (
         line
-        == "Created mate “Q” without its goal or anything after it. Undo removes the mate and what was saved"
+        == "Created Bot “Q” without its goal or anything after it. Undo removes the Bot and what was saved"
     )
 
 
@@ -218,6 +218,7 @@ def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(
         app = change_cards_helpers._app(world, store)
         app.router.add_post("/api/agents", create)
         app.router.add_delete("/api/agents/{name}", delete)
+        app.router.add_delete("/api/agents/b64/{name_b64}", delete)
         async with TestClient(TestServer(app)) as c:
             sdk = CrewmateSDK("share", app)
             bundle = {**_with("goals", {}), "crons": []}
@@ -240,5 +241,12 @@ def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(
     assert rec["slot_key"] == routes.APP_SLOT_PREFIX + "share" and rec["session_key"] == ""
     # The bundle's name is taken, so the card proposes the first free one.
     assert rec["params"]["name"] == "Release Captain 2"
-    assert seen == ([], {"status": "pending"}, 403, 200, "/api/agents/Release%20Captain%202", 200)
+    assert seen == (
+        [],
+        {"status": "pending"},
+        403,
+        200,
+        "/api/agents/b64/UmVsZWFzZSBDYXB0YWluIDI",
+        200,
+    )
     assert modes == ["normal"] and guarded == ["m1"] and rec["status"] == "undone"

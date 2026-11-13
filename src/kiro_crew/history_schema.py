@@ -27,6 +27,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "last_consolidated",
         "closed",
         "closed_at",
+        "closed_id",
         "memory_mode",
         "title",
         "agent",
@@ -101,10 +102,16 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "color_theme",
         "tags",
         "forked_from",
+        "forked_from_created_at",
         "linked_session_key",
         "tab_id",
     }
 )
+
+#: The app whose page embed began a conversation through a person's send. Written once,
+#: on that conversation's first line, and owned by no rebuilding writer, so every save
+#: carries it forward; uninstalling the app reads it (``app_conversation_keys``).
+EMBED_APP_META_KEY = "embed_app"
 
 # The subset of :data:`SLOT_OWNED_META_KEYS` a ROWS-ONLY slot save still owns.
 #

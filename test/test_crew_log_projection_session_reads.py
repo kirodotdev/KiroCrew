@@ -1,10 +1,7 @@
 """Reading a session's crew log: ``fold_session``, bundle reuse and unit order.
 
-One pass serves every projection, an incremental read refuses a log that moved
-backward or was rewritten under it, a bundle is reused only for the file it was
-folded from, and a slot's units fold in succession order rather than by the header
-clock. Shared logs, entries and fixture writers live in
-``crew_log_projection_helpers.py``.
+A bundle is reused only for the file it was folded from, and units fold in succession
+order, not header clock. Shared fixtures live in ``crew_log_projection_helpers.py``.
 """
 
 from __future__ import annotations
@@ -40,7 +37,7 @@ def owned_log():
         handle.release_ownership()
 
 
-# --- reading a session ----------------------------------------------------
+# reading a session
 
 
 def test_a_session_with_no_crew_log_folds_to_the_empty_projections():
@@ -73,13 +70,8 @@ def test_fold_session_continues_from_an_earlier_bundle():
 def test_fold_session_incremental_refuses_a_backward_seq_like_a_fold_from_the_start(owned_log):
     """A non-advancing seq in the tail refuses BOTH ways -- never one way only.
 
-    The append-only writer cannot produce a duplicate or backward seq, so one
-    in the file is external damage. A fold from the start refuses it in
-    ``advance``. Without the walked-entry guard, an incremental read drops the
-    record below its resume seq unexamined and folds on -- two reads of the
-    same bytes disagree and a reader cannot tell which answer it is getting.
-    The guard in ``iter_from`` makes the incremental read refuse the same
-    damage with the same code.
+    A full fold refuses it in ``advance``; the guard in ``iter_from`` makes an
+    incremental read refuse it with the same code instead of skipping the record.
     """
     handle = owned_log
     _opened(handle)
@@ -409,13 +401,9 @@ def test_a_ref_on_a_session_entry_is_left_to_the_page_path():
 def test_fold_session_rebuilds_when_the_bundle_origin_does_not_match_the_file():
     """A bundle whose origin differs from the current file is not reused.
 
-    This is the removed-and-recreated case that has already grown PAST the cached
-    seq: the seq guard (``since.last_seq <= last_seq``) passes because the file is
-    longer than the stale bundle, so without the file-identity check the old
-    file's state would be folded over the new file's bytes. A recreated log has a
-    different origin (a fresh ``created_at`` and/or inode), so the reuse is
-    refused and the fold rebuilds from the start. Filesystem-free so it behaves
-    the same on every platform.
+    A recreated log longer than the cache passes the seq guard
+    (``since.last_seq <= last_seq``), so only the origin check stops the reuse.
+    Filesystem-free so it behaves the same on every platform.
     """
     handle = _log()
     _opened(handle)
@@ -459,12 +447,8 @@ def test_fold_session_reuses_the_bundle_when_the_file_is_the_same():
 def _rewrite_in_place(target, lines: list[str]) -> None:
     """Replace *target*'s whole content, keeping its device and inode.
 
-    A removal and a create would hand the new file a new inode on most runs, and
-    then device and inode refuse the reuse on their own -- so a test written that
-    way is decided by whether the filesystem recycled the inode, and passes
-    without the identity it means to exercise. Truncating in place is the
-    recycled-inode case made deterministic: same device, same inode, different
-    file. The assertion below is what keeps it that way.
+    A remove and create usually yields a new inode, which refuses the reuse by itself.
+    Truncating in place makes the recycled-inode case deterministic; the assert holds it.
     """
     before = target.stat()
     with target.open("w", encoding="utf-8") as handle:
@@ -480,11 +464,7 @@ def _rewrite_in_place(target, lines: list[str]) -> None:
 def test_the_file_identity_reads_the_creation_stamp_from_disk_not_from_the_handle():
     """A handle's own header describes the file that existed when it was opened.
 
-    The identity exists to separate a recreated log from the one a reader started
-    on. Taken from the open handle, the stamp cannot do that: it is parsed once at
-    open and keeps answering for the replaced file, leaving device and inode as the
-    only live signal -- and those agree whenever the new file landed on the freed
-    inode, which is the common case. Here they are held IDENTICAL on purpose, so
+    The handle's stamp is parsed once at open. Device and inode are held identical, so
     only a stamp read from disk can tell the two files apart.
     """
     handle = _log()
@@ -506,12 +486,8 @@ def test_the_file_identity_reads_the_creation_stamp_from_disk_not_from_the_handl
 def test_a_log_recreated_under_a_held_handle_is_folded_again_rather_than_spliced():
     """The caller passes its handle back in, so the reuse must not trust it.
 
-    ``fold_session`` takes ``log=`` from a caller that already holds one, which is
-    what makes this reachable without any race: the handle was opened before the
-    recreation, so a stamp read from it still names the retired file. The seq guard
-    passes because the new file is longer, so nothing else stands between the old
-    file's folded state and the new file's bytes -- the totals below are the old
-    turn plus part of the new ones, a number no file on disk ever held.
+    The ``log=`` handle predates the recreation and the new file is longer, so a splice
+    would total the old turn plus part of the new ones.
     """
     handle = _log()
     _opened(handle)
@@ -542,19 +518,14 @@ def test_a_log_recreated_under_a_held_handle_is_folded_again_rather_than_spliced
     assert rebuilt.origin is not None and rebuilt.origin != first.origin
 
 
-# --- the order a slot's units fold in -------------------------------------
+# the order a slot's units fold in
 
 
 def test_usage_units_order_by_succession_not_wall_clock(monkeypatch):
     """MUTATION-SENSITIVE: a clock rollback must not invert two units of one slot.
 
-    Unit ``b`` REPLACED unit ``a`` (its ``session/opened`` names ``a`` as its
-    predecessor), so ``b`` is the newer unit and its rows must fold LAST -- the fold
-    applies a later unit over an earlier one. But the clock stepped backward before
-    ``b`` was created, so ``b``'s header ``createdAt`` (100) is SMALLER than ``a``'s
-    (200). A wall-clock sort would put ``b`` first, land its rows at the front of the
-    per-turn window, and the front-trim would evict the newest unit's rows. Ordering
-    by the durable ``previous_sid`` succession chain keeps ``b`` last regardless.
+    ``b`` replaced ``a`` but has the smaller ``createdAt`` (100 vs 200). A clock sort
+    would put ``b`` first, and the front-trim would evict the newest rows.
     """
     created = {"a": 200, "b": 100}
     previous = {"a": None, "b": "a"}
@@ -567,13 +538,8 @@ def test_usage_units_order_by_succession_not_wall_clock(monkeypatch):
 def test_usage_units_keep_disconnected_chains_contiguous(monkeypatch):
     """Two UNRELATED chains fold each as a contiguous run, ordered by root createdAt.
 
-    A slot can hold two chains the ``previous_sid`` links never relate -- a session
-    recreated after its predecessor's log was pruned, two logs whose link was never
-    written. Chain B is b0->b1->b2 (three deep); chain A is a0->a1 (two deep) and its
-    root was created FIRST. Ordering by depth alone would interleave them
-    (a0,b0,a1,b1,b2) and split each chain's predecessor edges apart. The order must be
-    chain-contiguous -- A's whole run then B's whole run -- with the runs ordered by
-    their roots' ``createdAt``, so every ``previous_sid`` edge stays adjacent.
+    Unrelated chains appear when a predecessor log was pruned. Ordering by depth would
+    interleave a0->a1 and b0->b1->b2 and split their ``previous_sid`` edges.
     """
     # a-root created before b-root; within each chain the header clock is irrelevant.
     created = {"a0": 100, "a1": 500, "b0": 200, "b1": 50, "b2": 300}

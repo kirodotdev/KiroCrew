@@ -22,6 +22,9 @@ from typing import Any
 
 from kiro_crew import mcp_core
 from kiro_crew.knowledge import store as knowledge_store
+from kiro_crew.mcp_tools.catalog.knowledge import (  # noqa: F401
+    schemas,
+)
 from kiro_crew.validation import (
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
     KNOWLEDGE_DEDUP_SCHEMA,
@@ -31,165 +34,31 @@ from kiro_crew.validation import (
 )
 
 
-def schemas() -> list[dict[str, Any]]:
-    """Descriptors for the knowledge tools."""
-    return [
-        {
-            "name": "local_knowledge_search",
-            "description": (
-                "Search the user's knowledge library. Call ONLY when the user's "
-                "message contains one of these explicit signals:\n"
-                "- Asks 'what do we know about X' or 'check knowledge for X'\n"
-                "- References a specific document, wiki, or stored content by name\n"
-                "- Says 'in my docs', 'in my notes', 'according to our knowledge'\n"
-                "- Asks a factual question AND mentions a topic you know is in "
-                "their knowledge base\n\n"
-                "Do NOT call for: general coding questions, file operations, "
-                "debugging, or any task you can answer from context alone."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query to find relevant knowledge chunks",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": (
-                            "Max results to return (default 3, max 5). One extra "
-                            "result may be appended when an exact-keyword match "
-                            "would otherwise be dropped."
-                        ),
-                        "default": 3,
-                    },
-                    "source_id": {
-                        "type": "string",
-                        "description": (
-                            "Optional source ID to scope keyword/vector seeding "
-                            "to one knowledge source (graph traversal still "
-                            "surfaces cross-source connections). Discover valid "
-                            "IDs with knowledge_list_sources."
-                        ),
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": (
-                            "Optional namespace to scope keyword/vector seeding "
-                            "to documents filed under one organisational label "
-                            "(graph traversal still surfaces cross-namespace "
-                            "connections). This is a relevance filter, not a "
-                            "security boundary. Discover namespaces in the "
-                            "dashboard Knowledge panel; composes with source_id."
-                        ),
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-        {
-            "name": "knowledge_list_sources",
-            "description": (
-                "Read-only counts for the user's knowledge library: how many "
-                "sources, documents and items it holds in total, then one "
-                "'name — id (N items)' line per source. Use it to answer 'how "
-                "much is in my knowledge base', and to discover a valid "
-                "source_id before scoping local_knowledge_search to a single "
-                "source. It only counts -- it never rebuilds, repairs or "
-                "flushes anything."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-        {
-            "name": "knowledge_add_document",
-            "description": (
-                "Add a document you have READ during this task to the user's "
-                "knowledge library, so it stays searchable later. Use it for a "
-                "document that turned out to be load-bearing -- a design doc, "
-                "spec, RFC, runbook, or wiki page that explains intent, a "
-                "decision, or how something works, and that you would want to "
-                "find again in a future session.\n\n"
-                "It works only when the operator turned on "
-                "knowledge.auto_add_documents (off by default). A refusal naming "
-                "that key means it is off: tell the user, do not retry.\n\n"
-                "Pass the document TEXT you already have as `content` -- this tool "
-                "never opens files, so read the document with your own tools first, "
-                "then hand over the text. Also pass where it came from as "
-                "`source_uri` (the path or URL you read it from): that is what tells "
-                'two documents apart, so a second "README" does not silently '
-                "replace the first. Adding the same document twice is harmless: "
-                "identical content is refused, not duplicated.\n\n"
-                "Do NOT add: source code, agent instruction files (AGENTS.md, "
-                "SKILL.md), generated or machine-readable files, chat transcripts, "
-                "your own notes and summaries, or a page you only skimmed. When in "
-                "doubt, skip it -- a polluted library makes every future search "
-                "worse."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": (
-                            "Human-readable document title, as the user would " "recognise it."
-                        ),
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The document text, as you already have it.",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": (
-                            "One line on why this document is worth keeping. "
-                            "Recorded in the audit trail."
-                        ),
-                    },
-                    "source_uri": {
-                        "type": "string",
-                        "description": (
-                            "Where you read this document from -- a file path, "
-                            "URL, or any stable handle. This is the document's "
-                            "identity: re-adding the same source_uri replaces that "
-                            "document, and two documents with different URIs stay "
-                            "separate even when their titles match. Nothing here "
-                            "is opened or fetched -- it is only stored as a label. "
-                            "Required: without it two documents sharing a title "
-                            "would overwrite each other."
-                        ),
-                    },
-                },
-                "required": ["title", "content", "source_uri"],
-            },
-        },
-        {
-            "name": "knowledge_dedup",
-            "description": (
-                "Find and collapse cross-source duplicate documents in the Knowledge "
-                "Base (e.g. the same file uploaded directly AND synced via a folder). "
-                "Defaults to a DRY-RUN preview that lists which duplicate would be "
-                "deleted and which copy is kept, changing nothing. Pass apply=true to "
-                "perform the hard deletes. Use when the user asks to de-duplicate, "
-                "clean up, or preview duplicates in their knowledge base."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "apply": {
-                        "type": "boolean",
-                        "description": (
-                            "false (default) = dry-run preview, no changes. "
-                            "true = perform the hard deletes."
-                        ),
-                        "default": False,
-                    },
-                },
-            },
-        },
-    ]
+def _fetch_remote_results(query: str, limit: int, source_id: str | None) -> list[dict]:
+    """The Bedrock remote leg, via the gateway's internal route.
+
+    Runs in the GATEWAY process because this MCP server is sandboxed and the
+    sandbox seals ``aws_service_consent.json`` with an inode-pinning
+    self-bind: a host-side consent withdrawal (atomic rename) never becomes
+    visible in here, so an in-process consent read could keep authorizing
+    paid retrievals after the operator withdrew. Dialled through
+    :func:`mcp_core._post` — the shared gateway chokepoint every other MCP
+    tool uses — which owns target resolution, per-generation secret
+    handling, and the moved-gateway replay. Fail-OPEN to [] on any
+    transport or error payload — the remote leg's standing contract.
+    """
+    try:
+        payload = mcp_core._post(
+            "/api/knowledge/remote-search",
+            {"query": query, "limit": limit, "source_id": source_id},
+            timeout=10.0,
+        )
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or payload.get("error"):
+        return []
+    results = payload.get("results")
+    return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
 
 
 # Appended when the embedding model cannot serve this search, so the caller
@@ -266,6 +135,40 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     # Filter by minimum confidence score
     min_score = 0.012
     results = [r for r in results if r.get("score", 0) >= min_score]
+
+    # Remote leg: registered bedrock_kb sources are queried live (they hold
+    # no local items) under a hard timeout and fail OPEN -- local results
+    # stand alone when the remote side is slow, broken, or absent. The leg
+    # runs THROUGH THE GATEWAY, not in-process: this MCP server is sandboxed,
+    # and the sandbox seals the consent store with a file-level self-bind
+    # that PINS THE INODE -- a host-side withdrawal (atomic rename) would be
+    # invisible here, so an in-process consent read could authorize paid
+    # calls after consent was withdrawn. The gateway reads the live store.
+    # Fast path first: the sources TABLE is not consent data and this
+    # process already holds the store, so the common no-bedrock install
+    # skips the loopback hop entirely.
+    has_remote = False
+    try:
+        has_remote = (
+            store.db.execute(
+                "SELECT 1 FROM sources WHERE source_type = 'bedrock_kb' LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+    except Exception:
+        has_remote = False
+    # A namespace scope is an intersection over ``items.namespace``, and a
+    # bedrock_kb source holds no items (the store refuses them), so no remote
+    # hit can fall inside any namespace: the leg is skipped and the search
+    # answers from local results alone. A source_id scope keeps the leg --
+    # the gateway route applies that filter to the remote rows itself.
+    remote = (
+        _fetch_remote_results(query, limit, source_id) if has_remote and namespace is None else []
+    )
+    if remote:
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        results = bedrock_kb.merge_by_rank(results, remote, limit)
 
     if not results:
         mcp_core.sel().log_tool_invocation(

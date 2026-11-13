@@ -15,6 +15,16 @@ describe('fixStreamingFences', () => {
     ]) expect(fixStreamingFences(input)).toBe(input)
   })
 
+  it('leaves a fence indented under a list item in its item', () => {
+    const input = [1, 2].map(n => `${n}. Step ${n}:\n   \`\`\`bash\n   echo ${n}\n   \`\`\``).join('\n')
+    expect(fixStreamingFences(input)).toBe(input)
+  })
+
+  it('pairs an indented opening fence with a column-0 closing fence', () => {
+    const input = 'Text:\n  ```bash\necho\n```\nAfter'
+    expect(fixStreamingFences(input)).toBe(input)
+  })
+
   it('separates and closes a glued fence that is still streaming', () => {
     expect(fixStreamingFences('Here is code:```python\nprint(1)')).toBe('Here is code:\n\n```python\nprint(1)\n```')
   })

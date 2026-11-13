@@ -17,6 +17,10 @@ import { useInsideDialog } from './overlayRoot'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
+  /** The binding resolves to the crewmate's own mate file: `kiro_agent` equals
+   *  its key AND `mates/agents/<key>.json` exists. Computed by the server;
+   *  absent on catalog rows and older payloads. */
+  owns_mate_file?: boolean
   workspace: string
   memory_store: string
   /** This agent's own default model. '' means inherit (kiro template pin, then
@@ -50,6 +54,11 @@ export interface KiroCrewAgent {
   scope?: string
   /** Catalog rows only: defined in markdown, with no JSON spec for its name. */
   markdown_only?: boolean
+  /** Catalog member rows on the shared `default` store: the crewmate has setup
+   *  of its own this row does not carry (permanent rules, goals, a briefing, or
+   *  a harness, worker, approval or dynamic-capabilities choice). Computed by
+   *  the server; absent on other rows and older payloads. */
+  own_setup?: boolean
   /** Set by `useAgents` when this chat's harness cannot load the markdown spec. */
   markdown_block?: MarkdownBlock
 }

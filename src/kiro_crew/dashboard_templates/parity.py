@@ -224,21 +224,13 @@ _KNOWN_HTML: Final[frozenset[str]] = frozenset("""
 #: none of it. The binder matches on the attribute alone and fills it regardless, which
 #: makes a binding here reachable and invisible at the same time.
 #:
-#: Named as the spec's own category rather than one tag at a time. ``object`` and
-#: ``iframe`` are already in :data:`CONTROL_TAGS`, so a page carrying one is refused by the
-#: control reader too -- they are here so this reader agrees with itself rather than
-#: relying on its neighbour. ``embed`` needs no entry: it is void and already refused for
-#: holding no text at all.
-#: An ENUMERATION, not a set derived from one rule -- worth saying plainly, because the
-#: rest of this reader avoids enumerations for exactly the reason this one keeps growing.
-#: The spec marks this content fallback element by element, in each element's own content
-#: model, so there is no single list to read and no membership test a reader can compute.
+#: ``object`` and ``iframe`` are also in :data:`CONTROL_TAGS`; they are here so this
+#: reader agrees with itself. ``embed`` is void and already refused for holding no text.
 #:
-#: Left as an enumeration rather than inverted into an allow-list of elements that DO paint
-#: text, because that list is most of html: getting it wrong refuses a page the browser
-#: renders, which is worse than the miss here. A tag absent from this set costs one blank
-#: cell on a page under review; a tag wrongly absent from an allow-list costs every page
-#: that uses it.
+#: An ENUMERATION, because the spec marks fallback content element by element, with no
+#: single list to read. Not inverted into an allow-list of elements that DO paint text:
+#: that list is most of html, and a tag wrongly missing from it would refuse every page
+#: that uses it, while a tag missing here costs one blank cell on a page under review.
 _FALLBACK_TEXT_TAGS: Final[frozenset[str]] = frozenset(
     {"canvas", "audio", "video", "object", "iframe", "meter", "progress"}
 )
@@ -296,12 +288,9 @@ class _FieldScanner(HTMLParser):
         #: below never reaches into the parser's own bookkeeping.
         self.open_at_end: list[str] = []
         #: Whether the cursor is still inside the head. NOT read off the open-element
-        #: stack, and the strict end-tag rule below does not make it readable from there:
-        #: html reparents content the head may not hold into the BODY, so
-        #: ``<head><span data-dashboard-field=...></span></head>`` is well formed by every
-        #: rule here and the browser still binds that span. A stack read would refuse it.
-        #: This is a content-model question, not a nesting one, and it is answered with a
-        #: set this reader keeps for its own sake.
+        #: stack: html reparents content the head may not hold into the BODY, so
+        #: ``<head><span data-dashboard-field=...></span></head>`` is still bound by the
+        #: browser. A content-model question, answered with :data:`_HEAD_CONTENT`.
         self._head_depth = 0
         #: Every open element around the cursor as ``(tag, field or None)``, innermost
         #: last. A pair of counters cannot survive an unmatched ``</div>``: it pops a
@@ -318,13 +307,9 @@ class _FieldScanner(HTMLParser):
     def _in_foreign(self, tag: str) -> bool:
         """Is ``tag`` being read as foreign content -- svg or mathml?
 
-        Answered from the open-element stack rather than a depth counter, for the reason
-        the counter was replaced everywhere else in this scanner: an end tag matching
-        nothing open closes nothing, and a counter cannot tell. ``<svg></math><circle
-        data-dashboard-field=...>`` decremented a count that ``</math>`` never raised,
-        and the binding then read as ordinary html and was accepted. Unwinding the stack
-        cannot make that mistake -- the stray end tag finds no ``math`` open and leaves
-        the ``svg`` where it is.
+        Answered from the open-element stack, not a depth counter: in ``<svg></math>``
+        the stray ``</math>`` closes nothing, but a counter would drop out of foreign
+        content and accept the next binding as ordinary html.
         """
         if tag in _FOREIGN_ROOTS:
             return True
@@ -334,14 +319,10 @@ class _FieldScanner(HTMLParser):
         """Why the binder will never write to this element, or ``None`` if it will.
 
         Recording the binding anyway would make the equality gate PASS on a page whose
-        cell stays blank at every render -- the precise failure this whole package is
-        built to make impossible, reached through its own reader.
+        cell stays blank at every render.
 
-        The first question asked is whether the binder VISITS this element at all, rather
-        than whether the element is one of the kinds it is known to step over. Listing
-        what is skipped means every placement nobody listed is accepted, and the binder's
-        reach has a short definition: ``body.querySelectorAll`` walks the descendants of
-        the body, which excludes the body and the root themselves.
+        Asked first: does the binder VISIT this element? ``body.querySelectorAll`` walks
+        the body's descendants, which excludes the body and the root themselves.
         """
         if tag in _ROOTS:
             return (
@@ -478,21 +459,10 @@ class _FieldScanner(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         """Every end tag must close the innermost open element, and nothing else.
 
-        This is STRICTER than html, deliberately. html lets an author omit many end tags and
-        repairs a misnested one, so accepting what a browser accepts means modelling both: a
-        table of omission rules, the scope variant each end tag is resolved in, and an unwind
-        that notices which formatting elements a stray end tag crossed.
-
-        That machinery is declined because of what this reader is FOR. It runs at authoring
-        time on a page someone in this repository is writing, and its whole job is to say
-        where a binding lands. A tree builder is a lot of machinery to answer that, and its
-        failure mode is silent: a scope set slightly wrong reads a child as a sibling and
-        reports it in a precise sentence. This rule cannot be wrong about scope at all, and
-        the author's remedy is one end tag, named, on the line that needs it.
-
-        So a page that renders and is refused here is not a bug in the page. It is this gate
-        asking for markup a reader can follow without guessing, which a dashboard page can
-        always supply.
+        STRICTER than html on purpose. Accepting what a browser accepts means modelling
+        end-tag omission, scope variants and misnest repair, and a tree builder that gets
+        scope slightly wrong reads a child as a sibling silently. This rule cannot be
+        wrong about scope, and the author's fix is one named end tag.
         """
         tag = tag.lower()
         if tag == _HEAD and self._head_depth:
@@ -634,9 +604,7 @@ def dropped_text_attributes(html: str) -> set[tuple[str, str]]:
     return _scan(html).dropped_text
 
 
-# --------------------------------------------------------------------------
-# the contract end
-# --------------------------------------------------------------------------
+# The contract end
 
 
 def _is_typed_dict(annotation: Any) -> bool:

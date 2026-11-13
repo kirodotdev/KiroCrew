@@ -152,9 +152,10 @@ class S3TranscriptReader:
     boto3-shaped exceptions the tests would have to imitate here.
     """
 
-    def __init__(self, bucket: str, *, client=None) -> None:
+    def __init__(self, bucket: str, *, client=None, expected_owner: str | None = None) -> None:
         self._bucket = bucket
         self._client = client
+        self._expected_owner = expected_owner
 
     def _ensure_client(self):
         if self._client is None:
@@ -162,6 +163,12 @@ class S3TranscriptReader:
 
             self._client = boto3.client("s3")
         return self._client
+
+    def _owner(self) -> str:
+        """The task's own account, resolved once and sent as ``ExpectedBucketOwner``."""
+        if self._expected_owner is None:
+            self._expected_owner = objects.caller_account()
+        return self._expected_owner
 
     def get(self, key: str) -> bytes:
         """Fetch one object, bounded twice.
@@ -172,7 +179,9 @@ class S3TranscriptReader:
         A header is not a bound, which is the same reason the request-body limit on the
         turn route does not trust ``Content-Length`` either.
         """
-        resp = self._ensure_client().get_object(Bucket=self._bucket, Key=key)
+        resp = self._ensure_client().get_object(
+            Bucket=self._bucket, Key=key, ExpectedBucketOwner=self._owner()
+        )
         declared = resp.get("ContentLength")
         if isinstance(declared, int) and declared > MAX_TRANSCRIPT_BYTES:
             raise TranscriptTooLarge(

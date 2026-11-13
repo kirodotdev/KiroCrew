@@ -17,19 +17,29 @@ the base itself, by lineage rather than by ancestry:
 * the first prerelease of a line compares against the highest stable tag below
   its base, which is what that line adds over the last stable release.
 
-Tags are read with ``scripts/check_feed_advance.py::parse_version``, the parser
-the publish jobs already use, so both agree on which spellings are release tags
-and on a prerelease's number (the text after its last dot). Other names are
-ignored. When there is no candidate the output is empty, and the release action
-falls back to GitHub's own choice.
+Candidates are the repository's GitHub RELEASES, not its tag refs. A
+prerelease run that fails before the release page is created leaves its tag
+behind; counted as a base, it would start the next prerelease's notes from a
+version nobody saw, and the pull requests merged before it would appear on no
+page at all. So:
 
-Every tag that parses is a candidate, including a prerelease tag whose release
-run failed and published no page; the next prerelease's notes then start from
-that tag. The notes stay editable on the release page; issue #25077 tracks
-reading published releases instead of tag refs.
+* a prerelease is a candidate only when its release is PUBLISHED. Prerelease
+  pages are published on create, so a prerelease with no page, or with a draft
+  one, never shipped;
+* a stable release is a candidate whether it is published or still a DRAFT.
+  A stable page is created as a draft and published later by
+  record-stable-promotion, so the next release can be created while the
+  previous stable is still a draft; skipping drafts would skip that stable.
 
-Usage: ``release_previous_tag.py <tag>`` with the repository's tag names, one
-per line (``refs/tags/`` prefixes allowed), on stdin. Prints the chosen tag.
+Names are read with ``scripts/check_feed_advance.py::parse_version``, the
+parser the publish jobs already use, so both agree on which spellings are
+release tags and on a prerelease's number (the text after its last dot). Other
+names are ignored. When there is no candidate the output is empty, and the
+release action falls back to GitHub's own choice.
+
+Usage: ``release_previous_tag.py <tag>`` with one release per line on stdin,
+``<tag name> <published|draft>`` (a ``refs/tags/`` prefix is allowed). A line
+in any other shape is not a candidate. Prints the chosen tag.
 """
 
 from __future__ import annotations
@@ -76,12 +86,38 @@ def parse_tag(name: str) -> ReleaseTag | None:
     )
 
 
-def previous_tag(current: str, tags: Iterable[str]) -> str:
+class Release(NamedTuple):
+    tag: str
+    draft: bool
+
+
+RELEASE_STATES = {"published": False, "draft": True}
+
+
+def parse_releases(text: str) -> list[Release]:
+    """Read ``<tag> <published|draft>`` lines; any other line is dropped."""
+    releases = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1] in RELEASE_STATES:
+            releases.append(Release(tag=fields[0], draft=RELEASE_STATES[fields[1]]))
+    return releases
+
+
+def candidate(release: Release) -> ReleaseTag | None:
+    """The release as a possible base: any stable page, or a published prerelease."""
+    tag = parse_tag(release.tag)
+    if tag is None or (release.draft and tag.number is not None):
+        return None
+    return tag
+
+
+def previous_tag(current: str, releases: Iterable[Release]) -> str:
     """Return the tag *current*'s notes compare against, or "" when none fits."""
     this = parse_tag(current)
     if this is None:
         return ""
-    known = [tag for tag in (parse_tag(name) for name in tags) if tag is not None]
+    known = [tag for tag in (candidate(release) for release in releases) if tag is not None]
     if this.number is not None:
         same_line = [
             tag
@@ -96,9 +132,12 @@ def previous_tag(current: str, tags: Iterable[str]) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print("usage: release_previous_tag.py <tag>  (tag names on stdin)", file=sys.stderr)
+        print(
+            "usage: release_previous_tag.py <tag>  ('<tag> <published|draft>' lines on stdin)",
+            file=sys.stderr,
+        )
         return 2
-    print(previous_tag(argv[1], sys.stdin.read().split()))
+    print(previous_tag(argv[1], parse_releases(sys.stdin.read())))
     return 0
 
 

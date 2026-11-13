@@ -12,6 +12,8 @@ from aiohttp.test_utils import make_mocked_request
 import kiro_crew.config.loader as loader
 from kiro_crew.secrets import SecretVault
 
+SHARED_CONFIG_HANDLER_CHECKS = ("save_rejects_non_numeric_user_ids", "soft_threshold_bounds")
+
 
 def _vault_value(env: Path, key: str) -> str | None:
     """The vault secret a channel save stored beside *env* under *key*."""
@@ -153,16 +155,6 @@ def test_save_proceeds_with_warning_when_telegram_unreachable(tmp_path: Path, mo
     assert _vault_value(env, "TELEGRAM_BOT_TOKEN") == VALID_TOKEN
 
 
-def test_save_rejects_non_numeric_user_ids(tmp_path: Path, monkeypatch) -> None:
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    _accept_token(monkeypatch, mod)
-    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": ["@username"]})
-    status, body = status_body
-    assert status == 400
-    assert "numeric" in body["error"]
-
-
 def test_clear_also_removes_legacy_config_token(tmp_path: Path, monkeypatch) -> None:
     """Clearing the token must also drop config.json's legacy telegram.bot_token.
 
@@ -293,18 +285,6 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
     assert status_body[1]["restart_required"] is True
 
 
-def test_soft_threshold_bounds(tmp_path: Path, monkeypatch) -> None:
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    _accept_token(monkeypatch, mod)
-    for bad in (0, 101, "80", True):
-        status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad})
-        assert status_body[0] == 400, f"soft_threshold_pct={bad!r} should be rejected"
-        # A machine-readable code, not prose only: the dashboard renders `error`
-        # verbatim into a localized UI, so prose alone is untranslatable.
-        assert status_body[1]["code"] == "soft_threshold_pct_invalid"
-
-
 def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     """GET returns presence + masked preview, never the raw token."""
     import kiro_crew.dashboard.handlers.messaging as mod
@@ -433,3 +413,34 @@ def test_save_survives_wrong_typed_stored_allow_list(tmp_path: Path, monkeypatch
     assert status == 200
     saved = json.loads(cfg.read_text(encoding="utf-8"))
     assert saved["telegram"]["allowed_user_ids"] == [555]
+
+
+def test_validate_token_non_bot_api_reply_is_unverifiable(monkeypatch) -> None:
+    """A proxy's empty 502 or ok-less JSON error is not Telegram's
+    rejection; the validator raises so the save proceeds with a warning."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from kiro_crew.dashboard.messaging_api.telegram_settings import _validate_telegram_token
+
+    async def _run(reply) -> None:
+        app = web.Application()
+        app.router.add_get("/bot{token}/getMe", reply)
+        async with TestServer(app, host="127.0.0.1") as srv:
+            monkeypatch.setenv(
+                "TELEGRAM_API_BASE_URL", f"http://127.0.0.1:{srv.port}/bot{{token}}/{{method}}"
+            )
+            try:
+                result = await _validate_telegram_token("123:abc")
+            except ConnectionError:
+                return
+            raise AssertionError(f"read as rejected: {result!r}")
+
+    async def _empty(_request):
+        return web.Response(status=502)
+
+    async def _ok_less(_request):
+        return web.json_response({"message": "Internal server error"}, status=500)
+
+    asyncio.run(_run(_empty))
+    asyncio.run(_run(_ok_less))

@@ -10,10 +10,9 @@ apply and the shutdown wait.
 from __future__ import annotations
 
 import asyncio
-import logging
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
@@ -22,8 +21,6 @@ from slack_gateway_helpers import (
     _mock_dashboard_state,
 )
 from wheel_update_test_helpers import ARTIFACT_BASE, FEED_BASE, wire_wheel_apply
-
-from kiro_crew.slack import gateway as gw
 
 
 class TestWheelAutoApplyRefusals:
@@ -131,8 +128,9 @@ class TestWheelAutoApplyUsesTheShadowEngine:
     """
 
     @pytest.mark.asyncio
-    async def test_applies_through_the_engine_with_admission_open_then_restarts(self, monkeypatch):
-        from kiro_crew.platform.wheel_engine import ApplyCancel, respawn_executable
+    async def test_applies_through_the_engine_with_admission_open_then_stages(self, monkeypatch):
+        from kiro_crew import update_restart_ready
+        from kiro_crew.platform.wheel_engine import ApplyCancel
 
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
@@ -149,9 +147,6 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         wire_wheel_apply(monkeypatch, apply=engine_mock)
         spawn = AsyncMock()
         monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
-        restart = AsyncMock()
-        monkeypatch.setattr(orch, "_restart_after_update", restart)
-        monkeypatch.setattr(orch, "_finish_auto_update_apply", AsyncMock())
         monkeypatch.setattr(orch, "_in_flight_work_counts", lambda: (0, 0))
 
         await orch._auto_apply_wheel_update("stable", "9.9.9")
@@ -162,8 +157,10 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         assert (kwargs["feed_base"], kwargs["artifact_base"]) == (FEED_BASE, ARTIFACT_BASE)
         assert isinstance(kwargs["cancel"], ApplyCancel)
         assert paused_during_build == [False], "turns must keep running while the tree builds"
-        sessions.pause_turn_admission_for_update.assert_awaited_once()
-        restart.assert_awaited_once_with(respawn_executable)
+        # The promoted tree waits for a restart a person chooses: nothing pauses, nothing execs.
+        sessions.pause_turn_admission_for_update.assert_not_awaited()
+        note = update_restart_ready.current()
+        assert note is not None and note.version == "9.9.9"
 
     @pytest.mark.asyncio
     async def test_a_promotion_the_restart_cannot_reach_never_restarts(self, monkeypatch):
@@ -174,58 +171,47 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
         wire_wheel_apply(monkeypatch, reaches=False)
-        restart = AsyncMock()
-        monkeypatch.setattr(orch, "_restart_after_update", restart)
 
         await orch._auto_apply_wheel_update("stable", "9.9.9")
         await orch._auto_apply_wheel_update("stable", "9.9.9")
 
-        restart.assert_not_awaited()
-        assert orch._pending_update_respawn is None, "no restart is left pending either"
         ds.notify.assert_called_once()
         assert "Re-run the installer" in ds.notify.call_args.args[2]
 
     @pytest.mark.asyncio
-    async def test_a_mandatory_apply_keeps_its_grace_on_every_restart_retry(self, monkeypatch):
+    @pytest.mark.parametrize("mandatory", [False, True], ids=["routine", "floor"])
+    async def test_unattended_installs_turned_off_mid_build_stop_only_a_routine_swap(
+        self, monkeypatch, mandatory
+    ):
+        """The tree builds, then the policy decides at the swap: a routine install
+        defers (the next cycle only notifies); a floor's mandatory update promotes
+        and is staged, with no restart either way."""
+        from kiro_crew import update_restart_ready
+
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
-        wire_wheel_apply(monkeypatch)
-        prepare = AsyncMock(return_value=False)  # busy: the restart is retried later
-        monkeypatch.setattr(orch, "_prepare_auto_update_apply", prepare)
 
-        await orch._auto_apply_wheel_update("stable", "9.9.9", mandatory=True, mandatory_key="k")
-        await orch._retry_pending_update_restart()  # the coordinator loop's bare retry
+        def engine(**kwargs):
+            kwargs["before_promote"]()
+            return Path("/x/crew-venv-9.9.9")
 
-        assert prepare.await_args_list == [
-            call(mandatory=True, mandatory_key="k"),
-            call(mandatory=True, mandatory_key="k"),
-        ]
+        wire_wheel_apply(monkeypatch, apply=MagicMock(side_effect=engine))
+        monkeypatch.setattr(
+            "kiro_crew.platform.wheel_apply.snapshot_memory_before_update", lambda: (1, "")
+        )
+        monkeypatch.setattr("kiro_crew.memory_backup.newest_backup", lambda *a: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: False
+        )
 
-    @pytest.mark.asyncio
-    async def test_the_mandatory_grace_warning_fires_across_real_retries(self, monkeypatch, caplog):
-        """Two retries of a deferred mandatory restart, 601 s apart: the grace
-        warning fires, because the deferral clock is not restarted by a retry."""
-        orch = _make_orchestrator()
-        sessions = MagicMock()
-        sessions.pause_turn_admission_for_update = AsyncMock(return_value=True)
-        sessions.resume_turn_admission_after_update = AsyncMock()
-        orch.sessions = sessions
-        orch._schedule_inbound_replay = MagicMock()
-        monkeypatch.setattr(orch, "_in_flight_work_counts", lambda: (1, 0))
-        orch._pending_update_respawn = lambda: "/x/python3"
-        orch._pending_update_mandatory = True
-        orch._pending_update_mandatory_key = "floor:9.9.9"
+        await orch._auto_apply_wheel_update("stable", "9.9.9", mandatory=mandatory)
 
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.gateway"):
-            await orch._retry_pending_update_restart()
-            # Age the recorded deferral rather than freezing ``loop.time``: the
-            # loop clock is the one every timer on this loop waits on, so a
-            # frozen one strands any bounded await the retry path makes.
-            assert orch._mandatory_update_deferred_at is not None
-            orch._mandatory_update_deferred_at -= orch._MANDATORY_UPDATE_MAX_DEFER_SECS + 1
-            await orch._retry_pending_update_restart()
-
-        assert "remains deferred after its grace period" in caplog.text
+        note = update_restart_ready.current()
+        if mandatory:
+            assert note is not None and note.mandatory is True
+        else:
+            assert note is None
+            assert orch._update_apply_deferred is True, "retried on the short cadence"
 
     @pytest.mark.asyncio
     async def test_a_held_lock_defers_quietly(self, monkeypatch):
@@ -237,14 +223,11 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         wire_wheel_apply(
             monkeypatch, apply=MagicMock(side_effect=WheelUpdateBusy("already in progress"))
         )
-        restart = AsyncMock()
-        monkeypatch.setattr(orch, "_restart_after_update", restart)
 
         await orch._auto_apply_wheel_update("stable", "9.9.9")
 
         assert orch._update_apply_deferred is True, "retried on the short cadence"
         ds.push_update_progress.assert_not_called()
-        restart.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_cancelled_apply_is_retried_on_the_short_cadence(self, monkeypatch):
@@ -302,12 +285,9 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         wire_wheel_apply(
             monkeypatch, apply=MagicMock(side_effect=WheelUpdateError(f"could not fetch {secret}"))
         )
-        restart = AsyncMock()
-        monkeypatch.setattr(orch, "_restart_after_update", restart)
 
         await orch._auto_apply_wheel_update("stable", "9.9.9")
 
-        restart.assert_not_awaited()
         step, detail = ds.push_update_progress.call_args.args
         assert step == "failed"
         assert "hunter2" not in detail
@@ -320,7 +300,7 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         orch.dashboard_state = ds
         engine = wire_wheel_apply(monkeypatch, reattach=True)
 
-        await orch._auto_apply_wheel_update("stable", "9.9.9", mandatory=True, mandatory_key="k")
+        await orch._auto_apply_wheel_update("stable", "9.9.9", mandatory=True)
 
         engine.assert_not_called()
         assert orch._update_apply_deferred is True, "a floor is never left for 12 h"
@@ -341,33 +321,6 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         assert cancel.is_set() and cancel.reason == "shutdown"
 
     @pytest.mark.asyncio
-    async def test_a_pending_restart_waits_for_an_apply_in_flight_without_cancelling_it(
-        self, monkeypatch
-    ):
-        """A deferred retry at an idle tick must not kill an approved apply of a newer
-        release and exec the older promotion over it; it defers until that apply ends."""
-        from kiro_crew.platform import wheel_apply
-        from kiro_crew.platform.wheel_engine import ApplyCancel
-
-        orch = _make_orchestrator()
-        sessions = MagicMock()
-        sessions.pause_turn_admission_for_update = AsyncMock(return_value=True)
-        sessions.resume_turn_admission_after_update = AsyncMock()
-        orch.sessions = sessions
-        orch._schedule_inbound_replay = MagicMock()
-        cancel = ApplyCancel()
-        monkeypatch.setattr(wheel_apply, "_IN_FLIGHT", {wheel_apply._Running(cancel, MagicMock())})
-        orch._pending_update_respawn = lambda: "/x/python3"
-        restart = AsyncMock()
-        monkeypatch.setattr(orch, "_restart_after_update", restart)
-
-        await orch._retry_pending_update_restart()
-
-        restart.assert_not_awaited()
-        assert orch._update_apply_deferred is True
-        assert not cancel.is_set(), "the approved apply keeps building"
-
-    @pytest.mark.asyncio
     async def test_the_shutdown_wait_never_imports_the_apply_module(self, monkeypatch):
         """With the install tree gone the module cannot be imported; the shutdown
         must not try, and still waits for the update coordinator."""
@@ -378,31 +331,14 @@ class TestWheelAutoApplyUsesTheShadowEngine:
                     raise ImportError("the install tree is gone")
                 return None
 
-        # flake-ok: pre-existing sys.modules eviction that monkeypatch restores, moved verbatim; tracked for a de-flake pass
+        # monkeypatch restores sys.modules at teardown; the refusing finder below fails any import.
         monkeypatch.delitem(sys.modules, "kiro_crew.platform.wheel_apply", raising=False)
         monkeypatch.setattr(sys, "meta_path", [_RefuseApplyModule(), *sys.meta_path])
         orch = _make_orchestrator()
-        # flake-ok: pre-existing parked stand-in task the test cancels, moved verbatim; tracked for a de-flake pass
-        task = asyncio.create_task(asyncio.sleep(10))
+        # The stand-in parks on an event nothing sets, and the test cancels it below.
+        task = asyncio.create_task(asyncio.Event().wait())
         task.cancel()
 
         await orch._settle_update_work(task)
 
         assert task.done()
-
-    @pytest.mark.asyncio
-    async def test_an_update_restart_waits_while_another_restart_owns_the_exec(self, monkeypatch):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds._gateway_restart_in_progress = True
-        orch.dashboard_state = ds
-        monkeypatch.setattr(gw, "resolve_restart_launcher", lambda: None)
-        monkeypatch.setattr("kiro_crew.platform_compat.execv_target_available", lambda _path: True)
-        claimed = AsyncMock()
-        monkeypatch.setattr(orch, "_restart_after_update_claimed", claimed)
-
-        await orch._restart_after_update(lambda: "/x/python3")
-
-        claimed.assert_not_awaited()
-        assert orch._update_apply_deferred is True
-        assert ds._gateway_restart_in_progress is True, "the other restart's claim is kept"

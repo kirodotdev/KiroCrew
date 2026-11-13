@@ -864,7 +864,7 @@ def test_a_failed_promotion_restores_the_previous_bundle_descriptor_relative(
         return real_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
     monkeypatch.setattr(os, "rename", spy)
-    with pytest.raises(Exception):
+    with pytest.raises(OSError):
         _build_at(mod, home, out)
 
     assert (
@@ -916,7 +916,7 @@ def test_MUTATION_a_bare_rename_rollback_is_not_descriptor_relative(
         return real_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
     monkeypatch.setattr(os, "rename", spy)
-    with pytest.raises(Exception):
+    with pytest.raises(OSError):
         _build_at(mod, home, out)
 
     restore = [

@@ -7,7 +7,8 @@ here; read and patch them there. This module owns:
   injects (:func:`_injectable_settings_servers`);
 * the stub entry that replaces a routed server (:func:`_build_stub_entry`), with its
   Windows command-line budget, and the launch-approval check it runs first
-  (:func:`_admit_launch`);
+  (:func:`_admit_launch`), and the refusing stub entry that starts nothing
+  (:func:`_refusing_stub_entry`);
 * :data:`UNPOOLABLE_SERVERS`, the servers left unwrapped by name.
 
 It logs under the rewriter's logger and never imports the facade.
@@ -26,12 +27,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Mapping
 
 from kiro_crew import platform_compat
-from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
+from kiro_crew.mcp_cleanup import (
+    include_mcp_json,
+    mcp_entry_is_muted,
+    mcp_entry_is_registry_governed,
+    mcp_entry_is_remote,
+)
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.mcp_gateway.launch_approval import (
+    _MAX_SERVER_LAUNCHES,
+    REFUSED_TOO_MANY,
     LaunchApprovals,
     env_fingerprint,
     launch_fingerprint,
+    target_stem,
 )
 from kiro_crew.mcp_gateway.rewriter_env import (
     _expand_env_map,
@@ -133,8 +143,10 @@ def _build_stub_entry(
     ENOENT or whose declared env is silently dropped. The one exception is a
     server :func:`_must_stay_wrapped` keeps wrapped, which must fail to start.
 
-    Preserves ``autoApprove`` on the wrapped entry so kiro-cli still honours
-    it at the UI layer. ``env`` is cleared on the wrapper — the stub passes
+    Preserves ``autoApprove`` on the wrapped entry, so it still states the agent's
+    own list. kiro-cli has no such field: a verb governance keeps runs unprompted as
+    an ``allowedTools`` entry of the agent's skill view (``acp.kas_auto_approve``).
+    ``env`` is cleared on the wrapper: the stub passes
     env separately through its flags so the gateway can hash the
     post-substitution env into the PoolKey.
     """
@@ -365,8 +377,10 @@ def _build_stub_entry(
             # ``session_servers.pooled_session_servers`` at ACP injection time,
             # where the value is in scope.
             "args": stub_argv[1:],
-            # autoApprove must stay on the wrapper — kiro-cli reads it at the
-            # permission-prompt UI layer, separately from the backend.
+            # autoApprove stays on the wrapper as the agent wrote it, so each
+            # agent's own list survives pooling. kiro-cli has no such field (a
+            # kept verb is an allowedTools entry of the skill view), and the
+            # backend never reads it.
             "autoApprove": auto_approve,
             # env cleared — the backend receives env via the gateway's spawn,
             # not via kiro-cli's subprocess environment.
@@ -414,6 +428,41 @@ def _build_stub_entry(
     return wrapped
 
 
+def _refusing_stub_entry(*, server_name: str, agent_name: str, work_dir: Path) -> dict[str, Any]:
+    """The overlay entry for a settings server this agent neither reaches nor starts.
+
+    Marked like every stub, so it is sent at ``session/new`` and outranks the
+    same-named entry the host's own ``mcp.json`` merge would start. Its stub runs
+    with ``--refuse`` (``stub_link._serve_refusal``): it starts nothing, never
+    reaches the gateway, and answers as a server with no tools. It names no
+    target (an empty ``--target-command``), so nothing reads one back out of it
+    (``rewriter_launch._wrapped_target``): the gateway is handed no target for
+    it, and no launch of it waits on an approval. It carries no env, so no
+    sidecar is written for it.
+    """
+    # fmt: off
+    stub_args: list[str] = [
+        "--server", server_name,
+        "--agent", agent_name,
+        "--target-command", "",
+        "--work-dir", str(work_dir),
+        "--refuse",
+    ]
+    # fmt: on
+    stub_argv = platform_compat.isolated_python_argv(
+        "-P",
+        "-m",
+        _STUB_MODULE,
+        f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}",
+    )
+    return {
+        _WRAPPER_MARKER: True,
+        "command": _cmd_safe_command(stub_argv[0]),
+        "args": stub_argv[1:],
+        "env": {},
+    }
+
+
 def _hashable_args(args_val: Any) -> tuple[str, ...]:
     """Coerce an agent-JSON ``args`` list into a hashable tuple of strings for
     the target-dedup key. A malformed ``args: [{...}]`` (list of objects) would
@@ -426,6 +475,25 @@ def _hashable_args(args_val: Any) -> tuple[str, ...]:
     return tuple(
         a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str) for a in args_val
     )
+
+
+def _named_in_tools(servers: Mapping[str, Any], tools: Any) -> dict[str, Any]:
+    """The entries of *servers* an agent's ``tools`` names, by raw key or alias.
+
+    ``*``, as the whole value or as an entry, names every server. ``@server`` and
+    ``@server/tool`` name ``server``, read through
+    :func:`~kiro_crew.agent_sdk.mcp_refs.parse_tools_refs` like the mirrors'
+    ``ToolsAllowlist``. A missing or malformed ``tools`` names none.
+    """
+    grant_all, refs = parse_tools_refs(tools)
+    if grant_all or tools == "*":
+        return dict(servers)
+    named = frozenset(refs)
+    return {
+        name: entry
+        for name, entry in servers.items()
+        if name in named or mcp_server_alias(name) in named
+    }
 
 
 def _rewrite_single_spec(
@@ -446,8 +514,13 @@ def _rewrite_single_spec(
     sidecars_written: _SidecarLedger | None = None,
     notes: _RewritePassNotes | None = None,
     approvals: LaunchApprovals | None = None,
+    scope_muted: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], int]:
     """Return ``(new_spec, wrapped_count)``. Idempotent.
+
+    ``scope_muted`` holds the canonical aliases a config scope mutes
+    (:func:`kiro_crew.mcp_cleanup.mcp_scope_muted_aliases`); such a server is
+    never wrapped, like one whose own entry is muted.
 
     ``approvals`` enforces content approval (see
     :mod:`kiro_crew.mcp_gateway.launch_approval`): a stubbed entry is wrapped
@@ -463,22 +536,55 @@ def _rewrite_single_spec(
     agents get pooled coverage WITHOUT relying on kiro-cli merging the global
     settings — which is what produced the duplicate, empty-``--agent`` stub.
 
-    An agent whose spec sets ``includeMcpJson: false`` gets none of them:
-    kiro-cli does not merge the global file into that agent, so there is no raw
-    entry for a stub to take precedence over, and every wrapped overlay entry is
-    sent at ``session/new``. Injecting there would mount servers the agent
-    excluded, and a tool name one of them shares with the agent's own server
-    leaves one of the two with no tools. Only a literal ``false`` opts out,
-    because kiro-cli reads an absent flag as true.
+    An agent whose spec sets ``includeMcpJson: false``, or its deprecated alias
+    ``useLegacyMcpJson: false``, gets none of them: kiro-cli does not merge the
+    global file into that agent, so there is no raw entry for a stub to take
+    precedence over, and every wrapped overlay entry is sent at
+    ``session/new``. Injecting there would mount servers the agent excluded, and
+    a tool name one of them shares with the agent's own server leaves one of the
+    two with no tools. Only a stated ``false`` opts out, because kiro-cli reads
+    an absent flag as true. The flag is read by
+    :func:`kiro_crew.mcp_cleanup.include_mcp_json`, the reader the KAS projection
+    uses too, so the two hand the agent the same servers.
+
+    Any other agent gets a stub only for the ones its ``tools`` names
+    (:func:`_named_in_tools`). The session mounts a wrapped entry it is sent at
+    ``session/new`` without asking ``tools``, so a stub for a server the author
+    left out of ``tools`` would be offered and callable anyway. Leaving one out
+    costs nothing ``tools`` could reach: for an agent with ``includeMcpJson: true``
+    the host's own ``mcp.json`` merge still starts the server, unpooled. The
+    exception is a server whose env holds a ``secret://`` reference
+    (:func:`_must_stay_wrapped`), which that merge would start with the literal
+    reference: it gets a stub that starts nothing and offers no tools
+    (:func:`_refusing_stub_entry`), which outranks the merge.
+
+    A server the agent declares itself is wrapped only when its ``tools`` names
+    it, for the same reason. One ``tools`` leaves out whose env holds a
+    ``secret://`` reference gets the refusing stub, since its own entry would
+    start it with the literal reference. A withheld secret-reference server this
+    pass routes is the exception; the stub-decoupling design note says why.
     """
     agent_name = spec.get("name") or ""
     servers = spec.get("mcpServers") or {}
     if not isinstance(servers, dict):
         servers = {}
     inject = inject_servers or {}
-    if spec.get("includeMcpJson") is False:
+    # The settings servers ``tools`` leaves out that still need an entry here, so
+    # the host's own merge cannot start them (see the docstring).
+    refused: dict[str, Any] = {}
+    if include_mcp_json(spec) is False:
         inject = {}
-    if not servers and not inject:
+    elif inject:
+        named = _named_in_tools(inject, spec.get("tools"))
+        refused = {
+            name: entry
+            for name, entry in inject.items()
+            if name not in named
+            and isinstance(entry, dict)
+            and _must_stay_wrapped(_normalized_env(entry))
+        }
+        inject = named
+    if not servers and not inject and not refused:
         return spec, 0
 
     new_servers: dict[str, Any] = {}
@@ -488,6 +594,7 @@ def _rewrite_single_spec(
     # would otherwise spawn a duplicate backend (e.g. a slash-named server and
     # its slash-free alias both pointing at the same proxy command).
     seen_targets: set[tuple[str, tuple[str, ...]]] = set()
+    granted = _named_in_tools(servers, spec.get("tools"))
     wrapped = 0
     for name, entry in servers.items():
         if not isinstance(entry, dict):
@@ -514,10 +621,17 @@ def _rewrite_single_spec(
             new_servers[name] = upgraded
             wrapped += 1
             continue
-        if "command" not in entry:
-            # HTTP/SSE MCP entries — already shareable by nature, skip.
+        if "command" not in entry or mcp_entry_is_remote(entry):
+            # HTTP/SSE MCP entries — already shareable by nature, skip. A remote
+            # entry may still carry a placeholder ``command`` the schema requires;
+            # wrapping it would resolve a launch for a process that does not exist.
             new_servers[name] = entry
             continue
+        withheld_now_routed = (
+            is_withheld_mute(entry)
+            and mcp_entry_is_muted(entry)
+            and routed_for_secret_reference(name, stub_servers)
+        )
         if mcp_entry_is_registry_governed(entry):
             # A registry-governed entry defers its launch to the administrator's
             # catalog, so there is nothing here to pool. Wrapping it produced a
@@ -530,11 +644,7 @@ def _rewrite_single_spec(
             # the client's own filter decides, like the mute below.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        if (
-            is_withheld_mute(entry)
-            and mcp_entry_is_muted(entry)
-            and routed_for_secret_reference(name, stub_servers)
-        ):
+        if withheld_now_routed:
             # The rebuild muted this entry only because it was not routed, and
             # this pass routes it (the launch probe asks before the routing is
             # saved). A wrapped server is started by the gateway, which resolves
@@ -554,6 +664,15 @@ def _rewrite_single_spec(
             # entry through unchanged (minus the internal ``poolable`` hint) so
             # kiro-cli still sees it disabled. Mirrors the settings-inject guard
             # in _injectable_settings_servers.
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
+        if mcp_server_alias(name) in scope_muted:
+            # The user's mute lives in a config scope, not in this spec: MCP
+            # Management never writes into an agent file it does not own. A
+            # wrapped name is subtracted from the KAS projection before that
+            # projection's own scope check runs, so wrapping here started
+            # the server the user switched off. Passed through unchanged, so the
+            # projection reads the scope and withholds it.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # The stub is opt-in per server, and ``mcp_gateway.stub_servers`` is the
@@ -580,6 +699,18 @@ def _rewrite_single_spec(
             # it lets the server through; every other server keeps the
             # exact-name rule.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
+        if name not in granted and not withheld_now_routed:
+            # Not in ``tools``: a stub would mount it anyway (see the docstring).
+            # Its own entry would start a ``secret://`` server with the literal
+            # reference, so that one gets a stub that starts nothing.
+            if secret_reference_keys(entry.get("env")):
+                new_servers[name] = _refusing_stub_entry(
+                    server_name=name, agent_name=agent_name, work_dir=work_dir
+                )
+                wrapped += 1
+            else:
+                new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # A reserved kirocrew-* name launches the managed invocation, whatever
         # the spec spelled -- before resolution, so the target the stub hashes,
@@ -719,7 +850,7 @@ def _rewrite_single_spec(
             continue
         if name in new_servers or alias in new_servers:
             continue
-        if not isinstance(entry, dict) or "command" not in entry:
+        if not isinstance(entry, dict) or "command" not in entry or mcp_entry_is_remote(entry):
             continue
         # The stub is opt-in here too, from the same single source. A settings
         # level server nobody listed is left for the session to launch itself, so
@@ -833,6 +964,22 @@ def _rewrite_single_spec(
         wrapped += 1
         seen_targets.add(inject_sig)
 
+    # A server ``tools`` leaves out whose env holds a ``secret://`` reference gets a
+    # stub that starts nothing (:func:`_refusing_stub_entry`), so the host's own
+    # merge of the real settings file, which would start it with the literal
+    # reference, is outranked. Decided by this agent's entry alone: the gateway's
+    # target for the server is keyed by name, and another agent naming it keeps
+    # that target approved. None of the launch checks above apply, since nothing
+    # here would launch it.
+    for name in refused:
+        alias = mcp_server_alias(name)
+        if is_unpoolable(name) or name in new_servers or alias in new_servers:
+            continue
+        new_servers[alias] = _refusing_stub_entry(
+            server_name=alias, agent_name=agent_name, work_dir=work_dir
+        )
+        wrapped += 1
+
     new_spec = dict(spec)
     new_spec["mcpServers"] = new_servers
     return new_spec, wrapped
@@ -846,11 +993,14 @@ def _injectable_settings_servers(
     forward_env: bool = False,
     identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
+    scope_muted: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Return ``{raw_name: raw_entry}`` of stdio servers in the global
-    ``settings/mcp.json`` that must be INJECTED into every per-agent overlay
-    whose agent reads that file (an ``includeMcpJson: false`` agent does not;
-    see :func:`_rewrite_single_spec`).
+    ``settings/mcp.json`` that may be INJECTED into a per-agent overlay. Each
+    agent gets a stub for the ones its ``tools`` names, and a refusing stub for
+    each other one whose env holds a ``secret://`` reference; an
+    ``includeMcpJson: false`` or ``useLegacyMcpJson: false`` agent gets none (see
+    :func:`_rewrite_single_spec`).
 
     Each returned server is wrapped with the receiving agent's own name, so the
     stub carries a correct ``--agent`` identity, and injected at ACP
@@ -888,14 +1038,18 @@ def _injectable_settings_servers(
             # in every agent overlay). Fail-closed like the wrap guard above: the
             # two decide the same thing about the same field.
             continue
+        if mcp_server_alias(name) in scope_muted:
+            # Muted in another scope (the crew store): the same mute, read the
+            # same way the per-agent wrap guard reads it (``scope_muted``).
+            continue
         if name in UNPOOLABLE_SERVERS:
             continue
         if entry.get(_WRAPPER_MARKER) is True:
             # Source settings should be raw; ignore an already-wrapped entry.
             continue
-        if "command" not in entry:
+        if "command" not in entry or mcp_entry_is_remote(entry):
             # HTTP/SSE — no stub needed; kiro-cli merges it from the real
-            # settings file.
+            # settings file. A placeholder ``command`` does not make it stdio.
             continue
         if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
             # Not stubbed: leave it to kiro-cli's own merge of the real
@@ -984,6 +1138,20 @@ def _admit_launch(
         derived_env_hash=derived_env_hash,
     ):
         # Names only: the args and env may carry tokens.
+        if approvals.refused.get(target_stem(name)) == REFUSED_TOO_MANY:
+            # ``admit`` records the stem's reason on each refusal that reaches the
+            # cap or the approval test, so this is the cap refusing this launch,
+            # not a missing approval.
+            logger.warning(
+                "mcp launch approvals: stubbed server %r (agent %r) resolves to more "
+                "distinct launches this pass than the per-server launch cap "
+                "_MAX_SERVER_LAUNCHES=%d; leaving this one unwrapped so the session "
+                "launches it inside its sandbox.",
+                name,
+                agent_name,
+                _MAX_SERVER_LAUNCHES,
+            )
+            return False
         logger.warning(
             "mcp launch approvals: stubbed server %r (agent %r) resolves to a launch "
             "the operator has not approved; leaving it unwrapped so the session "

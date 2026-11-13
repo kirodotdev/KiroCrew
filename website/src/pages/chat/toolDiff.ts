@@ -44,7 +44,7 @@ export type ToolDiffView =
 
 /**
  * The transport's truncation annotation (see DIFF_TRUNCATION_MARK in
- * acp/_dispatch.py). Diff renderers skip `\`-lines by convention, so without
+ * acp/_dispatch_parts/surfaced_text.py). Diff renderers skip `\`-lines by convention, so without
  * an explicit check a cut diff looks complete and its counts silently
  * understate the change. A regex, not a string constant: this is a WIRE
  * pattern matched against backend output, never user-visible copy — the i18n
@@ -72,7 +72,7 @@ export function presentToolDiff(
   cut?: ToolPayloadCut | null,
 ): ToolDiffView | null {
   if (kind !== 'edit' || !input) return null
-  // Bare-JSON edit payloads are covered UPSTREAM: acp/_dispatch.py's
+  // Bare-JSON edit payloads are covered UPSTREAM: acp/_dispatch_parts/surfaced_text.py's
   // derive_edit_diff turns strReplace / create / insert args into a unified
   // diff before the input reaches this module. A non-diff input here is a
   // genuinely unrecognizable shape; its fold-proof trace is FileChangeChips

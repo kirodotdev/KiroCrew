@@ -18,8 +18,8 @@ A construct whose SHAPE depends on a runtime value is never guessed. It contribu
 exactly one ``unknown`` node naming the construct, and every node found inside it is
 marked ``certain: False``:
 
-* ``if`` / ``for`` / ``while`` / ``async for`` / ``try`` / ``match``, a conditional
-  expression, and a comprehension — may not run, or may run a number of times only
+* ``if`` / ``for`` / ``while`` / ``async for`` / ``try`` (``except*`` too) /
+  ``match``, a conditional expression, and a comprehension — may not run, or may run a number of times only
   the run knows.
 * ``ctx.parallel(<not a literal list or tuple>)`` — fan-out width is a runtime value.
 * ``ctx.pipeline(...)`` — width times stage count, both runtime.
@@ -75,7 +75,14 @@ RUNNER_PROMPT_LABEL_CHARS = 40
 
 # Every ``ctx`` method this module draws something for. Read by ``_visit_call``, so it
 # cannot drift from the dispatch it describes.
-MODELLED_CTX_METHODS = frozenset({"agent", "parallel", "pipeline", "workflow", "phase"})
+MODELLED_CTX_METHODS = frozenset(
+    {"agent", "parallel", "pipeline", "workflow", "phase", "open_session", "send_to_session"}
+)
+
+#: Methods that start work in ANOTHER session. That work runs outside the run and
+#: reports nowhere in its stream, so each call draws one ``unknown`` marker rather
+#: than a box the run would never fill.
+SESSION_CTX_METHODS = frozenset({"open_session", "send_to_session"})
 
 # Methods that draw nothing on purpose: narration and side channels, not units of work.
 # Enumerated rather than implied so each one is a decision on the record.
@@ -87,7 +94,9 @@ MODELLED_CTX_METHODS = frozenset({"agent", "parallel", "pipeline", "workflow", "
 # The parity test in test_workflows_preview.py closes that gap, and ``_visit_call``
 # degrades an unclassified method to an unpredictable marker so the runtime is honest
 # even if the pin is ever relaxed.
-NARRATION_CTX_METHODS = frozenset({"log", "nudge", "approve", "send_slack", "send_message"})
+NARRATION_CTX_METHODS = frozenset(
+    {"log", "nudge", "approve", "send_slack", "send_message", "set_session_mode"}
+)
 
 
 def _bounded(value: str, limit: int) -> str:
@@ -112,6 +121,7 @@ _BRANCHING_STMTS: tuple[tuple[type, str], ...] = (
     (ast.AsyncFor, "for"),
     (ast.While, "while"),
     (ast.Try, "try"),
+    (ast.TryStar, "try"),
     (ast.Match, "match"),
 )
 
@@ -347,7 +357,12 @@ class _Planner:
         phase or invent a title no ``phase_started`` event can be paired with, so the
         region is marked instead and its nodes stay where they are.
         """
-        title = _literal_str(call.args[0]) if call.args else None
+        # ``title`` is positional-or-keyword on the runner, so ``ctx.phase(title="x")``
+        # opens the same phase as ``ctx.phase("x")``.
+        title_node: Optional[ast.expr] = call.args[0] if call.args else None
+        if title_node is None:
+            title_node = next((kw.value for kw in call.keywords if kw.arg == "title"), None)
+        title = _literal_str(title_node)
         if title is None:
             self._add("unknown", "phase", certain=False)
             return False
@@ -414,6 +429,9 @@ class _Planner:
             return True
         if method == "workflow":
             self._add("unknown", "nested", certain=False)
+            return True
+        if method in SESSION_CTX_METHODS:
+            self._add("unknown", "session", certain=False)
             return True
         if method is not None:
             if method not in NARRATION_CTX_METHODS and method not in MODELLED_CTX_METHODS:
@@ -485,7 +503,8 @@ def plan_from_source(source: str) -> Optional[dict[str, Any]]:
     entry = _find_entrypoint(tree)
     if entry is None:
         return None
-    params = entry.args.args
+    # A positional-only ``def workflow(ctx, /)`` keeps the context in ``posonlyargs``.
+    params = entry.args.posonlyargs + entry.args.args
     if not params:
         return None
     planner = _Planner(params[0].arg, _local_function_names(entry))

@@ -109,14 +109,15 @@ def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> Non
 
 def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = False) -> None:
     """Sync MCP server state to kirocrew.json mcpServers (not tools/allowedTools)."""
+    from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
 
     path = _installed_agent_config()
     try:
-        cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        cfg = loads_mcp_config(read_bytes_with_retry(path).decode("utf-8"))
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping sync: %s", path, exc)
         return
 
@@ -133,8 +134,9 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                 spec = gdata.get("mcpServers", {}).get(name, {})
                 if isinstance(spec, dict) and spec:
                     entry = {k: v for k, v in spec.items() if k != "disabled"}
-                    # Strip a governed `autoApprove`: kiro-cli honours it on the
-                    # copied entry and auto-approves the server WITHOUT reaching the
+                    # Strip a governed `autoApprove`: a verb it keeps on the copied
+                    # entry is granted in `allowedTools` (the skill view on kiro-cli,
+                    # the projection on KAS) and runs WITHOUT reaching the
                     # PreToolUse gate — the same exemption `allowedTools` is
                     # withheld for below. Drop it when the ceiling constrains this
                     # server.
@@ -293,14 +295,15 @@ def _sync_mcp_to_agent_batch(names: list[str], enabled: bool) -> None:
 
 def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
     """Batch sync multiple MCP servers to kirocrew.json in a single read-modify-write."""
+    from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
 
     path = _installed_agent_config()
     try:
-        cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        cfg = loads_mcp_config(read_bytes_with_retry(path).decode("utf-8"))
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping batch sync: %s", path, exc)
         return
 
@@ -420,10 +423,11 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
 def _mcp_hot_reload_active(request: web.Request) -> bool:
     """Whether every live session applies MCP config edits without a reset.
 
-    Two mechanisms satisfy it, per provider: the process reconciles the agent
-    file itself (kiro-cli, ``mcp_config_hot_reload``), or Crew re-sends the
+    Three mechanisms satisfy it, per provider: the process reconciles the agent
+    file itself (kiro-cli, ``mcp_config_hot_reload``), Crew re-sends the
     session's projection at its next turn boundary (KAS,
-    ``mcp_config_wire_reinject``). Keyed to the processes actually running — the
+    ``mcp_config_wire_reinject``), or Crew relaunches the process and reloads the
+    session at its next turn boundary (Strands, ``mcp_config_relaunch_reload``). Keyed to the processes actually running — the
     registered sessions plus the warm pool the reset would drain — and, for the
     first mechanism, to the version each reported at its own handshake, never
     to the binary on disk (which is newer than every live process after an
@@ -431,7 +435,7 @@ def _mcp_hot_reload_active(request: web.Request) -> bool:
     falls back to the reset that was always correct — a skipped reset is the
     one outcome a user cannot see.
 
-    A True answer is also the moment the re-injecting providers are MARKED:
+    A True answer is also the moment the re-injecting and relaunching providers are MARKED:
     nothing in their engine watches the file, so the skip is only correct if
     each of them is told a change is due. Marking is a flag per provider, never
     on the wire, so it runs here under the writer's own locks.
@@ -449,8 +453,8 @@ def _mcp_hot_reload_active(request: web.Request) -> bool:
             fence()
         if marked:
             logger.info(
-                "MCP config changed: %d live session(s) will re-send their projection "
-                "at their next turn instead of being reset",
+                "MCP config changed: %d live session(s) will apply it at their next "
+                "turn instead of being reset",
                 marked,
             )
         return True

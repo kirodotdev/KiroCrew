@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from '../test/helpers'
 
@@ -21,6 +21,8 @@ const PROJECT = '/home/me/src/billing'
 const bound = (status: string, extra: Record<string, unknown> = {}) =>
   ({ path: PROJECT, profile: 'billing-prod', boundDir: PROJECT, profiles: ['billing-prod', 'dev'], status, ...extra })
 const unbound = (profiles: string[] = ['dev', 'ops']) => ({ path: PROJECT, profile: null, boundDir: null, profiles, status: null })
+// The read retries on its own (`retryThroughRestart`); no backoff, so a failure shows at once.
+const NO_RETRY_DELAY = { queryDefaults: { retryDelay: 0 } }
 
 describe('ProjectAwsProfileStatus (the pill segment)', () => {
   beforeEach(() => { read.mockReset(); write.mockReset() })
@@ -70,13 +72,28 @@ describe('ProjectAwsProfileStatus read failure', () => {
 
   it('shows a failed read through the error notice instead of looking unbound, with no hand-off', async () => {
     read.mockRejectedValue(new ApiError(500, 'failed to read config file'))
-    const { container } = renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />)
+    const { container } = renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />, NO_RETRY_DELAY)
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain("Could not read this project's AWS profile")
     expect(container.querySelector('[data-aws-status]')!.getAttribute('data-aws-status')).toBe('read-failed')
     // The pill sits in the chat composer, so the hand-off stays off over its unsent draft.
     expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
     expect(container.querySelector('button')).toBeNull()
+  })
+
+  it('rides out a dropped read instead of reporting it (a gateway restart)', async () => {
+    read.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue(bound('ok'))
+    renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />, NO_RETRY_DELAY)
+    await screen.findByText('billing-prod')
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('says the gateway is busy when the read times out', async () => {
+    read.mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+    renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The gateway is busy and did not answer')
   })
 })
 
@@ -200,16 +217,33 @@ describe('ProjectAwsProfileSection (the project picker row)', () => {
     expect(value.className).toMatch(/max-w-/)
   })
 
+  it.each([
+    ['our deadline', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+    ['a dropped connection', new TypeError('Failed to fetch')],
+    ['a proxy timeout', new ApiError(504, 'gateway timeout')],
+  ])('says the gateway is busy, not that the profile is unreadable, on %s', async (_label, failure) => {
+    read.mockRejectedValue(failure)
+    renderWithProviders(<ProjectAwsProfileSection project={PROJECT} />, NO_RETRY_DELAY)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The gateway is busy and did not answer')
+    expect(alert.textContent).not.toContain("Could not read this project's AWS profile")
+  })
+
   it('reports a failed read through the error notice, but stays silent on the owner-only refusal', async () => {
     read.mockRejectedValue(new ApiError(500, 'gateway error'))
-    const first = renderWithProviders(<ProjectAwsProfileSection project={PROJECT} />)
+    const first = renderWithProviders(<ProjectAwsProfileSection project={PROJECT} />, NO_RETRY_DELAY)
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain("Could not read this project's AWS profile")
     first.unmount()
 
+    read.mockReset()
     read.mockRejectedValue(new ApiError(403, 'dashboard owner required'))
-    const second = renderWithProviders(<ProjectAwsProfileSection project={PROJECT} />)
+    const second = renderWithProviders(<ProjectAwsProfileSection project={PROJECT} />, NO_RETRY_DELAY)
+    // A 403 gets the global single retry, then settles as an error.
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+    await act(async () => {})
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(second.container.querySelector('[data-testid="pp-aws-profile"]')).toBeNull()
   })
 

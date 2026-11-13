@@ -182,45 +182,19 @@ def _capability_shape(capabilities: dict[str, Any] | None) -> Any:
 def _tool_surface(server: Any) -> Any:
     """What ``tools/list`` answered, projected so only real divergence shows.
 
-    The probe already pays for this round-trip and stores the result, so widening
-    the comparison here costs no extra spawn and no extra request. It is what
-    makes the check decidable on a server that sends no annotations at all: the
-    tool LIST is mandatory in every MCP revision, so a server too old to carry
-    ``readOnlyHint`` is still fully measurable on this facet.
+    The tool LIST is mandatory in every MCP revision, so this facet is
+    measurable even on a server that sends no annotations.
 
-    Two projections keep ordering out of the comparison, because a pooled backend
-    replays the cached answer and a server free to enumerate its tools in a
-    different order each spawn is not thereby caller-sensitive:
+    Ordering is projected out (a server may enumerate tools in any order):
+    names become a SET, annotation shapes a sorted MULTISET never paired with
+    a name. The pairing is unrecoverable: the prober builds ``tools`` and
+    ``tool_annotations`` with INDEPENDENT predicates (truthy name vs an
+    ``annotations`` dict), so equal lengths can still describe different
+    tools. The multiset still catches a different claim to the second caller.
 
-    * names become a SET — a different set is a real divergence, a different
-      order is not;
-    * annotation shapes become a sorted MULTISET, never paired with a name.
-
-    That second projection is deliberately unpaired, and this is the load-bearing
-    part. The prober builds ``tools`` and ``tool_annotations`` in two comprehensions
-    over the same list with INDEPENDENT predicates — a tool is kept in ``tools``
-    when its name is truthy, and in ``tool_annotations`` when it carries an
-    ``annotations`` dict. Neither list records which tool an entry came from, so a
-    tool with an empty name but an annotation object is dropped from one and kept in
-    the other: the two lists can be the same LENGTH and still describe different
-    tools. Any attempt to re-establish alignment on this side of the wire is
-    therefore guessing, whether it pairs by index or first checks the lengths.
-
-    So the alignment question is removed rather than answered. Comparing the
-    shapes as an unordered multiset still detects the thing this facet exists to
-    detect — a server that makes a different annotation claim to the second caller
-    changes the multiset — while a reorder, a partial list, and a mismatched filter
-    all become unobservable instead of becoming a wrong verdict. Per-tool
-    attribution is not lost, because nothing consumed it: one reason code covers
-    every facet, and no caller reads which tool diverged.
-
-    Each shape is canonicalised to a JSON string before sorting. The projection
-    yields dicts, and ordering dicts directly would raise ``TypeError`` — the same
-    crash class this module already guards against for tool names.
-
-    Annotation VALUES are compared through the same shape projection as
-    capabilities: what matters is that the server made the same claim to both
-    callers, and a free-form leaf it varies per spawn is not that claim.
+    Each shape is canonicalised to a JSON string before sorting, since sorting
+    dicts raises ``TypeError``. Values go through the same shape projection as
+    capabilities, so a free-form leaf varied per spawn is not a divergence.
     """
     names = list(getattr(server, "tools", None) or [])
     annotations = list(getattr(server, "tool_annotations", None) or [])

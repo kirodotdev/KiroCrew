@@ -18,7 +18,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 
 logger = logging.getLogger("kiro_crew.apps.builtins.issue_radar.backend.store")
 
@@ -42,7 +42,7 @@ def read_config(root: Path | None = None) -> dict[str, Any]:
     if not path.is_file():
         return {"repos": []}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return {"repos": []}
     if not isinstance(data, dict):
@@ -68,7 +68,7 @@ def _config_lock(root: Path | None = None):
     that race, so every config RMW below holds this exclusive lock across the
     whole read→mutate→atomic-write."""
     lock_path = data_dir(root) / "config.json.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -568,7 +568,7 @@ def read_watch_state(owner: str, repo: str, root: Path | None = None) -> dict[st
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -621,7 +621,7 @@ def read_ci_watch_state(owner: str, repo: str, root: Path | None = None) -> dict
     data: Any = {}
     if path.is_file():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             data = {}
     if not isinstance(data, dict):

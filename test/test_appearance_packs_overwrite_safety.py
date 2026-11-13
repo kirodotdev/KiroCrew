@@ -57,9 +57,9 @@ class TestOverwriteKeepsTheOldPackUntilTheNewOneLands:
                 raise OSError(5, "Input/output error")
             return real_replace(src, dst, *a, **kw)
 
-        monkeypatch.setattr(os, "replace", fail_on_the_commit)
-        _save(store, "mine", "second")
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "replace", fail_on_the_commit)
+            _save(store, "mine", "second")
 
         assert art.exists(), "the pack was lost"
         assert art.read_text() == original

@@ -41,6 +41,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: Wall-clock ceiling for the count. ``rev-list`` walks local objects only —
@@ -112,18 +113,29 @@ def parse_divergence_counts(output: str) -> DivergenceCounts | None:
 
 
 async def count_divergence(
-    repo: str | Path, upstream: str, *, timeout: float = DIVERGENCE_TIMEOUT_SEC
+    repo: str | Path,
+    upstream: str,
+    *,
+    timeout: float = DIVERGENCE_TIMEOUT_SEC,
+    git: str = "git",
+    env: dict[str, str] | None = None,
 ) -> DivergenceCounts | DivergenceUnreadable:
     """Count HEAD's divergence from *upstream* in *repo*, off the event loop.
 
     stderr is discarded: the async callers are HTTP handlers whose responses
     carry their own machine-readable codes, so git's message has no reader.
+
+    *env* is the environment the caller's OWN git commands use. An update path
+    that strips ``GIT_DIR`` and its siblings for its reset must count with the
+    same env, or an inherited redirect makes the guard judge another repository.
+    *git* is the binary to run; a hardened caller passes its trusted git.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git",
+            git,
             *divergence_count_args(upstream),
             cwd=repo,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -142,6 +154,10 @@ async def count_divergence(
             pass
         await proc.communicate()
         return DivergenceUnreadable(UNREADABLE_TIMEOUT, detail=f"timed out after {timeout:g}s")
+    except asyncio.CancelledError:
+        # A cancelled caller (a gateway shutdown) must not leave git running.
+        await kill_and_reap(proc)
+        raise
     if proc.returncode != 0:
         return DivergenceUnreadable(UNREADABLE_GIT_FAILED)
     text = out.decode(errors="replace")
@@ -152,7 +168,11 @@ async def count_divergence(
 
 
 def count_divergence_sync(
-    repo: str | Path, upstream: str, *, timeout: float = DIVERGENCE_TIMEOUT_SEC
+    repo: str | Path,
+    upstream: str,
+    *,
+    timeout: float = DIVERGENCE_TIMEOUT_SEC,
+    env: dict[str, str] | None = None,
 ) -> DivergenceCounts | DivergenceUnreadable:
     """Blocking :func:`count_divergence`, for CLI paths with no event loop.
 
@@ -165,6 +185,7 @@ def count_divergence_sync(
         result = subprocess.run(
             ["git", *divergence_count_args(upstream)],
             cwd=repo,
+            env=env,  # see count_divergence
             capture_output=True,
             timeout=timeout,
             **UTF8_TEXT,

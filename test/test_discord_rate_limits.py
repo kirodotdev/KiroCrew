@@ -1,14 +1,8 @@
 """Discord REST rate-limit accounting and failure classification.
 
-Covers what ``discord/client_rest.py``'s request ladder does with the accounting
-Discord hands back on every response: bucket pre-emption, a global hold that
-stops every route, the invalid-request breaker that keeps the app clear of
-Discord's 10,000-per-10-minutes IP block, and the permanent/transient split a
-caller needs so a turn whose whole output failed to send is not recorded as a
-delivered turn.
-
-Everything runs against stubbed transports with an injected clock: no socket,
-no network, no real sleeping, and no writes anywhere.
+Covers ``discord/client_rest.py``: bucket pre-emption, the global hold, the
+invalid-request breaker (Discord blocks the IP at 10,000 per 10 minutes), and the
+permanent/transient split. Stubbed transports and an injected clock; no network.
 """
 
 from __future__ import annotations
@@ -615,8 +609,9 @@ class TestClassification:
     async def test_a_5xx_is_retried_with_a_bounded_linear_back_off(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # An edit, not a create: a message create is never re-sent after a 5xx.
         harness = _harness(monkeypatch, [_Resp(500), _Resp(502), _Resp(503)])
-        result = await harness.client.api_json("POST", "/channels/9111/messages", {})
+        result = await harness.client.api_json("PATCH", "/channels/9111/messages/1", {})
         assert result.outcome == DISCORD_TRANSIENT and result.retryable
         assert result.status == 503
         assert len(harness.requests) == _TRANSIENT_RETRIES + 1
@@ -627,8 +622,9 @@ class TestClassification:
 
     @pytest.mark.asyncio
     async def test_a_5xx_that_clears_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An edit, not a create: a message create is never re-sent after a 5xx.
         harness = _harness(monkeypatch, [_Resp(500), _Resp(200, {"id": "77"})])
-        result = await harness.client.api_json("POST", "/channels/9111/messages", {})
+        result = await harness.client.api_json("PATCH", "/channels/9111/messages/77", {})
         assert result.outcome == DISCORD_OK and result.message_id == "77"
 
     @pytest.mark.asyncio
@@ -648,7 +644,8 @@ class TestClassification:
     ) -> None:
         harness = _harness(monkeypatch, [exc, exc, exc])
         with caplog.at_level(logging.WARNING, logger="kiro_crew.discord.client"):
-            result = await harness.client.api_json("POST", "/channels/9111/messages", {})
+            # An edit, not a create: a create retries only a pre-send connect error.
+            result = await harness.client.api_json("PATCH", "/channels/9111/messages/1", {})
         assert result.outcome == DISCORD_TRANSIENT and result.retryable
         assert result.status == 0 and result.detail == type(exc).__name__
         assert len(harness.requests) == _TRANSIENT_RETRIES + 1
@@ -827,28 +824,51 @@ class TestStateBounds:
 
 class TestLoopIsNotBlocked:
     @pytest.mark.asyncio
-    async def test_other_tasks_run_while_a_bucket_refills(self) -> None:
+    async def test_other_tasks_run_while_a_bucket_refills(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A hold is an ``await``, not a stall: a bucket refilling on one
         channel must not freeze every other turn in the process. Asserts the
         SHAPE (other tasks were scheduled during the wait), not a duration.
+
+        The wait is held open until the ticker has actually run, instead of a
+        fixed wall-clock budget: a slow or coarse-clock worker could let the
+        whole budget elapse before the client computed the wait, leaving no
+        time to sleep and the ticker no turn.
         """
         client = DiscordClient(token=_TOKEN)
-        events: list[tuple[str, Any]] = []
-        session = _Session([_Resp(204)], events)
 
         async def _ensure() -> Any:
-            return session
+            return _Session([_Resp(204)], [])
 
         client._ensure_session = _ensure  # type: ignore[method-assign]
-        hold = 0.1
-        client._set_hold(_route_key("POST", "/channels/9111/typing"), hold)
+
         ticks = 0
+        ticker_ran = asyncio.Event()
 
         async def _ticker() -> None:
             nonlocal ticks
             while True:
-                await asyncio.sleep(hold / 20)
+                await asyncio.sleep(0)
                 ticks += 1
+                if ticks >= 2:
+                    ticker_ran.set()
+
+        # The client's one hold wait stands in for the refill: rather than
+        # sleep a duration, it yields to the loop until the ticker has had its
+        # turns, so the test proves the await gives other tasks a turn without
+        # racing a wall clock. The clock never moves, so the hold stays due and
+        # the client reaches this await.
+        class _WaitForTicker:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(asyncio, name)
+
+            async def sleep(self, _delay: float, *_a: Any, **_k: Any) -> None:
+                await ticker_ran.wait()
+
+        monkeypatch.setattr(dc, "time", _Clock())
+        monkeypatch.setattr(dc, "asyncio", _WaitForTicker())
+        client._set_hold(_route_key("POST", "/channels/9111/typing"), 0.1)
 
         ticker = asyncio.create_task(_ticker())
         try:
@@ -928,13 +948,9 @@ class TestEditOutcomeClassification:
     """The seam grader picks its predecessor from the edit outcome, so an
     ordinary edit failure (404/429/5xx/timeout) must classify -- never raise.
 
-    Regression guard: the outcome verb routes through ``edit_message_result``
-    for a real ``DiscordApiResult`` rather than ``_api_multipart``, whose parsed
-    BODY is ``None`` on any failure -- a falsy body reaching ``result.status``
-    raises ``AttributeError`` at every non-OK edit, and ``_land_sealed``'s blanket
-    ``except`` then swallows it and drops the finalized segment's fallback send.
-    These drive the real client against a failing transport, so the classified
-    result is what keeps them from raising.
+    A raise here would be swallowed by ``_land_sealed``'s blanket ``except`` and
+    drop the segment's fallback send; ``_api_multipart`` returns a ``None`` body on
+    failure, so the verb needs a real ``DiscordApiResult``.
     """
 
     @pytest.mark.asyncio
@@ -991,7 +1007,7 @@ class TestEditOutcomeClassification:
         assert outcome == EDIT_FAILED
 
 
-# ── The truthiness contract the old callers rely on ───────────────────────
+# ── The truthiness contract callers rely on ───────────────────────────────
 
 
 class TestLegacyContract:
@@ -1039,11 +1055,8 @@ class TestLegacyContract:
 class TestNonFiniteRateLimitNumbersCannotWedgeTheClient:
     """A non-finite rate-limit number must read as absent, not become a sleep.
 
-    ``float("nan")`` parses, and NaN then survives every downstream guard: ``nan
-    <= 0`` is False so the "no hold needed" branch does not take it, and
-    ``min(max(nan, floor), ceiling)`` is still NaN. One malformed or hostile
-    header would otherwise become ``asyncio.sleep(nan)`` and wedge the client for
-    the life of the process.
+    NaN passes ``<= 0`` and ``min(max(...))`` guards, so one hostile header would
+    become ``asyncio.sleep(nan)`` and wedge the client for the life of the process.
     """
 
     @pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "Infinity"])
@@ -1056,8 +1069,7 @@ class TestNonFiniteRateLimitNumbersCannotWedgeTheClient:
         assert value is not None and math.isfinite(value)
 
     def test_a_nan_reset_after_header_arms_no_hold(self) -> None:
-        """The bucket-hold path is where a NaN would have become an unbounded
-        pre-emptive wait on every later call to that route."""
+        """On the bucket-hold path a NaN would be an unbounded wait on every call to that route."""
         client = DiscordClient(token=_TOKEN)
         client._note_headers(
             "/channels/1/messages",
@@ -1073,12 +1085,9 @@ class TestNonFiniteRateLimitNumbersCannotWedgeTheClient:
 class TestRouteKeyCarriesNoCredential:
     """The route key is the string every rate-limit log line prints.
 
-    Two Discord paths carry a CREDENTIAL as a path segment -- an interaction token
-    and a webhook token, each of which authorizes the call it rides in. Collapsing
-    them by LENGTH is the wrong footing for that: the length ceiling exists to keep
-    the bucket table from growing one entry per button press, and a token shorter
-    than it (or a Discord change to the format) would print verbatim into the log
-    ring, where the operator's own ``kirocrew logs`` would then hand it out.
+    Interaction and webhook paths carry a credential segment. It is collapsed by
+    position, not length: a short token would otherwise print into the log ring
+    that ``kirocrew logs`` hands out.
     """
 
     #: A short token is the case a length rule misses; a long one is the case it

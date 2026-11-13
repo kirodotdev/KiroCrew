@@ -34,6 +34,7 @@ from queue_depth_reconcile_helpers import (
 )
 
 import kiro_crew.subagent as subagent_mod
+import kiro_crew.subagent_manager.run as run_mod
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 from kiro_crew.subagent_manager.run import _QUEUE_DEPTH_RETRIES
@@ -323,9 +324,16 @@ async def test_an_unreadable_store_publishes_nothing_and_keeps_the_label(
 async def test_a_card_converges_once_the_store_answers_again(
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
 ) -> None:
-    """The stop's own read fails and nothing else will ask: the delayed
-    re-read is what repairs the card."""
+    """The stop's own read fails, and the stopped rows' heals answer the card.
+
+    Each stopped row's ``subagent_done`` asks for the depth while the card still
+    shows 3, and that read publishes the 0 and disarms the re-read the failure
+    armed. The re-read's timer is held off and the burst's clock frozen, so
+    neither can add a read: the timer firing during that read is the next test.
+    """
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    monkeypatch.setattr(run_mod, "_QUEUE_DEPTH_RETRY_SECS", 60.0)  # the heals answer it
+    monkeypatch.setattr(run_mod, "_queue_depth_clock", lambda: 0.0)
     try:
         _defer(mgr, 3)
         await _settle(mgr)
@@ -333,11 +341,66 @@ async def test_a_card_converges_once_the_store_answers_again(
         calls = _fail_chip_reads(monkeypatch, times=1)
 
         assert await mgr.cancel_for_parent(_PARENT) == (0, 3)
-        await _until(lambda: bool(_depths(events)), "the delayed re-read published")
+        await _until(lambda: bool(_depths(events)), "a read after the failed one published")
         await _settle(mgr)
 
         assert len(calls) == 2
         assert _depths(events) == [{"queued": 0}]
+        assert _store_waiting(mgr) == 0
+        assert _PARENT not in mgr._queue_depth_retries
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_reread_that_fires_during_a_read_still_publishes_once(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """The delayed re-read fires while another request's read is on the store.
+
+    It joins that burst, so the overlapped read is discarded and read again,
+    and the card gets one frame. On a fast timer this is the order a stop
+    takes when its heal read outlasts the re-read's delay. The timer is held
+    off and its callback run by hand inside the held read, and the burst's
+    clock is frozen, so the order is the test's and not the host's.
+    """
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    monkeypatch.setattr(run_mod, "_QUEUE_DEPTH_RETRY_SECS", 60.0)  # fired by hand below
+    monkeypatch.setattr(run_mod, "_queue_depth_clock", lambda: 0.0)
+    real = SpawnAdmissionCoordinator.taskq_chip_overflow_async
+    calls: list[int] = []
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held(self: Any, parent: str) -> int | None:
+        calls.append(1)
+        if len(calls) == 1:
+            return None
+        if len(calls) == 2:
+            entered.set()
+            await await_until(release, what="the test's release")
+        return await real(self, parent)
+
+    try:
+        _defer(mgr, 3)
+        await _settle(mgr)
+        events = _record(mgr)
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_chip_overflow_async", held)
+
+        mgr._emit_queue_depth(_PARENT)
+        await _settle(mgr)
+        armed = mgr._queue_depth_retries[_PARENT]
+        mgr._emit_queue_depth(_PARENT)
+        await await_until(entered, what="the second read starting")
+        armed.handle.cancel()
+        mgr._run_events._fire_queue_depth_retry(_PARENT)
+        release.set()
+        await _settle(mgr)
+
+        assert len(calls) == 3
+        assert [frame["queued"] for frame in _depths(events)] == [3]
+        assert _PARENT not in mgr._queue_depth_retries
     finally:
         _close(mgr)
 

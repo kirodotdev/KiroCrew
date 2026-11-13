@@ -8,14 +8,14 @@
  *   - a clipped row offers the arrow pointing at the hidden side only,
  *   - the arrows follow the row as it is scrolled (which needs a listener bound
  *     to the node, not a one-shot read),
- *   - the wheel translation still rides on the same node after the binding moved
- *     into the ref callback.
+ *   - a vertical wheel scrolls the row while it is clipped.
  *
  * jsdom does no layout, so scroll geometry is stubbed — that stub is what makes
  * the derivation testable at all.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
+import { expectWheelToScrollRow } from './helpers'
 import FollowUpBar, { FOLLOWUP_CHIP_DEBOUNCE_MS, LEFT_ARROW_CLICK_SHIELD_MS } from '../components/FollowUpBar'
 
 /** `hidden` px of content beyond the right edge, `scrolled` px already past the left. */
@@ -78,22 +78,9 @@ describe('FollowUpBar scroll layout edges', () => {
     expect(rightArrow()).toBeNull()
   })
 
-  it('translates a vertical wheel into horizontal scrolling only while clipped', () => {
-    stubGeometry({ hidden: 240 })
+  it('scrolls sideways on a vertical wheel only while the chips are clipped', () => {
     const { container } = renderScroll()
-    const scroller = container.querySelector('.overflow-x-auto') as HTMLElement
-    // scrollLeft is stubbed as a getter, so observe the preventDefault contract
-    // instead: the row claims the gesture exactly when it can act on it.
-    const clipped = new WheelEvent('wheel', { deltaY: 40, deltaX: 0, cancelable: true })
-    scroller.dispatchEvent(clipped)
-    expect(clipped.defaultPrevented).toBe(true)
-
-    vi.restoreAllMocks()
-    stubGeometry({ hidden: 0 })
-    const fits = new WheelEvent('wheel', { deltaY: 40, deltaX: 0, cancelable: true })
-    scroller.dispatchEvent(fits)
-    // A row that fits must leave the gesture to the page.
-    expect(fits.defaultPrevented).toBe(false)
+    expectWheelToScrollRow(container.querySelector('.overflow-x-auto') as HTMLElement)
   })
 
   it('pads the far end of a scrolling row so a vanishing arrow never leaves a chip under the pointer', () => {

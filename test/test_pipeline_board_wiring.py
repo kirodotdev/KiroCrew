@@ -1,23 +1,12 @@
 """The contract, wired: the reader derives the numbers and the writer is refused them.
 
-The types and the parity gate prove the contract is COHERENT. They cannot prove it is
-CONNECTED -- ``build_pipeline_board`` type-checks perfectly with no caller at all, which
-is exactly the state the previous commit left it in. These are the tests that fail when
-the wire is cut.
+``build_pipeline_board`` type-checks with no caller at all, so these tests fail when the
+wire is cut. The WRITER (:func:`kiro_crew.agent_panel.publish`) refuses a payload that is
+not a :class:`PipelineBoardJudgment`, since agent JSON meets no type checker. The READER
+(``_panel_record``) replaces a free-shape record's data with the provider's and says so.
 
-Two ends, and they fail differently on purpose:
-
-* the WRITER (:func:`kiro_crew.agent_panel.publish`) refuses a payload that is not a
-  :class:`PipelineBoardJudgment` and names the key, because the publisher is an agent
-  handing over JSON and no type checker is anywhere near it. This is where ``you`` being
-  the string ``"Raymond"`` stops, while the author is still present to fix the call.
-* the READER (``_panel_record``) replaces the data with the provider's output, so a
-  record already on disk in the free shape still renders the log's own numbers -- and
-  says it did.
-
-The load-bearing case is :func:`test_an_absent_work_board_is_not_a_board_of_zeros`. Every
-other test here fails loudly when the wiring breaks; that one fails SILENTLY in
-production, as a board of zeros a reader cannot tell from a real empty fleet.
+:func:`test_an_absent_work_board_is_not_a_board_of_zeros` is the case that would fail
+silently, as a board of zeros indistinguishable from an empty fleet.
 """
 
 from __future__ import annotations
@@ -26,6 +15,7 @@ import json
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import agent_panel
 from kiro_crew import crew_log as lg
@@ -60,26 +50,19 @@ def _isolated_home(tmp_path, monkeypatch):
     crew_log.forget_slot_folds()
 
 
-# ---------------------------------------------------------------------------
 # the fold name this reader asks for must be one the kernel registers
-# ---------------------------------------------------------------------------
 
 
 def test_the_work_fold_name_is_one_the_kernel_actually_registers() -> None:
     """``WORK_FOLD_NAME`` names a real fold.
 
-    The reader asks for a projection BY NAME across a package boundary, so a rename in
-    the registry cannot be caught by any type. It would make the read raise, which the
-    reader's own totality contract turns into a warning and an unchanged record -- a
-    blank panel with the numbers silently never arriving. Cheap to pin, invisible
-    otherwise.
+    The projection is asked for BY NAME, so a registry rename escapes the types and
+    shows only as a warning and a blank panel.
     """
     assert WORK_FOLD_NAME in crew_log.FOLD_NAMES
 
 
-# ---------------------------------------------------------------------------
 # the writer: the publisher's half is checked at run time
-# ---------------------------------------------------------------------------
 
 
 def test_a_bare_name_under_you_is_refused_and_the_key_is_named() -> None:
@@ -189,9 +172,7 @@ def test_publish_still_accepts_any_shape_on_the_generic_template() -> None:
     assert record["data"] == {"cycle": 3, "holding": "two workers", "anything": [1, 2]}
 
 
-# ---------------------------------------------------------------------------
 # the reader: the numbers come from the fold
-# ---------------------------------------------------------------------------
 
 
 def _unit() -> None:
@@ -208,7 +189,7 @@ def _work(*, action: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT, "actor": "conductor", "by": SLOT, "action": action}
     payload.update({name: value for name, value in fields.items() if value is not None})
     assert crew_log_emit.on_work_recorded(UNIT, payload, timeout=5.0) is True
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _board(*, items: int = 2, rounds: int = 3) -> list[str]:
@@ -340,15 +321,13 @@ def test_a_free_shape_record_already_on_disk_is_replaced_and_disclosed(monkeypat
     """A record predating the contract renders the log's numbers AND says it was
     overridden.
 
-    The writer refuses this shape now, but records written before it are on disk and
-    their author is gone, so the reader cannot refuse anything useful. What it must not
-    do is override silently: a provider quietly replacing published values is the same
-    undisclosed authority this contract took away from the publisher.
+    Free-shape records can still be on disk with no author to fix them, so the reader
+    replaces rather than refuses, but never silently.
     """
     _unit()
     _board(items=2)
     record = _record({"lede": "ok"})
-    # The shape publish now refuses, forced past it to stand for a record already stored.
+    # The shape publish refuses, forced past it to stand for a record already stored.
     record["data"] = {"title": "fleet", "fleet": 6, "waiting_on_you": "Raymond"}
 
     with caplog.at_level("WARNING"):
@@ -363,17 +342,9 @@ def test_a_free_shape_record_already_on_disk_is_replaced_and_disclosed(monkeypat
 def test_the_drawer_serializer_accepts_every_key_the_provider_adds(monkeypatch) -> None:
     """The provider's record survives the drawer's allow-list, key for key.
 
-    ``_panel_meta`` is an allow-list over the record's OWN keys that RAISES on a key
-    classified neither served nor withheld, and the route turns that raise into the
-    empty state. So a derived key this provider adds and nobody classifies does not
-    show up as a wrong number -- it shows up as every conductor's drawer reading
-    "nothing published", with the defect only in a server log. Nothing above notices:
-    the provider tests here stop at the record, and the serializer's own test reads
-    only the keys the FOLD produces, not the ones this route adds after it.
-
-    Asserted over the record the provider actually returns rather than a hand-listed
-    pair of names, so a third derived key added later is covered by this test the day
-    it is added.
+    ``_panel_meta`` RAISES on an unclassified key, and the route turns that into the empty
+    state, so every drawer would read "nothing published". Checked over the record the
+    provider returns, so a new derived key is covered as soon as it is added.
     """
     _unit()
     _board(items=2)
@@ -441,7 +412,12 @@ def test_the_unsaid_sentinel_never_reaches_the_rendered_data(monkeypatch) -> Non
 
     data = _read(record, monkeypatch)["board"]
 
-    assert UNSAID not in json.dumps(data)
+    # ``json.dumps`` would itself raise on an ``Unsaid`` member -- it is not JSON --
+    # so a clean serialization already proves no sentinel reached the island; the text
+    # scan then guards against a stringified copy of it leaking in as data.
+    serialized = json.dumps(data)
+    assert repr(UNSAID) not in serialized
+    assert UNSAID.value not in serialized
     # And the absence is a real one: this publisher supplied only a lede, so every
     # per-card judgment is unsaid. A payload with no nulls at all would mean the
     # conversion never ran rather than that nothing needed converting.
@@ -455,15 +431,9 @@ def test_the_document_carries_the_board_and_the_docked_data_stays_published(
 ) -> None:
     """One record, two surfaces, two keys -- and each surface gets the right one.
 
-    The composed DOCUMENT is what the contract describes, so it must carry the derived
-    board. The drawer's DOCKED card is native React that walks ``data``'s own key order
-    and prints its leading entries as headline tiles, so a derived board placed there
-    made a conductor's compact card lead with "contract version 1" and "omitted 0" --
-    the two least useful numbers on it. The publisher's sentence is what belongs in a
-    one-line card.
-
-    Asserted through ``render_record``, the real composer, rather than by inspecting the
-    record: the record having a ``board`` key proves nothing about which key is rendered.
+    The DOCUMENT carries the derived board. The DOCKED card prints ``data``'s leading
+    keys as tiles, so the board there would lead with "contract version 1". Checked
+    through ``render_record``, the real composer.
     """
     _unit()
     _board(items=2)

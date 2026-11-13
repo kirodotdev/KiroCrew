@@ -107,6 +107,58 @@ test("restart after firing re-arms for a new episode", async () => {
   m.stop();
 });
 
+test("a probe still outstanding when the monitor stops is dropped, not read as a wedge", async () => {
+  // A caller stops the monitor and then stops the gateway on purpose: the
+  // probe that was already in flight fails because of that stop, and must not
+  // trip recovery on the gateway being stopped.
+  const events = [];
+  let rejectProbe;
+  let probes = 0;
+  const m = createLivenessMonitor({
+    probe: () => {
+      probes += 1;
+      if (probes < 3) return Promise.reject(new Error("unresponsive"));
+      return new Promise((_resolve, reject) => { rejectProbe = reject; });
+    },
+    onUnresponsive: () => events.push("unresponsive"),
+    onRecovered: () => events.push("recovered"),
+    failureThreshold: 3,
+    log: () => {},
+  });
+  await m.tick(); // 1
+  await m.tick(); // 2
+  const third = m.tick(); // outstanding
+  m.stop();
+  rejectProbe(new Error("connection refused"));
+  await third;
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().fired, false);
+  assert.strictEqual(m.getState().consecutiveFailures, 2, "the dropped probe is not counted");
+});
+
+test("a probe that resolves after the monitor stops emits nothing", async () => {
+  const events = [];
+  let resolveProbe;
+  let probes = 0;
+  const m = createLivenessMonitor({
+    probe: () => {
+      probes += 1;
+      if (probes < 2) return Promise.reject(new Error("unresponsive"));
+      return new Promise((resolve) => { resolveProbe = resolve; });
+    },
+    onUnresponsive: () => events.push("unresponsive"),
+    onRecovered: () => events.push("recovered"),
+    failureThreshold: 3,
+    log: () => {},
+  });
+  await m.tick(); // 1 failure
+  const second = m.tick();
+  m.stop();
+  resolveProbe();
+  await second;
+  assert.deepStrictEqual(events, []);
+});
+
 // ---------------------------------------------------------------------------
 // The probe the monitor polls WITH. Field report (Windows desktop, 0.6.x): a
 // gateway whose event loop lagged 1-9s under a full test run answered every

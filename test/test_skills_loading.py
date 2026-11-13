@@ -8,6 +8,8 @@ of a relocated builtin skill's old copy. The family's other files are described 
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 from pathlib import Path
 
@@ -375,6 +377,31 @@ class TestSkillsLoader:
         always = loader.get_always_skills()
         assert "memory" in always
         assert "weather" not in always
+
+    def test_inclusion_always_without_always_true_is_named_once(self, tmp_path, caplog):
+        """``inclusion: always`` is the steering key: a skill carrying it alone stays
+        on demand, and the listing says so once instead of ignoring it silently."""
+        skills_dir = tmp_path / "skills"
+        _create_skill(
+            skills_dir,
+            "talk",
+            "---\nname: talk\ndescription: Talk\ninclusion: always\n---\n# Talk\n",
+        )
+        _create_skill(
+            skills_dir,
+            "both",
+            "---\nname: both\ndescription: Both\ninclusion: always\nalways: true\n---\n# Both\n",
+        )
+        loader = _settled(SkillsLoader(skills_path=skills_dir, install_builtins=False))
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.skills"):
+            loader.list_skills()
+            rows = loader.list_skills()
+
+        assert {row["key"]: row["always"] for row in rows} == {"talk": False, "both": True}
+        named = [r.getMessage() for r in caplog.records if "inclusion: always" in r.getMessage()]
+        assert len(named) == 1, named
+        assert str(Path("talk") / "SKILL.md") in named[0]
+        assert "always: true" in named[0]
 
     def test_get_context(self, tmp_path):
         skills_dir = tmp_path / "skills"
@@ -786,7 +813,7 @@ class TestSkillsLoaderExtraPaths:
         # validate_file_path — flagging it there blocks both.
         monkeypatch.setattr(
             "kiro_crew.skills.validate_file_path",
-            lambda p: None if str(p).endswith("SKILL.md") else p,
+            lambda p, **_kw: None if str(p).endswith("SKILL.md") else p,
         )
         loader = _settled(
             SkillsLoader(
@@ -797,3 +824,88 @@ class TestSkillsLoaderExtraPaths:
         )
         assert "x" not in {s["name"] for s in loader.list_skills()}
         assert loader.load_skill("x") is None
+
+
+def _unresolvable_extra_paths() -> list[str]:
+    # An embedded NUL cannot be resolved on any platform; an unknown ``~user``
+    # has no home to expand to on POSIX.
+    bad = ["a\x00b"]
+    if os.name != "nt":
+        bad.append("~kirocrew-no-such-user-for-test/skills")
+    return bad
+
+
+def test_an_unresolvable_extra_path_is_skipped_not_fatal(tmp_path):
+    """One bad ``skills.extra_paths`` entry is skipped; the loader and the good roots stay."""
+    good = tmp_path / "extra"
+    (good / "x").mkdir(parents=True)
+    (good / "x" / "SKILL.md").write_text(
+        "---\nname: x\ndescription: d\n---\nbody\n", encoding="utf-8"
+    )
+    cfg = KiroCrewConfig(skills=SkillsConfig(extra_paths=[*_unresolvable_extra_paths(), str(good)]))
+
+    loader = _settled(
+        SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False, config=cfg)
+    )
+
+    assert loader._configured_extra_paths == [good.resolve()]
+    assert "x" in {s["name"] for s in loader.list_skills()}
+
+
+def test_an_unresolvable_extra_path_is_skipped_on_reload(tmp_path):
+    good = tmp_path / "extra"
+    good.mkdir()
+    cfg = KiroCrewConfig(skills=SkillsConfig(extra_paths=[*_unresolvable_extra_paths(), str(good)]))
+
+    assert SkillsLoader._screen_extra_paths(cfg) == [good.resolve()]
+
+
+def test_an_unresolvable_extra_path_keeps_the_other_canonical_roots(tmp_path, monkeypatch):
+    """The dashboard's canonical roots skip one bad entry instead of dropping every root."""
+    from kiro_crew.dashboard.handlers import _shared_skill_roots as roots_mod
+
+    good = tmp_path / "extra"
+    good.mkdir()
+    cfg = KiroCrewConfig(skills=SkillsConfig(extra_paths=[*_unresolvable_extra_paths(), str(good)]))
+    monkeypatch.setattr(roots_mod.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    assert good.resolve() in roots_mod._canonical_skill_roots()
+
+
+def _skills_with_one_latin1_file(tmp_path: Path) -> Path:
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "good").mkdir(parents=True)
+    (skills_dir / "good" / "SKILL.md").write_text(
+        "---\nname: good\ndescription: deploy the payments service\nalways: true\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (skills_dir / "bad").mkdir()
+    # Saved as Latin-1: the single byte 0xE9 is not valid UTF-8.
+    (skills_dir / "bad" / "SKILL.md").write_bytes(
+        b"---\nname: bad\ndescription: caf\xe9 deploy the payments service\nalways: true\n---\nx\n"
+    )
+    return skills_dir
+
+
+def test_one_undecodable_skill_costs_its_own_always_row(tmp_path):
+    loader = _settled(
+        SkillsLoader(skills_path=_skills_with_one_latin1_file(tmp_path), install_builtins=False)
+    )
+
+    try:
+        always = loader.get_always_skills()
+    except UnicodeDecodeError as exc:
+        pytest.fail(f"one undecodable SKILL.md cost every always-on skill: {exc}")
+    assert always == ["good"]
+
+
+def test_one_undecodable_skill_is_left_out_of_find_similar(tmp_path):
+    loader = _settled(
+        SkillsLoader(skills_path=_skills_with_one_latin1_file(tmp_path), install_builtins=False)
+    )
+
+    try:
+        similar = loader.find_similar("deploy the payments service")
+    except UnicodeDecodeError as exc:
+        pytest.fail(f"one undecodable SKILL.md cost the whole dedupe: {exc}")
+    assert similar == "good"

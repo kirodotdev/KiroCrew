@@ -28,7 +28,12 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping
 
 from kiro_crew import platform_compat
-from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
+from kiro_crew.env import (
+    mcp_search_path,
+    resolved_command_casing,
+    saved_command_casing,
+    spec_path_key,
+)
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import decode_target_args, expand_stub_flags
@@ -209,11 +214,12 @@ def _resolve_target_command(
         # session, so failing it in the session (visible) beats a per-session
         # pooled-spawn-then-fallback cycle.
         if os.path.isfile(target_command) and os.access(target_command, os.X_OK):
-            # PATHEXT did not synthesize this spelling: it came from the
-            # operator's spec. Preserve it exactly, including any deliberate
-            # file or directory alias, and keep absolute paths outside the
-            # bare-command probe cache as they were before schema 6.
-            return target_command
+            # The operator's spec spelling: preserve it, including any
+            # deliberate file or directory alias, except a PATHEXT ``.EXE``
+            # an older build persisted, which ``saved_command_casing`` heals.
+            # Absolute paths stay outside the bare-command probe cache as they
+            # were before schema 6.
+            return saved_command_casing(target_command)
         return ""
     # spec_path_key, not a literal "PATH" lookup: Windows-authored specs
     # legitimately spell it "Path" and the child's loader honours it.

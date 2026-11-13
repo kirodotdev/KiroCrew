@@ -26,7 +26,6 @@ vi.mock('../../api/client', () => ({
     memberProjections: vi.fn(() => Promise.resolve({ asOfSeq: 0, values: {} })),
     memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
   },
 }))
 
@@ -64,7 +63,7 @@ async function openAlpha() {
 async function pressAndAsk(button: HTMLElement) {
   fireEvent.click(button)
   const dialog = await screen.findByRole('dialog')
-  expect(within(dialog).getByText('Give this mate a fresh start?')).toBeTruthy()
+  expect(within(dialog).getByText('Give this bot a fresh start?')).toBeTruthy()
   expect(within(dialog).getByText(/messages stay here/i)).toBeTruthy()
   return dialog
 }

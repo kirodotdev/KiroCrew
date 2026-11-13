@@ -8,9 +8,13 @@ branch, and the event loop staying responsive during slow startup work.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
+import io
 import logging
 import threading
 import time
+import weakref
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +33,7 @@ from slack_gateway_helpers import (
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack.gateway import GatewayOrchestrator
+from kiro_crew.testing.wait import await_until, finished
 
 _GATEWAY_LOGGER = "kiro_crew.slack.gateway"
 
@@ -51,6 +56,7 @@ class TestInitDashboard:
         orch.consolidator = MagicMock()
         orch.task_runner = MagicMock()
         orch.slack = None
+        orch._approval_mode = "yolo"
         ds = _mock_dashboard_state()
         runner = MagicMock()
         with patch(
@@ -62,6 +68,7 @@ class TestInitDashboard:
         assert orch.dashboard_state is ds
         assert orch._dashboard_runner is runner
         assert start.await_args.kwargs["assume_kiro_ready"] is True
+        assert start.await_args.kwargs["approval_mode"] == "yolo"
 
     @pytest.mark.parametrize(
         "servers, expected",
@@ -173,10 +180,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
@@ -186,7 +194,7 @@ class TestRunMethod:
 
     @pytest.mark.asyncio
     async def test_run_no_dashboard_uses_api_server(self, tmp_path, monkeypatch):
-        """--no-dashboard waits for and then clears its run marker."""
+        """--no-dashboard publishes, then writes and clears its run marker."""
         import kiro_crew
         from kiro_crew.instances import run_marker
 
@@ -194,11 +202,15 @@ class TestRunMethod:
         orch._dashboard_port = 5476
 
         monkeypatch.setattr(run_marker, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {})
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", tmp_path / "default-run")
         run_marker.write_marker(orch._dashboard_port)
         original_write_marker = run_marker.write_marker
         events = []
+        seen = []
 
         def slow_write_marker(port):
+            seen.append(run_marker.published_listeners(port))
             events.append("write-start")
             # flake-ok: pre-existing sleep inside the slow marker-write stub, moved verbatim; tracked for a de-flake pass
             # nosemgrep: kirocrew.test-sleep-as-barrier -- stub that simulates a slow write, moved verbatim; tracked for a de-flake pass
@@ -231,7 +243,13 @@ class TestRunMethod:
         orch._init_subagents = MagicMock()
         orch._init_task_runner = MagicMock()
         orch._init_dashboard = AsyncMock()
-        orch._init_api_server = AsyncMock()
+        task_at_init = []
+
+        async def _publish():
+            task_at_init.append(orch._marker_write_task)
+            run_marker.note_published_listener(5476, "127.0.0.1")
+
+        orch._init_api_server = AsyncMock(side_effect=_publish)
         orch._init_autonudge = AsyncMock()
         orch._check_for_updates = AsyncMock()
         orch._shutdown = AsyncMock()
@@ -249,10 +267,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
@@ -261,14 +280,15 @@ class TestRunMethod:
         assert events == ["write-start", "write-end", "clear"]
         assert not marker.exists()
         assert not pid_marker.exists()
+        assert task_at_init == [None]
+        assert seen == [frozenset({"127.0.0.1"})]
 
     @pytest.mark.asyncio
     async def test_run_stalled_marker_write_does_not_block_shutdown(self, tmp_path, monkeypatch):
         """A hung marker write times out; the marker is cleared and _shutdown runs.
 
-        Regression: an unbounded ``await self._marker_write_task`` sat before
-        the bounded ``_shutdown()`` call, so a stalled write consumed the
-        graceful-shutdown deadline and active slots were SIGKILLed unsaved.
+        An unbounded wait on ``self._marker_write_task`` before ``_shutdown()`` would
+        spend the graceful-shutdown deadline, and active slots would be SIGKILLed unsaved.
         """
         import kiro_crew
         from kiro_crew.instances import run_marker
@@ -353,10 +373,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
             # Release AND drain the stalled writer inside this finally: if an
@@ -375,16 +396,10 @@ class TestRunMethod:
         assert events[:2] == ["write-start", "clear"]
         orch._shutdown.assert_awaited_once()
 
-        # The released writer republished the marker files after the
-        # timed-out clear. The writer thread must then self-clear them
-        # (same thread, no event-loop callback os._exit could beat),
-        # otherwise a stopped gateway leaves stale runtime state behind.
-        #
-        # The thread's clear is ``clear_late_marker_write``, scoped to the
-        # generation: it may run after the listener is free, where a location
-        # does not identify its owner, so it removes only this process's own
-        # write and only while the pid record still names this process. The
-        # shutdown-side ``clear_marker`` runs once and holds the listener.
+        # The released writer republished the markers after the timed-out clear, so
+        # its own thread must clear them (no loop callback os._exit could beat).
+        # ``clear_late_marker_write`` may run after the listener is free, so it
+        # removes only this process's write, while the pid record still names it.
         assert late_cleared.is_set(), (
             f"the released writer did not self-clear within the {_LOST_RUN_SECS:.0f}s "
             f"lost-run ceiling: {events}"
@@ -444,10 +459,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
@@ -505,8 +521,7 @@ class TestRunFreezesBootHeap:
                 patch("kiro_crew.session.cleanup_orphaned_sessions"),
                 patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock),
                 patch("os._exit"),
-                patch("resource.getrlimit", return_value=(256, 10240)),
-                patch("resource.setrlimit"),
+                patch("kiro_crew.platform_compat.raise_nofile_soft_limit"),
             ):
                 # flake-ok: run() returns because the shutdown event is set before it starts
                 await orch.run()
@@ -531,21 +546,153 @@ class TestRunFreezesBootHeap:
         assert freezes == [(0, 1, False)]
 
 
+class TestRunGcWarmFreeze:
+    """``KIROCREW_GC_WARM_FREEZE``: off changes nothing; on, gen-2 threshold 100 and one warm freeze."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_gc(self):
+        import gc
+
+        from kiro_crew import gc_tuning
+
+        before = gc.get_threshold()
+        gc_tuning.reset_for_tests()
+        try:
+            yield
+        finally:
+            gc.set_threshold(*before)
+            gc_tuning.reset_for_tests()
+
+    @staticmethod
+    async def _boot(monkeypatch, *, switch: str | None) -> tuple[asyncio.Event, list[bool]]:
+        """Drive run() past the bind-time freeze; return the warm-up event and the freezes.
+
+        Each recorded freeze is ``gc.isenabled()`` at the call. run() is stopped at the
+        step right after the GC block (``slot_backfill_child.enable``), so nothing past
+        it needs a fake.
+        """
+        import gc
+
+        import kiro_crew
+        from kiro_crew import gc_tuning
+
+        if switch is None:
+            monkeypatch.delenv(gc_tuning.SWITCH_ENV, raising=False)
+        else:
+            monkeypatch.setenv(gc_tuning.SWITCH_ENV, switch)
+        gc.set_threshold(700, 10, 10)
+        orch = _make_orchestrator()
+        for name in ("_init_services", "_start_embeddings", "_auto_migrate_memory", "_init_cron"):
+            setattr(orch, name, AsyncMock())
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = AsyncMock()
+        orch._announce_cron_quarantine = MagicMock()
+        warm = asyncio.Event()
+        # What a started dashboard leaves behind; the mocked _init_dashboard builds none.
+        orch.dashboard_state = SimpleNamespace(startup_tabs_rebuilt=warm)
+        freezes: list[bool] = []
+        # A spy, not the real freeze: freezing would park this worker's whole heap.
+        monkeypatch.setattr(gc, "freeze", lambda: freezes.append(gc.isenabled()))
+        was_enabled = gc.isenabled()
+        gc.disable()
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(loop, "add_signal_handler"))
+                for target in (
+                    "kiro_crew.platform_compat.raise_nofile_soft_limit",
+                    "kiro_crew.slack.events.init_socket_mode",
+                    "kiro_crew.slack.interactions.init",
+                    "kiro_crew.slack.events.SeenCache",
+                    "kiro_crew.session.cleanup_orphaned_sessions",
+                    "os._exit",
+                ):
+                    stack.enter_context(patch(target))
+                stack.enter_context(
+                    patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+                )
+                stack.enter_context(
+                    patch(
+                        "kiro_crew.crew_log.slot_backfill_child.enable",
+                        side_effect=_BootMovedOn(),
+                    )
+                )
+                with pytest.raises(_BootMovedOn):
+                    await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+            if was_enabled:
+                gc.enable()
+        return warm, freezes
+
+    @pytest.mark.asyncio
+    async def test_switch_off_freezes_only_at_bind_and_keeps_thresholds(self, monkeypatch):
+        import gc
+
+        warm, freezes = await self._boot(monkeypatch, switch=None)
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert freezes == [False]
+        assert gc.get_threshold() == (700, 10, 10)
+
+    @pytest.mark.asyncio
+    async def test_switch_on_sets_threshold_and_freezes_once_after_warm_up(self, monkeypatch):
+        import gc
+
+        from kiro_crew import gc_tuning
+
+        warm, freezes = await self._boot(monkeypatch, switch="1")
+        assert gc.get_threshold() == (700, 10, gc_tuning.GEN2_THRESHOLD)
+        # Warm-up has not finished: only the bind-time freeze so far.
+        assert freezes == [False]
+
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        # The warm-up freeze runs with GC already back on, after the bind-time one.
+        assert freezes == [False, True]
+
+        # A second warm-up signal does not freeze again.
+        warm.clear()
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert freezes == [False, True]
+
+
 class _BootStopsHere(BaseException):
     """Ends ``run()`` at the release, so no boot step after it needs a fake."""
 
 
-class TestOrphanNoticeRelease:
-    """``run()`` releases the boot orphan sweep's held notices once the surface is up.
+class _BootMovedOn(BaseException):
+    """Ends ``run()`` at its first step after the release point (``gc.freeze``)."""
 
-    The sweep starts with the subagent manager, before the dashboard has restored
-    the tabs its notices go to. The release must follow the dashboard (or API-only
-    server) start, and must also run when that start raises, so the owner DM digest
-    still goes out.
+
+def _restore_cfg(*, surface_channel_sessions: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        dashboard=SimpleNamespace(
+            restore_window_minutes=30,
+            restore_sessions=True,
+            idle_slot_sweep_days=0,
+            surface_channel_sessions=surface_channel_sessions,
+        )
+    )
+
+
+class TestOrphanNoticeRelease:
+    """``run()`` releases the boot orphan sweep's held notices once the tabs are back.
+
+    Channel tabs return only with the channel reconciler's first complete pass, so
+    the release follows that pass. It runs at once when channel surfacing is off,
+    for the API-only server, and when the start raises, so the owner DM digest goes out.
     """
 
     @staticmethod
-    def _booting(*, no_dashboard: bool, start_raises: bool):
+    def _booting(*, no_dashboard: bool, start_raises: bool = False):
         orch = _make_orchestrator(no_dashboard=no_dashboard)
         events: list[str] = []
 
@@ -578,13 +725,11 @@ class TestOrphanNoticeRelease:
         orch._shutdown = AsyncMock()
         return orch, events
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("no_dashboard", [False, True], ids=["dashboard", "api-only"])
-    @pytest.mark.parametrize("start_raises", [False, True], ids=["started", "start-raised"])
-    async def test_the_release_follows_the_surface_start(self, no_dashboard, start_raises):
+    @staticmethod
+    async def _run_until(orch, stop: type[BaseException]) -> BaseException:
+        """Drive ``run()`` until *stop* ends it: the release, or the step after it."""
         import kiro_crew
 
-        orch, events = self._booting(no_dashboard=no_dashboard, start_raises=start_raises)
         # Set like the other boot tests: a run() that never reaches the release
         # leaves at the shutdown wait instead of blocking there.
         kiro_crew.shutdown_event.set()
@@ -604,15 +749,208 @@ class TestOrphanNoticeRelease:
                 stack.enter_context(
                     patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
                 )
-                with pytest.raises(_BootStopsHere) as stopped:
+                # A spy, not the real freeze: freezing would park this worker's heap.
+                stack.enter_context(patch("gc.freeze", side_effect=_BootMovedOn()))
+                with pytest.raises(stop) as stopped:
                     await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
+        return stopped.value
+
+    @staticmethod
+    def _dashboard_state(tmp_path, monkeypatch):
+        """A real ``DashboardState`` whose restores find nothing, and a fresh registry."""
+        from kiro_crew import session_surface
+        from kiro_crew.dashboard import channel_slots
+        from kiro_crew.dashboard import server as srv
+        from kiro_crew.dashboard.state import DashboardState
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv.cautious_boot, "pause_before", AsyncMock(return_value=None))
+        monkeypatch.setattr(srv.chat, "restore_open_slots_async", AsyncMock(return_value=0))
+        monkeypatch.setattr(srv.chat, "restore_recent_sessions_async", AsyncMock(return_value=0))
+        monkeypatch.setattr(channel_slots, "RECONCILE_INTERVAL_SECS", 3600)
+        monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset())
+        return DashboardState(
+            sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+        )
+
+    @staticmethod
+    async def _stop_dashboard_tasks(state) -> None:
+        import contextlib
+
+        task = state._channel_slot_reconciler
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if state._slot_list_rebuild_deadline is not None:
+            state._slot_list_rebuild_deadline.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("no_dashboard", [False, True], ids=["dashboard", "api-only"])
+    @pytest.mark.parametrize("start_raises", [False, True], ids=["started", "start-raised"])
+    async def test_the_release_follows_the_surface_start(self, no_dashboard, start_raises):
+        orch, events = self._booting(no_dashboard=no_dashboard, start_raises=start_raises)
+
+        stopped = await self._run_until(orch, _BootStopsHere)
 
         assert events == ["subagents", "surface", "release"]
         if start_raises:
             # The release ran while the start's own error was propagating.
-            assert isinstance(stopped.value.__context__, RuntimeError)
+            assert isinstance(stopped.__context__, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_an_api_only_gateway_releases_at_once_beside_its_state(
+        self, tmp_path, monkeypatch
+    ):
+        # ``start_api_server`` builds a DashboardState too, but it restores no
+        # tabs, so its ``startup_tabs_rebuilt`` is never set.
+        orch, events = self._booting(no_dashboard=True)
+        state = self._dashboard_state(tmp_path, monkeypatch)
+
+        async def _start_api_server() -> None:
+            orch.dashboard_state = state
+            events.append("surface")
+
+        orch._init_api_server = _start_api_server
+
+        await self._run_until(orch, _BootStopsHere)
+
+        assert events == ["subagents", "surface", "release"]
+        assert not state.startup_tabs_rebuilt.is_set()
+
+    @pytest.mark.asyncio
+    async def test_without_channel_surfacing_the_restores_finish_releases_at_once(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import server as srv
+
+        orch, events = self._booting(no_dashboard=False)
+        state = self._dashboard_state(tmp_path, monkeypatch)
+
+        async def _start_dashboard() -> None:
+            state.begin_slot_list_rebuild()
+            await srv._restore_dashboard_sessions(
+                state, _restore_cfg(surface_channel_sessions=False)
+            )
+            orch.dashboard_state = state
+            events.append("surface")
+
+        orch._init_dashboard = _start_dashboard
+        try:
+            await self._run_until(orch, _BootStopsHere)
+        finally:
+            await self._stop_dashboard_tasks(state)
+
+        assert events == ["subagents", "surface", "release"]
+        assert state._channel_slot_reconciler is None
+
+    @pytest.mark.asyncio
+    async def test_a_channel_parents_notice_waits_for_its_rebuilt_tab(
+        self, tmp_path, monkeypatch, close_subagent_managers
+    ):
+        # A Slack conversation was open in a tab at the last shutdown, and its
+        # subagent finished there. The real channel reconciler rebuilds the tab
+        # after the dashboard start returns; its first pass waits for ``first_pass``.
+        from kiro_crew import subagent_persistence as sp
+        from kiro_crew.dashboard import channel_slots
+        from kiro_crew.dashboard import server as srv
+        from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
+        from kiro_crew.history_projection import METADATA_LINE_CORRUPT
+        from kiro_crew.subagent import SubagentManager
+        from kiro_crew.testing.wait import await_until
+
+        for var, sub in (("KIROCREW_HOME", "home"), ("KIROCREW_WORKSPACE", "workspace")):
+            (tmp_path / sub).mkdir()
+            monkeypatch.setenv(var, str(tmp_path / sub))
+        sp.create_agent_folder("orp0101", task="summarise the logs", parent_session="slack:1.1")
+        assert sp.write_finished_result("orp0101", "the whole answer", sp.update_state)
+
+        state = self._dashboard_state(tmp_path, monkeypatch)
+        state.conversation_log = SimpleNamespace(
+            list_sessions_status=lambda: (
+                [{"key": "slack_1.1", "title": "", "modified": 10**12}],
+                True,
+            ),
+            get_metadata_status=lambda _key: ({}, False),
+            metadata_line_state=lambda _key: METADATA_LINE_CORRUPT,
+            mtime_of=lambda _key: None,
+            read_messages=MagicMock(return_value=[{"role": "user", "content": "hello"}]),
+        )
+        state.sessions.channel_key_for_stem = lambda stem: (
+            "slack:1.1" if stem == "slack_1.1" else ""
+        )
+        monkeypatch.setattr(channel_slots, "lookup_channel_folder", AsyncMock(return_value=""))
+        first_pass = asyncio.Event()
+        real_pass = channel_slots._reconcile_pass
+
+        async def _gated_pass(state_, window_minutes):  # type: ignore[no-untyped-def]
+            await first_pass.wait()
+            return await real_pass(state_, window_minutes)
+
+        monkeypatch.setattr(channel_slots, "_reconcile_pass", _gated_pass)
+
+        owner_dm: list[str] = []
+
+        async def _notify(parent_session, msg, meta=None, delivery=None):  # type: ignore[no-untyped-def]
+            # The gateway's own lookup (``_orphan_notify``): the tab showing the parent.
+            slot = state.get_slot(dashboard_slot_key(parent_session))
+            if slot is None:
+                return False
+            slot._pending_subagent_failures.append(msg)
+            return True
+
+        async def _dm(msg):  # type: ignore[no-untyped-def]
+            owner_dm.append(msg)
+            return True
+
+        manager = SubagentManager(
+            sessions=MagicMock(),
+            ctx_builder=MagicMock(),
+            on_done=AsyncMock(),
+            on_orphan_notify=_notify,
+            on_orphan_dm=_dm,
+            hold_orphan_notices=True,
+        )
+        monkeypatch.setattr(manager, "_is_pid_alive", lambda _pid: False)
+        monkeypatch.setattr("kiro_crew.subagent.sel", MagicMock())
+        orch, _events = self._booting(no_dashboard=False)
+        sweeps: list[asyncio.Task[None]] = []
+
+        def _init_subagents() -> None:
+            orch.subagent_mgr = manager
+            sweeps.append(asyncio.create_task(manager._reconcile_orphans()))
+
+        async def _start_dashboard() -> None:
+            state.begin_slot_list_rebuild()
+            await srv._restore_dashboard_sessions(
+                state, _restore_cfg(surface_channel_sessions=True)
+            )
+            orch.dashboard_state = state
+
+        orch._init_subagents = _init_subagents
+        orch._init_dashboard = _start_dashboard
+        try:
+            await self._run_until(orch, _BootMovedOn)
+
+            # The boot went on, and the notices are still held: the tab is not back.
+            assert (
+                not manager._orphan_notice_gate.is_set()
+            ), "the notices were released before the channel tab was rebuilt"
+            assert state.get_slot("slack_1.1") is None
+
+            first_pass.set()
+            await await_until(sweeps[0], what="the sweep the first channel pass released")
+        finally:
+            await self._stop_dashboard_tasks(state)
+
+        tab = state.get_slot("slack_1.1")
+        assert tab is not None and tab.linked_session_key == "slack:1.1"
+        assert len(tab._pending_subagent_failures) == 1
+        assert "orp0101" in tab._pending_subagent_failures[0]
+        assert owner_dm == [], "a notice the rebuilt tab took was also sent to the owner DM"
+        assert sp.read_tombstone("orp0101")["recovery_action"] == "delivered"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -749,11 +1087,10 @@ class TestRunSignalAndBgSession:
                                         ):
                                             with patch("os._exit"):
                                                 with patch(
-                                                    "resource.getrlimit", return_value=(256, 10240)
+                                                    "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                 ):
-                                                    with patch("resource.setrlimit"):
-                                                        # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                        await orch.run()
+                                                    # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                    await orch.run()
         finally:
             pass
 
@@ -829,17 +1166,15 @@ class TestBgSessionDashboardBranch:
                                                 ):
                                                     with patch("os._exit"):
                                                         with patch(
-                                                            "resource.getrlimit",
-                                                            return_value=(256, 10240),
+                                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                         ):
-                                                            with patch("resource.setrlimit"):
-                                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                                await orch.run()
-                                                                # Let bg_session task drain
-                                                                # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
-                                                                await asyncio.sleep(0)
-                                                                # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
-                                                                await asyncio.sleep(0)
+                                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                            await orch.run()
+                                                            # Let bg_session task drain
+                                                            # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
+                                                            await asyncio.sleep(0)
+                                                            # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
+                                                            await asyncio.sleep(0)
 
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
 
@@ -847,14 +1182,9 @@ class TestBgSessionDashboardBranch:
     async def test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited(self):
         """The URL must not wait on the MCP probe.
 
-        The port is bound before either happens, and nothing about formatting a
-        URL depends on MCP state — only session spawn does (kiro-cli reads
-        mcp.json at spawn time). Printing after the probe cost the operator up
-        to mcp_probe_timeout_secs+15 of blank screen, and all of it whenever the
-        probe timed out.
-
-        Asserted as an ORDER, not a call count, because the defect this pins is
-        purely positional: both the print and the probe happened either way.
+        Only session spawn depends on MCP state; waiting costs up to
+        mcp_probe_timeout_secs+15 of blank screen. Asserted as an ORDER: both
+        the print and the probe happen either way.
         """
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
@@ -923,16 +1253,14 @@ class TestBgSessionDashboardBranch:
                                                     ):
                                                         with patch("os._exit"):
                                                             with patch(
-                                                                "resource.getrlimit",
-                                                                return_value=(256, 10240),
+                                                                "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                             ):
-                                                                with patch("resource.setrlimit"):
-                                                                    # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                                    await orch.run()
-                                                                    # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
-                                                                    await asyncio.sleep(0)
-                                                                    # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
-                                                                    await asyncio.sleep(0)
+                                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                                await orch.run()
+                                                                # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
+                                                                await asyncio.sleep(0)
+                                                                # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
+                                                                await asyncio.sleep(0)
 
         assert "url" in trace, f"dashboard URL was never printed; trace={trace}"
         assert "probe" in trace, f"MCP probe was never awaited; trace={trace}"
@@ -997,61 +1325,209 @@ class TestBgSessionDashboardBranch:
                                             ):
                                                 with patch("os._exit"):
                                                     with patch(
-                                                        "resource.getrlimit",
-                                                        return_value=(256, 10240),
+                                                        "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                     ):
-                                                        with patch("resource.setrlimit"):
-                                                            # Must not raise.
-                                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                            await orch.run()
-                                                            # flake-ok: pre-existing pair of event-loop yields before the boot check, moved verbatim; tracked for a de-flake pass
-                                                            await asyncio.sleep(0)
-                                                            # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
-                                                            await asyncio.sleep(0)
+                                                        # Must not raise.
+                                                        # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                        await orch.run()
+                                                        # flake-ok: pre-existing pair of event-loop yields before the boot check, moved verbatim; tracked for a de-flake pass
+                                                        await asyncio.sleep(0)
+                                                        # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
+                                                        await asyncio.sleep(0)
 
         # Boot carried on past the failed announcement.
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
+
+    @pytest.mark.asyncio
+    async def test_the_session_warm_task_survives_a_gc_pass(self):
+        """The probe-gated session warm is held until it finishes.
+
+        The loop holds a task only weakly. A warm parked on a future that
+        nothing else references is a garbage cycle unless boot keeps the task.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+
+        parked = asyncio.Event()
+        refs: list = []
+
+        async def _start_pool_that_parks(**_kwargs):
+            current = asyncio.current_task()
+            assert current is not None
+            refs.append(weakref.ref(current))
+            del current
+            parked.set()
+            await asyncio.get_running_loop().create_future()
+
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = _start_pool_that_parks
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+
+        orch._init_dashboard = _init_dash
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
+            )
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.format_dashboard_urls", return_value=["url"])
+            )
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            raise_nofile_soft_limit = stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            await finished(orch.run(), "the gateway boot")
+            await await_until(parked, what="the session warm to park")
+
+        raise_nofile_soft_limit.assert_called_once_with(10240)
+        (ref,) = refs
+        gc.collect()
+        task = ref()
+        assert task is not None, "the session warm task was garbage-collected"
+        assert task in orch._background_tasks
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_until(task, what="the cancelled warm task")
+        assert task not in orch._background_tasks
+
+    @pytest.mark.parametrize(
+        "tty", [pytest.param(False, id="service_log"), pytest.param(True, id="terminal")]
+    )
+    @pytest.mark.asyncio
+    async def test_the_login_link_is_printed_to_a_terminal_only(self, tty, monkeypatch):
+        """A stdout that is not a terminal is a log a service manager keeps (the
+        journal, the launchd file), where a reader could redeem a login link.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=False)
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = AsyncMock()
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+
+        orch._init_dashboard = _init_dash
+        real_open, opened = orch._auto_open_dashboard, asyncio.Event()
+
+        async def _open(*args, **kwargs):  # the real auto-open, then a signal
+            await real_open(*args, **kwargs)
+            opened.set()
+
+        orch._auto_open_dashboard = _open
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        stdout = io.StringIO()
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
+            )
+            # The real formatter, kept off the host's own name and proxy.
+            stack.enter_context(
+                patch("kiro_crew.dashboard.urls.machine_hostname", return_value="localhost")
+            )
+            stack.enter_context(
+                patch("kiro_crew.dashboard.urls.devspaces_proxy_url", return_value=None)
+            )
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            stack.enter_context(patch.object(stdout, "isatty", return_value=tty))
+            stack.enter_context(patch("sys.stdout", stdout))
+            # Raising TimeoutError takes the branch the 5 s bound takes, with no wait.
+            browser = stack.enter_context(patch("webbrowser.open", side_effect=TimeoutError))
+            # The boot's subprocess-pool jobs, the browser open among them, run on the
+            # test loop's own executor, which teardown joins, so no shared
+            # kiro_crew.executors pool is left busy.
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.subprocess_executor", return_value=None)
+            )
+            await finished(orch.run(), "the gateway boot")
+            await await_until(opened, what="the browser auto-open")
+
+        printed = stdout.getvalue()
+        assert "👻 Dashboard:\n" in printed
+        assert "?token=" in browser.call_args.args[0]
+        if tty:
+            assert printed.count("   http://127.0.0.1:6779?token=") == 2
+        else:
+            assert "?token=" not in printed
+            assert printed.count("   http://127.0.0.1:6779\n") == 2
+            assert "👻 Sign in:   run kirocrew token for a sign-in link\n" in printed
 
 
 class TestInitServicesLoopResponsiveness:
     """The event loop must keep servicing callbacks during slow startup work.
 
-    Invariant: the loop runs callbacks one at a time, so a
-    synchronous subprocess/scan inside ``_init_services`` starves every other
-    coroutine — including the loop-stall watchdog heartbeat once armed — for
-    its whole duration.
+    A synchronous subprocess or scan in ``_init_services`` starves every other
+    coroutine, the loop-stall watchdog included. Each slow-call stand-in blocks
+    until it sees a concurrent ticker advance, which can happen only off the loop.
 
-    These tests assert the PROPERTY, not a duration: a fast ticker
-    runs concurrently with the init work, and the stand-in for each slow
-    call blocks — in whatever execution context production invoked it —
-    until it OBSERVES the ticker advance. Fixed code runs the work off the
-    loop (``asyncio.to_thread`` / an async subprocess), so the loop stays
-    free, the ticker advances, and the probe returns almost immediately. A
-    mutant reverted to the old synchronous on-loop shape blocks the loop
-    itself, the ticker can never advance while the probe waits, and the
-    probe gives up at a deliberately generous deadline and flags
-    starvation.
-
-    The previous shape bounded the ticker's max inter-tick gap by an
-    absolute, load-adaptive ceiling; a scheduler stall on a saturated
-    runner blew the ceiling with the invariant intact (a 1.87s gap against
-    the 0.40s floor at a commit whose diff contained zero Python files).
-    Polling for the property makes host contention cost only wall-clock,
-    never the verdict, while an on-loop regression still fails
-    deterministically: ticks CANNOT happen while the loop is blocked, so no
-    amount of waiting turns a mutant green.
+    Asserted as a property, not a duration: a time ceiling failed on a saturated
+    runner, while ticks cannot happen at all on a blocked loop.
     """
 
-    # Ticks a probe must observe while the slow work is in flight. Each tick
-    # proves the loop scheduled another coroutine DURING the work; requiring
-    # a handful rules out a single lucky wakeup counting as liveness.
+    # A handful of ticks, so a single lucky wakeup does not count as liveness.
     _MIN_TICKS_DURING_WORK = 5
-    # How long a probe waits for those ticks before declaring the loop
-    # starved. Generous on purpose (testing-conventions § Determinism: poll
-    # with a generous deadline): a loaded host only DELAYS ticks, so
-    # contention costs wall-clock, never the verdict. Only a blocked loop —
-    # where ticks cannot happen at all — exhausts it, so this is paid only
-    # on a genuinely regressed run.
+    # Generous on purpose: a loaded host only delays ticks; only a blocked loop
+    # exhausts this deadline.
     _PROBE_DEADLINE_SECS = 30.0
 
     @staticmethod
@@ -1074,13 +1550,8 @@ class TestInitServicesLoopResponsiveness:
     def _make_probe(self, state: dict, label: str, result=None):
         """A stand-in for slow init work that polls the loop-liveness property.
 
-        Runs in whatever execution context production invokes it in. Off the
-        loop (the fixed shape) the ticker keeps running, the tick delta
-        reaches ``_MIN_TICKS_DURING_WORK`` almost immediately, and *label* is
-        recorded in ``state['probed']``. On the loop (the regressed shape)
-        the ticker is starved for exactly as long as this function runs, the
-        delta can never advance, and *label* lands in ``state['starved']``
-        once the deadline expires.
+        Off the loop the ticker advances and *label* goes to ``state['probed']``;
+        on the loop it cannot, and *label* lands in ``state['starved']`` at the deadline.
         """
 
         def _probe(*args, **kwargs):

@@ -15,10 +15,11 @@
  * is undone. The accepted-receipt case pins that success stays untouched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
+import { sseChatMessage } from '../store/chatSlice'
 import App from '../App'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -135,6 +136,27 @@ describe('Request a Feature — failed send is reported (#4198)', () => {
     const chat = store.getState().chat
     expect(chat.messages.some(m => m.role === 'error' && m.content === i18nT('pages.chatPage.send_failed'))).toBe(true)
     expect(chat.slotRunning).toBe(false)
+  })
+
+  it('keeps a turn that is already streaming running when the send fails late', async () => {
+    let fail!: (reason: unknown) => void
+    sendChatMock.mockReturnValue(new Promise((_resolve, reject) => { fail = reject }))
+    const { store } = await clickRequestFeature()
+    await waitFor(() => expect(sendChatMock).toHaveBeenCalledTimes(1))
+    expect(store.getState().chat.slotRunning).toBe(true)
+    // The server started the turn: its first chunk streams before the POST answers.
+    act(() => { store.dispatch(sseChatMessage({ slot: 'fr-slot', role: 'chunk', content: 'Drafting the request', seq: 1 })) })
+    await act(async () => { fail(new Error('network down')) })
+    await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true))
+    expect(store.getState().chat.slotRunning).toBe(true)
+  })
+
+  it('reports a failed create on the shell notice and sends nothing', async () => {
+    createChatSlotMock.mockRejectedValue(new Error('zzq create failed'))
+    const { store } = await clickRequestFeature()
+
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice).toEqual({ title: "Couldn't create a new chat.", message: 'zzq create failed', error: true }))
+    expect(sendChatMock).not.toHaveBeenCalled()
   })
 
   it('says NOTHING when a 2xx receipt will not parse — the request was accepted (#4217)', async () => {

@@ -38,7 +38,7 @@ export interface LineageRow {
    * so the row nests where the run is owned while still citing a creator that is
    * gone. Absent on every ordinary edge.
    */
-  parent?: { slot?: string; key?: string | null; ancestor?: boolean } | null
+  parent?: { slot?: string; key?: string | null; ancestor?: boolean; title?: string } | null
 }
 
 /** The tree, flattened into the two lookups a renderer actually walks. */

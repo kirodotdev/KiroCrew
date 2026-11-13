@@ -74,7 +74,57 @@ APP_AGENT_LAUNCH_PREFIX = "kirocrew-app-launch-"
 #: ceiling a spawn falls back to the authored agent, so it is set well above
 #: that -- a host that trips it has several workspaces' worth of distinct views
 #: live at once, or a leak the doctor names.
+#:
+#: This is the FLOOR of the ceiling: :func:`skill_view_ceiling` raises it to
+#: :data:`SKILL_VIEW_CEILING_PER_AGENT` views per authored agent, because one
+#: view per agent is the steady state, so a fixed number below that trips on a
+#: host with many agents before anything has leaked.
 SKILL_VIEW_PROJECTION_CEILING = 128
+
+#: How many views per authored agent the ceiling allows: the agent's current
+#: view plus room for one more generation while an edit's old view drains.
+SKILL_VIEW_CEILING_PER_AGENT = 2
+
+# A bound on the authored-agent scan, so one huge directory cannot stall a spawn.
+_AUTHORED_AGENT_SCAN_LIMIT = 65536
+
+
+def count_authored_agent_files(directory: Path) -> int:
+    """How many authored agent specs (either form, not skill views) *directory* holds.
+
+    One bounded ``os.scandir`` over regular files by name only, so the
+    projection and the doctor size the ceiling from the same number. A
+    ``.json``/``.md`` pair with one stem is one agent. An unreadable directory
+    counts zero, which leaves the ceiling at its floor.
+    """
+    stems: set[str] = set()
+    seen = 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                seen += 1
+                if seen > _AUTHORED_AGENT_SCAN_LIMIT:
+                    break
+                name = entry.name
+                if (
+                    is_agent_spec_name(name)
+                    and not is_native_skill_alias_name(name)
+                    and entry.is_file(follow_symlinks=False)
+                ):
+                    stems.add(spec_stem(name).casefold())
+    except OSError:
+        return 0
+    return len(stems)
+
+
+def skill_view_ceiling(authored_agents: int, floor: int = SKILL_VIEW_PROJECTION_CEILING) -> int:
+    """The skill-view count at which projection falls back to authored agents.
+
+    *floor* when a host has few agents, otherwise
+    :data:`SKILL_VIEW_CEILING_PER_AGENT` views per authored agent.
+    """
+    return max(floor, SKILL_VIEW_CEILING_PER_AGENT * max(authored_agents, 0))
+
 
 _FRONTMATTER_CLOSE_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 

@@ -3,12 +3,25 @@
 import { i18nT } from '../i18n/t'
 
 export type SessionColorMode = 'tint' | 'gradient'
-export type PaletteName = 'trailhead' | 'horizon' | 'voyage' | 'odyssey'
+export type PaletteName = 'trailhead' | 'horizon' | 'voyage' | 'odyssey' | 'categorical'
 export type IntensityName = 'soft' | 'clear' | 'vivid' | 'bold' | 'intense'
 export type DefaultColorSetting = number | null | 'auto'
 
 export const PALETTE_SIZE = 7
-export const PALETTE_NAMES: PaletteName[] = ['trailhead', 'horizon', 'voyage', 'odyssey']
+export const PALETTE_NAMES: PaletteName[] = ['trailhead', 'horizon', 'voyage', 'odyssey', 'categorical']
+
+/** Twelve fixed, theme-independent hues for the 'categorical' palette. Unlike the
+ *  generated palettes they do not derive from the theme accent, so sessions stay
+ *  distinguishable when many are open. */
+export const CATEGORICAL_HUES: readonly string[] = [
+  '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e',
+  '#14b8a6', '#06b6d4', '#3b82f6', '#6366f1', '#a855f7', '#ec4899',
+]
+
+export function paletteSize(name: PaletteName): number {
+  return name === 'categorical' ? CATEGORICAL_HUES.length : PALETTE_SIZE
+}
+
 export const INTENSITY_NAMES: IntensityName[] = ['soft', 'clear', 'vivid', 'bold', 'intense']
 export const INTENSITY_THRESHOLDS: Record<IntensityName, number> = { soft: 0.035, clear: 0.07, vivid: 0.12, bold: 0.18, intense: 0.30 }
 
@@ -216,6 +229,7 @@ export function generatePalette(colorStr: string, palette: PaletteName, bgHex?: 
     case 'horizon': return generateContrastRamp(colorStr, bg, 90)
     case 'voyage': return generateHarmony(colorStr, bg, false)
     case 'odyssey': return generateHarmony(colorStr, bg, true)
+    case 'categorical': return [...CATEGORICAL_HUES]
     default: return generateContrastRamp(colorStr, bg, 90)
   }
 }
@@ -287,8 +301,66 @@ export function computePaletteBoost(
   return result
 }
 
-export function resolveDefaultColor(setting: DefaultColorSetting, slotCount: number): number | null {
+export function resolveDefaultColor(setting: DefaultColorSetting, slotCount: number, size: number): number | null {
   if (setting === null) return null
-  if (setting === 'auto') return slotCount % PALETTE_SIZE
+  if (setting === 'auto') return slotCount % size
   return setting
+}
+
+/** A session's resolved colour. `index` is the palette slot, or null for a frozen
+ *  hex (the session's own `color_hex` or its agent's `session_color`). */
+export interface ResolvedSessionColor {
+  hex: string
+  index: number | null
+}
+
+/** The slot a stored colour index takes in the active palette. Palettes differ in
+ *  size (categorical has 12, the generated ones 7), so an index picked under one
+ *  wraps into the other instead of dropping the session's colour. */
+export function paletteSlot(index: number | null | undefined, size: number): number | null {
+  if (index == null || index < 0 || size <= 0) return null
+  return index % size
+}
+
+/** Resolve a session's colour: its own `color_hex` wins, then its
+ *  `color_index` wrapped into the active palette, then the agent's `session_color`.
+ *  Returns null for an uncoloured session. The sidebar row and the thread
+ *  headers share this so one session reads the same colour everywhere. */
+export function resolveSessionColor(
+  slot: { color_hex?: string | null; color_index?: number | null } | undefined,
+  paletteColors: readonly string[],
+  agentColor?: string | null,
+): ResolvedSessionColor | null {
+  if (typeof slot?.color_hex === 'string' && slot.color_hex) return { hex: slot.color_hex, index: null }
+  const ci = paletteSlot(slot?.color_index, paletteColors.length)
+  if (ci != null) return { hex: paletteColors[ci], index: ci }
+  if (typeof agentColor === 'string' && /^#[0-9a-f]{6}$/i.test(agentColor)) return { hex: agentColor, index: null }
+  return null
+}
+
+const HEADER_BAND_MAX_PCT = 18
+
+/** CSS variables for a coloured thread header. The band uses the boost's idle
+ *  blend, the one its muted colour was adapted against, and the header carries
+ *  that adapted `--muted` so the resting title keeps its contrast over the band. */
+export function headerBandStyle(
+  color: ResolvedSessionColor,
+  boost: PaletteBoost,
+  boostFor: (hex: string) => PaletteBoost,
+): Record<string, string> {
+  const b = color.index != null ? boost : boostFor(color.hex)
+  const i = color.index ?? 0
+  const idle = b.idlePct[i]
+  if (idle == null) return { '--session-color': color.hex }
+  // The idle blend climbs to 80% on strong intensities; behind a header title that
+  // buries the text. Capping only weakens the tint, so the muted colour adapted
+  // to the full idle blend still clears its contrast target.
+  const band = Math.min(idle, HEADER_BAND_MAX_PCT)
+  const muted = b.mutedColors[i]
+  return {
+    '--session-color': color.hex,
+    '--session-band-pct': `${band}%`,
+    '--session-band-edge-pct': `${Math.min(band + 20, 65)}%`,
+    ...(muted ? { '--muted': muted } : {}),
+  }
 }

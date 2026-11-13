@@ -81,6 +81,15 @@ distinguishes a governed account from an ungoverned one. Leave the setting
 `false` on a personal account — there the filter inverts and the marked entries
 are the ones dropped.
 
+`kirocrew-core` and `kirocrew-cron` are the one exception. When no API key is
+set (in the environment or in the data home's `.env`, where the Docker image
+keeps it) and both the local store and `kiro-cli whoami` say the sign-in is
+Builder ID or social, so no admin
+registry can apply, Kiro Crew writes these two without the marker even with the
+declaration on, and they keep loading. If any check is unsure, they keep the
+marker. After you switch this machine to an Identity Center or API-key sign-in,
+run `kirocrew restart` so the spec is written again with the marker.
+
 Verify with `kirocrew doctor`, which grows an `MCP Governance (enterprise)`
 section when the local identity is one an administrator's registry can govern
 (an IAM Identity Center or API-key sign-in), when `agent.mcp_registry_mode` is
@@ -94,25 +103,44 @@ personal account.
 
 ### 2. Have the administrator allow-list the servers
 
-Kiro Crew needs three servers, and they must appear in the registry file under
+Kiro Crew ships eleven servers (`_MANAGED_MCP_SERVERS` in `src/kiro_crew/agent.py`
+is the authoritative map), and the registry filter applies to every one of them.
+Five are emitted on every install; the other six are assignable sets an agent
+carries only when granted them — but any agent that IS granted one loses it the
+same way if the registry omits it. They must appear in the registry file under
 **exactly** these names:
+
+Always emitted, on every install:
 
 | Server | What is lost without it |
 |---|---|
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
 | `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
+| `kirocrew-guide` | the platform guide set: where-is answers (`find_ui`), the packaged docs (`search_docs`), dashboard guides and change cards |
+| `kirocrew-mate` | a Bot's tools over its own record (name, description, face; goal and tools asked through a change card) |
+
+Assignable — emitted only for agents granted the set, and filtered the same way:
+
+| Server | What is lost without it |
+|---|---|
+| `kirocrew-work` | the work ledger every conductor records its dispatches to — without it a conductor still runs, but the Dashboard's Workstreams board has nothing to show for its fleet |
+| `kirocrew-dashboard` | the dashboard control surface mounted on every conductor |
+| `kirocrew-panel` | the member panel tools of member-scoped agents |
+| `kirocrew-crew-log` | the crew log set of agents granted it |
+| `kirocrew-debug` | the debug views (the wide ones answer only on the owner's own dashboard tab) |
+| `kirocrew-secrets` | mediated secret requests (`call_api_with_secret`): API writes that use a Custom secret the agent never sees |
 
 The registry file format is a subset of the MCP registry standard's server
 schema. Each entry needs a `packages` entry describing how to launch the server,
-and — because all three Kiro Crew servers live behind one package — a
+and — because every Kiro Crew server lives behind one package — a
 `packageArguments` entry naming the subcommand. For a `pypi` package the client
 derives `uvx <identifier> <packageArguments>`, so an entry without the argument
 launches `uvx kirocrew` with no subcommand, which prints CLI help instead of
 speaking MCP and fails the handshake. Kiro Crew releases are not published to
-the public Python Package Index; the `pypi` example below therefore requires
-your organisation to mirror the matching `kirocrew` wheel into the Python index
-that `uvx` uses:
+the public Python Package Index; the `pypi` example below therefore launches
+only once `uvx` is pointed at an index that hosts the matching `kirocrew` wheel,
+as the steps after it show:
 
 ```json
 {
@@ -155,12 +183,152 @@ that `uvx` uses:
           "transport": { "type": "stdio" }
         }
       ]
+    },
+    {
+      "name": "kirocrew-work",
+      "description": "Kiro Crew work ledger (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-work" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-dashboard",
+      "description": "Kiro Crew dashboard control surface (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-dashboard" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-panel",
+      "description": "Kiro Crew member panel (member-scoped agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-panel" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-guide",
+      "description": "Kiro Crew platform guide: find_ui, search_docs, guides, change cards",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-guide" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-mate",
+      "description": "Kiro Crew crewmate self-record tools",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-mate" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-crew-log",
+      "description": "Kiro Crew crew log (assignable)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-crew-log" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-debug",
+      "description": "Kiro Crew debug views (assignable, owner-tab only)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-debug" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-secrets",
+      "description": "Kiro Crew mediated secret requests (assignable)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-secrets" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
     }
   ]
 }
 ```
 
 Set `version` to the Kiro Crew version your fleet runs.
+
+> **Without that index, the servers are accepted but do not start.**
+> `kiro-cli mcp list` shows each entry, kiro-cli starts it as
+> `uvx kirocrew@<version> <subcommand>`, and `uvx` fails with
+> `kirocrew was not found in the package registry`, so the session has none of
+> the Kiro Crew tools those entries serve.
+
+Point `uvx` at the index through uv's own configuration on every client
+machine, for example in the user's `uv.toml` (`~/.config/uv/uv.toml` on macOS
+and Linux, `%APPDATA%\uv\uv.toml` on Windows). Kiro Crew's release CDN serves
+one index per release channel, and each version is listed only on the channel
+that released it (see
+[Installing a published wheel with pip](install.md#installing-a-published-wheel-with-pip)),
+so clients that can reach the CDN can put that index directly in `url`. Pick
+the channel in the URL by your fleet's version: `stable` (as below) for a
+version with no prerelease suffix, `insider` for an `rc` version, `nightly` for
+a `.dev` version:
+
+```toml
+[[index]]
+url = "https://updates.crew.kiro.dev/feed/stable/simple/"
+# The CDN answers 403, not 404, for a package it does not host. Without this
+# line uv stops at that answer instead of moving on to PyPI.
+ignore-error-codes = [403]
+```
+
+Clients that cannot reach the CDN need your organisation's own index carrying
+the `kirocrew` wheel for your fleet's version: put its URL in `url`, and keep
+`ignore-error-codes` only if that index also answers 403 for a missing package.
+uv checks an index listed this way before public PyPI and moves on to PyPI for
+any package the index does not host, so `kirocrew`'s dependencies still
+resolve. Do not add `default = true` unless the index also proxies PyPI or hosts
+every dependency: that setting removes PyPI as the fallback for every `uv` and
+`uvx` call that reads this file. Set the index in uv rather than in a package's
+`registryBaseUrl` field, which this guide has not verified kiro-cli passes on to
+`uvx`.
 
 ## Known limitation: the registry launches the server, not your install
 
@@ -173,14 +341,66 @@ resolves the package and, when a locally installed server's version differs from
 the registry's, relaunches it at the registry's version. For a `pypi` entry that
 means `uvx` fetching Kiro Crew into its own ephemeral environment from its
 configured Python index. Because the project is not on public PyPI, that route
-works only when your organisation mirrors the wheel and version into an index
-visible to `uvx`. The process serving your MCP tools can then still be a
-*different* Kiro Crew from the gateway serving your dashboard. Your `env`
-overrides (including `KIROCREW_HOME`) do flow through, which keeps the data home
-aligned, but the code does not.
+works only with the index set up above. The process serving your MCP tools can
+then still be a *different* Kiro Crew from the gateway serving your dashboard.
+Your `env` overrides (including `KIROCREW_HOME`) do flow through, which keeps the
+data home aligned, but the code does not.
 
 Keep the registry `version` in step with your fleet's installed version. If your
 organisation pins Kiro Crew centrally, that pin now governs the MCP side too.
+
+## Session identity for Kiro Crew's own tools: an admin opt-in, off by default
+
+Many `kirocrew-core` tools act for *one session* — `artifact_save`, `spawn_run`,
+memory, monitors — and need to prove which session is calling. Outside registry
+mode Kiro Crew gives each session's `kirocrew-core` and `kirocrew-cron` a signed
+session identity by mounting its own copy of them on the session. Under registry
+mode that copy would be launched as given, from the local install, past your
+catalog. So by default Kiro Crew mounts nothing there (except on a Builder ID or
+social sign-in no admin registry can govern, described above): the servers run from your
+catalog entry, which carries no session identity, and their tool calls refuse with
+
+```
+identity_unattestable ... This host is MCP registry-governed (agent.mcp_registry_mode),
+and the admin's MCP registry is blocking Kiro Crew's own tools ...
+```
+
+This field requires Kiro Crew **0.13.0** or later. Kiro Crew 0.12.1 and
+earlier reject `mcp_registry_local_control_plane` as an unknown governed key,
+and with `boot.fail_closed` set Kiro Crew then does not start. On those
+releases, leave the field out. Run `kirocrew policy validate` before you
+restart.
+
+To enable session identity, set one field at the top level of the security policy
+(`~/.kiro/crew/security_policy.json`, or your centrally distributed document) and
+restart Kiro Crew:
+
+```json
+{
+  "version": 1,
+  "boot": { "fail_closed": true },
+  "mcp_registry_local_control_plane": true
+}
+```
+
+What that changes, and what it does not:
+
+- `kirocrew-core` and `kirocrew-cron` then run from the **local Kiro Crew install**
+  for each session, not from your catalog entry. A catalog `version` pin no longer
+  governs those two servers, and they are mounted even if your catalog omits them.
+  The code that runs is the same Kiro Crew as the gateway, which also removes the
+  version mismatch described in the previous section.
+- Nothing else widens. `kirocrew-computer`, `kirocrew-dashboard`, builtin app
+  servers and every third-party server stay under your catalog exactly as before.
+- Only you can set it. `security_policy.json` is mounted read-only in the sandbox
+  and the agent's file tools refuse to write it; a per-surface profile that sets the
+  field is rejected; and a lower policy tier cannot supply it — with a central
+  document, only the central document's value counts.
+- It must be a JSON `true` or `false`; any other value fails the policy load.
+- A new security policy file brings the rest of the ceiling with it. The `boot`
+  object is required, and the boot flags you leave out take their documented
+  defaults (see the governance spec), so start from the example above or add the
+  field to the policy you already have.
 
 ## Known limitation: registry mode cannot work on the KAS backend
 
@@ -195,6 +415,15 @@ What you see is a session that starts and chats normally with no MCP tools at
 all: no `spawn_run`, no `cron_add`, no `learn_add`, no artifacts, knowledge or
 monitoring, and no error from the host explaining it. Declaring registry mode
 does not fix it there, because the marker it writes cannot reach the filter.
+
+The limitation is tracked upstream as
+[kirodotdev/Kiro#12231](https://github.com/kirodotdev/Kiro/issues/12231).
+
+When the host names the servers it filtered (KAS lists them in its MCP status as
+`accessModeFilteredServers`), Kiro Crew acts on that at once instead of waiting
+out the session-start budget. With `agent.mcp_registry_mode` on, the session
+starts without those servers. With it off, the session start fails straight
+away with an error that names each filtered server and the setting to declare.
 
 Kiro Crew makes the failure visible rather than silent. Projecting an agent onto
 that backend under registry mode logs a warning naming exactly this, and the
@@ -220,6 +449,11 @@ Enforcement in the V2 TUI arrived in **2.2.2**, and **2.6.0** made personal
 `mcp.json` servers load alongside registry-managed ones. Kiro Crew's servers
 live in an agent spec (`~/.kiro/agents/kirocrew.json`), not in personal
 `mcp.json`, so that last change does not exempt them.
+
+The `mcp_registry_local_control_plane` security policy field
+([session identity](#session-identity-for-kiro-crews-own-tools-an-admin-opt-in-off-by-default))
+requires Kiro Crew **0.13.0** or later. Earlier releases reject it as an
+unknown governed key, and with `boot.fail_closed` set they do not start.
 
 ## Central policy distribution: one security policy, every host
 
@@ -353,7 +587,8 @@ Kiro Crew runs as — the file *and* every directory above it**: a source that a
 write, and the refresher would install that ceiling without a restart. A `0444` file in a
 writable directory does not count: it can be replaced by unlink-and-recreate. Use a
 root-owned path or a read-only mount; if what you want is a local, editable policy file, that is
-`KIROCREW_SECURITY_POLICY`, not this channel. The validator is a content digest,
+`KIROCREW_SECURITY_POLICY`, not this channel. On Windows `file://` sources are
+refused until Kiro Crew can read the file's ACL. Use `https`. The validator is a content digest,
 so a host on a shared mount re-reads only when the bytes actually change — including the
 case where you replace the file with a same-size version and preserve its timestamp.
 Plain

@@ -39,7 +39,13 @@ import threading
 import time  # noqa: F401 - kept bound on the facade
 import unicodedata
 from collections import OrderedDict, defaultdict, deque  # noqa: F401 - kept bound
-from collections.abc import Awaitable, Callable, Collection, Iterator  # noqa: F401 - kept bound
+from collections.abc import (  # noqa: F401 - kept bound
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+)
 from collections.abc import Set as AbstractSet  # noqa: F401 - kept bound on the facade
 from contextlib import contextmanager  # noqa: F401 - kept bound on the facade
 from dataclasses import dataclass  # noqa: F401 - kept bound on the facade
@@ -68,6 +74,7 @@ from kiro_crew.context_assembly import budget as _budgets  # noqa: F401 - loaded
 from kiro_crew.context_assembly import delivery_records as _delivery_records
 from kiro_crew.context_assembly import inclusion as _inclusion  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import markers as _markers  # noqa: F401 - loaded eagerly
+from kiro_crew.context_assembly import mcp_servers as _mcp_servers  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import member as _member  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import member_gates as _member_gates
 from kiro_crew.context_assembly import output_contract as _output_contract  # noqa: F401
@@ -313,14 +320,13 @@ logger = logging.getLogger(__name__)
 _ReadingT = TypeVar("_ReadingT")
 
 # Lazy caches of per-target stores. The key is NOT a bare name: a memory store
-# and a workspace are two namespaces, and a single key cannot hold both. A crew
-# bound to store "acme" and a workspace also called "acme" collapsed into one
-# cache slot and one path resolution, so whichever arrived first decided where
-# the other one read. ``_target_key`` is the only thing that mints these keys:
+# and a workspace are two namespaces, so a store "acme" and a workspace "acme"
+# must get two cache slots and two path resolutions. ``_target_key`` is the only
+# thing that mints these keys:
 #
-#   "default"        the global v1 store -- UNCHANGED spelling, seeded eagerly
-#                    in ``ContextBuilder.__init__`` and what every existing
-#                    caller resolves to.
+#   "default"        the global v1 store, seeded eagerly in
+#                    ``ContextBuilder.__init__``; every existing caller
+#                    resolves to it.
 #   "ws:<name>"      a named workspace on the v1 path (markdown under that
 #                    workspace, vectors shared with the global store).
 #   "store:<name>"   a named store. V2 learned records and vectors share one
@@ -641,12 +647,10 @@ class _InflightStoreOpen:
 #: In-flight opens by RESOLVED store name, touched only on the event-loop thread
 #: (``_build_store_vectors`` is a coroutine and never awaits between its check and
 #: its insert). One open per store at a time: a burst of first-touch requests on
-#: an uncached store -- the 65-fact seeding in ``member-memory.spec.ts`` sends five
-#: ``PUT /api/memory/semantic`` at once -- shares a single ``_prepare`` worker.
-#: Without the sharing each request runs its own: two ``KiroCrewConfig.load()``,
-#: an identity check with ``PRAGMA quick_check``, and a SQLite open plus
-#: migrations under the exclusive namespace lock, after which every worker but
-#: the first discards its store at publication.
+#: an uncached store shares a single ``_prepare`` worker. Without the sharing each
+#: request runs its own config loads, ``PRAGMA quick_check`` and SQLite open plus
+#: migrations under the exclusive namespace lock, and every worker but the first
+#: then discards its store at publication.
 _inflight_store_opens: dict[str, _InflightStoreOpen] = {}
 
 
@@ -750,7 +754,7 @@ async def _open_store_vectors(name: str, generation: int) -> "VectorMemoryStore 
             # Revalidate at the publication edge. Restore, retirement, or an
             # operator edit may have changed the declaration while initialization
             # was running; never publish a handle for a store that does not
-            # resolves to the declared member database.
+            # resolve to the declared member database.
             require_memory_store(name)
             with _stores_lock:
                 if cancelled.is_set():
@@ -900,7 +904,7 @@ def _board_safe_tag_name(raw: object) -> str:
 
 
 # Per-section limits are derived below; shared admission never sums them.
-def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
+def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None, crew: str = "") -> bool:
     """Whether the configured member backend can mount the dispatch tools.
 
     The member operating-mode block teaches ``session_*`` tools that arrive as
@@ -913,19 +917,23 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
 
     ``cfg`` lets a caller that already loaded the config share the handle —
     the context builder calls this once per member turn, so a second disk
-    read would be pure waste.
+    read would be pure waste. *crew* names the crewmate whose thread this is:
+    its own harness pin (``agents.<name>.acp_backend``) outranks the member
+    route, as it does in ``members.select_provider_backend``, and a pin that
+    cannot start withholds the block.
     """
     try:
         from kiro_crew.acp_backends import (
             ACP_BACKENDS_MEMBER_DISPATCH,
             resolve_selected_backend,
         )
+        from kiro_crew.crewmate_harness import pinned_backend
 
         if cfg is None:
             from kiro_crew.config import KiroCrewConfig
 
             cfg = KiroCrewConfig.load()
-        backend = resolve_selected_backend(cfg.agent.member_acp_backend)
+        backend = pinned_backend(cfg, crew, resolve_selected_backend(cfg.agent.member_acp_backend))
         return backend in ACP_BACKENDS_MEMBER_DISPATCH
     except Exception:
         logger.debug("member backend capability check failed", exc_info=True)
@@ -949,22 +957,18 @@ def _resolve_caps(window_tokens: int | None) -> _ResolvedCaps:
     return _resolve_caps_cached(_effective_window(window_tokens))
 
 
-# Global ceiling at the reference (1M) window — the historical
-# ``_MAX_CONTEXT_CHARS``, now DERIVED from the single section-sum in
-# ``_ResolvedCaps.max_context`` so it can never drift from the per-section caps.
+# Global ceiling at the reference (1M) window, DERIVED from the single section-sum
+# in ``_ResolvedCaps.max_context`` so it can never drift from the per-section caps.
 _MAX_CONTEXT_CHARS = _resolve_caps(_REFERENCE_WINDOW_TOKENS).max_context
 
 
 def _build_stop_event_notes(conversation_log: "ConversationLog", session_key: str) -> str:
     """Render recent resolved stop_events as short system notes for LLM context."""
-    # Bound the scan: only the last _STOP_EVENT_CAP stop events matter,
-    # and stop events from hundreds of turns ago are not actionable context.
-    # Matches the pattern used by ``build_cancelled_turn_preamble`` below.
+    # Bound the scan: stop events from hundreds of turns ago are not actionable.
     messages = conversation_log.recent(session_key, max_messages=20)
     return _replay.stop_event_notes(messages)
 
 
-# Docs directory bundled inside the kiro_crew package
 _BUNDLED_DOCS_DIR = Path(__file__).resolve().parent / "docs"
 
 
@@ -1052,7 +1056,11 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
 
 
 def _project_steering_delivered(
-    provider_type: str | None, native_steering: bool, project: str | None
+    provider_type: str | None,
+    native_steering: bool,
+    project: str | None,
+    *,
+    agent: str | None = None,
 ) -> bool:
     """Whether the project/global ``.kiro/steering`` trees already reach the model.
 
@@ -1063,10 +1071,13 @@ def _project_steering_delivered(
     project and global ``.kiro/steering`` trees arrive wholesale too (a
     workspace that sets ``chat.disableInheritingDefaultResources`` gets only
     the declared resources, so the folder carries the trees minus the
-    documents in the launch record); the Claude Code
-    seam receives the explicit ``[Steering resources]`` load in ``build_message`` (gated on
-    ``is_cc``); KAS reports ``native_steering`` on
-    its session provider. Every other harness -- Codex, OpenCode, Pi, Goose,
+    documents in the launch record); a harness Crew loads the spec's steering
+    for (``acp_driver.crew_loads_spec_steering``: the Claude Code seam and
+    Codex) receives the explicit ``[Steering resources]`` load in
+    ``build_message``, but only for the Kiro Crew default agent: that load
+    sends nothing for a custom *agent*, so there the folder still carries the
+    trees (``None`` is the default agent); KAS reports ``native_steering`` on
+    its session provider. Every other harness -- OpenCode, Pi, Goose,
     DeepSeek -- has NO path for those trees today, so a folder that declares one
     of them must deliver its documents itself rather than skip them as "already
     delivered" with nothing arriving in their place. A harness that is not
@@ -1076,9 +1087,14 @@ def _project_steering_delivered(
     harness. The driver is asked directly, with no admission check on
     *project*: this path also serves non-member sessions and must not raise.
     """
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
     return (
         (provider_type == PROVIDER_ACP and acp_driver.inherits_default_resources(project))
-        or is_claude_code(provider_type)
+        or (
+            acp_driver.crew_loads_spec_steering(provider_type)
+            and (not agent or is_kirocrew_default_agent(agent))
+        )
         or bool(native_steering)
     )
 
@@ -1103,10 +1119,16 @@ def _agent_includes_crew_context(agent: str | None) -> bool:
     """
     if not agent or agent == "kirocrew":
         return True
-    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(agent)
+    from kiro_crew import agent_spec_pins
+
+    # Keyed with the pin folded in, from one snapshot that also drives the read: a
+    # pin change picks another file, whose flag may differ.
+    pins = agent_spec_pins.spec_pins()
+    key = agent_spec_pins.pinned_memo_key(agent, pins)
+    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(key)
     if cached is None:
-        cached = _read_include_crew_context(agent)
-        _INCLUDE_CREW_CONTEXT_CACHE[agent] = cached
+        cached = _read_include_crew_context(agent, pins)
+        _INCLUDE_CREW_CONTEXT_CACHE[key] = cached
     return cached
 
 
@@ -1130,6 +1152,7 @@ def build_cancelled_turn_preamble(
     *,
     user_cap: int = 2000,
     assist_cap: int = 2000,
+    newest_request: bool = False,
 ) -> str:
     """Build a preamble describing the most recent cancelled turn, if any.
 
@@ -1140,17 +1163,19 @@ def build_cancelled_turn_preamble(
     immediately before it plus any assistant text in between. Return a
     short bracketed preamble. Returns "" if nothing to inject.
 
-    Called by both dashboard and Slack callers after ``prev_turn_cancelled``
-    is observed on the session.
+    Called by the dashboard, Slack and the shared channel pipeline after
+    ``prev_turn_cancelled`` is observed on the session.
     """
     try:
         # Whole rows: ``recent()`` keeps only role and content, and the walk reads
-        # ``meta`` to step past a steer the person took back. Both callers run this
+        # ``meta`` to step past a steer the person took back. Every caller runs this
         # in a worker thread, since it reads the whole transcript.
         rows = _without_warm_task_brief_messages(conversation_log.read_messages(session_key))
     except Exception:
         return ""
-    return _replay.cancelled_turn_preamble(rows[-20:], user_cap=user_cap, assist_cap=assist_cap)
+    return _replay.cancelled_turn_preamble(
+        rows[-20:], user_cap=user_cap, assist_cap=assist_cap, newest_request=newest_request
+    )
 
 
 # ── Provider-Agnostic Session Replay ──
@@ -1167,6 +1192,7 @@ def _replay_rows(
     exclude_last_n: int = 0,
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
+    exclude_messages: list[dict] | None = None,
 ) -> list[dict]:
     """Tail of the chain under per-role quotas, in chronological order.
 
@@ -1175,7 +1201,9 @@ def _replay_rows(
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
-        messages = _merge_replay_rows(messages, pending_messages or [], current_message)
+        messages = _merge_replay_rows(
+            messages, pending_messages or [], current_message, exclude_messages
+        )
     elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
     messages = _without_warm_task_brief_messages(messages)
@@ -1228,6 +1256,7 @@ def build_session_replay(
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
     budget_chars: int = _REPLAY_BUDGET_CHARS,
+    exclude_messages: list[dict] | None = None,
 ) -> str | None:
     """Build session replay from KiroCrew's conversation_log.
 
@@ -1242,6 +1271,8 @@ def build_session_replay(
     With *pending_messages*, merge the disk and live window by delivery identity
     and exclude *current_message* explicitly before applying quotas or budgets.
     The legacy *exclude_last_n* applies only when no live snapshot is supplied.
+    *exclude_messages* (with a live snapshot) are left out on both sides by
+    delivery identity: the previous reply a Regenerate is replacing.
 
     *model_window* scales the replay budget to the active model's context
     window (the dashboard's primary history vehicle — it must shrink on a
@@ -1255,6 +1286,7 @@ def build_session_replay(
         exclude_last_n=exclude_last_n,
         pending_messages=pending_messages,
         current_message=current_message,
+        exclude_messages=exclude_messages,
     )
     if not messages:
         return None
@@ -1291,29 +1323,22 @@ def _skills_injection_plan(
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
-    from kiro_crew.agent_files import is_kirocrew_default_agent
-
     inherit = provider_type == PROVIDER_ACP
     pinned = pinned_skill_globs(session_key, project_dir=project_dir, inherit_defaults=inherit)
-    globs = (
-        pinned
-        if pinned is not None
-        else (
-            agent_skill_globs(
-                agent,
-                project_dir=project_dir,
-                inherit_defaults=inherit,
-                session_key=session_key or "",
-            )
-            if agent
-            else []
+    if pinned is not None:
+        globs = pinned
+    elif agent:
+        globs = agent_skill_globs(
+            agent,
+            project_dir=project_dir,
+            inherit_defaults=inherit,
+            session_key=session_key or "",
         )
-    )
-    is_custom = (
-        bool(agent)
-        and not is_kirocrew_default_agent(agent)
-        and agent not in WHOLE_CATALOG_TEMPLATES
-    )
+    else:
+        globs = []
+    # ``WHOLE_CATALOG_TEMPLATES`` holds every default agent, so it is the whole test:
+    # ``session_skill_globs`` reads the same set, and the two cannot disagree.
+    is_custom = bool(agent) and agent not in WHOLE_CATALOG_TEMPLATES
     return (bool(globs) or not is_custom), globs
 
 
@@ -1397,10 +1422,9 @@ class ContextBuilder:
                             vector_store=_vector_stores.get(store_name),
                         )
                         store.init()
-                        # NO shared-vector hop. Attaching the global store here is
-                        # what made the crew editor's Memory Store control a
-                        # read-side illusion: markdown split while every crew's
-                        # semantic, episodic and lesson rows stayed in one table.
+                        # NO shared-vector hop: attaching the global store here
+                        # would put every crew's semantic, episodic and lesson
+                        # rows in one table while only the markdown split.
                         store.vector_store = _vector_stores.get(store_name)
                         if memory_store_version(store_name) == 2 and store.vector_store is None:
                             raise UnknownMemoryStore(
@@ -1525,6 +1549,20 @@ class ContextBuilder:
         self.memory_mode_for_session: Callable[[str], Awaitable[str]] | None = None
         self.live_memory_mode_for_session: Callable[[str], str | None] | None = None
         self._session_memory_modes: dict[str, str] = {}
+        # Installed by the dashboard: a channel turn's build reads the sub-agent
+        # notices queued on its conversation's tab through it, and hands the call
+        # that settles them to the turn that built (`delivery_records`).
+        self.tab_notices_for_session: (
+            Callable[[str], tuple[list[str], Callable[[bool], None]] | None] | None
+        ) = None
+        # Installed by the gateway: the MCP servers a session cannot use right now,
+        # by state, for the turn's `[MCP SERVERS]` block (`context_assembly.mcp_servers`),
+        # and what each session was last told of them. In memory and bounded.
+        self.mcp_states_for_session: (
+            Callable[[str], Mapping[str, tuple[str, ...]] | None] | None
+        ) = None
+        self._mcp_states_told: OrderedDict[str, dict[str, tuple[str, ...]]] = OrderedDict()
+        self._mcp_states_told_lock = threading.Lock()
         # Lessons each session has already been shown, keyed by the fixed-size
         # digest of its session key: its session-start block plus every per-message
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory
@@ -1533,35 +1571,26 @@ class ContextBuilder:
         self._lessons_shown_lock = threading.Lock()
         # Per-session record of triggered-skill BODIES injected, so a later match
         # in the same provider window sends the cheap pointer line instead of the
-        # whole body again. Recorded at build time and keyed by a fixed-size
-        # digest of the session key (`_cap_memo_key`) -> {skill_key_digest:
-        # body_sha256}, both keys digested so the caps govern bytes, not just
-        # entries: `_SENT_SKILL_BODY_SESSIONS` bounds how many sessions are held,
-        # `_SENT_SKILL_BODY_ENTRIES` bounds the
-        # skills held per session, and both evict oldest-first. The hash lets an
-        # edited skill re-inject. One builder serves every session and runs on a
+        # whole body again. Keyed by a digest of the session key (`_cap_memo_key`)
+        # -> {skill_key_digest: body_sha256}; digested keys let the caps govern
+        # bytes. `_SENT_SKILL_BODY_SESSIONS` and `_SENT_SKILL_BODY_ENTRIES` bound
+        # sessions and skills per session, both evicting oldest-first. The hash
+        # lets an edited skill re-inject. One builder serves every session from a
         # thread executor, so the read-check-write is guarded, like `_cap_figures`.
-        # The record fails SAFE in both directions: a rare turn that never lands
-        # demotes the skill to its POINTER next turn (the agent still learns the
-        # skill applies), not to silence; and the record drops for a session whose
-        # provider window cannot hold the bodies — a fresh session and the first
-        # turn after a compaction — tracked alongside the agent last seen so an
-        # agent switch on the same key also resets.
+        # The record fails SAFE: a turn that never lands demotes the skill to its
+        # POINTER next turn, never to silence; and the record drops when the
+        # provider window cannot hold the bodies (a fresh session, the first turn
+        # after a compaction, or an agent switch on the same key).
         #
-        # The record is written at build time so the dedup holds at every
-        # `build_message` caller with no per-caller wiring. A build-time write
-        # can name a body a turn never delivered (a provider error or cancel
-        # after the prompt was built), so each build also stashes the prior
-        # value of every entry it touched into `_sent_skill_bodies_undo`, keyed
-        # by the same digest. A caller whose turn does not land calls
-        # `rollback_skill_bodies(session_key)` at its turn `finally` — the same
-        # seam that re-arms the post-compaction flag — to restore that prior
-        # state, so the record never outlives the provider copy it names. Turns
-        # on one session key are serialized by the per-session turn permit, so
-        # the single last-build undo entry per session is not raced. A caller
-        # that never rolls back keeps the fail-safe above (a pointer next turn,
-        # never silence), so the rollback is a refinement, not a correctness
-        # dependency.
+        # Written at build time so the dedup holds at every `build_message`
+        # caller with no per-caller wiring. A build can name a body its turn never
+        # delivered (a provider error or cancel), so each build stashes the prior
+        # value of every entry it touched in `_sent_skill_bodies_undo`. A caller
+        # whose turn does not land calls `rollback_skill_bodies(session_key)` in
+        # its turn `finally`, the seam that re-arms the post-compaction flag. The
+        # per-session turn permit serializes turns on one key, so the single undo
+        # entry per session is not raced. A caller that never rolls back still
+        # gets the fail-safe above, so the rollback is a refinement only.
         self._sent_skill_bodies: dict[str, dict[str, str]] = {}
         self._sent_skill_agents: dict[str, str | None] = {}
         # session_key_digest -> {skill_key_digest: prior body_sha256 | None},
@@ -1578,7 +1607,6 @@ class ContextBuilder:
             # substitutes, not prose about the product: respelling it would
             # change what the model is told to answer to.
             self._bot_name = "KiroCrew" if is_claude_code(provider) else "Kiro"  # brand-ok
-        # Register default memory in the workspace cache
         _memory_stores[_DEFAULT_KEY] = self.memory
 
     # ── Per-session delivery records (context_assembly/delivery_records.py) ──
@@ -1589,6 +1617,7 @@ class ContextBuilder:
     _dedup_triggered_bodies = _delivery_records._dedup_triggered_bodies
     rollback_skill_bodies = _delivery_records.rollback_skill_bodies
     commit_skill_bodies = _delivery_records.commit_skill_bodies
+    _read_tab_notices = _delivery_records._read_tab_notices
     # ── The agent spec and prompt (context_assembly/agent_spec.py) ──
     _substitute_bot_name = _agent_spec._substitute_bot_name
     _live_cap_figure = staticmethod(_agent_spec._live_cap_figure)

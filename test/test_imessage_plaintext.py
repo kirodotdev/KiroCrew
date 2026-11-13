@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from kiro_crew.imessage.plaintext import chunk_plaintext, to_plaintext
+from kiro_crew.messaging.split import split_markdown_safe
 
 
 class TestCodeBlocksPassThroughVerbatim:
@@ -61,6 +62,64 @@ class TestInlineMarkupIsFlattened:
 
     def test_empty_input_stays_empty(self) -> None:
         assert to_plaintext("") == ""
+
+
+class TestVerbatimSpansKeepTheirMarkers:
+    """Inline code and URLs are what a user copies or taps, so emphasis
+    flattening must not reach inside them."""
+
+    def test_inline_code_keeps_underscores_and_asterisks(self) -> None:
+        assert to_plaintext("Call `__init__` first") == "Call __init__ first"
+        assert to_plaintext("Use `**kwargs**` here") == "Use **kwargs** here"
+
+    def test_a_link_target_keeps_its_underscores(self) -> None:
+        assert (
+            to_plaintext("[docs](https://e.com/__init__.py)") == "docs (https://e.com/__init__.py)"
+        )
+        assert to_plaintext("[https://e.com/_x_](https://e.com/_x_)") == "https://e.com/_x_"
+
+    def test_a_bare_url_keeps_its_underscores(self) -> None:
+        assert to_plaintext("see https://e.com/a/__x__/b") == "see https://e.com/a/__x__/b"
+
+    def test_emphasis_around_a_verbatim_span_still_goes(self) -> None:
+        assert to_plaintext("**run `a_b_c` now**") == "run a_b_c now"
+        assert to_plaintext("[**docs**](https://e.com/_x_)") == "docs (https://e.com/_x_)"
+
+    def test_emphasis_around_a_bare_url_still_goes(self) -> None:
+        assert to_plaintext("**See https://e.com/docs**") == "See https://e.com/docs"
+        assert to_plaintext("*https://e.com*") == "https://e.com"
+        assert to_plaintext("_https://e.com_") == "https://e.com"
+        assert to_plaintext("~~https://old.com~~") == "https://old.com"
+        assert to_plaintext("**see https://e.com/a__x__b**") == "see https://e.com/a__x__b"
+        # Punctuation after the closing marker does not pull it into the URL.
+        assert to_plaintext("**See https://e.com/docs**.") == "See https://e.com/docs."
+        assert (
+            to_plaintext("Docs: **https://e.com/x**, then go") == "Docs: https://e.com/x, then go"
+        )
+        assert to_plaintext("(*https://e.com/a_b*)") == "(https://e.com/a_b)"
+        assert to_plaintext("see https://e.com/docs.") == "see https://e.com/docs."
+
+    def test_a_closing_marker_after_a_url_pairs_whatever_follows_it(self) -> None:
+        assert to_plaintext("请访问 **https://x.com**。") == "请访问 https://x.com。"
+        assert to_plaintext("**https://x.com**—next") == "https://x.com—next"
+        assert to_plaintext("**https://x.com**'s page") == "https://x.com's page"
+
+    def test_trailing_url_underscores_stay_in_the_url(self) -> None:
+        url = "https://github.com/facebook/react/tree/main/packages/react/src/__tests__"
+        assert to_plaintext(f"{url} and __bold__") == f"{url} and bold"
+        assert to_plaintext(f"**see** {url}") == f"see {url}"
+
+    def test_a_bare_url_keeps_a_balanced_closing_parenthesis(self) -> None:
+        url = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+        assert to_plaintext(f"read {url} now") == f"read {url} now"
+        assert to_plaintext(f"**{url}**.") == f"{url}."
+
+    def test_a_link_target_holding_inline_code_is_restored(self) -> None:
+        assert to_plaintext("[a](`b`)") == "a (b)"
+        assert to_plaintext("[run](`x_y`) now") == "run (x_y) now"
+
+    def test_a_line_holding_a_nul_is_still_flattened(self) -> None:
+        assert to_plaintext("a\x00b **c**") == "a\x00b c"
 
 
 class TestFenceDelimiterLength:
@@ -143,6 +202,26 @@ class TestChunkBoundaries:
         text = " ".join(f"w{i}" for i in range(200))
         assert " ".join(chunk_plaintext(text, 37)).split() == text.split()
 
+    def test_a_paragraph_break_halfway_in_is_still_taken(self) -> None:
+        text = "a" * 6 + "\n\n" + "b" * 8
+        assert chunk_plaintext(text, 12) == ["a" * 6, "b" * 8]
+
+    def test_a_line_break_a_quarter_in_is_still_taken(self) -> None:
+        text = "a" * 3 + "\n" + "b" * 10
+        assert chunk_plaintext(text, 12) == ["a" * 3, "b" * 10]
+
+    def test_a_space_a_quarter_in_is_still_taken(self) -> None:
+        text = "a" * 3 + " " + "b" * 10
+        assert chunk_plaintext(text, 12) == ["a" * 3, "b" * 10]
+
+    def test_a_long_answer_reaches_the_floor(self) -> None:
+        text = "x" * 9000
+        assert [len(c) for c in chunk_plaintext(text, 4000)] == [4000, 4000, 1000]
+
+    def test_a_cut_through_a_long_word_keeps_every_character(self) -> None:
+        text = "Hi\n\n" + "x" * 30
+        assert "".join(chunk_plaintext(text, 20)).replace("\n", "") == "Hi" + "x" * 30
+
     def test_cjk_without_spaces_falls_back_to_a_hard_cut(self) -> None:
         text = "一二三四五六七八九十"
         chunks = chunk_plaintext(text, 4)
@@ -188,3 +267,48 @@ class TestGraphemeClustersSurviveAHardCut:
         family = "👨\u200d👩\u200d👧\u200d👦"
         chunks = chunk_plaintext(family + "tail", 2)
         assert "".join(chunks) == family + "tail"
+
+
+class TestAnEarlyBreakDoesNotStrandTheBudget:
+    def test_a_short_greeting_paragraph_does_not_cost_a_message(self) -> None:
+        chunks = chunk_plaintext("Hi\n\n" + "x" * 6000, 4000)
+        assert [len(c) for c in chunks] == [4000, 2004]
+        assert chunks[0].startswith("Hi\n\nxxx")
+
+    def test_a_short_greeting_before_wrapped_prose_does_not_cost_a_message(self) -> None:
+        chunks = chunk_plaintext("Hi\n\n" + "word " * 1200, 4000)
+        assert len(chunks) == 2
+        assert chunks[0].startswith("Hi\n\nword")
+
+    def test_an_early_line_break_falls_through_to_a_later_space(self) -> None:
+        text = "Title\n" + "aa " * 10
+        assert chunk_plaintext(text, 28) == ["Title\naa aa aa aa aa aa aa", "aa aa aa"]
+
+    def test_an_early_space_falls_through_to_a_hard_cut(self) -> None:
+        text = "a " + "b" * 30
+        assert chunk_plaintext(text, 20) == ["a " + "b" * 18, "b" * 12]
+
+    def test_an_early_paragraph_falls_through_to_a_later_line_break(self) -> None:
+        text = "a\n\n" + "b" * 12 + "\n" + "c" * 10
+        assert chunk_plaintext(text, 20) == ["a\n\n" + "b" * 12, "c" * 10]
+
+    def test_a_long_url_behind_a_short_lead_in_moves_whole(self) -> None:
+        # iMessage makes a bare URL tappable; a URL cut in two opens nothing.
+        url = "https://example.com/" + "a" * 48
+        chunks = chunk_plaintext("Open: " + url, 70)
+        assert chunks == ["Open:", url]
+
+    def test_a_word_longer_than_any_chunk_fills_the_budget(self) -> None:
+        chunks = chunk_plaintext("Open: " + "a" * 90, 70)
+        assert [len(c) for c in chunks] == [70, 26]
+
+    def test_a_paragraph_between_a_quarter_and_halfway_matches_the_shared_splitter(
+        self,
+    ) -> None:
+        # A paragraph break that misses its own floor still counts as a line
+        # break, in split_markdown_safe's ladder and here.
+        text = "w " * 550 + "\n\n" + "word " * 1000
+        ours = chunk_plaintext(text, 4000)
+        shared = split_markdown_safe(text, 4000)
+        assert len(ours) == len(shared) == 3
+        assert ours[0] == shared[0]

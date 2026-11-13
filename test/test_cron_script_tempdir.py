@@ -91,7 +91,7 @@ def _make_script(tmp_path: Path, body: str) -> Path:
     crons_dir = tmp_path / ".kirocrew" / "crons"
     crons_dir.mkdir(parents=True, exist_ok=True)
     script = crons_dir / "job.py"
-    script.write_text(body)
+    script.write_text(body, encoding="utf-8")
     return script
 
 
@@ -111,7 +111,7 @@ class TestDefaultTempDir:
         assert resolved == live_tempdir
         # The vanished directory is never recreated: under the managed scratch
         # root that would be a directory with no owner record, which the sweep
-        # never deletes, so a skipped run would become a permanent leak.
+        # keeps for a week, so a skipped run would become a leak.
         assert not vanished_tempdir.exists()
 
 

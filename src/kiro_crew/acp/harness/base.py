@@ -50,6 +50,7 @@ __all__ = [
     "SpawnContext",
     "SpawnPlan",
     "TeardownPolicy",
+    "UnroutablePermissionRelay",
 ]
 
 
@@ -86,6 +87,11 @@ class SpawnContext:
 
     member_context: bool = field(default=False, kw_only=True)
     """Capture native member context sources for session delivery deduplication."""
+
+    harness_pin: str = field(default="", kw_only=True)
+    """The session's own Bot pin as stored (``agents.<name>.acp_backend``), ``""`` for none.
+
+    Read by KAS's route rule 2 (:func:`kiro_crew.acp.kas_route.automatic_switch_allowed`)."""
 
     sandbox_mode: str = "auto"
     """The sandbox tier this spawn will use, as configured.
@@ -138,14 +144,27 @@ class ProcessSession(Protocol):
     _opencode_denies_in_force: frozenset[str] | None
     _opencode_denies_unenforced: frozenset[str]
     _opencode_native_mounts: frozenset[str]
+    _mimocode_config_mcp_servers: tuple[str, ...]
+    _mimocode_denies_in_force: frozenset[str] | None
+    _mimocode_denies_unenforced: frozenset[str]
+    _mimocode_native_mounts: frozenset[str]
+    _mimocode_disabled_servers: frozenset[str]
+    _mimocode_governed_stop: tuple[str, str] | None
     _session_mcp_cache: list[dict[str, Any]] | None
     _pi_gate_nonce: str
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
     _deepseek_gate_nonce: str
+    _unasked_shell_tripwire: bool
     _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
+    _launch_mcp_servers: list[Any] | None
+    _mcp_relaunch_pending: bool
+
+    @property
+    def work_scratch_dir(self) -> Path | None:
+        """The child scratch window allocated by the shared launch tail."""
 
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
@@ -203,6 +222,18 @@ class SpawnPlan:
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
 
+    kiro_cli_internal_sandbox: bool = field(default=False, kw_only=True)
+    """kiro-cli's internal sandbox confines this spawn.
+
+    Stated by the harness that built the argv: the argv runs kiro-cli's ACP relay
+    AND that sandbox confines it on this host (for KAS, macOS with kiro-cli's switch
+    on; see ``harness.kas._kiro_cli_sandbox_owns_relay``). A relay Crew still wraps
+    leaves it False, so no delegated-only guard refuses a workspace Crew's own layer
+    would have sealed. It moves the sandbox only for
+    a harness in ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+    (``spawn_delegates_to_internal_sandbox``); any other harness is unaffected.
+    """
+
     host_auth: bool = False
     """Crew answers this process's credential callbacks.
 
@@ -238,8 +269,9 @@ class SpawnPlan:
     """Environment variable this host needs pointed at a per-process directory.
 
     ``None`` for a host whose state tolerates concurrent processes. Otherwise the
-    runtime sets the named variable to its own per-process scratch directory,
-    which no other process uses and which is reclaimed once this one is dead.
+    runtime sets the named variable to a scratch allocation of its own, apart from
+    the process's ``TMPDIR`` directory (which can be the session tree's shared work
+    directory), handed to no other process and reclaimed once this one is dead.
     A value already in the child's environment is left as set.
     """
 
@@ -289,6 +321,45 @@ class SessionExtras:
     recorder keeps with the response's ``model`` select
     (``agent_sdk/kas_model_catalog.py``). ``""`` for every other host, which
     records nothing; read here so no other host's session start gains a step.
+    """
+
+    managed_entries: Mapping[str, Any] | None = None
+    """The managed invocation per Crew-managed server the payload declares.
+
+    For a host whose payload carries agent-declared managed servers that the
+    runtime hoists and tokens (KAS): resolved in the same off-loop step as the
+    payload, because resolving the ``kirocrew`` launcher is filesystem and
+    ``PATH`` I/O that must not run on the event loop. Handed to
+    ``kas_agents.hoist_servers_for_session``. ``None`` on every other host.
+    """
+
+    app_launches: Mapping[str, Mapping[str, Any]] | None = None
+    """The shipped launch per builtin app server that gets a session identity.
+
+    Resolved off the loop with the payload by
+    ``kas_app_identity.resolve_app_identity_launches`` and handed to the same
+    hoist, which tokens those servers as it tokens the managed ones. ``None`` on
+    every other host.
+    """
+
+    withdrawn_stub_names: frozenset[str] = frozenset()
+    """Session-level stubs the caller selected that this payload does not mount.
+
+    For a KAS crewmate worker: the names in ``worker_stub_names`` whose server the
+    projected worker spec drops or mutes. That spec is read after the stubs were
+    selected, so a mute saved in between shows here, and the caller removes those
+    stubs from the session-level array. Empty on every other host.
+    """
+
+    withheld_credentials_notice: str = ""
+    """The session-start notice naming MCP servers that start without part of
+    their declared ``env`` or ``headers``, by server and key name, never a value.
+
+    For a host whose payload carries the agent's servers over the ACP wire, where
+    Crew withholds credential-bearing fields
+    (``kas_agents.withheld_credentials_notice``). ``""`` on every other host and
+    when nothing was withheld. On KAS it also carries the line for a ``file://``
+    prompt the session runs without (``kas_prompt.prompt_unread_notice``).
     """
 
 
@@ -353,6 +424,31 @@ class TeardownPolicy:
     stall silently, and this layer exists so a per-host fact is stated once by the
     host that knows it.
     """
+
+    local_only: bool = False
+    """Unregister without the destructive verb unless privacy requires deletion."""
+
+    delete_disposable_record: Callable[[str, Mapping[str, str] | None], bool] | None = None
+    """Crew's own delete of a disposable session's record, for a host whose verb keeps it.
+
+    ``None`` means the verb, or the kiro-cli transcript sweep the shared runtime
+    already runs, answers for the record. codex evicts and keeps the rollout under
+    ``CODEX_HOME``, so its harness names the rollout delete here. The shared
+    runtime calls it for an incognito or temporary session with the session id
+    and the runtime's ``extra_env``, which can move the store the child wrote.
+    Returns whether the cleanup completed.
+    """
+
+
+# ── Unroutable permission answer ──
+
+
+class UnroutablePermissionRelay(Protocol):
+    """The runtime's audited fail-closed answer for an unroutable permission request."""
+
+    async def _answer_unroutable_permission(
+        self, msg: Any, session_id: str, *, reason: str
+    ) -> None: ...
 
 
 # ── Seam 9: reclaim ──
@@ -543,6 +639,11 @@ class HarnessAdapter(LaunchAdapter):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
+        ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -551,6 +652,26 @@ class HarnessAdapter(LaunchAdapter):
         session-level entries -- declaring one twice lets the weaker declaration
         shadow the keyed one. Empty extras is the normal answer for a host that
         took its agent at spawn time.
+
+        ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
+        names of the stubs ``session/new`` injects for that session, from the
+        caller's one overlay lookup. A host that projects nothing ignores it.
+
+        ``ssh_auth_sock_forwarded`` is the verdict the launch tail applied to the
+        running engine's own environment, for a host that starts the session's
+        stdio servers itself (KAS); False when no launch recorded one.
+
+        ``engine_features`` is :func:`kiro_crew.acp.kas_engine_features.advertised`
+        of this process's ``initialize`` answer. Only the KAS projection reads it.
+
+        ``session_cwd`` is the session's own working directory, which can differ
+        from *work_dir* (the runtime's) for a session opened in another checkout.
+        A host that reads workspace settings beside the session reads them there;
+        one that projects nothing ignores it.
+
+        ``governance_app`` is the app whose governance profile the session runs
+        under, or ``None`` when the caller cannot vouch for it. Only the KAS
+        projection reads it, for the profiles a translated allow meets.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
@@ -588,6 +709,56 @@ class HarnessAdapter(LaunchAdapter):
         unchanged, which is what keeps its wire byte-identical.
         """
 
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
+
+        Asked after the runtime built the request and before it goes out. This
+        default sends what the runtime built and activates the agent the caller asked
+        for, so it returns BOTH of the caller's objects unchanged, and the request
+        stays byte-identical to one built without this seam. KAS
+        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names the mode a
+        ``session/new`` starts in, its injected agent or the start agent it adds
+        beside one that declares MCP servers, and still activates the
+        caller's agent. A host that places the session where Kiro Crew's agent does
+        not exist (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`)
+        reshapes the request and activates nothing. Raising ``AcpRuntimeError`` here
+        refuses the start before anything is sent.
+        """
+        return params, agent
+
+    def holds_replayed_permission(self, session_id: str) -> bool:
+        """Whether a permission request for *session_id* arrived inside a resume hold.
+
+        Read by the runtime's reader for a permission request that names a session.
+        Every host the backend table serves answers ``False``, so the request is
+        routed to the session's queue as before.
+        """
+        return False
+
+    def unroutable_permission(
+        self,
+        runtime: UnroutablePermissionRelay,
+        msg: Any,
+        session_id: str,
+        *,
+        reason: str,
+    ) -> Callable[[], Awaitable[None]]:
+        """How a permission request no session queue reads gets its answer.
+
+        Asked on the reader, before the answer task is admitted, so a host can
+        snapshot its own state at the moment the frame arrived. Every host the
+        backend table serves answers with the runtime's audited fail-closed reject,
+        unchanged.
+        """
+        return lambda: runtime._answer_unroutable_permission(msg, session_id, reason=reason)
+
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Why *agent* must NOT be activated on the session *resp* just opened, or ``None``.
 
@@ -600,6 +771,20 @@ class HarnessAdapter(LaunchAdapter):
         returned is the user-facing refusal, ready to raise as-is.
         """
         return None
+
+    def start_mode_ran_servers(self, mode_id: str) -> bool:
+        """Whether the mode a session started in may have started MCP servers of its own.
+
+        Asked after ``set_mode`` switched a new session away from *mode_id*, as a
+        seam rather than a backend test (harness-parity H13). Reports staged
+        before the switch describe that mode's servers, so the start skips them
+        unless the mode had none. This base answer is ``True``: a mode a host
+        chose may run any server. A host that starts a session in an agent it
+        registered without servers answers ``False`` for that agent, and the
+        reports staged under it, which can only name session-level servers,
+        still count.
+        """
+        return True
 
     # ── Seam 4: inbound requests the host answers ──
 
@@ -644,6 +829,19 @@ class HarnessAdapter(LaunchAdapter):
     @abc.abstractmethod
     def teardown(self) -> TeardownPolicy:
         """How one session ends, and whether ending it destroys the record."""
+
+    def release(self, agent_capabilities: Mapping[str, Any] | None) -> TeardownPolicy | None:
+        """The verb that frees a session from the process and KEEPS its record.
+
+        Asked only by a caller that wants the record to outlive the session for
+        a while, and deletes it later with :attr:`teardown`. ``None`` means this
+        host has no such verb distinct from its teardown, and the caller ends the
+        session with :attr:`teardown` as it always did. That is the answer for a
+        host whose teardown already keeps the record, and for one whose process
+        did not advertise the verb: the handshake is passed in so a host can
+        refuse when its running engine is older than the verb.
+        """
+        return None
 
     # How a live session's model changes, and how privileged tools are made to
     # ask, are deliberately NOT asked here. Both answers already live in a

@@ -24,6 +24,8 @@ from kiro_crew.apps.bridges import (
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 def _run(coro):
     """Drive an async bridge helper from a synchronous test.
@@ -445,6 +447,188 @@ class TestCronServiceBridge:
         ]
 
     @pytest.mark.asyncio
+    async def test_boot_keeps_crons_of_app_whose_record_is_not_an_object(
+        self, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+        from kiro_crew.apps.manager import list_apps
+
+        app_root = app_env["home"] / "apps" / "damaged-app"
+        app_root.mkdir(parents=True, exist_ok=True)
+        (app_root / "installed.json").write_text("[]", encoding="utf-8")
+        monkeypatch.setattr(bridges_mod, "list_apps", list_apps)
+        monkeypatch.setattr(execution_mod, "third_party_execution_allowed", lambda: True)
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [SimpleNamespace(created_by="app:damaged-app")]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=["job-id"])
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(mock_service)
+
+        assert disarmed == []
+        mock_service.remove_jobs_by_owner.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("record", ["[]", None], ids=["unlisted-damaged", "listed"])
+    async def test_boot_admission_runs_off_the_event_loop(self, app_env, monkeypatch, record):
+        # Source resolution reads shipped manifests, so it must not block the loop.
+        import threading
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+
+        app_root = app_env["home"] / "apps" / "some-app"
+        app_root.mkdir(parents=True, exist_ok=True)
+        if record is None:
+            monkeypatch.setattr(
+                bridges_mod, "list_apps", lambda: [{"name": "some-app", "enabled": True}]
+            )
+        else:
+            from kiro_crew.apps.manager import list_apps
+
+            (app_root / "installed.json").write_text(record, encoding="utf-8")
+            monkeypatch.setattr(bridges_mod, "list_apps", list_apps)
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def _denied(*a, **k):
+            seen.append(threading.get_ident())
+            return False
+
+        monkeypatch.setattr(bridges_mod, "_registration_denied", _denied)
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [SimpleNamespace(created_by="app:some-app")]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=[])
+
+        assert await bridges_mod.reconcile_app_crons_for_execution(mock_service) == []
+        assert seen and all(ident != loop_thread for ident in seen)
+
+    @pytest.mark.asyncio
+    async def test_boot_keeps_crons_of_admitted_app_whose_record_path_is_a_directory(
+        self, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+        from kiro_crew.apps.manager import list_apps
+
+        # Not a missing record: a directory in the file's place cannot be read.
+        (app_env["home"] / "apps" / "odd-app" / "installed.json").mkdir(parents=True)
+        monkeypatch.setattr(bridges_mod, "list_apps", list_apps)
+        monkeypatch.setattr(execution_mod, "third_party_execution_allowed", lambda: True)
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [SimpleNamespace(created_by="app:odd-app")]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=["job-id"])
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(mock_service)
+
+        assert disarmed == []
+        mock_service.remove_jobs_by_owner.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("granted", [True, False], ids=["per-app-grant", "no-grant"])
+    async def test_boot_pauses_crons_of_denied_app_whose_record_cannot_be_read(
+        self, app_env, monkeypatch, granted
+    ):
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+        from kiro_crew.apps.manager import list_apps
+        from kiro_crew.cron import CronService
+        from kiro_crew.mcp_cron_vet import _vet_app_owner_enabled
+
+        app_root = app_env["home"] / "apps" / "damaged-app"
+        app_root.mkdir(parents=True, exist_ok=True)
+        (app_root / "installed.json").write_text("[]", encoding="utf-8")
+        monkeypatch.setattr(bridges_mod, "list_apps", list_apps)
+        monkeypatch.setattr(execution_mod, "third_party_execution_allowed", lambda: False)
+        if granted:
+            monkeypatch.setattr(
+                execution_mod, "trusted_app_names", lambda: frozenset({"damaged-app"})
+            )
+            monkeypatch.setattr(
+                execution_mod,
+                "trusted_app_repository",
+                lambda _name: "https://example.invalid/a.git",
+            )
+            monkeypatch.setattr(execution_mod, "trusted_local_app_names", lambda: frozenset())
+        # Boot order: the store is loaded, the timer is not started yet.
+        svc = CronService(base_dir=app_env["home"] / "crons")
+        job = svc.add_job(
+            name="damaged-app/nightly",
+            message="m",
+            every_secs=600,
+            agent_id="a",
+            created_by="app:damaged-app",
+        )
+        assert execution_mod.app_execution_denied("damaged-app", action="probe")
+
+        await bridges_mod.reconcile_app_crons_for_execution(svc)
+
+        # The record is rewritten readable and enabled, naming another repository:
+        # the enablement gate alone would now let the job fire.
+        (app_root / "installed.json").write_text(
+            json.dumps(
+                {
+                    "name": "damaged-app",
+                    "enabled": True,
+                    "sourceUrl": "https://example.invalid/b.git",
+                }
+            ),
+            encoding="utf-8",
+        )
+        stored = {
+            j.id: j
+            for j in await CronService(base_dir=app_env["home"] / "crons").list_jobs_async(
+                include_disabled=True
+            )
+        }
+        assert job.id in stored, "the job and its settings are kept"
+        assert stored[job.id].enabled is False, "the timer fires enabled jobs only"
+        assert _vet_app_owner_enabled(stored[job.id]) is None
+
+    @pytest.mark.asyncio
+    async def test_boot_disarms_crons_of_unlisted_trusted_app_whose_readable_record_is_denied(
+        self, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+        from kiro_crew.apps.manager import list_apps
+
+        app_root = app_env["home"] / "apps" / "nameless-app"
+        app_root.mkdir(parents=True, exist_ok=True)
+        (app_root / "installed.json").write_text(
+            json.dumps({"enabled": True, "sourceUrl": "https://example.invalid/other.git"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(bridges_mod, "list_apps", list_apps)
+        monkeypatch.setattr(execution_mod, "third_party_execution_allowed", lambda: False)
+        monkeypatch.setattr(execution_mod, "trusted_app_names", lambda: frozenset({"nameless-app"}))
+        monkeypatch.setattr(
+            execution_mod,
+            "trusted_app_repository",
+            lambda _name: "https://example.invalid/bound.git",
+        )
+        monkeypatch.setattr(execution_mod, "trusted_local_app_names", lambda: frozenset())
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [SimpleNamespace(created_by="app:nameless-app")]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=["job-id"])
+
+        # The record reads, so the repository-bound denial is confirmed even though
+        # the nameless row keeps the owner out of the listing.
+        assert "nameless-app" not in {a.get("name") for a in list_apps()}
+        assert execution_mod.app_execution_denied("nameless-app", action="probe")
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(mock_service)
+
+        assert disarmed == ["nameless-app"]
+        mock_service.remove_jobs_by_owner.assert_awaited_once_with("app:nameless-app")
+
+    @pytest.mark.asyncio
     async def test_boot_keeps_shipped_builtin_app_cron_armed(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock
 
@@ -644,11 +828,11 @@ class TestCronServiceBridge:
         assert result == ["test-app/nightly-run"]
         assert mock_sdk.add_job_if_absent_async.call_args.kwargs["enabled"] is False
 
-    def test_legacy_defs_without_enabled_default_active(self, tmp_path, app_env, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_legacy_defs_without_enabled_default_active(self, tmp_path, app_env, monkeypatch):
         """Pre-existing app-crons.json without the enabled key registers active."""
-        from unittest.mock import MagicMock, patch
-
         from kiro_crew.apps.bridges import register_app_crons_with_service
+        from kiro_crew.cron import CronService
 
         cron_defs = [
             {
@@ -661,15 +845,16 @@ class TestCronServiceBridge:
         ]
         self._write_app_crons(tmp_path, "test-app", cron_defs)
 
-        mock_cron_service = MagicMock()
-        mock_sdk = MagicMock()
-        mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="abc123"))
+        svc = CronService(base_dir=app_env["home"] / "crons")
+        await svc.start()
+        try:
+            registered = await register_app_crons_with_service("test-app", svc)
+            jobs = {job.name: job for job in svc.list_jobs()}
+        finally:
+            await svc.stop()
 
-        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
-            _run(register_app_crons_with_service("test-app", mock_cron_service))
-
-        assert mock_sdk.add_job_if_absent_async.call_args.kwargs["enabled"] is True
+        assert registered == ["test-app/legacy"]
+        assert jobs["test-app/legacy"].enabled is True
 
     def test_startup_skips_existing_disabled_job(self, tmp_path, app_env, monkeypatch):
         """Gateway-startup re-registration must not re-add (and thus re-pause)

@@ -20,7 +20,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from kiro_crew import __version__, code_fingerprint, platform_compat, release_channel
 from kiro_crew.cloud import aws, sizes
@@ -286,10 +286,9 @@ def azs_offering_instance_type(instance_type: str, profile: str, region: str) ->
 
 
 # Hosts the bootstrap MUST resolve to build the box. Keep in sync with the
-# UserData in templates/kirocrew-ec2.yaml — the kiro-cli URL is pinned to
-# us-east-1 there regardless of the launch region, so it is literal here too.
+# UserData in templates/kirocrew-ec2.yaml; a test holds the kiro-cli host equal.
 _BOOTSTRAP_DOWNLOAD_HOSTS = (
-    "desktop-release.q.us-east-1.amazonaws.com",  # kiro-cli musl build
+    "prod.download.cli.kiro.dev",  # kiro-cli musl build
     "nodejs.org",  # Node >= NODE_MIN tarball
 )
 
@@ -298,9 +297,9 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
     """True when a hosted zone named ``zone`` is authoritative for ``host``.
 
     A private hosted zone owns its apex **and every subdomain**, so
-    ``q.us-east-1.amazonaws.com`` shadows ``desktop-release.q.us-east-1.amazonaws.com``.
-    Matching is done on label boundaries so ``xq.us-east-1.amazonaws.com`` does
-    not match — a plain ``endswith`` would produce false positives.
+    ``kiro.dev`` shadows ``prod.download.cli.kiro.dev``.
+    Matching is done on label boundaries so ``xkiro.dev`` does not match — a
+    plain ``endswith`` would produce false positives.
     """
     zone = zone.rstrip(".").lower()
     host = host.rstrip(".").lower()
@@ -312,18 +311,13 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
 def shadowed_download_hosts(vpc_id: str, profile: str, region: str) -> list[tuple[str, str]]:
     """``(host, zone)`` pairs where a private hosted zone hides a download host.
 
-    An interface VPC endpoint with private DNS enabled creates a private hosted
-    zone that is authoritative for its whole domain. Amazon Q's
-    ``com.amazonaws.<region>.q`` endpoint creates one for
-    ``q.<region>.amazonaws.com`` — and kiro-cli is downloaded from
-    ``desktop-release.q.us-east-1.amazonaws.com``, which sits inside it. In such
-    a VPC the lookup is answered by the private zone, finds no matching record,
-    and returns NXDOMAIN **without falling through to public DNS**, so the
-    bootstrap dies ~4 minutes in on a name that resolves fine everywhere else.
+    A private hosted zone bound to the VPC is authoritative for its whole
+    domain: a lookup under it that finds no record returns NXDOMAIN **without
+    falling through to public DNS**, so the bootstrap would die minutes in on a
+    name that resolves fine everywhere else.
 
-    The failure is deterministic — retries do not help — and it surfaces as
-    "kiro-cli did not install", which names the wrong layer. One read-only call
-    here turns it into a pre-launch error.
+    The failure is deterministic — retries do not help. One read-only call here
+    turns it into a pre-launch error.
 
     Returns an empty list when the check cannot be performed (for example the
     launch role predates ``route53:ListHostedZonesByVPC``): a missing optional
@@ -373,15 +367,53 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
         f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap "
         f"must download from ({detail}). Inside this VPC that name resolves to "
         "NXDOMAIN instead of falling through to public DNS, so the install would "
-        "fail several minutes from now with a misleading error. This is usually an "
-        "interface VPC endpoint with private DNS enabled (e.g. Amazon Q's "
-        "`com.amazonaws.<region>.q`). Launch into a VPC without that endpoint via "
-        "`--subnet <subnet-id>`, or disable private DNS on the endpoint, then retry.",
+        "fail several minutes from now with a misleading error. Launch into a VPC "
+        "without that zone via `--subnet <subnet-id>`, or remove the zone from this "
+        "VPC, then retry.",
         action="route53:ListHostedZonesByVPC",
     )
 
 
-def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
+def assert_ami_matches_tier(ami_id: str, tier: sizes.SizeTier, profile: str, region: str) -> None:
+    """Refuse an ``--ami`` built for another architecture than ``tier`` runs.
+
+    The template boots ``CustomAmiId`` on ``tier.instance_type`` as given, so a
+    mismatch fails only at the Instance resource, after the role and instance
+    profile exist. Raises :class:`aws.AWSError` naming both architectures and the
+    sizes that fit the image. A read that fails decides nothing: the launch goes
+    on and CloudFormation judges the image.
+    """
+    try:
+        data = aws.checked_json(
+            ["ec2", "describe-images", "--image-ids", ami_id],
+            profile,
+            region,
+            action="ec2:DescribeImages",
+        )
+    except aws.AWSError as exc:
+        logger.info("could not read the architecture of %s: %s", ami_id, exc)
+        return
+    images = data.get("Images", []) if isinstance(data, dict) else []
+    arch = images[0].get("Architecture", "") if images else ""
+    if arch in ("", tier.arch):
+        return
+    fits = " / ".join(t.key for t in sizes.all_tiers() if t.arch == arch)
+    remedy = f"use an {tier.arch} AMI"
+    if fits:
+        remedy = f"pick an {arch} size (--size {fits}) or an {tier.arch} AMI"
+    raise aws.AWSError(
+        f"AMI {ami_id} is built for {arch}, but the {tier.label} size "
+        f"({tier.instance_type}) runs {tier.arch}: {remedy}, then retry.",
+        action="ec2:DescribeImages",
+    )
+
+
+def discover_network(
+    profile: str,
+    region: str,
+    instance_type: str = "",
+    on_fallback: Optional[Callable[[str], None]] = None,
+) -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
     ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
@@ -397,6 +429,10 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
     the launch until the WaitCondition times out. Raises :class:`aws.AWSError`
     with actionable text if no default VPC, no AZ-compatible subnet, or no
     egress-capable subnet is available.
+
+    With no default VPC it falls back to the Region's only VPC, a choice the user
+    did not make, so ``on_fallback`` is then called with one sentence naming the
+    VPC, subnet and egress picked and how to choose another.
     """
     vpcs = aws.checked_json(
         ["ec2", "describe-vpcs", "--filters", "Name=isDefault,Values=true"],
@@ -405,7 +441,8 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
         action="ec2:DescribeVpcs",
     )
     vpc_list = vpcs.get("Vpcs", []) if isinstance(vpcs, dict) else []
-    if not vpc_list:
+    fallback = not vpc_list
+    if fallback:
         # Fall back to any VPC if there is exactly one.
         allv = aws.checked_json(
             ["ec2", "describe-vpcs"], profile, region, action="ec2:DescribeVpcs"
@@ -454,20 +491,41 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
     # even without MapPublicIpOnLaunch — but we still must not pick a subnet whose
     # only "egress" is an IGW when the launch can't get a public IP. Prefer, in
     # order: NAT (always works) > IGW (works via the associated public IP).
-    egress = _subnet_egress_kinds(vpc_id, profile, region)  # {subnet_id: "igw"|"nat"}
+    egress, dead = _subnet_egress_kinds(vpc_id, profile, region)  # egress: {subnet: "igw"|"nat"}
+
+    def _picked(subnet_id: str, kind: str) -> tuple[str, str, str]:
+        if fallback and on_fallback is not None:
+            via = "NAT" if kind == "nat" else "an internet gateway"
+            on_fallback(
+                f"No default VPC in {region}, so this launch uses the only VPC there, "
+                f"{vpc_id}, with subnet {subnet_id} (internet through {via}). This launch "
+                "goes on; to use another network next time, give a subnet ID (the Subnet "
+                "ID field, or --subnet)."
+            )
+        return vpc_id, subnet_id, kind
+
     nat = [s for s in candidates if egress.get(s["SubnetId"]) == "nat"]
     if nat:
-        return vpc_id, nat[0]["SubnetId"], "nat"
+        return _picked(nat[0]["SubnetId"], "nat")
     igw = [s for s in candidates if egress.get(s["SubnetId"]) == "igw"]
     if igw:
         # Prefer one that also auto-assigns a public IP, but the template's
         # conditional AssociatePublicIpAddress makes any IGW subnet workable.
         igw.sort(key=lambda s: not s.get("MapPublicIpOnLaunch"))
-        return vpc_id, igw[0]["SubnetId"], "igw"
+        return _picked(igw[0]["SubnetId"], "igw")
+    blackholed = [
+        f"{s['SubnetId']} -> {dead[s['SubnetId']]}" for s in candidates if s["SubnetId"] in dead
+    ]
+    dead_note = (
+        " Default routes whose target is no longer available (route state blackhole): "
+        f"{', '.join(blackholed)}; point each at a working NAT or internet gateway."
+        if blackholed
+        else ""
+    )
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
-        "gateway or NAT). KiroCrew needs outbound access to install packages and "
-        "reach SSM. Add an internet gateway + public route (or a NAT), or pass a "
+        f"gateway or NAT).{dead_note} Kiro Crew needs outbound access to install packages and "
+        "reach SSM. Add or repair an internet gateway or NAT default route, or pass a "
         "subnet that has one via `--subnet`, then retry.",
         action="ec2:DescribeRouteTables",
     )
@@ -513,26 +571,41 @@ def resolve_explicit_subnet(
                 f"{', '.join(sorted(ok_azs))}, or a different size.",
                 action="ec2:DescribeInstanceTypeOfferings",
             )
-    egress = _subnet_egress_kinds(vpc_id, profile, region)
+    egress, dead = _subnet_egress_kinds(vpc_id, profile, region)
+    if subnet_id in dead:
+        raise aws.AWSError(
+            f"subnet {subnet_id}'s default route points to {dead[subnet_id]}, which is no "
+            "longer available (route state blackhole), so the subnet has no internet "
+            "egress. Leave the subnet unset to let Kiro Crew pick one automatically, choose "
+            "another subnet, or point the route at a working NAT or internet gateway, then "
+            "retry.",
+            action="ec2:DescribeRouteTables",
+        )
     if subnet_id not in egress:
         raise aws.AWSError(
             f"subnet {subnet_id} has no verified internet egress route (NAT or "
             "internet gateway). Kiro Crew needs outbound access to install "
-            "packages and reach SSM — add a NAT (or IGW) default route to the "
-            "subnet's route table, then retry.",
+            "packages and reach SSM — leave the subnet unset to let Kiro Crew "
+            "pick one automatically, choose a subnet with a NAT or internet-gateway "
+            "route, or add a NAT (or IGW) default route to this subnet's route table, "
+            "then retry.",
             action="ec2:DescribeRouteTables",
         )
     return vpc_id, subnet_id, egress[subnet_id]
 
 
-def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
+def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> tuple[dict, dict]:
     """Map subnet id -> egress kind (``"nat"`` or ``"igw"``) for subnets in ``vpc_id``.
 
     A subnet uses its explicitly-associated route table, else the VPC main route
     table. NAT is distinguished from IGW because reachability differs: a NAT
     default route gives outbound access from a private subnet, whereas an
     internet-gateway route only works when the instance has a public IP. Subnets
-    with no 0.0.0.0/0 route are omitted (no egress).
+    with no active 0.0.0.0/0 route are omitted (no egress).
+
+    The second map holds, for a subnet without egress whose 0.0.0.0/0 NAT or IGW
+    route is not active (``blackhole``: its target was deleted, or its IGW
+    detached), that target, so a refusal can name the dead route.
     """
     rts = aws.checked_json(
         ["ec2", "describe-route-tables", "--filters", f"Name=vpc-id,Values={vpc_id}"],
@@ -542,19 +615,23 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
     )
     rt_list = rts.get("RouteTables", []) if isinstance(rts, dict) else []
 
-    def _egress_kind(rt: dict[str, Any]) -> Optional[str]:
+    def _egress_kind(rt: dict[str, Any]) -> tuple[Optional[str], str]:
         # NAT wins over IGW if both somehow present (private-subnet semantics).
         kind = None
+        dead = ""
         for route in rt.get("Routes", []):
             if route.get("DestinationCidrBlock", "") != "0.0.0.0/0":
                 continue
+            nat = route.get("NatGatewayId") or route.get("NetworkInterfaceId")
+            igw = route.get("GatewayId", "")
             if route.get("State", "active") != "active":
+                dead = nat or (igw if igw.startswith("igw-") else "")
                 continue
-            if route.get("NatGatewayId") or route.get("NetworkInterfaceId"):
-                return "nat"
-            if route.get("GatewayId", "").startswith("igw-"):
+            if nat:
+                return "nat", ""
+            if igw.startswith("igw-"):
                 kind = "igw"
-        return kind
+        return kind, dead
 
     main_kind: Optional[str] = None
     # A subnet's EXPLICIT route-table association overrides the main table — even
@@ -563,21 +640,25 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
     # an explicitly-bound no-egress subnet must be EXCLUDED from the main-table
     # fallback, not silently treated as having the main table's egress (which
     # would let discover_network pick a dead subnet and hang to WaitCondition).
+    main_dead = ""
     explicit_kind: dict = {}
+    dead: dict = {}
     explicitly_bound: set = set()
     for rt in rt_list:
-        kind = _egress_kind(rt)
+        kind, dead_target = _egress_kind(rt)
         for assoc in rt.get("Associations", []):
-            if assoc.get("Main") and kind:
-                main_kind = kind
+            if assoc.get("Main"):
+                main_kind, main_dead = kind, dead_target
             subnet_id = assoc.get("SubnetId")
             if subnet_id:
                 explicitly_bound.add(subnet_id)
                 if kind:
                     explicit_kind[subnet_id] = kind
+                elif dead_target:
+                    dead[subnet_id] = dead_target
 
     result: dict = dict(explicit_kind)
-    if main_kind:
+    if main_kind or main_dead:
         # Only subnets with NO explicit association fall back to the main table.
         subnets = aws.checked_json(
             ["ec2", "describe-subnets", "--filters", f"Name=vpc-id,Values={vpc_id}"],
@@ -588,8 +669,11 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
         for s in subnets.get("Subnets", []) if isinstance(subnets, dict) else []:
             sid = s.get("SubnetId", "")
             if sid and sid not in explicitly_bound:
-                result[sid] = main_kind
-    return result
+                if main_kind:
+                    result[sid] = main_kind
+                else:
+                    dead[sid] = main_dead
+    return result, dead
 
 
 def release_tag_exists(ref: str, repo: str = "") -> bool:
@@ -691,6 +775,42 @@ def resolve_public_ref(repo: str = "") -> str:
     return ""
 
 
+def _account_of_policy_arn(arn: str) -> str:
+    """The account id field of an IAM policy ARN (``arn:aws:iam::<account>:policy/...``)."""
+    parts = arn.split(":")
+    if len(parts) < 6 or not re.fullmatch(r"[0-9]{12}", parts[4]):
+        raise aws.AWSError(
+            f"could not read the account id from the boundary ARN {arn!r}",
+            action="iam:GetPolicy",
+        )
+    return parts[4]
+
+
+def _account_refusal(failures: list[dict[str, str]], tier: sizes.SizeTier) -> str:
+    """The plain-words cause and next step when EC2 refused the instance on an
+    account limit, else ``""``.
+
+    Matched on EC2's own message: CloudFormation's resource handler drops EC2's
+    error code from the event reason.
+    """
+    reasons = " ".join(f["reason"] for f in failures)
+    if "current vCPU limit" in reasons:
+        smaller = any(t.vcpu < tier.vcpu for t in sizes.all_tiers())
+        return (
+            f"this AWS account's vCPU quota in this Region has no room for the {tier.vcpu} "
+            f"vCPU of the {tier.label} size: request a higher Running On-Demand Standard "
+            "instances quota (L-1216C47A) in Service Quotas"
+            + (", or pick a smaller size," if smaller else "")
+            + " and retry"
+        )
+    if "in this region is being validated" in reasons:
+        return (
+            "this AWS account is still being validated for launches in this Region: AWS "
+            "emails you when it is done (usually within minutes, up to 4 hours), then retry"
+        )
+    return ""
+
+
 def build_deploy_argv(
     *,
     tag: str,
@@ -707,6 +827,7 @@ def build_deploy_argv(
     ami_id: str = "",
     extra_packages: str = "",
     ssm_kms_key_arn: str = "",
+    extra_managed_policy_arns: tuple[str, ...] = (),
 ) -> list[str]:
     """Assemble the exact ``aws cloudformation deploy`` argv (also the dry-run output).
 
@@ -719,6 +840,8 @@ def build_deploy_argv(
     emitted only when set, so a stock launch's argv is unchanged. The same holds
     for ``ssm_kms_key_arn`` (``--ssm-kms-key``): set, it adds ``SsmKmsKeyArn``
     and the caller passes the KMS-session boundary ARN; unset, nothing changes.
+    ``extra_managed_policy_arns`` (the edition's ``cloud_instance_policy``) fills
+    ``ExtraManagedPolicyArns`` only when non-empty, for the same reason.
     """
     overrides = [
         f"InstanceType={tier.instance_type}",
@@ -746,6 +869,8 @@ def build_deploy_argv(
         overrides.append(f"ExtraPackages={extra_packages}")
     if ssm_kms_key_arn:
         overrides.append(f"SsmKmsKeyArn={ssm_kms_key_arn}")
+    if extra_managed_policy_arns:
+        overrides.append(f"ExtraManagedPolicyArns={','.join(extra_managed_policy_arns)}")
     return [
         "cloudformation",
         "deploy",
@@ -780,6 +905,7 @@ def deploy(
     ami_id: str = "",
     extra_packages: str = "",
     ssm_kms_key_arn: str = "",
+    on_network_fallback: Optional[Callable[[str], None]] = None,
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -797,6 +923,8 @@ def deploy(
     opts in to encrypted Session Manager: the role gets the opt-in KMS-session
     boundary and an inline grant on exactly that key. Empty means the default
     boundary and no KMS grant, byte-identical to a launch before the flag existed.
+    ``on_network_fallback`` is handed to :func:`discover_network`, so a caller can
+    show which network a launch with no default VPC picked before the stack exists.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -817,7 +945,14 @@ def deploy(
     if ssm_kms_key_arn:
         ssm_kms_key_arn = validate_ssm_kms_key_arn(ssm_kms_key_arn)
 
+    from kiro_crew.cloud import host_policy
     from kiro_crew.cloud import source as source_mod
+
+    # Check the edition's instance-role additions before anything reaches AWS: an
+    # invalid descriptor, or one that cannot be read, refuses the launch, dry run
+    # included. Every later read refuses the same way, so none can launch an
+    # instance without the required policies.
+    host_policy.instance_policy()
 
     if ship_source is None:
         ship_source = source_mod.find_repo_root() is not None
@@ -851,6 +986,7 @@ def deploy(
             ami_id=ami_id,
             extra_packages=extra_packages,
             ssm_kms_key_arn=ssm_kms_key_arn,
+            extra_managed_policy_arns=tuple(host_policy.managed_policy_arns("<account>")),
         )
         return DeployResult(
             tag=tag,
@@ -877,6 +1013,15 @@ def deploy(
         boundary_arn = source_mod.ensure_instance_kms_boundary(profile, region)
     else:
         boundary_arn = source_mod.ensure_instance_boundary(profile, region)
+    # The edition's host policies, in the account the boundary ARN names (the one
+    # this launch resolved). Read once, before anything is uploaded, so the argv
+    # below cannot disagree with the check at the top or fail after the upload.
+    extra_managed_policy_arns = tuple(
+        host_policy.managed_policy_arns(_account_of_policy_arn(boundary_arn))
+    )
+    # A policy the account lacks would fail the role's attach with IAM's raw 404
+    # after the upload; refuse here instead, naming it.
+    host_policy.require_managed_policies(extra_managed_policy_arns, profile, region)
 
     # Package + upload the local source so the box installs from S3 (no GitHub
     # access needed). Fall back to a git clone only if source shipping is off.
@@ -903,7 +1048,9 @@ def deploy(
                 subnet_id, profile, region, tier.instance_type
             )
         else:
-            vpc_id, subnet_id, egress_kind = discover_network(profile, region, tier.instance_type)
+            vpc_id, subnet_id, egress_kind = discover_network(
+                profile, region, tier.instance_type, on_fallback=on_network_fallback
+            )
         # Both paths above settle on a VPC; check the resolver BEFORE provisioning
         # anything. A private hosted zone that shadows a download host makes the
         # bootstrap fail deterministically minutes later, blaming the wrong layer.
@@ -929,6 +1076,7 @@ def deploy(
         ami_id=ami_id,
         extra_packages=extra_packages,
         ssm_kms_key_arn=ssm_kms_key_arn,
+        extra_managed_policy_arns=extra_managed_policy_arns,
     )
     # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
     # on the gateway being healthy). "No changes" exits 0 with a message on reuse.
@@ -936,8 +1084,6 @@ def deploy(
         argv = [*argv, "--disable-rollback"]
     rc, out, err = aws.run_aws(argv, profile, region, timeout=_DEPLOY_TIMEOUT, proc_sink=proc_sink)
     if rc != 0 and "No changes to deploy" not in (out + err):
-        missing = aws.map_missing_action(err)
-        hint = f" — grant `{missing}` and retry" if missing else ""
         # The `aws cloudformation deploy` error is generic ("Failed to
         # create/update the stack"); the real cause is in the stack's FAILED
         # events (which now include the on-box bootstrap log tail). Fetch and
@@ -947,9 +1093,34 @@ def deploy(
         if failures:
             lines = "; ".join(f"{f['resource']}: {f['reason']}" for f in failures[:4])
             detail = f" — root cause: {lines}"
+        missing = aws.map_missing_action(err)
+        # The whole stderr, so its describe-stack-events command keeps the full
+        # stack name. The remedy leads, as in aws.checked, so the dashboard's
+        # 400-character cut keeps it.
+        cause = err.strip()
+        if extra_managed_policy_arns and "iam:AttachRolePolicy" in (err + detail):
+            # A denied attach of the edition's host policies means the second
+            # launcher policy was never applied; the first already grants the one
+            # attach it allows, so its grant line would not fix this.
+            cause = (
+                "this build attaches host policies to the instance role: apply the second "
+                "launcher policy from `kirocrew cloud iam-policy --host-policies` and retry"
+                f" — {cause}"
+            )
+        else:
+            # A denial CloudFormation meets creating a resource (iam:PassRole for the
+            # instance) is only in the events. The WaitCondition's reason is the
+            # instance's own setup log, so a denial there is not the launcher's grant.
+            for f in failures:
+                if not missing and f["resource"] != "WaitCondition":
+                    missing = aws.map_missing_action(f["reason"])
+            if missing:
+                cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            elif refusal := _account_refusal(failures, tier):
+                cause = f"{refusal} — {cause}"
         _cleanup_uploaded_source()
         raise aws.AWSError(
-            f"cloudformation deploy failed: {err.strip()[:200]}{hint}{detail}",
+            f"cloudformation deploy failed: {cause}{detail}",
             action="cloudformation:CreateStack",
             missing_action=missing,
             returncode=rc,
@@ -993,8 +1164,11 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
         if "does not exist" in err:
             return None
         missing = aws.map_missing_action(err)
+        cause = err.strip()[:300]
+        if missing:
+            cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         raise aws.AWSError(
-            f"could not query stack {stack_name(tag)}: {err.strip()[:300]}",
+            f"could not query stack {stack_name(tag)}: {cause}",
             action="cloudformation:DescribeStacks",
             missing_action=missing,
             returncode=rc,
@@ -1099,7 +1273,7 @@ def get_stack_failures(tag: str, profile: str = "", region: str = "") -> list[di
 
 
 def list_stack_events(tag: str, profile: str = "", region: str = "") -> list[dict[str, str]]:
-    """Return stack events oldest-first: ``{id, resource, status, reason}``.
+    """Return stack events oldest-first: ``{id, resource, status, reason, physical_id}``.
 
     Used by the launcher to stream live progress during ``deploy`` so the user
     sees each resource come up (and the failure reason) instead of a spinner.
@@ -1133,6 +1307,7 @@ def list_stack_events(tag: str, profile: str = "", region: str = "") -> list[dic
                 "resource": ev.get("LogicalResourceId", ""),
                 "status": ev.get("ResourceStatus", ""),
                 "reason": ev.get("ResourceStatusReason", "") or "",
+                "physical_id": ev.get("PhysicalResourceId", "") or "",
             }
         )
     return out_events
@@ -1168,6 +1343,11 @@ def describe(tag: str, profile: str = "", region: str = "") -> dict[str, Any]:
 
 
 def _instance_state(instance_id: str, profile: str, region: str) -> str:
+    """The state name; ``""`` when EC2 has no such instance; ``"unknown"`` when unread.
+
+    For an instance EC2 does not return, ``--output text`` prints the literal ``None``;
+    a failed call, or one that printed nothing, says nothing about the instance.
+    """
     rc, out, _err = aws.run_aws(
         [
             "ec2",
@@ -1183,7 +1363,10 @@ def _instance_state(instance_id: str, profile: str, region: str) -> str:
         region,
         timeout=_POLL_TIMEOUT,
     )
-    return out.strip() if rc == 0 else "unknown"
+    if rc != 0:
+        return "unknown"
+    state = out.strip()
+    return "" if state == "None" else state or "unknown"
 
 
 def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
@@ -1210,10 +1393,10 @@ def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
         tag = tags.get(INSTANCE_TAG_KEY, "")
         instance_id = arn.rsplit("/", 1)[-1] if "/" in arn else ""
         state = _instance_state(instance_id, profile, region) if instance_id else ""
-        # The tagging API keeps returning terminated instances for a while; only
+        # The tagging API keeps returning an instance after it is gone; only
         # surface live ones (running/stopped/pending/stopping/...), not
-        # terminated/shutting-down.
-        if state in ("terminated", "shutting-down"):
+        # terminated/shutting-down or one EC2 does not have at all ("").
+        if state in ("", "terminated", "shutting-down"):
             continue
         out.append({"tag": tag, "instance_id": instance_id, "instance_state": state})
     return sorted(out, key=lambda r: r["tag"])
@@ -1253,6 +1436,36 @@ def list_stacks(profile: str = "", region: str = "") -> list[dict[str, Any]]:
             }
         )
     return sorted(out, key=lambda r: r["tag"])
+
+
+def live_instance_tags(profile: str = "", region: str = "") -> set[str]:
+    """The ``kirocrew:instance`` tag of every launcher-managed instance that still exists.
+
+    One filtered ``describe-instances`` whatever the number of stacks, so a stack's
+    name never vouches for it: a stack named ``kirocrew-<tag>`` whose instance was
+    terminated, or that Kiro Crew never made, has no live instance carrying both tags.
+    """
+    profile = validate_profile(profile)
+    region = validate_region(region)
+    data = aws.checked_json(
+        [
+            "ec2",
+            "describe-instances",
+            "--filters",
+            f"Name=tag:{MANAGED_TAG_KEY},Values=true",
+            "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        ],
+        profile,
+        region,
+        action="ec2:DescribeInstances",
+    )
+    tags: set[str] = set()
+    for reservation in data.get("Reservations", []) if isinstance(data, dict) else []:
+        for instance in reservation.get("Instances", []):
+            for pair in instance.get("Tags", []):
+                if pair.get("Key") == INSTANCE_TAG_KEY and pair.get("Value"):
+                    tags.add(pair["Value"])
+    return tags
 
 
 # --- pause / resume ---------------------------------------------------------

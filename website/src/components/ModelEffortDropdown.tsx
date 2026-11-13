@@ -5,6 +5,8 @@ import { Btn, Input } from './ui'
 import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
+import EffortOffOnAutoNote from './EffortOffOnAutoNote'
+import UltracodeToggle from './UltracodeToggle'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -38,6 +40,8 @@ interface Props {
    *  Renders an `ErrorNotice` row: without it the failure would wear the
    *  empty list's "No matches" clothes and read as "this crew has no models". */
   modelsFailed?: boolean
+  /** The failure row's text, when the list that failed is not a peer crew's. */
+  modelsFailedMessage?: string
   /** In-place retry for that failure; omit to hide the button. */
   onRetryModels?: () => void
   /** True while that retry is in flight. The failed state persists until the
@@ -50,6 +54,9 @@ interface Props {
   modelVisibilityError?: boolean
   onRetryModelVisibility?: () => void
   hasEffort: boolean
+  /** No effort control because the session is on `auto`: say so where the
+   *  slider would be (#11546). Ignored while `hasEffort` is true. */
+  effortOffOnAuto?: boolean
   slot: string | null
   currentEffort: string
   /** Configured default effort for new sessions. Shown in the footer when the
@@ -63,6 +70,10 @@ interface Props {
   writeEffort?: (level: string) => Promise<{ reasoning_effort?: string; model?: string } | undefined>
   /** See ReasoningEffortDropdown's `onWriteError`. */
   onWriteError?: (message: string) => void
+  /** This gateway's slot's ultracode switch, when its session advertises one
+   *  (`UltracodeToggle`). Omitted, no switch renders: a crew window's peer slot
+   *  is not this gateway's to write. */
+  ultracode?: boolean
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -98,11 +109,12 @@ const WIDTH = 340
 /** Model picker with reasoning effort embedded below the searchable model list. */
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
-  filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
+  filter, setFilter, onClose, hasEffort, effortOffOnAuto = false, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
   modelVisibilityError = false, onRetryModelVisibility,
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
-  modelsFailed = false, onRetryModels, retryingModels = false, writeEffort, onWriteError,
+  modelsFailed = false, modelsFailedMessage, onRetryModels, retryingModels = false,
+  writeEffort, onWriteError, ultracode,
 }: Props) {
   const ime = useImeGuard()
   const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
@@ -171,7 +183,7 @@ export default function ModelEffortDropdown({
                 <ErrorNotice
                   className="min-w-0 flex-1"
                   variant="inline"
-                  message={i18nT('components.modelEffortDropdown.models_failed')}
+                  message={modelsFailedMessage ?? i18nT('components.modelEffortDropdown.models_failed')}
                 />
                 {onRetryModels && (
                   <Btn type="button" className="shrink-0" onClick={onRetryModels} disabled={retryingModels}>
@@ -196,6 +208,8 @@ export default function ModelEffortDropdown({
                 <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} writeEffort={writeEffort} onWriteError={onWriteError} />
               </div>
             )}
+            {!hasEffort && effortOffOnAuto && <EffortOffOnAutoNote />}
+            {typeof ultracode === 'boolean' && slot && <UltracodeToggle key={slot} slot={slot} enabled={ultracode} />}
             {onPinToAgent && agentName && (
               <Btn
                 type="button"

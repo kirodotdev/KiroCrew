@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
+from kiro_crew.crew_avatar_seed import default_icon_avatar
 from kiro_crew.execution_context import member_config_for_id
 from kiro_crew.member_workspace import (
     AUTO_WORKSPACE,
@@ -23,6 +23,7 @@ from kiro_crew.memory_stores import (
     require_member_memory_store,
     retire_unpublished_allocation,
 )
+from kiro_crew.user_json import loads_user_json
 from kiro_crew.workflows.registry import _await_owned
 
 from . import store
@@ -58,7 +59,12 @@ def _read_team() -> dict[str, str]:
     path = _team_path()
     if not path.exists():
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # A UTF-16 save (PowerShell 5.1 ``>``) names no file in the codec's own message.
+        raise ValueError(f"{path} is not UTF-8 text: {exc}") from exc
+    data = loads_user_json(text)
     if not isinstance(data, dict) or any(
         role not in ROLES or not isinstance(identity, str) or not identity
         for role, identity in data.items()
@@ -93,6 +99,9 @@ def ensure_team() -> dict[str, str]:
                     workspace=AUTO_WORKSPACE,
                     description=spec.description,
                     source=store.APP_NAME,
+                    # The same name-seeded icon every create path applies, so an
+                    # app-provisioned crew is born an icon, not the trait ghost.
+                    avatar=default_icon_avatar(spec.name),
                 )
                 config.agents[spec.name] = member
                 previous_store = member.memory_store
@@ -120,10 +129,10 @@ def ensure_team() -> dict[str, str]:
                     raise
                 existing = member
             if existing.source != store.APP_NAME or existing.kiro_agent != spec.template:
-                raise ValueError(f"Crew Member {spec.name!r} already belongs to another purpose")
+                raise ValueError(f"Bot {spec.name!r} already belongs to another purpose")
             require_member_memory_store(config, spec.name)
             if not existing.member_id:
-                raise ValueError(f"Crew Member {spec.name!r} has no private member identity")
+                raise ValueError(f"Bot {spec.name!r} has no private member identity")
             identities[role] = existing.member_id
             store.write_json_atomic(_team_path(), identities)
         return identities

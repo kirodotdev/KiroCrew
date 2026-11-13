@@ -2,9 +2,9 @@
 // matches-only / newest-first / wrap / tail toggles, the ring-buffer cap, the
 // match highlighter, and the follow behaviour that pins to whichever end is
 // "latest" for the current direction.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render as rtlRender, screen, fireEvent, act } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render as rtlRender, screen, fireEvent, act, within } from '@testing-library/react'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement, ReactNode } from 'react'
 
 type Line = { level: string; msg: string }
@@ -58,6 +58,7 @@ vi.mock('react-virtuoso', async () => {
 })
 
 import LogsPage, { LogViewer } from '../pages/LogsPage'
+import { i18next } from '../i18n/all'
 
 /** Feed lines through the websocket subscription the viewer registered. */
 function emit(...lines: Line[]) {
@@ -71,7 +72,12 @@ beforeEach(() => {
   sub.calls.length = 0
   virtuoso.scrollToIndex.mockClear()
   virtuoso.props = null
+  // An accepted level reaches the chips through the query cache, whose
+  // notifications default to a timer; on microtasks the `act` around a click
+  // flushes them, so a chip asserted after it shows the settled state.
+  notifyManager.setScheduler(queueMicrotask)
 })
+afterEach(() => { notifyManager.setScheduler(defaultScheduler) })
 
 describe('LogViewer level control', () => {
   it('adopts the backend level on mount', async () => {
@@ -96,6 +102,32 @@ describe('LogViewer level control', () => {
     await act(async () => { fireEvent.click(screen.getByText('Error')) })
     expect(screen.getByText('Info').className).toContain('bg-info')
     expect(screen.getByText('Error').className).toContain('bg-transparent')
+  })
+
+  it('announces the level buttons as one named radio group with the chosen level checked', async () => {
+    render(<LogViewer />)
+    await act(async () => {})
+    const group = screen.getByRole('radiogroup', { name: 'Log Level:' })
+    expect(within(group).getAllByRole('radio').map(r => r.textContent)).toEqual(['Debug', 'Info', 'Warning', 'Error'])
+    expect(within(group).getByRole('radio', { checked: true }).textContent).toBe('Info')
+    await act(async () => { fireEvent.click(within(group).getByRole('radio', { name: 'Warning' })) })
+    expect(within(group).getByRole('radio', { checked: true }).textContent).toBe('Warning')
+  })
+
+  it('names the level chips in the reader\'s language', async () => {
+    // The chips were built from the English level constants, so every locale
+    // read Debug / Info / Warning / Error while the rest of the bar translated.
+    await i18next.changeLanguage('ja')
+    try {
+      render(<LogViewer />)
+      await act(async () => {})
+      const group = screen.getByRole('radiogroup', { name: 'ログレベル:' })
+      expect(within(group).getAllByRole('radio').map(r => r.textContent)).toEqual(['デバッグ', '情報', '警告', 'エラー'])
+      await act(async () => { fireEvent.click(within(group).getByRole('radio', { name: '警告' })) })
+      expect(setLogLevel).toHaveBeenCalledWith('WARNING')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('styles each active level with its own tone', async () => {
@@ -167,7 +199,21 @@ describe('LogViewer search', () => {
     const marks = screen.getAllByText('needle')
     expect(marks).toHaveLength(2)
     expect(marks[0].tagName).toBe('MARK')
-    expect(screen.getByText(/2 matches|matches/)).toBeInTheDocument()
+    expect(screen.getByText('1 match')).toBeInTheDocument()
+  })
+
+  it('the Matches only toggle says whether it is on', async () => {
+    const input = await withLines()
+    fireEvent.change(input, { target: { value: 'needle' } })
+    const toggle = screen.getByRole('button', { name: 'Matches only' })
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId('log-line')).toHaveLength(1)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId('log-line')).toHaveLength(2)
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('narrows to matches only, and clearing the query resets that', async () => {

@@ -120,12 +120,11 @@ def parse_gh_stderr(raw: str, *, now: float | None = None) -> GhFailure:
     return GhFailure(CATEGORY_TRANSIENT, status, retry_at, False)
 
 
-_RE_RETRY_AFTER_TEXT = re.compile(r"\bretry-?after[:\s=]+(\d+)\b", re.IGNORECASE)
 _RE_RESET_TEXT = re.compile(r"\bx-ratelimit-reset[:\s=]+(\d{9,13})\b", re.IGNORECASE)
 
 
 def _retry_after_in_text(raw: str) -> str | None:
-    match = _RE_RETRY_AFTER_TEXT.search(raw)
+    match = _http._RE_RETRY_AFTER_TEXT.search(raw)
     return match.group(1) if match else None
 
 

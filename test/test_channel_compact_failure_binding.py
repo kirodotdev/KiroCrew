@@ -148,3 +148,66 @@ class TestCompactFailurePreservesChannelIdentity:
         assert mgr._session_map.get_discarded_sid(key) == "sid-live"
         assert not mgr.has_session(key)
         await mgr.close_all()
+
+
+def _unresolved_compaction_factory(tmp_path, providers: list):
+    """A real ``AcpProvider`` whose reader still owes an abandoned compaction's status."""
+    from unittest.mock import patch
+
+    from kiro_crew.acp import stale_compaction
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.providers.acp import AcpProvider
+
+    def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(acp_backend="")
+        reader = AcpClient(work_dir=tmp_path)
+        reader.stream_events = MagicMock()
+        provider._client = reader
+        provider.start = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.is_process_alive = lambda: True
+        provider.has_active_turn = lambda: False
+        provider.context_usage_pct = lambda: 0.0
+        stale_compaction.discard_stale_compaction_status(reader, within_secs=0.0)
+        providers.append(provider)
+        return provider
+
+    return factory
+
+
+class TestCompactRefusalKeepsTheConversation:
+    @pytest.mark.asyncio
+    async def test_telegram_refused_compact_reports_a_failure_and_discards_nothing(
+        self, cfg, tmp_path
+    ):
+        """A refusal is a plain failure reply, not the exception arm's discard."""
+        from kiro_crew.acp import stale_compaction
+        from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
+
+        providers: list = []
+        mgr = SessionManager(
+            cfg, provider_factory=_unresolved_compaction_factory(tmp_path, providers)
+        )
+        dispatcher = TelegramDispatcher(
+            sessions=mgr,
+            ctx_builder=MagicMock(),
+            cfg=cfg,
+            allowed_user_ids={"7"},
+        )
+        dispatcher.client = AsyncMock()
+        route = ("7", "")
+        key = dispatcher._session_key(route)
+        await _live_session(mgr, key)
+        discard = AsyncMock(wraps=mgr.discard_conversation)
+        mgr.discard_conversation = discard
+
+        await dispatcher._handle_compact(route, 7)
+
+        discard.assert_not_awaited()
+        assert mgr.has_session(key)
+        assert not mgr._session_map.get_discarded_sid(key)
+        providers[0]._client.stream_events.assert_not_called()
+        replies = [str(c) for c in dispatcher.client.mock_calls]
+        assert any(stale_compaction.UNRESOLVED_COMPACTION_ERROR in reply for reply in replies)
+        await mgr.close_all()

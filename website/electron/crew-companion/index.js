@@ -199,6 +199,8 @@ function probeEnabled(auth) {
     const req = http.get(url, { timeout: 5_000, headers }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
+      // A body cut off mid-read emits error, never end.
+      res.on("error", () => resolve("unknown"));
       res.on("end", () => {
         // The credential, not the answer, is what went stale — say so, so the
         // caller re-mints rather than treating it as "cannot tell".
@@ -242,11 +244,16 @@ function probeEnabled(auth) {
  * carries a `?token=` and any in-app route: same origin is exactly the property
  * that decides whether the SPA — and therefore the listener — is loaded.
  *
+ * The kirocrew:// deep-link handler in main.js shares this check and passes its
+ * own *base*: a link can arrive before this module is initialised.
+ *
  * @param {object} wc the view's webContents.
+ * @param {string} [base] the backend URL to match; defaults to the one this
+ *   module was initialised with.
  * @returns {boolean} true only for a page served from the dashboard's origin.
  */
-function hostsDashboard(wc) {
-  if (!backendUrl) return false;
+function hostsDashboard(wc, base = backendUrl) {
+  if (!base) return false;
   let current = "";
   try {
     current = (wc.getURL && wc.getURL()) || "";
@@ -254,7 +261,7 @@ function hostsDashboard(wc) {
     return false; // torn down between the isDestroyed() check and here
   }
   try {
-    return new URL(current).origin === new URL(backendUrl).origin;
+    return new URL(current).origin === new URL(base).origin;
   } catch {
     return false; // "", about:blank, or a file:// splash — not the dashboard
   }
@@ -439,6 +446,7 @@ async function reconcileOnce() {
  *   `fetchGatewayAuth` is the full credential chain main.js passes.
  */
 function initCrewCompanion(deps) {
+  suspended = false;
   backendUrl = (deps && deps.backendUrl) || "";
   if (deps && typeof deps.fetchGatewayAuth === "function") {
     fetchGatewayAuth = deps.fetchGatewayAuth;
@@ -535,6 +543,9 @@ function initCrewCompanion(deps) {
 }
 
 function shutdownCrewCompanion() {
+  // Latch the loop as suspend does: a reconcile already past its awaits would
+  // otherwise reopen the overlay after the quit closed it.
+  suspended = true;
   closePanelWindow();
   closeGalleryWindow();
   if (timer) {
@@ -584,4 +595,5 @@ module.exports = {
   reconcileOnce,
   probeEnabled,
   openDashboardSession,
+  hostsDashboard,
 };

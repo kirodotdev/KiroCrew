@@ -1,22 +1,9 @@
 """Turn-state parity between the two per-session ACP drivers.
 
-``AcpClient`` (Claude Code, Codex) and ``AcpSessionHandle`` (kiro-cli, KAS) are
-two independent implementations of ONE state machine: is a turn running, and has
-it finished. Everything above them -- the 409 ``turn_in_flight`` gate on
-set-model/set-agent, ``AcpProvider.cancel()``'s no_turn answer, the shutdown
-drain that decides whether killing the transport strands a native session lock --
-reads that machine through a driver-agnostic call and cannot tell which driver
-answered. So a divergence is not a code-style problem; it is a user-visible bug
-on exactly one backend, invisible on the other.
-
-Each invariant below is written ONCE and run against BOTH drivers through a
-small adapter, so a third driver is one ``_DRIVERS`` entry rather than a second
-copy of the suite. Where the two genuinely and correctly differ, the difference
-is asserted as itself, with the reason -- a test that flattens a real difference
-into fake parity hides the design instead of guarding it.
-
-Nothing here starts a subprocess. The transport is a mock whose liveness the
-adapter flips, which is exactly the surface both drivers read.
+``AcpClient`` and ``AcpSessionHandle`` implement one state machine (is a turn running,
+has it finished), and the 409 gate, ``AcpProvider.cancel()`` and the shutdown drain
+cannot tell them apart. Each invariant runs against both via ``_DRIVERS``; real
+differences are asserted as such. No subprocess: the adapter flips a mock's liveness.
 """
 
 from __future__ import annotations
@@ -181,11 +168,8 @@ def test_turn_on_dead_transport_reads_neither_active_nor_unfinished(drv: _Driver
 async def test_cancel_does_not_complete_the_turn(drv: _Driver) -> None:
     """A cancelled turn's transport is killed while the backend still holds it.
 
-    Cancel is a request, not an ending: the native turn stays open until the
-    backend acks it. If cancel marked the turn done, the shutdown drain would
-    see nothing to wait for and kill the transport immediately, leaving the
-    backend's session lock held -- which comes back as an empty response on the
-    next start.
+    The turn stays open until the backend acks; marking it done would let the drain
+    kill the transport with the session lock held (an empty response next start).
     """
     obj = drv.make()
     drv.begin_turn(obj)
@@ -204,12 +188,8 @@ async def test_cancel_does_not_complete_the_turn(drv: _Driver) -> None:
 async def test_cancel_with_no_turn_in_flight_is_a_no_op(drv: _Driver) -> None:
     """An idle session starts reporting a turn nobody will ever finish.
 
-    Cancelling an idle session is routine -- a stop button pressed after the
-    answer already arrived, a teardown race. It must change nothing. The
-    dangerous direction is inventing a turn: if cancel touches the turn-done
-    Event on an idle session, the shutdown drain then waits on a turn that no
-    prompt is running and no ack will ever close, so teardown hangs until its
-    timeout and the 409 gate blocks model switches until then.
+    Touching the turn-done Event on an idle session invents a turn no ack closes, so
+    teardown hangs to its timeout and the 409 gate blocks model switches.
     """
     obj = drv.make()
 
@@ -250,14 +230,8 @@ async def test_second_cancel_sees_an_inactive_turn(drv: _Driver) -> None:
 async def test_wait_turn_done_returns_at_once_when_idle(drv: _Driver) -> None:
     """Every idle teardown pays the full drain timeout before it can proceed.
 
-    Shutdown and session teardown drain each session in turn. An idle session
-    whose wait blocks until timeout turns a fast teardown into a stall
-    proportional to the number of sessions.
-
-    The return SHAPE deliberately differs and is not asserted here: AcpClient
-    returns the stop reason (and raises on timeout) because it owns the process
-    that produced it, while AcpSessionHandle returns a bool because a timeout on
-    a shared runtime is a normal answer its callers branch on, not an error.
+    Teardown drains sessions one by one. The return shape differs on purpose and is
+    not asserted: AcpClient returns the stop reason, AcpSessionHandle a bool.
     """
     obj = drv.make()
 
@@ -272,11 +246,8 @@ async def test_wait_turn_done_returns_at_once_when_idle(drv: _Driver) -> None:
 def test_client_reset_preserves_an_in_flight_turn() -> None:
     """A respawn reports the killed turn as an answer, and kills its replacement.
 
-    AcpClient resets in place when its process dies and a prompt respawns it.
-    Rebuilding the turn-done Event there marks the whole respawned turn done, so
-    the shutdown drain sees nothing to wait for and kills the replacement
-    mid-turn -- and anyone already waiting on the old Event is orphaned and
-    never woken.
+    Rebuilding the turn-done Event on reset marks the respawned turn done and orphans
+    anyone waiting on the old Event.
     """
     client = _make_client()
     client._process = _client_process(alive=False)
@@ -312,14 +283,7 @@ def test_client_reset_preserves_idle() -> None:
 def test_handle_has_no_reset_path_to_guard() -> None:
     """A reset added to the shared-runtime driver silently skips this guard.
 
-    A DELIBERATE difference, not missing parity: AcpClient owns its child
-    process and resets its own state in place when that process is replaced. A
-    session handle rides a runtime shared with co-tenant sessions -- it can
-    never respawn that transport, so it is destroyed and replaced rather than
-    reset, and there is no in-place reset to preserve turn state across.
-
-    This is a ratchet: if such a path is ever added, this fails, and the
-    preserve-the-turn invariant above must be extended to cover it rather than
-    the new path inheriting no coverage at all.
+    A handle shares its runtime, so it is replaced rather than reset. If a reset is
+    added, extend the preserve-the-turn invariant above to cover it.
     """
     assert not hasattr(AcpSessionHandle, "_reset_state")

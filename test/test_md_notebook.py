@@ -218,6 +218,22 @@ async def test_attach_existing_checkout(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_folder_beside_the_clone_root_reads_as_external(fixtures) -> None:
+    """`<clone_root>-old/notes` shares the clone root's spelling but not its folder."""
+    server_mod, remote, _seed = fixtures
+    sibling = Path(f"{server_mod._clone_root()}-old") / "notes"
+    sibling.parent.mkdir(parents=True)
+    _git("clone", "-q", str(remote), str(sibling), cwd=sibling.parent)
+    async with signed_client(server_mod) as client:
+        cloned = await _clone(client, remote)
+        status, body = await client.post("/api/vaults/attach", {"path": str(sibling)})
+        assert status == 200, body
+        _, listing = await client.get("/api/vaults")
+        external = {v["id"]: v["external"] for v in listing["vaults"]}
+        assert external == {cloned["id"]: False, body["vault"]["id"]: True}
+
+
+@pytest.mark.asyncio
 async def test_attach_accepts_a_repo_with_no_remote(fixtures, tmp_path: Path) -> None:
     """A `git init` folder with no origin is a valid local-only vault.
 
@@ -522,6 +538,36 @@ def test_every_spawn_in_this_module_pins_path() -> None:
         path.read_text(encoding="utf-8") for path in (facade, *facade.parent.glob("server_*.py"))
     )
     assert source.count("subprocess.run(") == source.count("env=_trusted_env(),")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "level", "needle"),
+    [
+        (OSError(8, "Exec format error"), "WARNING", "OSError (code 8)"),
+        (subprocess.TimeoutExpired(["gh"], 5), "WARNING", "TimeoutExpired"),
+        (subprocess.CompletedProcess(["gh"], 1, "not-a-token", ""), "DEBUG", "exited 1"),
+    ],
+)
+def test_a_failed_gh_token_mint_is_logged_without_the_output(
+    monkeypatch, caplog, outcome, level, needle
+) -> None:
+    """A gh that cannot run, times out or exits non-zero leaves a record."""
+    from kiro_crew.apps.builtins.md_notebook import server as server_mod
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> Any:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(server_mod, "_find_gh", lambda: "/opt/gh")
+    monkeypatch.setattr(server_mod.subprocess, "run", fake_run)
+    monkeypatch.setitem(server_mod._gh_cache, "at", -1e9)
+    with caplog.at_level("DEBUG", logger=server_mod.logger.name):
+        assert server_mod._gh_token_sync() is None
+    records = [r for r in caplog.records if "gh login lookup" in r.getMessage()]
+    assert [r.levelname for r in records] == [level]
+    assert needle in records[0].getMessage()
+    assert "not-a-token" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1088,7 +1134,7 @@ async def test_note_read_snapshots_mtime_before_content(fixtures, monkeypatch) -
         note = Path(vault["localPath"]) / "One.md"
         future = time.time() + 1000
 
-        real_read = server_mod.read_note_text
+        real_read = server_mod.read_note_snapshot
 
         async def racing_read(path: Path):
             # Simulate an external atomic save landing DURING the read by bumping
@@ -1096,7 +1142,7 @@ async def test_note_read_snapshots_mtime_before_content(fixtures, monkeypatch) -
             os.utime(note, (future, future))
             return await real_read(path)
 
-        monkeypatch.setattr(server_mod, "read_note_text", racing_read)
+        monkeypatch.setattr(server_mod, "read_note_snapshot", racing_read)
 
         status, body = await client.get("/api/note?path=One.md")
         assert status == 200

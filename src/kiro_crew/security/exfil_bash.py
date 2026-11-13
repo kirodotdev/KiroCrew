@@ -16,6 +16,7 @@ import fnmatch
 import re
 
 from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
+from .shell_commands import read_commands as _read_commands
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset
 # of SUSPICIOUS_BASH_PATTERNS. These are enforced at the
@@ -53,7 +54,6 @@ _BASH_EXFIL_PATTERNS: list[str] = [
     "--data-urlencode=@",
     "-F *=@",  # curl multipart file upload, any field name (glob)
     "--form *=@",
-    "--upload-file",  # curl upload, long form
     "wget --post-file",  # wget file upload
     "/dev/tcp/",  # bash builtin reverse shell (>/dev/tcp/host/port)
     "/dev/udp/",
@@ -73,10 +73,6 @@ _BASH_EXFIL_RES: list[tuple[re.Pattern[str], str]] = [
     # anchored at a word boundary so `rsync -e ssh` (contains `nc -e`) and
     # `vnc -e` do NOT match; a plain substring `"nc -e"` false-positived on them.
     (re.compile(r"(?:^|\s)nc(?:at)?\s+-e\b", re.IGNORECASE), "nc/ncat reverse shell"),
-    # curl upload short form `-T <file>` / `-Tfile` (no space). CASE-SENSITIVE
-    # `-T`: curl's upload flag is uppercase, so this does NOT match lowercase long
-    # options such as `--trace-time`. `-T` must begin at a word boundary.
-    (re.compile(r"\bcurl\b.*(?:^|\s)-T\s*\S"), "curl -T upload"),
 ]
 
 
@@ -97,7 +93,6 @@ _BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
     "--data-urlencode=@": "data-exfil-curl-file-body",
     "-F *=@": "data-exfil-curl-multipart-upload",
     "--form *=@": "data-exfil-curl-multipart-upload",
-    "--upload-file": "data-exfil-curl-upload",
     "wget --post-file": "data-exfil-wget-post-file",
     "/dev/tcp/": "reverse-shell-devtcp",
     "/dev/udp/": "reverse-shell-devtcp",
@@ -109,7 +104,6 @@ _BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
 _BASH_EXFIL_RULE_BY_LABEL: dict[str, tuple[str, ...]] = {
     "nc/ncat file redirect": ("data-exfil-nc-file-redirect",),
     "nc/ncat reverse shell": ("reverse-shell-nc", "reverse-shell-ncat"),
-    "curl -T upload": ("data-exfil-curl-upload",),
 }
 
 #: For a label whose regex spans several catalog rows, the token that identifies
@@ -148,19 +142,18 @@ _DATA_EXFIL_FILE_BODY_RULE = "data-exfil-curl-file-body"
 #: `_INERT_SEARCH_VERBS`, which must not grow the `rm -rf /` deny-exception.
 _CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
 
-#: Bash splits words on space and tab only; `str.split()` also splits on
-#: Unicode spaces such as NBSP, which would misread `date<NBSP>x` as `date`.
-_BASH_BLANKS_RE = re.compile(r"[ \t]+")
-
 
 def _data_at_carveout_allows(command: str) -> bool:
     """A `-d @` hit in a benign `date`/`grep` command, not an upload: reuses
     `denied_rules._exception_eligible` (the blessed single-plain-command test)
-    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand."""
+    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand.
+
+    The first word is the shared reader's RAW word, split at live space and tab
+    only (never NBSP), with its quotes kept: `'date'` is not the verb `date`."""
     if not _exception_eligible(command):
         return False
-    words = _BASH_BLANKS_RE.split(command.strip(" \t"))
-    return words[0] in _CARVEOUT_VERBS
+    words = _read_commands(command)[0].words
+    return bool(words) and words[0].raw in _CARVEOUT_VERBS
 
 
 def audit_bash_exfiltration(

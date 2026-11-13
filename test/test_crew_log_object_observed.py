@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
 import pytest
+from crew_log_drain import assert_drained
 from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
@@ -66,7 +67,7 @@ def _unit(unit_id: str = SESSION) -> None:
 
 
 def _observed(unit_id: str = SESSION) -> list:
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     return off_loop(_read_observed, unit_id)
 
 
@@ -521,7 +522,7 @@ def test_a_session_with_no_crew_log_is_a_policy_no_op():
         facts=_canonical(),
         observed_at=160.0,
     )
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert not CrewLog.exists(KIND_SESSION, "acp-never-opened")
     assert crew_log_emit.dropped_writes() == 0
 
@@ -552,7 +553,7 @@ def test_a_disabled_emitter_does_no_fit_work(monkeypatch):
         observed_at=170.0,
     )
     assert worked == [], f"a disabled emitter still did fit work: {worked}"
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert _observed(SESSION) == []
     with pytest.raises(ValueError):
         crew_log_emit.on_object_observed(

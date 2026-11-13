@@ -28,8 +28,6 @@ import functools
 import importlib
 import inspect
 import logging
-import os
-import subprocess
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -37,20 +35,25 @@ from types import ModuleType
 from typing import Any
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
 import kiro_crew
 from kiro_crew import _facade_mirror
 from kiro_crew.crew_log import session_tree_projection as facade
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Walks the test trees for patches and src/kiro_crew for owner imports; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_tree_projection_facade")
 
 #: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
 #: the same for every facade, so it is written once there and parametrized per module.
-SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
+SHARED_FACADE_CHECKS = (
+    "known_seams",
+    "corpus_gate",
+    "the_class_body_scan_can_fail",
+    "the_facade_installs_its_mirror_when_run_as_a_script",
+)
 
 FACADE = "kiro_crew.crew_log.session_tree_projection"
 OWNER_PREFIX = "kiro_crew.crew_log.session_tree_projection_"
@@ -82,7 +85,6 @@ MOVED_MEMBERS = {
         "_seed",
         "_seed_inner",
         "_replay_tail",
-        "_replay_spawned",
         "_arm_seed_retry",
         "_start_seed_retry_timer",
     ),
@@ -119,7 +121,6 @@ BASE_MEMBER_KINDS = {
     "_seed": "function",
     "_seed_inner": "function",
     "_replay_tail": "function",
-    "_replay_spawned": "function",
     "_changed": "function",
     "_announce": "function",
     "_schedule_checkpoint": "function",
@@ -153,14 +154,9 @@ BASE_BOUND_SIGNATURES = {
     "_seed_inner": "(self, live_sids: \"'tuple[str, ...]'\") -> 'None'",
     "_replay_tail": (
         "(self, loaded: 'dict[str, OpenedRecord]', loaded_edges: 'dict[tuple[str, str], "
-        "EdgeRecord]', loaded_scans: \"'dict[str, ScanIdentity] | None'\" = None, *, faults: "
+        "EdgeRecord]', loaded_spawned: \"'dict[tuple[str, str], EdgeRecord] | None'\" = None, "
+        "loaded_marks: \"'dict[str, ScanIdentity] | None'\" = None, *, faults: "
         "\"'_ScanFaults | None'\" = None) -> \"'_ReplayResult'\""
-    ),
-    "_replay_spawned": (
-        "(self, records: 'dict[str, OpenedRecord]', loaded_spawned: 'dict[tuple[str, str], "
-        "EdgeRecord]', loaded_scans: \"'dict[str, ScanIdentity]'\", *, faults: \"'_ScanFaults | "
-        "None'\" = None) -> \"'tuple[dict[tuple[str, str], EdgeRecord], dict[str, "
-        "ScanIdentity], bool]'\""
     ),
     "_arm_seed_retry": "(self, root: \"'str | None'\", epoch: 'int') -> 'None'",
     "_start_seed_retry_timer": "(self, delay: 'float', fire: \"'Any'\") -> 'None'",
@@ -175,7 +171,7 @@ BASE_MODULE_NAMES = frozenset("""
     TREE_UNIT_CAP TreeNode TreeReading _LIVE_PROJECTIONS _LoadedCheckpoint _ReplayResult
     _ScanFaults _checkpoint_path _current_root _edge_from_json _edge_to_json
     _edge_within_bounds _load_checkpoint _projection _projection_lock _record_from_json
-    _record_to_json _save_checkpoint _scans_from_json _store_name _within_bounds
+    _marks_from_json _record_to_json _save_checkpoint _store_name _within_bounds
     edge_supersedes fold_tree forget_unit inherited_parent log_exception_text log_rank_of
     logger projection reconcile_unit_edge record_adopted record_opened record_released
     record_spawned replace reset_for_tests retract_unit_parent spawned_creator
@@ -260,29 +256,11 @@ def test_an_owner_imports_only_owners_below_it_and_never_its_facade() -> None:
         assert {name for name in loaded if name in OWNERS} <= set(OWNERS[:position]), owner
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(OWNER_PREFIX) for name in _imported_modules(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(OWNER_PREFIX)
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:
@@ -325,20 +303,6 @@ def test_every_owner_logs_under_the_facades_name() -> None:
     assert facade.logger is shared
     for owner in OWNERS:
         assert vars(_owner(owner)).get("logger") is shared, owner
-
-
-def test_the_facade_installs_its_mirror_when_run_as_a_script(tmp_path: Path) -> None:
-    """Under ``python -m`` the facade is ``__main__``: one logger by literal name keeps
-    the family to one object per name, which the mirror's install requires."""
-    result = subprocess.run(
-        [sys.executable, "-m", FACADE],
-        capture_output=True,
-        cwd=tmp_path,
-        env=dict(os.environ),
-        timeout=120,
-        **UTF8_TEXT,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 # --------------------------------------------------------------------------- #
@@ -526,8 +490,3 @@ def test_no_bound_function_needs_the_class_body() -> None:
     a ``self.__name`` is never mangled. So no owner spells one; a method that needs one
     stays in the class body."""
     assert {owner: hits for owner in OWNERS if (hits := _class_body_reads(_source(owner)))} == {}
-
-
-def test_the_class_body_scan_can_fail() -> None:
-    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
-    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]

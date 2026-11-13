@@ -143,30 +143,57 @@ def _spawn_posix_inhibitor(reason: str) -> Optional["subprocess.Popen[bytes]"]:
     )
 
 
+def _helper_exited(proc: "subprocess.Popen[bytes]") -> bool:
+    """Whether the POSIX helper has exited, leaving it unreaped where possible.
+
+    An exited helper is read as a zombie (``platform_compat.pid_is_zombie``)
+    rather than reaped with ``poll()``: while the leader is unreaped its pid,
+    which is also the id of the group it leads, cannot be handed to another
+    process, so :func:`_terminate` can still signal that group. Only when the
+    process state cannot be read does this fall back to a reaping ``poll()``.
+    """
+    if proc.returncode is not None:
+        return True
+    zombie = platform_compat.pid_is_zombie(proc.pid)
+    if zombie is not None:
+        return zombie
+    return proc.poll() is not None
+
+
 def _terminate(proc: "subprocess.Popen[bytes]") -> bool:
-    """Kill a POSIX inhibitor helper's process tree if it is still running.
+    """Kill a POSIX inhibitor helper's process group, running or already exited.
 
     The helper was spawned with ``start_new_session`` (its own process group),
     so a group-kill is required: on Linux ``systemd-inhibit`` forks the ``sh``
     PID-watch as a child, and signalling only the parent PID would release the
     inhibit lock but orphan that ``sh`` loop (it watches the still-live gateway
     PID, so it never exits on its own) — one leaked process per release cycle.
+    A helper whose ``systemd-inhibit`` has already exited (OOM-killed, or a
+    stray ``pkill``) can leave that ``sh`` running in its group, so the group is
+    signalled whether or not the leader is still running.
 
-    Returns True when the helper is gone (already exited, or killed now), and
-    False only when a real signal error left it running — so the caller keeps
-    the handle and retries on the next idle poll / shutdown instead of leaking
-    a live helper that holds sleep inhibited for the gateway's lifetime.
+    The helper leads its own session, so its pid is its group id and it cannot
+    leave that group. The group is signalled only while the leader is unreaped,
+    the state that keeps the id from naming another process's group, and the
+    leader is reaped afterwards. A handle reaped before this runs is never
+    signalled: its pid may already belong to another process.
+
+    Returns True when the helper is gone (its group emptied, or signalled now),
+    and False only when a real signal error left it running — so the caller
+    keeps the handle and retries on the next idle poll / shutdown instead of
+    leaking a live helper that holds sleep inhibited for the gateway's lifetime.
     """
-    if proc.poll() is not None:
+    if proc.returncode is not None:
         return True
     try:
-        platform_compat.kill_process_tree(proc.pid)
-        return True
+        platform_compat.kill_process_group(proc.pid)
     except ProcessLookupError:
-        return True  # exited between the poll and the signal — already gone
-    except OSError:
+        pass  # every member of the group has exited
+    except (OSError, ValueError):
         logger.debug("sleep inhibitor terminate failed", exc_info=True)
         return False
+    proc.poll()  # collect a leader that has exited
+    return True
 
 
 def _set_windows_execution_state(keep_awake: bool) -> bool:
@@ -240,9 +267,13 @@ class SleepInhibitor:
         """
         if not platform_compat.IS_POSIX or self._proc is None:
             return
-        if self._proc.poll() is None:
+        if not _helper_exited(self._proc):
             self._consecutive_deaths = 0  # healthy — reset the streak
             return
+        # The dead helper's ``sh`` PID-watch can outlive its ``systemd-inhibit``;
+        # stop that group before the handle that names it is dropped.
+        if not _terminate(self._proc):
+            logger.debug("sleep inhibitor: an exited helper's group could not be stopped")
         self._proc = None
         self._active = False
         self._consecutive_deaths += 1

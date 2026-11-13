@@ -1,15 +1,9 @@
 """Reclaiming the crew log of a member the roster does not hold.
 
-The authorization is the roster and nothing else: a member's unit is keyed by its
-slug, so the only safe question is whether a live member still derives that key.
-Neither an age nor a size takes part, which is what makes the refusals the weight
-of this file -- keeping a deleted member's log costs disk, while removing a LIVE
-member's log destroys a history nothing can rebuild.
-
-So the two directions are pinned side by side: a delete collects the unit, and no
-shape of this path touches a unit the roster still claims -- a surviving
-namesake, a sibling member, a crew whose name the roster grammar rejects, or a
-config that cannot be read at all.
+Only the roster authorizes it, never age or size: keeping a deleted member's log costs
+disk, but removing a live member's log destroys a history nothing can rebuild. So a
+delete collects the unit, and nothing here touches a unit the roster still claims, nor
+acts on a config that cannot be read.
 """
 
 from __future__ import annotations
@@ -219,7 +213,7 @@ def test_an_unreadable_roster_removes_nothing(tmp_path):
     assert _unit(GONE).is_dir()
 
 
-# --- the service door's own contract ----------------------------------------
+# the service door's own contract
 
 
 def test_the_guard_refusal_is_reported_as_owned_not_removed(tmp_path):
@@ -251,7 +245,7 @@ def test_the_predicate_is_asked_under_the_hold_and_a_true_answer_removes(tmp_pat
     assert not _unit(GONE).exists()
 
 
-# --- the claim predicate itself ---------------------------------------------
+# the claim predicate itself
 
 
 @pytest.mark.parametrize(
@@ -389,7 +383,7 @@ def test_no_reclaim_call_sits_outside_a_namespace_lock_hold():
         assert any(holders), f"line {mention.lineno} reclaims outside the namespace lock"
 
 
-# --- the legacy source goes with the unit ------------------------------------
+# the legacy source goes with the unit
 #
 # The rows are the member's own pre-log history and they live OUTSIDE the unit,
 # while the marker recording that they were folded lives inside it. Taking the
@@ -532,11 +526,8 @@ def test_a_symlinked_legacy_activity_is_refused_not_followed(tmp_path):
 def test_a_linked_member_directory_cannot_reach_a_peers_history(tmp_path):
     """The directory name is checked AS WRITTEN, before anything resolves it.
 
-    `member_dir` resolves and then only containment-checks, so a link named for the
-    departing member but pointing at a LIVE peer's directory passes that check and
-    hands back the peer's real files -- where a link test on the leaves is false.
-    That peer's activity file is the sole copy of its pre-log history whenever its
-    own fold has not run yet, so the removal has to refuse on the unresolved name.
+    `member_dir` resolves before its containment check, so a link to a live peer's
+    directory would pass and expose the peer's activity file, possibly its only copy.
     """
     home = tmp_path / "home"
     _write_roster(home, **{GONE: {}, LIVE: {}})
@@ -839,13 +830,8 @@ def test_a_partial_removal_still_drops_the_cached_handle(tmp_path, monkeypatch):
 def test_a_host_without_dir_fd_still_removes_and_still_refuses_a_link(tmp_path):
     """Windows takes the by-path branch, where the held handle closes the window.
 
-    Masking the capability alone would prove nothing here, because this kernel
-    supports `dir_fd` whether or not the code consults that set. So the call is also
-    made to fail the way it fails on a host that lacks it.
-
-    The two patches live in their OWN context: they are undone when the `with` ends
-    rather than by reaching into this module's fixtures, and pytest's cleanup walks
-    with `dir_fd` too, so a wrapper still installed at teardown would break it.
+    This kernel supports `dir_fd`, so the call is also made to fail as on a host that
+    lacks it. The patches end with the `with`: pytest's cleanup uses `dir_fd` too.
     """
     real_unlink = service_mod.os.unlink
 
@@ -951,11 +937,8 @@ def test_a_refused_unit_lease_leaves_the_peers_lease_inode_alone(tmp_path, monke
 def test_the_refusal_branch_removes_nothing_at_all():
     """Read off the source, because one arm of this cannot be reached to be observed.
 
-    The behavioural case above pins the lease inode. It cannot pin the DIRECTORY the
-    same way: the thing causing a refusal is the peer's lease file sitting inside that
-    directory, so an `rmdir` there fails on its own and a test asserting the directory
-    survives passes whether or not the code tries. So the claim is made structurally --
-    this branch names no removal at all.
+    The peer's lease file inside the directory makes any `rmdir` fail on its own, so
+    only the source can show this branch names no removal.
     """
     import ast
     import inspect
@@ -1115,11 +1098,9 @@ def _peer_creates_the_unit(slug: str, stash: Path, seen: list[str]) -> "object":
 def test_a_unit_created_inside_the_absence_window_is_not_left_behind(tmp_path, monkeypatch):
     """The residual this closes: a deleted member's history surviving forever.
 
-    The store answers ``absent`` from an ``is_dir`` taken with no lease held, so a
-    peer can create the unit, fold the legacy source into it and release before the
-    cleanup's own acquire returns. Removing only the source there would leave that
-    fold standing under a slug the roster does not carry, and nothing collects it --
-    the retention sweep ages session logs only. So BOTH have to be gone at the end.
+    ``absent`` comes from an unleased ``is_dir``, so a peer can create and fold the unit
+    before the cleanup's acquire returns. Retention ages session logs only, so both the
+    source and the unit must be gone.
     """
     home = tmp_path / "home"
     _write_roster(home, **{GONE: {}})

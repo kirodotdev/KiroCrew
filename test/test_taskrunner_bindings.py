@@ -40,6 +40,11 @@ from kiro_crew.taskrunner import TaskRunner
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_taskrunner_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_class_only_scan_can_fail",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
 #: (``taskrunner`` for the class body itself).
@@ -53,12 +58,12 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_bound_history_key": ("function", True, "ec09f2c0755e", "run_scope"),
     "_build_resume_context": ("function", False, "41bb689ce7c8", "run_registry"),
     "_build_task_prompt": ("function", True, "4c406dd14756", "run_steps"),
-    "_call_llm_for_lesson": ("function", True, "1a3c02a39576", "run_reporting"),
+    "_call_llm_for_lesson": ("function", True, "402a11554e2b", "run_reporting"),
     "_capture_execution": ("function", False, "d1b2657e6a4e", "run_scope"),
     "_clamp_parallel_steps": ("staticmethod", False, "2edea9f8215c", "run_inputs"),
     "_cleanup_run_sessions": ("function", True, "859f30be3e40", "run_scope"),
     "_commit_snapshot": ("function", False, "04bd86086d4a", "run_registry"),
-    "_decompose": ("function", True, "4b43246cbda4", "plan_mode"),
+    "_decompose": ("function", True, "16cd35538179", "plan_mode"),
     "_ensure_resumable_workspace": ("function", True, "c658adc36b67", "run_lifecycle"),
     "_execute_single_task": ("function", True, "b60a0d3a7a41", "run_steps"),
     "_execute_tasks": ("function", True, "2bd591d8085c", "run_steps"),
@@ -84,6 +89,8 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_runs_path": ("function", False, "b08d8e6a45bd", "run_registry"),
     "_save_progress": ("function", False, "859f30be3e40", "run_registry"),
     "_serialize_runs": ("function", False, "bb418bb7ece8", "run_registry"),
+    "_settle_stopped_run": ("function", True, "859f30be3e40", "run_lifecycle"),
+    "_stopping": ("function", False, "a6632a57e602", "run_lifecycle"),
     "_taskq_admit_step": ("function", True, "26f0eeb8d4b4", "taskq_bridge"),
     "_taskq_begin_run": ("function", True, "859f30be3e40", "taskq_bridge"),
     "_taskq_end_run": ("function", True, "859f30be3e40", "taskq_bridge"),
@@ -100,12 +107,15 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "adopt_task_rows": ("function", True, "f540ddf6da0a", "taskq_bridge"),
     "attach_task_admission": ("function", False, "a1392cfcab90", "taskq_bridge"),
     "attach_workflow_service": ("function", False, "91113ebd1b19", "workflow_port"),
+    "begin_shutdown": ("function", False, "b60c5fea256e", "run_lifecycle"),
     "cancel": ("function", False, "241c3dd35dec", "run_lifecycle"),
     "cancel_plan": ("function", False, "b60c5fea256e", "plan_mode"),
     "current_run": ("property", False, "d9897e592c2e", "taskrunner"),
     "defer_workflow_attachment": ("function", False, "f14c5ff17c14", "workflow_port"),
     "delete_run": ("function", True, "ae22938dd735", "run_lifecycle"),
+    "end_recovery_wait": ("function", False, "b60c5fea256e", "taskq_bridge"),
     "execute_plan": ("function", True, "c7716637826e", "taskrunner"),
+    "mint_task_id": ("function", False, "1c1aaf154bb8", "run_lifecycle"),
     "pause": ("function", False, "2b842e351101", "run_lifecycle"),
     "plan": ("function", True, "75ded80d96af", "plan_mode"),
     "plan_to_chat_context": ("function", False, "5e6fa4118b91", "plan_mode"),
@@ -113,7 +123,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "run": ("function", True, "009afad1e01c", "run_lifecycle"),
     "running": ("property", False, "a6632a57e602", "taskrunner"),
     "self_review": ("function", True, "bcadeb840115", "run_steps"),
-    "start_background": ("function", True, "46d9c2194fcb", "run_lifecycle"),
+    "start_background": ("function", True, "120e7715f38e", "run_lifecycle"),
     "start_workflow_definition": ("function", True, "aee20a6f3206", "plan_mode"),
     "status": ("function", False, "44dc9acb7120", "run_registry"),
     "task_admission": ("property", False, "48800026c1b4", "taskrunner"),
@@ -234,11 +244,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", taskrunner._OWNERS)
@@ -381,16 +386,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:

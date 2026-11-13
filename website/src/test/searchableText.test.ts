@@ -18,6 +18,14 @@ describe('searchableText', () => {
     expect(t).not.toContain('mcwidget')
   })
 
+  it('drops an inline <thinking> block the bubble moves into the reasoning row', () => {
+    expect(searchableText(msg('assistant', '<thinking>\nplan the backup\n</thinking>\nTake a backup.'))).toBe('Take a backup.')
+    expect(searchableText(msg('streaming', 'Done.\n<thinking>still arriving backup'))).toBe('Done.')
+    // A tag shown as an example in code is answer text, so it stays searchable.
+    const example = '```xml\n<thinking>backup</thinking>\n```'
+    expect(searchableText(msg('assistant', example))).toBe(example)
+  })
+
   it('strips multiple widgets', () => {
     const t = searchableText(msg('assistant', '<mcwidget>one</mcwidget> mid <mcwidget>two</mcwidget>'))
     expect(t).not.toContain('one')

@@ -170,6 +170,13 @@ def load_contract(path: Path) -> tuple[dict[str, Any], list[str]]:
     problems: list[str] = []
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # A ``ValueError``, not an ``OSError``, so the clause below does not catch
+        # it. A UTF-16 file (what Windows PowerShell 5.1 ``>`` and ``Out-File``
+        # save) is a file this script cannot read, so it is ``unreadable`` like the
+        # rest; decoding it would widen what the gate accepts. Its own clause
+        # because ``exc.strerror`` is OSError's.
+        return {}, [f"the fix contract is not UTF-8: {path} ({exc.reason} at byte {exc.start})"]
     except OSError as exc:
         reason = exc.strerror or exc.__class__.__name__
         return {}, [f"the fix contract is not readable: {path} ({reason})"]

@@ -9,7 +9,7 @@
  * that drives the loader (`tool_running` = a turn is running with no text
  * arriving — exactly the gap the indicator exists to cover).
  *
- * Scenes via query string: ?theme=dark|light and ?state=tool_running|idle.
+ * Scenes via query string: ?theme=dark|light and ?state=tool_running|idle|preparing.
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
@@ -25,7 +25,7 @@ import '../src/index.css'
 
 /** Mirrors SlotState from state.ts in store/chat (the chatSlice facade does
  *  not re-export it) — the capture drives two of them. */
-type PaneState = 'idle' | 'tool_running'
+type PaneState = 'idle' | 'tool_running' | 'preparing'
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
@@ -40,7 +40,10 @@ store.dispatch(
       key: SLOT,
       title: 'radar',
       messages: 2,
-      running: state !== 'idle',
+      running: state === 'tool_running',
+      // ?state=preparing: no turn runs, but the gateway is preparing a
+      // background message (the warm catch-up), as the slots frame says.
+      preparing: state === 'preparing',
       mode: 'member',
       agent: 'radar',
     },
@@ -58,7 +61,7 @@ store.dispatch(
     ],
     hasMore: false,
     total: 2,
-    running: state !== 'idle',
+    running: state === 'tool_running',
   } as never),
 )
 if (state === 'tool_running') {

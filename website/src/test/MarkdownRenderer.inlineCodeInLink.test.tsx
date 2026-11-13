@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, render, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { copyToClipboard } from '../utils/clipboard'
 import { __resetPathKindCache } from '../hooks/usePathKind'
@@ -45,14 +45,14 @@ describe('inline code used as a link label', () => {
     const code = await screen.findByText('https://example.com/x')
 
     expect(code).toHaveAttribute('role', 'button')
-    fireEvent.click(code)
+    await act(async () => { fireEvent.click(code) })
     expect(copyToClipboard).toHaveBeenCalledWith('https://example.com/x')
   })
 
   it('still copies a backticked command in prose', async () => {
     render(<MarkdownRenderer content={'Run `npm test` please.'} />)
     const code = await screen.findByText('npm test')
-    fireEvent.click(code)
+    await act(async () => { fireEvent.click(code) })
     expect(copyToClipboard).toHaveBeenCalledWith('npm test')
   })
 

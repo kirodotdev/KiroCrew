@@ -22,7 +22,6 @@ from unittest import mock
 import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import pdftoppm_shim, preview_tools
-from kiro_crew.browser_cli import os_deps
 
 pdfium = pytest.importorskip(
     "pypdfium2",
@@ -220,14 +219,15 @@ class TestLauncherInstall:
             [str(launcher), "-png", str(base / "absent.pdf"), str(base / "out" / "page")],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         # The SHIM reporting a missing input (exit 1) proves it was reached. A shell
         # failure to resolve the path would be 126/127 with no shim message.
         assert result.returncode == 1, result.stderr
         assert "pdftoppm shim:" in result.stderr
 
-    def test_the_launcher_body_is_written_without_newline_translation(self, staged) -> None:
-        """`atomic_write`'s default translates `\\n`, which would make the `.cmd`
+    def test_the_launcher_is_written_as_bytes_so_line_endings_are_exact(self, staged) -> None:
+        """Text-mode `atomic_write` translates `\\n`, which would make the `.cmd`
         form's explicit `\\r\\n` into `\\r\\r\\n` on Windows.
 
         Asserts on the call rather than the file, because the translation only
@@ -236,9 +236,71 @@ class TestLauncherInstall:
         real_write = preview_tools.atomic_write
         with mock.patch.object(preview_tools, "atomic_write", side_effect=real_write) as write:
             assert preview_tools.install_pdftoppm()[0]
-        assert (
-            write.call_args.kwargs.get("newline") == ""
-        ), "the launcher must be written with newline='' so its line endings are exact"
+        assert isinstance(
+            write.call_args.args[1], bytes
+        ), "the launcher must be written as bytes so its line endings are exact"
+
+    @staticmethod
+    def _install_as_windows(tmp_path: Path, folder: str, code_page: str):
+        """Install the `.cmd` form for an engine interpreter under *folder*.
+
+        `cmd.exe` and the `oem` codec exist only on Windows, so the Windows branch
+        is selected and a concrete OEM page stands in for `oem`. Returns the
+        install result, the launcher path and the interpreter path.
+        """
+        base = tmp_path / folder
+        bin_dir = base / "bin"
+        python = base / "venv" / "Scripts" / "python.exe"
+        with (
+            mock.patch.object(preview_tools.platform_compat, "IS_WINDOWS", True),
+            mock.patch.object(preview_tools, "_launcher_encoding", return_value=code_page),
+            mock.patch.object(preview_tools.paths, "preview_tools_bin", return_value=bin_dir),
+            mock.patch.object(preview_tools, "_engine_python", return_value=python),
+        ):
+            result = preview_tools.install_pdftoppm()
+            launcher = preview_tools._launcher_paths()[0]
+        return result, launcher, python
+
+    def test_windows_launcher_is_written_in_the_console_code_page(self, tmp_path: Path) -> None:
+        """`cmd.exe` reads a `.cmd` in the OEM code page, so a UTF-8 `é` (two bytes)
+        reads back as two other characters and the path lookup fails."""
+        (ok, message), launcher, python = self._install_as_windows(tmp_path, "pt_café", "cp437")
+        assert ok, message
+        assert launcher.name == "pdftoppm.cmd"
+        data = launcher.read_bytes()
+        shim = Path(preview_tools.__file__).resolve().parent / "pdftoppm_shim.py"
+        expected = f'@echo off\r\n"{python}" "{shim}" %*\r\n'.encode("cp437")
+        assert data == expected
+        assert "café".encode("cp437") in data
+        assert "café".encode("utf-8") not in data
+
+    def test_windows_launcher_refuses_a_path_the_code_page_cannot_spell(
+        self, tmp_path: Path
+    ) -> None:
+        """A launcher pointing at a misread path would install 'ready' and never run."""
+        (ok, message), launcher, _ = self._install_as_windows(tmp_path, "pt_日本", "cp437")
+        assert ok is False
+        assert "cp437" in message
+        assert "KIROCREW_HOME" in message
+        assert not launcher.exists()
+
+    def test_a_refused_install_removes_the_earlier_launcher(self, tmp_path: Path) -> None:
+        """An earlier launcher must not keep the tool reported installed."""
+        stale = tmp_path / "pt_日本" / "bin" / "pdftoppm.cmd"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"@echo off\r\n")
+        (ok, _), launcher, _ = self._install_as_windows(tmp_path, "pt_日本", "cp437")
+        assert ok is False
+        assert launcher == stale
+        assert not stale.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the oem codec exists only on Windows")
+    def test_windows_launcher_uses_the_oem_codec(self, staged) -> None:
+        _, fake_python = staged
+        assert preview_tools.install_pdftoppm()[0]
+        shim = Path(preview_tools.__file__).resolve().parent / "pdftoppm_shim.py"
+        body = f'@echo off\r\n"{fake_python}" "{shim}" %*\r\n'
+        assert preview_tools._launcher_paths()[0].read_bytes() == body.encode("oem")
 
     def test_install_is_idempotent(self, staged) -> None:
         assert preview_tools.install_pdftoppm()[0]
@@ -261,21 +323,8 @@ class TestLauncherInstall:
 
 class TestSofficeIsReportedNotInstalled:
     """LibreOffice has no unpack-and-run build and no publishable digest pin, so it
-    stays a user action — the app reports the command instead of running it."""
-
-    def test_hint_is_platform_specific_and_non_empty(self) -> None:
-        # A Debian os-release, so the Linux leg never reads the developer's own host
-        # (Amazon Linux has no package and answers None by design).
-        preview_tools._linux_soffice_hint.cache_clear()
-        try:
-            with mock.patch.object(
-                os_deps.platform, "freedesktop_os_release", return_value={"ID": "debian"}
-            ):
-                for platform_name in ("darwin", "linux", "win32"):
-                    with mock.patch.object(preview_tools.sys, "platform", platform_name):
-                        assert (preview_tools.soffice_hint() or "").strip()
-        finally:
-            preview_tools._linux_soffice_hint.cache_clear()
+    stays a user action — the app reports the command instead of running it (the
+    command itself is pinned by ``test/test_soffice_discovery.py``)."""
 
     def test_no_install_function_exists_for_soffice(self) -> None:
         """Guards the product decision: nothing here may install a system package."""

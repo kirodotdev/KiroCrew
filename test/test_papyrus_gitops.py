@@ -17,7 +17,7 @@ Coverage targets:
   * push authentication detection, which is what lets the UI say "log in" instead
     of "something broke";
   * that a spawn routes through the sandbox chokepoint with a resource ceiling, and
-    that a timeout kills the process tree.
+    that a timeout or a cancel kills the process tree.
 """
 
 from __future__ import annotations
@@ -35,8 +35,10 @@ import pytest
 from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import sandbox
+from kiro_crew import atomic_write, platform_compat, sandbox
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import await_until
 
 
 def _hermetic_git_env() -> dict[str, str]:
@@ -230,6 +232,47 @@ class TestClone:
                 await gitops.clone("https://example.com/g/p.git", dest)
         assert "already exists" in str(excinfo.value)
         assert (dest / "existing.tex").read_text(encoding="utf-8") == "mine"
+
+    @staticmethod
+    def _hold_the_publish(monkeypatch: pytest.MonkeyPatch, holds: int) -> list[str]:
+        """Fail the first *holds* renames the way Windows does while a file under the
+        moved directory is open (an antivirus scan of the fresh checkout)."""
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+        real = os.rename
+        calls: list[str] = []
+
+        def _rename(src: str, dst: str) -> None:
+            calls.append(src)
+            if len(calls) <= holds:
+                raise PermissionError(13, "Access is denied", src)
+            real(src, dst)
+
+        monkeypatch.setattr(os, "rename", _rename)
+        return calls
+
+    async def test_a_brief_windows_hold_on_the_clone_is_waited_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dest = tmp_path / "dest"
+        calls = self._hold_the_publish(monkeypatch, holds=1)
+        with mock.patch.object(gitops, "_git", _GitScript()):
+            await gitops.clone("https://example.com/g/p.git", dest)
+        assert len(calls) == 2
+        assert dest.is_dir()
+        assert list(tmp_path.iterdir()) == [dest]
+
+    async def test_a_hold_that_never_clears_is_not_reported_as_a_conflict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dest = tmp_path / "dest"
+        self._hold_the_publish(monkeypatch, holds=10_000)
+        with mock.patch.object(gitops, "_git", _GitScript()):
+            with pytest.raises(gitops.GitError) as excinfo:
+                await gitops.clone("https://example.com/g/p.git", dest)
+        assert "could not move the clone into place" in str(excinfo.value)
+        assert "Access is denied" in excinfo.value.output
+        assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -567,6 +610,90 @@ class TestGitSpawn:
         assert kill.await_args is not None
         assert kill.await_args.args[0] == 9876
 
+    @staticmethod
+    def _git_that_runs_until_killed(started: asyncio.Event) -> mock.AsyncMock:
+        """A git child whose output read blocks until the call is cancelled.
+
+        The first ``communicate()`` is ``_git``'s read and never returns on its
+        own. Later calls are the reap after the kill, and return at once.
+        """
+
+        async def read_then_drain() -> tuple[bytes, bytes]:
+            if not started.is_set():
+                started.set()
+                await asyncio.Event().wait()
+            return b"", b""
+
+        proc = mock.AsyncMock()
+        proc.communicate = mock.AsyncMock(side_effect=read_then_drain)
+        proc.kill = mock.Mock()
+        proc.returncode = None
+        proc.pid = UNALLOCATABLE_PID
+        return proc
+
+    async def test_a_cancel_kills_the_process_tree(self, repo: Path) -> None:
+        """Cancelling a git call must not orphan the git child.
+
+        The child runs in its own session, so nothing else stops it once ``_git``
+        stops awaiting it. A cancel (app stop, gateway shutdown or restart) that
+        skipped the kill would leave a clone, pull or push running against a
+        remote with no deadline left.
+        """
+        started = asyncio.Event()
+        proc = self._git_that_runs_until_killed(started)
+        with mock.patch.object(
+            gitops, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            gitops.platform_compat, "kill_process_tree_async", mock.AsyncMock(return_value=True)
+        ) as kill:
+            task = asyncio.create_task(gitops._git(["pull"], cwd=repo, timeout=60))
+            await await_until(started, what="the git read starting")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled git call finishing")
+        assert kill.await_args is not None, "a cancelled git call left the child running"
+        assert kill.await_args.args[0] == UNALLOCATABLE_PID
+        assert proc.communicate.await_count >= 2, "the killed git child was not reaped"
+
+    async def test_a_second_cancel_cannot_skip_the_kill(self, repo: Path) -> None:
+        """A repeated cancel while the kill is in flight must not abandon it.
+
+        Shutdown can cancel a task more than once. If the kill were awaited
+        unshielded, the second cancel would land inside it and the child would
+        survive anyway.
+        """
+        started = asyncio.Event()
+        killing = asyncio.Event()
+        release_kill = asyncio.Event()
+
+        async def slow_kill(*_args: object) -> bool:
+            killing.set()
+            await release_kill.wait()
+            return True
+
+        proc = self._git_that_runs_until_killed(started)
+        with mock.patch.object(
+            gitops, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            gitops.platform_compat, "kill_process_tree_async", mock.AsyncMock(side_effect=slow_kill)
+        ) as kill:
+            task = asyncio.create_task(gitops._git(["pull"], cwd=repo, timeout=60))
+            await await_until(started, what="the git read starting")
+            task.cancel()
+            await await_until(killing, what="the cancel starting the kill")
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "the second cancel abandoned the in-flight kill"
+            release_kill.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled git call finishing")
+        assert kill.await_count == 1
+        assert proc.communicate.await_count >= 2, "the killed git child was not reaped"
+
     async def test_a_missing_git_binary_is_a_clear_error(self, repo: Path) -> None:
         with mock.patch.object(
             gitops, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
@@ -837,7 +964,7 @@ class TestPackProgramsArePinnedForEveryRemote:
 
         def _run(*args: str, cwd: Path = work) -> None:
             subprocess.run(
-                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=60
             )
 
         _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
@@ -879,7 +1006,7 @@ class TestPackProgramsArePinnedForEveryRemote:
 
         def _run(*args: str, cwd: Path = work) -> None:
             subprocess.run(
-                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=60
             )
 
         _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
@@ -980,7 +1107,7 @@ class TestGitProxyCannotExecuteACommand:
                 [git, *args],
                 cwd=project,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=60,
                 env={**os.environ, **(env or {})},
             )
@@ -1078,7 +1205,7 @@ class TestGitattributesCannotNameAProgram:
 
         def _run(*args: str) -> str:
             return subprocess.run(
-                [git, *args], cwd=project, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=project, capture_output=True, text=True, encoding="utf-8", timeout=60
             ).stdout
 
         _run("init", "-q", ".")
@@ -1166,7 +1293,7 @@ class TestGitattributesCannotNameAProgram:
 
         def _run(*args: str) -> int:
             return subprocess.run(
-                [git, *args], cwd=project, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=project, capture_output=True, text=True, encoding="utf-8", timeout=60
             ).returncode
 
         assert _run("init", "-q", ".") == 0

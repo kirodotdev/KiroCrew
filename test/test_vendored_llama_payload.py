@@ -39,6 +39,7 @@ from __future__ import annotations
 import ast
 import io
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -166,6 +167,22 @@ def test_package_data_declares_the_libs_explicitly() -> None:
         assert (
             f"_vendor/{_LIBS_DIR_NAME}/{plat}/*" in cfg
         ), f"setup.cfg [options.package_data] does not explicitly ship {plat}"
+
+
+def test_windows_bundle_prunes_every_foreign_platform_dir() -> None:
+    """The Windows desktop bundle keeps only `win_amd64`; every other dir is removed by name.
+
+    The prune lists directories one by one, so a new platform dir (like
+    `linux_aarch64_dotprod`) ships ~6 MB of dead Linux libs in every Windows
+    installer unless it is added there too.
+    """
+    script = (_REPO_ROOT / "packaging" / "build-desktop.sh").read_text(encoding="utf-8")
+    for plat in _REQUIRED_VENDORED_LIBS:
+        if plat == "win_amd64":
+            continue
+        assert re.search(
+            rf"_vendor/{_LIBS_DIR_NAME}/{plat} \\$", script, re.MULTILINE
+        ), f"packaging/build-desktop.sh does not prune {plat} from the Windows bundle"
 
 
 def test_both_ci_lanes_run_the_shared_payload_verifier() -> None:

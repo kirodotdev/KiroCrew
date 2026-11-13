@@ -30,7 +30,7 @@ from kiro_crew.agent_files import (
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
-from kiro_crew.agent_materialization import conductor_agents
+from kiro_crew.agent_materialization import auto_approve, conductor_agents
 from kiro_crew.crew_log import projection
 from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
 from kiro_crew.crew_log.schema import Entry
@@ -114,12 +114,15 @@ def test_every_conductor_spec_auto_approves_the_base_work_verbs(
 ):
     """The conductor verbs, on ``allowedTools`` and on the derived KAS rule, so an
     unattended patrol cycle can record without an approval prompt. The worker's
-    ``work_report`` is on none of them: it writes into a parent's record."""
+    ``work_report`` is granted only where a conductor can be dispatched as a
+    ledger item (the goal conductor and its alias), so it reports unattended;
+    the pipeline and security conductors keep it gated."""
     data = _install(tmp_path, monkeypatch, installer, filename)
     allowed = data["allowedTools"]
     for verb in agent._CONDUCTOR_BASE_WORK_GRANTS:
         assert verb in allowed, verb
-    assert "@kirocrew-work/work_report" not in allowed
+    nested = filename in (CONDUCTOR_AGENT_FILENAME, LEDGER_CONDUCTOR_AGENT_FILENAME)
+    assert ("@kirocrew-work/work_report" in allowed) is nested
     match = data["permissions"]["rules"][0]["match"]
     assert "kirocrew-work/work_ledger_record" in match
 
@@ -132,7 +135,11 @@ def test_every_conductor_prompt_states_the_ledger_flow_once(
     the goal conductor's charter already states the flow, so it is left as is and
     carries no second copy."""
     data = _install(tmp_path, monkeypatch, installer, filename)
-    prompt = data["prompt"]
+    # Every conductor auto-approves the create and not the send, so the governed
+    # tail closes its prompt with the one line that says so.
+    seed_rule = f"{auto_approve.SEED_AFTER_CREATE_RULE}\n"
+    assert data["prompt"].endswith(f"\n\n{seed_rule}")
+    prompt = data["prompt"].removesuffix(seed_rule)
     if charter == "_CONDUCTOR_SYSTEM_PROMPT":
         assert prompt == agent._CONDUCTOR_SYSTEM_PROMPT
         assert agent._CONDUCTOR_WORK_LEDGER_PROTOCOL not in prompt

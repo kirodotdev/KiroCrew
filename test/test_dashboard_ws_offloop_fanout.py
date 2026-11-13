@@ -1,19 +1,9 @@
-"""Regression: a WS fan-out reached off the event loop must not unregister clients.
+"""A WS fan-out reached off the event loop must not unregister clients.
 
-``_send_ws_all`` wrapped serialization AND send-scheduling in one
-``except Exception: dead.append(ws)``. Scheduling went through
-``asyncio.ensure_future``, which raises off a worker thread — so a thread-origin
-broadcast (``push_slots_update``'s leading edge runs inline on whatever thread
-calls it) was read as "this peer is dead" and the socket was dropped from
-``_ws_clients``/``_owner_ws_clients`` WITHOUT being closed. The client kept its
-connection and its per-slot chat stream, and silently never received another
-``slots``/``slot_title``/``refresh`` frame until it reconnected, so the sidebar
-froze on a stale snapshot with no error surfaced anywhere.
-
-Two guarantees are pinned here: an off-loop fan-out is DELIVERED (by handing the
-send to the serving loop), and no delivery failure of any kind costs a client its
-registration. The genuinely-gone peer must still be reaped, so that path is
-pinned too — otherwise a fix for this bug leaks closed sockets.
+``asyncio.ensure_future`` raises off a worker thread, and ``push_slots_update`` can run on
+any thread; a dropped-but-open socket silently freezes the sidebar. Pinned: an off-loop
+fan-out is delivered via the serving loop, no delivery failure unregisters a client, and a
+genuinely gone peer is still reaped.
 """
 from __future__ import annotations
 
@@ -168,11 +158,8 @@ async def test_peer_refusal_still_unregisters(tmp_path) -> None:
 async def test_register_ws_latches_serving_loop_for_first_offloop_frame(tmp_path) -> None:
     """The FIRST frame after a connect must not be dropped.
 
-    Latching the serving loop on the first SEND leaves a window: a freshly
-    connected client whose first frame originates off-loop (a background notify
-    reaching the fan-out from a worker thread) has no loop to run the send on, so
-    that frame is lost until the client reconnects. Registration runs on the
-    serving loop, so latching there closes the window.
+    The serving loop is latched at registration, not first send, so an off-loop first
+    frame has a loop to run on.
     """
     state = _make_state(tmp_path)
     ws = _FakeWS()
@@ -227,11 +214,8 @@ async def test_subagent_serialization_failure_keeps_subscriber(tmp_path) -> None
 class _AbandonProbeWS:
     """Socket whose ``send_str`` carries a coroutine qualname unique to one test.
 
-    ``gc.collect()`` sweeps the WHOLE process and ``catch_warnings(record=True)``
-    records every warning that sweep raises, so a never-awaited assertion phrased
-    against the generic "never awaited" text is satisfied by any other test's
-    abandoned coroutine sharing the worker. Filtering on this class's own qualname
-    keeps the check answerable only by the coroutine under test.
+    ``gc.collect()`` sweeps the whole process, so the generic "never awaited" text could
+    match another test's coroutine; the unique qualname pins this one.
     """
 
     def __init__(self) -> None:

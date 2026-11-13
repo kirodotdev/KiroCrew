@@ -3,8 +3,9 @@
  * page: the row reads its reference off the card meta, words an enrichment as
  * "updated", and a malformed row draws nothing.
  */
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { OPEN_DELAY_MS } from '../components/InstantTip'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -48,6 +49,42 @@ describe('reading the row', () => {
     expect(readLessonSavedRef({ role: 'notice', meta: { card: { surface: 'lesson', id: 'x', rule: 'r' } } })).toBeNull()
     expect(readLessonSavedRef(row({ rule: '' }))).toBeNull()
     expect(readLessonSavedRef(row({ id: '' }))).toBeNull()
+  })
+})
+
+describe('the full rule in a tip, not a native title', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  const full = () => i18nT('components.lessonSaved.saved', { rule: 'always use pnpm' })
+
+  it('carries no native title, which the desktop app may not paint', () => {
+    renderRow(row({}))
+    expect(screen.getByTestId('lesson-saved-row').querySelector('[title]')).toBeNull()
+  })
+
+  it('shows the full rule on hover after the intent delay and hides it on leave', () => {
+    renderRow(row({}))
+    const pill = screen.getByTestId('lesson-saved-pill')
+    fireEvent.mouseEnter(pill)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    expect(screen.getByRole('tooltip')).toHaveTextContent(full())
+    fireEvent.mouseLeave(pill)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('shows on keyboard focus of the link and closes on Escape', () => {
+    renderRow(row({}))
+    fireEvent.focus(screen.getByTestId('lesson-saved-review'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(full())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('describes the link by the full rule while the tip is closed', () => {
+    renderRow(row({}))
+    expect(screen.getByRole('link', { name: i18nT('components.lessonSaved.review'), description: full() })).toBeInTheDocument()
   })
 })
 

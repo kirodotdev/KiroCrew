@@ -178,6 +178,34 @@ class TestRunLaunch:
         # Persisted terminal state is visible to a fresh reader.
         assert lj.LaunchJobStore(root=s.root).get(job.id).status == lj.DONE
 
+    def test_a_fallback_network_is_on_the_provision_step_before_the_stack(
+        self, tmp_path, monkeypatch
+    ):
+        # The dashboard card names the VPC the launcher picked by itself while the
+        # stack is created, through the real engine's provision.
+        from kiro_crew.cloud import launch_engine as le
+
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-2", size_key="balanced")
+        mid_deploy = {}
+
+        def fake_deploy(**kw):
+            kw["on_network_fallback"]("No default VPC in us-east-2, so ...")
+            mid_deploy["detail"] = s.get(job.id).step(lj.STEP_PROVISION).detail
+            return SimpleNamespace(instance_id="i-0abc")
+
+        monkeypatch.setattr(le.ec2, "deploy", fake_deploy)
+        monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
+        eng = le.RealLaunchEngine()
+        eng.preflight = lambda profile, region: None
+        eng.begin_signin = lambda **kw: FakeHandle(already=True)
+        eng.register = lambda **kw: None
+
+        out = lj.run_launch(job, s, eng)
+
+        assert mid_deploy["detail"] == "No default VPC in us-east-2, so ..."
+        assert out.status == lj.DONE
+
     def test_verified_identity_mismatch_registers_then_fails_not_done(self, tmp_path):
         """A refused sign-in (the box holds a session for a DIFFERENT identity
         than the pinned target -- ordinary on a re-launch onto a reused stack) is
@@ -276,6 +304,55 @@ class TestRunLaunch:
         assert ("teardown", out.tag) in eng.calls
         assert "was removed" in out.error
 
+    @pytest.mark.parametrize(
+        ("exists", "confirms", "says", "never_says"),
+        [
+            (False, True, "was never created, so it is not billing", "was removed"),
+            (True, True, "was removed so it stops billing", "never created"),
+            (False, False, "did NOT confirm", "not billing"),
+            (RuntimeError("Throttling"), True, "was removed so it stops billing", "never created"),
+        ],
+    )
+    def test_a_failed_provision_says_whether_a_stack_existed(
+        self, tmp_path, exists, confirms, says, never_says
+    ):
+        """A refusal before CloudFormation (a denied CreateChangeSet, a subnet with no
+        egress) created no stack, so the card must not report one removed. The delete
+        runs whatever the lookup said, so an unconfirmed one keeps its billing warning."""
+
+        class ProbingEngine(FakeEngine):
+            def resource_exists(self, *, tag, profile, region):
+                self.calls.append(("resource_exists", tag))
+                if isinstance(exists, Exception):
+                    raise exists
+                return exists
+
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = ProbingEngine(
+            provision_exc=RuntimeError("AccessDenied: cloudformation:CreateChangeSet"),
+            teardown_confirms=confirms,
+        )
+        out = lj.run_launch(job, s, eng)
+
+        assert out.status == lj.FAILED
+        assert [c[0] for c in eng.calls if c[0] in ("resource_exists", "teardown")] == [
+            "resource_exists",
+            "teardown",
+        ]
+        assert says in out.error
+        assert never_says not in out.error
+
+    def test_the_ec2_engine_answers_existence_from_the_stack_lookup(self, monkeypatch):
+        from kiro_crew.cloud import launch_engine as le
+
+        stacks = {"kc-1": {"StackStatus": "ROLLBACK_COMPLETE"}}
+        monkeypatch.setattr(le.ec2, "find_stack", lambda tag, profile, region: stacks.get(tag))
+        eng = le.RealLaunchEngine()
+
+        assert eng.resource_exists(tag="kc-1", profile="", region="us-east-1") is True
+        assert eng.resource_exists(tag="kc-2", profile="", region="us-east-1") is False
+
     def test_a_failure_after_provisioning_does_not_tear_down_the_crew(self, tmp_path):
         # Once provisioning succeeded the crew exists; a later-step failure (register)
         # must NOT delete it — register even names it so the user can recover it. Only
@@ -294,11 +371,8 @@ class TestRunLaunch:
     def test_registration_unavailable_never_persists_a_reapable_intermediate(self, tmp_path):
         """No save may leave a failed connect step beside a non-terminal status.
 
-        That pair is exactly what ``reap_orphans`` reads as an interrupted launch,
-        and it rewrites the status to FAILED. A restart in such a window would turn
-        the DONE this path is heading for into a red card over a running crew. This
-        watches every save and asserts the combination is never on disk, so the
-        window does not exist rather than being merely narrow.
+        ``reap_orphans`` reads that pair as an interrupted launch and marks it FAILED,
+        so a restart then would show a red card over a running crew. Every save is watched.
         """
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
@@ -581,13 +655,8 @@ class TestRealSigninHandleFailures:
 class TestRealEngineGatewayPort:
     """A provisioned crew takes the stock port on BOTH ends.
 
-    The launch engine once allocated a bespoke gateway port because the tunnel
-    forced local_port == remote_port and hard-failed when that port was busy —
-    the operator's own gateway usually owns the default, so a crew registered on
-    it could never be connected. The hub now picks its local forward port
-    independently, so crews share the stock remote port: the stack binds its
-    DashboardPort default, the registry records its matching default, and no
-    allocation step exists to reintroduce.
+    The hub picks its local forward port on its own, so crews share the stock remote
+    port: the stack binds its DashboardPort default and the registry records the same.
     """
 
     def _engine(self, monkeypatch):
@@ -623,12 +692,8 @@ class TestRealEngineGatewayPort:
     def test_the_template_default_and_the_registry_default_name_the_same_port(self):
         """The invariant behind the no-override contract above.
 
-        Both ends resolve independently -- the stack binds the template's
-        ``DashboardPort`` Default, the registry records ``register_instance``'s
-        signature default -- so nothing at runtime checks they agree. A drift in
-        either literal ships crews whose tunnel forwards to a port nothing is
-        listening on, with every other test green. This is the one place the two
-        numbers are compared.
+        The template's ``DashboardPort`` Default and ``register_instance``'s signature
+        default resolve independently; this is the one place they are compared.
         """
         import re
 
@@ -976,12 +1041,9 @@ class TestTargetCompatibilityIsDecidedBeforeProvisioning:
 class TestTheRegionIsDefaulted:
     """A launch with no region must not reach preflight with an empty one.
 
-    Every provisioner's preflight refuses it, and the Fargate identity check
-    reports it as ``region='' is not a region`` -- which reads as a malformed
-    value rather than an absent one, so the reader looks for a bad setting
-    instead of a missing one. A dashboard form that has no region field of its
-    own posts an empty string, so the default belongs here, where every caller
-    passes through, rather than at each call site.
+    Preflight would report ``region='' is not a region``, which reads as malformed
+    rather than absent. A form with no region field posts "", so the default is applied
+    here, where every caller passes.
     """
 
     def test_an_empty_region_takes_the_configured_one(self, tmp_path, monkeypatch):

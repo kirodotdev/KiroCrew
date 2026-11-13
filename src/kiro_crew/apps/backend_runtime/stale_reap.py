@@ -19,6 +19,7 @@ from kiro_crew.apps.backend_runtime.pidfile import (
     _pidfile_lock,
     _proc_start_time,
     _read_pidfile,
+    _read_pidfile_for_update,
     _write_pidfile,
 )
 from kiro_crew.apps.backend_runtime.termination import _REAP_POLL_INTERVAL, _REAP_SIGTERM_GRACE
@@ -181,6 +182,12 @@ def _reap_stale_app_backends() -> int:
     # grace window is seconds long and must not be paid serially inside the scan.
     group_reaped: list[tuple[str, int, str, dict[int, str | None], dict[str, Any]]] = []
     for app_name, entry in data.items():
+        if not isinstance(entry, dict):
+            # A hand-edited or foreign row ({"app": 4242}, null) names no process
+            # this reaper can pin; dropped like an unparseable pid, never raised,
+            # because this runs on every gateway start.
+            handled[app_name] = entry
+            continue
         try:
             pid = int(entry.get("pid", 0))
         except (TypeError, ValueError):
@@ -409,15 +416,21 @@ def _reap_stale_app_backends() -> int:
     # entry ONLY if it still equals what we handled: a mid-scan re-record (new
     # pid) yields a different entry that must be kept.
     with _pidfile_lock:
-        current = _read_pidfile()
-        for app_name, handled_entry in handled.items():
-            if current.get(
-                app_name
-            ) == handled_entry and not platform_compat.windows_tree_cleanup_pending(
-                handled_entry.get("pid"), handled_entry.get("start_time")
-            ):
-                current.pop(app_name, None)
-        _write_pidfile(current)
+        current = _read_pidfile_for_update()
+        # An unreadable file is left alone: writing would replace every row this
+        # pass kept (a group still alive, an identity it could not confirm) with
+        # nothing. The rows it handled are re-checked at the next start.
+        if current is not None:
+            for app_name, handled_entry in handled.items():
+                is_row = isinstance(handled_entry, dict)
+                if current.get(app_name) == handled_entry and not (
+                    is_row
+                    and platform_compat.windows_tree_cleanup_pending(
+                        handled_entry.get("pid"), handled_entry.get("start_time")
+                    )
+                ):
+                    current.pop(app_name, None)
+            _write_pidfile(current)
     if reaped:
         logger.info("Startup stale-reap: terminated %d orphaned app backend(s)", len(reaped))
     if group_reaped:

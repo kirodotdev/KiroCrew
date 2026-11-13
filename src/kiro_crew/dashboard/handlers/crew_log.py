@@ -573,18 +573,13 @@ def _settle_writes() -> bool:
     return emit.flush(timeout=_SETTLE_SECONDS)
 
 
-def _read_slot_fold(unit_id: str, name: str) -> Any:
-    """One slot-keyed fold for the slot *unit_id*'s header names. Blocking.
+def _read_slot_fold_labelled(unit_id: str, name: str) -> "tuple[Any, int | None]":
+    """One slot-keyed fold for the slot *unit_id*'s header names and, for a delta fold,
+    its ``published_revision``. Blocking.
 
     Takes the resolved UNIT id rather than the caller's spelling, because the slot is
     read off that unit's own header -- a slot key handed straight to the header lookup
     would miss and answer with the empty fold.
-    """
-    return _read_slot_fold_labelled(unit_id, name)[0]
-
-
-def _read_slot_fold_labelled(unit_id: str, name: str) -> "tuple[Any, int | None]":
-    """:func:`_read_slot_fold` and, for a delta fold, its ``published_revision``. Blocking.
 
     ``published_revision`` is the base the next pushed delta applies on. The value and
     the label come from ``eager.read_labelled``, which folds outside the publisher's
@@ -918,6 +913,10 @@ class CrewLogPublisher:
         # land and be broadcast last. When a pass finishes with more work marked,
         # it schedules the next pass itself.
         self._flushing = False
+        # The flush and session-send tasks, held until each finishes: the loop keeps
+        # only a weak reference to a task, and a collected flush would never run
+        # :meth:`_finished`, leaving ``_flushing`` set and the publisher stopped.
+        self._tasks: "set[asyncio.Task[None]]" = set()
         # True while a lineage push is armed on the loop (see :meth:`_mark_tree`).
         self._tree_scheduled = False
 
@@ -978,6 +977,12 @@ class CrewLogPublisher:
             # or the seed landing. The sidebar's nesting is pushed from here.
             crew_log_bus.subscribe(crew_log_bus.TREE_ADVANCED, self.on_tree_advanced),
         ]
+        # A Crew Mode root's open-work summary (``crew_work``) moving is pushed to
+        # its row. The boards are followed keyed, from the slot frame
+        # (:func:`kiro_crew.dashboard.crew_work.follow`).
+        from kiro_crew.dashboard import crew_work
+
+        crew_work.set_listener(self.on_crew_work)
 
     def unsubscribe_bus(self) -> None:
         """Drop every bus subscription. Idempotent."""
@@ -985,6 +990,10 @@ class CrewLogPublisher:
         for dispose in disposers:
             dispose()
         self._drop_slot_subscriptions()
+        from kiro_crew.dashboard import crew_work
+
+        crew_work.set_listener(None)
+        crew_work.unfollow_all()
 
     # -- slot subscriptions: wildcard, or keyed by watched board ------------ #
 
@@ -1182,17 +1191,59 @@ class CrewLogPublisher:
         The event is read DEFENSIVELY -- a bus carries whatever a publisher sends, and a
         malformed one must cost this frame rather than the fan-out to the next subscriber.
         """
+        delta: "dict[str, Any] | None" = None
+        unpacked: "tuple[str, str, int, int, dict[str, Any] | None] | None"
         unpacked = self._unpack(event)
+        if unpacked is None:
+            unpacked, delta = self._unpack_delta(event)
         loop = self._loop
         if unpacked is None or loop is None:
             return
         key, fold, revision, _seq, value = unpacked
-        delta = self._delta_frame(event, key, fold, revision)
+        if delta is None:
+            delta = self._delta_frame(event, key, fold, revision)
         try:
             self._record_revision(key, fold, revision)
             loop.call_soon_threadsafe(self._push_fold, key, fold, revision, value, delta)
         except RuntimeError:
             logger.debug("crew log fold for %s/%s arrived after the loop closed", key, fold)
+
+    def on_crew_work(self, slot: str) -> None:
+        """A followed board's open items moved. On the fold worker's thread.
+
+        No I/O: one hop to the loop, which sends the row its ``slot_patch``.
+        """
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._push_crew_work, slot)
+        except RuntimeError:
+            logger.debug("crew work summary arrived after the loop closed")
+
+    def _push_crew_work(self, slot: str) -> None:
+        """Send one row's ``crew_work`` as a ``slot_patch``. On the loop. Never raises.
+
+        The summary is read here, against the live slots, so its closed and looping
+        answers are the ones the side board would give now.
+        """
+        from kiro_crew.dashboard import crew_work
+
+        state = self._state
+        try:
+            if slot not in (getattr(state, "_slots", None) or {}):
+                return
+            summary = crew_work.summary_for_state(slot, state)
+            if summary is None:
+                return
+            if state._has_legacy_slots_audience():
+                state.push_slots_update(legacy_only=True)
+            if state._has_slot_patch_clients():
+                state._send_slot_patch(
+                    {"slots": [{"key": slot, crew_work.CREW_WORK_FIELD: summary}]}
+                )
+        except Exception:
+            logger.debug("crew work push failed for %s", slot, exc_info=True)
 
     def on_session_fold(self, event: Any) -> None:
         """THE WS EXPORTER for a session fold: held for the next coalesced send.
@@ -1224,6 +1275,40 @@ class CrewLogPublisher:
         if not key or not fold or revision <= 0 or not isinstance(value, dict):
             return None
         return key, fold, revision, seq, value
+
+    @classmethod
+    def _unpack_delta(
+        cls, event: Any
+    ) -> "tuple[tuple[str, str, int, int, dict[str, Any] | None] | None, dict[str, Any] | None]":
+        """``(unpacked, delta_frame)`` for a ``work`` event that carries no value.
+
+        A ``delta`` or ``snapshot_needed`` ``work`` event has no whole value on it.
+        A tab that applies deltas gets the ``slot_fold`` frame; a tab that cannot
+        (no capability, or ``fold_delta.1`` only) still needs the whole value in its
+        ``slot_projection`` frame. That value is the render the publisher recorded as
+        this publish's base, taken HERE, on the fold worker inside the publish, where
+        :func:`kiro_crew.crew_log.eager.published_value` is exactly this revision's.
+        It is a reference, not a copy or a render; the hub serializes it only when a
+        socket that needs it is a target. ``None`` (an older or repeated publish) makes
+        the legacy frame bare, which an old tab answers with a REST re-read.
+        """
+        key = str(getattr(event, "key", "") or "")
+        fold = str(getattr(event, "fold", "") or "")
+        revision = int(getattr(event, "revision", 0) or 0)
+        if not key or fold != WORK_FOLD or revision <= 0:
+            return None, None
+        delta = cls._delta_frame(event, key, fold, revision)
+        if delta is None:
+            return None, None
+        seq = int(getattr(event, "seq", 0) or 0)
+        whole: "dict[str, Any] | None" = None
+        try:
+            from kiro_crew.crew_log import eager
+
+            whole = eager.published_value(key, fold, revision)
+        except Exception:  # pragma: no cover - a lookup must never cost the frame
+            logger.debug("crew log published value lookup failed for %s/%s", key, fold)
+        return (key, fold, revision, seq, whole), delta
 
     @staticmethod
     def _delta_frame(event: Any, slot: str, fold: str, revision: int) -> "dict[str, Any] | None":
@@ -1306,7 +1391,7 @@ class CrewLogPublisher:
         slot: str,
         fold: str,
         revision: int,
-        value: "dict[str, Any]",
+        value: "dict[str, Any] | None",
         delta: "dict[str, Any] | None" = None,
     ) -> None:
         """Broadcast one slot fold's advance. On the loop.
@@ -1315,15 +1400,16 @@ class CrewLogPublisher:
         seeds into a cache by fold. Every other slot fold is sent without ``value``,
         which the browser reads as the growth signal and answers with the same
         invalidations it runs for a valued frame of that fold (see :data:`SLOT_FRAME`).
-        The bus event itself is untouched, so in-process subscribers still get the
-        whole value.
+        A ``work`` frame whose value is ``None`` (see :meth:`_unpack_delta`) is sent
+        bare too. The ``work`` value is serialized only for a socket that reads it
+        (:meth:`~kiro_crew.dashboard.websocket_hub.WebSocketHub.broadcast_slot_fold`).
 
         An empty room is still a broadcast, which costs the hub one membership check and
         keeps this path free of a second liveness rule to keep in step with
         :meth:`_watchers`.
         """
         data: dict[str, Any] = {"slot": slot, "fold": fold, "revision": int(revision)}
-        if fold == _WORK_FOLD:
+        if fold == _WORK_FOLD and value is not None:
             data["value"] = value
         broadcast_slot_fold = getattr(self._state, "broadcast_slot_fold", None)
         if delta is not None and callable(broadcast_slot_fold):
@@ -1364,6 +1450,8 @@ class CrewLogPublisher:
         if loop is None or not pending:
             return
         task = loop.create_task(self._send_pending(pending))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         task.add_done_callback(_report_send_failure)
 
     async def _send_pending(
@@ -1467,8 +1555,9 @@ class CrewLogPublisher:
             return
         self._flushing = True
         task = loop.create_task(self._flush())
-        # Held only so the loop keeps a reference while it runs; the callback
-        # drops it and reports a failure rather than letting it be swallowed.
+        # The callback reports a failure rather than letting it be swallowed.
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         task.add_done_callback(self._finished)
 
     def _finished(self, task: "asyncio.Task[None]") -> None:

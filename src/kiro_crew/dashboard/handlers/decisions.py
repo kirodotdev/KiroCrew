@@ -202,7 +202,7 @@ def _judge_lane(jev_armed: bool) -> str:
     from kiro_crew.decisions import gate as _gate
 
     try:
-        return str(_gate.judge_lane(jev_consented=jev_armed) or _gate.LANE_JEV)
+        return str(_gate.judge_lane(endpoint_consented=jev_armed) or _gate.LANE_JEV)
     except Exception:
         logger.debug("decisions: judge lane unreadable; judging the row on the keystone")
         return _gate.LANE_JEV
@@ -418,6 +418,11 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # it rather than inferring the scope from ``enabled``.
         "memory_text": consent.consented_memory_text(state),
         "nudge_evidence": consent.consented_nudge_evidence(state),
+        # The two ``browser.step`` scopes. Both read TRUE when absent: they are the
+        # two scopes on by default once consent stands. ``browser_images`` reads
+        # FALSE when absent under a ``sagemaker://`` consent, and the card draws that.
+        "browser": consent.consented_browser(state),
+        "browser_images": consent.consented_browser_images(state),
         # The points this build ships, with the effective status of each. Here
         # rather than on a route of its own because the card reads this payload
         # already and a point's status is a function of the same keystone: a second
@@ -567,8 +572,10 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     Outcomes: ``200`` with the new state; ``400`` for a body that is not a JSON
     object, or whose ``enabled`` is present and not a boolean (plus a string
     ``endpoint`` when enabling, and a non-negative whole ``history_budget_chars``
-    when present); ``403`` for a non-owner, and for an ENABLING or SCOPE-ONLY write
-    the ceiling withdrew (``decisions_capability_denied``); ``409`` when the echoed
+    when present); ``403`` for a non-owner, for an ENABLING or SCOPE-ONLY write
+    the ceiling withdrew, and for an ENABLING write whose configured hosted or
+    SageMaker host the ceiling's ``endpoints`` list refuses
+    (``decisions_capability_denied``); ``409`` when the echoed
     endpoint is not the one config names now, and for a scope-only write against a
     keystone ENABLED for a different address than config names. A scope-only write
     against a REVOKED keystone is not a ``409``: it answers ``200`` and records no
@@ -614,6 +621,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         "compaction",
         "memory_text",
         "nudge_evidence",
+        "browser",
+        "browser_images",
         "history_budget_chars",
     )
     scope_named = isinstance(body, dict) and any(f in body for f in _STANDALONE_FIELDS)
@@ -726,6 +735,22 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # The two browser scopes, on the same terms: absent hands on the writer's KEEP
+    # sentinel, and a truthy stand-in is a 400.
+    browser_scopes: dict[str, object] = {}
+    for field, keep in (
+        ("browser", consent.KEEP_BROWSER),
+        ("browser_images", consent.KEEP_BROWSER_IMAGES),
+    ):
+        value = body.get(field, keep) if isinstance(body, dict) else keep
+        if value is not keep and not isinstance(value, bool):
+            await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
+            return web.json_response(
+                {"error": f'"{field}" must be true or false', "code": _CODE_INVALID_BODY},
+                status=400,
+            )
+        browser_scopes[field] = value
+
     # Bound to the endpoint the owner REVIEWED, checked against the one the
     # config names now. Equal: consent is for the address on screen, and the one
     # the gate will hold the config to afterwards. Different: the config moved
@@ -766,6 +791,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         or compaction is True
         or memory_text is True
         or nudge_evidence is True
+        or any(value is True for value in browser_scopes.values())
         or budget_grants
     )
     # The same answer, carried to the audit verb below with the ABSENT case kept apart
@@ -799,6 +825,22 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
                 {"error": "choose a decision model first", "code": _CODE_NO_MODEL},
                 status=409,
             )
+        from kiro_crew.dashboard.handlers.decisions_sagemaker import consent_endpoint_refused
+
+        # The send path refuses a host the ceiling's ``endpoints`` list names off, so
+        # a yes recorded for it would be consent to a destination nothing can reach.
+        # A local preset is not asked.
+        if await asyncio.to_thread(consent_endpoint_refused, endpoint):
+            await _audit(
+                request, operation=OP_CONSENT_PUT, outcome="denied", error="capability_denied"
+            )
+            return web.json_response(
+                {
+                    "error": "this decision model is turned off by policy",
+                    "code": _CODE_CAPABILITY_DENIED,
+                },
+                status=403,
+            )
         reviewed = consent.normalize_endpoint(body.get("endpoint"))
         if not reviewed:
             await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
@@ -831,6 +873,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             compaction=compaction,
             memory_text=memory_text,
             nudge_evidence=nudge_evidence,
+            browser=browser_scopes["browser"],
+            browser_images=browser_scopes["browser_images"],
         )
     except consent.ConsentCorruptError as exc:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="error", error="corrupt")
@@ -882,7 +926,13 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         # into the same row, and which way a scope moved is the fact an auditor
         # reconstructing when egress started actually needs.
         outcome=_consent_write_verb(
-            enabled, tool_args, compaction, memory_text, nudge_evidence, budget_asserts
+            enabled,
+            tool_args,
+            compaction,
+            memory_text,
+            nudge_evidence,
+            *browser_scopes.values(),
+            budget_asserts,
         ),
         resources=(
             f"decisions_consent.json endpoint={endpoint} "
@@ -890,7 +940,9 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             f"tool_args={consent.consented_tool_args(state)} "
             f"compaction={consent.consented_compaction(state)} "
             f"memory_text={consent.consented_memory_text(state)} "
-            f"nudge_evidence={consent.consented_nudge_evidence(state)}"
+            f"nudge_evidence={consent.consented_nudge_evidence(state)} "
+            f"browser={consent.consented_browser(state)} "
+            f"browser_images={consent.consented_browser_images(state)}"
         ),
     )
     return web.json_response(await asyncio.to_thread(_payload, state, denied=withdrawn))
@@ -1042,8 +1094,14 @@ def _provider_payload() -> dict:
     """The presets and the preset the config names now. Filesystem IO."""
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import (
+        PRESET_SAGEMAKER,
+        configured_sagemaker,
+        endpoint_refused,
+        hosted_offers,
+    )
     from kiro_crew.decisions import gate as _gate
-    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions import impl_sagemaker, local_models
     from kiro_crew.decisions.capability import denied_sides
     from kiro_crew.decisions.local_runtime import get_runtime
 
@@ -1055,7 +1113,27 @@ def _provider_payload() -> dict:
     installed = set(runtime.installed_ids())
     status = runtime.status()
     active = local_models.active_id(endpoint, model)
+    sagemaker = configured_sagemaker(endpoint)
+    if sagemaker is not None:
+        active = PRESET_SAGEMAKER
     hosted_denied, local_denied = denied_sides()
+    hosted_permitted, sagemaker_permitted = hosted_offers(
+        hosted_denied, (sagemaker or {}).get("region", "")
+    )
+    # The hosted default (or an unset endpoint, which falls back to it) that the
+    # ceiling's ``endpoints`` list refuses is a provider the send path never reaches:
+    # report "No model" so the card asks for a choice instead of naming a destination.
+    # The config is not rewritten. A row-level denial keeps its own reading.
+    if active == local_models.PRESET_JEV and not hosted_denied and not hosted_permitted:
+        active = local_models.PRESET_NONE
+    # The same holds for a configured SageMaker address whose own regional runtime host
+    # the ceiling refuses, whatever other regions it permits: the send path and the
+    # consent PUT refuse that host, so it reads "No model". Whether the SageMaker OPTION
+    # is offered (any region) is a separate answer, ``sagemaker_permitted``.
+    configured_refused = False
+    if active == PRESET_SAGEMAKER and not hosted_denied and endpoint_refused(endpoint, audit=False):
+        active = local_models.PRESET_NONE
+        configured_refused = True
     return {
         "presets": [
             {**local_models.as_payload(m), "installed": m.id in installed}
@@ -1069,10 +1147,22 @@ def _provider_payload() -> dict:
         # The card needs to say when a hand-written address gets no key; the one
         # predicate the oracle uses decides it, so the two surfaces cannot disagree.
         "loopback": local_models.is_loopback_endpoint(endpoint),
-        # Which side of the picker the fleet allows: hosted Jev by
-        # ``capabilities.decisions``, a local preset by both rows, each audited once.
-        "hosted_permitted": not hosted_denied,
+        # Which options the fleet allows. Hosted Jev: ``capabilities.decisions`` AND
+        # the ceiling's ``endpoints`` list for its host. A local preset: both rows.
+        # A refused option is not offered, so the picker hides hosted Jev and SageMaker.
+        "hosted_permitted": hosted_permitted,
         "local_permitted": not local_denied,
+        # The parts of a valid configured ``sagemaker://`` address, else null. An
+        # address that does not parse stays ``custom``: the picker cannot name it.
+        "sagemaker": sagemaker,
+        # Whether the SageMaker option can work here; the card names the install.
+        "sagemaker_available": impl_sagemaker.boto3_installed(),
+        # The hosted row permits and the ceiling's ``endpoints`` list permits a
+        # SageMaker runtime host in at least one region.
+        "sagemaker_permitted": sagemaker_permitted,
+        # The configured SageMaker address itself is refused by the ceiling's
+        # ``endpoints`` list (its own regional host), so ``active`` reads "none".
+        "configured_refused": configured_refused,
     }
 
 
@@ -1094,7 +1184,8 @@ async def api_decisions_provider_get(request: web.Request) -> web.Response:
 def _provider_target(body: object) -> tuple[str, str, int] | None:
     """``(endpoint, model, timeout_ms)`` for a valid body, else ``None``.
 
-    A local preset's port is the gateway's to choose: the one already in use when
+    A SageMaker body raises ``decisions_sagemaker.ProviderRefused`` naming what is
+    wrong with it. A local preset's port is the gateway's to choose: the one already in use when
     the preset is running, else the preset's default, else any free port. It is
     never taken from the body. Filesystem and socket IO.
     """
@@ -1102,9 +1193,15 @@ def _provider_target(body: object) -> tuple[str, str, int] | None:
         DECISION_PROVIDER_ENDPOINT_DEFAULT,
         DECISION_PROVIDER_MODEL_DEFAULT,
     )
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import (
+        PRESET_SAGEMAKER,
+        sagemaker_target,
+    )
     from kiro_crew.decisions import local_models
     from kiro_crew.decisions.local_runtime import free_port, get_runtime
 
+    if isinstance(body, dict) and body.get("preset") == PRESET_SAGEMAKER:
+        return sagemaker_target(body)
     if not isinstance(body, dict) or set(body) != {"preset"}:
         return None
     preset = body.get("preset")
@@ -1174,8 +1271,11 @@ def _carry_consent(endpoint: str) -> bool:
 async def api_decisions_provider_put(request: web.Request) -> web.Response:
     """PUT /api/decisions/provider -- ``{"preset": id}`` switches the provider.
 
-    ``preset`` is ``"jev"``, ``"none"`` or a local preset id. Anything else is a 400: no field
+    ``preset`` is ``"jev"``, ``"none"`` or a local preset id, or ``"sagemaker"`` with
+    ``endpoint_name``, ``region`` and an optional ``profile``, from which the route
+    builds the ``sagemaker://`` address. Anything else is a 400: no field
     of the body is written verbatim, which is what keeps a URL out of this route.
+    A SageMaker address is not a loopback one, so no standing consent is carried to it.
     Choosing a local preset also starts it -- download, install and serve, in the
     background -- and choosing hosted Jev or ``"none"`` stops it; the GET reports progress.
     """
@@ -1193,7 +1293,19 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             resources="decisions.provider",
         )
         return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
-    target = await asyncio.to_thread(_provider_target, body)
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import ProviderRefused
+
+    try:
+        target = await asyncio.to_thread(_provider_target, body)
+    except ProviderRefused as refused:
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error=refused.code,
+            resources="decisions.provider",
+        )
+        return refused.response()
     if target is None:
         await _audit(
             request,
@@ -1204,13 +1316,15 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": 'body must be {"preset": "jev"}, {"preset": "none"} or {"preset": <local id>}',
+                "error": 'body must be {"preset": "jev"}, {"preset": "none"}, {"preset": <local id>}'
+                ' or {"preset": "sagemaker", "endpoint_name", "region"[, "profile"]}',
                 "code": _CODE_PROVIDER_INVALID_BODY,
             },
             status=400,
         )
     endpoint, model, timeout_ms = target
-    from kiro_crew.decisions.capability import is_decisions_denied, names_local_preset
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import switch_refused
+    from kiro_crew.decisions.capability import names_local_preset
 
     # A switch to a side the fleet withdrew would leave a provider nothing may use;
     # refuse it where the owner is looking rather than letting decisions stop quietly.
@@ -1221,7 +1335,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
     # "No model" sends nothing and runs nothing, so no row has anything to withhold:
     # it is the way out on a fleet that denies both, and it is never refused.
     if endpoint != ENDPOINT_NONE and await asyncio.to_thread(
-        is_decisions_denied, local=target_local
+        switch_refused, endpoint, local=target_local
     ):
         await _audit(
             request,
@@ -1237,6 +1351,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    from kiro_crew.config.loader import PendingEditBlocksSave
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
     from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 
@@ -1258,6 +1373,9 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
                 error=type(exc).__name__,
                 resources=f"decisions.provider endpoint={endpoint}",
             )
+            if isinstance(exc, PendingEditBlocksSave):
+                # A pending config.json change: the dashboard chain answers it 409.
+                raise
             return web.json_response(
                 {"error": "the provider could not be saved", "code": _CODE_PROVIDER_WRITE_FAILED},
                 status=500,

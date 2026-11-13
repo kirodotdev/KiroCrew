@@ -1,7 +1,7 @@
-"""The lesson routes: ``POST``, ``DELETE`` and ``GET /api/lessons``.
+"""The lesson routes: ``POST``, ``PATCH``, ``DELETE`` and ``GET /api/lessons``.
 
-Each route resolves the lesson store its caller may reach, then writes, deletes or
-pages the lessons there; the create path embeds the rule within a bounded wait
+Each route resolves the lesson store its caller may reach, then writes, re-tiers,
+deletes or pages the lessons there; the create path embeds the rule within a bounded wait
 and hands the contradiction sweep to :mod:`.cron_lesson_supersede`.
 
 Served through :mod:`kiro_crew.dashboard.handlers.cron`, which callers and tests import and patch; this module
@@ -11,6 +11,7 @@ never imports it.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import threading
@@ -29,6 +30,13 @@ from kiro_crew.dashboard.handlers.cron_lesson_supersede import _resolve_and_supe
 from kiro_crew.dashboard.handlers.cron_shared import _sel
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
+from kiro_crew.lesson_events import (
+    LESSON_REMOVED,
+    LESSON_SOURCE_USER,
+    LESSON_UPDATED,
+    emit_lessons_changed,
+    lesson_write_action,
+)
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
@@ -47,6 +55,7 @@ from kiro_crew.project_scope import (
 from kiro_crew.validation import (
     ALLOWED_LESSON_SCOPES,
     LEARN_ADD_SCHEMA,
+    LEARN_UPDATE_SCHEMA,
     LESSON_LIST_LIMIT,
     LESSON_LIST_LIMIT_MAX,
     WORKSPACE_NAME_RE,
@@ -158,21 +167,43 @@ def _lesson_jsonl_store(
     return state.lessons
 
 
+def _is_operator_browser(request: web.Request, session_key: str) -> bool:
+    """The operator's own browser surface: no slot key, positively the dashboard user.
+
+    Only it may name any workspace on the lesson list and write; every other
+    caller is held to its own slot's workspace.
+    """
+    return session_key in ("", "dashboard:ui") and request.get("is_dashboard_user") is True
+
+
 def _load_workspace_lessons(state: DashboardState, workspace: str) -> list[Lesson]:
     """Every row in *workspace*'s JSONL lessons file."""
     return _get_lessons(state, workspace).load_all()
 
 
 async def _prepare_member_lesson_store(store: str) -> web.Response | None:
-    """Prepare V2 before synchronous lesson readers can borrow a handle."""
+    """Prepare a named store before synchronous lesson readers can borrow a handle.
+
+    Every named store is prepared, V1 included: ``get_memory_for`` attaches only a
+    handle some caller already opened, so after a restart an unprepared V1 store
+    would lend a ``None`` handle and the route would list the empty JSONL tier
+    instead of the lessons in its ``memory.db``. Every other reader (chat,
+    subagent, workflow, consolidation, task runner) prepares first, and so does
+    this route.
+
+    Only V2 refuses with 503 when it cannot be opened. ``ensure_store`` answers
+    ``None`` for a V1 store it could not prepare (it logs why), which keeps that
+    store's markdown/keyword fallback.
+    """
     # The member database is opened through the shim, so its errors are the shim's
     # classes; the stdlib ``sqlite3.Error`` would let them escape as a 500.
     from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_stores import memory_store_version
 
     try:
-        if store and await asyncio.to_thread(memory_store_version, store) == 2:
-            if await ContextBuilder.ensure_store(store) is None:
+        if store:
+            prepared = await ContextBuilder.ensure_store(store)
+            if prepared is None and await asyncio.to_thread(memory_store_version, store) == 2:
                 raise ValueError("Member memory database is unavailable")
     except (ValueError, OSError, sqlite3.Error) as exc:
         return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
@@ -204,6 +235,42 @@ async def _surface_lesson_saved(
         chat_cards.record_lesson_saved(state, slot_key, rule, outcome)
     except Exception:
         logger.warning("could not draw a saved lesson in its conversation", exc_info=True)
+
+
+def _parse_lesson_replaces(raw: object) -> tuple[str, str] | web.Response | None:
+    """The ``replaces`` selector of an edit as ``(rule, repo_scope)``, or None when absent.
+
+    ``repo_scope`` is the ``DELETE /api/lessons`` selector: ``""`` names the global
+    row, a fragment a scoped one. Refused (400) unless both are strings, the rule is
+    not blank and the scope is one the write surface would accept.
+    """
+    if raw is None:
+        return None
+    rule = raw.get("rule") if isinstance(raw, dict) else None
+    scope = raw.get("repo_scope", "") if isinstance(raw, dict) else None
+    if not isinstance(rule, str) or not rule.strip() or not isinstance(scope, str):
+        return web.json_response(
+            {"error": "replaces needs a rule and a repo_scope string", "code": "replaces_invalid"},
+            status=400,
+        )
+    if scope_selector_is_inadmissible(scope):
+        return web.json_response(
+            {"error": "repo_scope does not name a usable scope", "code": "repo_scope_inadmissible"},
+            status=400,
+        )
+    return rule, scope
+
+
+def _vector_tier_populated(vs: Any) -> bool:
+    """Whether ``GET /api/lessons`` reads this V1 vector store rather than its JSONL fallback."""
+    return vs.count_lessons() > 0 and vs.has_any_decodable_lesson()
+
+
+def _lesson_replace_refusal(reason: str) -> web.Response:
+    """An edit that wrote nothing, in the route's usual refusal shape."""
+    return web.json_response(
+        {"ok": False, "outcome": "refused", "reason": reason, "superseded": []}
+    )
 
 
 async def api_lessons_create(request: web.Request) -> web.Response:
@@ -306,6 +373,54 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # which the context builder serves as a standing rule. Both write paths carry
     # it so the JSONL fallback tiers identically to the vector store.
     applies = cleaned.get("applies") or None
+    # The Memory tab's edit names the row it rewrites: ``{"rule", "repo_scope"}``,
+    # the same selector pair ``DELETE /api/lessons`` takes. Outside
+    # LEARN_ADD_SCHEMA on purpose, so the learn_add tool cannot send it.
+    replaces = _parse_lesson_replaces(body.get("replaces"))
+    if isinstance(replaces, web.Response):
+        return replaces
+    if replaces is not None and canonical_scope(replaces[1]) != canonical_scope(repo_scope):
+        return web.json_response(
+            {"error": "an edit keeps its row's repo_scope", "code": "replaces_scope_mismatch"},
+            status=400,
+        )
+    # Who this write is attributed to, derived by the server (never the body):
+    # a person's own dashboard request, else the author of the session's latest
+    # user turn. Stored on the row as ``written_by`` and named in the
+    # memory-change notice and audit record when this write replaces lessons.
+    from kiro_crew.shared_crew import memory_changes
+
+    writer = memory_changes.writer_principal(request, state, sk)
+    written_by = memory_changes.writer_stamp(writer)
+    # The lesson origin gate reads the agent's own writes only (the MCP tool posts
+    # with the internal secret): a person's dashboard Add or CLI call is the
+    # person. The triggering turn is the latest turn opener in the caller's chat.
+    # A channel session is left as it is, as in gate_consolidation_lessons: its
+    # transport adds the person's row only after the reply, so the latest row
+    # would misread the person's own learn_add as automatic.
+    from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+    from kiro_crew.memory_origin_gate import gate_learn_add, record_origin_gate
+    from kiro_crew.messaging.link import is_channel_session_key
+
+    lesson_source = "user_explicit"
+    origin = None
+    origin_mode = _origin_mode()
+    if (
+        origin_mode != "off"
+        and request.get("internal_auth") is True
+        and not is_channel_session_key(sk)
+    ):
+        origin_slot = memory_changes.slot_for_session(state, sk)
+        origin = gate_learn_add(
+            applies,
+            getattr(origin_slot, "messages", None),
+            origin_mode,
+            rule=rule,
+            repo_scope=repo_scope,
+        )
+        applies, lesson_source = origin.applies, origin.source
+        if origin.drop_negative:
+            negative = None
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -325,6 +440,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         else _get_memory(state)
     )
     vs = _lesson_mem.vector_store
+    if replaces is not None and vs is not None:
+        # An edit goes to the tier the list read. The Memory tab offers Edit only on
+        # JSONL rows (vector lessons are edited in the Semantic browser), and the
+        # vector write would dedup, enrich or supersede rows the edit never named,
+        # so an edit against a vector tier is refused. A V1 store holding no
+        # decodable lesson is the list's JSONL fallback, so the edit goes there.
+        if vs.algorithm_version == "v2" or await asyncio.to_thread(_vector_tier_populated, vs):
+            return _lesson_replace_refusal("replace_vector_unsupported")
+        vs = None
     if vs:
         # Embed the rule once off the event loop and reuse it for both the
         # contradiction scan and write_lesson's own dedup pass — the store
@@ -339,6 +463,26 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # Bounded: a saturated inference queue yields None here rather than holding
         # the request past the client timeout, and the lesson still lands below.
         rule_emb = await asyncio.to_thread(_embed_lesson_bounded, vs, rule)
+        # The lesson tier policy's re-teach signal, before the write can merge into
+        # the lesson it compares with: does this rule repeat one shadow would demote?
+        # Only a person re-teaches: an agent's own write counts only when the chat's
+        # latest input row is the person's (the origin gate's fail-closed rule).
+        from kiro_crew import memory_tier_policy as _tier_policy
+        from kiro_crew.memory_origin_gate import TURN_HUMAN, triggering_turn
+
+        tier_mode = _tier_policy.configured_mode()
+        if (
+            tier_mode == _tier_policy.MODE_SHADOW
+            and rule_emb is not None
+            and (
+                request.get("internal_auth") is not True
+                or triggering_turn(
+                    getattr(memory_changes.slot_for_session(state, sk), "messages", None)
+                )
+                == TURN_HUMAN
+            )
+        ):
+            await asyncio.to_thread(_tier_policy.record_reteach, vs, rule_emb, tier_mode)
         # Persist the lesson immediately so the request returns fast. The
         # contradiction sweep below makes a per-candidate LLM call (~27s each);
         # running it inline would exceed the MCP client's 30s timeout while the
@@ -351,7 +495,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule,
             category,
             negative,
-            "user_explicit",
+            lesson_source,
             rule_emb,
             rule_emb_generation,
             repo_scope,
@@ -368,6 +512,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             # over; the exact-rule, substring and keyword-overlap rules still apply
             # to it.
             defer_backfills=True,
+            written_by=written_by,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -380,6 +525,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         outcome = result.outcome.value
         reason = result.reason
         stored = result.stored
+        if origin is not None and origin.gate.loggable:
+            await asyncio.to_thread(record_origin_gate, vs, origin.gate)
         # Redacted through the SAME chain this handler already applies to a lesson's
         # rule and category below (`_redact_memory_field`, which walks a list). A
         # superseded rule is stored user text leaving the process, so a credential or
@@ -444,26 +591,40 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                 state._background_tasks.add(task)
                 task.add_done_callback(state._background_tasks.discard)
     else:
-        # A workspace-scoped write that names no workspace takes the requesting
-        # session's. When that resolves to "default" -- no key, or a key with no
-        # live slot -- the write would land in the GLOBAL file, which every
-        # workspace reads. Refuse it, like the delete route refuses
-        # scope='workspace' without a name, rather than widen its reach.
-        if (
-            not _lesson_silo
-            and scope == "workspace"
-            and not cleaned.get("workspace")
-            and _get_active_workspace(state, sk) == "default"
-        ):
-            return web.json_response(
-                {
-                    "error": "scope='workspace' requires a workspace name: this "
-                    "session has no workspace of its own; use scope='global' or "
-                    "name the workspace",
-                    "code": "workspace_required",
-                },
-                status=400,
-            )
+        named = cleaned.get("workspace")
+        if not _lesson_silo and scope == "workspace":
+            own = _get_active_workspace(state, sk)
+            # A workspace-scoped write that names no workspace takes the requesting
+            # session's. When that resolves to "default" -- no key, or a key with no
+            # live slot -- the write would land in the GLOBAL file, which every
+            # workspace reads. Refuse it, like the delete route refuses
+            # scope='workspace' without a name, rather than widen its reach.
+            if not named and own == "default":
+                return web.json_response(
+                    {
+                        "error": "scope='workspace' requires a workspace name: this "
+                        "session has no workspace of its own; use scope='global' or "
+                        "name the workspace",
+                        "code": "workspace_required",
+                    },
+                    status=400,
+                )
+            # A named workspace is honoured only when it is the caller's own or the
+            # caller is the operator's browser: any other session would write
+            # another workspace's file.
+            if named and named != own and not _is_operator_browser(request, sk):
+                error = f"workspace '{named}' is not this session's workspace"
+                _sel().log_api_access(
+                    caller=sk,
+                    operation="learn_add",
+                    outcome="denied",
+                    source="dashboard",
+                    resources="workspace_not_owned",
+                    error=error,
+                )
+                return web.json_response(
+                    {"error": error, "code": "workspace_not_owned"}, status=403
+                )
         lesson = Lesson(
             rule=rule,
             category=category,
@@ -471,10 +632,22 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             repo_scope=repo_scope,
             applies=applies,
             ts=datetime.now(timezone.utc).isoformat(),
+            written_by=written_by,
         )
-        store = _lesson_jsonl_store(
-            state, _lesson_silo, scope, cleaned.get("workspace"), session_key=sk
-        )
+        # An edit names a file it rewrites, so a workspace it names must be a
+        # configured one, as DELETE requires: an unmapped name resolves to the
+        # default workspace's file, and "default" is the global file's name.
+        if replaces is not None and scope == "workspace" and named:
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            if named == "default" or named not in cfg.workspaces:
+                return web.json_response(
+                    {
+                        "error": f"workspace '{named}' is not configured",
+                        "code": "workspace_unknown",
+                    },
+                    status=400,
+                )
+        store = _lesson_jsonl_store(state, _lesson_silo, scope, named, session_key=sk)
         # save_or_enrich, not save: a re-submit of a stored rule carrying a new
         # NOT-clause has to attach it rather than be skipped as a duplicate.
         # Off the loop because it reads the file and rewrites it whole -- the
@@ -485,7 +658,29 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # ``refused`` means neither field was persisted; this is the one content
         # refusal the fallback owns, and its string outcome matches
         # LessonWriteOutcome on the wire.
-        outcome = await asyncio.to_thread(store.save_or_enrich, lesson)
+        replaced_rules: list[str] = []
+        if replaces is not None:
+            # An edit rewrites its row in place, under the store lock, so the row
+            # count never moves and the cap never evicts an unrelated lesson.
+            outcome = await asyncio.to_thread(store.replace_rule, replaces[0], replaces[1], lesson)
+            if outcome in ("missing", "ambiguous", "collision"):
+                return _lesson_replace_refusal(
+                    f"replace_{'source_missing' if outcome == 'missing' else outcome}"
+                )
+            # The screens judged the new rule with the row's STORED clause, which the
+            # body never carries, so the reason comes from the store, never capacity.
+            if outcome == "refused_volatile":
+                return _lesson_replace_refusal("volatile_session_fact")
+            if outcome == "refused_injection":
+                return _lesson_replace_refusal(SemanticRejectCode.INJECTION.value)
+            # The old wording is what the edit replaced: naming it sends the edit
+            # through the same redacted audit and collaborator notice as any write
+            # that replaces a lesson.
+            replaced_rules.append(replaces[0])
+        else:
+            outcome = await asyncio.to_thread(
+                functools.partial(store.save_or_enrich, lesson, superseded_out=replaced_rules)
+            )
         # This store has exactly THREE refusal paths -- the volatile-text
         # predicate, the blocked-content screen and the row cap -- and all answer
         # with the bare ``refused`` string, so the cause has to be re-derived here.
@@ -504,14 +699,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             else:
                 reason = LESSON_REFUSED_AT_CAPACITY
         stored = outcome != "refused"
-        # A genuine empty, not an unfilled field. ``_insert_or_enrich`` has no dedup
-        # rule that supersedes: it matches on exact rule text plus scope and either
-        # attaches a clause or reports ``unchanged``, appending every other record
-        # untouched -- so this store keeps both a general rule and the narrower rule
-        # containing it, which the vector store does not. (It can still drop the
-        # oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an eviction,
-        # not this write superseding a rule it overlaps.)
-        superseded = []
+        # Only a ``preference`` insert supersedes here: it replaces the stored
+        # preferences it conflicts with (newest wins). Every other rule matches on
+        # exact rule text plus scope and either attaches a clause or reports
+        # ``unchanged``, so this store keeps both a general rule and the narrower
+        # rule containing it, which the vector store does not. (It can still drop
+        # the oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an
+        # eviction, not this write superseding a rule it overlaps.) Redacted on the
+        # same chain as the vector path.
+        superseded = _redact_memory_field(replaced_rules) if replaced_rules else []
         # This store never answers ``deduped``, so there is no winner to name.
         winner = None
         winner_repo_scope = None
@@ -528,6 +724,29 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
     # deleted data.
     state.push_refresh("lessons")
+    # The app-facing signal is narrower than the refresh above: it fires only when
+    # the store changed, and only for the global store an app token's read
+    # resolves to, so a write into a crew's or crewmate's silo stays silent.
+    if not _lesson_silo:
+        change = lesson_write_action(str(outcome), bool(superseded))
+        if change is not None:
+            emit_lessons_changed(change, LESSON_SOURCE_USER)
+    # Newest wins, and everyone is told: a write that replaced stored lessons is
+    # audited with who changed what, and in a shared Crew the session gets a
+    # notice and every collaborator a frame. Never fails the write.
+    if superseded:
+        try:
+            memory_changes.announce_replacement(
+                state,
+                writer,
+                session_key=sk,
+                category=category,
+                new_rule=str(_redact_memory_field(rule) or ""),
+                replaced=[str(s) for s in superseded],
+                memory_store=_lesson_silo,
+            )
+        except Exception:
+            logger.debug("memory change announcement failed", exc_info=True)
     # One chat row per write that changed the store; the recorder drops every
     # other outcome, and a caller with no chat of its own draws nothing.
     await _surface_lesson_saved(request, state, sk, rule, outcome)
@@ -596,7 +815,12 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    rule_sub = body.get("rule", "").strip()
+    from ._shared import string_field_error
+
+    rule_sub = body.get("rule", "")
+    if (not_string := string_field_error("rule", rule_sub)) is not None:
+        return not_string
+    rule_sub = rule_sub.strip()
     if not rule_sub:
         return web.json_response({"error": "rule substring required"}, status=400)
     scope = body.get("scope", "global")
@@ -762,7 +986,130 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         )
     if ok:
         state.push_refresh("lessons")
+        # Global store only, for the reason the create route gives.
+        if not _lesson_silo:
+            emit_lessons_changed(LESSON_REMOVED, LESSON_SOURCE_USER)
     return web.json_response({"ok": ok})
+
+
+async def api_lessons_update(request: web.Request) -> web.Response:
+    """PATCH /api/lessons — change one lesson's ``applies`` tier in place.
+
+    Gated like the create route, since a re-tier changes what later sessions are
+    given. Only a vector store holding the lessons can do it; where they live in the
+    JSONL fallback the route answers ``unsupported`` and a re-tier stays a delete
+    plus an add.
+    """
+    state: DashboardState = request.app["state"]
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "lessons.update", blocks_persisted_mode=is_incognito_transcript
+    )
+    if refusal is not None:
+        return refusal
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    writes_off = memory_writes_off_key(cfg.memory)
+    if _is_restricted_session(state, request):
+        code = "restricted_session"
+    elif writes_off == "memory.persistence_enabled":
+        code = "persistence_disabled"
+    elif writes_off is not None:
+        code = "writes_disabled"
+    else:
+        code = ""
+    if code:
+        _sel().log_api_access(
+            caller=sk,
+            operation="lessons.update",
+            outcome="denied",
+            source="dashboard",
+            resources=code,
+        )
+        reason = (
+            "Memory writes are not allowed in this session mode."
+            if code == "restricted_session"
+            else f"Persistent memory writes are disabled ({writes_off} is false)."
+        )
+        return web.json_response({"error": reason, "code": code}, status=403)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    known = {f.name for f in LEARN_UPDATE_SCHEMA.fields}
+    try:
+        cleaned = validate_tool_args(
+            {k: v for k, v in body.items() if k in known}, LEARN_UPDATE_SCHEMA
+        )
+    except ValidationError as exc:
+        return web.json_response({"error": str(exc), "code": "validation_error"}, status=400)
+    # The lesson origin gate covers a re-tier too: under ``enforce`` the agent
+    # cannot move a lesson into the standing tier from a turn no person sent, or
+    # a demoted learn_add would be one learn_update away from ``always``. Same
+    # caller and channel rules as the create route.
+    from kiro_crew.memory_origin_gate import MODE_ENFORCE
+    from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+    from kiro_crew.memory_origin_gate import gate_learn_add
+    from kiro_crew.messaging.link import is_channel_session_key
+    from kiro_crew.shared_crew import memory_changes
+
+    if (
+        request.get("internal_auth") is True
+        and not is_channel_session_key(sk)
+        and _origin_mode() == MODE_ENFORCE
+    ):
+        origin_slot = memory_changes.slot_for_session(state, sk)
+        origin = gate_learn_add(
+            cleaned["applies"],
+            getattr(origin_slot, "messages", None),
+            MODE_ENFORCE,
+            rule=cleaned["rule"],
+            repo_scope=cleaned.get("repo_scope"),
+        )
+        if origin.gate.demoted:
+            _sel().log_api_access(
+                caller=sk,
+                operation="lessons.update",
+                outcome="denied",
+                source="dashboard",
+                resources="origin_gate",
+            )
+            return web.json_response(
+                {
+                    "error": "A lesson moves into the standing tier only from a person's turn.",
+                    "code": "origin_gate",
+                },
+                status=403,
+            )
+    _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.update")
+    if refusal is not None:
+        return refusal
+    memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
+    if memory_refusal is not None:
+        return memory_refusal
+    _lesson_mem = (
+        await asyncio.to_thread(ContextBuilder.get_memory_for, memory_store=_lesson_silo)
+        if _lesson_silo
+        else _get_memory(state)
+    )
+    vs = _lesson_mem.vector_store
+    # A V1 vector store with no decodable lesson leaves the lessons in the JSONL
+    # file, which is what the list then shows.
+    if vs is None or (
+        vs.algorithm_version != "v2" and not await asyncio.to_thread(vs.has_any_decodable_lesson)
+    ):
+        return web.json_response({"ok": False, "outcome": "unsupported"})
+    outcome = await asyncio.to_thread(
+        vs.update_lesson_applies,
+        cleaned["rule"],
+        cleaned.get("repo_scope"),
+        current=cleaned["current"],
+        applies=cleaned["applies"],
+    )
+    if outcome == "updated":
+        state.push_refresh("lessons")
+        if not _lesson_silo:
+            emit_lessons_changed(LESSON_UPDATED, LESSON_SOURCE_USER)
+    return web.json_response({"ok": outcome in ("updated", "unchanged"), "outcome": outcome})
 
 
 # ``LESSON_LIST_LIMIT`` / ``LESSON_LIST_LIMIT_MAX`` (the ``GET /api/lessons``
@@ -877,7 +1224,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         return page
     limit, offset = page
 
-    def _page_body(data: list[dict], total: int) -> web.Response:
+    def _page_body(data: list[dict], total: int, **extra: str) -> web.Response:
         return web.json_response(
             {
                 "lessons": data,
@@ -885,11 +1232,13 @@ async def api_lessons(request: web.Request) -> web.Response:
                 "truncated": len(data) < total,
                 "limit": limit,
                 "offset": offset,
+                **extra,
             }
         )
 
     # Block lesson reads only for temporary sessions (blocks_reads=True).
     # Incognito sessions can read lessons (memory context is already injected).
+    # The empty page is marked so a reader can tell "withheld" from "none saved".
     if _blocks_reads_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
@@ -899,7 +1248,7 @@ async def api_lessons(request: web.Request) -> web.Response:
             source="dashboard",
             resources=sk,
         )
-        return _page_body([], 0)
+        return _page_body([], 0, lessons_withheld="memory_reads_disabled")
     workspace = request.query.get("workspace")
 
     def _safe_lesson(
@@ -950,6 +1299,11 @@ async def api_lessons(request: web.Request) -> web.Response:
             "ts": ts,
             "repo_scope": _lesson_scope_selector(repo_scope),
         }
+        # A rule the redaction changed is shown with a placeholder in it. Editing
+        # that text would store the placeholder, so the row says it cannot be
+        # edited; the edit route also refuses it, since the text matches no row.
+        if safe_rule != rule:
+            result["rule_editable"] = False
         if tier is not None:
             result["scope"] = tier[0]
             if tier[1] is not None:
@@ -1073,13 +1427,13 @@ async def api_lessons(request: web.Request) -> web.Response:
             (le, ("global", None)) for le in rows
         ]
         if not _lesson_silo:
-            # Merge global + workspace-scoped lessons. A named workspace wins; a
-            # session sees only its own slot's workspace. The all-workspaces
-            # union -- every configured workspace's rows, so each one stays
-            # visible and deletable from the operator's Memory tab -- is for the
-            # operator's own BROWSER surface ONLY: no key (or the shared
-            # ``dashboard:ui`` key, which names no slot) AND positively
-            # authenticated as the dashboard user.
+            # Merge global + workspace-scoped lessons. A session sees only its
+            # own slot's workspace, whatever ``?workspace=`` it names. Naming one,
+            # and the all-workspaces union -- every configured workspace's rows,
+            # so each one stays visible and deletable from the operator's Memory
+            # tab -- are for the operator's own BROWSER surface ONLY: no key (or
+            # the shared ``dashboard:ui`` key, which names no slot) AND
+            # positively authenticated as the dashboard user.
             #
             # ``is_dashboard_user`` is set by the token-auth middleware to
             # ``not app`` on every path that reaches a mixed-internal route
@@ -1093,13 +1447,13 @@ async def api_lessons(request: web.Request) -> web.Response:
             # reaches the union. That keeps workspace data isolated: only the
             # operator's own browser sees every workspace.
             sk = request.headers.get("X-Session-Key", "")
-            if workspace:
+            if not _is_operator_browser(request, sk):
+                union = [_get_active_workspace(state, sk)]
+            elif workspace:
                 union = [workspace]
-            elif sk in ("", "dashboard:ui") and request.get("is_dashboard_user") is True:
+            else:
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 union = sorted(cfg.workspaces)
-            else:
-                union = [_get_active_workspace(state, sk)]
             for ws in union:
                 if ws == "default":
                     continue
@@ -1139,5 +1493,8 @@ async def api_lessons(request: web.Request) -> web.Response:
 # member's internal call is refused before it runs. These verify and scope
 # their own caller instead.
 guard_owner_surface_routes(
-    globals(), member_scoped=frozenset({"api_lessons", "api_lessons_create", "api_lessons_delete"})
+    globals(),
+    member_scoped=frozenset(
+        {"api_lessons", "api_lessons_create", "api_lessons_delete", "api_lessons_update"}
+    ),
 )

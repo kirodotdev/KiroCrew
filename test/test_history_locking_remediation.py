@@ -1,26 +1,10 @@
-"""Regression tests for the Cluster-B ``history.py`` audit remediation.
+"""Tests for ``history.py`` locking and rotation safety.
 
-Each test class reproduces one audited failure scenario:
-
-1. Cross-process advisory ``flock`` covering append / read-rewrite so a writer
-   in ANOTHER process (subagent, cron, CLI) can't silently lose updates.
-2. ``_tab_id_index`` invalidated on append/metadata + removal of the permanent
-   ``[]`` sentinel that hid sessions created after the first chained read.
-3. Consolidation offset recomputed (clamped) when a rotation fired during the
-   LLM await, so post-rotation messages aren't silently skipped.
-4. Oversized files rotate even when they have ``<= _SESSION_KEEP_LINES`` lines
-   (a few huge messages), instead of growing without bound.
-5. ``delete_session`` uses ``unlink(missing_ok=True)`` and tolerates a
-   concurrent removal instead of raising ``FileNotFoundError``.
-6. One-line metadata rewrites do not ``fsync`` while holding the lock,
-   shrinking the critical section every other writer contends on.
-
-This file pins scenarios 1 to 5, the message-cache fill ordering against writers,
-the on-loop persistence guard and its CI wiring, the off-loop helpers with their
-async callers, and the Windows rename retry that only an offloaded metadata write
-gets. Scenario 6, the lock's descriptor cleanup and ``append_if_absent`` are pinned
-in ``test_history_locking_remediation_locked_section.py``; the dashboard slot save
-and its foreign-line fold are pinned in
+Pins the cross-process ``flock``, ``_tab_id_index`` invalidation, the consolidation
+offset reset after rotation, size-based rotation, concurrent ``delete_session``, the
+cache fill ordering, the on-loop persistence guard and the off-loop helpers.
+The locked section and ``append_if_absent`` are in
+``test_history_locking_remediation_locked_section.py``; the dashboard slot save is in
 ``test_history_locking_remediation_dashboard_save.py``.
 """
 
@@ -187,11 +171,8 @@ class TestCrossProcessLock:
         """A separate PROCESS hammering ``mark_consolidated`` (read-all +
         rewrite) against a live appender must not drop any appended message.
 
-        Without the cross-process flock, the consolidator process reads N lines,
-        the appender process appends line N+1, then the consolidator's
-        ``os.replace`` writes back its stale N lines — silently losing N+1. The
-        in-process ``threading.RLock`` cannot prevent this because the two
-        actors live in different interpreters.
+        Without the flock, the consolidator's ``os.replace`` writes back stale lines
+        over line N+1; the in-process ``threading.RLock`` cannot span interpreters.
         """
         if not platform_compat.IS_POSIX:
             pytest.skip("cross-process flock semantics are POSIX-specific")
@@ -314,16 +295,9 @@ class TestMessageCacheRewriteSerialization:
     def test_unlocked_fill_publishes_under_unmoved_generation(self, tmp_path: Path) -> None:
         """An unlocked fill KEEPS its parse when no invalidation raced it.
 
-        It runs exactly while a writer holds the lock, so its parse may predate
-        a rewrite that restores the file's mtime. Two witnesses distinguish the
-        cases: the invalidation generation (unmoved across the fill window ⇒
-        no LOCAL preserved-mtime rewrite landed) and the cross-process
-        flock-hold witness (this process held the flock throughout ⇒ no
-        EXTERNAL writer could touch the file), so the holder here takes the
-        FULL writer lock the way a real local writer does. Publishing the
-        proven-valid parse spares the next reader a full re-parse. (The
-        moved-generation and no-flock discards are pinned in
-        test_history_cache_fill_race.py.)
+        The unmoved generation rules out a local rewrite and the flock-hold witness
+        an external one, so the holder takes the FULL writer lock. The discard
+        cases are in test_history_cache_fill_race.py.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "hello")
@@ -414,15 +388,11 @@ class TestMessageCacheRewriteSerialization:
 
 # ── On-loop offload discipline: structurally enforced, not convention-only ────
 class TestOnLoopPersistDiscipline:
-    """The PR routes ~15 on-loop callers off the loop (append_off_loop /
-    save_slot_off_loop / asyncio.to_thread) so ``_locked`` runs off-loop and
-    takes the patient acquire path. Nothing structurally stopped a FUTURE
-    on-loop call-site from calling a raw mutator, which works in every
-    uncontended test yet silently drops the write under real contention
-    (HistoryLockTimeout swallowed by best-effort callers). ``_locked`` now guards
-    that: strict (pytest / dev-mode / env) RAISES ``OnLoopPersistError`` on ANY
-    on-loop entry so the drift fails the suite; production logs it loudly and
-    proceeds via the non-blocking safety-net acquire.
+    """An on-loop ``_locked`` entry raises in strict mode and logs in production.
+
+    An on-loop raw mutator passes uncontended tests but drops the write under
+    contention (HistoryLockTimeout swallowed), so strict mode raises
+    ``OnLoopPersistError``; production proceeds via the non-blocking acquire.
     """
 
     def test_raw_on_loop_mutator_raises_in_strict_mode(
@@ -595,22 +565,11 @@ class TestOnLoopPersistDiscipline:
         ), "expected a loud on-loop diagnostic warning in production mode"
 
     def test_e2e_harness_enables_strict_mode_ci_enforcement(self) -> None:
-        """CI-enforcement guard (arbiter BLOCK item 1): the on-loop persistence
-        discipline must be an ENFORCED invariant, not a dev-only convention.
+        """``setup.py``'s ``E2eTestCommand`` exports ``KIROCREW_STRICT_ON_LOOP_PERSIST=1``.
 
-        Strict mode is deliberately OFF under bare unit pytest (the async harness
-        legitimately drives mutators on the loop as a convenience). To catch a
-        genuinely-new un-offloaded PRODUCTION call-site at PR time, the e2e gate
-        — which spawns a REAL gateway subprocess and drives real chat turns —
-        boots that gateway with ``KIROCREW_STRICT_ON_LOOP_PERSIST=1``, so any
-        raw on-loop ``_locked`` entry raises ``OnLoopPersistError`` and fails CI
-        instead of silently losing transcript data under production contention.
-
-        This test pins that wiring: ``setup.py``'s ``E2eTestCommand`` must export
-        the strict flag into the harness environment (``spawn_feature_gateway``
-        inherits ``os.environ``). If someone removes it, the enforcement silently
-        degrades back to a dev-only convention — so this fails deterministically
-        in the fast unit CI, independent of e2e coverage.
+        Strict mode is off under unit pytest, so the e2e gateway (which inherits
+        ``os.environ`` via ``spawn_feature_gateway``) is where an on-loop production
+        call-site fails CI.
         """
         import ast
         from pathlib import Path
@@ -701,13 +660,10 @@ class TestTabIdIndexInvalidation:
 # ── Bug 3: recompute consolidation offset after rotation-during-await ─────────
 class TestConsolidationOffsetAfterRotation:
     def test_offset_reset_when_file_shrank(self, tmp_path: Path) -> None:
-        """The consolidator captures ``total`` before a (slow) LLM call. If a
-        rotation truncates the file during that await, the stale absolute offset
-        is in the pre-rotation numbering and is meaningless afterwards. Clamping
-        it to the surviving count would mark the retained tail (which may hold
-        brand-new, never-consolidated messages) as consolidated and skip them.
-        mark_consolidated must instead reset to 0 and let the retained tail be
-        reconsolidated — redoing a few messages is harmless; dropping any is not.
+        """A rotation during the LLM await resets the offset to 0, not a clamp.
+
+        Clamping would mark new retained messages as consolidated; redoing a few
+        is harmless, dropping any is not.
         """
         log = ConversationLog(base_dir=tmp_path)
         for i in range(10):
@@ -775,15 +731,10 @@ class TestConsolidationOffsetAfterRotation:
         assert log.unconsolidated_count("k") == 0
 
     def test_offset_reset_when_rotation_retains_ge_offset(self, tmp_path: Path) -> None:
-        """The count-only heuristic is INCOMPLETE: a rotation that RETAINS
-        >= the snapshot offset leaves ``offset <= msg_count`` true, so the stale
-        offset sails through and is written verbatim — but every surviving index
-        shifted by the number of dropped lines, silently marking
-        never-consolidated retained messages as done. The rotation GENERATION
-        counter must force the reset regardless of retained count.
+        """The rotation generation forces the reset even when ``offset <= msg_count``.
 
-        Fails pre-fix: with only ``offset > msg_count`` the offset is <= the
-        retained count and is stored verbatim (data-integrity failure).
+        A rotation that retains at least the offset shifts every index, so a
+        count-only check would store the stale offset verbatim.
         """
         log = ConversationLog(base_dir=tmp_path)
         # Bodies sized off the byte cap so 100 messages stay under it while
@@ -854,23 +805,11 @@ class TestConsolidationOffsetAfterRotation:
         assert log.get_metadata("k")["last_consolidated"] == 3
 
     def test_snapshot_for_consolidation_is_atomic_over_rotation(self, tmp_path: Path) -> None:
-        """``snapshot_for_consolidation`` returns messages, total and generation
-        from ONE consistent point, so the (offset, generation) pair it yields
-        can never straddle a rotation.
+        """``snapshot_for_consolidation`` reads total and generation at ONE point.
 
-        This is the fix for the two-separate-reads race: the OLD pairing
-        (``get_unconsolidated`` then ``rotation_generation``) could read the
-        offset PRE-rotation and the generation POST-rotation, so
-        ``mark_consolidated`` saw a matching generation and applied the stale
-        offset. We assert the snapshot's generation matches the file's actual
-        generation for the same message set, and that feeding the snapshot back
-        into ``mark_consolidated`` stores the offset verbatim (no phantom
-        mismatch) when nothing rotated after it.
-
-        Pre-fix analogue — reading the two values separately with a rotation
-        wedged between them yields a PRE-rotation total paired with a
-        POST-rotation generation; that stale offset is then applied because the
-        generations (post==post) match. The snapshot closes that window.
+        Separate ``get_unconsolidated`` and ``rotation_generation`` reads could pair
+        a pre-rotation offset with a post-rotation generation, which then matches.
+        With no later rotation, the snapshot's offset is stored verbatim.
         """
         log = ConversationLog(base_dir=tmp_path)
         for i in range(6):
@@ -1280,18 +1219,9 @@ class TestOnLoopCallersOffload:
 class TestMetadataRenameRetryNeedsTheOffload:
     """The offload is what earns a mutation the Windows rename retry.
 
-    A one-line metadata rewrite publishes through ``replace_with_retry``. On
-    Windows that rename is refused with ``PermissionError`` while any other
-    handle is open on the destination -- a concurrent transcript reader, an
-    indexer, an AV scanner. ``replace_with_retry`` absorbs that window, but only
-    OFF the event loop: on the loop it makes exactly ONE attempt and re-raises
-    rather than sleeping the sole loop (``no-blocking-call-on-event-loop``).
-
-    So an async caller that invokes a sync mutator directly gets no retry at all,
-    and a single transient reader is enough to fail its write on Windows. Every
-    production caller offloads; an async TEST that mutates as a setup convenience
-    has to do the same, or it inherits a Windows-only flake that no Linux run
-    reproduces. These tests pin both halves of that asymmetry.
+    On Windows a rename fails with ``PermissionError`` while another handle is open.
+    ``replace_with_retry`` retries only OFF the loop; on it, it tries once and
+    re-raises (``no-blocking-call-on-event-loop``), so async tests must offload too.
     """
 
     KEY = "dashboard:resume-private"

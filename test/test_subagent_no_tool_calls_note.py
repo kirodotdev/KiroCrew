@@ -17,6 +17,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 
 from kiro_crew.constants import NO_TOOL_CALLS_NOTE
 from kiro_crew.subagent import SubagentInfo
@@ -118,6 +122,22 @@ class TestSpawnStatusSaysWhetherToolsWereCalled:
         return info
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kw", "outcome", "stopped"),
+        [
+            ({}, "completed", False),
+            ({"user_stopped": True}, "stopped", True),
+            ({"error": "boom"}, "failed", False),
+        ],
+    )
+    async def test_live_done_payload_carries_terminal_outcome(self, kw, outcome, stopped):
+        payload = await self._status(self._done(**kw))
+        assert payload["done"] is True
+        assert payload["result"] == "done"
+        assert payload["outcome"] == outcome
+        assert payload["stopped"] is stopped
+
+    @pytest.mark.asyncio
     async def test_a_completed_run_with_no_tool_call_says_so(self):
         assert (await self._status(self._done()))["made_no_tool_calls"] is True
 
@@ -150,6 +170,7 @@ def _dashboard_state() -> MagicMock:
     ds.close_all_ws = AsyncMock()
     ds._background_tasks = set()
     slot = MagicMock()
+    open_idle_tab(slot)
     slot.mode = "chat"
     slot.running = False
     slot.task = None
@@ -202,7 +223,7 @@ class TestCompletionEventNote:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             for n, info in enumerate(infos):

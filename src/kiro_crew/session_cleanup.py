@@ -21,6 +21,8 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_cleanup_leftovers as _leftovers
+from kiro_crew import session_cleanup_spare as _spare
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
 from kiro_crew.process_identity import (
@@ -30,6 +32,16 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.runtime_ownership import authorize_runtime_kill
 from kiro_crew.runtime_reconcile import build_reconciler
+from kiro_crew.session_background_hold import background_hold_secs, hold_expired_reason
+from kiro_crew.session_idle_clock import last_activity as _last_activity
+from kiro_crew.session_rss_rebound import (
+    RssFootprint,
+    RssHold,
+    RssRecycle,
+    judge_rss_reading,
+    prune_rss_records,
+    rss_recycle_reason,
+)
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -38,16 +50,6 @@ if TYPE_CHECKING:
 
 #: Caller name on this module's kill-decision audit rows.
 _SWEEP = "session_cleanup sweep"
-
-#: How long after a session's harness launched work that outlives the prompt
-#: the RSS recycle and the idle sweep still treat that session as busy. Claude
-#: Code runs a backgrounded command or a Workflow in the session's own process
-#: tree after the prompt returns, and reports the launch on the launching tool
-#: call; it reports nothing a client can read while that work runs, nor when it
-#: ends. So the hold is bounded by time: long enough for an ordinary workflow,
-#: short enough that a launch cannot exempt a runaway tree from the memory
-#: ceiling for the rest of the session's life.
-HARNESS_BACKGROUND_WORK_HOLD_SECS = 3600.0
 
 #: Hard ceiling multiplier on ``rss_max_mb`` that the hold cannot override.
 #: The hold's clock restarts on every launch, so an agent that keeps launching
@@ -61,13 +63,6 @@ HARNESS_BACKGROUND_WORK_HOLD_SECS = 3600.0
 #: a 1536 MB ceiling, so the hold must survive an ordinary workflow
 #: at ~1.6-1.7x while still cutting off a runaway before it grows unbounded.
 HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR = 2
-
-#: How long after an RSS recycle a session crossing the ceiling again counts as
-#: the replacement climbing straight back. A recycled session restarts its
-#: process on its next message, which can be hours after an idle recycle, so
-#: the window spans a day. A crossing inside it suggests the ceiling sits below
-#: the workload's steady footprint rather than one session leaking.
-RSS_REBOUND_WINDOW_SECS = 86400.0
 
 
 class ShutdownSignal(Protocol):
@@ -112,9 +107,11 @@ class CleanupOwner(Protocol):
     _lock: asyncio.Lock
     _draining_bg_runtimes: list[Any]
     _bg_runtime_lock: asyncio.Lock
+    _pool_sweep_pids: set[int]
     _watchdog: SessionWatchdog
     on_session_expire: Callable[[str], None] | None
     on_stuck_turn: Callable[[str, float], None] | None
+    on_rss_hold: Callable[[str, RssHold], None] | None
 
     async def _cleanup_loop(self) -> None: ...
 
@@ -140,6 +137,11 @@ class CleanupOwner(Protocol):
     async def _fire_recycle_callback(self, key: str, *, reason: str) -> None: ...
 
     def _pool_pids(self) -> set[int]: ...
+
+    def _spare_pid_providers(self) -> list[tuple[int, Any]]: ...
+    def _remove_pooled_providers_by_pid(self, pids: set[int]) -> list[tuple[int, Any]]: ...
+    async def _discard_pool_provider(self, provider: Any, context: str) -> None: ...
+    def _schedule_replenish(self) -> None: ...
 
     def _in_flight_pids(self) -> set[int]: ...
 
@@ -186,10 +188,13 @@ class CleanupState:
     # at most once per ``PROBE_FAILURE_WARN_INTERVAL_SECS`` across all keys,
     # never once per candidate per tick.
     probe_failure_warned_at: float | None = None
-    # Session key -> (monotonic time, tree RSS in MiB) of its last RSS recycle,
-    # kept for ``RSS_REBOUND_WINDOW_SECS``. The next crossing by that key pops
-    # its entry, so the rebound warning fires once per recycle cycle.
-    rss_recycled: dict[str, tuple[float, int]] = field(default_factory=dict)
+    # Session key -> its last RSS recycle, kept for ``RSS_REBOUND_WINDOW_SECS``
+    # and judged by ``session_rss_rebound`` at every later crossing by that key.
+    rss_recycled: dict[str, RssRecycle] = field(default_factory=dict)
+    # Runtime pid -> the tree the watchdog found it at (``session_rss_rebound``).
+    rss_footprints: dict[int, RssFootprint] = field(default_factory=dict)
+    # Busy session key -> leftover pids last reported this turn (session_cleanup_leftovers).
+    leftover_noticed: dict[str, frozenset[int]] = field(default_factory=dict)
     # When the agent-scope reap hook last failed loudly. A failure there stops
     # every scope from being reclaimed, so it surfaces at WARNING at most once
     # per ``PROBE_FAILURE_WARN_INTERVAL_SECS``; a clean pass re-arms it.
@@ -247,9 +252,13 @@ class CleanupDeps:
     cleanup_orphaned_session_roots: Callable[[], int]
     cleanup_stale_sandbox_profiles: Callable[[], int]
     prune_session_pid_mappings: Callable[[], int]
+    # Removes ``session_token_*.sig`` identity mappings past their age limit;
+    # answers how many. See ``session_pid._prune_stale_session_token_files``.
+    prune_session_token_mappings: Callable[[], int]
     prune_member_pid_bindings: Callable[[], int]
-    # Removes staging temps a killed writer left in the sessions directory;
-    # answers how many. See ``session_staging_sweep``.
+    # Removes staging temps a killed writer left in the sessions directory and
+    # unheld lock sentinels whose transcript is gone; answers how many. See
+    # ``session_staging_sweep``.
     sweep_session_staging_temps: Callable[[], int]
     # Rotates the bundled shell-audit hook's ``audit.log`` once it reaches its
     # cap; answers whether this call moved it aside. See ``shell_audit_log``.
@@ -766,72 +775,50 @@ class SessionCleanup:
             return
 
         now = self._deps.monotonic()
-        last_recycles = self.state.rss_recycled
-        for stale, (at, _) in list(last_recycles.items()):
-            if now - at > RSS_REBOUND_WINDOW_SECS:
-                del last_recycles[stale]
 
+        # A session with a turn in flight is never recycled; it is only reported
+        # (``session_cleanup_leftovers.report_busy_sessions``).
         candidates: list[tuple[str, int, SessionEntry]] = []
+        busy: list[tuple[str, int, SessionEntry]] = []
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
         async with self._owner._lock:
             for key, session in self._owner._sessions.items():
                 if key in persistent_keys or key.startswith(channel_prefix):
                     continue
-                if session.semaphore.locked():
-                    continue
                 pid = self._owner.get_pid(key)
                 if pid is not None:
-                    candidates.append((key, pid, session))
+                    (busy if session.semaphore.locked() else candidates).append((key, pid, session))
+        prune_rss_records(self.state, now, {pid for _key, pid, _session in candidates + busy})
 
-        victims: list[tuple[str, int, int, SessionEntry]] = []
-        if candidates:
-            loop = asyncio.get_running_loop()
-            measure: Callable[[int], int]
-            if self._deps.is_windows():
-
-                def measure(pid: int) -> int:
-                    return self._deps.get_session_rss_mb(pid)
-
-            else:
-                # A single immutable /proc snapshot is shared across every
-                # candidate in a tick; rebuilding it per process is expensive.
-                child_map = await loop.run_in_executor(
-                    self._deps.get_maintenance_executor(),
-                    self._deps.build_child_map,
-                )
-
-                def measure(pid: int) -> int:
-                    return self._deps.rss_mb_from_tree(pid, child_map)
-
-            # The figure is a RUNTIME's tree, so it is measured per runtime, not
-            # per session: co-tenants would otherwise pay N identical tree walks
-            # to read one number. Cached within the tick only -- the next tick
-            # re-measures, because the tree grows.
-            rss_by_pid: dict[int, int] = {}
+        # The warm-pool spare is owned by no session, so its own pass
+        # (``session_cleanup_spare``) measures and recycles it off the same snapshot.
+        spare_providers = _spare.spare_providers_over_ceiling_eligible(self)
+        victims: list[tuple[str, int, int, int, SessionEntry, int]] = []
+        loop = asyncio.get_running_loop()
+        measure: Callable[[int], int] | None = None
+        if candidates or spare_providers or busy:
+            measure = await _spare.build_rss_measure(self, loop)
+        # A RUNTIME's tree, so measured once per runtime, not per co-tenant session.
+        # Cached within the tick only: the next tick re-measures, as the tree grows.
+        rss_by_pid: dict[int, int] = {}
+        if candidates and measure is not None:
             for key, pid, session in candidates:
                 rss = rss_by_pid.get(pid)
                 if rss is None:
-                    rss = await loop.run_in_executor(
-                        self._deps.get_maintenance_executor(),
-                        measure,
-                        pid,
-                    )
+                    executor = self._deps.get_maintenance_executor()
+                    rss = await loop.run_in_executor(executor, measure, pid)
                     rss_by_pid[pid] = rss
-                if rss > self.state.rss_max_mb:
-                    previous = last_recycles.pop(key, None)
-                    if previous is not None:
-                        self._deps.logger.warning(
-                            "RSS recycle rebound: session %s tree rss=%dMB is back above "
-                            "%dMB %.0fs after a recycle at %dMB; "
-                            "session.watchdog_rss_max_mb may be set too low for this workload",
-                            key,
-                            rss,
-                            self.state.rss_max_mb,
-                            now - previous[0],
-                            previous[1],
-                        )
-                    victims.append((key, pid, rss, session))
+                limit = _spare.rss_limit_for(self, pid, rss)
+                # ``None`` leaves the session running: it is under the ceiling, its
+                # runtime's own footprint is over it, or recycling it cannot help.
+                notify, log = self._owner.on_rss_hold, self._deps.logger
+                tick = self.MAX_TICK_INTERVAL_SECS
+                rebounds = judge_rss_reading(
+                    self.state, key, pid, rss, limit, now=now, tick=tick, logger=log, notify=notify
+                )
+                if rebounds is not None:
+                    victims.append((key, pid, rss, limit, session, rebounds))
 
         # One RECLAIM per runtime per tick. The threshold was crossed by a
         # process, and every session on it reads the same figure, so recycling
@@ -841,7 +828,7 @@ class SessionCleanup:
         # reset that actually happened, not on an attempt: a victim the guards
         # below decline has reclaimed nothing, so a co-tenant is still eligible.
         recycled_pids: set[int] = set()
-        for key, pid, rss, session in victims:
+        for key, pid, rss, limit, session, rebounds in victims:
             if pid in recycled_pids:
                 self._deps.logger.debug(
                     "RSS recycle: runtime %d already recycled a session this tick; "
@@ -851,6 +838,7 @@ class SessionCleanup:
                 )
                 continue
             try:
+                before = await _leftovers.snapshot(self, pid, loop)
                 # A free semaphore only proves the parent's OWN turn is over.
                 # Sub-agents spawned by that turn keep running on this session's
                 # runtime, so a reset here discards their work. reset() only
@@ -862,7 +850,7 @@ class SessionCleanup:
                         "but has attached sub-agent work; skipping",
                         key,
                         rss,
-                        self.state.rss_max_mb,
+                        limit,
                     )
                     continue
                 # Ask the injection counter AGAIN, here. The wrapper above asks
@@ -892,17 +880,18 @@ class SessionCleanup:
                 # check off forever while its tree grows without limit.
                 # Synchronous, so the no-suspend window to ``reset`` holds.
                 launch = self._harness_background_launch(session)
+                hold = background_hold_secs(self._owner._cfg)
                 if (
                     launch is not None
-                    and launch[0] <= HARNESS_BACKGROUND_WORK_HOLD_SECS
-                    and rss <= self.state.rss_max_mb * HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR
+                    and launch[0] <= hold
+                    and rss <= limit * HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR
                 ):
                     self._deps.logger.info(
                         "RSS recycle: session %s tree rss=%dMB exceeds %dMB but its "
                         "harness launched background work %.0fs ago (%s); skipping",
                         key,
                         rss,
-                        self.state.rss_max_mb,
+                        limit,
                         launch[0],
                         launch[1],
                     )
@@ -922,15 +911,16 @@ class SessionCleanup:
                 if not recycled:
                     continue
                 recycled_pids.add(pid)
-                self.state.rss_recycled[key] = (self._deps.monotonic(), rss)
+                await _leftovers.end_after_recycle(self, key, pid, before, loop)
+                self.state.rss_recycled[key] = RssRecycle(self._deps.monotonic(), rss, rebounds)
                 self._deps.logger.warning(
                     "RSS recycle: session %s tree rss=%dMB exceeds %dMB",
                     key,
                     rss,
-                    self.state.rss_max_mb,
+                    limit,
                 )
                 self._deps.stats_factory().inc_session_cleaned()
-                reason = f"memory limit ({rss}MB)"
+                reason = rss_recycle_reason(rss, limit, rebounds)
                 # Name the launched work only while the launch is still inside
                 # the hold — in practice, a hard-ceiling recycle. A recycle let
                 # through PAST the hold just presumed that work finished (that
@@ -938,7 +928,7 @@ class SessionCleanup:
                 # cleared while the process lives, so warning "may have been
                 # stopped" about a launch from hours ago would be permanent
                 # noise on every later recycle.
-                if launch is not None and launch[0] <= HARNESS_BACKGROUND_WORK_HOLD_SECS:
+                if launch is not None and launch[0] <= hold:
                     reason += (
                         "; background work its agent started earlier may have been "
                         f"stopped: {launch[1]}"
@@ -947,6 +937,11 @@ class SessionCleanup:
             except Exception:
                 # One victim cannot suppress the rest of this tick.
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
+
+        await _leftovers.report_busy_sessions(self, busy, measure, rss_by_pid, loop)
+        # The warm-pool spare(s): same ceiling and discard action, on a runtime no session owns.
+        if spare_providers and measure is not None:
+            await _spare.recycle_over_ceiling_spares(self, spare_providers, measure, loop)
 
     def _harness_background_launch(self, session: SessionEntry) -> tuple[float, str] | None:
         """*session*'s newest background launch as ``(seconds since, description)``.
@@ -1223,6 +1218,7 @@ class SessionCleanup:
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
             await self._sweep_session_pid_mappings()
+            await self._sweep_session_token_mappings()
             await self._sweep_member_pid_bindings()
             await self._sweep_session_staging_temps()
             await self._sweep_shell_audit_log()
@@ -1317,6 +1313,39 @@ class SessionCleanup:
                 type(exc).__name__,
             )
 
+    async def _sweep_session_token_mappings(self) -> None:
+        """Retract ``session_token_*.sig`` mappings unrefreshed past their age limit.
+
+        Every started session publishes one, and the pass that removes them,
+        ``session_pid._prune_stale_session_token_files``, is otherwise reached
+        only from ``cleanup_orphaned_sessions`` (startup and graceful shutdown).
+        A gateway that keeps running, or that is only ever stopped by a kill,
+        would hold one file per session it has started. The pass needs nothing
+        added, only a caller on a bounded cadence, which this tick is.
+
+        Age is the pass's only signal and it is safe at any cadence: a live
+        session republishes its mapping at the start of every turn, before
+        anything in that turn can call a tool, so the TTL never costs a
+        live session its identity. Blocking glob and unlinks over the same-uid
+        agent-writable data home, so it runs on the maintenance executor like
+        the session-pid mapping sweep.
+        """
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.prune_session_token_mappings,
+            )
+            if removed:
+                self._deps.logger.info(
+                    "Periodic sweep: retracted %d stale session-token mappings",
+                    removed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "session token mapping sweep failed: %s",
+                type(exc).__name__,
+            )
+
     async def _sweep_member_pid_bindings(self) -> None:
         """Collect aged per-pid member-memory binding records.
 
@@ -1350,8 +1379,10 @@ class SessionCleanup:
 
         A writer that is killed between staging a transcript and renaming it into
         place leaves the staging file behind, and no in-process handler can remove
-        it. The pass is ``session_staging_sweep.sweep_session_staging_temps``,
-        age-gated so a live write is never touched. Blocking filesystem work over
+        it. The same pass prunes ``*.jsonl.lock`` sentinels whose transcript is
+        gone and which no process holds. The pass is
+        ``session_staging_sweep.sweep_session_staging_temps``, age-gated so a live
+        write is never touched. Blocking filesystem work over
         an agent-writable directory, so it runs on the maintenance executor like
         the other sweeps.
         """
@@ -1362,7 +1393,7 @@ class SessionCleanup:
             )
             if removed:
                 self._deps.logger.info(
-                    "Periodic sweep: removed %d orphaned session staging file(s)",
+                    "Periodic sweep: removed %d orphaned session staging/lock file(s)",
                     removed,
                 )
         except Exception as exc:
@@ -1676,7 +1707,10 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = key not in idle_exempt_keys and now - session.last_used > timeout_secs
+                idle = (
+                    key not in idle_exempt_keys
+                    and now - _last_activity(session, timeout_secs) > timeout_secs
+                )
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1786,7 +1820,8 @@ class SessionCleanup:
             # what makes it look idle to ``last_used`` and abandoned to the
             # orphan axis. Synchronous, like every read from here to ``reset``.
             launch = self._harness_background_launch(scanned)
-            if launch is not None and launch[0] <= HARNESS_BACKGROUND_WORK_HOLD_SECS:
+            hold = background_hold_secs(self._owner._cfg)
+            if launch is not None and launch[0] <= hold:
                 self._deps.logger.info(
                     "Idle sweep: %s looks %s but its harness launched background "
                     "work %.0fs ago (%s) - left running",
@@ -1800,9 +1835,12 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+            if (
+                not is_orphan
+                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
+            ):
                 self._deps.logger.info(
-                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    "Idle sweep: %s became active mid-sweep - left running",
                     key,
                 )
                 continue
@@ -1830,6 +1868,13 @@ class SessionCleanup:
                 )
             else:
                 self._deps.logger.warning("Expiring idle session: %s", key)
+            # Past the hold (inside it the session was kept above), so the
+            # launched work may still be running and this expiry may stop it.
+            hold_reason = (
+                None if launch is None else hold_expired_reason(launch, hold, orphaned=is_orphan)
+            )
+            if hold_reason is not None:
+                self._deps.logger.warning("Idle sweep: %s %s", key, hold_reason)
 
             # Preserve the historical attempt counter: it increments before the
             # race-safe reset, while the hang-resilience counter below is gated
@@ -1943,3 +1988,7 @@ class SessionCleanup:
                     self._deps.get_session_idle_expired_event(),
                     {"turn_active": turn_active, "orphaned": bool(is_orphan)},
                 )
+                # Tell the chat, which otherwise resets with no explanation.
+                # After ``reset``, so nothing here reopens a pre-reset window.
+                if hold_reason is not None:
+                    await self._owner._fire_recycle_callback(key, reason=hold_reason)

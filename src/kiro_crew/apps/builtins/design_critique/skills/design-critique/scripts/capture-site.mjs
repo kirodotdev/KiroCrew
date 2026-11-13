@@ -15,8 +15,9 @@
  * routes.json: [{ "path": "/", "label": "Home" }, ...]  (or a bare ["/", "/about"])
  * Prints one JSON line per shot: {"route","label","file","ok","bytes","engine"}
  */
-import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve, isAbsolute, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { getPlaywright } from './ensure-playwright.mjs'
 import { installSsrfGuard } from './ssrf-guard.mjs'
 
@@ -59,6 +60,25 @@ function loadRoutes(o) {
       : { path: r.path, label: safeLabel(r.label || slug(r.path)) }))
   }
   return (o.routes || '/').split(',').map(p => p.trim()).filter(Boolean).map(p => ({ path: p, label: safeLabel(slug(p)) }))
+}
+
+/**
+ * The Chromium flag that pins `host` to the first vetted address in `resolve`
+ * (`host:ip1,ip2`), or null when there is nothing to pin.
+ *
+ * Chromium reads an IPv6 replacement only in brackets (`MAP host [2001:db8::1]`);
+ * bare, the rule does not parse and the pin is lost, so an IPv6-first site
+ * navigates nowhere. IPv4 is written as it is, and an address that already has
+ * its brackets keeps them.
+ */
+export function hostResolverRule(resolve) {
+  if (!resolve) return null
+  const idx = resolve.indexOf(':')
+  const host = idx > 0 ? resolve.slice(0, idx) : ''
+  const ip = idx > 0 ? resolve.slice(idx + 1).split(',')[0].trim() : ''
+  if (!host || !ip) return null
+  const addr = ip.includes(':') && !ip.startsWith('[') ? `[${ip}]` : ip
+  return `--host-resolver-rules=MAP ${host} ${addr}`
 }
 
 async function tryPlaywright() {
@@ -104,12 +124,8 @@ async function main() {
   // git-clone curloptResolve pin; the per-request installSsrfGuard still guards
   // any other host a redirect/subresource reaches.
   const launchArgs = []
-  if (o.resolve) {
-    const idx = o.resolve.indexOf(':')
-    const host = idx > 0 ? o.resolve.slice(0, idx) : ''
-    const ip = idx > 0 ? o.resolve.slice(idx + 1).split(',')[0] : ''
-    if (host && ip) launchArgs.push(`--host-resolver-rules=MAP ${host} ${ip}`)
-  }
+  const rule = hostResolverRule(o.resolve)
+  if (rule) launchArgs.push(rule)
   const browser = await pw.chromium.launch({ channel: 'chrome', args: launchArgs }).catch(() => pw.chromium.launch({ args: launchArgs }))
   const ctx = await browser.newContext({ viewport: { width: o.width, height: o.height }, serviceWorkers: 'block' })
   let baseOrigin = null
@@ -146,4 +162,18 @@ async function main() {
   process.exit(good > 0 ? 0 : 3)
 }
 
-main().catch(e => { console.error('capture-site: failed:', e?.message || e); process.exit(4) })
+// Run only as the entry point, so a test can import the pure helpers above
+// without launching a browser. Compared by real path: Node resolves the main
+// module through symlinks, so `import.meta.url` names the target while argv[1]
+// may name the link.
+function isEntryPoint() {
+  if (!process.argv[1]) return false
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
+}
+if (isEntryPoint()) {
+  main().catch(e => { console.error('capture-site: failed:', e?.message || e); process.exit(4) })
+}

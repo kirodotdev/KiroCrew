@@ -150,6 +150,51 @@ def subagent_outcome(raw: object) -> str:
     return SUBAGENT_OUTCOME_UNKNOWN
 
 
+#: Every value ``result`` can carry on :data:`SUBAGENT_COMPLETED`: ``text`` for a
+#: completed run that returned a non-empty result, ``empty`` for a completed run
+#: whose result is empty (the "finished with no answer" failure mode), and
+#: ``none`` for a run that did not complete (failed, stopped or unknown). Only the
+#: emptiness of the result is published, never the result itself.
+SUBAGENT_RESULT_VALUES: tuple[str, ...] = ("text", "empty", "none")
+
+
+#: The placeholder the sub-agent runner stores as ``result`` when a run returned
+#: no reply (``subagent_manager/run_turn.py``). A notice may follow it.
+SUBAGENT_NO_REPLY_RESULT = "_No response._"
+
+
+def subagent_result_kind(
+    outcome: str,
+    result: object,
+    truncated: object = False,
+    *,
+    returned_reply: object = None,
+) -> str:
+    """Fold a terminal run's result onto :data:`SUBAGENT_RESULT_VALUES`; never raises.
+
+    *returned_reply* is the record's ``returned_reply``: whether the run's own
+    reply was non-empty before any notice (a model fallback, a no-reply notice)
+    was added to ``result``. When the runner set it, it decides. Otherwise the
+    stored result is read: a completed run is ``empty`` when its result is blank
+    or is the runner's
+    no-reply placeholder (with or without the notice appended to it), and
+    ``text`` otherwise. *truncated* is the record's ``result_truncated``: a result
+    too long for the completion event had a reply, so it counts as ``text``. The
+    result path is not consulted, because the runner assigns it to every run.
+    """
+    if outcome != "completed":
+        return "none"
+    if isinstance(returned_reply, bool):
+        return "text" if returned_reply else "empty"
+    if truncated is True:
+        return "text"
+    if isinstance(result, str):
+        text = result.strip()
+        if text and not text.startswith(SUBAGENT_NO_REPLY_RESULT):
+            return "text"
+    return "empty"
+
+
 #: One per inbound webhook REQUEST the endpoint decides, which is WIDER than the
 #: runs the history ring stores. TWO emitters, both through
 #: ``webhooks.count_request``:

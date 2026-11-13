@@ -1147,7 +1147,7 @@ class TestLoopStopReasons:
         finally:
             svc.stop()
         stops = tmp_path / "autonudge" / "logs" / "autonudge_stops.jsonl"
-        records = [json.loads(line) for line in stops.read_text().splitlines()]
+        records = [json.loads(line) for line in stops.read_text(encoding="utf-8").splitlines()]
         assert [r["reason"] for r in records] == ["campaign_deleted"]
 
     @pytest.mark.asyncio

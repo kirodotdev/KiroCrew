@@ -98,7 +98,7 @@ const switches = () => screen.getAllByRole('switch') as HTMLInputElement[]
 
 const customField = () => screen.getByLabelText('Custom minutes') as HTMLInputElement
 
-const preset = (mins: number) => screen.getByRole('button', { name: String(mins) })
+const preset = (mins: number) => screen.getByRole('radio', { name: String(mins) })
 
 // ── ViewHeader ─────────────────────────────────────────────────────────────
 
@@ -316,8 +316,8 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     })
     render(<SettingsView />)
 
-    await waitFor(() => expect(preset(60)).toHaveAttribute('aria-pressed', 'true'))
-    expect(preset(45)).toHaveAttribute('aria-pressed', 'false')
+    await waitFor(() => expect(preset(60)).toHaveAttribute('aria-checked', 'true'))
+    expect(preset(45)).toHaveAttribute('aria-checked', 'false')
     expect(switches()[0].checked).toBe(true)
     expect(switches()[1].checked).toBe(true)
     // The caveat is stated once for the whole section, not inside a toggle hint.
@@ -334,7 +334,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
 
     await waitFor(() => expect(api.getCrewCompanionConfig).toHaveBeenCalled())
     // Wrong types are ignored rather than coerced, so the 45 default survives.
-    expect(preset(45)).toHaveAttribute('aria-pressed', 'true')
+    expect(preset(45)).toHaveAttribute('aria-checked', 'true')
     expect(switches()[0].checked).toBe(true)
     expect(switches()[1].checked).toBe(true)
   })
@@ -342,12 +342,12 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
   it('survives a null config and a failed read', async () => {
     api.getCrewCompanionConfig.mockResolvedValue(null)
     render(<SettingsView />)
-    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-checked', 'true'))
 
     cleanup()
     api.getCrewCompanionConfig.mockRejectedValue(new Error('bridge is down'))
     render(<SettingsView />)
-    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-checked', 'true'))
   })
 
   it('hides the cadence row while break nudges are off', async () => {
@@ -382,18 +382,18 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
 
   it('selects a preset and persists it', async () => {
     render(<SettingsView />)
-    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-checked', 'true'))
 
     fireEvent.click(preset(90))
 
     expect(api.updateConfig).toHaveBeenCalledWith({ breakReminderMins: 90 })
-    expect(preset(90)).toHaveAttribute('aria-pressed', 'true')
-    expect(preset(45)).toHaveAttribute('aria-pressed', 'false')
+    expect(preset(90)).toHaveAttribute('aria-checked', 'true')
+    expect(preset(45)).toHaveAttribute('aria-checked', 'false')
   })
 
   it('leaves the custom field blank while a preset is selected', async () => {
     render(<SettingsView />)
-    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-checked', 'true'))
 
     expect(customField().value).toBe('')
   })
@@ -405,7 +405,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField().value).toBe('200'))
     // A custom value means no preset claims to be the current one.
     for (const m of [30, 45, 60, 90]) {
-      expect(preset(m)).toHaveAttribute('aria-pressed', 'false')
+      expect(preset(m)).toHaveAttribute('aria-checked', 'false')
     }
   })
 
@@ -414,7 +414,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField()).toBeInTheDocument())
     const field = customField()
 
-    field.focus()
+    act(() => { field.focus() })
     // Focused on a preset value, so the field opens empty rather than pre-filled.
     expect(field.value).toBe('')
 
@@ -431,7 +431,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     render(<SettingsView />)
     await waitFor(() => expect(customField().value).toBe('200'))
 
-    customField().focus()
+    act(() => { customField().focus() })
     // Editing an existing custom interval starts from it, not from blank.
     expect(customField().value).toBe('200')
   })
@@ -451,14 +451,14 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
 
   it('leaves the stored interval alone when the entry is not a number', async () => {
     render(<SettingsView />)
-    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-checked', 'true'))
 
     fireEvent.change(customField(), { target: { value: 'soonish' } })
     fireEvent.blur(customField())
 
     // A bad value must not silently reset the setting.
     expect(api.updateConfig).not.toHaveBeenCalled()
-    expect(preset(45)).toHaveAttribute('aria-pressed', 'true')
+    expect(preset(45)).toHaveAttribute('aria-checked', 'true')
     expect(customField().value).toBe('')
   })
 
@@ -467,7 +467,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField()).toBeInTheDocument())
     const field = customField()
 
-    field.focus()
+    act(() => { field.focus() })
     fireEvent.change(field, { target: { value: '75' } })
     fireEvent.keyDown(field, { key: 'Enter' })
 
@@ -480,7 +480,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField()).toBeInTheDocument())
     const field = customField()
 
-    field.focus()
+    act(() => { field.focus() })
     fireEvent.change(field, { target: { value: '75' } })
     fireEvent.keyDown(field, { key: 'a' })
 
@@ -490,9 +490,9 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
 
   it('re-reads on a config broadcast and drops a half-typed draft', async () => {
     render(<SettingsView />)
-    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(45)).toHaveAttribute('aria-checked', 'true'))
 
-    customField().focus()
+    act(() => { customField().focus() })
     fireEvent.change(customField(), { target: { value: '77' } })
     expect(customField().value).toBe('77')
 
@@ -500,7 +500,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     api.getCrewCompanionConfig.mockResolvedValue({ breakReminderMins: 90 })
     await act(async () => { broadcast() })
 
-    await waitFor(() => expect(preset(90)).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(preset(90)).toHaveAttribute('aria-checked', 'true'))
     // The draft described a value the user is no longer setting.
     expect(customField().value).toBe('')
   })

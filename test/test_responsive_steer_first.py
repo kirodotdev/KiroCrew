@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from test_responsive_chat import _busy
+from test_responsive_chat import _busy, _OwnerRequest
 from test_responsive_chat import fixture as responsive_fixture  # noqa: F401  (registers it)
 
 from kiro_crew.dashboard import chat_runner
@@ -213,6 +213,7 @@ async def test_closing_slot_drops_its_grace_timer(env, clock):
         ("native_permission", "waiting_for_input"),
         ("stop", "stopping"),
         ("compaction", "compacting"),
+        ("compact_command", "compacting"),
         ("no_steer_backend", "cancel_requested"),
         ("idle", "queued"),
     ],
@@ -233,6 +234,8 @@ async def test_non_steerable_states_keep_queue_behaviour(
         slot._stop_state = "soft_pending"
     elif condition == "compaction":
         state.sessions.is_compacting = lambda key: True
+    elif condition == "compact_command":
+        slot._compact_command_turn = True
     elif condition == "no_steer_backend":
         slot._acp_client.supports_steer = False
     else:
@@ -410,7 +413,7 @@ async def test_real_turn_steer_first_delivers_exactly_once(tmp_path, monkeypatch
         return "acked"
 
     state.sessions.cancel_owned_turn = AsyncMock(side_effect=cancel)
-    request = SimpleNamespace(app={"state": state})
+    request = _OwnerRequest(state)
     original = await _run_original(state, slot)
     try:
         await asyncio.wait_for(entered.wait(), timeout=30)

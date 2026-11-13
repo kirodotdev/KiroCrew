@@ -1,0 +1,38 @@
+{
+  "fixture": "frames/pong",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.4",
+  "status": "decided",
+  "summary": "The answer to ping, echoing its nonce.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "pong",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"pong\"."
+    },
+    "nonce": {
+      "type": "string",
+      "required": false,
+      "notes": "The ping's nonce, when it had one."
+    }
+  },
+  "valid": [
+    {
+      "name": "relay pong",
+      "message": {
+        "type": "pong",
+        "nonce": "p-000123"
+      }
+    }
+  ],
+  "invalid": []
+}

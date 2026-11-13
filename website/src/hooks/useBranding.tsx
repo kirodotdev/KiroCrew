@@ -2,9 +2,32 @@ import { createContext, useContext, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 
-interface Branding { botName: string; avatar: string; directLocal: boolean }
+/**
+ * `directLocal` and `desktopLauncher` are the two halves of the gate on the
+ * OS-desktop file actions (see `useCanReveal` in FilePathMenu): the browser is on
+ * the gateway host, and that host can open a file manager right now (the gateway
+ * decides that from its own launcher and desktop session). Both default to
+ * false, so a gateway that could not be read offers neither action.
+ */
+interface Branding {
+  botName: string
+  avatar: string
+  directLocal: boolean
+  desktopLauncher: boolean
+  /** `dashboard.remote_editor.editor` and `.host` for the "Open in <editor>"
+   *  row in the Markdown panel's ⋯ menu (`MarkdownPanelHeader.tsx`); "" = not set. */
+  remoteEditor: string
+  remoteEditorHost: string
+}
 
-const defaults: Branding = { botName: 'Kiro Crew', avatar: '/logo.png', directLocal: false }
+const defaults: Branding = {
+  botName: 'Kiro Crew',
+  avatar: '/logo.png',
+  directLocal: false,
+  desktopLauncher: false,
+  remoteEditor: '',
+  remoteEditorHost: '',
+}
 const BrandingContext = createContext<Branding>(defaults)
 
 export function BrandingProvider({ children }: { children: ReactNode }) {
@@ -24,7 +47,14 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     refetchInterval: q => (q.state.data ? false : 30_000),
   })
   const b: Branding = data
-    ? { botName: data.bot_name || defaults.botName, avatar: data.avatar || defaults.avatar, directLocal: !!data.direct_local }
+    ? {
+        botName: data.bot_name || defaults.botName,
+        avatar: data.avatar || defaults.avatar,
+        directLocal: !!data.direct_local,
+        desktopLauncher: !!data.desktop_launcher,
+        remoteEditor: data.remote_editor?.editor ?? '',
+        remoteEditorHost: data.remote_editor?.host ?? '',
+      }
     : defaults
   return <BrandingContext.Provider value={b}>{children}</BrandingContext.Provider>
 }

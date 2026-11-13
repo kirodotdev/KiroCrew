@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import functools
 import logging
 import os
 import shutil
@@ -49,7 +48,7 @@ from kiro_crew import platform_compat
 
 # The module, not its names: every engine call resolves at call time, so a test
 # (or a caller) that patches ``wheel_engine`` patches this path too.
-from kiro_crew.platform import wheel_engine
+from kiro_crew.platform import release_apply, wheel_engine
 from kiro_crew.platform.wheel_engine import (
     FAILURE_TEXT_CHARS,
     ApplyCancel,
@@ -333,15 +332,19 @@ def shown_failure_text(text: str, limit: int | None = FAILURE_TEXT_CHARS) -> str
 
 
 def userns_reattach_needed(version: str) -> bool:
-    """Would promoting *version* move the launcher a userns profile applies to?
+    """Would promoting *version* move the launcher out of a userns profile's attachment?
 
     On a host that restricts unprivileged user namespaces, ``kirocrew service
     install`` attaches the ``kirocrew-userns`` AppArmor profile to the RESOLVED
-    launcher path, and promotion makes that path resolve into the new tree. The
-    running gateway keeps its label, but the next fresh service start would run
-    unconfined and the agent sandbox could not be built. True only when the
-    profile applies to the launcher today (the same predicate ``kirocrew doctor``
-    reports) and the promoted one differs.
+    launcher, and promotion makes that path resolve into the new tree. An
+    attachment naming every versioned tree's launcher
+    (``crew-venv-*/bin/kirocrew``, what ``service install`` renders for a
+    managed install, :func:`apparmor.service_attachment`) covers the new tree
+    too. One naming a single tree's exact path does not: the running gateway
+    keeps its label, but the next fresh service start would run unconfined and
+    the agent sandbox could not be built. True only when the profile applies to
+    the launcher today (the same predicate ``kirocrew doctor`` reports) and its
+    attachment does not cover the promoted one.
     """
     if not sys.platform.startswith("linux"):
         return False
@@ -357,7 +360,7 @@ def userns_reattach_needed(version: str) -> bool:
         return False
     layout = wheel_engine.managed_venv_layout()
     promoted = os.path.realpath(layout.versioned_tree(version) / "bin" / "kirocrew")
-    return promoted != attached
+    return not apparmor.attachment_covers(attached, promoted)
 
 
 def userns_reattach_remedy(version: str) -> str:
@@ -367,8 +370,10 @@ def userns_reattach_remedy(version: str) -> str:
         "AppArmor profile is attached to, so the sandbox profile would stop applying at "
         "the next service start. Run `kirocrew update`, then `kirocrew service install` "
         "(which re-attaches the profile and restarts the service onto the new version). "
-        "Both are needed after every update while that profile is in use; `kirocrew "
-        "doctor` reports the attachment under Sandbox."
+        "When the directory holding the install is owned by the service's account and "
+        "writable by no other, that attaches the profile to every version an update "
+        "installs, so later updates apply on their own; `kirocrew doctor` reports the "
+        "attachment under Sandbox."
     )
 
 
@@ -378,8 +383,10 @@ def userns_reattach_after_apply(version: str) -> str:
         f"Kiro Crew {version} is installed, and the kirocrew-userns AppArmor profile is "
         "still attached to the previous launcher, so the sandbox profile stops applying "
         "at the next service start. Run `kirocrew service install`, which re-attaches "
-        "the profile and restarts the service onto the new version. `kirocrew doctor` "
-        "reports the attachment under Sandbox."
+        "the profile and restarts the service onto the new version. When the directory "
+        "holding the install is owned by the service's account and writable by no other, "
+        "that attaches the profile to every version an update installs, so later updates "
+        "keep it applying. `kirocrew doctor` reports the attachment under Sandbox."
     )
 
 
@@ -550,8 +557,14 @@ async def run_wheel_apply(
     artifact_base: str,
     state: DashboardState | None = None,
     held_lock_fd: int | None = None,
+    refuse_if_unattended_off: bool = False,
 ) -> WheelApplyOutcome:
     """Run one shadow apply on the update worker and report how it ended.
+
+    *refuse_if_unattended_off* is for a routine install nobody asked for: it is
+    refused at the swap, as ``deferred``, when the security policy has turned
+    unattended installs off since the caller decided to install. A person's
+    approve and a floor's mandatory update leave it False.
 
     ``busy`` at once, without queueing, when this process already runs one,
     unless the caller holds the update lock (*held_lock_fd*, a lock it took with
@@ -589,8 +602,26 @@ async def run_wheel_apply(
         loop.call_soon_threadsafe(_arm_deadline)
         _push("pulling", f"Applying update to v{version}…")
 
-    call = functools.partial(
-        wheel_engine.apply_wheel_update,
+    snapshot = memory_snapshot_hook(lambda message: _push("building", message))
+
+    def _refuse_if_unattended_turned_off() -> None:
+        if refuse_if_unattended_off:
+            from kiro_crew.platform.update_governance import unattended_apply_allowed
+
+            if not unattended_apply_allowed():
+                raise WheelUpdateNotReady("the security policy turned off unattended installs")
+
+    def _before_promote() -> None:
+        # Read at the swap, after the download and build: before the memory copy
+        # so a refused install spends none, and after it so a policy that landed
+        # while it ran still decides. The engine promotes next with no wait.
+        _refuse_if_unattended_turned_off()
+        snapshot()
+        _refuse_if_unattended_turned_off()
+
+    # The release, not the wheel: the new version's KAS engine is installed
+    # before the stable link flips (release_apply).
+    release = release_apply.WheelRelease(
         channel=channel,
         feed_base=feed_base,
         artifact_base=artifact_base,
@@ -599,9 +630,12 @@ async def run_wheel_apply(
         cancel=cancel,
         on_locked=_on_locked,
         preflight=check_memory_ready,
-        before_promote=memory_snapshot_hook(lambda message: _push("building", message)),
+        before_promote=_before_promote,
         held_lock_fd=held_lock_fd,
     )
+
+    def call() -> Path:
+        return release_apply.apply_release(release)
 
     def _apply_and_release() -> Path:
         try:

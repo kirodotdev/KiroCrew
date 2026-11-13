@@ -180,11 +180,6 @@ def declared_provider_urls() -> dict[str, str]:
     return urls
 
 
-def registry_slugs() -> set[str]:
-    """Every registry provider slug, whether or not it declares aliases."""
-    return {provider["slug"] for provider in get_all_registry_providers()}
-
-
 def derived_alias(slug: str, tool: str) -> str:
     """The ONE alias this module will ever emit for ``@slug/tool``.
 

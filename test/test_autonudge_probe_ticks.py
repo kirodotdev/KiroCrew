@@ -74,15 +74,8 @@ async def test_a_long_quiet_streak_is_delivered_anyway(tmp_path, monkeypatch):
 async def test_an_unusable_instruction_mid_poll_discards_the_verdict(tmp_path, monkeypatch):
     """The verdict is about the config the poll ran with, so the tick re-derives it.
 
-    This replaces a test for a HOST change mid-poll -- an instruction edited from a
-    bare ``owner/name#123`` to the same subject as a URL, which left kind and target
-    identical while changing which SERVER was observed. Requiring an explicit
-    pull-request URL removes that case entirely: a shorthand does not infer, and an
-    enterprise URL is refused, so no inferable spelling can change the host. Keeping
-    a test for an unreachable path would only look like protection.
-
-    What is still reachable is an edit that stops naming a subject at all. The
-    verdict must not settle the watch then either.
+    An edit mid-poll that stops naming a subject must not let the verdict settle the
+    watch. (A host change cannot happen: only an explicit github.com URL infers.)
     """
     import kiro_crew.autonudge as _an
 
@@ -198,17 +191,10 @@ async def test_a_drifted_instruction_fires_instead_of_observing(tmp_path, monkey
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_a_re_owed_claim_survives_the_backoff_re_arm(tmp_path, monkeypatch):
-    """The accounting fix was being defeated by the cleanup meant to protect it.
+    """A refused fire's re-owed wake claim survives the backoff re-arm.
 
-    A refused fire re-owes its wake so the retried delivery still charges it. But the
-    refusal path then re-arms with a backoff, ``_arm_timer`` cancels before it creates,
-    and the cancel path dropped both claims -- erasing, one statement later, the claim
-    the refusal had just re-owed. So the wake was undercounted and its follow-up turn
-    lost, in the ordinary case of a busy slot.
-
-    Replacing a timer is not cancelling a cycle. An explicit cancel still drops the
-    claim, which the sibling test pins and which is a deliberate trade: an undelivered
-    observation is lost rather than charged to a later turn that did not carry it.
+    ``_arm_timer`` cancels before it creates, and replacing a timer is not cancelling a
+    cycle. An explicit cancel still drops the claim, by design.
     """
     import kiro_crew.autonudge as _an
 
@@ -240,9 +226,8 @@ async def test_a_re_owed_claim_survives_the_backoff_re_arm(tmp_path, monkeypatch
         await service._run_fire_cycle(loop)
         assert loop.monitor is not None and loop.monitor.wakes == 0, "a refusal charges nothing"
         assert loop.id in service._pending_monitor_wake, "and the re-arm must not erase the debt"
-        # An explicit CANCEL still drops it, which is the trade the sibling test pins:
-        # an undelivered observation is lost rather than charged to a turn that did not
-        # carry it. Only REPLACING a timer is exempt.
+        # An explicit CANCEL still drops it: an undelivered observation is not charged
+        # to a turn that did not carry it. Only REPLACING a timer is exempt.
         service._cancel_timer(loop.id)
         assert loop.id not in service._pending_monitor_wake
         assert loop.id not in service._pending_floor_tick
@@ -254,14 +239,8 @@ async def test_a_re_owed_claim_survives_the_backoff_re_arm(tmp_path, monkeypatch
 async def test_a_floor_tick_is_charged_only_when_its_delivery_lands(tmp_path, monkeypatch):
     """The floor counter must describe turns that ran, like the wake counter.
 
-    The floor decides to deliver in the QUIET branch, and the fire it asks for can still
-    be refused by a busy slot. Charging at the decision reported a turn that never ran,
-    and because the honest free-tick figure is ``quiet_ticks`` minus ``floor_ticks``, an
-    over-counted floor understates the saving.
-
-    The prescribed remedy was to revert the counter until it could be charged after
-    delivery. That was declined -- the counter is the subtraction that separates a quiet
-    verdict from a free tick -- and the substance adopted instead.
+    A busy slot can refuse the floor's fire, and the free-tick figure is ``quiet_ticks``
+    minus ``floor_ticks``, so charging at the decision understates the saving.
     """
     import kiro_crew.autonudge as _an
 
@@ -309,17 +288,11 @@ async def test_a_floor_tick_is_charged_only_when_its_delivery_lands(tmp_path, mo
 async def test_a_death_between_the_floor_decision_and_its_turn_leaves_the_fire_owed(
     tmp_path, monkeypatch
 ):
-    """The decision to deliver is durable while the claim carrying it is not.
+    """The decision to deliver is durable, so the owed turn must be durable too.
 
-    The floor's decision publishes a reset ``quiet_streak`` through a scheduled write,
-    and the claim recording the owed turn lives in a process-local set. A gateway that
-    stops between the decision and the turn landing therefore keeps the half that
-    suppresses and loses the half that delivers: the reloaded loop reads an unchanged
-    subject against a baseline written for a turn nobody received, answers quiet, and
-    the forced delivery moves a whole floor away with nothing saying one was due.
-
-    The post-wake allowance cannot cover it. That one answers a fire the slot REFUSED,
-    and a process that stops refuses nothing.
+    The reset ``quiet_streak`` is persisted but the claim lives in a process-local set,
+    so after a restart the subject reads calm and the turn would be lost. The post-wake
+    allowance covers only a REFUSED fire.
     """
     polls: list[str] = []
 
@@ -387,12 +360,8 @@ async def test_a_death_between_the_floor_decision_and_its_turn_leaves_the_fire_o
 async def test_a_refused_floor_fire_then_a_restart_delivers_exactly_one_turn(tmp_path, monkeypatch):
     """Two credits for one owed turn must not each buy a turn.
 
-    A refused fire grants the post-wake allowance so the NEXT tick retries the
-    delivery, and the floor debt records that the delivery is still owed. Both
-    survive a restart while the in-process claim does not, so a debt served behind
-    the allowance is served twice: the bypass fires with no claim to charge, then the
-    debt fires on the tick after. The debt is therefore served first and consumes the
-    allowance it duplicates.
+    The follow-up allowance and the floor debt both survive a restart, so the debt is
+    served first and consumes the allowance it duplicates.
     """
     fired: list[str] = []
     outcomes = [False, True]
@@ -583,13 +552,7 @@ async def test_a_record_written_before_the_owed_floor_marker_owes_nothing(tmp_pa
 async def test_a_refused_wake_is_charged_once_when_its_retry_delivers(tmp_path, monkeypatch):
     """A refused fire accounts for nothing, so the wake must stay owed.
 
-    The claim was discarded on the assumption that reaching the end of the fire cycle
-    meant the wake had been accounted for. A refused fire does not account for it: the
-    next tick takes the observation-free follow-up bypass, DELIVERS the turn, and finds
-    no claim to charge -- so a wake that really happened and really woke the agent was
-    missing from ``wakes`` entirely, which makes the saving look better than it is.
-
-    Exactly once is the property: the refusal charges nothing, the retry charges one.
+    The refusal charges nothing and the follow-up retry that delivers charges one.
     """
     import kiro_crew.autonudge as _an
 
@@ -674,12 +637,8 @@ async def test_an_oversized_stored_pr_baseline_is_bounded_by_the_loader(tmp_path
 async def test_a_malformed_pr_baseline_never_disables_the_loop(tmp_path, stored):
     """The loop must survive a baseline the store can hold but the writer never emits.
 
-    Iterating the stored value directly raises ``TypeError`` for a non-iterable, and the
-    loader has no handler for it, so the whole record is skipped and an active watch is
-    never rearmed -- losing the watch, not merely the baseline. A string or a mapping is
-    worse than a crash: both iterate, so their characters or keys are retained as remark
-    ids and a real remark then reads as already seen. The container is checked for the
-    one type the writer emits, matching the sibling boundaries in this same function.
+    A non-iterable would skip the whole record; a string or mapping would iterate into
+    bogus remark ids. Only a list is accepted.
     """
     from kiro_crew import autonudge as _an
 
@@ -723,16 +682,9 @@ async def test_a_wake_keeps_the_interrupted_poll_doubt_until_delivery_settles(
 ):
     """The doubt guards DELIVERY for a wake, not the poll returning.
 
-    The kernel commits "reported" for what it saw, so a process that dies between the
-    verdict and the turn landing leaves a signal nothing will re-raise: a fresh
-    observation reads the same state as unchanged. The in-process refusal is covered by
-    ``followup_ticks``; only a marker that OUTLIVES the fire covers a death. Clearing it
-    when the poll returned made the protection depend on whether a debounced write won a
-    race against the shutdown, and a crash-safety property that holds only when a race
-    falls one way is not a property.
-
-    Other outcomes discharge it immediately: QUIET delivers nothing that could be lost,
-    and a FALLBACK observed nothing, so the kernel committed nothing to dedupe against.
+    The kernel commits "reported" for what it saw, so a death before the turn lands
+    loses the signal unless the marker outlives the fire. QUIET and FALLBACK clear it at
+    once: neither has anything to lose.
     """
     import kiro_crew.autonudge as _an
 
@@ -776,12 +728,8 @@ async def test_a_wake_keeps_the_interrupted_poll_doubt_until_delivery_settles(
 async def test_an_upgraded_record_with_a_monitor_but_no_gate_is_not_polled(tmp_path, monkeypatch):
     """The stored decision wins over the presence of the monitor object.
 
-    Flipping the legacy default to ungated created a state the two checks disagree
-    about: a record with a monitor dict but no ``gate`` key -- armed while the default
-    was True, or upgraded from an earlier build -- decodes to ``gate=False`` with its
-    monitor intact. Reading only ``monitor is None`` would poll it anyway and let a
-    terminal verdict DEACTIVATE it, which is the harm the opt-out exists to prevent.
-    An opt-out honoured by only some paths is worse than none.
+    A record with a monitor dict but no ``gate`` key decodes to ``gate=False``; polling
+    it would let a terminal verdict deactivate an opted-out loop.
     """
     import kiro_crew.autonudge as _an
 
@@ -819,12 +767,9 @@ async def test_an_upgraded_record_with_a_monitor_but_no_gate_is_not_polled(tmp_p
 async def test_an_interrupted_poll_fires_on_the_next_tick(tmp_path, monkeypatch):
     """A cancelled poll may already have been consumed on disk.
 
-    The kernel commits its dedupe state BEFORE raising a wake, which is right for
-    the cron driver -- there the raise IS the delivery. For a driver that awaits the
-    verdict the two come apart: a gateway shutdown landing mid-poll leaves the
-    observation recorded as reported while no turn was dispatched, and re-observing
-    would read the same state as unchanged. So the next tick fires, and the doubt is
-    consumed once rather than latching.
+    The kernel commits its dedupe state BEFORE raising a wake, so re-observing after a
+    mid-poll shutdown would read the state as unchanged. The next tick fires, and the
+    doubt is consumed once rather than latching.
     """
     import kiro_crew.autonudge as _an
 
@@ -868,11 +813,8 @@ async def test_an_interrupted_poll_fires_on_the_next_tick(tmp_path, monkeypatch)
 async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatch):
     """A wake claim belongs to the tick that took it.
 
-    A wake is claimed at observation and charged where delivery is confirmed. If
-    the cycle is cancelled in between -- an update(), a deactivation, a shutdown --
-    the claim must die with it. Otherwise the loop's next delivered fire, which
-    may be a fallback or a floor tick that observed nothing, inherits the claim
-    and is counted as a wake no observation ever made.
+    A cycle cancelled between claim and delivery drops the claim, or a later fire that
+    observed nothing would be counted as a wake.
     """
     fired: list[NudgeLoop] = []
 
@@ -890,10 +832,12 @@ async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatc
         gate=True,
     )
     service._loops[loop.id] = loop
+    release = asyncio.Event()
 
     async def _never() -> None:
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing never-ending task body, moved verbatim; it is cancelled, never awaited as a barrier
-        await asyncio.sleep(3600)
+        # The in-flight tick stays pending until the cancel below ends it, or the
+        # cleanup releases it.
+        await release.wait()
 
     try:
         # A tick observed a wake and is now in flight toward its fire.
@@ -915,6 +859,7 @@ async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatc
         assert loop.monitor.wakes == 0
         assert loop.monitor.followup_ticks == 0
     finally:
+        release.set()
         service.stop()
 
 
@@ -951,22 +896,10 @@ async def test_a_refused_fire_charges_no_wake(tmp_path, monkeypatch):
         assert loop.monitor is not None
         assert loop.monitor.wakes == 0, "a refused fire is not a wake"
         assert loop.id in service._pending_monitor_wake, "but the wake is still OWED"
-        # The claim must NOT be RELEASED here -- the second wrong belief
-        # this one test has recorded. The reasoning then treated the claim as a record
-        # of a turn that had happened, so releasing it looked like the way to avoid
-        # charging a wake that did not. It is really a record of a wake that is OWED:
-        # the next tick takes the gate-free bypass below, DELIVERS the turn, and found
-        # no claim to charge -- so a wake that really woke the agent was missing from
-        # the counter, which makes the saving look better than it is. Keeping it owed
-        # cannot double-charge, because the charge happens only where delivery is
-        # confirmed and the claim is discarded at that same point.
-        # It DOES buy a gate-free retry, and an earlier version of this test
-        # asserted the opposite. The reasoning then was "a refused fire earns
-        # nothing"; the reasoning now is that the kernel has already deduped the
-        # observation this fire was carrying, so without a bypassed tick the next
-        # one re-observes an unchanged subject, calls it quiet, and the signal is
-        # gone until the streak floor. Not counting it as a wake and not letting
-        # it retry are different things.
+        # The claim records a wake that is OWED; the retry that delivers charges it, and
+        # charging only at confirmed delivery cannot double-charge.
+        # It buys a gate-free retry: the kernel already deduped this observation, so a
+        # re-observing tick would call the subject quiet and lose the signal.
         assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
     finally:
         service.stop()
@@ -978,8 +911,7 @@ async def test_a_quiet_tick_re_arms_its_own_timer(tmp_path, monkeypatch):
 
     The delivered paths re-arm elsewhere -- notify_turn_complete for a dashboard
     slot, the fire cycle's own exit for a channel key -- and a quiet tick reaches
-    neither. Asserting only "no turn was spent" is what let this through the
-    first time: a dead watch and a calm watch both spend nothing.
+    neither. "No turn was spent" alone cannot tell a dead watch from a calm one.
     """
     import kiro_crew.autonudge as _an
 

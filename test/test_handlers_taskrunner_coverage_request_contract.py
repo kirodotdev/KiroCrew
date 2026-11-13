@@ -225,3 +225,22 @@ def test_exact_task_cancel_does_not_follow_another_runs_colliding_name():
     runner.cancel("own-id", exact=True)
     assert own.status == "cancelling"
     assert peer.status == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec", [5, ["a"], {"a": 1}], ids=["int", "list", "dict"])
+async def test_start_answers_a_non_string_spec_with_a_coded_400(tmp_path, spec):
+    """A truthy non-string spec is a coded 400, not a 500 from ``.startswith``."""
+    runner = _runner(tmp_path)
+    resp = await api_taskrunner_start(_request(_state(runner), json_body={"spec": spec}))
+    assert resp.status == 400
+    assert _body(resp) == {"error": "spec must be a string", "code": "invalid_field_type"}
+    runner.start_background.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{}, {"spec": ""}, {"spec": None}, {"spec": 0}])
+async def test_start_keeps_the_missing_or_blank_spec_answer(tmp_path, body):
+    resp = await api_taskrunner_start(_request(_state(_runner(tmp_path)), json_body=body))
+    assert resp.status == 400
+    assert _body(resp) == {"error": "spec path required"}

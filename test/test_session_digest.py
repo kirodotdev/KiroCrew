@@ -685,12 +685,8 @@ class TestBoundedRecords:
     ) -> None:
         """A refused record must not smuggle a valid record out of its own tail.
 
-        The whole file below is ONE line. Its first cap+1 characters are junk, and
-        a complete user record sits immediately after that boundary. Draining the
-        refused record is what keeps the tail from being read as a record of its
-        own: without the drain, the next bounded read starts on the forged object,
-        ends on the real newline, and the reader counts a turn inside a record it
-        reported as skipped.
+        The file is one line: cap+1 junk characters, then a complete user record. Without
+        draining the refused record, the next read would count the forged tail as a turn.
         """
         cap = 100
         forged = json.dumps({"role": "user", "content": "phantom"})
@@ -759,15 +755,9 @@ class TestBoundedRecords:
     ) -> None:
         """A CRLF-terminated record of exactly cap bytes is accepted.
 
-        The shared reader defers a trailing carriage return across reads, because
-        it must not split a CRLF whose line feed has not arrived. Excluding that
-        pending byte from the body length therefore costs nothing, and the record
-        below is legal by the cap's own definition -- its body IS cap bytes.
-
-        Left refused, it suppressed a real participation entry in
-        `members.read_activity`, which is why this is a correctness fix rather
-        than a cosmetic one. Flagged to the reviewer as a main-owned behaviour
-        change rather than folded in silently.
+        The reader defers a trailing carriage return so it never splits a CRLF, so that byte
+        is not body; the body is exactly cap bytes. A refusal would drop a real
+        participation entry in `members.read_activity`.
         """
         cap = 200
         path = sessions_dir / "crlf_at_cap.jsonl"

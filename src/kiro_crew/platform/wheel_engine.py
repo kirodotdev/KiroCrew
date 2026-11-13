@@ -54,10 +54,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from kiro_crew import asset_downloader  # noqa: F401 - re-export
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     IS_POSIX,
+    flock_owner_pid,
     kill_popen_tree,
     make_owner_only_dir,
     open_create_or_existing,
@@ -115,7 +117,12 @@ from kiro_crew.platform.wheel_engine_layout import (
     _realpath,
     managed_venv_layout,
 )
-from kiro_crew.platform.wheel_engine_transfer import _download_to_file, _fetch_bytes, _staging_dir
+from kiro_crew.platform.wheel_engine_transfer import (
+    _download_to_file,
+    _fetch_bytes,
+    _legacy_staging_dir,
+    _staging_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +164,9 @@ def _openssl_bin() -> str:
     if openssl is None:
         raise WheelUpdateError(
             "openssl is required to verify the signed manifest and was not "
-            "found in a trusted system directory"
+            "found in a trusted system directory. Install the openssl package "
+            "(Debian/Ubuntu: 'sudo apt-get install -y openssl'; Fedora/RHEL/"
+            "Amazon Linux: 'sudo dnf install -y openssl'), then retry the update."
         )
     return openssl
 
@@ -339,6 +348,16 @@ def _verify_over_nofollow_files(
         raise WheelUpdateError("manifest signature verification failed — refusing to install")
 
 
+def wheel_filename(channel: str, version: str) -> str:
+    """The wheel a channel publishes: the LTS edition's own distribution on lts.
+
+    publish-cli.yml, ``packaging/signing/cli-manifest.py`` and ``cli.sh`` pair
+    the same stem with the same channel.
+    """
+    stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
+    return f"{stem}-{version}-py3-none-any.whl"
+
+
 def parse_and_validate_manifest(
     raw: bytes,
     *,
@@ -390,7 +409,7 @@ def parse_and_validate_manifest(
     requires = manifest["python_requires"]
     if len(requires) > 128 or any(not (0x20 <= ord(c) <= 0x7E) for c in requires):
         raise WheelUpdateError("manifest python_requires fails validation")
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    wheel_name = wheel_filename(channel, version)
     expected_url = f"{artifact_base}/cli/{channel}/{version}/{wheel_name}"
     if manifest["wheel_url"] != expected_url:
         raise WheelUpdateError("manifest wheel_url is not the canonical artifact URL")
@@ -436,7 +455,7 @@ def download_verified_wheel(
     """Download the wheel the SIGNED payload names and verify its SHA-256."""
     url = payload["wheel_url"]
     expected_sha = payload["sha256"]
-    wheel_path = dest_dir / f"kirocrew-{payload['version']}-py3-none-any.whl"
+    wheel_path = dest_dir / wheel_filename(payload.get("channel", ""), payload["version"])
     _download_to_file(
         url,
         wheel_path,
@@ -957,10 +976,13 @@ def _sweep_layout_debris(layout: ManagedVenvLayout, cancel: ApplyCancel | None =
         if match and entry.is_symlink() and not _pid_alive(int(match.group(1))):
             with contextlib.suppress(OSError):
                 entry.unlink()
-    try:
-        staging = list(_staging_dir().iterdir())
-    except OSError:
-        staging = []
+    staging: list[Path] = []
+    # The legacy root too: a build that staged under trust/ may have left a run there.
+    for root in (_staging_dir(), _legacy_staging_dir()):
+        try:
+            staging.extend(root.iterdir())
+        except OSError:
+            continue
     now = time.time()
     for entry in staging:
         try:
@@ -1049,6 +1071,9 @@ def hold_update_lock() -> int:
     filesystem that cannot lock is never mistaken for a busy one). The caller
     owns the descriptor: pass it to :func:`apply_wheel_update` as ``held_lock_fd``
     and close it afterwards (closing releases the lock).
+
+    The holder's pid is written into the lock file while it is held, so a
+    caller that loses the lock can tell who has it (:func:`update_lock_holder_pid`).
     """
     path = _update_lock_path(managed_venv_layout())
     try:
@@ -1065,14 +1090,52 @@ def hold_update_lock() -> int:
         raise WheelUpdateBusy(
             "another kirocrew update is already in progress — wait for it to finish and re-run"
         )
+    with contextlib.suppress(OSError):
+        # Only into the file this name holds, never through a link to another file.
+        held = os.fstat(fd)
+        if held.st_nlink == 1 and os.path.samestat(held, os.lstat(path)):
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, _holder_stamp())
     return fd
 
 
+def _holder_stamp() -> bytes:
+    return f"{os.getpid()}\n".encode()
+
+
 def release_update_lock(fd: int) -> None:
-    """Release and close a descriptor :func:`hold_update_lock` returned."""
+    """Release and close a descriptor :func:`hold_update_lock` returned.
+
+    This holder's pid is cleared first, while the lock is still held, so a
+    later holder that records none (``cli.sh``) is not named as this one.
+    """
+    with contextlib.suppress(OSError):
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.read(fd, 64) == _holder_stamp():
+            os.ftruncate(fd, 0)
     with contextlib.suppress(OSError):
         release_lock(fd)
     os.close(fd)
+
+
+def update_lock_holder_pid() -> int | None:
+    """The pid holding the update lock, or ``None`` when it cannot be named.
+
+    The kernel's record of who took the lock comes first (Linux). Elsewhere it
+    is the pid the holder wrote into the file: ``cli.sh`` writes none, and an
+    exec that skipped :func:`release_update_lock` leaves its own behind.
+    """
+    path = _update_lock_path(managed_venv_layout())
+    owner = flock_owner_pid(path)
+    if owner is not None:
+        return owner
+    try:
+        with open(path, "rb") as lock_file:
+            text = lock_file.read(64).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if text.isdigit() else None
 
 
 # ── The apply ───────────────────────────────────────────────────────────────
@@ -1091,6 +1154,7 @@ def apply_wheel_update(
     before_promote: Callable[[], None] = lambda: None,
     held_lock_fd: int | None = None,
     trusted_env: bool = True,
+    install_engine: Callable[[Path, _BuildContext], None] | None = None,
 ) -> Path:
     """Run the full shadow flow; return the promoted tree's path.
 
@@ -1099,9 +1163,14 @@ def apply_wheel_update(
     exists, run *preflight*, fetch + verify the signed
     manifest, refuse a release the signed metadata excludes, download + verify
     the wheel, build the shadow tree, prove it serves the promised version, run
-    *before_promote*, promote the stable link, repoint the launcher, then prune
-    superseded trees. Every failure before :func:`promote` leaves the install
-    untouched; promote itself is atomic.
+    *install_engine* on the verified tree, run *before_promote*, promote the
+    stable link, repoint the launcher, then prune superseded trees. Every failure
+    before :func:`promote` leaves the install untouched; promote itself is atomic.
+
+    *install_engine* is the release step ``release_apply.apply_release`` supplies:
+    it gets the verified tree and this apply's build context (cancel, lock,
+    environment), so the new release's own engine install runs as one more child
+    of the apply, and a failure of it is a failure before promotion.
 
     *on_locked* runs once the lock is held, so a caller reports progress only
     for an apply that is actually running; a held lock raises
@@ -1132,6 +1201,7 @@ def apply_wheel_update(
             ctx=_BuildContext(cancel=cancel, lock_fd=lock_fd, trusted_env=trusted_env),
             preflight=preflight,
             before_promote=before_promote,
+            install_engine=install_engine,
         )
     finally:
         if held_lock_fd is None:
@@ -1144,7 +1214,7 @@ def check_policy_channel(channel: str) -> None:
     The one channel-pin check every wheel install passes: :func:`apply_wheel_update`
     enforces it under the update lock immediately before ``promote`` swaps the
     stable link, whichever route called it (dashboard approve, scheduled
-    auto-apply, ``kirocrew server update``). The earlier reads are advisory, made
+    auto-apply, ``kirocrew update``). The earlier reads are advisory, made
     so a refusal comes before a download and names the policy: the engine's own
     before its preflight, and the approve route's. The
     caller picked *channel* when it read the feed or armed the request; an
@@ -1223,6 +1293,7 @@ def _apply_locked(
     ctx: _BuildContext,
     preflight: Callable[[], None],
     before_promote: Callable[[], None],
+    install_engine: Callable[[Path, _BuildContext], None] | None = None,
 ) -> Path:
     """The lock-held body of :func:`apply_wheel_update`."""
     _sweep_layout_debris(layout, ctx.cancel)
@@ -1282,6 +1353,8 @@ def _apply_locked(
             build_shadow_venv(wheel_path, shadow_dir, stable_link=layout.stable_link, ctx=ctx)
             progress("Verifying the new environment…")
             verify_shadow_venv(shadow_dir, version, ctx=ctx)
+            if install_engine is not None:
+                install_engine(shadow_dir, ctx)
             before_promote()
             # The last point a cancel is honoured: past it the stable link flips.
             _raise_if_cancelled(ctx.cancel)
@@ -1421,6 +1494,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         stable_launch_path,
     )
     from kiro_crew.platform.wheel_engine_transfer import (  # noqa: F401
+        _UPDATE_STAGING_LEAF,
         _read_bounded,
         _response_socket,
         _SinkWriteError,

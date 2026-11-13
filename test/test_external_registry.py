@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -340,17 +341,36 @@ class TestFetchExternalRegistryValidation:
             assert result is None  # git failed but validation passed
 
     @pytest.mark.asyncio
-    async def test_accepts_branch_with_slashes(self):
+    async def test_accepts_branch_with_slashes(self, monkeypatch, tmp_path):
         """Branch names like 'feature/foo' are valid git refs."""
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
-            mock_proc = AsyncMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b"error"))
-            mock_proc.returncode = 128
-            mock_exec.return_value = mock_proc
-            await _fetch_external_registry_index(
-                "https://github.com/example/MyRepo.git", "feature/branch-name"
-            )
-            assert mock_exec.called
+        # The sandbox wrapper is swapped for a real stand-in "git": a child that
+        # records the clone argv and writes an index into the clone directory
+        # (its last argument), so no network is touched.
+        record = tmp_path / "clone-argv.json"
+        fake_git = tmp_path / "fake_git.py"
+        fake_git.write_text(
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(record)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "index = [{'name': 'slashed-app', 'repo': 'https://github.com/example/MyRepo.git'}]\n"
+            "pathlib.Path(sys.argv[-1], 'app-registry.json').write_text(json.dumps(index))\n",
+            encoding="utf-8",
+        )
+
+        async def _run_fake_git(argv, **_kwargs):
+            return [sys.executable, str(fake_git), *argv], None
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry_pipeline.indexes.wrap_argv_async", _run_fake_git
+        )
+        result = await _fetch_external_registry_index(
+            "https://github.com/example/MyRepo.git", "feature/branch-name"
+        )
+
+        assert result is not None
+        assert [row["name"] for row in result] == ["slashed-app"]
+        clone_argv = json.loads(record.read_text(encoding="utf-8"))
+        assert clone_argv[clone_argv.index("--branch") + 1] == "feature/branch-name"
 
 
 @pytest.mark.asyncio
@@ -918,7 +938,7 @@ class TestExternalRegistryRepos:
 
 class TestRegistryInstallAdmission:
     def _write_policy(self, home, policy):
-        (home / "app_admission.json").write_text(json.dumps(policy))
+        (home / "app_admission.json").write_text(json.dumps(policy), encoding="utf-8")
 
     @pytest.fixture()
     def reg_home(self, tmp_path, monkeypatch):
@@ -1188,7 +1208,7 @@ class TestRefreshRegistries:
         assert result["ok"] is False
         assert result["refreshed"] == []
         assert result["failed"] == ["acme"]
-        assert result["results"] == [{"name": "acme", "ok": False}]
+        assert result["results"] == [{"name": "acme", "ok": False, "cached": True}]
 
     @pytest.mark.asyncio
     async def test_refused_ssh_sign_in_is_reported_as_auth(self, cache_dir, monkeypatch):
@@ -1234,7 +1254,13 @@ class TestRefreshRegistries:
         assert mock_exec.called
         assert result["failed"] == ["acme"]
         assert result["results"] == [
-            {"name": "acme", "ok": False, "reason": "auth", "host": "git.example.com"}
+            {
+                "name": "acme",
+                "ok": False,
+                "cached": False,
+                "reason": "auth",
+                "host": "git.example.com",
+            }
         ]
 
     @pytest.mark.asyncio
@@ -1558,41 +1584,41 @@ class TestRecordedCloneFailure:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("stderr", "refused"),
+        ("stderr", "cause"),
         [
-            (b"git@git.example.com: Permission denied (publickey).\n", True),
-            (b"fatal: Authentication failed for 'https://git.example.com/r'\n", True),
-            (b"ssh: Could not resolve hostname git.example.com: nodename\n", False),
-            (b"fatal: could not create work tree dir 'x': Permission denied\n", False),
+            (b"git@git.example.com: Permission denied (publickey).\n", "auth"),
+            (b"fatal: Authentication failed for 'https://git.example.com/r'\n", "auth"),
+            (b"ssh: Could not resolve hostname git.example.com: nodename\n", "dns"),
+            (b"Host key verification failed.\r\nfatal: Could not read from remote\n", "host_key"),
+            (b"ssh: connect to host git.example.com port 22: Connection refused\n", "network"),
+            (b"fatal: could not create work tree dir 'x': Permission denied\n", "other"),
         ],
     )
-    async def test_only_a_refused_sign_in_is_recorded(self, monkeypatch, stderr, refused):
+    async def test_every_failure_records_its_cause(self, monkeypatch, stderr, cause):
         from kiro_crew.apps.registry_pipeline import indexes
 
         assert await self._fetch_with_stderr(monkeypatch, stderr) is None
-        assert (
-            indexes._registry_sign_in_refused("ssh://git.example.com/acme/apps", "main") is refused
-        )
+        assert indexes._registry_fetch_failure("ssh://git.example.com/acme/apps", "main") == cause
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("stderr", "label", "refused"),
+        ("stderr", "label", "cause"),
         [
             (
                 "git@git.example.com: Permission denied (publickey).",
                 "git refused the sign-in",
-                True,
+                "auth",
             ),
             (
                 "ssh: Could not resolve hostname git.example.com: x",
                 "host could not be resolved",
-                False,
+                "dns",
             ),
-            ("fatal: something new from git.example.com", "unclassified git failure", False),
+            ("fatal: something new from git.example.com", "unclassified git failure", "other"),
         ],
     )
     async def test_a_credentialed_clone_logs_a_fixed_label_only(
-        self, monkeypatch, caplog, stderr, label, refused
+        self, monkeypatch, caplog, stderr, label, cause
     ):
         """A credentialed remote's git output never reaches the log; a fixed label does."""
         from kiro_crew.apps.registry_pipeline import indexes
@@ -1610,20 +1636,25 @@ class TestRecordedCloneFailure:
             assert await indexes._fetch_external_registry_index(repo, "main") is None
         warning = [r.getMessage() for r in caplog.records if "clone failed" in r.getMessage()]
         assert warning == [f"external registry clone failed: {label}"]
-        assert indexes._registry_sign_in_refused(repo, "main") is refused
+        assert indexes._registry_fetch_failure(repo, "main") == cause
 
     @pytest.mark.asyncio
     async def test_a_plain_clone_failure_logs_one_line(self, monkeypatch, caplog):
-        """The plain clone keeps its single redacted-tail line; recording adds none."""
+        """The plain clone keeps its single redacted-tail line; recording adds none.
+
+        The line names git's exit code: a silent ssh failure leaves only git's
+        generic fatal line in the tail.
+        """
         with caplog.at_level("WARNING"):
             await self._fetch_with_stderr(
                 monkeypatch, b"git@git.example.com: Permission denied (publickey).\n"
             )
         warning = [r.getMessage() for r in caplog.records if "clone failed" in r.getMessage()]
         assert len(warning) == 1
+        assert "(git exit 128)" in warning[0]
 
     @pytest.mark.asyncio
-    async def test_a_later_fetch_clears_the_refused_sign_in(self, monkeypatch):
+    async def test_a_later_fetch_replaces_the_recorded_cause(self, monkeypatch):
         """The record describes the latest fetch only, not any earlier one."""
         from kiro_crew.apps.registry_pipeline import indexes
 
@@ -1631,8 +1662,8 @@ class TestRecordedCloneFailure:
         await self._fetch_with_stderr(
             monkeypatch, b"git@git.example.com: Permission denied (publickey).\n"
         )
-        assert indexes._registry_sign_in_refused(repo, "main") is True
+        assert indexes._registry_fetch_failure(repo, "main") == "auth"
         await self._fetch_with_stderr(
             monkeypatch, b"ssh: Could not resolve hostname git.example.com: x\n"
         )
-        assert indexes._registry_sign_in_refused(repo, "main") is False
+        assert indexes._registry_fetch_failure(repo, "main") == "dns"

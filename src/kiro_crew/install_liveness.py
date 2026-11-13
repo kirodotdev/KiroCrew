@@ -58,6 +58,15 @@ def install_pruned(package_root: Path | None = None) -> bool:
     return not (root / "__init__.py").is_file()
 
 
+def is_pooled_backend() -> bool:
+    """True when the MCP gateway pool spawned this process (its marker is set).
+
+    Such a process answers into the gateway's broker, never to the client
+    directly, so a frame it writes has not yet reached the client.
+    """
+    return os.environ.get(POOLED_BACKEND_ENV) == POOLED_BACKEND_VALUE
+
+
 def respawned_by_pool() -> bool:
     """True when this process is a pooled backend AND exiting gets it replaced.
 
@@ -65,7 +74,7 @@ def respawned_by_pool() -> bool:
     command must still resolve. Absent or unresolvable means no working
     respawn: the caller keeps its transport instead of exiting.
     """
-    if os.environ.get(POOLED_BACKEND_ENV) != POOLED_BACKEND_VALUE:
+    if not is_pooled_backend():
         return False
     command = os.environ.get(POOLED_RESPAWN_COMMAND_ENV, "")
     if not command:

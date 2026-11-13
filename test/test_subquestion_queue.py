@@ -90,6 +90,30 @@ class TestEnqueue:
         ])
         assert [i["text"] for i in added] == ["first", "second"]
 
+    @pytest.mark.parametrize("priority", ["high", None, [0.9], {"v": 1}, 10**400])
+    def test_a_non_numeric_priority_is_admitted_as_zero(self, priority):
+        q = new_queue()
+        added = _no_raise(enqueue, q, [{"text": "odd", "priority": priority}])
+        assert [(i["text"], i["priority"]) for i in added] == [("odd", 0.0)]
+
+    @pytest.mark.parametrize("priority", [float("nan"), "nan", float("inf"), "-inf"])
+    def test_a_non_finite_priority_does_not_take_a_slot(self, priority):
+        q = new_queue()
+        added = enqueue(q, [
+            {"text": "high", "priority": 0.9},
+            {"text": "odd", "priority": priority},
+            {"text": "mid", "priority": 0.5},
+        ], max_admit=2)
+        assert [i["text"] for i in added] == ["high", "mid"]
+
+    def test_a_numeric_string_priority_still_ranks(self):
+        q = new_queue()
+        added = enqueue(q, [
+            {"text": "low", "priority": 0.1},
+            {"text": "text", "priority": "0.8"},
+        ], max_admit=1)
+        assert [(i["text"], i["priority"]) for i in added] == [("text", 0.8)]
+
 
 class TestDequeue:
     def test_top_k_returns_highest_priority_and_removes(self):

@@ -22,11 +22,11 @@ describe('useBottomTerminal viewport clamp', () => {
   const ORIG_H = window.innerHeight
 
   beforeEach(() => {
-    __resetBottomTerminal()
+    act(() => { __resetBottomTerminal() })
     localStorage.clear()
   })
   afterEach(() => {
-    __resetBottomTerminal()
+    act(() => { __resetBottomTerminal() })
     setViewport(ORIG_W, ORIG_H)
   })
 
@@ -69,7 +69,7 @@ describe('useBottomTerminal viewport clamp', () => {
     expect(result.current.height).toBe(Math.round(800 * MAX_VH))
 
     // Cleanup — reset the fresh module's state
-    freshModule.__resetBottomTerminal()
+    act(() => { freshModule.__resetBottomTerminal() })
   })
 
   it('re-clamps when the window is resized', () => {

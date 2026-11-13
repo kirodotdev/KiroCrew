@@ -178,7 +178,10 @@ def _probe_store_blocking(name: str) -> dict[str, Any]:
     if path is None:
         return row
     try:
-        backups = memory_backup.list_backups(path)
+        # Stamped names only, as retention and restore read them: a file such as
+        # ``memory.pre-upgrade.db`` has no taken-at time, so it is neither the
+        # newest backup nor one of the backups the rotation keeps.
+        backups = memory_backup.list_backups(path, stamped_only=True)
     except OSError:
         # An unreadable backups directory costs the backup summary, not the
         # counts: the two answers are independent and one of them is still real.
@@ -239,8 +242,9 @@ def _list_stores_blocking() -> list[dict[str, Any]]:
         # reserved so a new same-named member cannot claim the old memory), but
         # no route can read it: every content request fails the member lookup.
         # Listing it under the dead crew's name gives the picker a row whose
-        # every click is a 503, so the picker omits it; ``kirocrew memory scan``
-        # and ``doctor`` still see the record.
+        # every click is a 503, so the picker omits it. The record stays in
+        # ``memory_stores``, so ``kirocrew memory backups`` still lists it;
+        # ``memory backup`` and ``doctor`` cover living members' stores only.
         owner_id = getattr(record, "owner_member_id", "")
         if getattr(record, "memory_version", 1) == 2 and (
             not isinstance(owner_id, str) or owner_id not in living_ids
@@ -623,7 +627,7 @@ async def api_memory_restore(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    if not backup.is_file():
+    if not await asyncio.to_thread(backup.is_file):
         return web.json_response(
             {"error": "no such backup for this memory store", "code": "backup_not_found"},
             status=404,

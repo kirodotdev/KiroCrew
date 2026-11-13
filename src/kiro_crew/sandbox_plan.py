@@ -110,6 +110,10 @@ class SandboxRequest:
     #: optionally followed by the kind the name reached and the referent's dev and ino.
     mask_occupants: tuple[tuple[str, tuple[int, ...]], ...] = ()
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = ()
+    #: ``(record path, nonce, names)``: where the gateway records the config files it
+    #: published (``config.write_provenance``), so the launcher can tell the gateway's own
+    #: save of one of *names* from a substituted object. Empty: no name is vouched for.
+    published_file_record: tuple[str, str, tuple[str, ...]] | tuple[()] = ()
     #: A directory the launcher enters after every seal and before it execs, so the
     #: agent starts in it through the sealed mount; it must then be read-only and
     #: empty, or the launch fails closed. Empty: the agent starts in the launcher's
@@ -190,16 +194,45 @@ class PlanHost:
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
-    #: Every rename-sensitive ancestor of those targets (Seatbelt only): a path-based
-    #: deny on the package directory does not hold if a parent can be renamed away.
-    install_root_ancestor_guards: tuple[str, ...] = ()
+    #: Every entry resolving a read-only seal (``run``, the kiro agents tree, the crew-home
+    #: ceilings, the install tree) steps on, links included, and the parents of its own
+    #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
+    #: backend only those this uid could rename, since it pins each with a mount.
+    readonly_ancestor_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
+    #: The operator's ``agent.sandbox_readonly_paths``, one probe per configured entry
+    #: (``~`` already expanded). Empty when the key is unset, which plans exactly what
+    #: it planned before the key existed.
+    operator_readonly_probes: tuple[CarveoutProbe, ...] = ()
+    #: The operator's ``agent.sandbox_readonly_exceptions``, probed the same way.
+    operator_exception_probes: tuple[CarveoutProbe, ...] = ()
+    #: Namespace only: for each operator read-only entry, by its canonical spelling, the
+    #: parents this uid could rename. The plan pins those of the entries it ACCEPTS, so
+    #: an entry it refuses pins nothing.
+    operator_parent_pins: tuple[tuple[str, tuple[str, ...]], ...] = ()
     #: The real uid and gid the namespace launcher maps.
     uid: int = 0
     gid: int = 0
     #: Whether the host's ssh accepts ``StrictHostKeyChecking=accept-new``.
     ssh_accept_new: bool = False
+    #: Seatbelt only: regexes (POSIX ERE, matched against the whole path) naming host
+    #: UNIX sockets the agent must not ``connect()`` to. Each is a socket an unconfined
+    #: host process listens on and trusts its caller's uid alone, so a same-uid agent
+    #: reaching it would borrow that process's authority. The gateway's own API socket is
+    #: never one of them: the in-sandbox MCP servers reach the gateway through it.
+    denied_socket_patterns: tuple[str, ...] = ()
+    #: Seatbelt only: the subset of :attr:`denied_socket_patterns` whose directory no
+    #: other rule write-seals (the system temp dir is agent-writable). The profile also
+    #: denies writing and hard-linking these paths, so the agent cannot rename or link
+    #: the socket file to a name the connect deny does not match.
+    sealed_socket_patterns: tuple[str, ...] = ()
+    #: Whether a per-user systemd manager keeps ``/run/user/$UID`` coherent across
+    #: session churn. False steers the launcher's bind-source stand-in root to the
+    #: durable host-wide ``/dev/shm`` ahead of the volatile ``/run/user/$UID``; see
+    #: :func:`namespace_payload`. Default False so a host built from literals, and
+    #: every non-namespace backend, takes the durable order.
+    runtime_dir_durable: bool = False
 
 
 @dataclass(frozen=True)
@@ -209,7 +242,8 @@ class Mask:
     ``origin`` is ``"tier"`` for an entry the tier or the host derived and
     ``"caller"`` for an ``extra_hidden_dirs`` entry. ``windows`` are the private windows
     re-opened inside it, ``window_ancestors`` the directories ``realpath`` must stat to
-    reach them, and ``exposed`` the files carved out of its read deny.
+    reach them, ``exposed`` the files carved out of its read deny, and
+    ``exposed_ancestors`` the directories ``realpath`` must stat to reach those.
     """
 
     path: str
@@ -217,6 +251,7 @@ class Mask:
     windows: tuple[str, ...] = ()
     window_ancestors: tuple[str, ...] = ()
     exposed: tuple[str, ...] = ()
+    exposed_ancestors: tuple[str, ...] = ()
     #: The CALLER explicitly opted this mask in to a read-only seal when it carries no
     #: writable window (``SandboxRequest.seal_hidden_dirs`` seals every caller mask of the
     #: request): a data-loss mask where a silently-discarded write is the bug (a cron
@@ -301,6 +336,7 @@ class NamespaceIdentities:
     required_mask_targets: tuple[str, ...] = ()
     mask_occupants: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = ()
+    published_file_record: tuple[str, str, tuple[str, ...]] | tuple[()] = ()
 
 
 @dataclass(frozen=True)
@@ -320,6 +356,8 @@ class ConfinementPlan:
     masks: tuple[Mask, ...]
     readonly: tuple[str, ...]
     runtime_parents: tuple[str, ...]
+    #: Entries a rename of which would carry a seal away: Seatbelt write-denies each
+    #: one, the namespace launcher binds each over itself (``parent_pins``).
     runtime_ancestor_guards: tuple[str, ...]
     files: tuple[str, ...]
     expose: tuple[tuple[str, str], ...]
@@ -331,6 +369,7 @@ class ConfinementPlan:
     env_scrub_prefixes: tuple[str, ...]
     unreadable_mask_leaves: tuple[str, ...]
     ssh_accept_new: bool
+    runtime_dir_durable: bool
     uid: int
     gid: int
     identities: NamespaceIdentities
@@ -338,6 +377,23 @@ class ConfinementPlan:
     refusals: tuple[Refusal, ...]
     #: :attr:`SandboxRequest.exec_cwd`, carried to the namespace launcher.
     exec_cwd: str = ""
+    #: :attr:`PlanHost.denied_socket_patterns`, which Seatbelt renders as
+    #: ``network-outbound`` denies. Always empty on the namespace plan.
+    denied_socket_patterns: tuple[str, ...] = ()
+    #: :attr:`PlanHost.sealed_socket_patterns`, which Seatbelt renders as
+    #: ``file-write*`` and ``file-link`` denies. Always empty on the namespace plan.
+    sealed_socket_patterns: tuple[str, ...] = ()
+    #: The operator's read-only directories (:func:`operator_readonly_layer`). Both
+    #: renderers apply this layer BEFORE every crew rule, so a crew mask, seal or
+    #: carve-out placed later always wins over it.
+    operator_readonly: tuple[str, ...] = ()
+    #: The operator's write exceptions, each inside one of :attr:`operator_readonly`.
+    operator_writable: tuple[str, ...] = ()
+    #: Seatbelt only: each operator read-only directory and its ancestors, denied as
+    #: literal writes so a rename of a parent cannot move the tree out from under its
+    #: path-based rule. On Linux a bind mount moves with its directory, and the parents
+    #: the agent could rename are pinned through ``runtime_ancestor_guards`` instead.
+    operator_ancestor_guards: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -407,6 +463,67 @@ def hidden_path_contains_visible_path(
         except ValueError:
             continue
     return False
+
+
+#: Host UNIX sockets a Seatbelt-confined agent must not connect to, as whole-path POSIX
+#: EREs. Each listener runs outside the sandbox and trusts its caller's uid alone:
+#:
+#: - the local credential agent's sockets in the system temp dir (``/tmp`` is a link to
+#:   ``/private/tmp`` on macOS, so both spellings match). One of them,
+#:   ``mcs-agent.sock``, is the ssh agent that ``~/.ssh/config`` names as
+#:   ``IdentityAgent``: it stays reachable whenever the spawn forwards the ssh agent
+#:   (:attr:`SandboxRequest.forward_ssh_auth_sock`), since the ``standard`` tier keeps
+#:   ``~/.ssh`` precisely so git-over-SSH works. Every other ``mcs-*.sock`` vends
+#:   credentials or desktop state, not ssh, and is always denied;
+#: - the tunnel sidecar's sockets in the data home's ``run`` dir, one pattern per
+#:   spelling of that dir (:func:`denied_socket_patterns`).
+#:
+#: The gateway's own API socket (``dashboard_socket_path``) is deliberately NOT here: the
+#: in-sandbox MCP servers reach the gateway through it, and a Seatbelt deny surfaces as
+#: EPERM, which ``loopback_urlopen`` does not fall back from, so denying it would break
+#: every Kiro Crew tool call an agent makes.
+MCS_SOCKETS = r"^/(private/)?tmp/mcs-[^/]*\.sock$"
+#: :data:`MCS_SOCKETS` minus ``mcs-agent.sock`` alone. ERE has no lookahead, so the name
+#: part spells "any name but ``agent``" one prefix at a time; an unknown future
+#: ``mcs-*.sock`` is denied rather than admitted.
+MCS_SOCKETS_BUT_SSH_AGENT = (
+    r"^/(private/)?tmp/mcs-([^a/][^/]*|a([^g/][^/]*)?|ag([^e/][^/]*)?"
+    r"|age([^n/][^/]*)?|agen([^t/][^/]*)?|agent[^/]+)?\.sock$"
+)
+_TUNNEL_SIDECAR_SOCKET_LEAF = r"/tunnel-sidecar-[^/]*\.sock$"
+_ERE_SPECIALS = frozenset(".[]()*+?{}|^$\\")
+
+
+def ere_literal(path: str) -> str:
+    """*path* as a POSIX ERE that matches it literally, safe inside a Seatbelt ``#"..."``.
+
+    A double quote or newline cannot appear in that raw string, so each becomes ``.``:
+    the deny then matches a little more than the path, never less.
+    """
+    return "".join("." if c in '"\n' else "\\" + c if c in _ERE_SPECIALS else c for c in path)
+
+
+def credential_agent_socket_patterns(keep_ssh_agent: bool) -> tuple[str, ...]:
+    """The credential agent's socket denies: all of them, or all but the ssh agent.
+
+    These sockets live in the agent-writable temp dir, so the plan also write-seals them
+    (:attr:`PlanHost.sealed_socket_patterns`). The sidecar's need no such seal: its
+    ``run`` dir is already a write-sealed runtime parent.
+    """
+    return (MCS_SOCKETS_BUT_SSH_AGENT if keep_ssh_agent else MCS_SOCKETS,)
+
+
+def denied_socket_patterns(
+    run_parents: tuple[str, ...], *, keep_ssh_agent: bool
+) -> tuple[str, ...]:
+    """The Seatbelt socket denies for a host whose ``run`` dir has *run_parents* spellings.
+
+    The credential agent's patterns, then the sidecar socket under every spelling
+    (lexical and canonical, as the file rules use), since a path rule matches only the
+    spelling it names.
+    """
+    sidecar = (f"^{ere_literal(run)}{_TUNNEL_SIDECAR_SOCKET_LEAF}" for run in run_parents)
+    return tuple(dict.fromkeys((*credential_agent_socket_patterns(keep_ssh_agent), *sidecar)))
 
 
 def is_policy_cache_dir(path: str) -> bool:
@@ -527,7 +644,8 @@ def window_ancestors(target: str, windows: list[str]) -> list[str]:
     """Every directory from masked *target* down to each window's parent.
 
     These are the path components ``realpath`` must ``lstat`` to reach a window, all of
-    them inside the mask. Lexical.
+    them inside the mask. An exposed file is reached the same way, so its entries take
+    this too. Lexical.
     """
     root = target.rstrip("/")
     ancestors: list[str] = []
@@ -556,6 +674,24 @@ CARVEOUT_NOT_A_DIRECTORY = (
 )
 CARVEOUT_REFUSED = "SECURITY: refusing sandbox write carve-out %r: %s"
 
+#: The log records a refused ``agent.sandbox_readonly_paths`` entry becomes.
+OPERATOR_READONLY_NOT_ABSOLUTE = (
+    "SECURITY: ignoring agent.sandbox_readonly_paths entry %r: not an absolute path"
+)
+OPERATOR_READONLY_NOT_A_DIRECTORY = (
+    "SECURITY: ignoring agent.sandbox_readonly_paths entry %r: not an existing directory"
+)
+OPERATOR_READONLY_REFUSED = "SECURITY: ignoring agent.sandbox_readonly_paths entry %r: %s"
+#: The log records a refused ``agent.sandbox_readonly_exceptions`` entry becomes.
+OPERATOR_EXCEPTION_NOT_ABSOLUTE = (
+    "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: not an absolute path"
+)
+OPERATOR_EXCEPTION_NOT_A_DIRECTORY = (
+    "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: not an existing "
+    "real directory"
+)
+OPERATOR_EXCEPTION_REFUSED = "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: %s"
+
 
 def writable_carveouts(
     extra_writable_dirs: tuple[str, ...],
@@ -564,6 +700,13 @@ def writable_carveouts(
     subtree_guards: list[str],
     literal_guards: list[str],
     carveable_parents: list[str],
+    parent_label: str = "carveable runtime parent",
+    strictly_inside: bool = False,
+    messages: tuple[str, str, str] = (
+        CARVEOUT_NOT_ABSOLUTE,
+        CARVEOUT_NOT_A_DIRECTORY,
+        CARVEOUT_REFUSED,
+    ),
 ) -> tuple[list[str], list[Refusal]]:
     """Validate write carve-outs against the sandbox's own seals.
 
@@ -571,7 +714,7 @@ def writable_carveouts(
     child its OWN self-derived directory INSIDE the sealed runtime parent
     (``<data home>/run``) and needs that one directory writable. The uses are:
 
-    * ``run/mcp-tmp/<probe>`` -- the MCP probe's private ``TMPDIR``;
+    * ``run/t/<probe>`` -- the MCP probe's private ``TMPDIR``;
     * the npm resolver's private install prefix (``mcp_gateway.resolve_once``);
     * ``run/decisions/<id>`` -- the local decision runtime's own work dir
       (``decisions.local_runtime.WORK_SUBDIR``), holding the preset's uv environment
@@ -600,7 +743,14 @@ def writable_carveouts(
     LEXICAL and case-sensitive, so this is a backstop for self-derived paths, not a
     boundary for hostile input. *probes* hold the host's ``realpath`` / ``isdir`` answer
     for each absolute candidate. Returns the deduplicated approved spellings.
+
+    :func:`operator_readonly_layer` reuses these checks for the operator's write
+    exceptions: its ``carveable_parents`` are the operator's own read-only directories,
+    *parent_label* and *messages* name the config keys in the refusals, and
+    *strictly_inside* refuses an exception that equals its parent, which would only
+    cancel that read-only entry.
     """
+    not_absolute, not_a_directory, refused = messages
     carveable = [os.path.normpath(path) for path in carveable_parents]
     subtree = [os.path.normpath(path) for path in subtree_guards]
     literals = [os.path.normpath(path) for path in literal_guards]
@@ -609,17 +759,20 @@ def writable_carveouts(
     refusals: list[Refusal] = []
     for raw in extra_writable_dirs:
         if not raw or not os.path.isabs(raw):
-            refusals.append(Refusal("carve-out", CARVEOUT_NOT_ABSOLUTE, (raw,)))
+            refusals.append(Refusal("carve-out", not_absolute, (raw,)))
             continue
         probe = probes[raw]
         spellings = list(dict.fromkeys((probe.lexical, probe.canonical)))
         if not probe.is_dir:
-            refusals.append(Refusal("carve-out", CARVEOUT_NOT_A_DIRECTORY, (raw,)))
+            refusals.append(Refusal("carve-out", not_a_directory, (raw,)))
             continue
         refusal: str | None = None
         for spelling in spellings:
             if not any(path_within(spelling, parent) for parent in carveable):
-                refusal = f"{spelling!r} is outside every carveable runtime parent"
+                refusal = f"{spelling!r} is outside every {parent_label}"
+                break
+            if strictly_inside and spelling in carveable_set:
+                refusal = f"{spelling!r} is itself a read-only entry, not a directory inside one"
                 break
             for guard in subtree + literals:
                 if path_within(guard, spelling):
@@ -634,10 +787,144 @@ def writable_carveouts(
             if refusal:
                 break
         if refusal:
-            refusals.append(Refusal("carve-out", CARVEOUT_REFUSED, (raw, refusal)))
+            refusals.append(Refusal("carve-out", refused, (raw, refusal)))
             continue
         approved.extend(spellings)
     return list(dict.fromkeys(approved)), refusals
+
+
+def stand_in_roots(uid: int) -> list[str]:
+    """The tmpfs roots the namespace launcher may create its mask stand-ins under."""
+    return [user_runtime_root(uid), "/dev/shm"]
+
+
+def path_ancestor_guards(paths: Iterable[str]) -> list[str]:
+    """Each of *paths* and every ancestor of it below the filesystem root, once each."""
+    guards: list[str] = []
+    for item in paths:
+        current = os.path.normpath(item)
+        while os.path.dirname(current) != current:
+            guards.append(current)
+            current = os.path.dirname(current)
+    return list(dict.fromkeys(guards))
+
+
+def operator_readonly_layer(
+    readonly_probes: tuple[CarveoutProbe, ...],
+    exception_probes: tuple[CarveoutProbe, ...],
+    *,
+    crew_subtree_guards: list[str],
+    crew_literal_guards: list[str],
+    protected_roots: list[str],
+    canonical_only: bool,
+) -> tuple[list[str], list[str], list[Refusal]]:
+    """The operator's read-only directories and the write exceptions inside them.
+
+    ``agent.sandbox_readonly_paths`` names directories the agent may read but never
+    write, and ``agent.sandbox_readonly_exceptions`` names directories inside those
+    that stay writable -- e.g. ``/mnt/c`` read-only with ``/mnt/c/Users/<me>/Documents``
+    writable. Both keys live in the operator's ``config.json``, which is itself a
+    READONLY crew leaf, so the agent cannot edit its own boundary. The layer only ever
+    REMOVES write access the agent had before: an exception re-opens nothing but a
+    part of the operator's own read-only directory.
+
+    Crew rules always win. Both renderers apply this layer before every crew mask,
+    seal and carve-out, so a crew rule placed later covers whatever the layer did; the
+    checks here refuse, with a log line, the entries that would conflict anyway:
+
+    * a read-only entry that is not an absolute existing directory, that is ``/``
+      (a whole-filesystem allowlist is a different feature), or that contains a
+      *protected_roots* entry (the namespace launcher's stand-in roots, which every
+      mask is created under);
+    * an exception outside every accepted read-only entry, equal to one, or holding
+      or lying inside a crew guard (:func:`writable_carveouts`). A read-only entry that
+      IS a crew guard opens no exception, because an exception inside it would re-open
+      that guard.
+
+    *canonical_only* is the namespace launcher's view: a bind mount follows the name,
+    so the canonical spelling is the one directory either name reaches. Seatbelt
+    matches paths, so it keeps both spellings. Returns ``(readonly, writable,
+    refusals)``.
+    """
+    readonly: list[str] = []
+    validated: list[str] = []
+    accepted: list[CarveoutProbe] = []
+    refusals: list[Refusal] = []
+    roots = [os.path.normpath(root) for root in protected_roots]
+    for probe in readonly_probes:
+        if not probe.raw or not os.path.isabs(probe.lexical):
+            refusals.append(Refusal("operator", OPERATOR_READONLY_NOT_ABSOLUTE, (probe.raw,)))
+            continue
+        if not probe.is_dir:
+            refusals.append(Refusal("operator", OPERATOR_READONLY_NOT_A_DIRECTORY, (probe.raw,)))
+            continue
+        spellings = list(dict.fromkeys((probe.lexical, probe.canonical)))
+        refusal: str | None = None
+        for spelling in spellings:
+            if spelling == os.sep:
+                refusal = "the whole filesystem cannot be made read-only; name a narrower directory"
+                break
+            held = next((root for root in roots if path_within(root, spelling)), None)
+            if held is not None:
+                refusal = f"it holds {held!r}, where the sandbox places its masks"
+                break
+        if refusal:
+            refusals.append(Refusal("operator", OPERATOR_READONLY_REFUSED, (probe.raw, refusal)))
+            continue
+        readonly.extend([probe.canonical] if canonical_only else spellings)
+        validated.extend(spellings)
+        accepted.append(probe)
+    readonly = list(dict.fromkeys(readonly))
+    guards = {os.path.normpath(path) for path in crew_subtree_guards}
+    carveable = [path for path in dict.fromkeys(validated) if path not in guards]
+    probes = {probe.raw: probe for probe in exception_probes}
+    # An exception reached through a symlink below its read-only entry is refused: the
+    # agent can write the exception's own name, so it can swap the directory for a link
+    # to a read-only sibling, and the next plan would then re-open that sibling. Only
+    # the part BELOW the entry is judged, so an entry under a symlinked root (``/tmp``
+    # on macOS) still accepts the exceptions inside it.
+    linked: list[Refusal] = []
+    for raw, probe in list(probes.items()):
+        holder = next(
+            (
+                entry
+                for entry in accepted
+                if path_within(probe.lexical, entry.lexical) and entry.lexical != probe.lexical
+            ),
+            None,
+        )
+        if holder is None:
+            continue
+        below = os.path.relpath(probe.lexical, holder.lexical)
+        if os.path.normpath(os.path.join(holder.canonical, below)) != probe.canonical:
+            del probes[raw]
+            linked.append(
+                Refusal(
+                    "operator",
+                    OPERATOR_EXCEPTION_REFUSED,
+                    (raw, f"it passes through a symbolic link below {holder.raw!r}"),
+                )
+            )
+    # Validated in both spellings even where only the canonical one is applied, so a
+    # crew guard named through either spelling is caught.
+    approved, exception_refusals = writable_carveouts(
+        tuple(probes),
+        probes,
+        subtree_guards=crew_subtree_guards,
+        literal_guards=crew_literal_guards,
+        carveable_parents=carveable,
+        parent_label="agent.sandbox_readonly_paths entry the sandbox applies",
+        strictly_inside=True,
+        messages=(
+            OPERATOR_EXCEPTION_NOT_ABSOLUTE,
+            OPERATOR_EXCEPTION_NOT_A_DIRECTORY,
+            OPERATOR_EXCEPTION_REFUSED,
+        ),
+    )
+    if canonical_only:
+        kept = set(approved)
+        approved = list(dict.fromkeys(p.canonical for p in probes.values() if p.canonical in kept))
+    return readonly, approved, refusals + linked + exception_refusals
 
 
 def scrub_prefixes(base: list[str], forward_ssh_auth_sock: bool) -> list[str]:
@@ -878,6 +1165,19 @@ def _namespace_plan(
         literal_guards=[fold(os.path.join(home, f)) for f in files],
         carveable_parents=runtime_parents,
     )
+    # The operator's layer, checked against every crew rule this plan emits. The
+    # launcher applies it before them all, so each crew rule lands on top of it.
+    operator_readonly, operator_writable, operator_refusals = operator_readonly_layer(
+        host.operator_readonly_probes,
+        host.operator_exception_probes,
+        crew_subtree_guards=kept
+        + unhidden
+        + list(readonly)
+        + ([os.path.join(home, ".ssh")] if hide_ssh else []),
+        crew_literal_guards=[fold(os.path.join(home, f)) for f in files],
+        protected_roots=stand_in_roots(host.uid),
+        canonical_only=True,
+    )
     expose = [(fold(os.path.join(home, f)), f.split("/")[-1]) for f in expose_files]
     # Caller re-exposures are a COPY, never the inode: strictly weaker than lifting the
     # tree with ``extra_visible_dirs``.
@@ -911,6 +1211,15 @@ def _namespace_plan(
         required_mask_targets=tuple(required),
         mask_occupants=occupants,
         crew_home_aliases=tuple(request.crew_home_aliases),
+        published_file_record=(
+            (
+                request.published_file_record[0],
+                request.published_file_record[1],
+                tuple(dict.fromkeys(fold(n) for n in request.published_file_record[2])),
+            )
+            if request.published_file_record
+            else ()
+        ),
     )
     return ConfinementPlan(
         backend=request.backend,
@@ -919,7 +1228,19 @@ def _namespace_plan(
         masks=masks,
         readonly=tuple(dict.fromkeys(readonly)),
         runtime_parents=tuple(runtime_parents),
-        runtime_ancestor_guards=(),
+        runtime_ancestor_guards=tuple(
+            dict.fromkeys(
+                (
+                    *host.readonly_ancestor_guards,
+                    *(
+                        pin
+                        for entry, pins in host.operator_parent_pins
+                        if entry in operator_readonly
+                        for pin in pins
+                    ),
+                )
+            )
+        ),
         files=tuple(fold(os.path.join(home, f)) for f in files),
         expose=tuple(expose),
         windows=tuple(windows),
@@ -930,12 +1251,15 @@ def _namespace_plan(
         env_scrub_prefixes=tuple(env_prefixes),
         unreadable_mask_leaves=tuple(sorted(host.unreadable_mask_leaves)),
         ssh_accept_new=host.ssh_accept_new,
+        runtime_dir_durable=host.runtime_dir_durable,
         uid=host.uid,
         gid=host.gid,
         identities=identities,
         cancellations=cancellations,
-        refusals=tuple(window_refusals + carveout_refusals),
+        refusals=tuple(window_refusals + carveout_refusals + operator_refusals),
         exec_cwd=request.exec_cwd,
+        operator_readonly=tuple(operator_readonly),
+        operator_writable=tuple(operator_writable),
     )
 
 
@@ -999,11 +1323,13 @@ def _seatbelt_plan(
             )
             continue
         is_crew_secret = target in crew_hidden
+        exposed = sorted(f for f in expose_abs if f.startswith(target + "/"))
         masks.append(
             Mask(
                 path=target,
                 origin="tier",
-                exposed=tuple(f for f in expose_abs if f.startswith(target + "/")),
+                exposed=tuple(exposed),
+                exposed_ancestors=tuple(window_ancestors(target, exposed)) if exposed else (),
                 write_sealed=is_policy_cache_dir(target)
                 or is_voice_runtime_dir(target)
                 or is_crew_secret,
@@ -1031,6 +1357,7 @@ def _seatbelt_plan(
     for target in caller_targets:
         windows = [w for w in caller_windows if w.startswith(target.rstrip("/") + "/")]
         carved = tuple(sorted(f for f in extra_expose_abs if f.startswith(target + sep)))
+        carved_ancestors = tuple(window_ancestors(target, list(carved))) if carved else ()
         if windows:
             masks.append(
                 Mask(
@@ -1039,6 +1366,7 @@ def _seatbelt_plan(
                     windows=tuple(windows),
                     window_ancestors=tuple(window_ancestors(target, windows)),
                     exposed=carved,
+                    exposed_ancestors=carved_ancestors,
                 )
             )
             continue
@@ -1048,12 +1376,14 @@ def _seatbelt_plan(
                 Cancellation(target, _visible_lifts(target, visible, host.cwd), False)
             )
             continue
-        masks.append(Mask(path=target, origin="caller", exposed=carved))
+        masks.append(
+            Mask(path=target, origin="caller", exposed=carved, exposed_ancestors=carved_ancestors)
+        )
     hide_ssh = tier == "strict"
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
+        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.readonly_ancestor_guards))
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
@@ -1064,6 +1394,21 @@ def _seatbelt_plan(
         subtree_guards=masked_targets + readonly + caller_targets + ([ssh_dir] if hide_ssh else []),
         literal_guards=ancestor_guards + home_files,
         carveable_parents=runtime_parents,
+    )
+    # The operator's layer is rendered FIRST and the crew rules after it, so on every
+    # path both match, the later crew rule decides. Its exceptions are still checked
+    # against every crew rule, including the runtime parent's write seal.
+    operator_readonly, operator_writable, operator_refusals = operator_readonly_layer(
+        host.operator_readonly_probes,
+        host.operator_exception_probes,
+        crew_subtree_guards=masked_targets
+        + readonly
+        + caller_targets
+        + runtime_parents
+        + ([ssh_dir] if hide_ssh else []),
+        crew_literal_guards=ancestor_guards + home_files,
+        protected_roots=[],
+        canonical_only=False,
     )
     return ConfinementPlan(
         backend=request.backend,
@@ -1083,11 +1428,19 @@ def _seatbelt_plan(
         env_scrub_prefixes=(),
         unreadable_mask_leaves=(),
         ssh_accept_new=False,
+        runtime_dir_durable=False,
         uid=host.uid,
         gid=host.gid,
         identities=NamespaceIdentities(),
         cancellations=tuple(cancellations),
-        refusals=tuple(window_refusals + caller_window_refusals + carveout_refusals),
+        refusals=tuple(
+            window_refusals + caller_window_refusals + carveout_refusals + operator_refusals
+        ),
+        denied_socket_patterns=host.denied_socket_patterns,
+        sealed_socket_patterns=host.sealed_socket_patterns,
+        operator_readonly=tuple(operator_readonly),
+        operator_writable=tuple(operator_writable),
+        operator_ancestor_guards=tuple(path_ancestor_guards(operator_readonly)),
     )
 
 
@@ -1100,6 +1453,17 @@ _PLANNERS: Mapping[
 }
 
 
+def user_runtime_root(uid: int) -> str:
+    """The per-user runtime dir the launcher may stage bind sources on.
+
+    One spelling for both readers: :func:`namespace_payload` lists it as a stand-in
+    root, and the live adapter probes the SAME path for a per-user manager
+    (``sandbox_argv._runtime_dir_is_durable``), so the two can never name different
+    directories.
+    """
+    return f"/run/user/{uid}"
+
+
 def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
     """The data the namespace launcher program reads, as JSON-safe values.
 
@@ -1109,7 +1473,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
     path appears in the program exactly as ``json.dumps`` writes it.
     """
     ids = plan.identities
-    return {
+    payload: dict[str, Any] = {
         "real_uid": plan.uid,
         "real_gid": plan.gid,
         "sensitive_dirs": list(plan.sensitive_dirs),
@@ -1118,6 +1482,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "private_dirs": list(plan.windows),
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
         "readonly_dirs": list(plan.readonly),
+        "parent_pins": list(plan.runtime_ancestor_guards),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),
         "fail_closed_file_masks": [list(entry) for entry in ids.fail_closed_file_masks],
@@ -1135,6 +1500,15 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
             for name, ident in ids.mask_occupants.items()
         },
         "crew_home_aliases": [list(entry) for entry in ids.crew_home_aliases],
+        "published_file_record": (
+            {
+                "record": ids.published_file_record[0],
+                "nonce": ids.published_file_record[1],
+                "names": list(ids.published_file_record[2]),
+            }
+            if ids.published_file_record
+            else {}
+        ),
         "expose_files": [list(pair) for pair in plan.expose],
         "env_prefixes": list(plan.env_scrub_prefixes),
         "ssh_dir": plan.ssh_dir,
@@ -1145,5 +1519,30 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "strict_host_key_opt": (
             " -o StrictHostKeyChecking=accept-new" if plan.ssh_accept_new else ""
         ),
-        "stand_in_roots": [f"/run/user/{plan.uid}", "/dev/shm"],
+        # Both roots are cross-fs tmpfs, which is what keeps a bind source from
+        # corrupting its target's host directory entry on namespace teardown (see
+        # ``pick_stand_in_root``). They differ in DURABILITY: ``/run/user/$UID`` is the
+        # login session's runtime dir, which only a per-user systemd manager keeps
+        # coherent -- without one, logind tears it down and remakes it across session
+        # churn, and a bind source pinned inside it when that happens leaves the host
+        # leaf (``.env``, a credential home, ``live_target.json``) a bind of a
+        # now-empty inode, i.e. truncated. ``/dev/shm`` is a host-wide tmpfs no user
+        # manager owns, so it survives that churn. So the volatile root leads only when
+        # a manager is keeping it coherent; otherwise the durable one does. The
+        # launcher still verifies cross-fs and still moves to the next candidate if the
+        # chosen root is torn out mid-create -- this only decides which it reaches for
+        # first. ``/run/user/$UID`` stays in the list either way: where it IS coherent
+        # it is the better pick (login-scoped, auto-reclaimed at logout).
+        "stand_in_roots": (
+            [user_runtime_root(plan.uid), "/dev/shm"]
+            if plan.runtime_dir_durable
+            else ["/dev/shm", user_runtime_root(plan.uid)]
+        ),
     }
+    # Only when the operator configured the layer, so an unset key renders the launcher
+    # it rendered before the layer existed, byte for byte.
+    if plan.operator_readonly:
+        payload["operator_readonly_dirs"] = list(plan.operator_readonly)
+    if plan.operator_writable:
+        payload["operator_writable_dirs"] = list(plan.operator_writable)
+    return payload

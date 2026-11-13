@@ -1,8 +1,10 @@
 import { memo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { ChevronLeft, ChevronRight, ArrowUp, Loader2 } from 'lucide-react'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
+import { reportUiControlClick } from '../lib/uiControlTelemetry'
 import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
@@ -331,7 +333,8 @@ function ChipError({ error }: { error: string }) {
  * name is never truncated regardless of this.
  */
 function useInstantTip(option: string, hint: string) {
-  const { tip, tipHandlers, tipId } = useSharedInstantTip()
+  // Below, so it never covers an approval card's buttons above the chips.
+  const { tip, tipHandlers, tipId } = useSharedInstantTip({ placement: 'below' })
   const tipNode = (
     <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] whitespace-pre-wrap break-words">
       <div className="text-text text-[12px]">{option}</div>
@@ -468,7 +471,7 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
           // `undefined` (i.e. "no key supplied") keeps this path's behaviour
           // exactly as it was — see `sourceKeyAtClick` in the debounced handler,
           // which is where the race actually lives.
-          onClick={(e) => { if (pending || dimmed) return; onSelect(option, e) }}
+          onClick={(e) => { if (pending || dimmed) return; reportUiControlClick('option_chip'); onSelect(option, e) }}
           className={`${className} ${entrance.className}${stateClass}`}
           style={entrance.style}
           {...tipHandlers}
@@ -507,6 +510,7 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
     timerRef.current = setTimeout(() => {
       timerRef.current = null
       armedSourceKeyRef.current = undefined
+      reportUiControlClick('option_chip')
       onSelect(option, synth, sourceKeyAtClick)
     }, FOLLOWUP_CHIP_DEBOUNCE_MS)
   }
@@ -518,6 +522,7 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
     armedSourceKeyRef.current = undefined
     // Pass option text directly to send() so it doesn't race with setInput.
     // If already picked, send() will use the current input (which already contains o).
+    reportUiControlClick('option_chip')
     onSend?.(isPicked ? undefined : option, clickedKey)
   }
 
@@ -609,11 +614,14 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
   }, [])
   const overflowRoRef = useRef<ResizeObserver | null>(null)
 
-  // The hook owns the node's edge measurement; this keeps a plain handle to the
-  // same node for the row's own scroll and wheel behaviour.
+  const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+
+  // The hooks own the node's edge measurement and wheel scrolling; this keeps a
+  // plain handle to the same node for the row's own scroll.
   const setScroller = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
     attachEdges(node)
+    attachWheel(node)
     overflowRoRef.current?.disconnect()
     overflowRoRef.current = null
     if (!node) return
@@ -622,7 +630,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
       overflowRoRef.current = new ResizeObserver(measureOverflow)
       overflowRoRef.current.observe(node)
     }
-  }, [attachEdges, measureOverflow])
+  }, [attachEdges, attachWheel, measureOverflow])
 
   // The left arrow's footprint outlives the arrow by LEFT_ARROW_CLICK_SHIELD_MS
   // (see that constant). Set on the true -> false edge only, so a row that
@@ -644,25 +652,6 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
   // Mounting or dropping the gutters changes the content width without
   // changing the row's box, so no observer reports it: re-read the edges.
   useLayoutEffect(() => { remeasure() }, [overflows, remeasure])
-
-  // A mount effect is enough here: this scroller renders unconditionally with
-  // ScrollLayout, so its node exists by the time effects run — unlike the tab
-  // strip, which appears only below a breakpoint and is why the hook binds from
-  // a ref callback.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    // Vertical wheel scrolls the row horizontally, but only while the row
-    // actually overflows — otherwise the page loses its own scroll.
-    const onWheel = (e: WheelEvent) => {
-      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
-      if (el.scrollWidth <= el.clientWidth) return
-      e.preventDefault()
-      el.scrollLeft += e.deltaY
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [])
 
   // Chips changing keeps the row's own box, so no observer reports it.
   useEffect(() => { remeasure(); measureOverflow() }, [options, remeasure, measureOverflow])

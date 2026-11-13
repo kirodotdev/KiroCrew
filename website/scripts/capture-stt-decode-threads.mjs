@@ -90,8 +90,7 @@ async function openFineTuning(config = {}) {
     if (path === '/api/voice/config') { await json(route, VOICE_CONFIG_FIXTURE); return true }
     return false
   }
-  await stubDashboardApi(page, { extra })
-  await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
+  await stubDashboardApi(page, { extra, localStorageEntries: { 'mc-lang': 'en' } })
   await page.goto(`${base}/settings?tab=voice`, { waitUntil: 'domcontentloaded' })
   const toggle = page.getByRole('button', { name: /fine-tuning/i })
   await toggle.waitFor({ timeout: 15_000 })

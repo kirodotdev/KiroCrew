@@ -27,7 +27,8 @@ import RunProgress from './RunProgress'
 import PostCommentsButton from './PostCommentsButton'
 import RunStatusPill from './RunStatusPill'
 import ShimmerLine from './ShimmerLine'
-import PullRequestPanel from '../../../components/PullRequestPanel'
+// Through the App SDK, the surface an app outside this repository has too.
+import { PullRequestPanel } from '../../../app-sdk'
 
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'

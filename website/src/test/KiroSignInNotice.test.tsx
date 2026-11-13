@@ -10,6 +10,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { api, type KasLoginStatus } from '../api/client'
+import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 const navigate = vi.fn()
 vi.mock('react-router-dom', async importOriginal => ({
@@ -201,6 +202,21 @@ describe('KiroSignInNotice', () => {
     expect(failure()).not.toBeInTheDocument()
   })
 
+  it('leaves a status read that failed while the gateway was down to the offline state (#32966)', async () => {
+    backend('kas')
+    kasLoginStatus.mockRejectedValue(new Error('Failed to fetch'))
+    setGatewayConnected(false)
+    try {
+      renderWithProviders(<KiroSignInNotice />)
+      await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
+      await settle()
+      expect(failure()).not.toBeInTheDocument()
+      expect(notice()).not.toBeInTheDocument()
+    } finally {
+      __resetGatewayConnectedForTests()
+    }
+  })
+
   it('says a backend-setting read that failed before any good read could not be read, with no sign-in claim', async () => {
     kirocrewConfig.mockRejectedValue(new Error('config read failed'))
     kasLoginStatus.mockResolvedValue(EXPIRED)
@@ -246,7 +262,7 @@ describe('KiroSignInNotice', () => {
   })
 
   it.each([
-    ['kiro-cli', ''],
+    ['kiro-cli', 'kiro'],
     ['Claude', 'claude'],
   ])('shows nothing for a backend-setting read that fails after one named %s', async (_name, id) => {
     backend(id)
@@ -384,7 +400,7 @@ describe('KiroSignInNotice', () => {
   })
 
   it.each([
-    ['kiro-cli', ''],
+    ['kiro-cli', 'kiro'],
     ['Claude', 'claude'],
   ])('never reads the sign-in on the %s backend, where it concerns no agent', async (_name, id) => {
     backend(id)
@@ -396,6 +412,40 @@ describe('KiroSignInNotice', () => {
     expect(kasLoginStatus).not.toHaveBeenCalled()
     expect(notice()).not.toBeInTheDocument()
     expect(failure()).not.toBeInTheDocument()
+  })
+
+  it.each(['kiro', 'claude'])('shows a lapsed sign-in on the %s backend when its Bots run on KAS, naming the Bots', async id => {
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: id }, kas_in_use: true } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
+    kasLoginStatus.mockResolvedValue(EXPIRED)
+    renderWithProviders(<KiroSignInNotice />)
+    const el = await findNotice()
+    expect(el).toHaveTextContent('Bots cannot run until you sign in again')
+    expect(el).not.toHaveTextContent('Agents cannot run')
+    // The main agent runs on another credential, so its hand-off still works.
+    expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+  })
+
+  it.each([
+    [REFUSED, 'Bots will stop when this sign-in expires'],
+    [REFUSED_EXPIRED, 'Bots cannot run until you sign in again. This sign-in has already expired.'],
+  ])('names the Bots in a refused renewal where only Bots run on KAS', async (status, text) => {
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' }, kas_in_use: true } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
+    kasLoginStatus.mockResolvedValue(status)
+    renderWithProviders(<KiroSignInNotice />)
+    const el = await findRefused()
+    expect(el).toHaveTextContent(text)
+    expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('never reads the sign-in on a KAS-named backend the gateway says nothing runs on', async () => {
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' }, kas_in_use: false } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
+    kasLoginStatus.mockResolvedValue(EXPIRED)
+    renderWithProviders(<KiroSignInNotice />)
+    await waitFor(() => expect(kirocrewConfig).toHaveBeenCalled(), chain())
+    await settle()
+    expect(kasLoginStatus).not.toHaveBeenCalled()
+    expect(notice()).not.toBeInTheDocument()
   })
 
   it('clears as soon as a new sign-in lands on the shared status entry', async () => {

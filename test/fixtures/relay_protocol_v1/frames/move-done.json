@@ -1,0 +1,57 @@
+{
+  "fixture": "frames/move-done",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.5",
+  "status": "plan",
+  "summary": "Sent on the old host connection once a move has taken effect: the relay relays no new request or WebSocket on it. It follows every earlier frame on the same socket, so a Crew that has it has every request that will ever arrive there.",
+  "provisional": [],
+  "planPosition": [
+    "The frame, its negotiation as the move-done feature and the Crew's 5 second fallback are this contract's, added on 11/02 to close the race where a Crew closed the old connection with a request still on the wire."
+  ],
+  "frame": "move-done",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"move-done\"."
+    },
+    "lastId": {
+      "type": "integer",
+      "required": false,
+      "notes": "The stream id of the last request or ws-upgrade the relay relayed on this connection. Absent when there was none. For diagnostics only: a Crew must not depend on it."
+    }
+  },
+  "valid": [
+    {
+      "name": "after requests on the old connection",
+      "message": {
+        "type": "move-done",
+        "lastId": 41
+      }
+    },
+    {
+      "name": "no request was ever relayed on the old connection",
+      "message": {
+        "type": "move-done"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "lastId not an integer",
+      "message": {
+        "type": "move-done",
+        "lastId": "41"
+      },
+      "expect": "the Crew answers error invalid_message and keeps the fallback timeout"
+    }
+  ],
+  "timing": "Sent only on a connection whose ready listed move-done. Frames for streams opened before it, request-chunk, request-end, request-cancel, flow-credit, and ws-frame, ws-flow and ws-close on viewer WebSockets already open, still flow after it.",
+  "crewDoes": "Keep answering everything that arrived on the old connection. Close it with 1000 once move-done has arrived and every stream opened before it has finished. Without move-done 5 seconds after the new connection's ready, close it with 1000 once the HTTP requests it has received are done."
+}

@@ -330,6 +330,8 @@ def test_guard_reddens_on_the_submodule_attribute_form(tmp_path) -> None:
         ("import asyncio\n_L = asyncio.locks.Lock()\n", "Lock"),
         ("import asyncio\n_Q = asyncio.queues.Queue()\n", "Queue"),
         ("import asyncio as aio\n_L = aio.locks.Lock()\n", "Lock"),
+        ("import asyncio.locks\n_L = asyncio.locks.Lock()\n", "Lock"),
+        ("import asyncio.queues as aq\n_Q = aq.Queue()\n", "Queue"),
     ):
         planted = tmp_path / f"planted_{primitive}_{len(src)}.py"
         planted.write_text(src, encoding="utf-8")

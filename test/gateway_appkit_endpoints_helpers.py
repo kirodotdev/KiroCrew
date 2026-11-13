@@ -72,7 +72,6 @@ def _make_state(tmp_path: Path) -> DashboardState:
     state._slack_client = None
     state._owner_id = ""
     state._notification_log = []
-    state._unread_count = 0
     state._slots = {}
     state._slack_to_slot = {}
     state._slot_counter = 0

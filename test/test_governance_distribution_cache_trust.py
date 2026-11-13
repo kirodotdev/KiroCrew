@@ -643,8 +643,7 @@ class TestAnExposedCacheIsStillReadOnly:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's in-process ssh probe, moved verbatim; tracked for a de-flake pass
-    def _pinned_ssh_probe(self, monkeypatch):
+    def _pinned_ssh_probe(self, _floor_monkeypatch):
         """Answer the launcher's ``ssh -V`` probe in-process.
 
         A namespace plan consults ``_ssh_supports_accept_new`` for the
@@ -655,7 +654,7 @@ class TestAnExposedCacheIsStillReadOnly:
         """
         from kiro_crew import sandbox
 
-        monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+        _floor_monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
     @staticmethod
     def _cache_path():

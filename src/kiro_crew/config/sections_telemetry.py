@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew.config.fields import _meta
@@ -81,7 +82,93 @@ class TelemetryConfig:
             "http://localhost:4318/v1/metrics). EMPTY = no network egress "
             "(default). When set, aggregated metrics are ALSO pushed to this "
             "collector in addition to the local JSONL sink; requires the "
-            "OTLP exporter from the otlp package extra to be installed.",
+            "OTLP exporter from the otlp package extra to be installed. Kept "
+            "for compatibility: when set it is the first entry of the "
+            "OTLP Endpoints list below.",
+            sensitive=True,
+        ),
+    )
+    otlp_endpoints: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "OTLP Endpoints",
+            "Opt-in list of OpenTelemetry OTLP/HTTP metrics collectors, each its "
+            "own destination, sent to IN ADDITION to the local JSONL sink and to "
+            "OTLP Endpoint above. EMPTY = no network egress (default). Each entry "
+            "is {endpoint, name, enabled, headers_env, temporality, allow, "
+            "point_attributes, resource_allow}: endpoint is an http(s) URL; "
+            "headers_env maps a header name to an environment variable that holds "
+            "its value, so no secret is stored here (there is no key for a literal "
+            "header value, and an entry with one is skipped). An entry sends only "
+            "those headers: the OTEL_EXPORTER_OTLP_HEADERS variables apply to "
+            "OTLP Endpoint above, not to these entries. temporality "
+            "is '' (core default), 'cumulative' or 'delta'; allow is a list of "
+            "metric names or the preset 'PRODUCT_METRICS', and without it the "
+            "collector gets every metric; point_attributes adds fixed labels "
+            "from a reviewed key set (ClientType); resource_allow keeps only the "
+            "named resource keys. Set enabled to false to turn an entry off. "
+            "Every entry obeys the 'enabled' switch above and the "
+            "capabilities.telemetry otlp_hosts policy. A malformed entry is "
+            "skipped with a warning. See docs/guides/telemetry-otlp-export.md.",
+            sensitive=True,
+        ),
+    )
+    traces_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Traces Enabled",
+            "Record OpenTelemetry traces of agent turns: one trace per turn, "
+            "with the model, credits, tokens where reported, and one span per "
+            "tool call. Off by default, and off loads nothing. When on, spans "
+            "go to a local JSONL sink under ~/.kiro/crew/traces, pruned by the "
+            "Retention and Max Total Size settings above, which the traces "
+            "directory gets as its own budget; they leave the host only when "
+            "Traces OTLP Endpoint below (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / "
+            "OTEL_EXPORTER_OTLP_ENDPOINT) names a collector. Never records prompt "
+            "or reply text, tool arguments or output, file paths, or MCP server "
+            "and tool names. Independent of the metrics 'enabled' switch.",
+        ),
+    )
+    traces_otlp_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Traces OTLP Endpoint",
+            "Opt-in OTLP/HTTP traces URL, the full path included (e.g. "
+            "https://cloud.langfuse.com/api/public/otel/v1/traces or "
+            "https://xray.us-east-1.amazonaws.com/v1/traces). EMPTY = spans stay "
+            "on this host (default). Read only while Traces Enabled is on; then "
+            "it wins over the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and "
+            "OTEL_EXPORTER_OTLP_ENDPOINT variables. Must be https:// unless the "
+            "host is loopback, and carries no user:password or query. Obeys the "
+            "capabilities.telemetry otlp_hosts policy, and an LTS build "
+            "ignores it. Requires the otlp package extra.",
+            sensitive=True,
+        ),
+    )
+    traces_otlp_headers_secret: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Traces OTLP Headers (vault)",
+            "Header name -> the name of a Settings -> Secrets entry holding that "
+            'header\'s whole value, e.g. {"Authorization": "LANGFUSE_OTLP_AUTH"} '
+            "where the entry holds 'Basic <base64 public:secret>', or an X-Ray "
+            "API key as 'Bearer <key>'. Read when the exporter is built; no value "
+            "is stored here or logged. An entry that is missing, or a value that "
+            "is not an entry name, turns export off. Sent to Traces OTLP Endpoint "
+            "only, never to an endpoint from the environment.",
+            # Masked wherever config values are shown or logged: a credential
+            # pasted here by mistake must not reach a load warning.
+            sensitive=True,
+        ),
+    )
+    traces_otlp_headers_env: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Traces OTLP Headers (environment)",
+            "Header name -> the environment variable holding its value, as "
+            "headers_env does for a metrics destination. Read when the exporter "
+            "is built, never logged; an unset variable turns export off. Sent to "
+            "Traces OTLP Endpoint only.",
             sensitive=True,
         ),
     )
@@ -193,6 +280,20 @@ class WakaTimeConfig:
             "yet. Incognito and temporary sessions never send one: they keep "
             "no record of the chat, and a heartbeat is an external record of "
             "it.",
+            tags=["wakatime"],
+        ),
+    )
+    oauth_client_id: str = field(
+        default="",
+        metadata=_meta(
+            "OAuth Client ID",
+            "WakaTime OAuth app client ID, from https://wakatime.com/apps. "
+            "Required to read stats, summaries, and durations after WakaTime "
+            "makes API keys write-only on 1 November 2026. The matching client "
+            "secret and the user's access and refresh tokens are stored in the "
+            "secrets vault, not here. Empty keeps the integration on API-key "
+            "auth, which still works before the cutoff and for self-hosted "
+            "backends.",
             tags=["wakatime"],
         ),
     )

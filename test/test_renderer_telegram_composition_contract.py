@@ -16,23 +16,37 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
-import logging
-import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 from kiro_crew.messaging import display_safety
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.telegram import renderer as FACADE_MODULE
 
 FACADE = "kiro_crew.telegram.renderer"
 STEM = "renderer"
 FACADE_PATH = Path(FACADE_MODULE.__file__).resolve()
 TELEGRAM_DIR = FACADE_PATH.parent
+
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="renderer_telegram_composition_contract")
+
+SHARED_FACADE_CHECKS = (
+    "the_class_body_scan_can_fail",
+    "the_facade_installs_its_mirror_when_run_as_a_script",
+    "every_owner_logs_under_the_facades_name",
+    "a_moved_member_is_its_owners_function",
+    "every_owner_function_of_self_is_bound_on_the_class",
+    "no_bound_function_needs_the_class_body",
+    "each_guarded_construct_stays_in_the_facade",
+    "the_owners_are_every_sibling_module_in_layer_order",
+    "an_owner_imports_only_owners_below_it_and_never_its_facade",
+    "the_class_keeps_every_base_member_and_gains_none",
+    "every_base_member_keeps_its_kind_and_signature",
+)
 TEST_DIR = Path(__file__).resolve().parent
 CLS = FACADE_MODULE.TelegramRenderer
 
@@ -217,7 +231,7 @@ def _runtime_imports(source: str) -> set[str]:
     return loaded
 
 
-def _describe(member: Any) -> tuple[str, str]:
+def _describe(member: Any, cls: type) -> tuple[str, str]:
     """A class member's kind and ``inspect`` signature, less the owner's ``self`` annotation."""
     if isinstance(member, property):
         kind, fn = "property", member.fget
@@ -228,7 +242,7 @@ def _describe(member: Any) -> tuple[str, str]:
         fn = member
     else:
         return "attribute", repr(member)
-    signature = str(inspect.signature(fn)).replace(f"self: '{CLS.__name__}'", "self", 1)
+    signature = str(inspect.signature(fn)).replace(f"self: '{cls.__name__}'", "self", 1)
     return kind, signature
 
 
@@ -257,94 +271,7 @@ def _class_body_reads(source: str) -> list[str]:
 # ── the owners ───────────────────────────────────────────────────────────────────
 
 
-def test_the_owners_are_every_sibling_module_in_layer_order() -> None:
-    on_disk = {path.stem for path in TELEGRAM_DIR.glob(f"{STEM}_*.py")}
-    assert on_disk == set(OWNERS)
-    assert FACADE_MODULE._OWNERS == tuple(f"kiro_crew.telegram.{stem}" for stem in OWNERS)
-
-
-def test_an_owner_imports_only_owners_below_it_and_never_its_facade() -> None:
-    for index, stem in enumerate(OWNERS):
-        loaded = _runtime_imports(_source(stem))
-        assert FACADE not in loaded, stem
-        siblings = {
-            name.rsplit(".", 1)[-1]
-            for name in loaded
-            if name.startswith(f"kiro_crew.telegram.{STEM}_") and name.count(".") == 2
-        }
-        assert siblings <= set(OWNERS[:index]), stem
-
-
-def test_every_owner_logs_under_the_facades_name() -> None:
-    assert FACADE_MODULE.logger is logging.getLogger(FACADE)
-    for stem in OWNERS:
-        logger = vars(_owner(stem)).get("logger")
-        if logger is not None:
-            assert logger is logging.getLogger(FACADE), stem
-
-
-def test_the_facade_installs_its_mirror_when_run_as_a_script(tmp_path: Path) -> None:
-    """Under ``python -m`` the facade is ``__main__``: one logger by literal name keeps
-    the family to one object per name, which the mirror's install requires."""
-    result = subprocess.run(
-        [sys.executable, "-m", FACADE],
-        capture_output=True,
-        cwd=tmp_path,
-        env=dict(os.environ),
-        timeout=120,
-        **UTF8_TEXT,
-    )
-    assert result.returncode == 0, result.stderr
-
-
 # ── the class surface ────────────────────────────────────────────────────────────
-
-
-def test_the_class_keeps_every_base_member_and_gains_none() -> None:
-    members = {
-        n for n in vars(CLS) if (not n.startswith("__") or n == "__init__") and n != "_abc_impl"
-    }
-    assert members == set(BASE_MEMBERS)
-
-
-def test_every_base_member_keeps_its_kind_and_signature() -> None:
-    members = vars(CLS)
-    for name, described in BASE_MEMBERS.items():
-        assert _describe(members[name]) == described, name
-
-
-def test_a_moved_member_is_its_owners_function() -> None:
-    members = vars(CLS)
-    for stem, names in MOVED_MEMBERS.items():
-        owner = _owner(stem)
-        for name in names:
-            assert members[name] is getattr(owner, name), f"{stem}.{name}"
-            assert members[name].__module__ == owner.__name__, f"{stem}.{name}"
-            assert members[name].__qualname__ == name, f"{stem}.{name}"
-
-
-def test_every_owner_function_of_self_is_bound_on_the_class() -> None:
-    bound = {name for names in MOVED_MEMBERS.values() for name in names}
-    for stem in OWNERS:
-        owner = _owner(stem)
-        for name, value in vars(owner).items():
-            if not inspect.isfunction(value) or value.__module__ != owner.__name__:
-                continue
-            if list(inspect.signature(value).parameters)[:1] == ["self"]:
-                assert name in bound and vars(CLS)[name] is value, f"{stem}.{name}"
-
-
-def test_no_bound_function_needs_the_class_body() -> None:
-    """A function bound into the class from an owner was compiled outside it: it has no
-    ``__class__`` cell, so a zero-argument ``super()`` or a ``__class__`` read raises, and
-    a ``self.__name`` is never mangled. So no owner spells one; a method that needs one
-    stays in the class body."""
-    assert {stem: hits for stem in OWNERS if (hits := _class_body_reads(_source(stem)))} == {}
-
-
-def test_the_class_body_scan_can_fail() -> None:
-    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
-    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]
 
 
 def _top_level_names(tree: ast.Module) -> set[str]:
@@ -357,23 +284,6 @@ def _top_level_names(tree: ast.Module) -> set[str]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
     return names
-
-
-def test_each_guarded_construct_stays_in_the_facade() -> None:
-    """The constructs ``FACADE_PINNED`` names are defined in the facade's own file."""
-    tree = ast.parse(FACADE_PATH.read_text(encoding="utf-8"))
-    cls_node = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == CLS.__name__
-    )
-    members = {
-        node.name
-        for node in cls_node.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert sorted(FACADE_PINNED - (_top_level_names(tree) | members)) == []
-    for stem in OWNERS:
-        owned = _top_level_names(ast.parse(_source(stem)))
-        assert sorted(FACADE_PINNED & owned) == [], stem
 
 
 def test_the_decider_moved_whole_and_keeps_its_owner_module() -> None:

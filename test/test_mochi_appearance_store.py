@@ -189,10 +189,10 @@ class TestOverwrite:
                 raise OSError("No space left on device")
             return real_write_bytes(self, data)
 
-        monkeypatch.setattr(Path, "write_bytes", _explode)
-        with pytest.raises(OSError):
-            save_sprite_pack(tmp_path, _payload(overwriteId=pack_id, name="Replacement"))
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(Path, "write_bytes", _explode)
+            with pytest.raises(OSError):
+                save_sprite_pack(tmp_path, _payload(overwriteId=pack_id, name="Replacement"))
 
         # Old pack still there, unchanged, and no staging debris left behind.
         assert sorted(p.name for p in pack.iterdir()) == before
@@ -226,10 +226,10 @@ class TestStagedOverwriteAcrossEveryWriter:
                 raise zipfile.BadZipFile("CRC failed")
             return real_read(self, name)
 
-        monkeypatch.setattr(zipfile.ZipFile, "read", _boom)
-        with pytest.raises(Exception):
-            import_bundle(tmp_path, blob)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(zipfile.ZipFile, "read", _boom)
+            with pytest.raises(Exception):
+                import_bundle(tmp_path, blob)
 
         assert sorted(p.name for p in pack.iterdir()) == before
         detail = get_pack_detail(tmp_path, pack_id)
@@ -255,10 +255,10 @@ class TestStagedOverwriteAcrossEveryWriter:
                 raise OSError("No space left on device")
             return real(path, content, **kw)
 
-        monkeypatch.setattr(store, "atomic_write", _explode)
-        with pytest.raises(OSError):
-            save_pack(tmp_path, {**meta, "name": "Replacement"}, {"idle": "<svg>b</svg>"})
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(store, "atomic_write", _explode)
+            with pytest.raises(OSError):
+                save_pack(tmp_path, {**meta, "name": "Replacement"}, {"idle": "<svg>b</svg>"})
 
         assert sorted(p.name for p in pack.iterdir()) == before
         detail = get_pack_detail(tmp_path, "edit-me")
@@ -306,7 +306,7 @@ class TestListing:
 class TestPathConfinement:
     """A pack id and a filename both come from the client."""
 
-    @pytest.mark.parametrize("bad", ["../escape", "a/b", "", ".hidden", "x" * 100])
+    @pytest.mark.parametrize("bad", ["../escape", "a/b", "", ".hidden", "x" * 100, "abc\n"])
     def test_unsafe_pack_ids_are_rejected(self, tmp_path: Path, bad: str) -> None:
         with pytest.raises(PackError):
             get_pack_detail(tmp_path, bad)
@@ -316,6 +316,18 @@ class TestPathConfinement:
         pack_id = save_sprite_pack(tmp_path, _payload())
         with pytest.raises(PackError):
             read_pack_file(tmp_path, pack_id, bad)
+
+    @pytest.mark.parametrize("field", ["overwriteId", "slot"])
+    def test_a_trailing_newline_never_reaches_a_directory_or_file_name(
+        self, tmp_path: Path, field: str
+    ) -> None:
+        if field == "overwriteId":
+            payload = _payload(overwriteId="abc\n")
+        else:
+            payload = _payload(assignments={"idle": PNG, "happy\n": PNG})
+        with pytest.raises(PackError):
+            save_sprite_pack(tmp_path, payload)
+        assert not [p for p in tmp_path.rglob("*") if "\n" in p.name]
 
     def test_a_legitimate_file_reads_back(self, tmp_path: Path) -> None:
         pack_id = save_sprite_pack(tmp_path, _payload())

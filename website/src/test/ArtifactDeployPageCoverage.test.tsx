@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { useLocation } from 'react-router-dom'
 import ArtifactDeployPage from '../pages/ArtifactDeployPage'
 import { renderWithProviders } from './helpers'
@@ -34,10 +34,11 @@ interface FetchCfg {
   preview?: { status: number; body: Json }
   /** answer for the SECOND (confirm: true) call */
   commit?: { status: number; body: Json }
-  confirmPending?: { status: number; body: Json }
+  /** a string body is sent as raw text, the way a proxy's error page arrives */
+  confirmPending?: { status: number; body: Json | string }
   /** answer for POST /api/deploy/deploy (the direct-deploy preview/confirm) */
   deploy?: { status: number; body: Json }
-  dismissPending?: { status: number; body: Json }
+  dismissPending?: { status: number; body: Json | string }
 }
 
 interface Call { url: string; method: string; body: Json | null }
@@ -57,12 +58,13 @@ function installFetch(cfg: FetchCfg = {}): Call[] {
   // `text()` and `headers` are what the shared `toApiError` factory reads on a
   // non-2xx reply. An empty-object body stands in for "no body" here, so the
   // factory's `HTTP <status>` fallback is what the notice shows for it.
-  const reply = (status: number, data: Json) =>
+  // A string body is raw text, so `json()` rejects on it like a real Response.
+  const reply = (status: number, data: Json | string) =>
     ({
       ok: status < 400,
       status,
-      json: async () => data,
-      text: async () => (Object.keys(data).length ? JSON.stringify(data) : ''),
+      json: async () => (typeof data === 'string' ? JSON.parse(data) : data),
+      text: async () => (typeof data === 'string' ? data : Object.keys(data).length ? JSON.stringify(data) : ''),
       headers: { get: () => null },
     }) as unknown as Response
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
@@ -198,7 +200,7 @@ describe('ArtifactDeployPage — navigation, disclosure, and copy affordances', 
     // Three now: the two authentication commands plus step 4's optional
     // auto-cleanup install command.
     expect(copyButtons).toHaveLength(3)
-    fireEvent.click(copyButtons[0])
+    await act(async () => { fireEvent.click(copyButtons[0]) })
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('aws configure sso'))
   })
 
@@ -231,6 +233,7 @@ describe('ArtifactDeployPage — navigation, disclosure, and copy affordances', 
     renderPage()
     expect(await screen.findByText(/No profiles yet/)).toBeInTheDocument()
     expect(screen.getByText(/No deployments yet/)).toBeInTheDocument()
+    expect(screen.getByText(/read live from AWS resource tags/)).toBeInTheDocument()
     expect(screen.getByText(/AWS Profiles \(0\)/)).toBeInTheDocument()
   })
 
@@ -295,6 +298,21 @@ describe('ArtifactDeployPage — profile registry mutations', () => {
       name: 'fresh-sandbox', region: 'eu-central-1', create: true, account: '210987654321', role: 'DeployRole',
     })
     expect(screen.queryByLabelText('Profile name')).toBeNull()
+  })
+
+  it('the New profile button says whether the profile form is open', async () => {
+    installFetch()
+    renderPage()
+    await profilesLoaded()
+    const toggle = screen.getByRole('button', { name: /New profile/ })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getByLabelText('Profile name')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(screen.queryByLabelText('Profile name')).toBeNull()
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('defaults a blank region to us-west-2 and refuses a nameless profile', async () => {
@@ -459,7 +477,7 @@ describe('ArtifactDeployPage — IAM policy loader', () => {
     expect(calls.some((c) => c.url.includes('/iam-policy?tier=fullstack'))).toBe(true)
     expect(screen.getByText(/Fullstack tier: includes Lambda/)).toBeInTheDocument()
     expect(screen.getByText('Create this boundary before the first deploy (name: deploy-app-boundary)')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Copy boundary policy/ }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Copy boundary policy/ })) })
     expect(writeText).toHaveBeenCalledWith('BOUNDARY-POLICY-JSON')
   })
 
@@ -745,5 +763,29 @@ describe('ArtifactDeployPage — pending confirmations', () => {
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
     expect(await screen.findByText('Dismiss failed (500)')).toBeInTheDocument()
+  })
+
+  // A proxy in front of the gateway answers 502 with its own HTML page, which
+  // is not JSON: the card shows the status, never a parse error.
+  it('reports a confirm that a proxy answered with an HTML 502 by its status', async () => {
+    installFetch({
+      pending: [pendingEntry()],
+      confirmPending: { status: 502, body: '<!DOCTYPE html><html><body><h1>502 Bad Gateway</h1></body></html>' },
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Deploy' }))
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
+    expect(await screen.findByText('Confirm failed (502)')).toBeInTheDocument()
+    expect(screen.queryByText(/JSON|Unexpected token/)).toBeNull()
+  })
+
+  it('reports a dismiss that a proxy answered with a plain-text 502 by its text', async () => {
+    installFetch({ pending: [pendingEntry()], dismissPending: { status: 502, body: 'upstream connect error' } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+    expect(await screen.findByText('upstream connect error')).toBeInTheDocument()
+    expect(screen.queryByText(/JSON|Unexpected token/)).toBeNull()
   })
 })

@@ -27,6 +27,7 @@ from cloud_microvm_engine_helpers import (  # noqa: F401 -- the autouse fixture 
 
 from kiro_crew.cloud.microvm import api
 from kiro_crew.cloud.microvm.engine import MicroVmLaunchEngine, MicroVmLaunchSpec
+from kiro_crew.cloud.microvm.recipe import RecipeRefused
 from kiro_crew.cloud.microvm.record import CrewStore
 
 
@@ -220,7 +221,8 @@ class TestBothWheelStagingPathsDateTheWheelAlike:
     of unchanged code a cache miss and a full multi-minute image build. TWO
     scripts stage that same wheel into ``runtime/vendor``:
     ``scripts/build_microvm_image_zip.py``, whose build env is pinned and tested
-    in ``test_cloud_microvm_recipe.py``, and ``scripts/build_crew_base_image.sh``,
+    in ``test_cloud_microvm_recipe.py``, and the crew tree's
+    ``scripts/build_crew_base_image.sh``,
     which was not -- so a wheel staged by the shell path missed the cache.
 
     Pinned by READING the shell script, the way
@@ -233,7 +235,10 @@ class TestBothWheelStagingPathsDateTheWheelAlike:
     def _shell_text() -> str:
         from pathlib import Path
 
-        path = Path(__file__).resolve().parents[1] / "scripts" / "build_crew_base_image.sh"
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_base_image.sh"
+        )
         return path.read_text(encoding="utf-8")
 
     @staticmethod
@@ -305,7 +310,7 @@ class TestPreflightChecksTheBundle:
             spec=dataclasses.replace(self.BUILD_SPEC, bundle_dir=str(root)),
             store=CrewStore(tmp_path / "c.json"),
         )
-        with pytest.raises(Exception, match="missing"):
+        with pytest.raises(RecipeRefused, match="missing"):
             built.preflight("prof", "us-east-1")
 
     def test_a_complete_bundle_passes_preflight(self, tmp_path):
@@ -336,7 +341,8 @@ class TestTheRecipeIsNotEncryptedWithTheLaneKey:
     with AccessDenied -- minutes later, in a log the operator does not hold.
     """
 
-    def test_the_upload_names_no_kms_key(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _upload_kwargs(tmp_path, monkeypatch) -> list[dict]:
         import dataclasses
 
         from kiro_crew.cloud.microvm import engine as engine_mod
@@ -379,11 +385,21 @@ class TestTheRecipeIsNotEncryptedWithTheLaneKey:
         )
 
         ApiVmLauncher(spec).resolve_image(profile="p", region="us-east-1")
+        return seen
 
+    def test_the_upload_names_no_kms_key(self, tmp_path, monkeypatch):
+        seen = self._upload_kwargs(tmp_path, monkeypatch)
         assert seen, "the recipe was never uploaded"
         assert not seen[0].get(
             "kms_key_id"
         ), "the recipe was encrypted with the lane CMK, which the build role cannot decrypt"
+
+    def test_the_upload_pins_the_bucket_to_the_lanes_own_account(self, tmp_path, monkeypatch):
+        """A bucket name outlives its stack, so the put must refuse a bucket some
+        other account now owns rather than hand that account the crew bundle."""
+        seen = self._upload_kwargs(tmp_path, monkeypatch)
+        assert seen, "the recipe was never uploaded"
+        assert seen[0].get("expected_bucket_owner") == "123456789012"
 
     def test_an_upload_with_no_key_still_sends_an_encryption_header(self, monkeypatch):
         """S3-managed, not absent. A bucket that denies unencrypted puts tests the

@@ -24,9 +24,9 @@ that rebinds ``kiro_crew.acp.client.wrap_argv`` (or the runtime's) reaching the
 launch it drives, and it is the seam a test of this module fills with fakes.
 
 The rest of this module is what several per-process hosts share before the tail:
-the Node-adapter resolution ladder (claude-agent-acp, codex-acp, pi-acp), the
-self-served binary ladder (opencode, goose, DeepSeek Harness), the per-gateway
-resolution caches' generation fence, the enforced-host credential-mask preflight,
+the Node-adapter resolution ladder (claude-agent-acp, codex-acp, pi-acp) and the
+reader of such an adapter's npm manifest version, the self-served binary ladder
+(opencode, goose, DeepSeek Harness), the per-gateway resolution caches' generation fence, the enforced-host credential-mask preflight,
 and the plumbing of a host's read-back child. A host's own knowledge lives in its
 adapter module under :mod:`kiro_crew.acp.harness`; nothing here names one host.
 """
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 import re
@@ -50,8 +51,14 @@ from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.env import describe_search_path, mise_data_dir
-from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST
+from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
+
+# Re-exported: the launcher was these helpers' first home, and their callers and
+# tests still import them from here (``acp.kas_app_identity`` reads the port gate).
+# They live in port_resolution now so the MCP gateway daemon can apply them
+# without importing the launcher.
+from kiro_crew.port_resolution import _well_formed_port, drop_foreign_inherited_port  # noqa: F401
+from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
 # log line they emit has always been filed there. The launch tail itself logs under
@@ -209,6 +216,29 @@ def _resolve_node_for_script(script_path: str) -> str | None:
     except (ValueError, IndexError):
         pass
     return None
+
+
+def _npm_windows_shim_target(shim: str, bin_name: str, package_target: Path) -> str | None:
+    """The file an npm Windows bin shim launches, or ``None`` when *shim* is not one.
+
+    On Windows, ``npm i -g`` cannot symlink a package's ``bin``, so it writes text
+    shims into the global bin directory -- ``<bin_name>.cmd`` among them -- each
+    running ``<that dir>/node_modules/<package_target>``. Python's ``CreateProcess``
+    runs such a ``.cmd``, but a Node child does not: since the CVE-2024-27980 fix
+    ``child_process.spawn``/``execFile`` refuse a ``.cmd`` or ``.bat`` without a shell
+    (``spawn EINVAL``). A path Crew hands to a Node child to run is therefore the
+    target the shim names, never the shim, with no shell in between.
+
+    Matched by layout, not by reading the shim: a shim whose name is *bin_name* (any
+    extension) sitting next to ``node_modules/<package_target>``. Reading the shim's
+    text would trust a script anything on PATH can write; the layout check accepts
+    only the file npm itself would have put there.
+    """
+    path = Path(shim)
+    if path.stem.casefold() != bin_name.casefold():
+        return None
+    target = path.parent / "node_modules" / package_target
+    return str(target) if target.is_file() else None
 
 
 #: Sentinel for "not yet resolved": every host's cached resolution starts here, and the
@@ -398,6 +428,42 @@ def _vendored_adapter_entry(
             real_entry.parent,
         )
     return None
+
+
+def _node_adapter_manifest_version(argv: list[str], package: str) -> str:
+    """The ``version`` in the npm manifest of *package* that *argv* runs, or ``""``.
+
+    One reader for the Node adapters whose version is read off disk, never by
+    running the adapter, which enters stdio-server mode on any argv. Each argv
+    element that is a file is followed to its real path. The manifest is looked for
+    in a Windows ``.cmd`` shim's ``node_modules`` (the npm prefix, or beside the
+    package from ``node_modules/.bin``) and in the four directories above the
+    element. Only a manifest named *package* counts, so a wrapper script or an
+    override that names some other file answers ``""``. Blocking (small file reads).
+    """
+    for element in argv:
+        try:
+            here = Path(os.path.realpath(element))
+        except (OSError, ValueError):
+            continue
+        if not here.is_file():
+            continue
+        shim_roots = [here.parent / "node_modules"]
+        if here.parent.name == ".bin":
+            shim_roots.append(here.parent.parent)
+        candidates = [root / package / "package.json" for root in shim_roots]
+        candidates += [d / "package.json" for d in list(here.parents)[:4]]
+        for manifest in candidates:
+            try:
+                if manifest.stat().st_size > 1 << 20:
+                    continue
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                continue
+            if isinstance(data, dict) and data.get("name") == package:
+                version = data.get("version")
+                return version.strip() if isinstance(version, str) else ""
+    return ""
 
 
 # ── The per-gateway resolution caches' generation fence, and the self-served ladder ──
@@ -787,6 +853,8 @@ class LaunchHost(Protocol):
     _sandbox_cleanup: str | None
     _sandbox_wrapped_by_crew: bool
     _sandbox_hidden_dirs: tuple[str, ...]
+    _ssh_auth_sock_forwarded: bool
+    _child_env_names: frozenset[str]
     _spawn_work_dir: str
     _bound_workspace_fd: int | None
 
@@ -820,14 +888,18 @@ class LaunchTools:
     augmented_path: Callable[[str], str]
     scrub_agent_subprocess_env: Callable[..., dict[str, str]]
     apply_pod_home_remap: Callable[..., dict[str, str]]
-    browser_session_env: Callable[[Mapping[str, str]], dict[str, str]]
-    browser_socket_env: Callable[[Mapping[str, str]], dict[str, str]]
     inject_xdist_auto_cap: Callable[[dict[str, str]], Any]
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
     #: ``agent.env`` (``acp.agent_env.agent_env_overlay``); blocking, run off-loop.
     agent_env_overlay: Callable[[], dict[str, str]] = field(default=dict)
+    #: ``sandbox.ssh_auth_sock_consent_notice``; blocking (tier floor + consent
+    #: leaf), run off-loop. Diagnostic only: the forward verdict is
+    #: ``forward_ssh_auth_sock``'s, as the sandbox wrap re-judged it.
+    ssh_auth_sock_consent_notice: Callable[[str, str, tuple[str, ...]], str] = field(
+        default=ssh_auth_sock_consent_notice
+    )
     #: ``sandbox.remember_namespace_launcher``; non-blocking ``/proc`` reads, never raises.
     remember_namespace_launcher: Callable[[int, Sequence[str], str | None], None] = field(
         default_factory=lambda: _remember_namespace_launcher
@@ -877,10 +949,17 @@ class LaunchRequest:
     env_before_scrub: Callable[[dict[str, str], str | None], Awaitable[dict[str, str]]]
     extra_hidden_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
+    #: More windows into the masked scratch root for this process alone: the
+    #: runtime's private-state directory.
+    extra_private_dirs: tuple[str, ...] = ()
     internal_sandbox: bool = False
     pod_home_remap: bool = False
     #: The runtime allocates scratch through its guarded hop; the client never has.
     guard_scratch_hops: bool = False
+    #: A frozen SSH_AUTH_SOCK-forward request the caller resolved earlier (the
+    #: chat-sharing placement keys on it before it spawns). ``None`` means resolve
+    #: it here via ``tools.forward_ssh_auth_sock`` like every other launch.
+    forward_ssh_auth_sock_override: bool | None = None
     env_after_scrub: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     env_after_marker: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     env_after_scratch: Callable[[dict[str, str]], None] = field(default=_no_env_step)
@@ -899,45 +978,47 @@ class LaunchedProcess:
     scope_unit: str = ""
 
 
-def _well_formed_port(value: str) -> bool:
-    """1-5 ASCII decimal digits naming a port in 1..65535 (the KAS projection's gate)."""
-    return 1 <= len(value) <= 5 and value.isascii() and value.isdecimal() and 0 < int(value) < 65536
+#: Harnesses this process has already named in the ssh-agent consent notice. The
+#: notice is a remedy, not an event log: one line per harness per gateway run is
+#: enough for an operator to find it, and a respawn loop must not flood the log.
+_SSH_AUTH_SOCK_NOTICE_LOGGED: set[str] = set()
 
 
-def drop_foreign_inherited_port(env: dict[str, str]) -> None:
-    """Remove an inherited ``KIROCREW_PORT`` that names a gateway other than this one.
+async def _note_ssh_auth_sock_withheld(
+    host: LaunchHost, tools: LaunchTools, request: LaunchRequest
+) -> None:
+    """Log, once per harness, why this child starts without the ssh-agent socket.
 
-    A gateway started from a shell that already exports ``KIROCREW_PORT`` (an
-    agent shell of ANOTHER gateway carries one) keeps that value in its own
-    environment beside the ``KIROCREW_BOUND_PORT`` its listener exports
-    (``dashboard.server_runtime.listener._export_bound_port``). Every child it
-    spawns -- the agent CLI and the managed MCP servers that CLI starts --
-    inherits both, and ``port_resolution.resolve_client_port_src`` reads
-    ``KIROCREW_PORT`` first. The child then dials the OTHER gateway with THIS
-    gateway's credential and every tool call fails ``internal_auth_mismatch``.
-
-    Dropping the foreign value, rather than overwriting it with the bound port,
-    is deliberate: the listener keeps the two variables apart so the transient
-    bound port is never written under the operator-intent name (which
-    ``service_environment()`` would bake into a unit file), and nothing here is
-    persisted -- it shapes one child's environment at spawn time. With the
-    foreign value gone the child's chain falls to ``KIROCREW_BOUND_PORT``, the
-    gateway that spawned it.
-
-    A no-op when no well-formed bound port is exported (nothing to prove the
-    inherited value foreign) or when the inherited value already equals it (the
-    operator's own ``KIROCREW_PORT`` that this gateway bound). Mutates *env*.
+    Called only when the parent had a socket and the forward verdict scrubbed it.
+    The notice says something only when the verdict came from the consent route
+    with consent not granted (see ``sandbox.ssh_auth_sock_consent_notice``), and
+    then names the consent and how to grant it. It never changes the verdict, the
+    child's environment or its sandbox, and a failure to compute it is ignored:
+    the spawn proceeds exactly as it would have without it.
     """
-    bound = env.get("KIROCREW_BOUND_PORT", "")
-    if not _well_formed_port(bound):
+    if request.backend in _SSH_AUTH_SOCK_NOTICE_LOGGED:
         return
-    inherited = env.get("KIROCREW_PORT")
-    if inherited is None:
+    # Claimed BEFORE the hop: two spawns of one harness in flight cannot both
+    # log, and a harness whose notice cannot be computed is not re-read on every
+    # respawn. One attempt per harness per gateway process.
+    _SSH_AUTH_SOCK_NOTICE_LOGGED.add(request.backend)
+
+    def _compute() -> str:
+        # Swallowed INSIDE the thread: the guarded hop discards the sandbox
+        # launcher on any exception it sees, and this spawn still needs it.
+        try:
+            return tools.ssh_auth_sock_consent_notice(
+                request.backend, request.sandbox_mode, tuple(request.extra_hidden_dirs)
+            )
+        except Exception:
+            tools.logger.debug("ssh-agent consent notice could not be computed", exc_info=True)
+            return ""
+
+    # Guarded so a cancellation here still reclaims the launcher the wrap wrote.
+    notice = await host._to_thread_guarding_sandbox(_compute)
+    if not notice:
         return
-    value = inherited.strip()
-    if value.isascii() and value.isdecimal() and int(value) == int(bound):
-        return
-    env.pop("KIROCREW_PORT", None)
+    tools.logger.warning("%s", notice)
 
 
 def process_directory(host: LaunchHost) -> tuple[str, int | None]:
@@ -989,9 +1070,10 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # OS-level sandbox: wrap the command to hide sensitive paths.
     # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
     # foreign MCP subprocesses (which bundle their own interpreter + deps).
-    # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
-    # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
-    # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
+    # is_kiro_cli is the driver's request.internal_sandbox, the positive verdict
+    # of spawn_delegates_to_internal_sandbox (harness-parity H7), not "not
+    # claude": the flag makes wrap_argv SKIP Crew's seatbelt on macOS and
+    # grants Windows's Kiro-only delegation in
     # favour of the harness's own internal sandbox, so a harness without one
     # must never be granted it by the absence of another harness.
     #
@@ -1000,7 +1082,12 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # own sandbox, so the child runs the bundle binary and Crew's launcher
     # wraps it. Off-loop because the resolution stats the candidate path.
     argv, delegate_internal_sandbox = await asyncio.to_thread(
-        tools.apply_pod_bundle_spawn, request.argv, backend=request.backend
+        functools.partial(
+            tools.apply_pod_bundle_spawn,
+            request.argv,
+            backend=request.backend,
+            internal_sandbox=request.internal_sandbox,
+        )
     )
     spawned_binary = argv[0] if argv else None
     # Per-process scratch containment. Allocated BEFORE the sandbox is built:
@@ -1043,22 +1130,33 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         )
     if host._shared_scratch is not None:
         scratch_window = (*scratch_window, str(host._shared_scratch))
+    scratch_window = (*scratch_window, *request.extra_private_dirs)
     # Resolve the SSH_AUTH_SOCK forward OFF the event loop (the governance
     # floor and the consent leaf are filesystem reads) ONCE, then pass the
-    # resolved boolean into both the sandbox wrap below and the parent-side
-    # scrub further down, so neither reads config synchronously on the loop.
-    # The tier and this spawn's credential mask decide whether ~/.ssh is
-    # readable to the child, which is what makes the forward a default rather
-    # than a consent. Scoped to this agent spawn: generic launchers default the
-    # flag off and keep scrubbing the socket.
-    forward_ssh_auth_sock = await asyncio.to_thread(
-        tools.forward_ssh_auth_sock, request.sandbox_mode, tuple(request.extra_hidden_dirs)
-    )
+    # resolved boolean into the sandbox wrap below, so nothing reads config
+    # synchronously on the loop. The wrap re-judges it on the tier it applies
+    # and appends the verdict it applied, which the parent-side scrub and the
+    # host record further down use. The tier and this spawn's credential mask
+    # decide whether ~/.ssh is readable to the child, which is what makes the
+    # forward a default rather than a consent. Scoped to this agent spawn:
+    # generic launchers default the flag off and keep scrubbing the socket.
+    #
+    # A frozen request (the chat-sharing placement, which read the consent
+    # before it keyed on it) is used as the request; the wrap still judges it on
+    # the tier it applies. Every other caller resolves it here.
+    if request.forward_ssh_auth_sock_override is not None:
+        forward_ssh_auth_sock = request.forward_ssh_auth_sock_override
+    else:
+        forward_ssh_auth_sock = await asyncio.to_thread(
+            tools.forward_ssh_auth_sock, request.sandbox_mode, tuple(request.extra_hidden_dirs)
+        )
+    forward_applied = [forward_ssh_auth_sock]
     argv, host._sandbox_cleanup = await tools.wrap_argv_async(
         argv,
         mode=request.sandbox_mode,
         strip_python_env=True,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        forward_ssh_auth_sock_out=forward_applied,
         # Credential homes the standard tier exposes for kiro-cli's sake and that
         # an enforced host has no claim on. Empty for every harness this core does
         # not enforce, so their spawn arguments are unchanged.
@@ -1078,6 +1176,11 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     host._sandbox_wrapped_by_crew = tools.wrapped_by_crew_sandbox(argv)
     sandbox_wrapped_argv = tuple(argv)
     host._sandbox_hidden_dirs = tuple(request.extra_hidden_dirs)
+    # The verdict this child's environment is built with -- the wrap's own, so a
+    # socket the wrap dropped stays dropped -- so a server the engine starts later
+    # is judged on it, not on a later config or floor.
+    forward_ssh_auth_sock = forward_applied[-1]
+    host._ssh_auth_sock_forwarded = forward_ssh_auth_sock
     # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server / tool
     # descendants with pids.max (fork bomb) + memory.max (RSS balloon). No-op +
     # loud warning where cgroup delegation is unavailable. --scope execs into the
@@ -1113,14 +1216,27 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         env.update(await host._to_thread_guarding_sandbox(tools.agent_env_overlay))
     if request.extra_env:
         env.update(request.extra_env)
-    env["PATH"] = tools.augmented_path(env.get("PATH", ""))
+    # The contributed MCP launcher dirs go LAST, after everything the gateway's
+    # PATH already resolves, so a bare-name MCP server kiro-cli starts is found
+    # even when the gateway itself was started without them (a service installed
+    # from a non-login shell). Read from the snapshot the config load above just
+    # refreshed, and never persisted: see ``env.append_mcp_path_dirs``. Off-loop:
+    # validating a ``~user`` entry expands it through a directory-service lookup.
+    env["PATH"] = await host._to_thread_guarding_sandbox(
+        append_mcp_path_dirs, tools.augmented_path(env.get("PATH", ""))
+    )
     env = await request.env_before_scrub(env, spawned_binary)
+    # Whether the child would have had an agent socket before the scrub, read
+    # here because the driver's credential repair above may have just found one.
+    had_ssh_auth_sock = bool(env.get("SSH_AUTH_SOCK"))
     # Match the OS launchers' sensitive + Python env scrub in the parent. Windows
     # Kiro delegation has no POSIX `env -u` wrapper, so this is the enforcement
     # point there. Kept after the driver's credential repair so no resolver can
-    # reintroduce a denied variable. forward_ssh_auth_sock is the opt-in resolved
-    # off-loop above and reused here.
+    # reintroduce a denied variable. forward_ssh_auth_sock is the verdict the wrap
+    # applied, handed back above.
     env = tools.scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
+    if had_ssh_auth_sock and not forward_ssh_auth_sock:
+        await _note_ssh_auth_sock_withheld(host, tools, request)
     # Bundled skill scripts must not depend on a system ``python`` name. The
     # desktop bundles carry their interpreter outside the user's PATH, while this
     # path is already running under the exact environment that can import
@@ -1139,15 +1255,6 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # node) are identifiable as ours.
     env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
     request.env_after_marker(env)
-    # Own browser session per agent process: the CLI resolves a nameless command to
-    # one shared ``default`` browser, so without this two agents navigate and close
-    # each other's pages (see browser_session_env). Per PROCESS, not per agent: a
-    # shared runtime's sessions share this one.
-    browser_env = tools.browser_session_env(env)
-    env.update(browser_env)
-    if browser_env:
-        lifecycle_env = {**os.environ, **browser_env}
-        env.update(await host._to_thread_guarding_sandbox(tools.browser_socket_env, lifecycle_env))
     # The scratch dir was allocated before the sandbox wrap (carved out of the
     # masked root there); hand it to the child as its temp.
     if host._scratch_dir is not None:
@@ -1166,6 +1273,9 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # resource_status.inject_xdist_auto_cap. Off-loop: resolving the cap reads the
     # raw config. Guarded: the sandbox temp file is live.
     await host._to_thread_guarding_sandbox(tools.inject_xdist_auto_cap, env)
+    # Names only, never values: what a ``${NAME}`` the child expands itself can
+    # resolve to (``mcp_ref_guard.warn_unset_env_placeholders``).
+    host._child_env_names = frozenset(env)
 
     await host._discard_bound_workspace()
     if request.internal_sandbox:

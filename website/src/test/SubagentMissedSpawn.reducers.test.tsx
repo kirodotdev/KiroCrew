@@ -5,10 +5,10 @@
  * Between one `subagent_spawn` and one `subagent_done`, the incremental frames
  * (tool, streaming text, stalled, retrying) are the only evidence the panel
  * gets. When the container is missing they have nowhere to land, and the gap is
- * reachable in ordinary use rather than only in theory:
- * `clearSubagentsForSnapshot` keeps only `pending` entries across a reconnect,
- * so an agent already running at that moment loses its entry while every frame
- * it has left is an incremental one. These pin that such a frame creates the
+ * reachable in ordinary use rather than only in theory: the subscription
+ * starts before the reconnect replay is sent, and a replay's end drops every
+ * card it did not name, so an agent can lose its entry while every frame it has
+ * left is an incremental one. These pin that such a frame creates the
  * card it needs, and that the prototype-pollution guard still refuses.
  */
 import { describe, it, expect } from 'vitest'
@@ -23,7 +23,7 @@ import {
   sseSubagentBatchUpdate,
   sseSubagentDone,
   sseSubagentSnapshot,
-  clearSubagentsForSnapshot,
+  clearSubagentsForSnapshot, subagentReplayDone,
   markSubagentApproving,
 } from '../store/chatSlice'
 
@@ -94,6 +94,7 @@ describe('an incremental frame for an unknown sub-agent', () => {
     s.dispatch(sseSubagentSpawn({ slot: SLOT, id: ID, task: 'do a thing', agent: 'kirocrew' }))
     expect(sub(s)).toBeDefined()
     s.dispatch(clearSubagentsForSnapshot())
+    s.dispatch(subagentReplayDone())
     expect(sub(s)).toBeUndefined()
     s.dispatch(sseSubagentTool({ slot: SLOT, id: ID, tool: 'fs_write' }))
     expect(sub(s)).toBeDefined()

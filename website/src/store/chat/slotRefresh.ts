@@ -6,8 +6,8 @@ import { createAsyncThunk, isDraft, original, type ActionReducerMapBuilder, type
 import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
-import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, reuseUnchangedRows, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { fetchSlotDetail, isUnsafeKey, safeKey, type SlotQueueItem } from './wire'
+import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, reuseUnchangedRows, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import {
@@ -18,6 +18,8 @@ import {
 } from './runState'
 import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
+import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 import { walkWindowBackTo } from './windowWalk'
 
 /** The two row kinds a person decides on and the client stamps locally: a tool
@@ -59,12 +61,47 @@ export function withRefreshRevision(reducer: Reducer<ChatState>): Reducer<ChatSt
   }
 }
 
+/** Every row identity (`rowIdentities`) in *rows*. */
+function identitiesOf(rows: readonly ChatMessage[]): string[] {
+  const ids: string[] = []
+  for (const m of rows) ids.push(...rowIdentities(m))
+  return ids
+}
+
+/** The user rows sent while a refresh's page was in flight that the rebuilt
+ *  transcript does not carry, in send order. `refreshSlot.fulfilled` keeps
+ *  them, as `switchSlot.fulfilled` keeps its `liveSends`: the page was read
+ *  before the send, so rebuilding the view from it alone would drop the user's
+ *  message.
+ *
+ *  A send lands at the bottom, so only rows below the last row that was on
+ *  screen at dispatch qualify: older history paged in during the round trip is
+ *  prepended above it and carries `sendId`s the baseline never saw. Rows the
+ *  rebuilt transcript already holds (the page, the kept older head, the queued
+ *  bubbles) are left out too, and so is a send the page lists in its `queue`:
+ *  the queued bubble it hydrates is that send. */
+function liveSendsSince(
+  rows: readonly ChatMessage[], idsAtDispatch: readonly string[] | undefined, rebuilt: ChatMessage[],
+  pageQueue: readonly SlotQueueItem[],
+): ChatMessage[] {
+  if (!idsAtDispatch) return []
+  const before = new Set(idsAtDispatch)
+  let from = rows.length
+  while (from > 0 && !rowIdentities(rows[from - 1]).some(id => before.has(id))) from -= 1
+  const queued = new Set(pageQueue.map(q => q.sendId).filter(Boolean))
+  return tailNotInPage(
+    rows.slice(from).filter(m => m.role === 'user' && typeof m.meta?.sendId === 'string' && m.meta.sendId
+      && !before.has(`send:${m.meta.sendId}`) && !queued.has(m.meta.sendId)),
+    rebuilt,
+  )
+}
+
 /** Re-fetch messages for a slot without changing activeSlot. Only applies if still active. */
 let refreshSeqCounter = 0
 const nextRefreshSeq = (): number => ++refreshSeqCounter
 
 export const refreshSlot = createAsyncThunk<
-  (Awaited<ReturnType<typeof fetchSlotDetail>> & { refreshSeq: number; liveFrameSeqAtDispatch: number }) | null,
+  (Awaited<ReturnType<typeof fetchSlotDetail>> & { refreshSeq: number; liveFrameSeqAtDispatch: number; idsAtDispatch: string[] }) | null,
   string | { key: string; onlyIfUnchanged?: boolean; reachTs?: string },
   { fulfilledMeta: { recoveryRevision?: number } }
 >(
@@ -80,8 +117,13 @@ export const refreshSlot = createAsyncThunk<
     const liveAtStart = state.liveFrameSeq ?? 0
     // Dispatch order, captured before any await (see `refreshAppliedSeq`).
     const refreshSeq = nextRefreshSeq()
+    // The rows on screen when the fetch went out: a user row below all of them
+    // whose `sendId` is not among these was sent while the page was in flight,
+    // so the page cannot carry it (see `liveSendsSince`). By id, not by row
+    // index, because rows can be added or removed during the round trip.
+    const idsAtDispatch = identitiesOf(state.messages)
     const finish = (page: Awaited<ReturnType<typeof fetchSlotDetail>> | null) =>
-      fulfillWithValue(page ? { ...page, refreshSeq, liveFrameSeqAtDispatch: liveAtStart } : null,
+      fulfillWithValue(page ? { ...page, refreshSeq, liveFrameSeqAtDispatch: liveAtStart, idsAtDispatch } : null,
         onlyIfUnchanged ? { recoveryRevision: state.recoveryRevision ?? 0 } : {})
     const isStale = () => onlyIfUnchanged &&
       ((getState() as { chat: ChatState }).chat.recoveryRevision ?? 0) !== (state.recoveryRevision ?? 0)
@@ -408,10 +450,22 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // page carries.
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
+      // A queue hand-off emits no `chat_done` for the turn it ends, so the guard
+      // above cannot see a page captured before a requeued steer's drain. Such a
+      // page still shows the steer's old row un-retired and lacks the drained
+      // turn's own row; it is older than this tab in the same way. Its queue
+      // still counts: an entry whose `queue_push` this tab missed is listed
+      // only there. So the queue merges in, without the drained steer's entry.
+      if (pageRegressesSupersededSteer(state.messages, messages)) {
+        state.messages = hydrateQueuedBubbles(state.messages, queueAfterSupersededDrain(state.messages, messages, queue), true)
+        return
+      }
       if (!reportedRunning) recordEndedTurn(state, key, action.payload)
       // The rows on screen before this refresh, as plain store objects, so the
       // rebuilt transcript can hand back the ones the page repeats unchanged.
       const rowsBeforeRefresh = plainRows(state.messages)
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(messages))
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -525,14 +579,51 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // user's pending queued messages. Routing all three slot-detail reducers
       // through hydrateQueuedBubbles is what stops them drifting apart again.
       state.messages = hydrateQueuedBubbles(state.messages, queue)
+      /* A send made while this page was in flight is in neither half of it:
+       * the page was read before the send. Keep those user rows (after the
+       * page, ahead of any queued bubbles, in send order, and above every kept
+       * row that followed them on screen: a permission card the send's turn
+       * raised must stay below its send, or the approval bar, which reads only
+       * below the last user row, goes blank under a turn waiting on it), and
+       * keep the run state the send established: the page's `running: false` describes the
+       * slot before the turn the send opened, and taking it would idle the
+       * slot under that turn -- "user row last, slot idle" is the shape the
+       * composer offers Resume on. Same guard as `switchSlot.fulfilled`'s
+       * `pagePredatesLiveSend`; a page that caught the send, or reports
+       * running, is current and lands as before. */
+      const liveSends = liveSendsSince(rowsBeforeRefresh, action.payload.idsAtDispatch, state.messages, queue)
+      if (liveSends.length) {
+        let end = state.messages.length
+        while (end > 0 && state.messages[end - 1].role === 'queued') end -= 1
+        // Live reasoning carries only its client-minted `clientTs`, so that is
+        // its key here; a permission card is keyed as `statePerms` keys it.
+        const keysOf = (m: ChatMessage): string[] => {
+          const keys = rowIdentities(m)
+          const decided = isDecidedRow(m) ? decidedRowKey(m) : undefined
+          if (decided) keys.push(decided)
+          const clientTs = m.meta?.clientTs
+          if (typeof clientTs === 'string' && clientTs) keys.push(`client:${clientTs}`)
+          return keys
+        }
+        for (const send of liveSends) {
+          const below = new Set(rowsBeforeRefresh.slice(rowsBeforeRefresh.indexOf(send) + 1).flatMap(keysOf))
+          let at = state.messages.findIndex((m, i) => i < end && keysOf(m).some(k => below.has(k)))
+          if (at < 0) at = end
+          state.messages.splice(at, 0, send)
+          end += 1
+        }
+      }
+      const pagePredatesLiveSend = !running && liveSends.length > 0
       // The active slot's server snapshot flipping to running is a turn
       // start (see `ChatState.runEpoch`), as it is in
       // syncSlotRunningFromServer; the hand-back in `enterActiveSlot` reads
       // the epoch to tell a turn that ran on screen from a slot that saw
       // nothing.
       if (running && !state.slotRunning) bumpRunEpoch(state, key)
-      state.slotRunning = running
-      state.slotStopping = action.payload.stopping ?? false
+      if (!pagePredatesLiveSend) {
+        state.slotRunning = running
+        state.slotStopping = action.payload.stopping ?? false
+      }
       /* A snapshot that says the slot is NOT running settles the stream state
        * too, not only `slotRunning`. A turn that dies with the gateway sends no
        * `_done`, so the tab that watched it stream still holds
@@ -543,7 +634,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
        * the snapshot is stale: a frame of a NEW turn reduced after this fetch
        * was dispatched, which owns the stream state from then on
        * (`noLiveFrameSince`, read above). */
-      if (!running && (action.meta?.recoveryRevision !== undefined || noLiveFrameSince)) {
+      if (!running && !pagePredatesLiveSend && (action.meta?.recoveryRevision !== undefined || noLiveFrameSince)) {
         state.slotState = 'idle'
         state.slotStopping = false
         finalizeTrailingStreaming(state.messages)
@@ -553,7 +644,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // ends repeat every row but the last turn's, so the turn grouper and the
       // memoised rows re-render that turn alone.
       state.messages = reuseUnchangedRows(rowsBeforeRefresh, state.messages)
-      state.pendingTurnSlot = null
+      if (!pagePredatesLiveSend) state.pendingTurnSlot = null
       // Same seeding as switchSlot: this refresh is the reconnect recovery,
       // and the frames that raced it are exactly the ones it must not let
       // through a second time (the duplicated leading fragment).
@@ -564,7 +655,9 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         const snapGen = snapshotChunkGen(messages)
         state.lastChunkSeq = raiseChunkSeq(floorForGen(state.lastChunkSeq, state.lastChunkGen, snapGen), snapshotChunkSeq(messages))
         if (snapGen !== undefined) state.lastChunkGen = snapGen
-      } else {
+      } else if (!pagePredatesLiveSend) {
+        // A page that predates a live send has no say on that turn's stream:
+        // the floor its chunks raised stays.
         state.lastChunkSeq = undefined
       }
       setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore)
@@ -579,6 +672,25 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // Slot became active between dispatch and fulfilment — switchSlot now
       // owns its messages, so leave the cache for it to manage.
       if (state.activeSlot === key) return
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(fetchedMessages))
+      // Same stale-page rule as `refreshSlot.fulfilled`, against this pane's
+      // cache: a warm captured before a requeued steer drained is older than it.
+      // Its queue merges in, as for a refresh.
+      const warmCache = state.slotMessages?.[safeKey(key)] ?? []
+      if (pageRegressesSupersededSteer(warmCache, fetchedMessages)) {
+        if (warmCache.length) {
+          const merged = hydrateQueuedBubbles(warmCache, queueAfterSupersededDrain(warmCache, fetchedMessages, queue), true)
+          // The merge moves only queued rows, so the bounded page's last row
+          // keeps its identity; re-index it rather than drop the bound. The
+          // paging markers stay as they are (`hasMore` undefined).
+          const bounded = state.slotPaneBounded?.[safeKey(key)]
+          const lastBounded = bounded !== undefined && bounded > 0 ? warmCache[bounded - 1] : undefined
+          const at = lastBounded ? merged.indexOf(lastBounded) : -1
+          writeSlotPage(state, key, merged, undefined, at >= 0 ? at + 1 : undefined)
+        }
+        return
+      }
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running
@@ -729,7 +841,11 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const mergedRaw = newerTail.length && !keepsAllPrior ? [...base, ...newerTail] : base
       // A queued row has no identity, so both merge branches keep one the warm
       // already re-added; collapsing once dedupes it and restores queued-last.
-      const merged = hydrateQueuedBubbles(mergedRaw, queue)
+      // A pending coordinator card lives only in this cache (see
+      // `coordinatorApprovals`), so the page cannot carry it. `boundedLen`
+      // below finds the page's last row by reference, so a kept card seated
+      // above that row still leaves the marker on it.
+      const merged = keepPendingCoordinatorApprovals(priorAll, hydrateQueuedBubbles(mergedRaw, queue))
       // Restore the preserved reasoning onto the reconciled list. A slot the
       // user switched AWAY from mid-turn holds its blocks only in this cache
       // (switchSlot.pending caches `state.messages` wholesale) and this warm is

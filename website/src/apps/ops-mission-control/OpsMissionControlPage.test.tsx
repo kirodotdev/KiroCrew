@@ -8,7 +8,7 @@
  * gates "Copied" on the resolved boolean.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
@@ -84,7 +84,7 @@ describe('OpsMissionControlPage closed postmortem copy', () => {
 
   it('copies the postmortem log through the shared helper and confirms, then reverts', async () => {
     const btn = await openPostmortem()
-    fireEvent.click(btn)
+    await act(async () => { fireEvent.click(btn) })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('postmortem log body'))
     await waitFor(() =>
@@ -93,7 +93,7 @@ describe('OpsMissionControlPage closed postmortem copy', () => {
       ).toBeInTheDocument(),
     )
 
-    vi.advanceTimersByTime(2100)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
     await waitFor(() =>
       expect(
         screen.getByText(i18nT('apps.opsMissionControl.opsMissionControlPage.copy_postmortem')),
@@ -104,7 +104,7 @@ describe('OpsMissionControlPage closed postmortem copy', () => {
   it('renders no confirmation when the copy fails', async () => {
     vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
     const btn = await openPostmortem()
-    fireEvent.click(btn)
+    await act(async () => { fireEvent.click(btn) })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalled())
     expect(

@@ -52,14 +52,12 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
   } else if (prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
     // A failure AFTER `restarting` was pushed (invalid exe path) means
     // no exec is coming — an armed latch would reload over the next
-    // unrelated blip. `done` is only ever simulated, same cleanup.
+    // unrelated blip. `done` ends a staged install: no exec is coming, same cleanup.
     try { sessionStorage.removeItem(UPDATE_RESTART_LATCH_KEY) } catch { /* best effort */ }
   }
-  if (prog.step === 'done') {
-    dispatch(setUpdateProgress(null))
-  } else {
-    dispatch(setUpdateProgress(prog))
-  }
+  // `done` is kept, not cleared: a staged install (the new version waits for the
+  // next restart) ends on it, and the update flow reads it to say so.
+  dispatch(setUpdateProgress(prog))
 }
 
 /**
@@ -86,7 +84,7 @@ export interface BundleReload {
 
 export function useBundleReload(
   dispatch: AppDispatch,
-  getDashboard?: () => Pick<RootState['dashboard'], 'status' | 'connected'>,
+  getDashboard?: () => Pick<RootState['dashboard'], 'status'>,
 ): BundleReload {
   // The last status frame's version and served-bundle hash. Kept across
   // reconnects on purpose, so a restarted gateway with a new version or
@@ -100,8 +98,8 @@ export function useBundleReload(
   const lastBundleIdRef = useRef<string | null>(null)
   // The non-volatile key of the last frame this hook stored, and the status
   // object the store held right after it. A frame is skipped only while both
-  // still describe the store: the socket is marked connected and no other
-  // writer (an `/api/status` reply, a disconnect) has replaced the status.
+  // still describe the store: no other writer (an `/api/status` reply) has
+  // replaced the status.
   const lastStoredRef = useRef<{ key: string; status: StatusData | null } | null>(null)
 
   return useMemo<BundleReload>(() => ({
@@ -128,7 +126,7 @@ export function useBundleReload(
       const key = stableStatusKey(data)
       const held = getDashboard?.()
       const last = lastStoredRef.current
-      if (held && last && held.connected && held.status != null && held.status === last.status && last.key === key) {
+      if (held && last && held.status != null && held.status === last.status && last.key === key) {
         return
       }
       dispatch(sseStatus(data))

@@ -66,7 +66,7 @@ class TestCronJobPersistentSessionField:
                 }
             ],
         }
-        path.write_text(json.dumps(legacy))
+        path.write_text(json.dumps(legacy), encoding="utf-8")
 
         svc = CronService()
         loaded = [j for j in svc.list_jobs() if j.id == "legacy1"][0]
@@ -88,9 +88,14 @@ class TestBuildCronSessionContext:
         key, _prompt = build_cron_session_context(job)
         assert key == "cron:abc123"
 
-    def test_persistent_prompt_prepends_last_result(self):
-        """persistent_session=True → prompt contains the previous run's result."""
+    def test_persistent_job_carries_last_result_beside_the_prompt(self):
+        """persistent_session=True → the previous result is carried, not in the request.
+
+        The prompt is the owner's message alone; the previous run's result travels
+        as ``cron_prior_result_context``, framed as data, for the context region.
+        """
         from kiro_crew.cron import build_cron_session_context
+        from kiro_crew.cron_service.identity import cron_prior_result_context
 
         job = CronJob(
             id="abc123",
@@ -100,8 +105,8 @@ class TestBuildCronSessionContext:
             last_result="PREVIOUS OUTPUT HERE",
         )
         _key, prompt = build_cron_session_context(job)
-        assert "PREVIOUS OUTPUT HERE" in prompt
-        assert "do work" in prompt
+        assert prompt == "do work"
+        assert "PREVIOUS OUTPUT HERE" in cron_prior_result_context(job)
 
     def test_stateless_uses_fresh_key_per_call(self):
         """persistent_session=False → two calls return two different keys."""
@@ -138,9 +143,12 @@ class TestBuildCronSessionContext:
             persistent_session=False,
             last_result="STALE OUTPUT MUST NOT APPEAR",
         )
+        from kiro_crew.cron_service.identity import cron_prior_result_context
+
         _key, prompt = build_cron_session_context(job)
         assert "STALE OUTPUT MUST NOT APPEAR" not in prompt
         assert "do work" in prompt
+        assert cron_prior_result_context(job) == ""
 
     def test_stateless_prompt_equals_bare_message(self):
         """When persistent_session=False and no acks, prompt is exactly job.message."""
@@ -155,3 +163,187 @@ class TestBuildCronSessionContext:
         )
         _key, prompt = build_cron_session_context(job)
         assert prompt == "do work"
+
+
+def _stateless_llm_job(**overrides):
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    fields = dict(
+        id="abcd1234",
+        name="poll",
+        message="check",
+        persistent_session=False,
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef(DEFAULT_MEMORY_STORE), "template", "kirocrew"
+        ).to_record(),
+    )
+    fields.update(overrides)
+    return CronJob(**fields)
+
+
+def _run_files(job_id):
+    from kiro_crew.history import ConversationLog
+
+    return sorted(p.name for p in ConversationLog()._dir.glob(f"cron_{job_id}_*.jsonl"))
+
+
+async def _fire(gw, job, events, *, extra=()):
+    """Fire *job* through the callback ``_init_cron`` builds, recording order.
+
+    *events* receives ``("active", key)`` when the run registers its key and
+    ``("tag", key)`` when the ephemeral tag is written.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from kiro_crew.history import ConversationLog
+
+    real_update = ConversationLog.update_metadata
+
+    def recording_update(log, key, updates, *args, **kwargs):
+        if updates.get("cron_run") == "ephemeral":
+            events.append(("tag", key))
+        return real_update(log, key, updates, *args, **kwargs)
+
+    captured = {}
+
+    def capture_cron(on_job=None, **_kw):
+        captured["cb"] = on_job
+        svc = MagicMock()
+        svc.start = AsyncMock()
+        svc.remove_job_async = AsyncMock(return_value=True)
+        svc.register_active_session_key.side_effect = lambda _id, key: events.append(
+            ("active", key)
+        )
+        return svc
+
+    gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    with ExitStack() as stack:
+        cron_cls = stack.enter_context(patch("kiro_crew.slack.gateway.CronService"))
+        cron_cls.create = AsyncMock(side_effect=capture_cron)
+        stack.enter_context(
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                AsyncMock(return_value=("full prompt", None)),
+            )
+        )
+        stack.enter_context(
+            patch("kiro_crew.slack.gateway.stream_and_collect", AsyncMock(return_value="done"))
+        )
+        stack.enter_context(patch("kiro_crew.slack.gateway.sel"))
+        stack.enter_context(
+            patch("kiro_crew.cron_service.agent_presence.cron_agent_missing", return_value=False)
+        )
+        stack.enter_context(
+            patch("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+        )
+        stack.enter_context(patch.object(ConversationLog, "update_metadata", recording_update))
+        for ctx in extra:
+            stack.enter_context(ctx)
+        await gw._init_cron()
+        return await captured["cb"](job)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("sequence", [[], ["deadbeef"], ["deadbeef", "cafebabe"]])
+async def test_fire_capture_writes_no_transcript(monkeypatch, persistent, sequence):
+    """The capture runs before the gate and admission, so it never tags a key."""
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.history import ConversationLog
+
+    job = _stateless_llm_job(persistent_session=persistent, agent_sequence=sequence)
+    gw = _make_gw_for_llm()
+    monkeypatch.setattr("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+    await gw._cron_capture(job)
+    assert _run_files(job.id) == []
+    assert not ConversationLog().has_log(f"cron:{job.id}")
+
+
+@pytest.mark.asyncio
+async def test_a_stateless_run_is_tagged_only_after_its_key_is_active():
+    """The prune skips active keys, so the tag must land after the registration."""
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.history import ConversationLog
+
+    job = _stateless_llm_job()
+    events: list[tuple[str, str]] = []
+    await _fire(_make_gw_for_llm(), job, events)
+    tags = [key for kind, key in events if kind == "tag"]
+    assert len(tags) == 1
+    key = tags[0]
+    assert key.startswith(f"cron:{job.id}:")
+    assert events.index(("active", key)) < events.index(("tag", key))
+    assert ConversationLog().get_metadata(key)["cron_run"] == "ephemeral"
+
+
+@pytest.mark.asyncio
+async def test_a_persistent_run_is_never_tagged():
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.history import ConversationLog
+
+    job = _stateless_llm_job(persistent_session=True)
+    events: list[tuple[str, str]] = []
+    await _fire(_make_gw_for_llm(), job, events)
+    assert ("active", f"cron:{job.id}") in events
+    assert not [e for e in events if e[0] == "tag"]
+    assert "cron_run" not in ConversationLog().get_metadata(f"cron:{job.id}")
+
+
+@pytest.mark.asyncio
+async def test_a_stateless_fire_refused_by_the_fire_time_gate_writes_no_transcript():
+    from unittest.mock import AsyncMock, patch
+
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    job = _stateless_llm_job()
+    gw = _make_gw_for_llm()
+    gw._alert_cron_failure = AsyncMock()
+    events: list[tuple[str, str]] = []
+    gate = patch(
+        "kiro_crew.slack.gateway._await_cron_fire_time_gate",
+        AsyncMock(return_value=("cron capability is denied", False)),
+    )
+    assert await _fire(gw, job, events, extra=[gate]) is None
+    assert job.fire_time_denied is True
+    assert events == []
+    assert _run_files(job.id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stateless_fire_refused_at_admission_writes_no_transcript():
+    from unittest.mock import patch
+
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    async def refuse(_job, dispatch):
+        # A refused fire never starts its dispatch; close the run coroutine the
+        # holding wrapper carries as well as the wrapper itself.
+        dispatch.cr_frame.f_locals["dispatch"].close()
+        dispatch.close()
+        return None
+
+    job = _stateless_llm_job()
+    events: list[tuple[str, str]] = []
+    admission = patch("kiro_crew.shared_crew.admission_entry.admitted_cron_dispatch", refuse)
+    assert await _fire(_make_gw_for_llm(), job, events, extra=[admission]) is None
+    assert events == []
+    assert _run_files(job.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [{"command": "echo hi"}, {"script": "/tmp/x.py:run"}])
+async def test_fire_capture_creates_no_transcript_for_a_code_job(monkeypatch, code):
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.history import ConversationLog
+
+    job = _stateless_llm_job(**code)
+    gw = _make_gw_for_llm()
+    monkeypatch.setattr("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+    cap = await gw._cron_capture(job)
+    assert not ConversationLog().has_log(cap.session_key)

@@ -94,6 +94,50 @@ class TestPostComment:
         assert stored[0].author  # defaulted to the dashboard user alias
 
 
+_BAD_ANCHOR_INTS = [
+    {"start_offset": "9", "end_offset": 23},
+    {"start_offset": 9.0, "end_offset": 23},
+    {"start_offset": True, "end_offset": 23},
+    {"start_offset": -1, "end_offset": 23},
+    {"start_offset": 9, "end_offset": 2**31},
+    {"start_offset": 23, "end_offset": 9},
+    {"start_offset": 9, "end_offset": 23, "version_number": 0},
+    {"start_offset": 9, "end_offset": 23, "version_number": "2"},
+    {"start_offset": 9, "end_offset": 23, "version_number": False},
+    {"start_offset": 9, "end_offset": [23]},
+]
+
+
+class TestPostCommentAnchorInts:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ints", _BAD_ANCHOR_INTS)
+    async def test_bad_anchor_int_400_and_nothing_stored(self, store, ints):
+        anchor = {"quote": "some body text", **ints}
+        resp = await h.api_artifact_post_comment(
+            _req(body={"text": "x", "anchor": anchor}, match={"slug": "doc"})
+        )
+        assert resp.status == 400
+        assert _j(resp)["error"].startswith("anchor.")
+        assert store.list_comments("doc") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ints",
+        [
+            {},
+            {"start_offset": None, "end_offset": None, "version_number": None},
+            {"start_offset": 0, "end_offset": 0, "version_number": 1},
+            {"start_offset": 9, "end_offset": 23, "version_number": 2**31 - 1},
+        ],
+    )
+    async def test_valid_anchor_ints_stored_as_given(self, store, ints):
+        await _post("doc", text="x", anchor={"quote": "some body text", **ints})
+        (stored,) = store.list_comments("doc")
+        assert stored.anchor_start_offset == ints.get("start_offset")
+        assert stored.anchor_end_offset == ints.get("end_offset")
+        assert stored.anchor_version == ints.get("version_number")
+
+
 class TestReplyComment:
     @pytest.mark.asyncio
     async def test_reply_persists_thread(self, store):
@@ -207,7 +251,7 @@ class TestDeleteAndList:
     @pytest.mark.asyncio
     async def test_get_anchor_includes_prefix_suffix(self, store):
         # Regression: the local GET serializer must echo prefix/suffix so the
-        # markdown overlay can disambiguate a repeated quote — rangeForAnchor
+        # markdown overlay can disambiguate a repeated quote — rangesForAnchor
         # matches on quote+prefix+suffix and ignores the offsets. Without these
         # a comment on a later occurrence highlights the first match. Must match
         # the remote serializer (_serialize_remote_comment).
@@ -257,7 +301,11 @@ class TestEditComment:
         # Agent provenance is the structured is_agent flag, not a body prefix —
         # an edit stores the new body verbatim, never stamping an emoji into it
         # (the dashboard renders a lucide Bot icon from is_agent per AGENTS.md).
-        root = await _post("doc", text="original", is_agent=True)
+        resp = await h.api_artifact_post_comment(
+            _agent_req(body={"text": "original"}, match={"slug": "doc"})
+        )
+        assert resp.status == 201, _j(resp)
+        root = _j(resp)["comment"]
         resp = await h.api_artifact_edit_comment(
             _req(body={"text": "corrected"}, match={"slug": "doc", "comment_id": root["id"]})
         )
@@ -523,6 +571,185 @@ class TestAgentDeleteComment:
         )
         assert resp.status == 403
         assert store.list_comments("doc")[0].status == "open"
+
+    @pytest.mark.asyncio
+    async def test_agent_mark_review_on_resolved_thread_409(self, store):
+        """Resolve is the person's call, so an agent mark_review must
+        not move a thread the person resolved back to REVIEW."""
+        root = await _post("doc", text="root")
+        rresp = await h.api_artifact_resolve_comment(
+            _req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert rresp.status == 200
+        events_before = len(store.get("doc").events)
+        resp = await h.api_artifact_mark_review(
+            _agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 409
+        assert "resolved" in _j(resp)["error"]
+        assert store.list_comments("doc")[0].status == "resolved"
+        assert len(store.get("doc").events) == events_before
+
+    @pytest.mark.asyncio
+    async def test_agent_mark_review_on_open_thread_still_works(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_mark_review(
+            _agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 200
+        assert store.list_comments("doc")[0].status == "review"
+
+
+def _socket_agent_req(*, body: dict | None = None, match: dict | None = None) -> MagicMock:
+    """An agent call over the agent socket: it sends a capability, not the
+    secret header, and the auth middleware marks it ``internal_auth``."""
+    r = _req(body=body, match=match)
+    marks = {"internal_auth": True}
+    r.get = lambda key, default=None: marks.get(key, default)
+    return r
+
+
+class TestSocketAgentIsAnAgent:
+    """The agent socket carries no X-Internal-Secret header, so each actor
+    check must also read the middleware's ``internal_auth`` mark."""
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_mark_review_on_resolved_thread_409(self, store):
+        root = await _post("doc", text="root")
+        await h.api_artifact_resolve_comment(
+            _req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        resp = await h.api_artifact_mark_review(
+            _socket_agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 409
+        assert store.list_comments("doc")[0].status == "resolved"
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_cannot_resolve_403(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_resolve_comment(
+            _socket_agent_req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 403
+        assert store.list_comments("doc")[0].status == "open"
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_delete_needs_reason_400(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_delete_comment(
+            _socket_agent_req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 400
+        assert len(store.list_comments("doc")) == 1
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_mark_review_event_is_by_agent(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_mark_review(
+            _socket_agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 200
+        assert store.get("doc").events[-1]["by"] == "agent"
+
+
+class TestCommentIdentityFromRequest:
+    """Post and reply read who wrote the comment from the request, like delete
+    and resolve: the X-Internal-Secret header marks an agent, and a person is
+    the dashboard owner's login. Body ``author`` / ``is_agent`` are accepted
+    and ignored, never refused."""
+
+    @pytest.fixture(autouse=True)
+    def owner_login(self, _floor_monkeypatch):
+        from kiro_crew.dashboard.handlers.artifacts_parts import artifact_comments as mod
+
+        _floor_monkeypatch.setattr(mod.getpass, "getuser", lambda: "owner-login")
+
+    @pytest.mark.asyncio
+    async def test_post_body_flags_ignored_for_dashboard_call(self, store):
+        resp = await h.api_artifact_post_comment(
+            _req(
+                body={"text": "hi", "is_agent": True, "author": "someone-else"},
+                match={"slug": "doc"},
+            )
+        )
+        assert resp.status == 201, _j(resp)
+        stored = store.list_comments("doc")[0]
+        assert stored.is_agent is False
+        assert stored.author == "owner-login"
+
+    @pytest.mark.asyncio
+    async def test_post_header_marks_agent_without_body_flag(self, store):
+        resp = await h.api_artifact_post_comment(
+            _agent_req(body={"text": "hi", "author": "someone-else"}, match={"slug": "doc"})
+        )
+        assert resp.status == 201, _j(resp)
+        stored = store.list_comments("doc")[0]
+        assert stored.is_agent is True
+        assert stored.author == "agent"
+
+    @pytest.mark.asyncio
+    async def test_post_mcp_shaped_body_stays_agent(self, store):
+        # The body the MCP artifact_post_comment tool sends today.
+        resp = await h.api_artifact_post_comment(
+            _agent_req(
+                body={"text": "hi", "scope": "private", "is_agent": True, "author": "agent"},
+                match={"slug": "doc"},
+            )
+        )
+        assert resp.status == 201, _j(resp)
+        stored = store.list_comments("doc")[0]
+        assert (stored.is_agent, stored.author) == (True, "agent")
+
+    @pytest.mark.asyncio
+    async def test_post_dashboard_body_keeps_owner_name(self, store):
+        # The body the dashboard sends today: no author, no is_agent.
+        await _post("doc", text="hi")
+        stored = store.list_comments("doc")[0]
+        assert (stored.is_agent, stored.author) == (False, "owner-login")
+
+    @pytest.mark.asyncio
+    async def test_reply_body_flags_ignored_for_dashboard_call(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_reply_comment(
+            _req(
+                body={"text": "re", "is_agent": True, "author": "someone-else"},
+                match={"slug": "doc", "comment_id": root["id"]},
+            )
+        )
+        assert resp.status == 201, _j(resp)
+        reply = next(c for c in store.list_comments("doc") if c.parent_id == root["id"])
+        assert reply.is_agent is False
+        assert reply.author == "owner-login"
+
+    @pytest.mark.asyncio
+    async def test_reply_header_marks_agent_without_body_flag(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_reply_comment(
+            _agent_req(body={"text": "re"}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 201, _j(resp)
+        reply = next(c for c in store.list_comments("doc") if c.parent_id == root["id"])
+        assert reply.is_agent is True
+        assert reply.author == "agent"
+
+    @pytest.mark.asyncio
+    async def test_disagreeing_body_flags_logged_at_debug(self, store, caplog):
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            resp = await h.api_artifact_post_comment(
+                _req(
+                    body={"text": "hi", "is_agent": True, "author": "someone-else"},
+                    match={"slug": "doc"},
+                )
+            )
+        assert resp.status == 201
+        debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("ignoring body is_agent=True" in m for m in debug)
+        assert any("ignoring body author" in m for m in debug)
+        # The claimed author string itself is not written to the log.
+        assert not any("someone-else" in m for m in debug)
 
 
 class TestCommentLifecycleEvents:

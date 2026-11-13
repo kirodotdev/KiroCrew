@@ -22,7 +22,7 @@ import type { RootState } from '../../store'
 // loaded these modules (and `matchMedia` is restored for the next one).
 vi.hoisted(() => { vi.resetModules() })
 vi.mock('../../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
 vi.mock('../../api/client', () => ({
   api: {
     sttConfig: vi.fn().mockResolvedValue({ enabled: false, available: false }),

@@ -1,17 +1,22 @@
 import { useState, useEffect, useMemo, useRef, useCallback, RefObject, type ReactNode } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { OverlayPortal } from './overlayRoot'
 import { FolderOpen, FolderSearch, ChevronRight, ChevronLeft, Clock, Search, Star } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { usePointerMotion } from '../hooks/usePointerMotion'
 import ErrorNotice from './ErrorNotice'
+import { NewFolderForm, NewFolderToggle } from './ProjectPickerNewFolder'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
 import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../lib/electron'
 
 import { i18nT } from '../i18n/t'
+
+/** The Browse tab's Tab trap dismisses nothing itself (`handleEscape: false`). */
+const noop = () => {}
 
 // Copy for a failed DIRECTORY listing, keyed on the same classifier WorkspacePicker and
 // FolderPanel read, so one failure is named one way whichever picker the user is in. Three
@@ -127,7 +132,8 @@ interface ListFailure {
  * valid HTML. `tabIndex={-1}` is honest about its reach: on the two list panes the listbox's
  * own document-capture keyboard handler claims Enter and Tab, so a tab stop here could never
  * be activated -- Alt/Option+Enter on the highlighted row is the keyboard path, and the title
- * says so. The hit area is 24x24 against a 13px glyph, so a touch landing beside the glyph
+ * says so. The Browse pane's labelled star is the exception: no listbox claims its keys, so
+ * it is a real tab stop that Enter or Space toggles. The hit area is 24x24 against a 13px glyph, so a touch landing beside the glyph
  * still hits the star and not the row underneath.
  */
 function FavoriteStar({ path, on, busy, onToggle, testId, labelled = false, className = 'absolute right-1 top-1/2 -translate-y-1/2' }: {
@@ -152,8 +158,11 @@ function FavoriteStar({ path, on, busy, onToggle, testId, labelled = false, clas
       aria-pressed={on}
       aria-disabled={busy || undefined}
       aria-label={label}
+      // Keyboard activation for the Browse star: a click with `detail === 0` came from Enter
+      // or Space, since a pointer press already toggled on mousedown.
+      onClick={labelled ? e => { if (e.detail === 0 && !busy) onToggle(path) } : undefined}
       title={i18nT('components.projectPicker.favorite_hint', { action: label })}
-      tabIndex={-1}
+      tabIndex={labelled ? 0 : -1}
       data-testid={testId}
       className={`${className} flex items-center rounded hover:bg-bg-hover aria-disabled:opacity-50 ${labelled ? 'gap-1.5 px-1.5 py-1 min-w-0 text-[11px]' : 'justify-center w-6 h-6'} ${on ? 'text-accent' : 'text-muted'}`}
     >
@@ -162,6 +171,12 @@ function FavoriteStar({ path, on, busy, onToggle, testId, labelled = false, clas
     </button>
   )
 }
+
+// `change` as well as `input`: React's onChange covers both, and a select or file input never
+// reports `input` at all. `wheel` rather than `scroll`: the list highlight calls scrollIntoView,
+// and a scroll the picker made itself is not the user engaging.
+const ENGAGE_EVENTS = ['pointerdown', 'mousedown', 'click', 'keydown', 'input', 'change', 'wheel'] as const
+const ENGAGE_LISTEN = { capture: true, passive: true } as const
 
 interface Props {
   open: boolean
@@ -219,6 +234,9 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // list on screen.
   const [favoriteBusy, setFavoriteBusy] = useState<string | null>(null)
   const [browseSel, setBrowseSel] = useState(0)
+  // The New folder field under the Browse pane's favourite row. It belongs to the directory the
+  // pane shows, so every listing read closes it, and so does a tab switch.
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
   // The listing read that failed last: a directory (`browse`) or the drive list
   // (`browseDrives`). The related path, cause, and report live in the same state
   // object so the notice and its agent hand-off always describe one failure.
@@ -267,6 +285,19 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // retired by a newer recents read (for example, after close/reopen), never by
   // borrowing the ticket from an unrelated directory or drive-list request.
   const recentSeq = useRef(0)
+  // Set by any engagement with the open picker, so a read that answers late cannot move the
+  // user off the pane they are already working in. A ref, not state: `settle` reads it at
+  // callback time, where a closed-over state value would be the one captured when the open began.
+  const holdTab = useRef(false)
+  // One detector on the root rather than a flag set per control: enumerating the affordances
+  // left the arrow keys on two panes, the favourite star and the native chooser unprotected,
+  // and which control the user reached for is not a fact about whether they engaged. Capture
+  // phase so a handler inside that stops propagation cannot hide the interaction from it. The
+  // two list panes are the one thing the root cannot see: `useListKeyboardNav` navigates from
+  // a DOCUMENT capture listener that stops propagation, which runs before the event descends
+  // this far, so each nav reports its own arrows through `onMove` below, and its Alt+Enter from
+  // inside `toggleFavorite`.
+  const engage = useCallback(() => { holdTab.current = true }, [])
   // Read by the open effect only, so a caller whose field changes while the picker is up does
   // not re-run the open (which would also re-read recents and reset the tab).
   const startPathRef = useRef(startPath)
@@ -283,10 +314,36 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // and the second one to arrive picks the tab. Reset on every open, keyed to the open's ticket.
   const landing = useRef<{ ticket: number; favorites?: string[] | null; recent?: string[] | null }>({ ticket: 0 })
   const btnRef = anchorRef
-  const dropRef = useRef<HTMLDivElement>(null)
+  const dropRef = useRef<HTMLDivElement | null>(null)
+  // Attached to the node, not written as JSX capture props: a `<div>` carrying an onClick-family
+  // prop is a blocking a11y rule whose remedy is `<Clickable>`, which would give this container
+  // role="button" and Enter/Space activation that the fields and rows inside it own. The detach
+  // rides on React 18 calling a ref callback with null on unmount.
+  const bindDrop = useCallback((el: HTMLDivElement | null) => {
+    const prev = dropRef.current
+    if (prev) for (const kind of ENGAGE_EVENTS) prev.removeEventListener(kind, engage, ENGAGE_LISTEN)
+    dropRef.current = el
+    if (el) for (const kind of ENGAGE_EVENTS) el.addEventListener(kind, engage, ENGAGE_LISTEN)
+  }, [engage])
   const inputRef = useRef<HTMLInputElement>(null)
   const recentSearchRef = useRef<HTMLInputElement>(null)
   const favoriteSearchRef = useRef<HTMLInputElement>(null)
+  // The one way the New folder field closes by the user's hand (its Escape, its close control,
+  // the toggle pressed again): focus goes back to the path field, the picker's keyboard home.
+  // Left on the toggle, the next Escape would pass `isolateKeys` and close a host modal.
+  const closeNewFolder = () => { setNewFolderOpen(false); requestAnimationFrame(() => inputRef.current?.focus()) }
+  // Tab on Browse cycles the whole picker (the pane, the system folder picker, the caller's
+  // footer): a trap newer than a host Modal's, so Tab neither closes the picker nor drops into
+  // the dialog underneath. Escape and focus return keep their own owners.
+  useDialogFocusTrap(dropRef, noop, { enabled: open && tab === 'browse', handleEscape: false, restoreFocus: false })
+  // Escape on a Browse control the Tab trap reaches (Back, the star, New folder, Retry, the
+  // system folder picker) closes the picker, as it does in the path field: left to bubble it
+  // would pass `isolateKeys` and close a host modal under the picker. The path field and the
+  // New folder field handle their own Escape first, so one they already acted on is skipped.
+  const escapeClosesPicker = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !ime.claimKey(e)) return
+    e.preventDefault(); e.stopPropagation(); onOpenChange(false); btnRef?.current?.focus()
+  }
   const browseItemRefs = useRef<(HTMLElement | null)[]>([])
   const anchorRectRef = useRef<DOMRect | null>(anchorRect ?? null)
   anchorRectRef.current = anchorRect ?? null
@@ -305,6 +362,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // with no fallback, and its Retry re-asks that path.
   const browse = useCallback((path?: string, preserveInput = false, homeOnGone = false, carried?: { path: string; err: unknown }) => {
     const ticket = ++listingSeq.current
+    // Leaving the directory on screen closes its New folder field now, not when the listing
+    // lands: unmounting the form drops a pending create's own callback, so a create that answers
+    // after this navigation began cannot pull the pane back to the folder it made.
+    setNewFolderOpen(false)
     setListingInFlight(true)
     api.browseDirs(path).then(d => {
       if (ticket !== listingSeq.current) return
@@ -341,6 +402,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // lists the mounted drives so the user can cross to D:\ without typing it.
   const browseDrives = useCallback(() => {
     const ticket = ++listingSeq.current
+    setNewFolderOpen(false)
     setListingInFlight(true)
     api.browseDrives().then(d => {
       if (ticket !== listingSeq.current) return
@@ -440,6 +502,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     const ticket = ++recentSeq.current
     const favTicket = ++favoriteSeq.current
     landing.current = { ticket }
+    holdTab.current = false
     // This open retires any retry still out, so its handlers return without clearing the flag.
     setRetryingRecent(false)
     // The tab is chosen once BOTH reads have settled, by whichever settles second. Favourites
@@ -451,6 +514,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
       landing.current[which] = dirs
       const { favorites, recent } = landing.current
       if (favorites === undefined || recent === undefined) return
+      if (holdTab.current) return
       setTab(favorites?.length ? 'favorites' : recent?.length ? 'recent' : 'browse')
     }
     const start = startPathRef.current.trim()
@@ -577,6 +641,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
    * they are. A toggle never commits the project: `select` is the row's own job.
    */
   const toggleFavorite = (path: string) => {
+    // The nav hook stops propagation inside its own Enter branch before calling this, so
+    // Alt+Enter on a row never reaches the root detector. Above the early return: the
+    // keypress is the engagement whatever the write then does.
+    engage()
     const clean = stripTrailingSeparator(path.trim())
     if (!clean || favoriteBusy) return
     setFavoriteBusy(clean)
@@ -605,6 +673,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     // sanctioned second action on the highlighted row, and it is what gives the toggle a
     // keyboard path at all.
     onAltEnter: i => { const d = filteredRecent[i]; if (!d) return false; toggleFavorite(d); return true },
+    onMove: engage,
     onClose: () => onOpenChange(false),
   })
 
@@ -615,6 +684,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     count: filteredFavorites.length,
     onChoose: i => { const d = filteredFavorites[i]; if (d) select(d) },
     onAltEnter: i => { const d = filteredFavorites[i]; if (!d) return false; toggleFavorite(d); return true },
+    onMove: engage,
     onClose: () => onOpenChange(false),
   })
 
@@ -627,6 +697,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // Reset the Browse highlight whenever the visible list changes (tab switch,
   // drill into a new dir, or filter edit).
   useEffect(() => { setBrowseSel(0) }, [tab, input, browsePath])
+  useEffect(() => { setNewFolderOpen(false) }, [tab])
   // Browse keeps its own selection, so it asks the shared motion check directly:
   // hover moves the highlight only on real pointer motion (see usePointerMotion).
   const browsePointerMoved = usePointerMotion(open && tab === 'browse')
@@ -746,7 +817,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
 
   return <OverlayPortal>{
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
-    <div ref={dropRef} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
+    <div ref={bindDrop} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
       const dropMinH = 200
       const spaceBelow = window.innerHeight - anchorR.bottom - 8
       const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2
@@ -757,15 +828,16 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
       }
       return { top: anchorR.bottom + 4, left, height: Math.min(460, Math.max(200, spaceBelow)) }
     })()}>
-      {/* Tabs */}
+      {/* Tabs. Out of the Tab order, like the Select button: they switch on mousedown only, so a
+          Tab stop here could not be activated, and Browse's Tab trap spans this whole popover. */}
       <div className="flex border-b border-border">
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'favorites' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('favorites') }}>
+        <button tabIndex={-1} className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'favorites' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('favorites') }}>
           <Star size={12} /> {i18nT('components.projectPicker.favorites')}
         </button>
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
+        <button tabIndex={-1} className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
           <Clock size={12} /> {i18nT('components.projectPicker.recent')}
         </button>
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('browse') }}>
+        <button tabIndex={-1} className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('browse') }}>
           <FolderOpen size={12} /> {i18nT('components.projectPicker.browse')}
         </button>
       </div>
@@ -941,7 +1013,8 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
           </div>
         </>
       ) : (
-        <>
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- an Escape boundary for the pane's buttons, not an activatable control.
+        <div className="contents" onKeyDown={escapeClosesPicker}>
           <div className="p-2 border-b border-border flex gap-1 items-center">
             {canGoUp && (
               /* One control, one shape: chevron plus a visible name. The name is
@@ -989,9 +1062,9 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0 && canGoUp) {
                   e.preventDefault(); goUp()                                          // caret at start -> go to parent (or the drive list)
                 }
-                else if (e.key === 'Escape' || e.key === 'Tab') {
-                  // This input is a composable free-text path field. An Escape
-                  // or Tab the IME owns is cancelling or cycling the candidate
+                else if (e.key === 'Escape') {
+                  // This input is a composable free-text path field. An
+                  // Escape the IME owns is cancelling the candidate
                   // list, not leaving the picker — acting on it would close the
                   // popover and yank focus mid-composition. `claimKey` claims
                   // through this input's own tracked latch (the
@@ -1004,14 +1077,16 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               }}
               className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent"
             />
-            <button disabled={!canCommit} onMouseDown={e => { e.preventDefault(); if (canCommit) select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
+            {/* Out of the Tab order: it acts on mousedown only, and Enter in the field is its keyboard path. */}
+            <button tabIndex={-1} disabled={!canCommit} onMouseDown={e => { e.preventDefault(); if (canCommit) select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
           </div>
           {/* Favourite the directory the pane is ON, without committing it as the project. Its
               own row, labelled, rather than a third control beside Back and Select. Gated on
               there BEING one: the drive list has no path of its own, and a typed path that has
-              not listed yet is not a directory the gateway would accept. */}
+              not listed yet is not a directory the gateway would accept. The same row carries
+              New folder, which makes a folder in that directory, for the same reason. */}
           {browsePath && (
-            <div className="px-2 py-0.5 border-b border-border flex">
+            <div className="px-2 py-0.5 border-b border-border flex items-center gap-1">
               <FavoriteStar
                 path={browsePath}
                 on={favoriteSet.has(browsePath)}
@@ -1019,9 +1094,20 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 onToggle={toggleFavorite}
                 testId="pp-browse-star"
                 labelled
-                className="max-w-full"
+                className="min-w-0"
               />
+              <NewFolderToggle open={newFolderOpen} onToggle={() => (newFolderOpen ? closeNewFolder() : setNewFolderOpen(true))} />
             </div>
+          )}
+          {browsePath && newFolderOpen && (
+            <NewFolderForm
+              parent={browsePath}
+              ime={ime}
+              // Listing the new folder closes the field (the pane's directory changed) and puts
+              // its path in the field above, so Select commits it.
+              onCreated={path => { inputRef.current?.focus(); browse(path) }}
+              onCancel={closeNewFolder}
+            />
           )}
           {browseNotice && (
             <div className="px-3 py-2 border-b border-border flex items-center gap-2" aria-busy={noticeRetry?.busy || undefined}>
@@ -1075,7 +1161,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               </button>
             ))}
           </div>
-        </>
+        </div>
       )}
       {nativePickReady && (
         <div className="px-2 py-1.5 border-t border-border shrink-0 flex flex-col gap-1.5">
@@ -1096,10 +1182,12 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               confirmed a pick can work; everywhere else the panes above are the whole picker.
               A bordered resting state so it reads as a control; dimmed only while its dialog (or
               the listing that checks the answer) is out, and inert then like the Retry control:
-              `aria-disabled` plus the in-handler guard. */}
+              `aria-disabled` plus the in-handler guard. Browse's Tab trap reaches it, so its
+              Escape closes the picker like the pane's buttons. */}
           <button
             type="button"
             onClick={pickNative}
+            onKeyDown={escapeClosesPicker}
             aria-disabled={nativePickBusy || undefined}
             className="w-full px-2 py-1.5 text-[12px] text-text bg-bg-hover/60 border border-border rounded hover:bg-bg-hover flex items-center justify-center gap-1.5 aria-disabled:opacity-50 aria-disabled:cursor-progress"
           >

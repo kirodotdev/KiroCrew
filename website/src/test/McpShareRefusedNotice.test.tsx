@@ -2,9 +2,9 @@
 //
 // Contract under test:
 // - a server on the share list whose launch the gateway refused is named, with
-//   the restart line and a link to Developer > MCP Management, where it is approved.
-// - the link lands on /developer?tab=mcp-pool, a route served whether or not
-//   Developer Mode shows it in the side rail.
+//   the restart line and a link to the MCP Servers page's Sharing view, where it is approved.
+// - the link lands on Customize → MCP Servers, Sharing view, a surface served for anyone (no
+//   dependence on Developer Mode).
 // - the list comes from the gateway's `share_refused`, which matches a refusal
 //   recorded under a slash-named server's alias.
 // - a failed status read renders an error notice; a 403 for a non-owner is silent;
@@ -14,7 +14,8 @@
 //   off, or no refusal at all renders nothing.
 // - with staged edits on the host page the link opens a new tab, so they survive.
 // - McpTab renders the notice above its server table.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+// - the refused names join the way the active language joins a list.
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
@@ -33,6 +34,8 @@ vi.mock('../providers', () => ({
 vi.mock('../components/McpBrowserModal', () => ({ default: () => null }))
 
 import { ApiError } from '../api/apiError'
+// `/all` registers the ja and zh-CN catalogs; the vitest setup registers English only.
+import { i18next } from '../i18n/all'
 import McpShareRefusedNotice, { MCP_MANAGEMENT_PATH, STATUS_POLL_MS, refusedShares } from '../pages/overview/McpShareRefusedNotice'
 import McpTab from '../pages/overview/McpTab'
 
@@ -59,11 +62,11 @@ function mount(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   lastClient = qc
   return render(
-    <MemoryRouter initialEntries={['/capabilities?tab=mcp']}>
+    <MemoryRouter initialEntries={['/']}>
       <QueryClientProvider client={qc}>
         <Routes>
-          <Route path="/capabilities" element={ui} />
-          <Route path="/developer" element={<Where />} />
+          <Route path="/" element={ui} />
+          <Route path="/capabilities" element={<Where />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -92,10 +95,10 @@ describe('McpShareRefusedNotice', () => {
     expect(notice).toHaveTextContent('every chat starts its own copy')
     expect(notice).toHaveTextContent('Approve sharing')
     expect(notice).toHaveTextContent('Settings → About → Restart gateway')
-    const link = screen.getByRole('link', { name: 'Review in MCP Management' })
+    const link = screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
     fireEvent.click(link)
-    expect(await screen.findByTestId('where')).toHaveTextContent('/developer?tab=mcp-pool')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/capabilities?tab=mcp-servers&view=sharing')
   })
 
   it('opens MCP Management in a new tab while the page holds staged edits', async () => {
@@ -104,7 +107,7 @@ describe('McpShareRefusedNotice', () => {
     )
     mount(<McpShareRefusedNotice stagedChanges />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
-    const link = screen.getByRole('link', { name: 'Review in MCP Management' })
+    const link = screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
@@ -116,7 +119,26 @@ describe('McpShareRefusedNotice', () => {
     )
     mount(<McpShareRefusedNotice />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
-    expect(screen.getByRole('link', { name: 'Review in MCP Management' })).not.toHaveAttribute('target')
+    expect(screen.getByRole('link', { name: 'Review in MCP Servers' })).not.toHaveAttribute('target')
+  })
+
+  it('renders the refusal as an error notice with the agent hand-off', async () => {
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice />)
+    const notice = await screen.findByTestId('mcp-share-refused', undefined, WAIT)
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('offers no agent hand-off while the page holds staged edits', async () => {
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice stagedChanges />)
+    await screen.findByTestId('mcp-share-refused', undefined, WAIT)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
   })
 
   it('uses the singular form for one server', async () => {
@@ -127,6 +149,17 @@ describe('McpShareRefusedNotice', () => {
     expect(await screen.findByTestId('mcp-share-refused', undefined, WAIT)).toHaveTextContent(
       '1 server set to share is not shared: alpha-mcp.',
     )
+  })
+
+  it.each(['ja', 'zh-CN'])('joins the refused names the way %s does', async lng => {
+    const previous = i18next.language
+    onTestFinished(() => i18next.changeLanguage(previous))
+    await i18next.changeLanguage(lng)
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'beta-mcp': 'changed_needs_reapproval', 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice />)
+    expect(await screen.findByTestId('mcp-share-refused', undefined, WAIT)).toHaveTextContent('alpha-mcp、beta-mcp')
   })
 
   it('is rendered by McpTab', async () => {
@@ -146,7 +179,7 @@ describe('McpShareRefusedNotice', () => {
     ])
     mount(<McpTab />)
     await screen.findByTestId('mcp-share-refused', undefined, WAIT)
-    const link = () => screen.getByRole('link', { name: 'Review in MCP Management' })
+    const link = () => screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link()).not.toHaveAttribute('target')
     fireEvent.click(await screen.findByRole('button', { name: /Uninstall/ }, WAIT))
     await waitFor(() => expect(link()).toHaveAttribute('target', '_blank'))

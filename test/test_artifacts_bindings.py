@@ -42,6 +42,8 @@ from kiro_crew.artifacts import ArtifactStore
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_artifacts_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 #: Member -> (kind, signature digest, owning module). Frozen at the split: the kind and
 #: the signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, str, str]] = {
@@ -83,6 +85,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "add_comment": ("function", "6b133a71159a", "artifacts_comments"),
     "allowed_source_roots": ("function", "4c8ae5b2fe43", "artifacts_source_link"),
     "artifact_index_key": ("staticmethod", "06db94384f74", "artifacts_scans"),
+    "check_create": ("function", "3d9bb8721033", "artifacts_writes"),
     "clear_publication": ("function", "0feb3239807e", "artifacts"),
     "create": ("function", "8800112eea34", "artifacts_writes"),
     "create_image": ("function", "bf9291cc3a6d", "artifacts_writes"),
@@ -227,13 +230,6 @@ def _class_only_constructs(fn: ast.FunctionDef) -> list[str]:
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    fn = tree.body[0]
-    assert isinstance(fn, ast.FunctionDef)
-    assert sorted(_class_only_constructs(fn)) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", art_mod._OWNERS)

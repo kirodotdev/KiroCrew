@@ -21,7 +21,7 @@ export const ASK_QUESTION_SERVER = 'kirocrew-core'
 export const ASK_ANSWERED_HEADER = 'User has answered your questions:'
 
 /**
- * Mirrors `_ASK_PAIR_SEPARATOR` (validation.py): joins the two JSON strings of an
+ * Mirrors `_ASK_PAIR_SEPARATOR` (validation_parts/ask_question_card.py): joins the two JSON strings of an
  * answered pair. Neither `=` nor `:`, because the transport's key=value credential
  * scrub accepts a quote and either of those after a key name and would match
  * across a question and its answer.
@@ -32,7 +32,7 @@ export const ASK_PAIR_SEPARATOR = ' -> '
 export const MAX_TOOL_RESULT_CHARS = 8000
 
 /**
- * Mirrors `_ASK_MAX_ANSWER_LEN` (validation.py): the longest custom answer the
+ * Mirrors `_ASK_MAX_ANSWER_LEN` (validation_parts/ask_question_card.py): the longest custom answer the
  * server accepts, derived there so four max-length questions and answers fit
  * one tool result. `askQuestionTool.test.ts` recomputes it from the Python
  * source, so this literal cannot drift from the server's bound.

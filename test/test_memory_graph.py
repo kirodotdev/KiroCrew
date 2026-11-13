@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,9 +18,7 @@ def _get_handler():
     return mod.api_memory_graph
 
 
-# ---------------------------------------------------------------------------
 # Unit tests — pure logic, no HTTP
-# ---------------------------------------------------------------------------
 
 
 class TestMemoryGraphNodeExtraction:
@@ -126,7 +125,10 @@ class TestMemoryGraphNodeExtraction:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = self._make_state(
             tmp_path,
-            history="# 2026-03-25\n#### 06:47 UTC\n[2026-03-25 01:38] Did some work on the feature",
+            history=(
+                "# 2026-03-25\n#### 06:47 UTC\n### Shipped the export feature\n"
+                "[2026-03-25 01:38] Did some work on the feature"
+            ),
         )
         request = MagicMock()
         request.app = {"state": state}
@@ -134,8 +136,76 @@ class TestMemoryGraphNodeExtraction:
         resp = await _get_handler()(request)
         data = json.loads(resp.body)
 
-        hist_nodes = [n for n in data["nodes"] if n["group"] == "history"]
-        assert len(hist_nodes) >= 2  # heading + bracketed entry
+        hist_titles = sorted(n["title"] for n in data["nodes"] if n["group"] == "history")
+        assert hist_titles == [
+            "Shipped the export feature",
+            "[2026-03-25 01:38] Did some work on the feature",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "# 2026-03-25",
+            "#### 06:47 UTC",
+            "#### 6:47 CST",
+            "#### 06:47 +08",
+            "#### 06:47 +0530",
+            "#### 06:47 China Standard Time",
+            "#### 06:47",
+            "#### 06:47 ChST",
+            "#### 06:47 UTC-11",
+            "#### 06:47 UTC+13",
+            "#### 06:47 W. Europe Standard Time",
+        ],
+    )
+    async def test_history_timestamp_headers_are_not_nodes(self, tmp_path, monkeypatch, header):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(tmp_path, history=header)
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        assert [n for n in data["nodes"] if n["group"] == "history"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_stamp_in_the_host_zone_name_is_not_a_node(self, tmp_path, monkeypatch):
+        """A localized Windows zone name is what ``%Z`` printed from ``time.tzname``."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # Rebinds the recognizer module's own `time` name, so nothing else in the
+        # worker sees the fake zones.
+        monkeypatch.setattr(
+            "kiro_crew.memory_history_stamps.time",
+            SimpleNamespace(tzname=("Mitteleuropäische Zeit", "Mitteleuropäische Sommerzeit")),
+        )
+        state = self._make_state(
+            tmp_path, history="#### 06:47 Mitteleuropäische Zeit\n#### 10:00 deploy chat"
+        )
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        hist_titles = [n["title"] for n in data["nodes"] if n["group"] == "history"]
+        assert hist_titles == ["10:00 deploy chat"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header", ["#### 06:47 standup notes", "## 2026-03-25 release"])
+    async def test_history_header_with_content_after_time_stays(
+        self, tmp_path, monkeypatch, header
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(tmp_path, history=header)
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        assert len([n for n in data["nodes"] if n["group"] == "history"]) == 1
 
     @pytest.mark.asyncio
     async def test_lessons_become_nodes(self, tmp_path, monkeypatch):
@@ -472,6 +542,60 @@ class TestMemoryGraphEdgeDetection:
         for edge in data["edges"]:
             assert edge["from"] != edge["to"], "Self-edges should not exist"
 
+    @staticmethod
+    def _pref_edge_count(data):
+        pref_ids = {n["id"] for n in data["nodes"] if n["group"] == "preference"}
+        return len([e for e in data["edges"] if e["from"] in pref_ids])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pref",
+        [
+            "- 账单服务查询接口超时要加重试",  # name at the start of prose
+            "- 排查账单服务查询接口的超时问题",  # name in the middle of prose
+            "- 这周主要在修账单服务",  # name at the end of prose
+            "- 修复 账单服务 的超时问题",  # name between spaces
+        ],
+    )
+    async def test_cjk_project_name_links_inside_prose(self, tmp_path, monkeypatch, pref):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(tmp_path, prefs=pref, projects="## 账单服务\n- Owner: billing")
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        assert self._pref_edge_count(data) == 1
+
+    @pytest.mark.asyncio
+    async def test_cjk_project_name_does_not_link_unrelated_text(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(
+            tmp_path, prefs="- 订单服务查询接口超时", projects="## 账单服务\n- Owner: billing"
+        )
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        assert self._pref_edge_count(data) == 0
+
+    @pytest.mark.asyncio
+    async def test_ascii_project_name_still_needs_word_boundary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(
+            tmp_path, prefs="- Uses Acmeville for staging", projects="## Acme\n- Some detail"
+        )
+        request = MagicMock()
+        request.app = {"state": state}
+
+        resp = await _get_handler()(request)
+        data = json.loads(resp.body)
+
+        assert self._pref_edge_count(data) == 0
+
 
 class TestMemoryGraphResponseFormat:
     """Tests for the API response structure."""
@@ -665,9 +789,7 @@ class TestMemoryGraphErrorHandling:
         ), "File-based lessons should still load when vector store errors"
 
 
-# ---------------------------------------------------------------------------
 # Integration tests — real HTTP server via aiohttp TestClient
-# ---------------------------------------------------------------------------
 
 
 class TestMemoryGraphHTTPIntegration:

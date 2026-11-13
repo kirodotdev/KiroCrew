@@ -5,7 +5,7 @@
  * scrolls to a Lessons card that is about to disappear.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { renderWithProviders } from './helpers'
 
@@ -26,13 +26,15 @@ const { api } = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api }))
 
 /** What the stub vector card reports, and the props it was given. */
-const vector = vi.hoisted(() => ({ active: false, settled: true, filter: undefined as string | undefined }))
-function StubVectorCard({ onActiveChange, onSettledChange, initialSemanticFilter }: {
+const vector = vi.hoisted(() => ({ active: false, settled: true, filter: undefined as string | undefined, onDirtyChange: undefined as ((d: boolean) => void) | undefined }))
+function StubVectorCard({ onActiveChange, onSettledChange, onDirtyChange, initialSemanticFilter }: {
   onActiveChange?: (a: boolean) => void
   onSettledChange?: (s: boolean) => void
+  onDirtyChange?: (d: boolean) => void
   initialSemanticFilter?: string
 }) {
   vector.filter = initialSemanticFilter
+  vector.onDirtyChange = onDirtyChange
   useEffect(() => { onActiveChange?.(vector.active) }, [onActiveChange])
   useEffect(() => { onSettledChange?.(vector.settled) }, [onSettledChange])
   return vector.active ? <div id="memory-semantic-card" data-testid="semantic-card" /> : <div />
@@ -41,7 +43,10 @@ vi.mock('../pages/overview/VectorMemoryCard', () => ({
   SEMANTIC_CARD_ID: 'memory-semantic-card',
   default: StubVectorCard,
 }))
-vi.mock('../pages/overview/EmbeddingModelCard', () => ({ default: () => <div /> }))
+const embed = vi.hoisted(() => ({ onDirtyChange: undefined as ((d: boolean) => void) | undefined }))
+vi.mock('../pages/overview/EmbeddingModelCard', () => ({
+  default: ({ onDirtyChange }: { onDirtyChange?: (d: boolean) => void }) => { embed.onDirtyChange = onDirtyChange; return <div /> },
+}))
 vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div /> }))
 const { default: MemoryTab, LESSONS_CARD_ID } = await import('../pages/overview/MemoryTab')
 
@@ -55,6 +60,8 @@ beforeEach(() => {
   vector.active = false
   vector.settled = true
   vector.filter = undefined
+  vector.onDirtyChange = undefined
+  embed.onDirtyChange = undefined
   api.lessons.mockResolvedValue({ lessons: [] })
   api.memoryPreferences.mockResolvedValue({ content: '' })
   api.memoryProjects.mockResolvedValue({ content: '' })
@@ -69,6 +76,13 @@ beforeEach(() => {
 afterEach(() => {
   Element.prototype.scrollIntoView = original
 })
+
+/** Whether the page holds a browser unload for unsaved work. */
+function leave() {
+  const event = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
 
 describe('?focus=lessons', () => {
   it('lands on the Lessons card when vector memory is off', async () => {
@@ -89,6 +103,24 @@ describe('?focus=lessons', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" />)
     await waitFor(() => expect(document.getElementById(LESSONS_CARD_ID)).not.toBeNull())
     expect(scrolled).toEqual([])
+  })
+
+  it('counts a typed lesson that was not added yet as unsaved work', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const rule = await screen.findByRole('textbox', { name: 'Rule' })
+    expect(leave()).toBe(false)
+    fireEvent.change(rule, { target: { value: 'Always use tabs' } })
+    await waitFor(() => expect(leave()).toBe(true))
+  })
+
+  it.each([['vector', vector], ['embedding model', embed]])('counts a draft the %s card reports as unsaved work', async (_card, reporter) => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByRole('textbox', { name: 'Rule' })
+    expect(leave()).toBe(false)
+    act(() => reporter.onDirtyChange?.(true))
+    expect(leave()).toBe(true)
+    act(() => reporter.onDirtyChange?.(false))
+    expect(leave()).toBe(false)
   })
 
   it('leaves the page alone without the focus', async () => {

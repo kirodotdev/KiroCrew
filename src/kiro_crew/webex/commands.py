@@ -48,8 +48,12 @@ _MID_TURN_ALIASES = _QUEUE_ALIASES | _STEER_ALIASES
 #: covers every spelling this channel accepts. Inlining it costs nothing visible —
 #: the probe falls back to its default, and these two spellings are a subset of what
 #: the other channels contribute, so the union it asserts on does not move. The
-#: coverage just stops. The rest are named for symmetry; only that one has a reader
-#: outside this module.
+#: coverage just stops. The rest have a reader outside this module too: the
+#: quick-prompt reserved-token test collects every ``*_ALIASES`` frozenset off each
+#: channel's ``commands`` module by reflection. Inlining one drops no token from that
+#: check today, since another surface it reads supplies each spelling, but it hides
+#: the set from the check, so a Webex-only spelling added there later goes unchecked
+#: while the test still passes.
 _ALIAS_TO_COMMAND: dict[str, str] = {
     alias: canonical
     for canonical, aliases in (

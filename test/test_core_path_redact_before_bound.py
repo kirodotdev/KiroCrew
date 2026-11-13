@@ -237,7 +237,6 @@ _SCANNED_MODULES = [
     "src/kiro_crew/vector_memory_lifecycle.py",
     "src/kiro_crew/vector_memory_member.py",
     "src/kiro_crew/vector_memory_semantic_write.py",
-    "src/kiro_crew/knowledge/agent_fetch.py",
     "src/kiro_crew/slack/gateway.py",
     "src/kiro_crew/telegram/renderer.py",
     # The owners the Telegram renderer is composed from, beside its facade.

@@ -276,8 +276,13 @@ class TestContextBuilder:
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
             lessons=LessonStore(base_dir=tmp_path),
         )
+        # A person sent this turn: the follow-up card is admitted only then.
         dash, _ = builder.build_message(
-            "done", is_new_session=False, interactive=True, session_key="dashboard:chat-1"
+            "done",
+            is_new_session=False,
+            interactive=True,
+            session_key="dashboard:chat-1",
+            directive_user_origin=True,
         )
         assert "ask_question" in dash, "dashboard session must get the question nudge"
         # The nudge must say ask_question blocks and returns the answers as its result.
@@ -495,6 +500,7 @@ class TestContextBuilder:
             session_key="dashboard:chat-1",
             project="/workspace/example",
             thread_meta=thread_meta,
+            directive_user_origin=True,
         )
 
         marker = "[REPLY FORMAT RULES]"
@@ -1498,6 +1504,13 @@ class TestLoadAgentPrompt:
         self._write_spec(tmp_path, monkeypatch, f"file://{contract}")
         loaded = ContextBuilder._load_agent_prompt("test", owner_template=owner_template)
         assert loaded == "RESOLVED_CONTRACT"
+
+    def test_a_file_uri_spelled_prompt_reads_the_file_it_names(self, tmp_path, monkeypatch):
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute prompt."""
+        own = tmp_path / "own-prompt.md"
+        own.write_text("OWN_URI_PERSONA", encoding="utf-8")
+        self._write_spec(tmp_path, monkeypatch, "file:///" + own.as_posix().lstrip("/"))
+        assert ContextBuilder._load_agent_prompt("test") == "OWN_URI_PERSONA"
 
     def test_owner_template_custom_prompt_omitted(self, tmp_path, monkeypatch):
         """An owner template's own (non-managed) prompt reaches the model through

@@ -362,8 +362,7 @@ describe('ComputerUsePanel', () => {
       // The panel must stop polling on the shapes the backend itself returns as
       // normal: `unknown` (the probe could not run) and `unsupported` (no TCC on
       // this platform). Re-polling while accessibility !== 'granted' never
-      // terminates on those. Each tick shells out to a `kirocrew computer
-      // doctor --json` child.
+      // terminates on those. Each tick spawns a permission-probe child process.
       expect(permissionPollInterval('granted', t0, t0)).toBe(false)
       expect(permissionPollInterval('unknown', t0, t0)).toBe(false)
       expect(permissionPollInterval('unsupported', t0, t0)).toBe(false)

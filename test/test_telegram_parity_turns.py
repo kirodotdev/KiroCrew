@@ -23,11 +23,35 @@ from telegram_parity_helpers import (  # noqa: F401 -- the autouse fixture regis
     _msg,
     _renderer,
 )
+from telegram_wire_helpers import telegram_wire
 from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _origin, _prime_live
 
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.telegram import renderer_status
 from kiro_crew.telegram.renderer import TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundMessage
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import await_until, finished
+
+
+def _frozen_turn_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+    """Freeze the footer's clock, so a turn that started N s ago has taken exactly N s.
+
+    ``TelegramRenderer._turn_footer`` is bound from ``renderer_status``, which reads
+    ``time.monotonic()`` through its own ``import time``, so the clock goes there.
+    """
+    clock = ManualClock()
+    clock.install(monkeypatch, renderer_status)
+    return clock
+
+
+async def _title_tasks_done(dispatcher: Any) -> None:
+    """Wait for every title task the dispatcher has spawned, under the lost-run bound.
+
+    A turn spawns its title task before ``handle_message`` returns and holds it in
+    ``_title_tasks``, so once this returns nothing the turn started is still in flight.
+    """
+    await finished(asyncio.gather(*list(dispatcher._title_tasks)), "the title tasks")
 
 
 class TestTurnFooter:
@@ -44,12 +68,10 @@ class TestTurnFooter:
         renderer, _ = self._renderer_with_ctx(4)
         assert renderer._turn_footer() == ""
 
-    def test_a_slow_turn_reports_its_duration(self) -> None:
-        import time as _time
-
+    def test_a_slow_turn_reports_its_duration(self, monkeypatch) -> None:
+        clock = _frozen_turn_clock(monkeypatch)
         renderer, _ = self._renderer_with_ctx(4)
-        # flake-ok: pre-existing real monotonic stamp 95 s back; the footer text changes only if a second passes between the two reads, moved verbatim; tracked for a de-flake pass
-        renderer._turn_started = _time.monotonic() - 95
+        renderer._turn_started = clock.monotonic() - 95
         footer = renderer._turn_footer()
         assert "Finished in 1m 35s" in footer and "ctx 4%" in footer
 
@@ -61,24 +83,21 @@ class TestTurnFooter:
         footer = renderer._turn_footer()
         assert icon in footer and f"ctx {pct}%" in footer
 
-    def test_an_unreadable_context_client_still_reports_a_slow_turn(self) -> None:
-        import time as _time
+    def test_an_unreadable_context_client_still_reports_a_slow_turn(self, monkeypatch) -> None:
+        clock = _frozen_turn_clock(monkeypatch)
 
         def _boom() -> float:
             raise RuntimeError("no session")
 
         renderer, _ = _renderer()
         renderer.attach_context_client(SimpleNamespace(context_usage_pct=_boom))
-        # flake-ok: pre-existing real monotonic stamp 30 s back; the footer text changes only if a second passes between the two reads, moved verbatim; tracked for a de-flake pass
-        renderer._turn_started = _time.monotonic() - 30
+        renderer._turn_started = clock.monotonic() - 30
         assert renderer._turn_footer() == "Finished in 30s"
 
-    def test_no_context_client_at_all_still_reports_a_slow_turn(self) -> None:
-        import time as _time
-
+    def test_no_context_client_at_all_still_reports_a_slow_turn(self, monkeypatch) -> None:
+        clock = _frozen_turn_clock(monkeypatch)
         renderer, _ = _renderer()
-        # flake-ok: pre-existing real monotonic stamp 30 s back; the footer text changes only if a second passes between the two reads, moved verbatim; tracked for a de-flake pass
-        renderer._turn_started = _time.monotonic() - 30
+        renderer._turn_started = clock.monotonic() - 30
         assert renderer._turn_footer() == "Finished in 30s"
 
     @pytest.mark.asyncio
@@ -463,8 +482,7 @@ class TestAutoTitle:
             mp.setattr(auto_title, "maybe_auto_title", _fake)
             await d.handle_message(_dm("what is the plan"))
             await d.handle_message(_dm("and the next step"))
-            # flake-ok: pre-existing zero-delay yield before the assert, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            await _title_tasks_done(d)
         assert len(calls) == 1, "the conversation is named once, not once per turn"
         assert calls[0][1]["source"] == "telegram"
 
@@ -484,8 +502,7 @@ class TestAutoTitle:
                 lambda *a, **k: calls.append(1) or _done(""),
             )
             await d.handle_message(_dm("what is the plan"))
-            # flake-ok: pre-existing zero-delay yield before the absence assert, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            await _title_tasks_done(d)
         assert not calls
 
     @pytest.mark.asyncio
@@ -497,22 +514,22 @@ class TestAutoTitle:
 
         d, _, _ = _dispatcher({7})
         started = asyncio.Event()
+        release = asyncio.Event()
 
         async def _slow(*a: Any, **k: Any) -> str:
             started.set()
-            # flake-ok: pre-existing 50 ms stub title generation, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms stub title generation, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
+            await release.wait()
             return "Named"
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(auto_title, "maybe_auto_title", _slow)
             await d.handle_message(_dm("what is the plan"))
-            # flake-ok: pre-existing unbounded Event.wait on the title task the turn starts itself, moved verbatim; tracked for a de-flake pass
-            await started.wait()
-            assert d._title_tasks, "the in-flight task must be strongly referenced"
-            # flake-ok: pre-existing unbounded gather of the title tasks, moved verbatim; tracked for a de-flake pass
-            await asyncio.gather(*list(d._title_tasks))
+            try:
+                await await_until(started, what="the title generation to start")
+                assert d._title_tasks, "the in-flight task must be strongly referenced"
+            finally:
+                release.set()
+            await _title_tasks_done(d)
         assert not d._title_tasks, "a finished task must be discarded, not accumulated"
 
 
@@ -754,6 +771,7 @@ class TestStatsCounters:
     def test_a_governance_denied_message_counts_nothing(self) -> None:
         # It never happened as far as the operator's own traffic figures go, and
         # counting it would make the failure ratio read as the bot's fault.
+        from kiro_crew.messaging import dispatch
         from kiro_crew.telegram import transport_dispatch as td
 
         d, _, _ = _dispatcher({7})
@@ -765,7 +783,7 @@ class TestStatsCounters:
         )
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(td, "Stats", lambda: recorder)
-            mp.setattr(td, "channel_inbound_permitted", _false)
+            mp.setattr(dispatch, "channel_inbound_permitted", _false)
             asyncio.run(d.handle_message(_dm("a question")))
         assert seen == []
 
@@ -947,13 +965,24 @@ class TestVoiceReplyCharacterization:
         assert order == [("speak", ["telegram:kirocrew:direct:1"]), ("persist",)]
 
     @pytest.mark.asyncio
-    async def test_a_forum_turn_speaks_with_an_int_thread(self) -> None:
+    async def test_a_forum_turn_speaks_with_an_int_thread(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        path = tmp_path / "reply.ogg"
+        path.write_bytes(b"OggS..")
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver",
+            self._synth([], [], path),
+        )
+        # The fake provider's answer is short; the floor is not what this is about.
+        monkeypatch.setattr("kiro_crew.telegram.dispatch.voice._VOICE_MIN_CHARS", 1)
         d, _client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         d._voice_pref[("forum", "-100999:4")] = True
-        speak = AsyncMock()
-        d._speak_reply = speak  # type: ignore[method-assign]
-        await d.handle_message(_forum_msg("hello"))
-        assert speak.await_args.args[3] == 4
+        async with telegram_wire(monkeypatch) as wire:
+            d.client = wire.client  # type: ignore[assignment]
+            await d.handle_message(_forum_msg("hello"))
+        [voice] = wire.sent("sendVoice")
+        assert (voice.get("chat_id"), voice.get("message_thread_id")) == ("-100999", "4")
 
     @pytest.mark.asyncio
     async def test_no_voice_when_off(self) -> None:
@@ -1008,9 +1037,7 @@ class TestStatsAndReplyTargetCharacterization:
             asked.append(channel)
             raise RuntimeError("profile store down")
 
-        monkeypatch.setattr(
-            "kiro_crew.telegram.transport_dispatch.channel_inbound_permitted", _raise
-        )
+        monkeypatch.setattr("kiro_crew.messaging.dispatch.channel_inbound_permitted", _raise)
         d, _client, _sess = _dispatcher({7})
         with pytest.raises(RuntimeError):
             asyncio.run(d.handle_message(_dm("hi")))

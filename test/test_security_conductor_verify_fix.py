@@ -401,6 +401,20 @@ class TestHoldsIsUnreachableWhileAnythingIsUnverifiable:
         assert body["golden_paths_checked"] == 0
         assert symptom in body["corpus_problems"][0]
 
+    def test_a_utf16_corpus_is_unverifiable_not_a_traceback(
+        self, staged: Path, tmp_path: Path, worktree: Path
+    ) -> None:
+        """UTF-16 with its BOM is not UTF-8, so it is a corpus nobody could read."""
+        db = tmp_path / "findings.db"
+        corpus_path(staged).write_bytes('{"golden_paths": []}'.encode("utf-16"))
+        install_verifier(staged, VERIFIER_REJECTED)
+        result = run_fix(staged, db, worktree)
+        assert result.returncode == EXIT_UNVERIFIABLE, result.stderr
+        assert "Traceback" not in result.stderr
+        body = payload(result)
+        assert body["golden_paths_checked"] == 0
+        assert "not UTF-8" in body["corpus_problems"][0]
+
     def test_an_unreadable_deny_fence_makes_every_shell_row_unverifiable(
         self, staged: Path, tmp_path: Path, worktree: Path
     ) -> None:

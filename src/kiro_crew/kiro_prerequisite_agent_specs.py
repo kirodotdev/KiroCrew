@@ -252,6 +252,7 @@ async def _repair_agent_specs(self: KiroPrerequisiteService) -> str:
     try:
         await asyncio.to_thread(_rebuild)
     except Exception as exc:
+        # PlatformCompositionError too: boot enforces composition; the gate reports a failure.
         logger.error("Agent spec repair from the readiness gate failed", exc_info=True)
         return _sanitize_detail(f"{type(exc).__name__}: {exc}")
     logger.info("Agent specs repaired from the readiness gate")

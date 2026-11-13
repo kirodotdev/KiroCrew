@@ -162,6 +162,59 @@ def test_unreadable_config_is_refused(repo: Path) -> None:
         gch.config_hook_names(repo)
 
 
+#: git's line for a ``.git`` file whose ``gitdir:`` names no git directory. Older git
+#: names the missing target; newer git (2.56 on CI) names the ``.git`` file itself.
+_DANGLING_GITFILE_WORDS = (
+    "not a git repository: ",
+    "gitfile does not point to a valid repository: ",
+)
+
+
+def test_a_refused_listing_carries_gits_whole_stderr_beside_the_short_message(
+    tmp_path: Path,
+) -> None:
+    """``str(exc)`` stays the clipped one-line form callers show, and ``git_stderr``
+    is what the scan's git said, whole."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {tmp_path / 'gone' / '.git' / 'worktrees' / 'wt'}\n")
+    with pytest.raises(gch.ConfigHookScanError) as caught:
+        gch.config_hook_names(wt)
+    err = caught.value.git_stderr
+    assert err is not None and err.startswith("fatal: ")
+    assert any(words in err for words in _DANGLING_GITFILE_WORDS)
+    assert str(caught.value) == f"could not list git hook config (128): {err.strip()[-200:]}"
+
+
+def test_a_reason_a_long_path_pushes_out_of_the_message_stays_in_git_stderr(
+    tmp_path: Path,
+) -> None:
+    """git can name a path longer than the 200 characters ``str(exc)`` keeps, so the
+    reason ahead of it is gone from the message and still in ``git_stderr``."""
+    err = b"fatal: not a git repository: /srv/" + b"x" * 400 + b"\n"
+
+    def refused(argv: list[str]) -> tuple[int, bytes, bytes]:
+        return 128, b"", err
+
+    with pytest.raises(gch.ConfigHookScanError) as caught:
+        gch.config_hook_names(tmp_path, runner=refused)
+    assert caught.value.git_stderr == err.decode()
+    assert "not a git repository" not in str(caught.value)
+
+
+def test_a_refused_listings_stderr_keeps_its_end_within_the_bound(tmp_path: Path) -> None:
+    """git dies on its last report, so a stderr longer than the bound keeps its end."""
+    err = b"warning: x\n" * gch._SCAN_STDERR_LIMIT + b"fatal: bad config line 1\n"
+
+    def refused(argv: list[str]) -> tuple[int, bytes, bytes]:
+        return 128, b"", err
+
+    with pytest.raises(gch.ConfigHookScanError) as caught:
+        gch.config_hook_names(tmp_path, runner=refused)
+    assert caught.value.git_stderr == err[-gch._SCAN_STDERR_LIMIT :].decode()
+    assert caught.value.git_stderr.endswith("\nfatal: bad config line 1\n")
+
+
 def test_missing_directory_adds_nothing(tmp_path: Path) -> None:
     assert gch.config_hook_names(tmp_path / "absent") == []
 
@@ -218,38 +271,6 @@ def test_disable_args_stop_the_hook_even_with_an_event_named_hook(
         check=True,
         capture_output=True,
     )
-    assert not marker.exists()
-
-
-# ── auto_improvement (git_safety) ──
-
-
-def test_git_safety_argv_carries_the_disable(repo: Path, tmp_path: Path) -> None:
-    from kiro_crew.apps.builtins.auto_improvement.spine import gate, git_safety
-
-    _plant(repo, tmp_path / "marker")
-    assert "hook.pwn.enabled=false" in git_safety.git_argv(repo, "status")
-    assert "hook.pwn.enabled=false" in gate._git_argv(repo, "add", "-A")
-
-
-def test_git_safety_scan_failure_is_a_git_safety_error(repo: Path) -> None:
-    from kiro_crew.apps.builtins.auto_improvement.spine import git_safety
-
-    with (repo / ".git" / "config").open("a") as fh:
-        fh.write('[hook "a=b"]\n\tcommand = true\n')
-    with pytest.raises(git_safety.GitSafetyError):
-        git_safety.hook_off_args(repo)
-
-
-@needs_config_hooks
-def test_git_safety_commit_does_not_fire(repo: Path, tmp_path: Path) -> None:
-    from kiro_crew.apps.builtins.auto_improvement.spine import gate
-
-    marker = tmp_path / "marker"
-    _plant(repo, marker)
-    (repo / "a.txt").write_text("b\n")
-    for args in (("add", "-A"), ("commit", "-qm", "x"), ("status", "--porcelain")):
-        subprocess.run(gate._git_argv(repo, *args), check=True, capture_output=True)
     assert not marker.exists()
 
 

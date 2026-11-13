@@ -10,15 +10,17 @@ name here; that module's comment lists the owners.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import threading
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Iterator
 
-from kiro_crew.config.loader import config_path, read_config_text
+from kiro_crew.config.loader import read_config_text  # noqa: F401 - facade surface
+from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
 from kiro_crew.cpu_affinity import affinity_cpu_count
 
 logger = logging.getLogger("kiro_crew.embeddings")
@@ -30,17 +32,50 @@ class EmbeddingWork:
 
     Queued inference is cancellable. A running native call retains its executor
     worker and admission until completion because native inference cannot stop.
+    ``phases`` stays empty unless the work's owner seeds it with a first step; then
+    each step the work enters is appended with its start time (:func:`enter_work_phase`,
+    :func:`work_phase`), so a recall that runs out of time can say where its time went.
     """
 
     deadline: float
     cancelled: threading.Event = field(default_factory=threading.Event)
     priority: int = 2
+    phases: list[tuple[str, float]] = field(default_factory=list)
 
     def expired(self) -> bool:
         return self.cancelled.is_set() or time.monotonic() >= self.deadline
 
+    def phase_report(self) -> str:
+        """``<current phase> (<phase> <seconds>s, ...)``, the time spent in each phase."""
+        marks = list(self.phases)  # a copy: a worker thread may still be appending
+        ends = [at for _, at in marks[1:]] + [time.monotonic()]
+        spent = ", ".join(f"{name} {end - at:.2f}s" for (name, at), end in zip(marks, ends))
+        return f"{marks[-1][0]} ({spent})"
+
 
 embedding_work: ContextVar[EmbeddingWork | None] = ContextVar("embedding_work", default=None)
+
+
+def enter_work_phase(phase: str) -> None:
+    """Record that the caller's :class:`EmbeddingWork` entered *phase*, if it tracks phases."""
+    work = embedding_work.get()
+    if work is not None and work.phases:
+        work.phases.append((phase, time.monotonic()))
+
+
+@contextmanager
+def work_phase(phase: str) -> Iterator[None]:
+    """Record *phase* for the block, then resume the phase it interrupted."""
+    work = embedding_work.get()
+    resumed = work.phases[-1][0] if work is not None and work.phases else None
+    enter_work_phase(phase)
+    try:
+        yield
+    finally:
+        if resumed is not None:
+            enter_work_phase(resumed)
+
+
 _EMBED_WAIT_SECS = 30.0
 
 
@@ -164,6 +199,16 @@ _COLD_LOAD_WAIT_SECS = 30.0
 # suffer and cause contention. Pinned to the established four-thread default
 # here, overridable via memory.embedding_threads.
 _DEFAULT_EMBED_THREADS = 4
+# A host with at least _LARGE_HOST_MIN_CORES usable CPUs defaults to
+# _LARGE_HOST_EMBED_THREADS instead. Inference scales near-linearly from 4 to 8
+# threads (2,400 chars on a 16-core Graviton3: 8.4 s -> 4.2 s), but an embed
+# competes with the memory searches and agent turns running beside it: on a
+# 32-CPU x86 host with embeds back to back, 8 threads raised the p95 of the
+# memory searches they overlapped from 1.29 s to 2.07 s against 4, while 6 cut
+# embed time 15% and left that p95 at 1.30 s. At 12 cores 6 leaves half free. _DEFAULT_EMBED_THREADS stays 4 because it is
+# also the value every saved config.json carries (see _embed_threads).
+_LARGE_HOST_MIN_CORES = 12
+_LARGE_HOST_EMBED_THREADS = 6
 # One shared model and worker serve every store within this queue budget.
 _MAX_PENDING_EMBEDS = 8
 _INTERACTIVE_QUEUE_RESERVE = 2
@@ -271,22 +316,17 @@ _PROGRESS_EVERY_BYTES = 16 << 20
 
 
 def _read_memory_config() -> dict:
-    """Read the raw ``memory`` section of ``config.json``. Never raises.
+    """Read the raw ``memory`` section, ``config.local.json`` over ``config.json``. Never raises.
 
     Read raw rather than through the config loader so the download thread and
     the backend factory never depend on the config dataclass import graph
-    (which imports large parts of the package).
+    (which imports large parts of the package). The overlay's keys win, as they
+    do for the loader: a knob set only in ``config.local.json`` is the one the
+    loader and Settings report, so it must be the one the embedder runs with.
+    A file that is absent or unreadable contributes nothing.
     """
-    try:
-        path = config_path()
-        if path.exists():
-            data = json.loads(read_config_text(path))
-            section = data.get("memory", {})
-            if isinstance(section, dict):
-                return section
-    except Exception:
-        logger.debug("Could not read the memory config section", exc_info=True)
-    return {}
+    section = read_merged_config_files(config_path(), config_local_path()).get("memory", {})
+    return section if isinstance(section, dict) else {}
 
 
 def embedding_idle_evict_secs() -> float:
@@ -300,6 +340,16 @@ def embedding_idle_evict_secs() -> float:
     if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 0:
         return float(raw)
     return _DEFAULT_IDLE_EVICT_SECS
+
+
+def embedding_weight_repack() -> bool:
+    """Whether llama.cpp keeps its CPU-repacked copy of the embedding weights.
+
+    Raw ``memory`` section, read once per model load. Only an explicit ``false``
+    turns repacking off; anything else keeps llama.cpp's default (on), so vectors
+    stay what they were unless the operator opts out.
+    """
+    return _read_memory_config().get("embedding_weight_repack") is not False
 
 
 def _embed_threads() -> int:
@@ -318,15 +368,18 @@ def _embed_threads() -> int:
     honoured up to that count. Default policy caps the default one core BELOW it
     instead, so a 2-vCPU host keeps a core for the event loop rather than handing
     llama.cpp the whole box. It is a ceiling on the default, not a replacement
-    for it: a 16-core host still answers 4.
+    for it. A process that may use :data:`_LARGE_HOST_MIN_CORES` or more CPUs
+    defaults to :data:`_LARGE_HOST_EMBED_THREADS` instead: a 16-core host
+    answers 6, an 8-core laptop 4.
 
     A raw value EQUAL to the default is default policy, not operator intent.
     ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and
     ``KiroCrewConfig.save()`` publishes every field, so a fresh install's
     ``config.json`` carries a 4 nobody typed; reading that as a choice would
     hand the whole box to exactly the hosts this cap protects. The cost is that
-    4 cannot be pinned where the process may use 4 or fewer CPUs -- any other
-    number can.
+    4 cannot be pinned where the process may use 4 or fewer CPUs, or
+    :data:`_LARGE_HOST_MIN_CORES` or more (there it runs
+    :data:`_LARGE_HOST_EMBED_THREADS`) -- any other number can.
     """
     raw = _read_memory_config().get("embedding_threads")
     cores = affinity_cpu_count()
@@ -335,6 +388,8 @@ def _embed_threads() -> int:
         return max(1, min(requested, cores or _DEFAULT_EMBED_THREADS))
     if cores is None:
         return _DEFAULT_EMBED_THREADS
+    if cores >= _LARGE_HOST_MIN_CORES:
+        return _LARGE_HOST_EMBED_THREADS
     return max(1, min(_DEFAULT_EMBED_THREADS, cores - 1))
 
 

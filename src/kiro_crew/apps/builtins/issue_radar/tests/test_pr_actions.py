@@ -1020,6 +1020,8 @@ class TestReviewRoutePinning(unittest.TestCase):
         """
         client = mock.Mock()
         client.get_pr_detail.return_value = {"head_sha": live_sha}
+        # A GitHub stand-in: the route asks the client which review verbs it records.
+        client.PR_REVIEW_EVENTS = ("APPROVE", "REQUEST_CHANGES", "COMMENT")
         with mock.patch.object(routes, "_connected", return_value=True), \
                 mock.patch.object(routes, "_repo_can_write", return_value=True), \
                 mock.patch.object(provider, "client_for", return_value=client):
@@ -1114,6 +1116,7 @@ class TestReviewRoutePinning(unittest.TestCase):
         lazily-computed field."""
         client = mock.Mock()
         client.get_pr_detail.return_value = {"head_sha": "abc1234"}
+        client.PR_REVIEW_EVENTS = ("APPROVE", "REQUEST_CHANGES", "COMMENT")
         with mock.patch.object(routes, "_connected", return_value=True), \
                 mock.patch.object(routes, "_repo_can_write", return_value=True), \
                 mock.patch.object(provider, "client_for", return_value=client), \

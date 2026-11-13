@@ -9,7 +9,7 @@ import math
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _SPAWN_STATUS_MAX_GREP_LEN,
         _SPAWN_STATUS_MAX_LINES,
+        INVALID_WAIT_CODE,
+        MAX_HOLD_SECS,
         PERSISTED_SUBAGENT_REPLAY_KEEP,
         PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
         DashboardState,
@@ -31,6 +33,8 @@ if TYPE_CHECKING:
         _queued_run_payload,
         _queued_runs,
         _run_belongs_to_caller,
+        _wait_secs,
+        agent_dir_for_display,
         classify_persisted_ending,
         internal_memory_scope,
         is_sensitive_path,
@@ -44,7 +48,19 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         slot_owner_snapshot,
         subagent_event_slot,
+        wait_done,
     )
+
+
+def _failover_fields(info: object) -> dict[str, object]:
+    """``failover_from`` and ``backend`` for a run ``agent.acp_failover`` moved, else ``{}``."""
+    from kiro_crew.acp_backends import backend_to_stored
+
+    moved_from = getattr(info, "failover_from", None)
+    ran_on = getattr(info, "backend", None)
+    if not isinstance(moved_from, str) or not isinstance(ran_on, str):
+        return {}
+    return {"failover_from": moved_from, "backend": backend_to_stored(ran_on)}
 
 
 def _redact(text: str) -> str:
@@ -107,7 +123,12 @@ async def _apply_result_view(request: web.Request, text: str) -> tuple[str, dict
 
 
 async def api_spawn_status(request: web.Request) -> web.Response:
-    """GET /api/spawn/{id} — poll subagent status."""
+    """GET /api/spawn/{id} — a run's status.
+
+    ``wait_secs`` (0..8) holds the answer for a live run until it ends or the
+    bound passes, whichever is first. A run with no live record (queued, or read
+    from disk) is answered at once.
+    """
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
@@ -154,7 +175,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 agent_dir = _agent_dir(agent_id)
                 result_path = agent_dir / "result.txt"
                 result = ""
-                if result_path.exists() and not is_sensitive_path(str(result_path)):
+                if await asyncio.to_thread(result_path.exists) and not is_sensitive_path(
+                    str(result_path)
+                ):
                     try:
                         result = await asyncio.to_thread(
                             result_path.read_text, encoding="utf-8", errors="replace"
@@ -189,13 +212,36 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 disk_data["outcome"] = outcome
                 disk_data["stopped"] = stopped
                 disk_data["error"] = _redact(error) if error else ""
+                shown_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+                disk_data["result_path"] = str(shown_dir / "result.txt")
                 return web.json_response(disk_data)
         except Exception:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
         return web.json_response({"error": "not found"}, status=404)
+    if not info.done and "wait_secs" in request.query:
+        # A caller waiting for this run to end (``spawn_sub_agents``, a blocking
+        # ``kirocrew spawn run``) is answered when it does, or at the bound. Before
+        # the ``done`` read below, which must share a step with the turn-holding read.
+        wait = _wait_secs(request)
+        if wait is None:
+            return web.json_response(
+                {
+                    "error": f"wait_secs must be a finite number in 0..{MAX_HOLD_SECS:g}",
+                    "code": INVALID_WAIT_CODE,
+                },
+                status=400,
+            )
+        await wait_done(info, wait)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
+    # Read in the same step as ``done``, before this handler awaits anything.
+    seen_under = _parent_turn_holding(request, state, info) if info.done else None
     data["started"] = info.started
+    # Present only when ``agent.acp_failover`` moved the run, so the default
+    # payload is unchanged: the backend asked for, and the one that ran.
+    data.update(_failover_fields(info))
     if info.done:
+        data["outcome"] = info.outcome
+        data["stopped"] = info.user_stopped
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
         # ``spawn_sub_agents`` flags a completed run that made no tool call,
@@ -226,6 +272,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        # The pointer ``spawn_sub_agents`` gives for a long result, in the
+        # configured home spelling its own MCP process cannot know.
+        data["result_path"] = info.result_path
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
@@ -243,7 +292,56 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+    if (
+        seen_under is not None
+        and seen_under == getattr(info, "_spawned_under", None)
+        and getattr(info, "_seen_done_under", None) is None
+    ):
+        # Stamped only under the attempt that spawned the run, and only when that
+        # attempt answered from the read to here: a read under any other attempt,
+        # or one that ended while this read awaited, sends its reply to no turn
+        # that will carry it, so it holds nothing and the completion is delivered.
+        if _parent_turn_holding(request, state, info) == seen_under:
+            info._seen_done_under = seen_under
     return web.json_response(data)
+
+
+def _parent_turn_holding(request: web.Request, state: DashboardState, info: Any) -> Any:
+    """The attempt holding the parent's turn permit, when the parent's own tool asks.
+
+    ``None`` unless an internal caller presents the run's own parent session
+    (``X-Session-Key``) and a turn holds that session's permit now. A
+    ``spawn_sub_agents`` call reads its children through this route under the
+    turn whose reply will carry them, so a done read under the attempt that
+    spawned the child (``SubagentInfo._spawned_under``) names it
+    (``SubagentInfo._seen_done_under``), the one a mark is held under.
+    """
+    return _session_turn_holding(request, state, getattr(info, "parent_session_key", None))
+
+
+def _session_turn_holding(
+    request: web.Request, state: DashboardState, parent_session: str | None
+) -> Any:
+    """The attempt holding ``parent_session``'s turn permit, when that session asks.
+
+    ``None`` unless an internal caller presents ``parent_session`` itself
+    (``X-Session-Key``), a turn holds its permit now, and that turn's prompt is in
+    flight (``SessionManager.turn_prompt_in_flight``): a holder that has claimed
+    but not yet sent its prompt issued no tool call, so a call that reaches here
+    then belongs to a turn that ended. ``POST /api/spawn`` records it on the child
+    it creates (``SubagentInfo._spawned_under``) and ``GET /api/spawn/{id}``
+    compares a done read against it.
+    """
+    if request.get("internal_auth") is not True:
+        return None
+    caller = request.headers.get("X-Session-Key", "")
+    if not caller or caller != parent_session:
+        return None
+    in_flight = getattr(state.sessions, "turn_prompt_in_flight", None)
+    token_of = getattr(state.sessions, "turn_token", None)
+    if not callable(in_flight) or not callable(token_of) or in_flight(caller) is not True:
+        return None
+    return token_of(caller)
 
 
 def _awaiting_spawn_approval(info: object) -> bool:
@@ -326,6 +424,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "agent": info.agent or info.crew,
             "started": info.started,
         }
+        # Present only when ``agent.acp_failover`` moved the run, so the default
+        # payload is unchanged: the backend asked for, and the one that ran.
+        entry.update(_failover_fields(info))
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""

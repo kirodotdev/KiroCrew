@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -128,15 +129,21 @@ class TestScanHonoursThePolicy:
         pipeline.embedder = None
         return KnowledgeWatcher(store=MagicMock(), pipeline=pipeline)
 
-    def test_paused_sweep_returns_before_touching_the_store(self):
+    def test_paused_sweep_returns_before_touching_the_store(self, caplog):
         w = self._watcher()
         w._store_rows = MagicMock(side_effect=AssertionError("sweep must not query"))
         with (
+            caplog.at_level(logging.INFO, logger=watcher_mod.logger.name),
             patch.object(KnowledgeWatcher, "_sweep_chunk_budget", staticmethod(lambda: 500)),
             patch.object(KnowledgeWatcher, "_battery_budget", classmethod(lambda cls, b: None)),
         ):
             asyncio.run(w._scan())
         w._store_rows.assert_not_called()
+        # The skip is told to the operator, so a paused Library is not a silent stop.
+        assert [r.getMessage() for r in caplog.records if r.name == watcher_mod.logger.name] == [
+            "On battery and power.on_battery=paused; skipping this sweep "
+            "(sources resume on the first sweep back on mains)"
+        ]
 
     def test_the_battery_decision_is_offered_the_configured_budget(self):
         w = self._watcher()

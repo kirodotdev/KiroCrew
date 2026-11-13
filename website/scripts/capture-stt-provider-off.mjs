@@ -103,8 +103,7 @@ async function openVoiceSettings() {
     }
     return false
   }
-  await stubDashboardApi(page, { extra })
-  await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
+  await stubDashboardApi(page, { extra, localStorageEntries: { 'mc-lang': 'en' } })
   await page.goto(`${base}/settings?tab=voice`, { waitUntil: 'domcontentloaded' })
   const heading = page.getByText('Speech-to-Text', { exact: true }).first()
   await heading.waitFor({ timeout: 15_000 })

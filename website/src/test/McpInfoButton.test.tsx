@@ -32,6 +32,17 @@ describe('McpInfoButton', () => {
     expect(screen.getByTitle('Session MCP servers')).toBeInTheDocument()
   })
 
+  it('says whether its popover is open and hides its icon from the name', async () => {
+    render(<McpInfoButton />)
+    const btn = screen.getByRole('button', { name: 'Session MCP servers' })
+
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    for (const svg of btn.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    await waitFor(() => expect(screen.getByText('builder-mcp')).toBeInTheDocument())
+  })
+
   it('shows server list on click', async () => {
     render(<McpInfoButton />)
     fireEvent.click(screen.getByTitle('Session MCP servers'))
@@ -96,5 +107,26 @@ describe('McpInfoButton', () => {
     fireEvent.click(screen.getByTitle('Session MCP servers'))
     await waitFor(() => expect(screen.getByText('Tool Search · Fully loaded')).toBeInTheDocument())
     expect(screen.queryByText('Tool Search · Deferred')).not.toBeInTheDocument()
+  })
+})
+
+describe('McpInfoButton — footer', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // The default agent's footer comes from the catalog, like the per-agent one.
+  it('says the default agent loads every configured server', async () => {
+    render(<McpInfoButton />)
+    fireEvent.click(screen.getByTitle('Session MCP servers'))
+    await waitFor(() => expect(
+      screen.getByText('kirocrew loads all configured MCP servers — manage them in Overview → MCP.'),
+    ).toBeInTheDocument())
+  })
+
+  it('says a named agent loads only its own servers', async () => {
+    render(<McpInfoButton agent="reviewer" />)
+    fireEvent.click(screen.getByTitle('Session MCP servers'))
+    await waitFor(() => expect(
+      screen.getByText('Agent "reviewer" loads only its own MCP servers.'),
+    ).toBeInTheDocument())
   })
 })

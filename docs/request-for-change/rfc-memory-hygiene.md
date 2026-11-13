@@ -110,6 +110,19 @@ On 2026-10-22 this narrow rule matches 596 of 10,091 live `project.*` rows (6%).
 The key test alone matches 4,812 (48%). The wider set is left to the sweep's
 aged rule, because a work-item key can hold a durable decision.
 
+**Amendment, 2026-10-26: the class comes from the model.** A hand-graded
+sample of 300 live `project.*` rows found 65.3% one-off work state. The narrow
+rule above was 100% precise there but caught only 16% of it; a key-or-value
+rule caught 79% but flagged half the durable facts. So the screen does not use a
+regex. The prompt asks for a `kind` on each semantic item (`fact`, `event` or
+`state`), and `memory.kind_routing` routes by it with the same exemptions and on
+the same two write paths. It answers question 1 below with "refuse" for now: a
+`state` item is refused under a new audited `SemanticRejectCode`, and an `event`
+is still written as a fact. Rewriting an `event` as a dated episodic record is
+deferred to a follow-up that reads the shadow samples first. It ships `off` by default. `shadow` (write as
+today, log what routing would do, inside fixed caps) and `enforce` are opt-in. The spec's
+Consolidation Integration section holds the detail.
+
 ### 2. Pick the table by relevance (the hybrid in #16354)
 
 Answer to #16354: **hybrid**. Over the cap, fill the same 64 KiB budget in two

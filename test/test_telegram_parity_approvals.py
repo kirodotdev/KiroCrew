@@ -77,7 +77,7 @@ class TestSessionTrust:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
                 "kiro_crew.telegram.transport_dispatch.add_trusted_session",
-                lambda k, s=None: order.append("granted"),
+                lambda k, s=None, strict=False: order.append("granted"),
             )
             mp.setattr(
                 TelegramApprovalDecider,
@@ -127,7 +127,7 @@ class TestSessionTrust:
         from kiro_crew.messaging import session_trust as trust
 
         trust.clear_trusted_sessions()
-        dispatcher, _, _ = _dispatcher({1})
+        dispatcher, _, sessions = _dispatcher({1})
         key = dispatcher._session_key(("direct", "1"))
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
@@ -142,6 +142,45 @@ class TestSessionTrust:
             )
             await dispatcher.on_callback(_trust_press("f" * 16))
         assert trust.is_session_trusted(key)
+        assert sessions.approval_policies == {key: "auto"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_policy_write_says_approved_not_trusted(self) -> None:
+        # Subagents read the session policy, so a press whose policy write failed
+        # is no grant: nothing stays trusted and the reply does not claim it.
+        from kiro_crew.messaging import session_trust as trust
+
+        trust.clear_trusted_sessions()
+        dispatcher, client, sessions = _dispatcher({1})
+        key = dispatcher._session_key(("direct", "1"))
+        audits: list[dict] = []
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                sessions,
+                "set_approval_policy",
+                MagicMock(side_effect=OSError("disk full")),
+                raising=False,
+            )
+            mp.setattr(
+                "kiro_crew.telegram.transport_dispatch.sel",
+                lambda: SimpleNamespace(log_api_access=lambda **kw: audits.append(kw)),
+            )
+            mp.setattr(
+                TelegramApprovalDecider,
+                "is_pending",
+                classmethod(lambda cls, k, n="": True),
+            )
+            mp.setattr(
+                TelegramApprovalDecider,
+                "resolve_global",
+                staticmethod(lambda k, a, nonce="": True),
+            )
+            await dispatcher.on_callback(_trust_press("f" * 16))
+        assert not trust.is_session_trusted(key)
+        assert "Trusted" not in client.edits[-1][1]
+        assert "Approved" in client.edits[-1][1]
+        grants = [a for a in audits if a.get("operation") == "telegram.trust_session"]
+        assert [a["outcome"] for a in grants] == ["error"]
 
     @pytest.mark.asyncio
     async def test_a_trusted_conversation_auto_approves_the_rest(self) -> None:
@@ -166,6 +205,7 @@ class TestSessionTrust:
         sessions = MagicMock()
         trust.add_trusted_session("telegram:k", sessions)
         assert sessions.set_approval_policy.call_args.args == ("telegram:k", "auto")
+        assert trust.is_session_trusted("telegram:k") is True
         trust.clear_trusted_sessions()
 
     def test_revoking_trust_also_revokes_the_subagent_half(self) -> None:
@@ -271,7 +311,10 @@ class TestSessionTrust:
             "keep_policy=standing_trust" in src
         ), "the override-expiry revoke must exclude slots carrying standing trust"
         assert (
-            "if slot._trust or slot._trust_reads:" in src
+            # The HELD grants: the reset runs inside a ceiling install, while the
+            # ``permission_mode`` trust mask is on (RFC LTS edition D9).
+            "if slot._trust_held or slot._trust_reads_held:"
+            in src
         ), "the exclusion set must be built from the same condition the reset loop skips"
 
     def test_a_kept_key_loses_its_grant_but_keeps_its_policy(self) -> None:
@@ -308,6 +351,7 @@ class TestSessionTrust:
         sessions = MagicMock()
         trust.add_trusted_session("dashboard:slot-1", sessions)
         trust.clear_trusted_sessions()
+        assert trust.is_session_trusted("dashboard:slot-1") is False
         assert ("dashboard:slot-1", "") in [
             c.args for c in sessions.set_approval_policy.call_args_list
         ]
@@ -611,13 +655,10 @@ class TestApprovalNonceBindsThePress:
         # re-open the same window on the next request id the provider reuses.
         async def _go() -> bool:
             decider = TelegramApprovalDecider(session_key="telegram:1:0")
-            task = asyncio.ensure_future(decider(SimpleNamespace(request_id="rq5")))
-            # flake-ok: pre-existing 20 ms yield so the decider registers its prompt, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield so the decider registers its prompt, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
             key = "telegram:1:0:rq5"
             nonce = "n1"
             TelegramApprovalDecider.arm(key, nonce)
+            task = asyncio.ensure_future(decider(SimpleNamespace(request_id="rq5")))
             TelegramApprovalDecider.resolve_global(key, True, nonce=nonce)
             # flake-ok: pre-existing unbounded await of the decider task the test resolves itself, moved verbatim; tracked for a de-flake pass
             await task

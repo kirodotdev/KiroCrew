@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.hooks import (
     FileTooLargeError,
     is_unc_shape,
@@ -359,8 +360,10 @@ class LocalMemoryFiles:
         """
         if is_link_or_junction(lock_path):
             raise OSError(f"refusing lock file (link or junction): {lock_path}")
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(lock_path, flags, 0o600)
+        from kiro_crew.platform_compat import open_create_or_existing
+
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = open_create_or_existing(lock_path, flags, 0o600)
         try:
             st = os.fstat(fd)
             if not _stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
@@ -562,7 +565,7 @@ class LocalMemoryFiles:
             if actual != expected or os.path.commonpath([actual, root]) != root:
                 raise OSError("Opened manual profile file is outside its expected bound path")
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                data = handle.read(self._HISTORY_SNAPSHOT_MAX_BYTES + 1)
+                data = bounded_read(handle, self._HISTORY_SNAPSHOT_MAX_BYTES + 1)
             if len(data) > self._HISTORY_SNAPSHOT_MAX_BYTES:
                 raise FileTooLargeError("Manual profile file exceeds the 8 MiB read limit")
             return data

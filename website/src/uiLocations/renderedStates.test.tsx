@@ -140,7 +140,7 @@ describe('Library card: the way to Details for an app that opens (app_tile_menu_
       manifest: { name: 'demo', ui: { pages: [{ route: '/apps/demo', title: 'Demo' }] } },
     } as unknown as Parameters<typeof LaunchpadTile>[0]['app']
     renderWithProviders(
-      <LaunchpadTile app={app} pinned={false} pinnable={false} actionLoading={null}
+      <LaunchpadTile app={app} pinned={false} pinnable={false} connected actionLoading={null}
         onTogglePin={vi.fn()} onAction={vi.fn()} onOpen={onOpen} onDetail={onDetail} />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'demo' }))

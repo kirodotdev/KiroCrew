@@ -135,6 +135,26 @@ async def test_script_cron_card_is_the_entry_the_drain_pops(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_queued_script_cron_result_draws_its_card_live(tmp_path) -> None:
+    # Open dashboards draw queue cards from frames, so each queued report needs
+    # its own queue_push, not just a row in the slot's message list.
+    state = _make_state(tmp_path)
+    slot = _live_slot(state)
+    wire = _Wire(state)
+    orchestrator = MagicMock()
+    orchestrator.dashboard_state = state
+
+    await gw.GatewayOrchestrator._deliver_script_result(
+        orchestrator, _job("SS captain watch"), "watch report"
+    )
+
+    pushed = [payload for kind, payload in wire.frames if kind == "queue_push"]
+    assert [p["queue_id"] for p in pushed] == [slot._queue[0]["id"]]
+    assert pushed[0]["slot"] == SLOT_KEY
+    assert "watch report" in pushed[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_script_cron_on_a_full_live_queue_drops_the_oldest_entry_and_card(
     tmp_path,
 ) -> None:

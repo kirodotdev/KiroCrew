@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from kiro_crew import irq, probes
 from kiro_crew.autonudge_service.maintenance import _release_mutation_lock
@@ -100,13 +100,41 @@ def _quiet_floor(loop: NudgeLoop, monitor: MonitorState) -> int:
     """Quiet ticks before this monitor's floor turn.
 
     The shipped floor, except for a work-ledger watch whose ledger is idle (see
-    :func:`_ledger_is_idle`), which waits :data:`_IDLE_LEDGER_QUIET_FLOOR`.
-    Re-read every tick, so a worker report landing mid-streak puts the floor back
-    to the shipped length at once.
+    :func:`_ledger_is_idle`) and a pull request that only waits on a reviewer (see
+    :func:`_pr_waits_only_on_review`), which wait :data:`_IDLE_LEDGER_QUIET_FLOOR`.
+    Re-read every tick, so a worker report landing mid-streak, or a lane going
+    red, puts the floor back to the shipped length at once.
     """
-    if _ledger_is_idle(loop, monitor):
+    if _ledger_is_idle(loop, monitor) or _pr_waits_only_on_review(monitor):
         return _IDLE_LEDGER_QUIET_FLOOR
     return _MAX_QUIET_STREAK
+
+
+def _pr_waits_only_on_review(monitor: MonitorState) -> bool:
+    """Whether a watched pull request has nothing left but a reviewer's approval.
+
+    Read whole, open, not a draft, mergeable, every check finished with none failed,
+    and ``REVIEW_REQUIRED``. Nothing the owner can do moves it, so a floor turn
+    every :data:`_MAX_QUIET_STREAK` ticks only re-reads the same page. A review or
+    a comment changes the reading, which the judge and the typed probe still wake
+    on at once; the longer floor bounds only the silence.
+    """
+    from kiro_crew import autonudge_judge as judge
+
+    facts = monitor.last_observation
+    if monitor.kind != probes.GH_PR or judge.pr_target_is_unread(facts):
+        return False
+    checks = facts.get("checks")
+    return (
+        facts.get("state") == "OPEN"
+        and facts.get("draft") is not True
+        and facts.get("mergeability") == "MERGEABLE"
+        and facts.get("review_decision") == "REVIEW_REQUIRED"
+        and facts.get("checks_complete") is True
+        and isinstance(checks, Mapping)
+        and bool(checks.get("passed"))
+        and not any(checks.get(bucket) for bucket in judge.NAMED_CHECK_BUCKETS)
+    )
 
 
 def _note_ledger_revision(monitor: MonitorState, probe: object) -> None:
@@ -145,9 +173,13 @@ def _failure_streak(loop: NudgeLoop) -> int:
     return loop.consecutive_start_failures + loop.consecutive_failed_cycles
 
 
-def _note_ledger_wake(svc: AutoNudgeService, loop: NudgeLoop) -> None:
-    """A work-ledger wake was delivered: remember the failure streak it went out at."""
-    svc._ledger_wake_streak[loop.id] = _failure_streak(loop)
+def _note_ledger_wake(svc: AutoNudgeService, loop: NudgeLoop, sent_streak: int) -> None:
+    """A work-ledger wake was delivered: remember the failure streak it went out at.
+
+    *sent_streak* is read before the delivery is awaited, because the turn that
+    carries the wake can fail, and grow the streak, before the delivery returns.
+    """
+    svc._ledger_wake_streak[loop.id] = sent_streak
 
 
 def _spend_ledger_wake_retry(svc: AutoNudgeService, loop: NudgeLoop) -> bool:
@@ -174,15 +206,10 @@ def _record_delivered_revision(monitor: MonitorState) -> None:
 #: Ticks one repeated short reading may cost at most one turn across: the turn that
 #: delivered it, then this many minus one held repeats, then a turn again.
 #:
-#: A short reading is never screened quiet on the half that arrived, which is right
-#: and stays: that half can be missing exactly the red required status the owner is
-#: waiting for. But a degraded forge returns the SAME short reading tick after tick,
-#: and delivering each one spends a turn carrying nothing the previous turn did not.
-#: Holding a repeat does not claim the subject is calm -- the reading is still short,
-#: the owner was already handed a turn on it, and a notice says so on every held tick.
-#: What the ceiling bounds is how long the unread half can go without a turn, and that
-#: is the question the quiet floor already answers for every gated loop, so it is the
-#: same number rather than a second one to keep in step.
+#: A degraded forge returns the SAME short reading tick after tick; holding a repeat
+#: saves a turn that carries nothing new, and a notice says so on every held tick. The
+#: ceiling bounds how long the unread half goes without a turn, which is the question
+#: the quiet floor already answers, so it is the same number.
 _SHORT_READING_HOLD_CEILING = _MAX_QUIET_STREAK
 
 
@@ -204,10 +231,65 @@ def _short_reading_digest(monitor: MonitorState) -> str:
     return _pr_facts_digest(facts)
 
 
+def _reading_blockers(facts: Any) -> tuple[list[str], bool]:
+    """The failing-check set and conflict flag of one published pull-request reading.
+
+    ``((sorted failed-check identities), is_conflicting)``, read from the same typed
+    facts the reading digest and the structured classifier read, so the delivered
+    basis and the live comparison cannot drift apart. A reading with no facts, or one
+    whose shape is not the expected mapping, answers the EMPTY basis: an unreadable
+    reading is no evidence of a blocker, which resolves toward not inventing a wake.
+
+    Conflict is normalised the way :meth:`gh_pr.Observation.is_conflicting` normalises
+    it -- ``CONFLICTING`` mergeability or a ``DIRTY`` merge state -- spelled inline
+    rather than imported, because that import pulls the apps and cron graphs the
+    autonudge facade must not load on every tick. ``BEHIND`` is deliberately not a
+    conflict, matching the classifier: a behind branch still builds and a wake on it
+    would re-fire on every base commit.
+    """
+    if not isinstance(facts, Mapping):
+        return [], False
+    failed: list[str] = []
+    checks = facts.get("checks")
+    if isinstance(checks, Mapping):
+        raw = checks.get("failed")
+        if isinstance(raw, (list, tuple)):
+            failed = sorted(item for item in raw if isinstance(item, str) and item)
+    mergeability = str(facts.get("mergeability") or "").upper()
+    merge_state = str(facts.get("merge_state") or "").upper()
+    conflicting = mergeability == "CONFLICTING" or merge_state == "DIRTY"
+    return failed, conflicting
+
+
+def _newly_blocked(monitor: MonitorState) -> list[str]:
+    """Blockers in the published reading that the last DELIVERED turn did not carry.
+
+    A list of short human labels, empty when nothing is new. A failing check whose
+    identity is not in ``delivered_failed_checks`` is new; a conflict is new when the
+    reading conflicts and the delivered basis did not. A red check the owner was
+    already shown (same identity in the basis) is NOT new -- a PR under repair reports
+    the same failing lane every tick, and waking on it each time is exactly what the
+    judge's quiet verdict is for.
+
+    Read only from the durable published reading and the durable delivered basis, so
+    the answer survives a restart: both are on the monitor record.
+    """
+    facts = monitor.last_observation
+    failed, conflicting = _reading_blockers(facts)
+    seen = set(monitor.delivered_failed_checks)
+    new = [identity for identity in failed if identity not in seen]
+    labels = [f"check failed: {identity}" for identity in new]
+    if conflicting and not monitor.delivered_conflicting:
+        labels.append("the branch now conflicts with its target")
+    return labels
+
+
 #: What a turn about to be dispatched carries, as :func:`_delivery_basis` reads it:
-#: the monitor, the instruction, the brief, and the short-reading digest of the
-#: published reading (``""`` when it is whole).
-_DeliveryBasis = tuple[MonitorState, str, dict[str, Any], str]
+#: the monitor, the instruction, the brief, the short-reading digest of the published
+#: reading (``""`` when it is whole), and the blockers that reading carried (the
+#: failing-check set and the conflict flag) so a later tick can tell a NEW blocker
+#: from one already delivered.
+_DeliveryBasis = tuple[MonitorState, str, dict[str, Any], str, list[str], bool]
 
 
 def _delivery_basis(loop: NudgeLoop) -> _DeliveryBasis | None:
@@ -223,7 +305,15 @@ def _delivery_basis(loop: NudgeLoop) -> _DeliveryBasis | None:
     monitor = loop.monitor
     if monitor is None:
         return None
-    return (monitor, loop.message, judge.spec_of(loop), _short_reading_digest(monitor))
+    failed, conflicting = _reading_blockers(monitor.last_observation)
+    return (
+        monitor,
+        loop.message,
+        judge.spec_of(loop),
+        _short_reading_digest(monitor),
+        failed,
+        conflicting,
+    )
 
 
 def _record_delivered_reading(loop: NudgeLoop, basis: _DeliveryBasis | None) -> None:
@@ -234,18 +324,40 @@ def _record_delivered_reading(loop: NudgeLoop, basis: _DeliveryBasis | None) -> 
     the next short reading still delivers -- holding is only ever earned by a turn the
     owner actually received.
 
-    Nothing is recorded when the loop was re-aimed while the turn was in flight: a
-    replaced monitor, a reworded instruction, or a replaced brief. The update that
-    re-aimed it cleared the hold on purpose, because the turn it would be keyed on
-    answered the question that was replaced, and writing a baseline here would put
-    that hold straight back.
+    The two baselines recorded here are guarded differently, because they answer
+    different questions:
+
+    * The SHORT-READING hold is question-dependent -- it exists to hold a repeat of
+      the reading the owner was handed a turn ON, under the instruction and brief it
+      was handed WITH. A re-aim while the turn was in flight (a replaced monitor, a
+      reworded instruction, a replaced brief) cleared it on purpose, and writing it
+      back here would put a hold the owner's new question never earned straight back.
+      So it is written only when the whole identity -- monitor, message, spec -- still
+      matches.
+
+    * The DELIVERED-BLOCKER basis is subject-dependent -- it records which blockers of
+      the PULL REQUEST the owner has now been shown, and that fact does not change when
+      the instruction or brief is reworded on the SAME pull request. Guarding it on the
+      message/spec too would leave it stale after a same-PR re-aim mid-flight (a Slack
+      wake that rewords the instruction before this records), so the next tick would
+      announce the already-delivered blocker as new. So it is written whenever the
+      MONITOR identity still matches, regardless of the question. A true retarget
+      replaces the monitor, so ``loop.monitor is monitor`` is false and nothing is
+      written to the old subject's record.
     """
     from kiro_crew import autonudge_judge as judge
 
     if basis is None:
         return
-    monitor, message, spec, digest = basis
-    if loop.monitor is not monitor or loop.message != message or judge.spec_of(loop) != spec:
+    monitor, message, spec, digest, failed, conflicting = basis
+    if loop.monitor is not monitor:
+        return
+    # Subject-dependent: recorded on any confirmed delivery of this monitor's reading.
+    monitor.delivered_failed_checks = failed
+    monitor.delivered_conflicting = conflicting
+    # Question-dependent: only when the instruction and brief are still the ones the
+    # held reading was delivered under.
+    if loop.message != message or judge.spec_of(loop) != spec:
         return
     monitor.short_reading_digest = digest
     monitor.short_reading_held = 0
@@ -262,6 +374,14 @@ def _clear_short_reading_hold(loop: NudgeLoop) -> None:
     if monitor is not None:
         monitor.short_reading_digest = ""
         monitor.short_reading_held = 0
+        # The delivered-blocker basis is deliberately NOT cleared here. A re-aim that
+        # keeps the same pull request (a reworded instruction, a replaced brief) keeps
+        # its monitor, and the blockers the owner was already shown about that PR are
+        # still the same ones -- clearing them would make a still-red check read as new
+        # against an empty basis and fire a false "blocker not present at the last
+        # delivery" wake. A re-aim to a DIFFERENT subject replaces the monitor with a
+        # fresh MonitorState whose basis already starts empty, so the first reading of
+        # the new subject is a first look, not a spurious wake.
 
 
 def _holds_short_reading(loop: NudgeLoop, monitor: MonitorState, digest: str) -> bool:
@@ -321,25 +441,18 @@ def _unchanged_reading_skips_judge(
 ) -> bool:
     """Whether this quiet tick needs no judge because nothing the judge reads has moved.
 
-    The invariant: a tick whose pull-request reading is WHOLE and byte-identical to
-    the one the last verdict was reached on, on a loop whose judge would read only
-    that pull request, asks no judge and starts no turn. No criterion about the
-    subject can have become true while the subject did not change, which is the
-    argument the judge-less path already rests on. Asking anyway shows the judge
-    nothing new for the price of a model call, and a judge that cannot answer (a
-    timeout is a fallback, and a fallback fires) spends a full turn on every tick.
-    Elapsed time is the one thing a digest cannot see, and the quiet floor still
-    delivers for it.
+    A WHOLE pull-request reading byte-identical to the one the last verdict was reached
+    on, on a loop whose judge reads only that pull request, asks no judge: no criterion
+    can have become true while the subject did not change, and a judge that times out
+    falls back to firing a full turn. The quiet floor still delivers for elapsed time.
 
-    *reading_unchanged* is the publish step's own answer, so wholeness is decided in
-    one place: a short reading or one that never reached the subject is never
-    unchanged. An owed judge wake or an owed terminal turn is delivered, never
-    skipped.
+    *reading_unchanged* is the publish step's answer, so wholeness is decided in one
+    place. An owed judge wake or terminal turn is delivered, never skipped.
 
-    Nothing is skipped while ``decisions.nudge_wake.quiet_streak_floor`` is set below
-    this loop's quiet floor. That knob bounds silence in judge verdicts, which only a
-    judged tick advances, so a skipped tick would stretch the operator's shorter bound
-    to the probe's; with it lowered, every tick is judged.
+    Nothing is skipped while ``decisions.nudge_wake.quiet_streak_floor`` is below the
+    shipped floor: only a judged tick advances that knob's streak, so skipping would
+    stretch the operator's shorter bound. Measured against the shipped floor, not this
+    loop's, so a longer floor (:func:`_quiet_floor`) is not cut back to the judge's.
     """
     if not reading_unchanged:
         return False
@@ -347,7 +460,7 @@ def _unchanged_reading_skips_judge(
         return False
     if not _judge_reads_only_the_watched_pr(loop, monitor):
         return False
-    return svc._judge_quiet_streak_floor() >= _quiet_floor(loop, monitor)
+    return svc._judge_quiet_streak_floor() >= _MAX_QUIET_STREAK
 
 
 def _short_reading_notice(monitor: MonitorState) -> str:
@@ -433,43 +546,22 @@ async def _commit_judge_pr_seen(
     ``True`` once the baseline is durable and published, ``False`` when the record
     refused it, ``None`` when the loop was re-aimed and there is nothing to commit.
 
-    PERSISTED FIRST, the same way the reading itself is published. The stored
-    record is this baseline's authority -- the loader restores it from the
-    snapshot -- and the awaited judge write that reached the verdict has already
-    landed one holding the OLD baseline. So the new one is written on a staged copy
-    and copied over the live loop only once that write has landed. Memory never
-    runs ahead of disk: a refused write publishes nothing, so the baseline stays
-    exactly what the record holds, and the next tick re-reads these remarks --
-    which costs a turn and withholds nothing.
+    PERSISTED FIRST: the record is the baseline's authority, so the new one is written
+    on a staged copy and copied to the live loop only once the write lands. A refused
+    write publishes nothing; the next tick re-reads the remarks, costing a turn and
+    withholding nothing.
 
-    AWAITED under ``_lock`` for both halves of the same reason. The write has to
-    land before the tick's own scheduled write, or a process that stops in between
-    leaves disk claiming the old baseline while this tick has already screened
-    against the new one, and every remark it passed on reads as new after the
-    restart. And the snapshot is taken under the lock so no update can land between
-    the copy and the write, which would put a stale row on disk. Holding the lock
-    across the write is also what keeps every other writer's snapshot honest: none
-    can serialize the loop while its baseline is half-committed.
+    AWAITED under ``_lock``: the write must land before the tick's scheduled write, or
+    a restart in between makes every remark passed on read as new; and no update may
+    land between the copy and the write, or a stale row reaches disk.
 
-    ONLY THE BASELINE is published, never the whole staged copy. The lock does not
-    cover every writer: ``notify_cycle_landed`` clears the start-failure streak on
-    the live loop synchronously and lock-free, from the turn-completion path, and
-    can land inside the awaited write. Copying every field of the snapshot back over
-    the live loop -- what ``_apply_staged_monitor`` does for a full monitor
-    transition -- would silently put that streak back and let the loop back off or
-    stand down on a failure a completed turn has just disproved. Writing one field
-    cannot revert another.
+    ONLY THE BASELINE is published, never the whole staged copy: ``notify_cycle_landed``
+    clears the start-failure streak lock-free and can land inside the write, and a
+    full copy-back would restore that streak.
 
-    A write that lands and is then cancelled still publishes: the snapshot writer
-    propagates the cancellation only after the executor result is in, so disk holds
-    the new baseline, and a memory left on the old one would hand the next tick a
-    record it does not match.
-
-    The re-aim check runs under the lock too. An ``update`` that retargets the
-    message or replaces the criteria clears the baseline deliberately, because a
-    digest earned under the old question would screen the new one quiet; the caller
-    checks the same thing before the await, but an update can land while this call
-    waits for the lock.
+    A write that lands and is then cancelled still publishes, since disk already holds
+    the new baseline. The re-aim check runs under the lock because an ``update`` that
+    clears the baseline can land while this call waits for it.
     """
     from kiro_crew import autonudge_judge as judge
 
@@ -504,12 +596,9 @@ async def _publish_pr_observation(
 ) -> tuple[bool, dict] | None:
     """Make this tick's reading the loop's current pull-request observation.
 
-    PERSISTED FIRST. The durable record owns this state -- it is what a restart
-    restores and what the dashboard and Slack projections read -- so the write is
-    awaited on a STAGED copy and published to live readers only once it has landed.
-    A fire-and-forget write beside the in-memory assignment would let a kill inside
-    that window leave the record on the previous tick's facts while readers had
-    already been shown the new ones.
+    PERSISTED FIRST: the durable record is what a restart restores and what the
+    dashboard and Slack read, so the write is awaited on a STAGED copy and published
+    only once it lands; otherwise a kill could leave readers ahead of the record.
 
     Returns ``(unchanged, staged_baseline)``. ``unchanged`` says whether this
     reading matches the last one a VERDICT was reached on -- ``False`` whenever the
@@ -520,17 +609,12 @@ async def _publish_pr_observation(
     the judge, because screening against a reading the record refused would report
     a quiet on state that does not exist.
 
-    Two carriers, because the halves have two lifetimes. The typed facts and the
-    remark metadata go on the monitor record, which is durable and is what the
-    judge collector and the goal popover read. ``monitor_inspect`` does not: a
-    gated prompt loop is not a structured monitor, so that endpoint answers it
-    with a presence and cadence reading and no observation at all. The remark
-    BODIES go in a process-local stash, are picked up by the collector on this
-    same tick, and are written nowhere.
+    Typed facts and remark metadata go on the durable monitor record (read by the judge
+    collector and the goal popover); remark BODIES go in a process-local stash the
+    collector reads this same tick and are written nowhere.
 
-    A reading the record refuses is not worth failing the tick over: the collector
-    then sees no reading, counts the target as unread, and the tick fires -- the
-    direction every uncertain path here resolves toward.
+    A reading the record refuses does not fail the tick: the collector counts the
+    target as unread and the tick fires.
     """
     from kiro_crew import autonudge_judge as judge
 
@@ -583,13 +667,9 @@ async def _publish_pr_observation(
                     loop.id,
                 )
                 return None
-            # STAGED UNDER THE LOCK, and that placement is the whole correctness
-            # argument. ``_apply_staged_monitor`` copies EVERY field of the staged
-            # loop back over the live one, so a copy taken before the lock would
-            # revert any update accepted in between -- in memory and on disk, since
-            # the snapshot written would be the stale one too, with nothing to
-            # recover from. Copying here means no update can land between the copy
-            # and the write.
+            # STAGED UNDER THE LOCK: ``_apply_staged_monitor`` copies EVERY field back
+            # over the live loop, so a copy taken before the lock would revert any
+            # update accepted in between, in memory and on disk.
             staged = deepcopy(loop)
             staged_state = staged.monitor
             if staged_state is None:
@@ -636,18 +716,12 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     un-inferable target, a probe defect, a kernel that reached no verdict --
     returns False so the caller fires exactly as it does today.
 
-    The asymmetry is the whole safety argument. A wrongly-QUIET tick is
-    silence: the loop stops waking and the work it was watching stalls with
-    nothing on screen to say why. A wrongly-spent tick costs one turn, which
-    is what every tick costs today. So every uncertain path resolves toward
-    spending, and only a positive "nothing happened" from the kernel skips.
+    A wrongly-QUIET tick is silent stalled work; a wrongly-spent tick costs one turn.
+    So every uncertain path resolves toward spending.
 
-    The kernel call is offloaded to a thread because observing runs ``gh`` as a
-    subprocess -- several of them, since one reading fetches the pull request, its
-    check runs and its commit statuses, and paginates the last two. Each call is
-    capped individually, but what the thread is held for is the whole reading's
-    budget, ``gh_pr._TICK_BUDGET_SECS``. On the event loop that would freeze chat,
-    the channel transports and the liveness probes for that long.
+    The kernel call runs in a thread because one reading runs several ``gh``
+    subprocesses for up to ``gh_pr._TICK_BUDGET_SECS``, which on the event loop would
+    freeze chat, the channel transports and the liveness probes.
     """
     from kiro_crew import autonudge_judge as judge
 
@@ -683,36 +757,20 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     if monitor is None or monitor.outcome is not None:
         return False
     if not loop.gate:
-        # An opt-out that only SOME paths honour is worse than no opt-out. This
-        # check exists because the two can now disagree: a record stored with a
-        # monitor but no ``gate`` key -- one armed while the default was True,
-        # or written by an earlier build -- decodes to
-        # ``gate=False`` with its monitor intact. Reading only the monitor would
-        # poll such a loop anyway and let a terminal verdict DEACTIVATE it,
-        # which is exactly the harm the opt-out exists to prevent. The stored
-        # decision wins over the presence of the object.
+        # A record with a monitor but no ``gate`` key decodes to ``gate=False`` with
+        # its monitor intact. The stored decision wins over the monitor's presence:
+        # polling anyway would let a terminal verdict DEACTIVATE an opted-out loop.
         return False
     if monitor.floor_fire_pending:
-        # A floor delivery was decided on an earlier tick and has not been
-        # confirmed. Deliver it WITHOUT observing: the streak that earned it is
-        # already reset on disk, so a fresh probe reads an unchanged subject,
-        # answers quiet, and would suppress the very turn that is owed -- the
-        # same reasoning the judge's own owed wake is delivered on.
+        # An owed floor delivery fires WITHOUT observing: the streak that earned it
+        # is already reset on disk, so a fresh probe would answer quiet and
+        # suppress the owed turn.
         #
-        # AHEAD of the follow-up allowance below, because a refused floor fire
-        # leaves TWO credits standing for ONE owed turn: the allowance, granted so
-        # the next tick retries the delivery, and this debt, recording that the
-        # delivery is still owed. Behind the allowance a restart spends the bypass
-        # with no claim to charge, then spends the debt on the tick after -- two
-        # turns for one owed delivery. So the debt is served first and the
-        # allowance it duplicates is consumed with it: the retry that allowance
-        # exists for IS this fire. Decremented rather than zeroed, so a credit
-        # this debt did not create is left to be spent on its own tick.
-        #
-        # The in-process claim is re-taken because a restart starts with an empty
-        # claim set while this flag survives, and the claim is what makes the fire
-        # cycle charge the delivery and discharge the debt. Re-taking is
-        # idempotent: it is a set, and the fire cycle is the only release.
+        # AHEAD of the follow-up allowance: a refused floor fire leaves the
+        # allowance and this debt standing for ONE owed turn, so the debt consumes
+        # one allowance credit (decremented, not zeroed, to keep credits it did not
+        # create). The claim is re-taken because a restart empties the claim set
+        # while this flag survives; it is a set, so re-taking is idempotent.
         if monitor.followup_ticks > 0:
             monitor.followup_ticks -= 1
         self._pending_floor_tick.add(loop.id)
@@ -723,18 +781,11 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             loop.id,
         )
         return False
-    # A wake buys the agent one more turn, unconditionally and BEFORE any
-    # observation. The probe watches the subject, not the agent: a turn that
-    # was woken and has not pushed yet leaves the subject unchanged, so
-    # observing here would read "nothing happened" and starve work already in
-    # progress. Bounded on purpose -- one tick per wake, spent whether or not
-    # it was needed -- because the alternative designs both fail worse: an
-    # unbounded allowance driven by a completion signal disables gating
-    # entirely on any surface where that signal never arrives, and no
-    # allowance at all lets a watch go silent while holding half-finished
-    # work. Costing one turn per wake is the cheap failure. A work-ledger wake is
-    # granted none (the fire cycle skips it), so the allowance a work-ledger loop
-    # can hold here is the one a refused fire grants to retry its delivery.
+    # A wake buys the agent one more turn BEFORE any observation: a woken turn that
+    # has not pushed yet leaves the subject unchanged, and observing would starve it.
+    # One tick per wake, because an unbounded allowance disables gating where the
+    # completion signal never arrives. A work-ledger wake is granted none; its only
+    # allowance is the one a refused fire grants to retry its delivery.
     pushed = loop.id in (getattr(self, "_pushed_running", None) or ())
     if (
         monitor.followup_ticks > 0
@@ -742,29 +793,16 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         and not monitor.terminal_delivered
         and not pushed
     ):
-        # NOT while a delivered terminal is still unsettled. The branch at the top
-        # hands such a tick to observation once its re-probes stay indeterminate
-        # for the bound, so the terminal branch can settle a matching reading
-        # without firing. A credit a refused final fire granted is still standing
-        # then, because the owed turn never spent it, and spending it here would
-        # fire a second final turn for a terminal that already landed.
+        # NOT while a delivered terminal is unsettled: a credit a refused final fire
+        # left standing would fire a second final turn for a terminal that landed.
         #
-        # NOT while a terminal turn is owed. The allowance exists to protect work
-        # already in progress, which is why it skips observation -- but a subject
-        # with terminal debt is FINISHED, so there is no in-progress work to
-        # protect, and the retry's correctness depends on it still being finished.
-        # Skipping the poll here is what let a REOPENED pull request keep its stale
-        # debt: the clearing added for that case lives after the poll, so the
-        # bypass jumped straight over it and the retried delivery settled a
-        # terminal state that had ended. Re-observing costs one probe call on
-        # a path that is already firing a turn.
+        # NOT while a terminal turn is owed: the subject is finished, so there is no
+        # work to protect, and skipping the poll would jump over the clearing that
+        # drops the debt of a REOPENED pull request.
         #
-        # NOT on a tick a worker's push brought forward either. The allowance is the
-        # loop's own second turn, owed on its cadence; a push landing right after a wake
-        # would otherwise arrive on it and buy a turn without the ledger being read --
-        # a worker's close after its ``done`` report would buy exactly that. Such a tick is
-        # observed like any other and wakes only for an observation the delivered turn
-        # did not already carry; the allowance stays for the next scheduled tick.
+        # NOT on a tick a worker's push brought forward: the allowance is owed on the
+        # loop's cadence, and a push right after a wake (a close after ``done``) would
+        # buy a turn without the ledger being read. It stays for the next tick.
         monitor.followup_ticks -= 1
         self._persist_soon()
         logger.debug("AutoNudge: loop %s spending a post-wake follow-up tick", loop.id)
@@ -787,29 +825,16 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         worker_running=self._worker_running,
         worker_closed=self._worker_closed,
         worker_looping=self._worker_looping,
+        worker_loop_held=self._worker_loop_held,
     )
     if probe is None:
         return False
-    # Derive the probe's config from the LOOP'S OWN STRINGS -- its judge brief's
-    # target list, else its instruction -- then check the subject it yields
-    # against the stored monitor.
-    #
-    # Not from ``monitor.target``: that is the CANONICAL subject
-    # ("owner/name#123"), a shorthand, and a shorthand deliberately carries no
-    # host -- so re-inferring from it would discard the github.com pin that a
-    # URL-armed watch is entitled to, and on a machine configured for an
-    # enterprise server the probe would resolve the slug there. A
-    # same-numbered enterprise pull request being merged would then falsely
-    # terminate a live public watch.
-    #
-    # Those strings are the only place the original spelling survives, and
-    # storing the host a second time would put one fact in two places that can
-    # disagree. So infer from them and REQUIRE the result to name the
-    # subject the monitor is bound to; a mismatch means the two have drifted
-    # apart, which is not something to resolve by guessing -- fire instead, the
-    # same direction every other uncertain path takes. Resolving the subject
-    # HERE by a different rule than the arm used is exactly how that mismatch
-    # gets manufactured, which is why both go through ``infer_subject``.
+    # Derive the probe's config from the LOOP'S OWN STRINGS (judge brief targets,
+    # else instruction), not from ``monitor.target``: that canonical shorthand
+    # ("owner/name#123") carries no host, so on an enterprise-configured machine a
+    # same-numbered enterprise PR could falsely terminate a public watch. The result
+    # must name the monitor's subject; a mismatch fires. Arm and tick both go
+    # through ``infer_subject`` so the two rules cannot drift.
     target = loop_subject(loop)
     if target is None or (target.kind, target.subject) != (monitor.kind, monitor.target):
         if target is not None:
@@ -821,19 +846,12 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
                 monitor.target,
             )
         return False
-    # Captured BEFORE the poll, which awaits: this is what the verdict is
-    # about, and it is checked again afterwards. The derived CONFIG is part of
-    # it, not just the subject: the stored target is a shorthand, so an
-    # instruction edited from an enterprise shorthand to the same public URL
-    # leaves kind and target identical while changing which SERVER is being
-    # observed. Comparing only the subject would let a verdict about one host
-    # settle a watch that now means the other.
+    # Captured BEFORE the awaiting poll and re-checked after. The derived config is
+    # part of it because an edit from an enterprise shorthand to the same public URL
+    # keeps kind and target but changes which SERVER is observed.
     binding = (monitor.kind, monitor.target, target.message)
-    # The dedupe memory is keyed on this identity, so it must move when the
-    # subject's host does -- otherwise a retargeted watch inherits
-    # observations made against a different server and suppresses the first
-    # real signal from the new one. Only this driver's identity changes; the
-    # cron path keeps the one its persisted state was written under.
+    # The dedupe memory is keyed on the host too, so a retargeted watch does not
+    # inherit another server's observations. The cron path keeps its own identity.
     identity = f"{loop.id}:{target.host_key}"
     if monitor.poll_in_flight:
         # A previous poll was interrupted after the kernel may already have
@@ -855,12 +873,9 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # scheduled write does not survive the shutdown that causes the problem.
     monitor.poll_in_flight = True
     try:
-        # ``_write_monitor_snapshot_locked`` under ``_lock``, NOT
-        # ``_persist_locked``: that one releases ``_lock`` if the awaiting task
-        # is cancelled while the executor write is still in flight, so a
-        # pause or retarget landing here could have this stale snapshot
-        # overwrite the newer state it just wrote. The settlements already use
-        # the non-releasing writer; these marker writes were left behind.
+        # ``_write_monitor_snapshot_locked``, NOT ``_persist_locked``: that one
+        # releases ``_lock`` on cancellation mid-write, so a pause or retarget could
+        # be overwritten by this stale snapshot.
         async with self._lock:
             await self._write_monitor_snapshot_locked()
     except Exception:
@@ -887,29 +902,16 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         )
         return False
     if verdict.outcome is not irq.Outcome.WAKE:
-        # The doubt is discharged when the thing it protects has happened -- and
-        # for a WAKE that is DELIVERY, not the poll returning. The kernel has
-        # already committed "reported" for what it saw, so if this process dies
-        # between here and the turn landing, a fresh observation reads the same
-        # state as unchanged and the signal is gone until the streak floor. The
-        # in-process refusal is covered by ``followup_ticks``; a DEATH is covered
-        # only by this marker outliving the fire, so a wake keeps it set and the
-        # fire cycle clears it where the wake claim is consumed.
-        #
-        # The asymmetry is deliberate: the SET must be durable because it guards
-        # against a death, while a CLEAR may ride the debounced write -- losing a
-        # clear costs one unnecessary fire, the direction this design resolves
-        # toward anyway.
+        # For a WAKE the doubt lasts until DELIVERY: the kernel already committed
+        # "reported", so a death before the turn lands would lose the signal. The
+        # fire cycle clears it then. The SET is durable; a CLEAR may ride the
+        # debounced write, since losing one costs only an extra fire.
         monitor.poll_in_flight = False
 
-    # The poll above is a real await -- it runs ``gh`` in a thread for as long as
-    # the reading's whole budget, ``gh_pr._TICK_BUDGET_SECS``, not the per-call cap
-    # -- so the loop can be RETARGETED while it is in flight:
-    # ``update(message=...)`` or a replaced judge brief rebinds the monitor to a
-    # different pull request, or clears it. Acting on this verdict now would apply
-    # an observation of the OLD subject to the new one, and the terminal branch
-    # would deactivate a watch that had just been pointed at a live pull request.
-    # Compare the binding, not the object: a retarget mutates the same MonitorState.
+    # The poll can last ``gh_pr._TICK_BUDGET_SECS``, so the loop may be RETARGETED
+    # meanwhile; acting on an old subject's verdict could deactivate a watch just
+    # pointed at a live PR. Compare the binding, not the object: a retarget mutates
+    # the same MonitorState.
     fresh = loop_subject(loop)
     current_binding = (monitor.kind, monitor.target, fresh.message) if fresh is not None else None
     if loop.monitor is not monitor or current_binding != binding:
@@ -935,15 +937,9 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # the single decision an owner cannot recover by waiting, so it is taken from
     # a typed fact, by the layer that can act on it.
     observation = _pr_observation_of(probe)
-    # Two kinds reach terminal by two channels and BOTH end the watch here. The
-    # gh-pr fetcher exposes its finish as a ``probe.observation`` this reads via
-    # ``_pr_observation_of``; the work-ledger probe exposes none and instead lets
-    # the kernel attribute a ``Severity.TERMINAL`` observation, which surfaces as
-    # ``verdict.outcome is TERMINAL``. Gating on the observation alone left a
-    # settled work-ledger loop with ``terminal`` false forever, so it never
-    # deactivated and polled its own finished ledger on every interval. The
-    # disjunct honours the kernel's typed terminal for the observation-less kind
-    # without disturbing the gh-pr path, whose observation still decides it.
+    # Two channels reach terminal: the gh-pr fetcher through ``probe.observation``,
+    # and the kernel's own ``Outcome.TERMINAL`` verdict (a subject that cannot be
+    # named). A work ledger whose every item is closed is a wake, not a terminal.
     terminal = (
         observation is not None and observation.is_terminal
     ) or verdict.outcome is irq.Outcome.TERMINAL
@@ -953,15 +949,9 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     reading_unchanged = False
     #: What ``judge_pr_seen`` becomes, but only once a verdict exists.
     staged_pr_seen: dict = {}
-    #: The question that baseline answers, captured BEFORE the reading is published
-    #: and re-checked before it is committed. An ``update`` that retargets the
-    #: message or replaces the criteria CLEARS the baseline, deliberately, because a
-    #: digest earned under the old question would screen the new one quiet. The
-    #: commit below runs after an await the update lands inside, so committing
-    #: unconditionally would put the cleared baseline straight back and suppress the
-    #: watch the owner just re-aimed until the streak floor. Same comparison the
-    #: judge call makes twice for the same reason, on the verdict rather than on the
-    #: baseline.
+    #: The question that baseline answers, captured BEFORE publishing and re-checked
+    #: before committing: an ``update`` landing in between clears the baseline on
+    #: purpose, and committing anyway would screen the re-aimed watch quiet.
     staged_for_spec = judge.spec_of(loop)
     staged_for_message = loop.message
     #: The record refused this tick's reading. Carried rather than returned on the
@@ -987,60 +977,24 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             short_digest = _short_reading_digest(monitor)
 
     if terminal:
-        # The subject is finished (a merged or closed pull request). Stop the
-        # loop rather than firing: there is nothing left to service, and one
-        # more turn would only rediscover that. ``expired`` is the existing
-        # channel for "this loop stopped rather than the agent finishing",
-        # and the emitted payload carries ``stopped_reason``, which is what
-        # distinguishes a merged subject from a spent bound.
+        # The subject is finished (a merged or closed pull request): stop the loop
+        # rather than fire. Not counted as a wake, since no turn is delivered.
         #
-        # Deliberately NOT counted as a wake: no turn is delivered here. A
-        # terminal observation that incremented ``wakes`` would report a turn
-        # that never ran, in counters that have to be trustworthy.
-        # Record the finish ON THE MONITOR, not only on the loop. Without
-        # this the record reads as merely paused, and the generic resume path
-        # -- the goal popover's Save, which is allowed to revive a current
-        # unsettled monitor -- would re-arm the watch onto a subject that is
-        # already merged. It would then observe TERMINAL, deactivate, and be
-        # revivable again: a loop that cannot be told apart from a working
-        # one. Reaching the end of the thing you were watching is a SUCCESS,
-        # so the outcome says so rather than borrowing a bound's vocabulary.
-        # ONE transition, committed once. Every other shape has a gap:
-        # announcing before the write promises a finish the record does not
-        # have; announcing after it is swallowed by ``update``'s cancel reaching
-        # this very task; and doing both leaves TWO await points, so a write
-        # failure kills the timer with the loop still active, and a retarget
-        # landing between them lets an old verdict deactivate a subject that
-        # has never been observed.
+        # The finish is recorded ON THE MONITOR, or the record reads as merely
+        # paused and the goal popover's Save would revive a watch on a merged subject.
+        # ONE transition with no ``update`` call and no await between the marks: one
+        # durable write commits them, and ``active = False`` is honoured by the
+        # re-arm guard below.
         #
-        # So there is no ``update`` call here at all. The marks go on in memory
-        # with no await between them, one durable write commits them, and the
-        # deactivation is simply ``active = False`` -- which the re-arm guard
-        # below already honours, making the timer cancel unnecessary rather
-        # than merely deferred.
-        # Reaching the end of the thing you were watching is not automatically
-        # a success. A MERGED subject is; one CLOSED WITHOUT MERGING ended on a
-        # question -- reopen or abandon -- and recording SUCCESS there tells the
-        # user "no action needed" about the one case that needs them most. The
-        # reading distinguishes the two, and it is read as a typed fact rather
-        # than out of delivered prose, which would break the first time that
-        # wording is edited.
+        # Only MERGED is a success; CLOSED WITHOUT MERGING needs the user. Read as
+        # typed facts, never prose.
         merged = observation is not None and observation.merged
-        # The probe distinguishes the two, so this reads its KEYS rather than its
-        # prose, which would break the first time that wording is edited. No
-        # key at all (an unusable target) is also not a success. The gh-pr probe
-        # is a FETCHER: its ``observe`` returns ``observations=[]``, so the kernel
-        # never attributes a TERMINAL key on that path and ``verdict.keys`` is
-        # empty for a pull request. ``merged`` is that kind's own success signal
-        # and must stand alongside the keys, or a merged pull request records as
-        # blocked. The disjunct cannot fire spuriously for gh-pr (its key set is
-        # always empty) and cannot fire for a rejected work ledger (``merged`` is
-        # only ever true for a pull request).
+        # The gh-pr probe is a FETCHER, so ``verdict.keys`` is always empty for it and
+        # ``merged`` is its success signal; ``merged`` is never true for a work ledger.
+        # No key at all (an unusable target) is not a success.
         succeeded = merged or probes.terminal_succeeded(verdict.keys)
-        # EVERY field this transition writes has to be in here. The loop's own
-        # ``stopped_reason`` is written alongside the monitor's, and leaving it
-        # out of the rollback left a live loop tagged as terminated -- which the
-        # fallback delivery would then persist.
+        # EVERY field this transition writes, including the loop's own
+        # ``stopped_reason``, or a rollback leaves a live loop tagged as terminated.
         restore = (
             monitor.outcome,
             monitor.stopped_reason,
@@ -1059,27 +1013,15 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             loop.id,
             subject_state,
         )
-        # SERIALIZED against ``update``. This path has no second await of its
-        # own; this closes the other side of the same race, which is
-        # ``update``'s. That method takes the MAINTENANCE lock (not ``_lock``)
-        # and awaits inside it, so a retarget could pass its precheck, yield,
-        # let this branch settle the OLD subject with ``active = False``, and
-        # then bind the NEW subject onto that inactive loop -- a fresh watch
-        # that never ticks. Holding the same lock across revalidate, mutate and
-        # persist is what makes the two mutually exclusive; ``_lock`` alone
-        # would not, because that is not the lock ``update`` contends for.
+        # SERIALIZED against ``update`` with the MAINTENANCE lock it holds, not
+        # ``_lock``: otherwise a retarget could bind a NEW subject onto the loop this
+        # branch just deactivated, a watch that never ticks. Lock ORDER matches
+        # ``update``'s (maintenance, then ``_lock``) so they cannot deadlock.
         #
-        # Lock ORDER matches ``update``'s (maintenance, then ``_lock`` for the
-        # write) so the two cannot deadlock against each other.
-        # A CHANNEL loop is told by a delivered TURN, not by the dashboard
-        # notification -- so for one the settlement must not be committed yet.
-        # Committing it means an inactive loop, and if that final fire is
-        # refused (a busy thread, the ordinary case) nothing re-arms and the
-        # news is lost: exactly the silent ending the previous round added this
-        # delivery to prevent. So mark what is OWED, durably, and settle only
-        # once the turn has landed. No outcome is recorded in the meantime, so a
-        # restart in this window finds a plain live loop rather than one tagged
-        # as finished and refused revival.
+        # A CHANNEL loop learns of the finish through a delivered TURN, so its
+        # settlement waits: if the final fire is refused (a busy thread) nothing would
+        # re-arm. Mark the turn OWED durably and settle once it lands; no outcome is
+        # recorded meanwhile, so a restart finds a plain live loop.
         if is_channel_key(loop.slot_key):
             classification = "success" if succeeded else "blocked"
             if monitor.terminal_delivered == classification:
@@ -1348,6 +1290,57 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
                     "not persist -- leaving the stored baseline in force",
                     loop.id,
                 )
+        if judged is not False:
+            # A typed blocker the owner has NOT been shown wakes the loop whatever the
+            # judge said. This is the one fact a judge must never be able to silence:
+            # the gap this repairs is a narrow custom brief answering QUIET while a
+            # check the last delivered turn did not carry has just gone red, or the
+            # branch has just started conflicting -- the typed classifier already holds
+            # "checks_failed"/"merge_conflict" as ACTIONABLE, but on a gated loop the
+            # fetcher raises no observation, so once a judge runs nothing else gets a
+            # say. Measured against the LAST DELIVERED reading, not the last tick, so a
+            # red PR already under repair (the same failing set the owner saw) stays
+            # quiet -- which is why the judge's own override bar still has a reason to
+            # exist. Checked only on a path that would otherwise go quiet (``judged``
+            # is True or None); a judge that already said WAKE has returned above.
+            new_blockers = _newly_blocked(monitor)
+            if new_blockers:
+                if judged is True:
+                    # The judge claimed this tick quiet, and this path FIRES it: its
+                    # suppression row would otherwise take a false ``missed`` label
+                    # from the delivery, so withdraw it the way the quiet-floor
+                    # override does. Awaited and paired with the withdrawal for the
+                    # same reason given there.
+                    self._withdraw_judge_suppression(loop)
+                    await self._persist_judge_state(loop)
+                monitor.quiet_streak = 0
+                monitor.last_observed_at = time.time()
+                self._persist_soon()
+                logger.info(
+                    "AutoNudge: loop %s waking on a blocker the last delivered turn "
+                    "did not carry (%s) -- the judge's quiet does not silence a typed "
+                    "fact",
+                    loop.id,
+                    "; ".join(new_blockers[:3]),
+                )
+                if self._emit_judge_notice is not None:
+                    try:
+                        await self._emit_judge_notice(
+                            loop,
+                            # Neutral lead-in: a new blocker is a failing check OR a
+                            # fresh conflict, and each label in ``new_blockers`` already
+                            # names its own kind ("check failed: ..." / "the branch now
+                            # conflicts ..."), so the lead-in must not claim a check.
+                            "Watch woke on a blocker not present at the last delivery "
+                            "\u00b7 " + "; ".join(new_blockers[:3]),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "AutoNudge: could not write the new-blocker notice for " "loop %s",
+                            loop.id,
+                            exc_info=True,
+                        )
+                return False
         if judged is False:
             # The judge overrides the probe's quiet on evidence the probe cannot
             # read, so this tick spends a turn and is accounted for as one.
@@ -1751,6 +1744,7 @@ async def _terminal_still_holds(
         worker_running=self._worker_running,
         worker_closed=self._worker_closed,
         worker_looping=self._worker_looping,
+        worker_loop_held=self._worker_loop_held,
     )
     if (
         target is None

@@ -34,7 +34,7 @@
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import SidePanelLayout, { useSidePanelLeaveGuard, type SidePanelTab } from '../components/SidePanelLayout'
 import {
@@ -143,7 +143,7 @@ const enterCapabilities = async () => {
 /** jsdom applies `back()` in a task, and the guard answers inside the resulting
  *  `popstate` — so every assertion about Back has to be awaited. */
 const pressBack = async (settle: () => void) => {
-  window.history.back()
+  await act(async () => { window.history.back() })
   await waitFor(settle)
 }
 
@@ -242,7 +242,7 @@ describe('browser Back navigation leave guard', () => {
     typeDraft('first thoughts')
     typeDraft('')
     await pressBack(() => expect(loc()).toBe('/schedule'))
-    window.history.forward()
+    await act(async () => { window.history.forward() })
     await waitFor(() => expect(screen.getByLabelText('draft')).toBeInTheDocument())
     typeDraft('half-written prompt')
     await pressBack(() => expect(confirmSpy).toHaveBeenCalled())
@@ -281,7 +281,7 @@ describe('browser Back navigation leave guard', () => {
     // get back. The guard stays out of the stack instead: Back is unguarded on
     // this entry (a gap), but nothing is lost.
     expect(window.history.length).toBe(lengthBeforeTyping)
-    window.history.forward()
+    await act(async () => { window.history.forward() })
     await waitFor(() => expect(loc()).toBe('/chat'))
     expect(confirmSpy).not.toHaveBeenCalled()
   })
@@ -337,7 +337,7 @@ describe('browser Back navigation leave guard', () => {
     // the page is already unmounted by the time the guard hears about it.
     // Correlating any pop with its own duplicate would confirm a draft that is
     // already gone and then pop one entry further.
-    window.history.go(-2)
+    await act(async () => { window.history.go(-2) })
     await waitFor(() => expect(loc()).toBe('/schedule'))
     expect(confirmSpy).not.toHaveBeenCalled()
   })

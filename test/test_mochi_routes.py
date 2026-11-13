@@ -369,6 +369,64 @@ class TestPinnedRoutes:
             assert json.loads(resp4.body)["pins"] == []
 
     @pytest.mark.asyncio
+    async def test_a_failed_pin_write_is_a_coded_500_not_a_quiet_200(self, tmp_path, monkeypatch):
+        """A full data home must reach the page as an error. A 200 would leave
+        the pin unchanged with nothing telling the person why."""
+        from kiro_crew.apps.builtins.mochi import pinned_files_service as pfs
+
+        async with _live_runtime(tmp_path) as runtime:
+            target = tmp_path / "watched.txt"
+            target.write_text("x")
+            assert runtime.pinned.add_pin(str(target), now_ms=1_000)
+
+            def _boom(*_a, **_k):
+                raise OSError("ENOSPC")
+
+            monkeypatch.setattr(pfs, "atomic_write", _boom)
+            for route, url in (
+                (routes._handle_pinned_mark_seen, "/api/apps/mochi/pinned/mark-seen"),
+                (routes._handle_pinned_unpin, "/api/apps/mochi/pinned/unpin"),
+            ):
+                resp = await route(_json_request("POST", url, {"path": str(target)}))
+                assert resp.status == 500, url
+                assert json.loads(resp.body)["code"] == "pins_write_failed", url
+            assert [p["path"] for p in runtime.pinned.get_pins()] == [str(target)]
+
+    @pytest.mark.asyncio
+    async def test_a_lock_create_failure_is_coded_not_a_bare_500(self, tmp_path, monkeypatch):
+        """The FIRST mutation of a fresh pin list creates the sidecar ``.lock``
+        file; when the data folder cannot be written that create fails before the
+        save even runs. It must reach the page as ``pins_write_failed``, not the
+        bare 500 that an uncaught ``PermissionError`` produced."""
+        from kiro_crew import platform_compat
+
+        async with _live_runtime(tmp_path) as runtime:
+            target = tmp_path / "watched.txt"
+            target.write_text("x")
+            assert runtime.pinned.add_pin(str(target), now_ms=1_000)
+
+            def _no_lock(*_a, **_k):
+                raise PermissionError(13, "Permission denied")
+
+            monkeypatch.setattr(platform_compat, "open_create_or_existing", _no_lock)
+            for route, url in (
+                (routes._handle_pinned_mark_seen, "/api/apps/mochi/pinned/mark-seen"),
+                (routes._handle_pinned_unpin, "/api/apps/mochi/pinned/unpin"),
+            ):
+                resp = await route(_json_request("POST", url, {"path": str(target)}))
+                assert resp.status == 500, url
+                assert json.loads(resp.body)["code"] == "pins_write_failed", url
+
+    @pytest.mark.asyncio
+    async def test_unpinning_an_unknown_path_still_reports_ok_false(self, tmp_path):
+        async with _live_runtime(tmp_path):
+            resp = await routes._handle_pinned_unpin(
+                _json_request("POST", "/api/apps/mochi/pinned/unpin", {"path": "/never/pinned"})
+            )
+            assert resp.status == 200
+            assert json.loads(resp.body) == {"ok": False}
+
+    @pytest.mark.asyncio
     async def test_pinned_label_credential_is_redacted(self, tmp_path):
         """Pin labels are agent-authored (pin_file); a credential in one must be
         scrubbed before the pinned route hands it to the browser."""

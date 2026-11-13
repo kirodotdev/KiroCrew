@@ -5,7 +5,8 @@
  * with the reason the gateway gave as visible text and in the mark's name.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, within, fireEvent, waitFor, act } from '@testing-library/react'
+import { i18next } from '../i18n/all'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { NormalizedProviderHook, NormalizedUnsentHook } from '../providers/types'
@@ -100,6 +101,20 @@ describe('Provider hooks — hooks the provider was never handed', () => {
         + 'It can run on PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, Stop.',
     )
     expect(mark.getAttribute('title')).toContain('kiro-cli has no event for this trigger')
+  })
+
+  it('words the mark label as one sentence, with no English dash in Japanese', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      unsent = [row({ reason: 'trigger' })]
+      renderPage()
+      const [r] = await screen.findAllByTestId('unsent-hook-row')
+      const mark = within(r).getByText('自動実行されない')
+      expect(mark.getAttribute('aria-label')).toMatch(/^自動実行されない：/)
+      expect(mark.getAttribute('aria-label')).not.toContain(' — ')
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('lists them after the hooks kiro-cli runs, with no order number', async () => {

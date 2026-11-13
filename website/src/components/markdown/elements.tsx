@@ -2,6 +2,7 @@ import React from 'react'
 import type { Components } from 'react-markdown'
 import type { Element as HastElement } from 'hast'
 import { TAG_ATTRS } from './sanitize'
+import { CopyableBlockquote } from './CopyableBlockquote'
 import {
   MD_EM_CLS,
   MD_HEADING_CLS,
@@ -10,6 +11,7 @@ import {
   MD_STRONG_CLS,
   MD_TABLE_CELL_CLS,
   MD_TABLE_HEAD_CELL_CLS,
+  MD_TASK_LIST_CLS,
   MD_UL_CLS,
 } from './typography'
 
@@ -117,7 +119,7 @@ export const ELEMENT_OVERRIDES = {
   // Headers carry the column's meaning, so never break them mid-label.
   th({ node, children }) { return <th {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
   td({ node, children }) { return <td {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td> },
-  blockquote({ node, children }) { return <blockquote {...sp(node)} className="border-l-[3px] border-accent pl-3 my-2 text-muted italic">{children}</blockquote> },
+  blockquote({ node, children }) { return <CopyableBlockquote node={node}>{children}</CopyableBlockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
   h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} id={id} className={MD_HEADING_CLS[0]}>{children}</h1> },
   h2({ node, children }) { const id = slugify(children); return <h2 {...sp(node)} id={id} className={MD_HEADING_CLS[1]}>{children}</h2> },
@@ -125,7 +127,7 @@ export const ELEMENT_OVERRIDES = {
   h4({ node, children }) { const id = slugify(children); return <h4 {...sp(node)} id={id} className={MD_HEADING_CLS[3]}>{children}</h4> },
   h5({ node, children }) { const id = slugify(children); return <h5 {...sp(node)} id={id} className={MD_HEADING_CLS[4]}>{children}</h5> },
   h6({ node, children }) { const id = slugify(children); return <h6 {...sp(node)} id={id} className={MD_HEADING_CLS[5]}>{children}</h6> },
-  ul({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ul {...sp(node)} className={isTasks ? 'list-none pl-4 my-2 space-y-1' : MD_UL_CLS}>{children}</ul> },
+  ul({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ul {...sp(node)} className={isTasks ? MD_TASK_LIST_CLS : MD_UL_CLS}>{children}</ul> },
   // `start` must reach the DOM, not be dropped while attaching a className: a
   // fenced block SPLITS the message into independent markdown documents
   // (useBlockAssembler), so the list after a code block is its own <ol> that
@@ -149,7 +151,7 @@ export const ELEMENT_OVERRIDES = {
       <ol
         {...spa('ol', node)}
         style={typed ? { listStyleType: styleType } : undefined}
-        className={isTasks ? 'list-none pl-4 my-2 space-y-1' : `${typed ? '' : 'list-decimal '}${MD_OL_BASE_CLS}`}
+        className={isTasks ? MD_TASK_LIST_CLS : `${typed ? '' : 'list-decimal '}${MD_OL_BASE_CLS}`}
       >
         {children}
       </ol>
@@ -179,7 +181,7 @@ export const ELEMENT_OVERRIDES = {
     return (
       <li
         {...spa('li', node)}
-        className="text-sm leading-relaxed break-words pl-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0 [&>ul]:mt-1 [&>ol]:mt-1"
+        className="text-sm leading-normal break-words pl-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0"
       >
         {children}
       </li>

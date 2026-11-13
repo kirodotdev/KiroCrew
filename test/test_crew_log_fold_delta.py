@@ -121,6 +121,12 @@ class _Receiver:
         bus.subscribe(bus.FOLD_ADVANCED, self._on, scope="slot", key=WORK_SLOT, fold="work")
 
     def _on(self, event: bus.FoldAdvanced) -> None:
+        # A work event carries no whole value. Recorded beside it, for the assertions,
+        # is the render it stands for: inside the publish that is
+        # ``eager.published_value`` at its revision (what the WS exporter looks up).
+        assert event.value is None, "a work event must not carry the whole render"
+        whole = eager.published_value(event.key, event.fold, event.revision)
+        event = event._replace(value=whole)
         self.events.append(event)
         if event.kind == fold_delta.KIND_DELTA and event.base_revision == self.revision:
             assert self.value is not None
@@ -129,9 +135,10 @@ class _Receiver:
             self.value, self.revision = applied, event.revision
             return
         # snapshot_needed, or a base we do not hold: "pull" one snapshot. The pull here
-        # is a deep copy of the event's value, which is what a REST read at this
-        # revision returns.
+        # is a deep copy of the render published at this revision, which is what a
+        # REST read labelled with it returns.
         self.snapshots += 1
+        assert event.value is not None
         self.value, self.revision = copy.deepcopy(dict(event.value)), event.revision
 
 
@@ -365,19 +372,22 @@ def test_the_lru_bound_drops_the_oldest_base(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_every_work_event_still_carries_the_whole_value():
+def test_no_work_event_carries_the_whole_value():
+    """The bus carries only the delta for ``work``; the render it stands for is
+    the publisher's recorded base, and equals a fresh read."""
+    raw: list[bus.FoldAdvanced] = []
+    bus.subscribe(bus.FOLD_ADVANCED, raw.append, scope="slot", key=WORK_SLOT, fold="work")
     writer = _Writer()
-    receiver = _Receiver()
     writer.create("it-1")
     _publish_now()
     writer.create("it-2")
     _publish_now()
-    for event in receiver.events:
-        assert event.value == crew_log.read_slot_projection(WORK_SLOT, "work").value or (
-            event is not receiver.events[-1]
-        )
-        assert isinstance(event.value, dict) and event.value["items"]
-    assert receiver.events[-1].value == crew_log.read_slot_projection(WORK_SLOT, "work").value
+    assert [e.kind for e in raw] == [fold_delta.KIND_SNAPSHOT_NEEDED, fold_delta.KIND_DELTA]
+    assert all(e.value is None for e in raw)
+    read = crew_log.read_slot_projection(WORK_SLOT, "work").value
+    assert eager.published_value(WORK_SLOT, "work", raw[-1].revision) == read
+    # Any other revision has no recorded render: the base moved on.
+    assert eager.published_value(WORK_SLOT, "work", raw[0].revision) is None
 
 
 def test_a_fold_outside_delta_folds_publishes_a_plain_value():
@@ -401,9 +411,8 @@ def test_a_fold_outside_delta_folds_publishes_a_plain_value():
 
 
 def test_the_exporter_frame_for_work_is_the_whole_value_as_before():
-    """An old tab: the exporter unpacks only (key, fold, revision, seq, value) and builds
-    its ``slot_projection`` frame from ``value``, so a delta event produces the same
-    frame a pre-delta event did."""
+    """An old tab: a value-less delta event still produces the ``slot_projection`` frame
+    a pre-delta event did, whole value included, from the publisher's recorded render."""
     from types import SimpleNamespace
 
     from kiro_crew.dashboard.handlers.crew_log import CrewLogPublisher
@@ -412,23 +421,27 @@ def test_the_exporter_frame_for_work_is_the_whole_value_as_before():
     hub = SimpleNamespace(broadcast_ws_owners=lambda kind, data: sent.append((kind, data)))
     exporter = SimpleNamespace(_state=hub)
 
+    raw: list[bus.FoldAdvanced] = []
+    bus.subscribe(bus.FOLD_ADVANCED, raw.append, scope="slot", key=WORK_SLOT, fold="work")
     writer = _Writer()
-    receiver = _Receiver()
     writer.create("it-1")
     _publish_now()
     writer.create("it-2")
     _publish_now()
-    delta_event = receiver.events[-1]
-    assert delta_event.kind == fold_delta.KIND_DELTA
-    plain = delta_event._replace(kind="value", base_revision=0, delta=None)
+    delta_event = raw[-1]
+    assert delta_event.kind == fold_delta.KIND_DELTA and delta_event.value is None
+    read = crew_log.read_slot_projection(WORK_SLOT, "work").value
+    plain = delta_event._replace(kind="value", base_revision=0, delta=None, value=read)
 
-    assert CrewLogPublisher._unpack(delta_event) == CrewLogPublisher._unpack(plain)
-    for event in (delta_event, plain):
-        unpacked = CrewLogPublisher._unpack(event)
-        assert unpacked is not None
-        key, fold, revision, _seq, value = unpacked
+    assert CrewLogPublisher._unpack(delta_event) is None
+    unpacked, frame = CrewLogPublisher._unpack_delta(delta_event)
+    assert unpacked == CrewLogPublisher._unpack(plain)
+    assert frame is not None and frame["kind"] == fold_delta.KIND_DELTA
+    for packed in (unpacked, CrewLogPublisher._unpack(plain)):
+        assert packed is not None
+        key, fold, revision, _seq, value = packed
         CrewLogPublisher._push_fold(exporter, key, fold, revision, value)  # type: ignore[arg-type]
     assert len(sent) == 2
     assert json.dumps(sent[0]) == json.dumps(sent[1])
-    assert sent[0][1]["value"] == delta_event.value
+    assert sent[0][1]["value"] == read
     assert "delta" not in sent[0][1] and "base_revision" not in sent[0][1]

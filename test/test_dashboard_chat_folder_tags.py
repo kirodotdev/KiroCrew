@@ -7,6 +7,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import AsyncIterator, _make_folder_app, _make_state
 from dashboard_chat_helpers import _provider_mock
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 class TestFolderTags:
     """Folder `tags` — vocabulary-constrained list persisted on create/update,
@@ -161,11 +165,8 @@ class TestFolderTags:
     async def test_unknown_tag_id_is_filtered_not_400(self, tmp_path, monkeypatch):
         """(b) An unknown tag id is silently dropped on create and update.
 
-        Mirrors ``api_chat_slot_tags`` exactly: a dangling id can legitimately
-        exist (the tag delete's best-effort folder strip can fail), and a
-        strict 400 here would make every subsequent save of that folder fail —
-        the "permanently uneditable folder" class. Filtering at the write
-        sheds the stale reference instead.
+        Mirrors ``api_chat_slot_tags``: a dangling id can exist (the tag delete's folder
+        strip is best-effort), and a 400 would make the folder permanently uneditable.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -313,17 +314,10 @@ class TestFolderAssignmentPersistence:
 
     @pytest.mark.asyncio
     async def test_folder_assignment_persists_on_resumed_session(self, tmp_path, monkeypatch):
-        """Regression: folder_id must reach disk even when slot is a resumed
-        session with no new messages.
+        """folder_id must reach disk even for a resumed session with no new messages.
 
-        Root cause: _save_slot_to_history had an early-return guard that
-        skipped disk writes when ``slot._resumed_count > 0 and
-        len(messages) <= slot._resumed_count``. Metadata-only changes like
-        folder assignment don't grow the message count past the resumed
-        marker, so the save was silently dropped — folder_id never reached
-        disk and the move was lost on the next gateway restart.
-
-        Fix: folder endpoint passes ``force=True`` which bypasses the guard.
+        _save_slot_to_history skips saves when ``len(messages) <= slot._resumed_count``,
+        so the folder endpoint passes ``force=True`` to bypass that guard.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

@@ -115,10 +115,9 @@ if python3 -c "import kiro_crew.security" 2>/dev/null; then
   CRED_HITS=$(python3 - "$SNAPSHOT_DIR" <<'PYEOF'
 import sys, os, re
 from pathlib import Path
-from kiro_crew.security import get_credential_patterns, is_sensitive_path
+from kiro_crew.security import is_sensitive_path, iter_credential_matches
 
 target = Path(sys.argv[1])
-patterns = [p for p in get_credential_patterns()]
 hits = []
 for root, dirs, files in os.walk(target):
     dirs[:] = [d for d in dirs if d != '.git']
@@ -145,10 +144,8 @@ for root, dirs, files in os.walk(target):
             data = fpath.read_text(errors='ignore')
         except (OSError, UnicodeDecodeError):
             continue
-        for pat in patterns:
-            if pat.search(data):
-                hits.append(str(fpath))
-                break
+        if any(iter_credential_matches(data)):
+            hits.append(str(fpath))
 if hits:
     for h in hits:
         print(h)

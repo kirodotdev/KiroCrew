@@ -54,9 +54,10 @@ def _probe(snippet: str) -> dict:
     # parse_dashboard_url honours KIROCREW_PORT; keep the probe deterministic.
     env.pop("KIROCREW_PORT", None)
     proc = subprocess.run(
-        [sys.executable, "-c", snippet],
+        [sys.executable, "-X", "utf8", "-c", snippet],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         timeout=120,
     )

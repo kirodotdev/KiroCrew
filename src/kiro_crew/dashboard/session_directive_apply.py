@@ -45,6 +45,7 @@ from __future__ import annotations
 import importlib as _importlib
 import logging
 import sys as _sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from kiro_crew import _facade_mirror
@@ -62,7 +63,6 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     _DASHBOARD_ONLY_DIRECTIVES,
     _REVISION_DIRECTIVES,
     _STOP_DIRECTIVES,
-    _USER_ORIGIN_DIRECTIVES,
     _USER_SURFACE_DIRECTIVES,
     REVISION_REFUSAL_NOTICE_PREFIX,
     STOP_REFUSAL_NOTICE_PREFIX,
@@ -79,6 +79,7 @@ from kiro_crew.dashboard.session_directive_apply_slot import (
     _set_project,
     _suggest_followup,
 )
+from kiro_crew.directive_origin import user_origin_gate_admits
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
@@ -103,6 +104,68 @@ def _audit(session_key: str, kind: str, outcome: str) -> None:
         )
     except Exception:
         logger.debug("session-directive SEL audit failed", exc_info=True)
+
+
+def refuse_user_origin_directive(session_key: str, kind: str) -> str:
+    """Audit *kind* as denied by the user-origin gate and return the refusal text.
+
+    The gate's one wording, shared with the cron turn, which no applier reads.
+    """
+    _audit(session_key, kind, "denied")
+    if kind in _USER_SURFACE_DIRECTIVES:
+        # Unchanged wording: extending the set must not silently reword an
+        # unrelated tool's refusal.
+        return (
+            f"Error: {kind} only works from a user-facing session (dashboard "
+            f"or a messaging channel); headless callers such as cron jobs and "
+            f"sub-agents are refused (this turn is {session_key!r}). "
+            "Nothing was changed."
+        )
+    return (
+        f"Error: {kind} only works from a turn a person sent; cron jobs, "
+        f"sub-agents, task-runner turns and this session's own wakes are "
+        f"refused even when this session has an open dashboard tab "
+        f"(this turn is {session_key!r}). Nothing was changed."
+    )
+
+
+def person_only_directive_refuser(
+    session_key: str, refusals: list[str]
+) -> Callable[[Any], Awaitable[None]]:
+    """Return a ``stream_and_collect`` ``on_event`` that refuses person-only directives.
+
+    For a turn no session applier reads (a cron job, a workflow agent step): each
+    ``USER_ORIGIN_DIRECTIVES`` call the turn completes is refused with
+    :func:`refuse_user_origin_directive` and its text appended to *refusals* for
+    the caller to lead its result with. The call is named from any of its frames
+    the way the dashboard's out-of-band claim names it
+    (``directive_tool_from_call``), never from the result body, which a harness
+    may reshape (KAS). Nothing is applied, so a forged title buys only a refusal
+    line. Every other directive is left unread.
+    """
+    from kiro_crew import session_directive
+    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT
+    from kiro_crew.directive_origin import USER_ORIGIN_DIRECTIVES
+
+    person_only_calls: dict[str, str] = {}
+
+    async def _on_event(event: Any) -> None:
+        call_id = event.tool_call_id
+        if not call_id:
+            return
+        if event.kind != CONTEXT_EVENT_TOOL_RESULT:
+            tool = session_directive.directive_tool_from_call(
+                event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
+            )
+            if tool in USER_ORIGIN_DIRECTIVES:
+                person_only_calls[call_id] = tool
+            return
+        if event.tool_final and call_id in person_only_calls:
+            refusals.append(
+                refuse_user_origin_directive(session_key, person_only_calls.pop(call_id))
+            )
+
+    return _on_event
 
 
 async def apply_session_directive(
@@ -213,29 +276,12 @@ async def apply_session_directive_outcome(
         and not producer_is_user_facing
         and _has_user_surface(session_key)
     )
-    if (
-        kind in _USER_ORIGIN_DIRECTIVES
-        and not wake_reset
-        and (not producer_is_user_facing or not _has_user_surface(session_key))
+    if not wake_reset and not user_origin_gate_admits(
+        kind, session_key, producer_is_user_facing=producer_is_user_facing
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
         # parent's slot, so both inherit a surface they never opened.
-        _audit(session_key, kind, "denied")
-        if kind in _USER_SURFACE_DIRECTIVES:
-            # Unchanged wording: extending the set must not silently reword an
-            # unrelated tool's refusal.
-            return DirectiveOutcome(
-                f"Error: {kind} only works from a user-facing session (dashboard "
-                f"or a messaging channel); headless callers such as cron jobs and "
-                f"sub-agents are refused (this turn is {session_key!r}). "
-                "Nothing was changed."
-            )
-        return DirectiveOutcome(
-            f"Error: {kind} only works from a turn a person sent; cron jobs, "
-            f"sub-agents, task-runner turns and this session's own wakes are "
-            f"refused even when this session has an open dashboard tab "
-            f"(this turn is {session_key!r}). Nothing was changed."
-        )
+        return DirectiveOutcome(refuse_user_origin_directive(session_key, kind))
     # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
     # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
     # started in this session (the same authenticated-human flag the
@@ -391,7 +437,15 @@ async def apply_session_directive_outcome(
     # result the same way call_tool_with_logging does (an "Error:" prefix ==
     # failed), keeping the audit truthful for the failure paths too.
     outcome = _outcome(result)
-    _audit(session_key, kind, "error" if outcome.text.startswith("Error:") else "success")
+    failed = outcome.text.startswith("Error:")
+    _audit(session_key, kind, "error" if failed else "success")
+    if not failed and kind in ("monitor_start", "monitor_watch"):
+        # The "PR watch" milestone, once the loop is really armed: the MCP tool
+        # already answered "requested" before this consumer could refuse it.
+        # Local import, like ``_audit``'s, for the import-cycle reason given there.
+        from kiro_crew.milestones import record as record_milestone
+
+        record_milestone("pr-watch")
     return outcome
 
 
@@ -421,6 +475,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.session_directive_apply_monitor import (  # noqa: F401
         _STOP_NOT_APPLIED,
         _binding,
+        _default_cycle_cap,
+        _keeps_stopped_loop,
         _no_loop_message,
         _StaleWakeStopGuard,
         _stop_resolved_loop,
@@ -448,9 +504,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew.apps.builtins.auto_research.session_keys import (  # noqa: F401
-        is_owned_research_slot,
-    )
     from kiro_crew.autonudge import (  # noqa: F401
         APPROVAL_STALL_REASON,
         AUTONUDGE_STOP_REASON,
@@ -461,6 +514,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.autonudge_judge import (  # noqa: F401
         screen_phrase,
+    )
+    from kiro_crew.directive_origin import (  # noqa: F401
+        USER_ORIGIN_DIRECTIVES as _USER_ORIGIN_DIRECTIVES,
+    )
+    from kiro_crew.directive_origin import (  # noqa: F401
+        has_user_surface as _shared_has_user_surface,
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         is_channel_session_key,

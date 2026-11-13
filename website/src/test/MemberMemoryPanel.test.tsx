@@ -127,8 +127,8 @@ describe('private member memory lifecycle', () => {
 
     await screen.findByRole('heading', { name: `Memory for ${LEGACY_STORE}` })
     expect(screen.getByText('Memory V1', { exact: true })).toBeVisible()
-    const guidance = screen.getByText(/This mate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new mate\./)
-    expect(guidance).toHaveTextContent(/^This mate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new mate\.$/)
+    const guidance = screen.getByText(/This bot keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new bot\./)
+    expect(guidance).toHaveTextContent(/^This bot keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new bot\.$/)
     expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
     expect(screen.queryByText('Member memory · V2')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
@@ -452,7 +452,8 @@ describe('private member memory lifecycle', () => {
     expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE)
     expect(api.memoryRetired).toHaveBeenCalledWith(MEMBER_STORE, expect.any(Number))
     const advanced = screen.getByText('Advanced memory analysis').closest('details')!
-    advanced.open = true
+    // happy-dom fires `toggle` synchronously from the `open` setter, into onToggle's setAdvanced.
+    act(() => { advanced.open = true })
     fireEvent(advanced, new Event('toggle'))
     await waitFor(() => expect(api.memoryCarve).toHaveBeenCalled())
     expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: MEMBER_STORE }))
@@ -653,7 +654,10 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'review' } })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Recall for this task' })).toBeEnabled())
+    // The Recall button draws its searching state as `busy` (aria-disabled),
+    // not native `disabled`, so toBeEnabled() no longer gates on it: wait for
+    // the busy signal to clear, or a press lands while busy and is swallowed.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recall for this task' })).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(screen.getByRole('button', { name: 'Recall for this task' }))
     expect(await screen.findByText('Selected member evidence')).toBeVisible()
     expect(api.memoryRecall).toHaveBeenCalledWith('review', MEMBER_STORE)

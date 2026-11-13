@@ -13,13 +13,15 @@ gets.
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import vector_memory
+from kiro_crew import injection_receipts, vector_memory
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.context import (
     _LESSONS_SHOWN_PER_SESSION,
@@ -336,6 +338,20 @@ class TestSessionLifecycle:
         assert HEADER in first and ROLLBACK in first
         assert ROLLBACK not in again
 
+    def test_the_block_records_the_keys_it_sent(self, builder, store, home) -> None:
+        enable(home, inject_lessons_per_turn=True)
+        rollback_key = next(
+            row["key"] for row in store.get_lessons() if ROLLBACK in row["value_json"]
+        )
+
+        with injection_receipts.collect() as first:
+            turn(builder, "flywheel telemetry canary")
+        with injection_receipts.collect() as again:
+            turn(builder, "the flywheel telemetry again")
+
+        assert first[injection_receipts.TURN_LESSONS]["ids"] == [rollback_key]
+        assert injection_receipts.TURN_LESSONS not in again
+
     def test_scrubbed_lesson_lines_stay_within_the_character_budget(
         self, builder, store, home
     ) -> None:
@@ -588,3 +604,83 @@ class TestLessonScrub:
         for marker in ("[End of learned corrections]", "[PERMANENT RULES]", "[Skill: override]"):
             assert marker not in line
         assert rendered.count("[End of learned corrections]") == 1
+
+
+# The reinjection frame, minus its dash (the built message folds it to ASCII).
+_REINJECTED_LESSONS = re.compile(
+    r"REINJECTED AFTER COMPACTION\W+learned corrections\]\n(.*?)\n\[END REINJECTED\]",
+    re.DOTALL,
+)
+
+
+def reinjected_lessons(rendered: str) -> str:
+    """The post-compaction lessons block's payload, or ``""`` when it is absent."""
+    match = _REINJECTED_LESSONS.search(rendered)
+    return match.group(1) if match else ""
+
+
+class TestCompactionReinjection:
+    """A compaction drops the session-start lessons; the next turn gets them back."""
+
+    def test_a_compaction_brings_the_startup_lessons_back(self, builder, home) -> None:
+        rendered = turn(builder, "flywheel telemetry canary", needs_reinjection=True)
+
+        block = reinjected_lessons(rendered)
+        assert "[Learned corrections" in block
+        assert ROLLBACK in block
+
+    def test_a_turn_without_a_compaction_gets_no_block(self, builder, home) -> None:
+        assert reinjected_lessons(turn(builder, "flywheel telemetry canary")) == ""
+
+    def test_the_lessons_switch_withholds_it(self, builder, home) -> None:
+        enable(home, inject_lessons=False)
+
+        rendered = turn(builder, "flywheel telemetry canary", needs_reinjection=True)
+
+        assert reinjected_lessons(rendered) == ""
+
+    def test_a_parent_withheld_lessons_group_withholds_it(self, builder, home) -> None:
+        rendered = turn(
+            builder,
+            "flywheel telemetry canary",
+            needs_reinjection=True,
+            context_groups=frozenset(),
+        )
+
+        assert reinjected_lessons(rendered) == ""
+
+    def test_a_temporary_session_gets_none(self, builder, home) -> None:
+        rendered = turn(
+            builder, "flywheel telemetry canary", needs_reinjection=True, blocks_reads=True
+        )
+
+        assert reinjected_lessons(rendered) == ""
+
+    def test_a_minimal_context_turn_gets_none(self, builder, home) -> None:
+        rendered = turn(
+            builder, "flywheel telemetry canary", needs_reinjection=True, minimal_context=True
+        )
+
+        assert reinjected_lessons(rendered) == ""
+
+    def test_the_per_message_block_skips_what_the_reinjection_showed(self, builder, home) -> None:
+        enable(home, inject_lessons_per_turn=True)
+
+        rendered = turn(builder, "flywheel telemetry canary", needs_reinjection=True)
+
+        assert ROLLBACK in reinjected_lessons(rendered)
+        assert HEADER not in rendered
+        assert rendered.count(ROLLBACK) == 1
+
+    def test_an_unreadable_store_costs_the_block_not_the_turn(
+        self, builder, store, home, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreadable(*_args, **_kwargs) -> str:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store, "get_lessons_context", unreadable)
+
+        rendered = turn(builder, "flywheel telemetry canary", needs_reinjection=True)
+
+        assert reinjected_lessons(rendered) == ""
+        assert "flywheel telemetry canary" in rendered

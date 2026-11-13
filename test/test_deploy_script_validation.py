@@ -30,22 +30,38 @@ def _load_script(name: str):
     return mod
 
 
-class TestAttachBackendValidation:
+class _InputsBothScriptsAccept:
+    """Valid inputs that ``attach_backend.py`` and ``detach_backend.py`` both accept.
+
+    Each validation class below takes this as a base and loads its own script into
+    ``self.mod``, so every node id stays ``<Class>::<test>``.
+    """
+
+    def test_valid_args_pass(self, capsys):
+        """Known-good inputs should not raise."""
+        assert (
+            self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app") is None
+        )
+        assert capsys.readouterr().err == ""
+
+    def test_sso_plus_profile_passes(self, capsys):
+        """IAM Identity Center derived names contain '+'."""
+        assert (
+            self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
+            is None
+        )
+        assert capsys.readouterr().err == ""
+
+
+class TestAttachBackendValidation(_InputsBothScriptsAccept):
     @pytest.fixture(autouse=True)
     def _mod(self):
         self.mod = _load_script("attach_backend.py")
 
-    def test_valid_args_pass(self):
-        """Known-good inputs should not raise."""
-        self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
-
-    def test_sso_plus_profile_passes(self):
-        """IAM Identity Center derived names contain '+'."""
-        self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
-
-    def test_empty_profile_allowed(self):
+    def test_empty_profile_allowed(self, capsys):
         """Empty profile (default) should pass."""
-        self.mod._validate_args("", "us-east-1", "ABCDEFGHIJKLM", "demo-app")
+        assert self.mod._validate_args("", "us-east-1", "ABCDEFGHIJKLM", "demo-app") is None
+        assert capsys.readouterr().err == ""
 
     def test_invalid_region_rejects(self):
         with pytest.raises(SystemExit) as exc:
@@ -67,9 +83,10 @@ class TestAttachBackendValidation:
             self.mod._validate_args("has spaces!", "us-west-2", "E1A2B3C4D5E6F7", "slug")
         assert exc.value.code == 2
 
-    def test_14_char_dist_id_valid(self):
+    def test_14_char_dist_id_valid(self, capsys):
         """14-char dist IDs are valid."""
-        self.mod._validate_args("", "eu-west-1", "E1A2B3C4D5E6F8", "app")
+        assert self.mod._validate_args("", "eu-west-1", "E1A2B3C4D5E6F8", "app") is None
+        assert capsys.readouterr().err == ""
 
     def test_dist_id_lowercase_rejects(self):
         """Lowercase dist IDs should be rejected."""
@@ -78,20 +95,14 @@ class TestAttachBackendValidation:
         assert exc.value.code == 2
 
 
-class TestDetachBackendValidation:
+class TestDetachBackendValidation(_InputsBothScriptsAccept):
     @pytest.fixture(autouse=True)
     def _mod(self):
         self.mod = _load_script("detach_backend.py")
 
-    def test_valid_args_pass(self):
-        self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
-
-    def test_sso_plus_profile_passes(self):
-        """IAM Identity Center derived names contain '+'."""
-        self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
-
-    def test_empty_profile_allowed(self):
-        self.mod._validate_args("", "ap-southeast-2", "ABCDEFGHIJKLM", "demo")
+    def test_empty_profile_allowed(self, capsys):
+        assert self.mod._validate_args("", "ap-southeast-2", "ABCDEFGHIJKLM", "demo") is None
+        assert capsys.readouterr().err == ""
 
     def test_invalid_region_rejects(self):
         with pytest.raises(SystemExit) as exc:
@@ -196,7 +207,7 @@ class TestAwsHelperResolvesAbsolutely:
         from kiro_crew.deploy import engine
 
         fake_aws = tmp_path / "aws"
-        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.write_text("#!/bin/sh\n", encoding="utf-8")
         fake_aws.chmod(0o755)
         empty_bin = tmp_path / "emptybin"
         empty_bin.mkdir()

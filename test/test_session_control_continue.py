@@ -257,6 +257,32 @@ def test_a_target_linked_while_the_lock_was_awaited_is_refused(
     dispatched.started.assert_not_awaited()
 
 
+def test_a_subagent_refusal_names_the_attached_runs(tmp_path, dispatched, audits, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = state.get_or_create_slot("chat-2")
+    _finished(target)
+
+    async def _children(*_a, **_kw):
+        return ch.web.json_response(
+            {
+                "error": "sub-agents are running",
+                "code": "slot_subagents_running",
+                "runs": [{"id": "r1", "state": "stalled"}],
+                "queued": [],
+                "queued_partial": False,
+            },
+            status=409,
+        )
+
+    monkeypatch.setattr(ch, "_subagents_attached_response", _children)
+
+    err = _refused(state, caller)
+    assert err.code == "slot_subagents_running"
+    assert err.message == "sub-agents are running. Still running or queued: r1 (stalled)."
+    dispatched.started.assert_not_awaited()
+
+
 # ── HTTP handler ─────────────────────────────────────────────────────────────
 
 

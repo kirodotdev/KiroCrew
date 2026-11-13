@@ -60,6 +60,7 @@ class TestRestartReadinessVerdict:
                 "kiro_crew.cli_server.service_controller.is_service_active",
                 return_value=False,
             ),
+            patch("kiro_crew.cli_server.service_controller.installed_unit_path", return_value=None),
             patch(
                 "kiro_crew.cli_server.platform_compat.find_listening_pids",
                 return_value=[],
@@ -167,6 +168,145 @@ class TestRestartReadinessVerdict:
         assert "did not become ready" in out
         assert "still booting" not in out
 
+    def test_replacement_that_dies_on_a_truncated_key_prints_the_repair_steps(
+        self, capsys, tmp_path
+    ):
+        """The gateway's refusal goes to gateway.log; the restart terminal gets the steps too."""
+        key = tmp_path / "token_signing.key"
+        with (
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value=None),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", key),
+            ),
+            patch(
+                "kiro_crew.service.common.restart_command_hint",
+                return_value="kirocrew restart",
+            ),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "died immediately" in out
+        assert f"token signing key at {key} is shorter than 32 bytes" in out
+        assert "Repair it by hand:" in out
+        # Every step the gateway prints, in order, ending on the restart.
+        from kiro_crew.dashboard import token_secret
+
+        steps = token_secret.signing_key_remedy(key, "kirocrew restart")
+        positions = [out.index(step) for step in steps]
+        assert positions == sorted(positions)
+        assert "kirocrew restart" in steps[-1]
+
+    @pytest.mark.parametrize("state", ["ok", "absent", "masked", "other", "unstatable"])
+    def test_replacement_that_dies_on_a_healthy_key_prints_no_repair_steps(
+        self, capsys, tmp_path, state
+    ):
+        # Only a truncated key gets the remedy: the steps delete the file, so a
+        # sandbox mask or a healthy key must never be handed them.
+        with (
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value=None),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=(state, tmp_path / "token_signing.key"),
+            ),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "died immediately" in out
+        assert "Repair it by hand" not in out
+
+    @pytest.mark.parametrize(
+        ("kirocrew_own", "expect_steps"),
+        [
+            # A foreign Seatbelt (kiro-cli's, an operator wrapper) can leave the
+            # real key readable: the boot preflight refuses it as short, so the
+            # restart must print the steps too, as doctor does.
+            (False, True),
+            # Kiro Crew's own sandbox masks the leaf whatever its readability.
+            (True, False),
+        ],
+    )
+    def test_a_readable_short_key_under_a_seatbelt_follows_doctor(
+        self, capsys, tmp_path, kirocrew_own, expect_steps
+    ):
+        key = tmp_path / "token_signing.key"
+        key.write_bytes(b"short")
+        key.chmod(0o600)
+        with (
+            patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value="seatbelt"),
+            patch(
+                "kiro_crew.sandbox.agent_confinement_is_kirocrew_own",
+                return_value=kirocrew_own,
+            ),
+            patch(
+                "kiro_crew.service.common.restart_command_hint",
+                return_value="kirocrew restart",
+            ),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "died immediately" in out
+        assert ("Repair it by hand:" in out) is expect_steps
+
+    def test_a_short_key_this_process_cannot_open_gets_no_removal_steps(self, capsys, tmp_path):
+        # Inside an agent sandbox whose confinement signals both missed, the
+        # mode-0 mask over a healthy key reads as short; doctor withholds the
+        # steps that delete the file, and so must restart.
+        with (
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value=None),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", tmp_path / "token_signing.key"),
+            ),
+            patch("kiro_crew.dashboard.token_secret.open_is_denied", return_value=True),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "died immediately" in out
+        assert "Repair it by hand" not in out
+
+    def test_relayed_refusal_is_not_followed_by_a_second_copy_of_the_steps(self, capsys, tmp_path):
+        # The relayed gateway.log lines already hold the gateway's refusal and its
+        # repair steps, so the restart does not print them again under the relay.
+        relayed = ["ERROR Refusing to start: token signing key is shorter than 32 bytes"]
+        with (
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value=None),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", tmp_path / "token_signing.key"),
+            ),
+            patch("kiro_crew.cli_server._gateway_log_lines_since", return_value=relayed),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "Its last lines in gateway.log:" in out
+        assert relayed[0] in out
+        assert "Repair it by hand" not in out
+
+    def test_a_failing_key_probe_leaves_the_died_report_unchanged(self, capsys):
+        with patch(
+            "kiro_crew.dashboard.token_secret.signing_key_health",
+            side_effect=OSError("stale file handle"),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "died immediately" in out
+        assert "kirocrew logs -f" in out
+        assert "Repair it by hand" not in out
+
     def test_replacement_that_never_becomes_ready_is_reported_as_a_failure(self, capsys):
         """A live-but-not-serving replacement must exit non-zero with timeout wording."""
         code, mock_sel, mock_token_url = self._drive(
@@ -218,7 +358,33 @@ class TestRestartReadinessVerdict:
         assert code == 1
         out = capsys.readouterr().out
         assert "✅" not in out
-        assert "did not become ready" in out
+        assert "could not confirm that replacement gateway" in out
+        mock_token_url.assert_not_called()
+
+    def test_a_200_with_an_unwritten_marker_is_not_reported_as_not_serving(self, capsys):
+        """A port that answers 200 while the marker stays unwritten is unconfirmed, not idle.
+
+        The marker write is best-effort, so a replacement that serves but cannot
+        write ``run/`` keeps the marker empty for the whole wait. Saying nothing
+        serves the port sends the operator to re-run restart, which stops it.
+        """
+        from kiro_crew.config.loader import config_dir
+
+        code, mock_sel, mock_token_url = self._drive(
+            poll=None, ready_status=200, marker_pid=[None, None]
+        )
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        assert "not serving" not in out
+        assert "could not confirm that replacement gateway (pid 4321) is the one serving" in out
+        assert "re-running restart would stop it" in out
+        assert f"check that {config_dir() / 'run'} is writable" in out
+        assert self._outcomes(mock_sel) == ["denied"]
+        assert "reason=replacement_unconfirmed_within=" in (
+            mock_sel.log_api_access.call_args.kwargs["resources"]
+        )
         mock_token_url.assert_not_called()
 
 

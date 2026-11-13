@@ -10,11 +10,10 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse fixture of test_chat_tags.py and the suites split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _hermetic_signing_secret(monkeypatch):
+def _hermetic_signing_secret(_floor_monkeypatch):
     """Pin the grants-store provenance key so no test touches the real
     ``token_signing.key`` (lazy creation would pollute the developer's or
     runner's live config home)."""
     from kiro_crew.dashboard import token_secret
 
-    monkeypatch.setattr(token_secret, "_get_secret", lambda: b"test-signing-key")
+    _floor_monkeypatch.setattr(token_secret, "_get_secret", lambda: b"test-signing-key")

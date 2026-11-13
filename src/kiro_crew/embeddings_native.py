@@ -19,6 +19,7 @@ import logging
 import os
 import platform
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -58,6 +59,11 @@ _LINUX_X86_64_REQUIRED_CPU_FLAGS = frozenset(
     {"avx", "avx2", "bmi2", "f16c", "fma", "sse3", "ssse3"}
 )
 _LINUX_CPUINFO_PATH = Path("/proc/cpuinfo")
+# Linux arm64 ships two builds of the same llama.cpp: `linux_aarch64` (upstream's
+# armv8-a wheel) and this one, rebuilt with the int8 dot-product instructions
+# (`sdot`), about 5x faster per core on the shipped Q8_0 model. Loaded only
+# where _linux_aarch64_has_dotprod says every core has them.
+_LINUX_AARCH64_DOTPROD_DIRNAME = "linux_aarch64_dotprod"
 
 #: MSVC runtime DLLs the vendored Windows libs IMPORT but which are not shipped
 #: beside them. All four ship with the Microsoft Visual C++ 2015-2022
@@ -68,9 +74,12 @@ _LINUX_CPUINFO_PATH = Path("/proc/cpuinfo")
 #: ``ggml-base.dll``/``ggml-cpu.dll`` additionally pull ``VCOMP140.DLL``, the MSVC
 #: OpenMP runtime. Both Linux payloads DO vendor their equivalent
 #: (``libgomp-*.so.1.0.0``), which is what makes this an omission on the Windows
-#: lane rather than a deliberate asymmetry. They are not vendored here because
-#: redistributing Microsoft's runtime is a licensing decision, not a packaging one
-#: — so the gap is reported precisely instead of being papered over.
+#: lane rather than a deliberate asymmetry. Redistributing the runtime is
+#: allowed when the files come from Microsoft's own redistributable and are
+#: sha256-pinned: the Windows desktop build does exactly that for the bundled
+#: kiro-cli (``packaging/vc_runtime.py``, ``packaging/vc-runtime-pin.json``).
+#: This package does not vendor them yet, so the gap is reported precisely
+#: instead of being papered over.
 _WINDOWS_MSVC_RUNTIME_DLLS = (
     "MSVCP140.dll",
     "VCRUNTIME140.dll",
@@ -96,6 +105,41 @@ def _platform_libs_dirname() -> str | None:
         if machine in ("amd64", "x86_64"):
             return "win_amd64"
     return None
+
+
+def _linux_aarch64_cpu_features(
+    cpuinfo_path: Path = _LINUX_CPUINFO_PATH,
+) -> frozenset[str] | None:
+    """Return the ``Features`` tokens shared by every visible Linux AArch64 core.
+
+    The repository's one AArch64 cpuinfo reader, as :func:`_linux_x86_64_cpu_flags`
+    is its x86 one; ``kiro_crew.stt.preflight.host_flags`` reads both through here.
+    ``None`` means the file is unreadable or has no ``Features`` line.
+    """
+    try:
+        cpuinfo = cpuinfo_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    per_cpu: list[frozenset[str]] = []
+    for line in cpuinfo.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip().lower() == "features":
+            per_cpu.append(frozenset(tok.lower() for tok in value.split()))
+    if not per_cpu:
+        return None
+    return frozenset.intersection(*per_cpu)
+
+
+def _linux_aarch64_has_dotprod(cpuinfo_path: Path = _LINUX_CPUINFO_PATH) -> bool:
+    """Whether every visible Linux arm64 core reports ``asimddp`` (int8 ``sdot``).
+
+    False on any doubt: an unreadable file, no ``Features`` line, or one core
+    without it (a big.LITTLE host may run the thread on its weakest core). A
+    wrong True loads :data:`_LINUX_AARCH64_DOTPROD_DIRNAME`, whose first ``sdot``
+    on such a core is a SIGILL that kills the process.
+    """
+    features = _linux_aarch64_cpu_features(cpuinfo_path)
+    return features is not None and "asimddp" in features
 
 
 def _missing_windows_msvc_runtime() -> list[str]:
@@ -287,23 +331,79 @@ def _install_diskcache_stub() -> None:
     sys.modules["diskcache"] = stub
 
 
-def _harden_llama_null_streams() -> None:
-    """Make llama-cpp-python's process-global suppression streams Unicode-safe.
+class _NativeQuiet:
+    """How many of the binding's quiet blocks are open, and the callback that reads it."""
 
-    The vendored suppressor temporarily assigns its import-time ``os.devnull``
-    handles to ``sys.stdout`` and ``sys.stderr`` while a model loads. That load
-    runs on a background thread, so unrelated gateway output can reach those
-    handles. Reconfiguring the existing wrappers preserves the native ``dup2``
-    suppression while removing the host locale from that process-wide window.
+    #: Guards ``depth``, and makes installing the two halves one step.
+    lock = threading.Lock()
+    depth = 0
+    #: Every log callback registered with llama.cpp. It holds only an address,
+    #: so these references keep each one alive; none is ever dropped.
+    callbacks: list[object] = []
+
+
+def _native_quiet_enter(self):  # type: ignore[no-untyped-def]
+    """``suppress_stdout_stderr.__enter__``: silence llama.cpp's log, nothing else."""
+    if not self.disable:
+        with _NativeQuiet.lock:
+            _NativeQuiet.depth += 1
+    return self
+
+
+def _native_quiet_exit(self, *_exc):  # type: ignore[no-untyped-def]
+    """``suppress_stdout_stderr.__exit__``: the last block to close ends the silence."""
+    if not self.disable:
+        with _NativeQuiet.lock:
+            _NativeQuiet.depth -= 1
+
+
+def _quiet_native_log_without_redirect() -> None:
+    """Keep llama.cpp quiet during a load without redirecting the process's streams.
+
+    The binding wraps its native load calls in ``suppress_stdout_stderr``, which
+    points ``sys.stdout``, ``sys.stderr`` and descriptors 1 and 2 at the null
+    device for the WHOLE process. The load runs on ``kc-embed-load``, so every
+    line another thread writes meanwhile is discarded: the gateway's
+    ``--json-ready`` line, a log record, a traceback.
+
+    llama.cpp reports through one log callback, which the binding registers. So
+    the block keeps its meaning and loses its reach: a callback registered here
+    drops every native line while a block is open and hands it to the binding's
+    own callback otherwise. The count of open blocks is the only state, so the
+    ``set_verbose`` call every constructor makes cannot end the silence of a
+    load that is still running. Every caller of the class gets this, since
+    ``with`` reads ``__enter__`` and ``__exit__`` from the class.
+
+    A binding without these parts keeps its own redirect: both halves are
+    installed or neither. They are installed once per binding and under one
+    lock: the loader's cache does not stop two threads from both arriving here
+    first, and a callback registered by one of them and then released would
+    leave llama.cpp calling freed memory.
+
+    shortcut: a native line that bypasses llama.cpp's log callback is not hidden
+    (the bundled Linux arm64 build writes none through a load, embed and free);
+    if a build writes one, silence that writer, never a descriptor.
     """
-    llama_utils = sys.modules.get("llama_cpp._utils")
-    if llama_utils is None:
+    binding = sys.modules.get("llama_cpp")
+    redirect = getattr(sys.modules.get("llama_cpp._utils"), "suppress_stdout_stderr", None)
+    shipped = getattr(sys.modules.get("llama_cpp._logger"), "llama_log_callback", None)
+    as_callback = getattr(binding, "llama_log_callback", None)
+    register = getattr(binding, "llama_log_set", None)
+    if redirect is None or shipped is None or as_callback is None or register is None:
         return
-    for name in ("outnull_file", "errnull_file"):
-        stream = getattr(llama_utils, name, None)
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+    def quiet_aware(level, text, user_data):  # type: ignore[no-untyped-def]
+        if not _NativeQuiet.depth:
+            shipped(level, text, user_data)
+
+    with _NativeQuiet.lock:
+        if redirect.__enter__ is _native_quiet_enter:
+            return
+        callback = as_callback(quiet_aware)
+        _NativeQuiet.callbacks.append(callback)
+        register(callback, ctypes.c_void_p(0))
+        redirect.__enter__ = _native_quiet_enter
+        redirect.__exit__ = _native_quiet_exit
 
 
 def _log_dropped_inherited_lib_path() -> None:
@@ -333,6 +433,27 @@ def _log_dropped_inherited_lib_path() -> None:
             "Ignoring empty %s; this install resolves its own bundled llama.cpp libs",
             _LIB_PATH_ENV,
         )
+
+
+def _linux_aarch64_libs_dir(default_dir: Path) -> Path:
+    """Pick the dot-product arm64 build when this CPU and the install allow it.
+
+    *default_dir* is today's ``linux_aarch64`` and is the answer on any doubt:
+    a core without ``asimddp``, an unreadable ``/proc/cpuinfo``, or an
+    incomplete dotprod directory.
+    """
+    if not _linux_aarch64_has_dotprod():
+        return default_dir
+    dotprod_dir = default_dir.parent / _LINUX_AARCH64_DOTPROD_DIRNAME
+    if any(
+        not (dotprod_dir / name).is_file()
+        for name in _REQUIRED_VENDORED_LIBS[_LINUX_AARCH64_DOTPROD_DIRNAME]
+    ):
+        logger.info(
+            "Dot-product llama.cpp build incomplete at %s; using %s", dotprod_dir, default_dir
+        )
+        return default_dir
+    return dotprod_dir
 
 
 @functools.lru_cache(maxsize=1)
@@ -480,6 +601,8 @@ def _load_llama_class():
                     _LIB_PATH_ENV,
                 )
                 return None
+        if libs_dirname == "linux_aarch64":
+            libs_dir = _linux_aarch64_libs_dir(libs_dir)
     # The bundled directory reaches the vendored loader through the process-local
     # seam; an operator-provided override (e.g. a GPU build) is left in the
     # environment as they set it, and the seam is absent so the loader reads it.
@@ -491,7 +614,7 @@ def _load_llama_class():
     try:
         from llama_cpp import Llama  # noqa: F811
 
-        _harden_llama_null_streams()
+        _quiet_native_log_without_redirect()
         return Llama
     except Exception:
         logger.warning("Vendored llama-cpp-python failed to import", exc_info=True)

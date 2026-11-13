@@ -1,11 +1,14 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, useId } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useTheme, type CustomThemeData, CUSTOM_THEMES_CHANGED_EVENT } from '../hooks/useTheme'
 import { Input, Btn } from './ui'
 import { api } from '../api/client'
 import { applyThemeCss, exampleThemeCss, parseThemeCss, refusedLabel, themeVarsToCss } from '../lib/themeCssImport'
 import { themeDesignPrompt } from '../lib/themeDesign.prompt'
 import { copyToClipboard } from '../utils/clipboard'
+import { askAppConfirm } from '../lib/appConfirm'
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 /* ── CSS variable groups for the color picker ── */
@@ -129,14 +132,22 @@ type PickerFields = { name: string; emoji: string; dark: Record<string, string>;
  * The picker fields a JSON-tab text sets: only those it carries, and none when
  * it does not parse, so the picker keeps whatever the text leaves out.
  */
+/** A plain object, the shape a theme's `dark` / `light` colour map must have. */
+function isVarMap(v: unknown): v is Record<string, string> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
 function themeJsonFields(text: string): Partial<PickerFields> {
   try {
     const p = JSON.parse(text)
     const out: Partial<PickerFields> = {}
-    if (p.name !== undefined) out.name = p.name
-    if (p.emoji !== undefined) out.emoji = p.emoji
-    if (p.dark) out.dark = p.dark
-    if (p.light) out.light = p.light
+    // Pasted JSON is untyped: only a string reaches the name and emoji fields,
+    // and only a plain object reaches a colour map, so the picker state keeps
+    // the types `saveTheme` reads.
+    if (typeof p?.name === 'string') out.name = p.name
+    if (typeof p?.emoji === 'string') out.emoji = p.emoji
+    if (isVarMap(p?.dark)) out.dark = p.dark
+    if (isVarMap(p?.light)) out.light = p.light
     return out
   } catch { return {} }
 }
@@ -149,7 +160,7 @@ function themeJson(name: string, emoji: string, dark: Record<string, string>, li
 
 /** Shared theme editor state and actions */
 export function useThemeEditor() {
-  const { addCustomTheme, deleteCustomTheme, loadCustomThemes } = useTheme()
+  const { addCustomTheme, deleteCustomTheme, loadCustomThemes, customThemes } = useTheme()
 
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingSlug, setEditingSlug] = useState<string | null>(null)
@@ -162,6 +173,15 @@ export function useThemeEditor() {
   const [cssText, setCssText] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // A save refused by the editor's own checks (bad JSON, no name). It is a
+  // hint about the draft, not a failure, so it never reaches `error` or
+  // `ErrorNotice`.
+  const [hint, setHint] = useState('')
+  // True while the delete confirmation is open. The confirmation is a second
+  // Modal stacked on the editor's, and both listen for Escape on `window`, so
+  // the editor's Modal folds this into its dismissal guard: an Escape that
+  // cancels the delete must leave the editor open.
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   const isEditing = editingSlug !== null
 
@@ -196,14 +216,14 @@ export function useThemeEditor() {
   const openNewTheme = () => {
     const current = getCurrentThemeVars()
     setDarkVars({ ...current }); setLightVars({ ...current })
-    setThemeName(''); setThemeEmoji('✨'); setJsonText(''); setCssText(''); setError('')
+    setThemeName(''); setThemeEmoji('✨'); setJsonText(''); setCssText(''); setError(''); setHint('')
     lastCssMeta.current = {}
     setEditingSlug(null); setEditorOpen(true); setCreatorMode('picker')
     openedWith.current = fingerprint('', '✨', current, current, '')
   }
 
   const openEditTheme = async (slug: string) => {
-    setError('')
+    setError(''); setHint('')
     try {
       const data = await api.themeDetail(slug)
       const json = JSON.stringify(data, null, 2)
@@ -222,7 +242,7 @@ export function useThemeEditor() {
     }
   }
 
-  const closeEditor = () => { setEditorOpen(false); setEditingSlug(null); setError('') }
+  const closeEditor = () => { setEditorOpen(false); setEditingSlug(null); setError(''); setHint('') }
 
   /** Live parse of the Paste CSS tab, for its summary line and for Save. */
   const cssImport = useMemo(() => parseThemeCss(cssText), [cssText])
@@ -244,13 +264,24 @@ export function useThemeEditor() {
     // A paste with no theme variable is a hint the Paste CSS summary already
     // shows inline, not a save failure; Save is disabled in that state too.
     if (creatorMode === 'css' && !cssImport.recognized) return
-    setError(''); setSaving(true)
+    setError(''); setHint('')
+    // The editor's own checks run before any request and refuse as a hint.
+    let parsed: CustomThemeData | null = null
+    if (creatorMode === 'json') {
+      let value: unknown
+      try { value = JSON.parse(jsonText) } catch { setHint(i18nT('components.themeEditor.json_invalid')); return }
+      // `null`, a number or an array parses fine but carries no fields, so it
+      // gets the same hint as an object with no name.
+      const obj = isVarMap(value) ? value as unknown as CustomThemeData : null
+      if (typeof obj?.name !== 'string' || !obj.name.trim()) { setHint(i18nT('components.themeEditor.json_needs_name')); return }
+      if (!isVarMap(obj.dark) || !isVarMap(obj.light)) { setHint(i18nT('components.themeEditor.json_needs_modes')); return }
+      parsed = obj
+    } else if (!themeName.trim()) {
+      setHint(i18nT('components.themeEditor.theme_name_required')); return
+    }
+    setSaving(true)
     try {
-      if (creatorMode === 'json') {
-        let parsed: CustomThemeData
-        try { parsed = JSON.parse(jsonText) } catch { throw new Error('Invalid JSON — check syntax and try again.') }
-        if (!parsed.name) throw new Error('JSON must include a "name" field.')
-        if (!parsed.dark || !parsed.light) throw new Error('JSON must include "dark" and "light" objects.')
+      if (parsed) {
         if (isEditing) {
           await api.updateTheme(editingSlug!, { name: parsed.name, emoji: parsed.emoji || '🎨', dark: parsed.dark, light: parsed.light })
           await loadCustomThemes(); window.dispatchEvent(new Event(CUSTOM_THEMES_CHANGED_EVENT))
@@ -262,7 +293,6 @@ export function useThemeEditor() {
         // declarations over the picker's variables, so both save the same way.
         let dark = darkVars, light = lightVars
         if (creatorMode === 'css') ({ dark, light } = applyThemeCss(cssImport, darkVars, lightVars))
-        if (!themeName.trim()) throw new Error('Theme name is required.')
         const payload = { name: themeName.trim(), emoji: themeEmoji.trim() || '✨', dark, light }
         if (isEditing) {
           await api.updateTheme(editingSlug!, payload)
@@ -280,10 +310,21 @@ export function useThemeEditor() {
   const handleDelete = async (slug?: string) => {
     const target = slug || editingSlug
     if (!target) return
-    if (confirm(i18nT('components.themeEditor.delete_this_custom_theme'))) {
-      try { await deleteCustomTheme(target); closeEditor() }
-      catch (e: unknown) { setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_delete_theme')) }
-    }
+    // The in-app dialog, not the browser's `confirm()`: see `lib/appConfirm`.
+    // It names the theme the way the theme list shows it.
+    const name = customThemes.find(t => t.value === `custom-${target}`)?.label ?? target
+    setConfirmingDelete(true)
+    let ok: boolean
+    try {
+      ok = await askAppConfirm({
+        title: i18nT('components.themeEditor.delete_theme_title'),
+        body: i18nT('components.themeEditor.delete_theme_confirm', { name }),
+        confirmLabel: i18nT('components.themeEditor.delete_theme_title'),
+      })
+    } finally { setConfirmingDelete(false) }
+    if (!ok) return
+    try { await deleteCustomTheme(target); closeEditor() }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_delete_theme')) }
   }
 
   const syncJsonToPicker = (text: string) => {
@@ -318,10 +359,10 @@ export function useThemeEditor() {
   const updateLightVar = (key: string, val: string) => setLightVars(prev => ({ ...prev, [key]: val }))
 
   return {
-    editorOpen, isEditing, editingSlug, creatorMode, setCreatorMode, isDirty,
+    editorOpen, isEditing, editingSlug, creatorMode, setCreatorMode, isDirty, confirmingDelete,
     themeName, setThemeName, themeEmoji, setThemeEmoji,
     darkVars, lightVars, updateDarkVar, updateLightVar,
-    jsonText, setJsonText, cssText, changeCss, cssImport, saving, error,
+    jsonText, setJsonText, cssText, changeCss, cssImport, saving, error, hint,
     openNewTheme, openEditTheme, closeEditor, saveTheme, handleDelete,
     syncJsonToPicker, switchMode,
   }
@@ -351,6 +392,8 @@ export function ColorModeEditor({ label, vars, onChange }: {
   label: string; vars: Record<string, string>; onChange: (key: string, val: string) => void
 }) {
   const [expanded, setExpanded] = useState<string | null>(null)
+  // The dark and light editors render side by side, so each needs its own ids.
+  const idBase = useId()
   return (
     <div>
       <div className="text-[13px] font-medium text-text-strong mb-2">{label}</div>
@@ -359,6 +402,8 @@ export function ColorModeEditor({ label, vars, onChange }: {
           <div key={group.id} className="border border-border rounded-md overflow-hidden">
             <button
               className="w-full flex items-center justify-between px-3 py-1.5 text-[13px] text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent border-none"
+              aria-expanded={expanded === group.id}
+              aria-controls={`${idBase}-${group.id}`}
               onClick={() => setExpanded(expanded === group.id ? null : group.id)}
             >
               <span>{i18nT(VAR_GROUP_LABEL_KEY[group.id])}</span>
@@ -367,11 +412,13 @@ export function ColorModeEditor({ label, vars, onChange }: {
                   <span key={key} className="w-3 h-3 rounded-sm border border-border"
                     style={{ background: vars[key] || '#000' }} title={`${i18nT(VAR_LABEL_KEY[key])}: ${vars[key] || '?'}`} />
                 ))}
-                <span className="ml-1 text-[11px]">{expanded === group.id ? '▲' : '▼'}</span>
+                {expanded === group.id
+                  ? <ChevronUp size={12} className="ml-1" aria-hidden="true" />
+                  : <ChevronDown size={12} className="ml-1" aria-hidden="true" />}
               </span>
             </button>
             {expanded === group.id && (
-              <div className="px-3 pb-2 border-t border-border bg-bg-elevated/50">
+              <div id={`${idBase}-${group.id}`} className="px-3 pb-2 border-t border-border bg-bg-elevated/50">
                 {group.vars.map(key => (
                   <ColorRow key={key} label={i18nT(VAR_LABEL_KEY[key])} value={vars[key] || ''} onChange={val => onChange(key, val)} />
                 ))}
@@ -445,7 +492,7 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
     darkVars, lightVars, updateDarkVar, updateLightVar,
     jsonText, setJsonText, syncJsonToPicker,
     cssText, changeCss, cssImport,
-    error, saving, saveTheme, closeEditor, handleDelete,
+    error, hint, saving, saveTheme, closeEditor, handleDelete,
   } = editor
 
   const tabClass = (mode: CreatorMode) =>
@@ -471,10 +518,15 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
     </div>
   )
 
-  /** At most ten names, so a pasted framework stylesheet stays one readable line. */
-  const nameList = (names: string[]) => names.length <= 10
-    ? names.join(', ')
-    : i18nT('components.themeEditor.css_more_names', { names: names.slice(0, 10).join(', '), extra: names.length - 10 })
+  /** At most ten names, so a pasted framework stylesheet stays one readable line.
+   *  "N more" is the last item of the same list, so each language places its one
+   *  conjunction (de: "a, b und 5 weitere"). */
+  const nameList = (names: string[]) => fmtList(
+    names.length <= 10
+      ? names
+      : [...names.slice(0, 10), i18nT('components.themeEditor.css_more_count', { extra: names.length - 10 })],
+    { style: 'narrow' },
+  )
 
   const cssCounts = {
     dark: Object.keys(cssImport.dark).length,
@@ -485,13 +537,13 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
   return (
     <div className="animate-rise">
       <div className="flex items-center gap-2 mb-3">
-        <button className={tabClass('picker')} onClick={() => switchMode('picker')}>
+        <button className={tabClass('picker')} aria-pressed={creatorMode === 'picker'} onClick={() => switchMode('picker')}>
           {i18nT('components.themeEditor.color_picker')}
         </button>
-        <button className={tabClass('json')} onClick={() => switchMode('json')} title={i18nT('components.themeEditor.paste_json_title')}>
+        <button className={tabClass('json')} aria-pressed={creatorMode === 'json'} onClick={() => switchMode('json')} title={i18nT('components.themeEditor.paste_json_title')}>
           {i18nT('components.themeEditor.paste_json')}
         </button>
-        <button className={tabClass('css')} onClick={() => switchMode('css')} title={i18nT('components.themeEditor.paste_css_title')}>
+        <button className={tabClass('css')} aria-pressed={creatorMode === 'css'} onClick={() => switchMode('css')} title={i18nT('components.themeEditor.paste_css_title')}>
           {i18nT('components.themeEditor.paste_css')}
         </button>
         {isEditing && <span className="ml-auto text-[12px] text-muted">{i18nT('components.themeEditor.editing')} {themeName || editingSlug}</span>}
@@ -500,6 +552,9 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
       {/* No hand-off: the notice sits beside unsaved form input, and the button
           navigates away — which would discard what the user typed. */}
       <ErrorNotice message={error} className="mb-3 animate-rise" />
+      {/* A refusal from the editor's own checks: guidance about the draft,
+          announced politely, never styled as a failure. */}
+      <div role="status" className="text-[13px] text-warn empty:hidden mb-3">{hint}</div>
 
       {creatorMode === 'picker' ? (
         <div>
@@ -572,7 +627,7 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
       )}
 
       <div className="flex items-center gap-2 mt-3">
-        <Btn onClick={saveTheme} className="bg-accent text-accent-fg hover:bg-accent-hover" disabled={saving || (creatorMode === 'css' && !cssImport.recognized)}
+        <Btn primary onClick={saveTheme} disabled={saving || (creatorMode === 'css' && !cssImport.recognized)}
           aria-describedby={creatorMode === 'css' && !cssImport.recognized ? 'theme-editor-css-summary' : undefined}>
           {saving ? i18nT('components.themeEditor.saving') : isEditing ? i18nT('components.themeEditor.update_theme') : i18nT('components.themeEditor.save_theme')}
         </Btn>

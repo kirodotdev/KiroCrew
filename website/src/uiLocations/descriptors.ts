@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -109,6 +109,12 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['installed skills', 'my skills', 'skill list'],
     'zh-CN': ['已安装的技能', '我的技能', '技能列表'],
   },
+  // Settings > Developer holds the internals pages (logs, system metrics,
+  // memory graph, MCP pool) and the feature previews.
+  'settings.tab.developer': {
+    en: ['developer page', 'developer tools', 'dev tools', 'debug tools', 'developer settings page'],
+    'zh-CN': ['开发者页面', '开发者工具', '调试工具'],
+  },
   'settings.tab.secrets': {
     en: ['api key', 'api keys', 'credentials', 'tokens', 'passwords'],
     'zh-CN': ['密钥', 'api 密钥', '凭据', '凭证', '令牌'],
@@ -151,8 +157,20 @@ export type UiLocationId = keyof typeof UI_LOCATIONS
 export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_ARTIFACT_DEPLOY]: 'developer.artifact-deploy',
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
-  [PREVIEW_CREW]: 'developer.mates',
   [PREVIEW_SESSION_ENVIRONMENTS]: 'developer.session-environments',
+  [PREVIEW_EXPLORE]: 'developer.explore',
+  [PREVIEW_CREW_MODE]: 'developer.ultra-mode',
+  [PREVIEW_DASHBOARD_STALE_FIELDS]: 'developer.mark-out-of-date-dashboard-fields',
+}
+
+/** Single settings a panel draws only while a preview flag is on, on a tab that
+ *  is not itself gated (e.g. Display > Explore). Keyed by setting id. */
+export const SETTING_PREVIEW: Record<string, string> = {
+  'display.explore': PREVIEW_EXPLORE,
+  // Chat > Sessions draws Start New Chats in Ultra Mode only while the Ultra Mode preview is on.
+  'chat.start-new-chats-in-ultra-mode': PREVIEW_CREW_MODE,
+  // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
+  'developer.wake-bots-to-update-out-of-date-fields': PREVIEW_DASHBOARD_STALE_FIELDS,
 }
 
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter).

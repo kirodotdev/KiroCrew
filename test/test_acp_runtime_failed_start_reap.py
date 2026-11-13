@@ -103,7 +103,9 @@ async def test_a_failed_init_leaves_no_child_processes(tmp_path, monkeypatch, ca
         raise AcpRuntimeError("initialize timed out")
 
     monkeypatch.setattr(rt, "_resolve_spawn_plan", _plan)
-    monkeypatch.setattr(skill_projection, "prepare_native_skill_projection", lambda _wd: None)
+    monkeypatch.setattr(
+        skill_projection, "prepare_native_skill_projection", lambda _wd, **_kw: None
+    )
     monkeypatch.setattr(rt, "_initialize_handshake", _failing_handshake)
 
     try:
@@ -168,7 +170,9 @@ async def test_a_cancel_during_the_failed_start_scan_still_reaps_the_tree(tmp_pa
         await real_snapshot(**kwargs)
 
     monkeypatch.setattr(rt, "_resolve_spawn_plan", _plan)
-    monkeypatch.setattr(skill_projection, "prepare_native_skill_projection", lambda _wd: None)
+    monkeypatch.setattr(
+        skill_projection, "prepare_native_skill_projection", lambda _wd, **_kw: None
+    )
     monkeypatch.setattr(rt, "_initialize_handshake", _failing_handshake)
     monkeypatch.setattr(rt, "_snapshot_descendants", _slow_snapshot)
 

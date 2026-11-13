@@ -27,6 +27,24 @@ logger = logging.getLogger(LOGGER_NAME)
 
 _EMERGENT_FILENAME = "emergent_questions.json"
 _FINALIZE_FLAG = "finalize.flag"
+#: Priority an emergent proposal gets when it names none, or names one that is
+#: not a finite number (``"high"``, ``null``, ``"nan"``, ``"inf"``).
+_DEFAULT_EMERGENT_PRIORITY = 0.5
+
+
+def _emergent_priority(value: object) -> float:
+    """``value`` as a priority in [0, 1], or the default when it is not a finite number.
+
+    The file is agent-written, so one odd entry must neither fail the round nor
+    outrank every real proposal.
+    """
+    try:
+        priority = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return _DEFAULT_EMERGENT_PRIORITY
+    if not math.isfinite(priority):
+        return _DEFAULT_EMERGENT_PRIORITY
+    return min(1.0, max(0.0, priority))
 
 
 def _reserve_cycles(max_cycles: int, reserve_fraction: float) -> int:
@@ -76,8 +94,8 @@ def _ingest_emergent_questions(campaign_id: str) -> list[dict]:
         raw = json.loads(ef.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         raw = []
-    ef.unlink(missing_ok=True)  # consumed regardless of validity
     if not isinstance(raw, list) or not raw:
+        ef.unlink(missing_ok=True)  # unreadable or holds no proposals: consumed
         return []
     max_admit = int(
         row["max_subquestions_per_round"]
@@ -104,17 +122,19 @@ def _ingest_emergent_questions(campaign_id: str) -> list[dict]:
     for it in raw:
         if isinstance(it, dict):
             text = str(it.get("text", "")).strip()
-            base = float(it.get("priority", 0.5))
+            base = _emergent_priority(it.get("priority", _DEFAULT_EMERGENT_PRIORITY))
         else:
             text = str(it).strip()
-            base = 0.5
+            base = _DEFAULT_EMERGENT_PRIORITY
         text = _redact_em(text)  # scrub LLM output before it reaches DB/UI
         if not text or _sq.normalize(text) in existing_norm:
             continue  # empty, or already a checklist question
-        base = min(1.0, max(0.0, base))  # clamp to [0,1] before decay
         cands.append({"text": text, "priority": base * factor})
     admitted = _sq.enqueue(queue, cands, depth=depth, max_admit=max_admit)
     _sq.save_queue(d, queue)
+    # Consumed only once the queue holding its proposals is saved, so a failure
+    # above leaves the round's questions for the next sweep.
+    ef.unlink(missing_ok=True)
     if admitted:
         lifecycle._audit("campaign_emergent_ingested", campaign_id)
     return admitted

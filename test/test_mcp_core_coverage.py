@@ -287,6 +287,15 @@ class TestExtractHistorySnippet:
     def test_blank_needle_returns_empty(self):
         assert _extract_history_snippet([{"role": "user", "content": "hi"}], "   ") == ""
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self):
+        msgs = [
+            {"role": "user", "content": "please maintain the release notes"},
+            {"role": "assistant", "content": "we started tracking ai usage per team"},
+        ]
+        out = _extract_history_snippet(msgs, "ai usage tracking")
+        assert "<<<usage>>>" in out
+        assert "maintain" not in out
+
     def test_tool_roles_are_skipped(self):
         msgs = [
             {"role": "tool", "content": "needle in a tool trace"},
@@ -505,7 +514,7 @@ class TestSpawnRunArgumentHandling:
         assert "Spawned 1 subagent(s)" in out
         assert "1 task(s) failed to start" in out
         assert "1 task(s) have unknown acceptance status" in out
-        assert "END YOUR TURN NOW" in out.upper()
+        assert "REPLY WITH ONE LINE SAYING WHAT YOU STARTED, THEN END YOUR TURN" in out.upper()
 
     def test_orphaned_spawn_warns_and_switches_to_polling_guidance(
         self, monkeypatch: pytest.MonkeyPatch
@@ -749,6 +758,42 @@ class TestWorkflowDefinitionLibrary:
             out = _call_tool("workflow_library_list", {"search": "debugging"})
         assert mocked.call_args[0][0] == "/api/workflows/definitions?q=debugging"
         assert "/workflow debug-project" in out
+
+    def test_list_never_offers_an_empty_or_none_command(self):
+        """A listed workflow is offered under its slug, else its id, and never
+        as ``/workflow `` or ``/workflow None``: one with no usable ref, or
+        whose read listed both refs as shadowed, is left out."""
+        response = {
+            "definitions": [
+                {"id": "wfd_free", "slug": None, "revision": 1, "name": "No Slug"},
+                {"id": "wfd_blank", "slug": "   ", "revision": 1, "name": "Blank Slug"},
+                {"id": None, "slug": None, "revision": 1, "name": "Nothing"},
+                {"slug": "", "revision": 1, "name": "Missing Id"},
+                {
+                    "id": "wfd_held",
+                    "slug": "held",
+                    "shadowed_refs": ["held", "wfd_held"],
+                    "revision": 1,
+                    "name": "Both Held",
+                },
+            ]
+        }
+        with patch.object(mcp_core, "_get", return_value=response):
+            out = _call_tool("workflow_library_list", {})
+
+        assert "/workflow None" not in out
+        assert "/workflow `" not in out and "/workflow  " not in out
+        assert out.splitlines()[1:] == [
+            "- `/workflow wfd_free` — No Slug (revision 1, id `wfd_free`)",
+            "- `/workflow wfd_blank` — Blank Slug (revision 1, id `wfd_blank`)",
+        ]
+
+    def test_list_of_only_unreachable_workflows_says_none_are_saved(self):
+        response = {"definitions": [{"id": None, "slug": None, "revision": 1}]}
+        with patch.object(mcp_core, "_get", return_value=response):
+            out = _call_tool("workflow_library_list", {})
+
+        assert out == "No saved workflows yet."
 
 
 class TestWorkflowReadIdentity:
@@ -1082,6 +1127,16 @@ class TestSkillSearch:
         out = _call_tool("skill_search", {"query": "x"})
         assert out.startswith("Error: skill_search failed: RuntimeError: project not trusted")
 
+    def test_slot_refusal_says_it_is_not_a_missing_skill(self, monkeypatch: pytest.MonkeyPatch):
+        refusal = {"error": "not found", "code": "slot_not_found"}
+        monkeypatch.setattr(mcp_core, "_get", lambda *_a, **_kw: refusal)
+        monkeypatch.setattr(mcp_core, "_post", lambda *_a, **_kw: refusal)
+        for args in ({"query": "x"}, {"action": "read", "key": "a/b"}):
+            out = _call_tool("skill_search", args)
+            assert out.startswith("Error: skill_search failed: RuntimeError: the gateway refused")
+            assert "slot_not_found" in out
+            assert "does not mean the skill is missing" in out
+
     @pytest.mark.parametrize("raw,expected", [(0, 20), (999, 50), (5, 5)])
     def test_limit_is_defaulted_and_clamped(
         self, monkeypatch: pytest.MonkeyPatch, raw: int, expected: int
@@ -1154,6 +1209,16 @@ class TestRegisterHook:
         out = _call_tool("register_hook", {"hook_id": "h", "context_summary": "c"})
         assert "hooks.json is corrupted" in out
         assert hook_file.read_text() == "{not json"
+
+    def test_a_bom_hooks_json_is_merged_not_reported_corrupt(self):
+        # Windows editors save "UTF-8 with BOM"; the mark is not content.
+        hook_file = mcp_core.config_dir() / "hooks.json"
+        hook_file.parent.mkdir(parents=True, exist_ok=True)
+        hook_file.write_bytes(b'\xef\xbb\xbf{"first": {"context_summary": "a"}}\r\n')
+        out = _call_tool("register_hook", {"hook_id": "second", "context_summary": "b"})
+        assert "Hook registered: second" in out
+        stored = json.loads(hook_file.read_text(encoding="utf-8"))
+        assert set(stored) == {"first", "second"}
 
     def test_acquiring_the_lock_does_not_truncate_the_lock_file(self):
         """The lock-file open must be WRITABLE but MUST NOT truncate.

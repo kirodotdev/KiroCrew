@@ -8,6 +8,7 @@ model.
 from __future__ import annotations
 
 import asyncio
+from threading import get_ident
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -178,12 +179,35 @@ class TestAutoMigrateMemory:
         assert "semantic=0 episodic=0 skipped=0" in store._log_event.call_args[0][4]
 
     @pytest.mark.asyncio
+    async def test_the_migration_audit_event_is_written_off_the_event_loop(self):
+        """The audit write takes the store's writer lock, so on the loop thread it
+        logs a lock warning on every fresh install's first start."""
+        orch, store = self._orch_with_store(migrated=False)
+        written_on: list[int] = []
+        store._log_event = MagicMock(side_effect=lambda *a: written_on.append(get_ident()))
+        not_ready = MagicMock(
+            wait_ready=MagicMock(return_value=False), is_ready=MagicMock(return_value=False)
+        )
+        with (
+            patch("kiro_crew.slack.gateway.model_file_present", return_value=True),
+            patch("kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])),
+            patch("kiro_crew.slack.gateway.get_shared_embedder", return_value=not_ready),
+            patch("kiro_crew.memory.legacy_memory_present", return_value=False),
+            patch.object(orch, "_set_memory_migrated", AsyncMock()),
+        ):
+            await orch._auto_migrate_memory()
+        assert written_on and written_on[0] != get_ident()
+
+    @pytest.mark.asyncio
     async def test_model_absent_awaits_download_then_sweeps(self):
         orch, store = self._orch_with_store(migrated=False)
         # Model absent at migrate time, present after the download task resolves.
         presence = iter([False, False, True, True])
-        # flake-ok: pre-existing event-loop yield standing in for the download task, moved verbatim; tracked for a de-flake pass
-        orch._model_download_task = asyncio.ensure_future(asyncio.sleep(0))
+        # The download task is a real task the test completes on an event;
+        # the production await on it is the wait, not a loop-turn count.
+        download_done = asyncio.Event()
+        orch._model_download_task = asyncio.ensure_future(download_done.wait())
+        download_done.set()
         with (
             patch(
                 "kiro_crew.slack.gateway.model_file_present",
@@ -198,6 +222,7 @@ class TestAutoMigrateMemory:
         ):
             await orch._auto_migrate_memory()
         # Migrated even though the model was absent; sweep ran after the wait.
+        assert orch._cfg.memory.migrated is True
         store.migrate_from_markdown.assert_called_once()
         store.backfill_missing_embeddings.assert_called_once()
 
@@ -237,12 +262,8 @@ class TestAutoMigrateMemory:
 class _LoadRecordingEmbedder:
     """A backend that records whether the model load was kicked.
 
-    Mirrors ``LlamaCppEmbedder``: ``wait_ready()`` kicks the background load (the
-    ~700MB GGUF mmap plus its KV/compute buffers) before joining the loader
-    thread, so a call to ``wait_ready`` IS the cost this sweep must avoid paying
-    on a boot with nothing to embed. ``model_id``/``dim`` are set at construction
-    and readable without a load, which is what lets the staleness probe run
-    ahead of it.
+    Like ``LlamaCppEmbedder``, ``wait_ready()`` kicks the load, while ``model_id``/``dim``
+    are readable without it, so the staleness probe can run first.
     """
 
     def __init__(self, *, model_id: str = "qwen3-embedding:0.6b", dim: int = 1024) -> None:
@@ -266,11 +287,8 @@ class _LoadRecordingEmbedder:
 class TestReembedSweepDefersTheModelLoad:
     """The sweep must probe with SQL before it loads a ~700MB embedding model.
 
-    ``wait_ready()`` is not a free question: it kicks the GGUF load, costing
-    ~1GB RSS for the process's lifetime (measured: VmRSS +1069 MiB — RssAnon
-    +455 MiB private buffers, RssFile +614 MiB mmap'd weights). Steady state has
-    nothing to embed, so a boot that loads the model to discover that is pure
-    waste. These tests pin the load itself, not a proxy for it.
+    ``wait_ready()`` kicks the GGUF load, ~1GB RSS for the process's life (measured
+    VmRSS +1069 MiB), and steady state has nothing to embed.
     """
 
     def _orch(self, *, pending: bool):

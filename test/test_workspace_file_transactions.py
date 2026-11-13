@@ -276,7 +276,7 @@ def test_git_status_runs_no_repository_filter_driver(tmp_path, key):
     _git(root, "config", f"filter.x.y.{key}", f"touch {marker}; cat")
     (root / ".gitattributes").write_text("*.txt filter=x.y\n")
     (root / "a.txt").write_text("two\n")  # same size: status must hash it
-    out = wt._git_status(wt.Workspace(str(root)))
+    out = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
     assert not marker.exists()
     assert out["git"] is True and "a.txt" in out["output"]
 
@@ -314,7 +314,7 @@ def test_git_status_runs_no_submodule_filter_driver(tmp_path):
     git(inner, "config", "filter.x.clean", f"touch {marker}; cat")
     (inner / ".gitattributes").write_text("*.txt filter=x\n")
     (inner / "a.txt").write_text("two\n")  # same size: status must hash it
-    out = wt._git_status(wt.Workspace(str(root)))
+    out = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
     assert not marker.exists()
     assert out["git"] is True
 
@@ -348,7 +348,6 @@ def test_browse_read_keeps_text_whose_last_character_the_cap_splits(tmp_path):
 
 
 @needs_git
-@pytest.mark.skipif(os.name == "nt", reason="POSIX hook script")
 @pytest.mark.parametrize("where", ["hooks_dir", "hooks_path"])
 def test_git_status_runs_no_repository_hook(tmp_path, where):
     """An agent can write a hook (or point core.hooksPath at one); status must not run it."""
@@ -361,12 +360,12 @@ def test_git_status_runs_no_repository_hook(tmp_path, where):
     hooks = root / ".git" / "hooks" if where == "hooks_dir" else root / "agent-hooks"
     hooks.mkdir(exist_ok=True)
     hook = hooks / "post-index-change"
-    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", newline="\n")
     hook.chmod(0o755)
     if where == "hooks_path":
         _git(root, "config", "core.hooksPath", str(hooks))
     (root / "a.txt").write_text("two\n")  # stale stat: a plain status would refresh the index
-    out = wt._git_status(wt.Workspace(str(root)))
+    out = wt.browse(wt.Workspace(str(root)), {"op": "git_status"})
     assert not marker.exists()
     assert out["git"] is True and "a.txt" in out["output"]
 

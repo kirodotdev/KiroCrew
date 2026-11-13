@@ -34,7 +34,7 @@ export type BackfillReport = ChannelFolderBackfillReport
  *  unwraps that, so the sentence the user reads is unchanged from before. When the
  *  body carried none -- an edge HTML page, an empty 500 -- this falls back to the
  *  panel's own sentence, which is what the raw-`fetch` version did; without it the
- *  transport's `HTTP 502` would be shown instead. The question is put to
+ *  transport's status line would be shown instead. The question is put to
  *  `friendlyErrText`, the same function the transport used to decide, rather than
  *  re-deciding it here from the status. */
 function backfillErrorMessage(e: unknown): string {

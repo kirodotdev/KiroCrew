@@ -199,6 +199,7 @@ _PASSED_THROUGH_REASONS = (
     loop_model.CONSECUTIVE_FAILURE_REASON,
     loop_model.STRUCTURAL_TERMINAL_REASON,
     loop_model.MODEL_REFUSED_REASON,
+    loop_model.CLAIM_UNSAVED_REASON,
     loop_model.SENTINEL_DROPPED_REASON,
     loop_model.MANUAL_STOP_REASON,
     # The structured monitor stop reasons (``monitoring/models.py``). Each budget
@@ -244,6 +245,72 @@ STOP_REASONS: dict[str, str] = {
 
 #: Every value ``reason`` can carry.
 STOP_REASON_VALUES = frozenset(STOP_REASONS.values()) | {OTHER}
+
+# ---------------------------------------------------------------------------
+# ended_by -- who or what ended the loop, a fixed grouping of ``reason``
+# ---------------------------------------------------------------------------
+
+#: Every value ``ended_by`` can carry.
+ENDED_BY_VALUES: tuple[str, ...] = (
+    "agent_stop",
+    "user_stop",
+    "budget",
+    "subject_done",
+    "stalled",
+    "error",
+    OTHER,
+)
+
+#: Each :data:`STOP_REASON_VALUES` member -> the ``ended_by`` group it belongs to.
+#: A function of ``reason``, so the attribute adds no series. Written out rather
+#: than derived, because the grouping is a judgement about what each reason means;
+#: ``test_monitor_loop_counters.py`` asserts the keys are exactly
+#: :data:`STOP_REASON_VALUES`, so a new stop reason cannot ship unmapped.
+ENDED_BY: dict[str, str] = {
+    # The agent declared the goal met.
+    "autonudge_stop": "agent_stop",
+    "stop_sentinel": "agent_stop",
+    # A person stopped it, or removed what it ran on.
+    "user_stop": "user_stop",
+    "manual": "user_stop",
+    "session_close": "user_stop",
+    "removed": "user_stop",
+    # A cap or budget ran out.
+    "cycle_cap": "budget",
+    "runtime_budget": "budget",
+    "agent_turn_budget": "budget",
+    "token_budget": "budget",
+    "provider_error_budget": "budget",
+    "budget": "budget",
+    # The watched subject finished.
+    "success": "subject_done",
+    "monitor_terminal": "subject_done",
+    # It waited on something that never came.
+    "approval_stall": "stalled",
+    "verdict_stall": "stalled",
+    "blocked": "stalled",
+    # It could not keep running.
+    "session_start_failures": "error",
+    "consecutive_failures": "error",
+    "structural_terminal": "error",
+    "model_refused": "error",
+    "claim_unsaved": "error",
+    "sentinel_dropped": "error",
+    "invalid_monitor_record": "error",
+    "unsupported_monitor_version": "error",
+    "completion_evidence_unavailable": "error",
+    "session_unavailable": "error",
+    "target_unavailable": "error",
+    # No reason recorded, or one not recognised.
+    "unspecified": OTHER,
+    OTHER: OTHER,
+}
+
+
+def ended_by(reason: str) -> str:
+    """The :data:`ENDED_BY_VALUES` group a closed stop *reason* belongs to."""
+    return ENDED_BY.get(reason, OTHER)
+
 
 # ---------------------------------------------------------------------------
 # decision -- what the monitor controller decided
@@ -405,6 +472,8 @@ def record_loop_stopped(record: Mapping[str, Any], outcome: str | None = None) -
     only when the stored reason is not in :data:`STOP_REASONS`, so a PR monitor
     that stopped on ``pull_request_merged`` is reported as ``success`` rather
     than :data:`OTHER`.
+
+    ``ended_by`` is the fixed grouping :data:`ENDED_BY` of the reported reason.
     """
     kind = record.get("kind")
     reason = stop_reason(record.get("reason"))
@@ -416,6 +485,7 @@ def record_loop_stopped(record: Mapping[str, Any], outcome: str | None = None) -
             "kind": kind if kind in LOOP_KINDS else OTHER,
             "reason": reason,
             "ran": ran_bucket(record.get("ran_secs")),
+            "ended_by": ended_by(reason),
         },
     )
 

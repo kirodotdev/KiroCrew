@@ -358,22 +358,14 @@ describe('mochiApi binary reads', () => {
 // ── voice config ────────────────────────────────────────────────────────────
 
 describe('mochiApi speech-to-text config', () => {
-  it('posts the patch to the core route as JSON', async () => {
-    const { calls } = stubFetch({ json: { ok: true } })
+  // No Mochi UI edits voice settings: the dashboard owns them through
+  // `api.saveSttConfig` (PUT /api/config/stt). A seam write with no caller is a
+  // save nobody can see fail, so mochiApi.ts lists `updateSttConfig` as
+  // deliberately absent. Adding one back means adding its caller with it.
+  it('exposes no voice-config write of its own', async () => {
     const seam = await loadSeam()
 
-    await seam.api.updateSttConfig({ provider: 'whisper' })
-
-    expect(calls[0].url).toBe('/api/config/stt')
-    expect(calls[0].init?.method).toBe('POST')
-    expect(bodyOf(calls[0])).toEqual({ provider: 'whisper' })
-  })
-
-  it('swallows a failed write — voice must not take the settings window down', async () => {
-    stubFetch('reject')
-    const seam = await loadSeam()
-
-    await expect(seam.api.updateSttConfig({ provider: 'whisper' })).resolves.toBeUndefined()
+    expect('updateSttConfig' in seam.api).toBe(false)
   })
 })
 

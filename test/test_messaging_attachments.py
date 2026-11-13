@@ -37,6 +37,7 @@ from kiro_crew.messaging.attachments import (
     safe_suffix,
     sniff_image_mime,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -59,29 +60,83 @@ async def _boom(url: str, dest: str) -> None:
     raise RuntimeError("network error")
 
 
+def _named(prefix, rows):
+    return [pytest.param(mime, kind, id=f"{prefix}-{mime}") for mime, kind in rows]
+
+
 class TestClassify:
     @pytest.mark.parametrize(
         "mime,expected",
-        [
-            ("image/png", IMAGE),
-            ("image/jpeg", IMAGE),
-            ("text/plain", TEXT),
-            ("application/json", TEXT),
-            ("audio/webm", AUDIO),
-            ("video/mp4", VIDEO),
-            ("application/octet-stream", OTHER),
-            ("", OTHER),
-        ],
+        _named(
+            "mimetype_mapping",
+            [
+                ("image/png", IMAGE),
+                ("image/jpeg", IMAGE),
+                ("text/plain", TEXT),
+                ("application/json", TEXT),
+                ("audio/webm", AUDIO),
+                ("video/mp4", VIDEO),
+                ("application/octet-stream", OTHER),
+                ("", OTHER),
+            ],
+        )
+        + _named(
+            "parameters_after_the_type_are_ignored",
+            [
+                # Discord's content_type for a JSON or XML file carries a charset.
+                ("application/json; charset=utf-8", TEXT),
+                ("application/xml; charset=utf-8", TEXT),
+                ("text/plain;charset=UTF-8", TEXT),
+                ("IMAGE/PNG ; foo=bar", IMAGE),
+                ("application/octet-stream; charset=utf-8", OTHER),
+            ],
+        ),
     )
-    def test_mimetype_mapping(self, mime, expected):
+    def test_mimetype_maps_to_its_kind(self, mime, expected):
         assert classify(mime) == expected
 
     def test_documents_detected_by_filename(self):
         assert classify("application/pdf", "report.pdf") == DOCUMENT
 
+    @pytest.mark.parametrize(
+        "ext,kind",
+        [(".dotx", "wordprocessingml"), (".xltx", "spreadsheetml"), (".potx", "presentationml")],
+    )
+    def test_an_ooxml_template_stays_a_file(self, ext, kind):
+        """Text extraction would drop a template's layouts, so the agent gets the file."""
+        mime = f"application/vnd.openxmlformats-officedocument.{kind}.template"
+        assert classify(mime, f"brand{ext}") == OTHER
+
     def test_svg_is_not_an_image(self):
         """SVG is scriptable XML; the ACP encoder cannot inline it."""
         assert classify("image/svg+xml") == OTHER
+
+    def test_a_parameter_cannot_make_svg_an_image(self):
+        assert classify("image/svg+xml; charset=utf-8") == OTHER
+
+
+class TestParameterizedDocumentReachesTheParser:
+    @pytest.mark.asyncio
+    async def test_the_parser_gets_the_same_base_type_the_classifier_read(self, monkeypatch):
+        """``application/pdf; charset=binary`` on a name with no extension is parsed as a PDF."""
+        import kiro_crew.messaging.attachments as mod
+
+        seen: list[str] = []
+
+        def _extract(path: str, *, mimetype: str = "", filename: str = "") -> str:
+            seen.append(mimetype)
+            return "page one"
+
+        monkeypatch.setattr(mod, "extract_text", _extract)
+        att = Attachment(
+            name="report", mimetype="application/pdf; charset=binary", url="https://x/1"
+        )
+        result = await ingest_attachments([att], download=_writer(b"%PDF-1.4\n"), source="test")
+        try:
+            assert seen == ["application/pdf"]
+            assert result.rejections == []
+        finally:
+            cleanup(result.temp_paths)
 
 
 class TestSafeSuffix:
@@ -100,6 +155,28 @@ class TestSafeSuffix:
         out = safe_suffix(hint)
         assert out == expected
         assert "/" not in out and ".." not in out.strip(".")
+
+    def test_a_long_hint_is_bounded(self):
+        assert safe_suffix("x" * 300) == "." + "x" * 16
+
+
+class TestAttachmentSuffix:
+    @pytest.mark.parametrize(
+        ("name", "mimetype", "expected"),
+        [
+            ("report.pdf", "", ".pdf"),
+            ("report.pdf", "image/png", ".pdf"),
+            ("README", "text/plain", ".txt"),
+            ("README", "", ".bin"),
+            (".env", "", ".bin"),
+            ("clip", "video/mp4; codecs=avc1", ".mp4"),
+            ("voice", "audio/ogg; codecs=opus", ".ogg"),
+            ("x" * 300, "text/plain", ".txt"),
+            ("a." + "y" * 40, "", ".bin"),
+        ],
+    )
+    def test_name_extension_then_mimetype_then_bin(self, name, mimetype, expected):
+        assert attachments.attachment_suffix(name, mimetype) == expected
 
 
 class TestSniffImageMime:
@@ -142,6 +219,28 @@ class TestIngestAttachments:
         assert result.rejections == []
         assert os.path.exists(result.image_paths[0])
         cleanup(result.temp_paths)
+
+    async def test_a_dotless_name_downloads_under_its_mimetype_extension(self):
+        """A channel that sends no hint (Discord, Telegram) for a dotless name left
+        the whole name as the temp suffix; a long one made the temp path too long
+        to create, so the file was refused as "download failed"."""
+        dests: list[str] = []
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            with open(dest, "wb") as fh:
+                fh.write(b"hello")
+
+        for name in ("README", "n" * 300):
+            result = await ingest_attachments(
+                [Attachment(name=name, mimetype="text/plain", size=5, url="u")],
+                download=_download,
+                source="test",
+            )
+            assert result.rejections == []
+            assert len(result.text_blocks) == 1
+            cleanup(result.temp_paths)
+        assert [os.path.splitext(d)[1] for d in dests] == [".txt", ".txt"]
 
     async def test_size_enforced_on_downloaded_bytes_not_metadata(self):
         """The hole this closes: Slack trusted the channel's `size`, which
@@ -215,7 +314,166 @@ class TestIngestAttachments:
             source="test",
             limits=IngestLimits(max_text_inject=100),
         )
+        cleanup(result.temp_paths)
         assert "truncated" in result.text_blocks[0]
+
+    @pytest.mark.parametrize(
+        "name,mimetype",
+        [("n.csv", "text/csv"), ("r.pdf", "application/pdf")],
+        ids=["text", "document"],
+    )
+    async def test_a_cut_attachment_hands_over_its_whole_redacted_text(
+        self, monkeypatch, name, mimetype
+    ):
+        """The prompt keeps the first 100 characters, as before, and says how many
+        there were; the agent's tools get ALL of them -- redacted, never the raw
+        download -- in a .txt that the caller deletes with the turn's temp paths."""
+        secret = "ghp_" + "a" * 36
+        text = "x" * 150 + f"\ntoken={secret}\n" + "tail " * 400
+        monkeypatch.setattr(attachments, "extract_text", lambda path, **_: text)
+        dests: list[str] = []
+        write = _writer(text.encode())
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            await write(url, dest)
+
+        result = await ingest_attachments(
+            [Attachment(name=name, mimetype=mimetype, size=len(text), url="u")],
+            download=_download,
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        try:
+            assert not os.path.lexists(dests[0])
+            [kept] = result.file_paths
+            with open(kept, encoding="utf-8") as fh:
+                whole = fh.read()
+            block = result.text_blocks[0]
+            assert kept.endswith(".txt") and kept in result.temp_paths
+            assert whole.endswith("tail " * 400) and secret not in whole
+            assert (
+                f"\n{whole[:100]}\n[… truncated: 100 of {len(whole)} characters of text shown]\n"
+                in block
+            )
+            assert f"[Its whole text is in {kept} until this turn ends]" in block
+        finally:
+            cleanup(result.temp_paths)
+
+    async def test_a_copy_that_cannot_be_stored_leaves_the_marker_alone(self, monkeypatch):
+        """The copy is extra: failing to make it never costs the inline part."""
+        dests: list[str] = []
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write("z" * 500)
+
+        def _fail(text: str) -> str:
+            raise UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate")
+
+        monkeypatch.setattr(attachments, "_write_whole_text", _fail)
+        result = await ingest_attachments(
+            [Attachment(name="n.txt", mimetype="text/plain", size=500, url="u")],
+            download=_download,
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        assert result.rejections == [] and result.file_paths == []
+        assert result.text_blocks == [
+            "[File: n.txt]\n" + "z" * 100 + "\n[… truncated: 100 of 500 characters of text shown]"
+            "\n[End of file]"
+        ]
+        assert not os.path.exists(dests[0])
+
+    async def test_a_link_planted_at_the_download_after_it_is_read_is_never_written_through(
+        self, monkeypatch, tmp_path
+    ):
+        """An agent can reach the download's path, so a link swapped in for it
+        between the read and the hand-over must not steer the gateway's write."""
+        try:
+            os.symlink(tmp_path / "probe-target", tmp_path / "probe-link")
+        except OSError as exc:
+            pytest.skip(f"this host cannot create a symlink: {exc}")
+        target = tmp_path / "protected.json"
+        target.write_bytes(b'{"enabled": false}\n')
+        downloads: list[str] = []
+        real_reader = attachments._read_text_file
+
+        def _read_then_plant(path: str, limit: int) -> tuple[str, str]:
+            read = real_reader(path, limit)
+            downloads.append(path)
+            os.unlink(path)
+            os.symlink(target, path)
+            return read
+
+        monkeypatch.setattr(attachments, "_read_text_file", _read_then_plant)
+        result = await ingest_attachments(
+            [Attachment(name="n.txt", mimetype="text/plain", size=500, url="u")],
+            download=_writer(b"w" * 500),
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        try:
+            assert target.read_bytes() == b'{"enabled": false}\n'
+            [kept] = result.file_paths
+            assert kept.endswith(".txt") and not os.path.islink(kept)
+            assert os.path.isfile(kept)
+            with open(kept, encoding="utf-8") as fh:
+                assert fh.read() == "w" * 500
+            assert not os.path.lexists(downloads[0])
+        finally:
+            cleanup(result.temp_paths)
+
+    async def test_a_cancel_while_the_copy_is_written_leaves_no_copy_behind(
+        self, monkeypatch, tmp_path
+    ):
+        """The worker writing the copy cannot be stopped, so a turn cancelled
+        meanwhile must still delete the copy it goes on to make."""
+        import tempfile
+
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        started, release, deleted = threading.Event(), threading.Event(), threading.Event()
+        real_write, real_cleanup = attachments._write_whole_text, attachments.cleanup
+
+        def _held_write(text: str) -> str:
+            started.set()
+            assert release.wait(30), "the test never released the write"
+            return real_write(text)
+
+        def _cleanup(paths: list[str]) -> None:
+            real_cleanup(paths)
+            deleted.set()
+
+        monkeypatch.setattr(attachments, "_write_whole_text", _held_write)
+        monkeypatch.setattr(attachments, "cleanup", _cleanup)
+        task = asyncio.ensure_future(
+            ingest_attachments(
+                [Attachment(name="n.txt", mimetype="text/plain", size=500, url="u")],
+                download=_writer(b"c" * 500),
+                source="test",
+                limits=IngestLimits(max_text_inject=100),
+            )
+        )
+        try:
+            await async_wait_until(started.is_set, describe=lambda: "the copy was never started")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled ingest")
+        finally:
+            release.set()
+        await async_wait_until(deleted.is_set, describe=lambda: "the copy was never deleted")
+        assert list(tmp_path.iterdir()) == []
+
+    async def test_an_attachment_that_fits_is_inlined_whole_and_nothing_is_kept(self):
+        result = await ingest_attachments(
+            [Attachment(name="n.txt", mimetype="text/plain", size=100, url="u")],
+            download=_writer(b"y" * 100),
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        assert result.text_blocks == ["[File: n.txt]\n" + "y" * 100 + "\n[End of file]"]
+        assert result.temp_paths == []
 
     @pytest.mark.parametrize(
         "name,mimetype,suffix,payload",
@@ -554,7 +812,7 @@ class TestBlockingWorkLeavesTheEventLoop:
         observed: list[int] = []
         real_reader = attachments._read_text_file
 
-        def _spy(path: str, limit: int) -> str:
+        def _spy(path: str, limit: int) -> tuple[str, str]:
             observed.append(threading.get_ident())
             return real_reader(path, limit)
 
@@ -599,7 +857,7 @@ class TestBlockingWorkLeavesTheEventLoop:
         """
         real_reader = attachments._read_text_file
 
-        def _slow_read(path: str, limit: int) -> str:
+        def _slow_read(path: str, limit: int) -> tuple[str, str]:
             time.sleep(0.15)  # blocking, as a large/slow filesystem read would be
             return real_reader(path, limit)
 
@@ -650,7 +908,51 @@ class TestAppendAttachmentContext:
     def test_image_paths_appended(self):
         result = IngestResult(image_paths=["/tmp/a.png", "/tmp/b.jpg"])
         out = append_attachment_context("hello", result)
-        assert out == "hello\n/tmp/a.png\n/tmp/b.jpg"
+        assert out == "\n\n".join(
+            [
+                "hello\n/tmp/a.png\n/tmp/b.jpg",
+                attachments.image_location_note("/tmp/a.png"),
+                attachments.image_location_note("/tmp/b.jpg"),
+            ]
+        )
+
+    def test_each_image_gets_a_note_naming_its_folder(self, tmp_path):
+        # The ACP encoder hides an inlined image's path behind ``[image: <name>]``,
+        # so the note is the only place the agent learns where the file is.
+        image = tmp_path / "shot.png"
+        out = append_attachment_context("look", IngestResult(image_paths=[str(image)]))
+        assert (
+            f"[Image shot.png is saved in the folder {tmp_path}{os.sep} until this turn ends; "
+            "join the two to open the original file]"
+        ) in out
+
+    def test_the_note_survives_the_prompt_encoder(self, tmp_path):
+        # The note names the folder and the file apart, so the encoder that turns
+        # the bare path line into an image block leaves the note readable.
+        import io
+
+        from kiro_crew.acp.prompt_blocks import build_prompt_blocks
+
+        pil = pytest.importorskip("PIL.Image")
+        buf = io.BytesIO()
+        pil.new("RGB", (2, 2), (127, 127, 127)).save(buf, format="PNG")
+        image = tmp_path / "shot.png"
+        image.write_bytes(buf.getvalue())
+        out = append_attachment_context("look", IngestResult(image_paths=[str(image)]))
+        blocks = build_prompt_blocks(out)
+        assert [b["type"] for b in blocks].count("image") == 1
+        texts = "".join(b.get("text", "") for b in blocks)
+        assert f"saved in the folder {tmp_path}{os.sep} " in texts
+        assert str(image) not in texts
+
+    def test_files_get_no_image_note(self):
+        out = append_attachment_context("msg", IngestResult(file_paths=["/tmp/a.zip"]))
+        assert "is saved in the folder" not in out
+
+    def test_slack_uses_the_same_note(self):
+        from kiro_crew.slack import files as slack_files
+
+        assert slack_files.image_location_note is attachments.image_location_note
 
     def test_file_paths_appended(self):
         result = IngestResult(file_paths=["/tmp/archive.zip", "/tmp/clip.mp4"])
@@ -681,7 +983,7 @@ class TestAppendAttachmentContext:
     def test_empty_text_with_images(self):
         result = IngestResult(image_paths=["/tmp/x.png"])
         out = append_attachment_context("", result)
-        assert out == "/tmp/x.png"
+        assert out == f"/tmp/x.png\n\n{attachments.image_location_note('/tmp/x.png')}"
 
     def test_empty_result_returns_text_unchanged(self):
         result = IngestResult()

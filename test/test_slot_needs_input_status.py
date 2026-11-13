@@ -1,18 +1,8 @@
 """Tests for the slot's ``needs_input`` status — "the agent asked you something".
 
-A question card is a websocket broadcast with no transcript row, so before this
-status it was invisible anywhere outside the tab that received it — and a
-BLOCKING card parks the turn, so the sidebar, the sessions board and the command
-palette all showed a session that reported ``running`` with nothing able to
-advance it.
-
-That is the whole scope: the status corrects a status that would otherwise be
-wrong. It is NOT raised for a turn that merely ended, including one ending in an
-``[OPTIONS:]`` tag — every finished turn is waiting on the user, which is why
-``waiting_for_input`` cannot carry a badge either. It is separate from
-``pending_approval`` (a tool gate, answered allow/deny). These tests pin that
-boundary in both directions, plus the record's whole lifecycle: who sets it, and
-every path that must retire it.
+A question card has no transcript row, and a blocking one parks a turn that would
+otherwise read ``running``. It is not raised for a turn that merely ended (even
+with ``[OPTIONS:]``), and is separate from ``pending_approval``.
 """
 
 from __future__ import annotations
@@ -337,11 +327,8 @@ def test_clear_announces_the_retirement() -> None:
 def test_a_live_nudge_row_keeps_a_stateless_card() -> None:
     """An auto-nudge cycle does NOT consume the answer channel.
 
-    The nudge wakes the same agent in the same conversation, so a message the
-    user sends after ten cycles still reaches the agent that asked. Retiring here
-    deleted the record a reload rehydrates from — the card was gone on the next
-    visit and the question was never answerable again. An unanswered stateless
-    record is retired by the user's own message or by an explicit dismiss.
+    The nudge wakes the same agent, and retiring would delete the record a reload
+    rehydrates from. Only the user's message or a dismiss retires it.
     """
     slot = _ChatSlot("chat-1")
     announced: list[list[str]] = []

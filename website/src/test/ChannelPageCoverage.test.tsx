@@ -5,7 +5,7 @@
 // the message list (MessageBubble, mentions, approval cards, thread replies), the
 // agents sidebar (state/listen badges, the listen-mode menu, dismiss, Add Agent),
 // the New Channel dialog and its preset picker, the close-channel flow, the
-// error modal fed by `apiError`, the two empty states, and the seven branches of
+// inline error notice fed by `apiError`, the two empty states, and the seven branches of
 // the `kirocrew-channel` window-event handler that stands in for the WebSocket.
 //
 // Conventions follow ChannelPage.clearContext.test.tsx: the api client is the
@@ -173,7 +173,7 @@ describe('ChannelPage — message list', () => {
       messages: [message({ from_id: 'human', from_role: 'You', mention: ['a1', 'ghost'] })],
     })])
     await renderPage()
-    expect(screen.getByText('→ @Researcher, @ghost')).toBeInTheDocument()
+    expect(screen.getByText('→ @Researcher and @ghost')).toBeInTheDocument()
   })
 
   it('renders an approval message as an approval card and posts the decision', async () => {
@@ -317,6 +317,24 @@ describe('ChannelPage — message list', () => {
     mockApi([channelOf({ messages: [message({ reply_count: 2 })] })])
     await renderPage()
     expect(screen.getByRole('button', { name: '2 replies' })).toBeInTheDocument()
+  })
+
+  it('counts a thread reply that arrives live on its parent, once', async () => {
+    mockApi([channelOf({ messages: [message({ id: 'p1', content: 'Root finding' })] })])
+    await renderPage()
+    // Let the channel's own read land first, so it cannot overwrite the live reply.
+    await waitFor(() => expect(vi.mocked(api).channelGet).toHaveBeenCalledWith('ch1'))
+    await act(async () => { await vi.mocked(api).channelGet.mock.results[0].value })
+    expect(screen.queryByRole('button', { name: /repl(y|ies)$/ })).not.toBeInTheDocument()
+
+    const reply = message({ id: 'r1', thread_id: 'p1', content: 'Follow-up detail' })
+    wsEvent('channel_message', { channel_id: 'ch1', message: reply })
+    expect(await screen.findByRole('button', { name: '1 reply' })).toBeInTheDocument()
+
+    // The same event again (a channel read that already held it) adds nothing.
+    wsEvent('channel_message', { channel_id: 'ch1', message: reply })
+    wsEvent('channel_message', { channel_id: 'ch1', message: message({ id: 'r2', thread_id: 'p1', content: 'More' }) })
+    expect(await screen.findByRole('button', { name: '2 replies' })).toBeInTheDocument()
   })
 })
 
@@ -562,13 +580,17 @@ describe('ChannelPage — Add Agent form', () => {
     await userEvent.click(screen.getByRole('button', { name: '+ Add Agent' }))
     fireEvent.change(await screen.findByLabelText('Role'), { target: { value: 'Extra' } })
     await userEvent.click(screen.getByRole('button', { name: 'Add' }))
-    // In-page ErrorNotice, titled with the failed action; the inputs were
-    // already submitted so it carries the agent hand-off.
-    const notice = await screen.findByTestId('channel-error')
+    // ErrorNotice inside the still-open form, titled with the failed action.
+    // The typed role is not saved yet, so it offers no agent hand-off.
+    const notice = await screen.findByTestId('add-agent-error')
     expect(notice).toHaveTextContent('Failed to add agent')
     expect(notice).toHaveTextContent('agent cap reached')
     expect(screen.queryByText('Limit Reached')).not.toBeInTheDocument()
-    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    // Inline, not an overlay: the failure must not block the page behind a
+    // dialog or the old raw `fixed inset-0 bg-black/50` backdrop.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(document.querySelector('.bg-black\\/50')).toBeNull()
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 
   it('falls back to the raw message when the api error is not JSON', async () => {
@@ -578,7 +600,7 @@ describe('ChannelPage — Add Agent form', () => {
     await userEvent.click(screen.getByRole('button', { name: '+ Add Agent' }))
     fireEvent.change(await screen.findByLabelText('Role'), { target: { value: 'Extra' } })
     await userEvent.click(screen.getByRole('button', { name: 'Add' }))
-    const notice = await screen.findByTestId('channel-error')
+    const notice = await screen.findByTestId('add-agent-error')
     expect(notice).toHaveTextContent('Failed to add agent')
     expect(notice).toHaveTextContent('gateway timeout')
     expect(screen.queryByText('Limit Reached')).not.toBeInTheDocument()
@@ -651,8 +673,7 @@ describe('ChannelPage — New Channel dialog', () => {
     await userEvent.click(screen.getByRole('button', { name: '+ New' }))
     await screen.findByRole('dialog', { name: 'New channel' })
     // The old overlay was a raw `fixed inset-0 bg-black/50` div; the shared
-    // Modal renders its own backdrop instead. (The error modal still carries
-    // the raw class until #5570 lands, but it is not mounted here.)
+    // Modal renders its own backdrop instead.
     expect(document.querySelector('.bg-black\\/50')).toBeNull()
     // Escape dismissal is what the hand-rolled overlay lacked — Modal owns it.
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -714,7 +735,7 @@ describe('ChannelPage — New Channel dialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New channel' })).not.toBeInTheDocument())
   })
 
-  it('labels a create failure with its action in the shared in-page notice and dismisses it', async () => {
+  it('labels a create failure with its action inside the open dialog and dismisses it', async () => {
     vi.mocked(api).channelCreate = vi.fn()
       .mockRejectedValue(new Error(JSON.stringify({ error: 'channel cap reached' })))
     await renderPage()
@@ -722,16 +743,17 @@ describe('ChannelPage — New Channel dialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New channel' })
     fireEvent.change(within(dialog).getByLabelText('Topic'), { target: { value: 'One too many' } })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
-    // The failure is the shared ErrorNotice (role="alert" + agent hand-off), not
-    // a blocking modal: the inputs were already submitted, so nothing is lost.
-    const notice = await screen.findByTestId('channel-error')
+    // The failure is the shared ErrorNotice (role="alert") inside the dialog,
+    // which stays open with the typed topic, so it offers no agent hand-off.
+    const notice = await within(dialog).findByTestId('new-channel-error')
     expect(notice).toHaveAttribute('role', 'alert')
     expect(notice.textContent).toContain('Failed to create channel')
     expect(notice.textContent).toContain('channel cap reached')
     expect(screen.queryByText('Limit Reached')).not.toBeInTheDocument()
-    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
     await userEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
-    await waitFor(() => expect(screen.queryByTestId('channel-error')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTestId('new-channel-error')).not.toBeInTheDocument())
+    expect(within(dialog).getByLabelText('Topic')).toHaveValue('One too many')
   })
 
   it('ignores a create response that carries no channel', async () => {

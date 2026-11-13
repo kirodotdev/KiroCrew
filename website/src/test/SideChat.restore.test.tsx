@@ -538,6 +538,31 @@ describe('a side conversation starts at its first row', () => {
     expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBeUndefined()
   })
 
+  it('counts by time a conversation begun while a switch is still loading its slot', () => {
+    // A switch to an uncached slot: it is active, its transcript not yet loaded.
+    const loading = (): ChatState => ({ ...mainWith(fresh(), 0), slotSwitchRequestId: 'req-1', slotSwitchTarget: SLOT })
+    let s = chatReducer(loading(), sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: 'Q', ts: '2027-01-15T08:00:00.000Z' },
+    }))
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+    expect(s.slotSide[SLOT].createdAt).toBe('2027-01-15T08:00:00.000Z')
+    s = chatReducer(loading(), frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+    s = chatReducer(loading(), sseSideQueue({ slot: SLOT, action: 'push', queue_id: 'q1', content: 'Q', raw: true }))
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+    // Another slot's switch in flight leaves this slot's count a baseline.
+    s = chatReducer({ ...mainWith(fresh(), 4), slotSwitchRequestId: 'req-2', slotSwitchTarget: 'another-slot' },
+      frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].openedAtTurnCount).toBe(4)
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBeUndefined()
+  })
+
+  it('counts by time a conversation its first row makes while another slot is shown', () => {
+    const s = chatReducer({ ...mainWith(fresh(), 4), activeSlot: 'another-slot' },
+      frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+  })
+
   it('leaves the start of a conversation that already has rows alone', () => {
     let s = chatReducer(mainWith(fresh(), 2), frame({ run_id: 'r1', role: 'user', content: 'Q1', ts: QUESTION_AT }))
     s = chatReducer(mainWith(s, 12), frame({ run_id: 'r2', role: 'user', content: 'Q2', ts: QUESTION_AT + 600 }))

@@ -59,11 +59,20 @@ each session the :data:`_MAX_TRACKED_SESSIONS` cap evicts. On the first sight of
 session the diff counts its WHOLE render against zero: session.started once, and every
 turn already in that first render (a new session's opening and first turn can share one
 coalesced fold batch, so counting against zero is what keeps that first turn). Every
-other first sight -- a resumed session (``opened_ts`` predates install), or an evicted
-session seen again (its ``opened_ts`` is at most the evicted maximum) -- is BASELINED:
-its render becomes the floor and nothing is emitted, so no restart or eviction replay
-re-adds a total already exported. The S2 session-tree counters ride the same "new"
+other first sight -- a session opened before install with no resume of this process
+behind it (next paragraph), or an evicted session seen again (its ``opened_ts`` is at
+most the evicted maximum) -- is BASELINED: its render becomes the floor and nothing is
+emitted, so no restart or eviction replay re-adds a total already exported. The S2 session-tree counters ride the same "new"
 test.
+
+A SESSION RESUMED IN THIS PROCESS IS DIFFED AGAINST ITS RESUME FLOOR, not baselined.
+The ``otel_usage`` fold keeps the turn totals standing at the newest resumed
+``session/opened`` (``resumed_turns``, stamped ``resumed_ts``). When
+:func:`_opened_in_this_process` holds for ``resumed_ts``, this process wrote that
+entry, so no earlier process can have exported a turn after it: the first sight diffs
+``turns`` against that floor and every turn after the resume counts once. Eviction
+raises :data:`_evicted_max_opened_ts` by the dropped row's ``resumed_ts`` too, so an
+evicted resumed session seen again baselines instead of counting from its floor twice.
 
 THE RULE IS NEVER OVER-COUNT, AND EVERY UNDER-COUNT IS NAMED. There are three, all in
 the fail-safe direction, and a reader of these counters is owed all three rather than a
@@ -71,23 +80,21 @@ bare claim that the loss is small.
 
 1. A session opened before install -- every session live across a restart -- is not
    counted as started by this process.
-2. The TURNS in such a session's first delivery after a restart are folded into the
-   baseline, not counted. The fold publishes a resumed session only once a new entry
-   wakes it, so that first delivery normally carries at least one real
-   ``turn/started``, and those turns are lost. Per resumed session per restart the loss
-   is one coalesced batch, which is what makes it a bound a reader can reason about --
-   but it recurs on every restart, so it is NOT bounded over the life of an install, and
-   calling it bounded without that qualifier would be the wrong claim. Counting exactly
-   once instead needs a floor set to the state BEFORE that delivery's entries, which
-   means either re-walking replayed state or persisting a per-session cursor; both are
-   out of scope for this design, and the trade is stated in the pull request rather
-   than hidden here.
-3. Once the 4096 cap is saturated, a never-seen session that opened no later than some
-   already-evicted session reads as not-new and is baselined rather than counted. This
-   one needs the cap saturated to occur at all.
+2. A turn written after the previous process's last delivery and before the resume
+   is inside the resume floor, so it is not counted: that process ended before
+   exporting it. A session first seen after install with no resume of this process
+   behind it (its re-attach landed before install, or a path wrote none) baselines
+   its whole render, so the turns in that first delivery are lost too. Neither
+   re-adds a total; persisting a per-session exported cursor would close both, at the
+   cost of disk work on the export path.
+3. Once the 4096 cap is saturated, a never-seen session that opened (or resumed) no
+   later than some already-evicted session's opening or resume reads as not-new and is
+   baselined rather than counted. This one needs the cap saturated to occur at all.
 
 The alternative to each is an over-count, which is why the design takes them. The table
-itself is bounded (:data:`_MAX_TRACKED_SESSIONS`).
+itself is bounded (:data:`_MAX_TRACKED_SESSIONS`). Every "this process" test above reads
+entry timestamps against install time, so it assumes the wall clock does not step back
+across a restart.
 """
 
 from __future__ import annotations
@@ -141,8 +148,10 @@ class UsageExporter:
     then counts the WHOLE render against zero for a session it can prove is new
     (:func:`_opened_in_this_process`), and BASELINES (emits nothing, the render becomes
     the floor) for one it cannot -- so a resumed or evicted-and-re-seen session's total
-    is never re-added. It must be PURE and must not raise for a malformed ``current``
-    (validate and return ``[]`` instead); the caller still guards it.
+    is never re-added. A fold that keeps a resume floor may diff against that instead,
+    for a resume the same test proves this process wrote. It must be PURE and must not
+    raise for a malformed ``current`` (validate and return ``[]`` instead); the caller
+    still guards it.
 
     A NEW session-keyed usage fold adds one ``UsageExporter`` to :data:`_EXPORTERS`
     and writes its own ``diff``; nothing else in this module changes. ``diff`` owns
@@ -238,37 +247,36 @@ def _otel_usage_diff(
       first render. A new session's opening and first turn can arrive in one coalesced
       fold batch, so counting against zero is what keeps that first turn from being lost
       to a baseline.
-    - A session NOT provably new (a resumed one, or one opened no later than an evicted
-      session) is BASELINED: its cumulative render becomes the floor and nothing is
-      emitted, so a restart or an eviction replay never re-adds a total a previous
-      process -- or this one -- already exported.
+    - A session NOT provably new but RESUMED in this process (its ``resumed_ts`` passes
+      the same test) diffs its turns against the fold's resume floor
+      (``resumed_turns``), so every turn after the resume counts once and none before
+      it does. session.started does not fire.
+    - Any other session NOT provably new (resumed before install, or opened no later
+      than an evicted session) is BASELINED: its cumulative render becomes the floor and
+      nothing is emitted, so a restart or an eviction replay never re-adds a total a
+      previous process -- or this one -- already exported.
 
     Later deliveries (``previous`` not ``None``) diff turns against the stored floor.
-    Both metrics are counters. The rule is never over-count, at the price of
-    the three named under-counts in this module's own docstring -- and the one this
-    branch is responsible for is the second: a resumed session's first delivery after a
-    restart normally already carries a real ``turn/started``, and baselining the whole
-    render loses those turns. Read that paragraph before treating this function's output
-    as a complete count.
+    Both metrics are counters. The rule is never over-count, at the price of the three
+    named under-counts in this module's own docstring; the second is the one this
+    function's first-sight branches carry.
     """
     metrics: "list[Metric]" = []
     first_sight = previous is None
     is_new = first_sight and _opened_in_this_process(current.get("opened_ts"))
 
     if first_sight and not is_new:
-        # Resumed, or opened no later than an evicted session: baseline, emit nothing.
-        # THIS LINE IS WHERE UNDER-COUNT 2 HAPPENS, named rather than left to be
-        # discovered: the entries that woke this delivery are inside the render being
-        # made the floor, so a resumed session's turns in that batch are not counted.
-        # The alternative is diffing against an empty memo, which re-adds that session's
-        # entire pre-restart total -- an unbounded over-count. Counting exactly once
-        # needs a floor set to the state before this batch, which no field on the event
-        # supplies without re-walking replayed state or persisting a cursor.
-        return metrics
+        floor = current.get("resumed_turns")
+        if not isinstance(floor, Mapping) or not _opened_in_this_process(current.get("resumed_ts")):
+            # No resume of this process to count from: baseline, emit nothing. Diffing
+            # against an empty memo instead would re-add the session's entire
+            # pre-restart total -- an unbounded over-count.
+            return metrics
+        previous = {"turns": floor}
 
     # The floor to diff turns against: zero for a provably-new session's first sight (so
-    # its whole render -- opening and first-batch turns -- counts), the stored render for
-    # a later delivery.
+    # its whole render -- opening and first-batch turns -- counts), the resume floor for
+    # a session resumed in this process, the stored render for a later delivery.
     prev: Mapping[str, Any] = previous if isinstance(previous, Mapping) else {}
 
     # The fold already folded the raw agent to the closed ``agent_kind`` set in its own
@@ -343,8 +351,8 @@ def _otel_session_tree_diff(
     :func:`~kiro_crew.crew_log.otel_session_tree_fold.nth_bucket_counts`. The fold
     keeps that total across restarts in its savepoint, so the ordinal stays the
     child's true position among its creator's children; only the adds in a resumed
-    creator's first post-restart delivery are lost to the baseline, the same bounded
-    under-count the turn counter carries.
+    creator's first post-restart delivery are lost to the baseline, because this fold
+    keeps no resume floor the way ``otel_usage`` does.
     """
     from kiro_crew.crew_log.otel_session_tree_fold import depth_bucket, nth_bucket_counts
 
@@ -446,12 +454,13 @@ def _last_value(fold_name: str, session_key: str) -> dict[str, Any]:
 #: this process installed the subscriber. ``None`` until install.
 _install_ms: "int | None" = None
 
-#: The newest ``opened_ts`` this process has ever DROPPED from the memo -- the install
-#: time to begin with, raised toward each session evicted by the
-#: :data:`_MAX_TRACKED_SESSIONS` cap. A session counts as NEW only when its ``opened_ts``
-#: is strictly greater than this, which is what stops an evicted session from being
-#: re-counted when it is seen again: its own ``opened_ts`` is at most this high after it
-#: was evicted, so its re-sight baselines instead of counting. Strictly ``>`` rather
+#: The newest ``opened_ts`` or ``resumed_ts`` this process has ever DROPPED from the
+#: memo -- the install time to begin with, raised toward each session evicted by the
+#: :data:`_MAX_TRACKED_SESSIONS` cap. A session counts as NEW (or as resumed in this
+#: process) only when that timestamp is strictly greater than this, which is what stops
+#: an evicted session from being re-counted when it is seen again: both of its
+#: timestamps are at most this high after it was evicted, so its re-sight baselines
+#: instead of counting. Strictly ``>`` rather
 #: than ``>=`` for exactly that boundary -- a session whose ``opened_ts`` equals the
 #: evicted maximum must read as NOT new, so the eviction of a session never lets an
 #: equal-timestamped re-sight of it count twice. The cost is the fail-safe direction: a
@@ -461,17 +470,17 @@ _install_ms: "int | None" = None
 _evicted_max_opened_ts: "int | None" = None
 
 
-def _opened_in_this_process(opened_ts: Any) -> bool:
-    """Whether *opened_ts* marks a session this process should count as NEW: opened
-    strictly after the newest opening this process has already dropped (install time, or
-    the latest evicted session). ``False`` when the value is missing or not yet anchored
-    -- never guess a session is new, since that is the direction that double-counts.
+def _opened_in_this_process(ts: Any) -> bool:
+    """Whether *ts* (an opening's or a resume's entry time) is strictly after the anchor:
+    install time, raised by each evicted row's opening or resume. ``False`` when the
+    value is missing or not yet anchored -- never guess a session is new, since that is
+    the direction that double-counts.
     """
-    if not isinstance(opened_ts, int) or isinstance(opened_ts, bool) or opened_ts <= 0:
+    if not isinstance(ts, int) or isinstance(ts, bool) or ts <= 0:
         return False
     with _memo_lock:
         anchor = _evicted_max_opened_ts
-    return anchor is not None and opened_ts > anchor
+    return anchor is not None and ts > anchor
 
 
 def _seen(fold_name: str, session_key: str) -> bool:
@@ -489,8 +498,9 @@ def _remember_value(fold_name: str, session_key: str, value: Mapping[str, Any]) 
     """Record *value* as the last one exported for *(fold_name, session_key)*.
 
     On eviction (the memo passing :data:`_MAX_TRACKED_SESSIONS`) the dropped session's
-    ``opened_ts`` raises :data:`_evicted_max_opened_ts`, so a later re-sight of that
-    session reads as not-new and baselines instead of re-counting.
+    ``opened_ts`` and ``resumed_ts`` raise :data:`_evicted_max_opened_ts`, so a later
+    re-sight of that session reads as neither new nor resumed here and baselines
+    instead of re-counting.
     """
     global _evicted_max_opened_ts
     key = (fold_name, session_key)
@@ -499,14 +509,14 @@ def _remember_value(fold_name: str, session_key: str, value: Mapping[str, Any]) 
         _last_values.move_to_end(key)
         while len(_last_values) > _MAX_TRACKED_SESSIONS:
             _, dropped = _last_values.popitem(last=False)
-            dropped_ts = dropped.get("opened_ts")
-            if (
-                isinstance(dropped_ts, int)
-                and not isinstance(dropped_ts, bool)
-                and _evicted_max_opened_ts is not None
-                and dropped_ts > _evicted_max_opened_ts
-            ):
-                _evicted_max_opened_ts = dropped_ts
+            for dropped_ts in (dropped.get("opened_ts"), dropped.get("resumed_ts")):
+                if (
+                    isinstance(dropped_ts, int)
+                    and not isinstance(dropped_ts, bool)
+                    and _evicted_max_opened_ts is not None
+                    and dropped_ts > _evicted_max_opened_ts
+                ):
+                    _evicted_max_opened_ts = dropped_ts
 
 
 def _record_metrics(metrics: "list[Metric]") -> None:
@@ -590,11 +600,12 @@ def _on_fold_advanced_inner(event: Any) -> bool:
     # sight the ``diff`` asks :func:`_opened_in_this_process`: a session whose
     # ``opened_ts`` is strictly newer than :data:`_evicted_max_opened_ts` (install
     # time, raised by each eviction) is provably new, and its WHOLE render is counted
-    # against zero -- session.started plus every turn already in it. Any other session
-    # (resumed, or opened no later than an evicted one) is baselined: its cumulative
-    # render becomes the floor and nothing is emitted, because diffing it against the
-    # empty memo would re-add totals a previous process, or this one before the
-    # eviction, already exported. No persistence, no I/O on this bus-callback thread.
+    # against zero -- session.started plus every turn already in it. A session resumed
+    # in this process diffs against the fold's resume floor. Any other session
+    # (resumed before install, or opened no later than an evicted one) is baselined: its
+    # cumulative render becomes the floor and nothing is emitted, because diffing it
+    # against the empty memo would re-add totals a previous process, or this one before
+    # the eviction, already exported. No persistence, no I/O on this bus-callback thread.
     previous: "Mapping[str, Any] | None"
     if _seen(fold_name, key):
         previous = _last_value(fold_name, key)

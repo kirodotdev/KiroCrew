@@ -1,7 +1,7 @@
 /**
  * SpriteImporter — Import a sprite sheet and assign rows to pet states/moods.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { FolderOpen, Plus} from 'lucide-react'
 import { REQUIRED_STATES, ALL_MOODS, OPTIONAL_STATES, type PackMeta } from '../shared/appearanceTypes'
 import { SpriteRenderer } from './SpriteRenderer'
@@ -108,6 +108,9 @@ export const SpriteImporter: React.FC<Props> = ({
   const [flipX, setFlipX] = useState(false)
   const [offsetY, setOffsetY] = useState(0)
   const [rows, setRows] = useState<RowPreview[]>([])
+  // One prefix per importer, suffixed per slot below, so each card's row picker
+  // is named by its own caption and two open importers never share an id.
+  const slotIdBase = useId()
   // True when a picked sheet matched the petdex.dev grid and the mapping was
   // pre-filled from that convention. Surfaced in the UI: dropdowns that fill
   // themselves with no explanation read as a bug.
@@ -340,9 +343,9 @@ export const SpriteImporter: React.FC<Props> = ({
           {row ? <SpriteRenderer src={row.dataUri} frameWidth={frameW} frameHeight={frameH} fps={fps} displaySize={64} /> : <span style={{ fontSize: 24, color: 'var(--text-faint)' }}><Plus size={14} /></span>}
         </div>
         {required
-          ? <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{label} *</span>
-          : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>}
-        <select value={rowIdx ?? ''} onChange={e => setAssignments(prev => ({ ...prev, [slot]: e.target.value === '' ? null : Number(e.target.value) }))} style={{ ...S.select, width: '100%', fontSize: 10 }}>
+          ? <label htmlFor={`${slotIdBase}-${slot}`} style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{label} *</label>
+          : <label htmlFor={`${slotIdBase}-${slot}`} style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</label>}
+        <select id={`${slotIdBase}-${slot}`} value={rowIdx ?? ''} onChange={e => setAssignments(prev => ({ ...prev, [slot]: e.target.value === '' ? null : Number(e.target.value) }))} style={{ ...S.select, width: '100%', fontSize: 10 }}>
           <option value="">—</option>
           {rows.map(r => <option key={r.index} value={r.index}>{i18nT('apps.mochi.sprite.row_n', { n: r.index + 1 })}</option>)}
         </select>

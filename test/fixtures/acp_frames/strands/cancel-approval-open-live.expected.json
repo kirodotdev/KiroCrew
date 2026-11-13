@@ -1,0 +1,80 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "strands-session-2"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "block",
+        "tool_call_id": "tooluse_k4_block",
+        "tool_kind": "other",
+        "wire_title": "block"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "title": "block",
+        "tool_call_id": "v1:before_tool_call:tooluse_k4_block:strands-interrupt-1"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "cancelled"
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "content_types=<['text']> | must resume from interrupt with list of interruptResponse's"
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 4
+  }
+]

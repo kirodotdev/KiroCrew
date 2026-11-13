@@ -19,25 +19,17 @@ from kiro_crew import cli_doctor
 class TestEffectiveModelSection:
     """`kirocrew doctor`'s Model section.
 
-    The four-tier model precedence is not visible from any single file, so a
-    stale spec pin that outlived the setting which created it is otherwise only
-    diagnosable by hand-reading config.json, two agent-spec directories and the
-    sidecar. This section names the winning tier and, when a pin is deciding,
-    the exact command that clears it.
+    The section names the winning tier of the four-tier model precedence and, when a
+    stale spec pin decides, the command that clears it.
 
-    ISOLATION: the section reads the directory the RESOLVER reads, and that
-    resolver is ``kiro_home()``, which the suite's autouse fixtures deliberately
-    do NOT pin (see the note in the rootdir conftest) -- it resolves the real
-    machine-wide ``~/.kiro``. So every test here sets ``KIRO_HOME`` itself, and
-    ``_agents_dir`` asserts the resolved path really is under tmp before writing
-    a byte. Without that guard these tests overwrite the operator's live agent
-    spec.
+    ISOLATION: ``kiro_home()`` is NOT pinned by the autouse fixtures, so every test sets
+    ``KIRO_HOME`` and ``_agents_dir`` asserts the path is under tmp before writing;
+    without that these tests overwrite the operator's live agent spec.
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the Model section's autouse KIRO_HOME pin, moved verbatim; no test in test_cli_doctor_config_sections.py calls monkeypatch.undo()
-    def _isolate_kiro_home(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
+    def _isolate_kiro_home(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
         self._tmp = tmp_path
 
     def _agents_dir(self) -> Path:
@@ -437,13 +429,9 @@ class TestEffectiveModelSection:
         assert "not a valid agent name" in out
 
     def test_a_control_bearing_project_filename_is_escaped(self, monkeypatch, capsys) -> None:
-        """A cloned repository can TRACK a filename containing control bytes, so
-        the path itself is untrusted input on this line.
+        """A cloned repository can track a filename with control bytes, so it is untrusted.
 
-        The hostile path is INJECTED rather than created: control bytes are
-        illegal in a Windows filename, so building it on disk would make this
-        assertion Windows-only-skipped, and what is under test is that the
-        printer escapes what it is handed.
+        The path is injected, not created: control bytes are illegal in Windows filenames.
         """
         hostile = Path("/tmp/proj/.kiro/agents/kirocrew\x1b[2J.json")
         self._install_spec(None)
@@ -531,11 +519,8 @@ class TestEffectiveModelSection:
 class TestWhatsAppSection:
     """`kirocrew doctor`'s WhatsApp Integration section.
 
-    WhatsApp is the only channel whose whole runtime hangs off an OPTIONAL wheel
-    plus a locally stored credential, and neither absence produces an error the
-    operator sees: a message simply never arrives. So the section has to answer
-    both, and it has to answer them WITHOUT loading the Go core: a preflight that
-    initializes the subsystem it is inspecting is both slow and a side effect.
+    A missing optional wheel or stored credential fails silently (messages never
+    arrive), so the section reports both WITHOUT loading the Go core.
     """
 
     def _cfg(self, *, enabled: bool = True, groups: list | None = None):
@@ -711,12 +696,9 @@ class TestWhatsAppSection:
 class TestProjectSectionAndAuthRow:
     """`kirocrew doctor` Project labels + the local-bind auth row.
 
-    The Project row resolves the Kiro Crew SOURCE CHECKOUT (``cli.py``
-    ``_PROJECT_MARKERS``), never the user's own workspace, so its labels must
-    say so. The Configuration auth row must not advertise a loopback
-    exemption: the dashboard middleware requires a valid token on every
-    request (``token_auth.py``), and local CLI/MCP callers authenticate with
-    the local secret instead.
+    The Project row resolves the Kiro Crew SOURCE CHECKOUT, not the user's workspace.
+    The auth row must not claim a loopback exemption: every dashboard request needs a
+    token (``token_auth.py``).
     """
 
     def _run_doctor(self, tmp_path: Path, monkeypatch, capsys, *, project_dir: str) -> str:
@@ -734,7 +716,7 @@ class TestProjectSectionAndAuthRow:
             return cfg
 
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
-        monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
+        monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self, **kw: {})
 
         async def _probe(server):
             server.status = "ok"
@@ -852,7 +834,7 @@ class TestNameGrantPlatformScopeRow:
         from kiro_crew import name_grant
 
         profile = tmp_path / "Microsoft.PowerShell_profile.ps1"
-        profile.write_text("function ls { evil }\n")
+        profile.write_text("function ls { evil }\n", encoding="utf-8")
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(
             name_grant.platform_compat, "windows_powershell_profile_paths", lambda: (str(profile),)
@@ -933,3 +915,98 @@ class TestNameGrantPlatformScopeRow:
 
         params = inspect.signature(cli_doctor._doctor_name_grant_platform_scope).parameters
         assert not params
+
+
+class TestChannelSdkRows:
+    """A channel whose gateway needs an optional SDK is not reported fine without
+    it, and no install command is printed where pip cannot install."""
+
+    @staticmethod
+    def _rows(monkeypatch, *names: str) -> None:
+        from kiro_crew import channels as channels_mod
+
+        rows = [channels_mod.ChannelReadiness(n, True, ()) for n in names]
+        monkeypatch.setattr(channels_mod, "channel_readiness", lambda cfg, creds: rows)
+
+    @staticmethod
+    def _sdks(monkeypatch, present: bool) -> None:
+        """Make PyJWT and lark-oapi look present or absent to the shared probe."""
+        import importlib.util
+
+        real = importlib.util.find_spec
+
+        def _find_spec(name, *args, **kwargs):
+            if name in ("jwt", "lark_oapi"):
+                return object() if present else None
+            return real(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
+
+    @pytest.mark.parametrize("pip_ok", [True, False])
+    def test_a_ready_channel_without_its_sdk_is_an_issue(self, monkeypatch, capsys, pip_ok):
+        from kiro_crew.doctor_checks import channels as doctor_channels
+
+        self._rows(monkeypatch, "teams", "feishu", "telegram")
+        self._sdks(monkeypatch, False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.messaging._pip_install_channel_available",
+            lambda: pip_ok,
+        )
+        issues: list[str] = []
+
+        doctor_channels._doctor_other_channels(MagicMock(), {}, issues)
+
+        out = capsys.readouterr().out
+        assert f"{'teams:':12} ❌ enabled, but PyJWT is not installed" in out
+        assert f"{'feishu:':12} ❌ enabled, but lark-oapi is not installed" in out
+        # Telegram needs no optional SDK, so its config-only answer stands.
+        assert f"{'telegram:':12} ✅ enabled, credentials present" in out
+        assert issues == ["teams: PyJWT not installed", "feishu: lark-oapi not installed"]
+        assert ("-m pip install" in out) is pip_ok
+        if not pip_ok:
+            assert "pip install" not in out
+            assert "Settings > Messaging Channels" in out
+
+    def test_a_ready_channel_with_its_sdk_stays_clean(self, monkeypatch, capsys):
+        from kiro_crew.doctor_checks import channels as doctor_channels
+
+        self._rows(monkeypatch, "teams", "feishu")
+        self._sdks(monkeypatch, True)
+        issues: list[str] = []
+
+        doctor_channels._doctor_other_channels(MagicMock(), {}, issues)
+
+        out = capsys.readouterr().out
+        assert f"{'teams:':12} ✅ enabled, credentials present" in out
+        assert f"{'feishu:':12} ✅ enabled, credentials present" in out
+        assert issues == []
+
+    def test_whatsapp_prints_no_pip_where_pip_cannot_install(self, tmp_path, monkeypatch, capsys):
+        from kiro_crew.config import KiroCrewConfig
+
+        monkeypatch.setattr(cli_doctor, "data_home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.whatsapp.client.neonize_available", lambda: False)
+        monkeypatch.setattr(cli_doctor, "pip_install_channel_available", lambda: False)
+        cfg = KiroCrewConfig()
+        cfg.whatsapp.enabled = True
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(cfg, issues)
+
+        out = capsys.readouterr().out
+        assert "neonize not installed" in out
+        assert "pip install" not in out
+        assert "whatsapp extra missing" in issues
+
+    def test_the_sdk_probe_does_not_import_the_sdk(self, monkeypatch):
+        """The doctor's rows use this shared probe; it must stay a find_spec."""
+        import sys
+
+        from kiro_crew.dashboard.handlers.messaging import _channel_sdk_status
+
+        monkeypatch.delitem(sys.modules, "jwt", raising=False)
+        monkeypatch.delitem(sys.modules, "lark_oapi", raising=False)
+        _channel_sdk_status("teams")
+        _channel_sdk_status("feishu")
+        assert "jwt" not in sys.modules
+        assert "lark_oapi" not in sys.modules

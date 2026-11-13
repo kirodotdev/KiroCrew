@@ -216,24 +216,19 @@ def test_a_same_name_folder_the_caller_cannot_see_is_refused_not_forked() -> Non
     assert all(b.get("dry_run") for b in gw.create_posts), "no session may be created"
 
 
-def test_file_self_into_an_invisible_same_name_folder_is_refused() -> None:
-    """``chat_folder_file_self`` shares the walk, so it shares the refusal."""
-    gw = _Gateway([_OPS], visible=lambda f: f["id"] != _OPS["id"])
-    out = gw.run("chat_folder_file_self", {"folder": "Ops"})
-    assert out.startswith("Error:")
-    assert "no duplicate was created" in out
-    assert len(gw.named("Ops")) == 1
-
-
-# ── Gateway: the folder endpoint ─────────────────────────────────────────────
-
-
 def _folder_state(folders: list[dict[str, Any]]) -> DashboardState:
     state = MagicMock(spec=DashboardState)
     state._folders = folders
     slot = _ChatSlot("chat-1-100")
     state._slots = {slot.key: slot}
     state.push_slots_update = MagicMock()
+    # An unlinked session: the channel-reachability check fails closed on a store
+    # that cannot answer, so the double answers "no binding".
+    state.get_slot = state._slots.get
+    state.sessions = MagicMock(
+        get_mirror_link=MagicMock(return_value=None),
+        get_slack_link=MagicMock(return_value=(None, None)),
+    )
     state.conversation_log = None
 
     async def _mutate(fn: Any, on_committed: Any = None) -> Any:
@@ -560,6 +555,61 @@ def test_the_walk_takes_a_reused_folder_as_found_not_created() -> None:
     )
     assert "created folder path" not in out
     assert posts[-1].body["folder_id"] == winner["id"]
+
+
+def test_folder_create_reports_a_reused_folder_as_reused_not_created() -> None:
+    """The leaf create reads the endpoint's 200 reuse the way the walk does."""
+    winner = {"id": "0000000000b9", "name": "Work", "parent_id": ""}
+
+    def _post(req: DashboardRequest) -> dict:
+        return {**winner, "reused": True}
+
+    gw = _Gateway([_OPS, winner])
+    out = _call(
+        "chat_folder_create",
+        {"name": "Work"},
+        {"GET /api/{route}": lambda req: gw.get(req.path), "POST /api/{route}": _post},
+    )
+    assert not out.startswith("Created"), out
+    assert "already exists" in out and winner["id"] in out
+
+
+def test_a_reused_folder_is_named_as_the_endpoint_returns_it() -> None:
+    """A folder renamed between the read and the create is reported by the name
+    the endpoint returned, not the stale name the earlier read held."""
+    stale = {"id": "0000000000b9", "name": "Old", "parent_id": ""}
+
+    def _post(req: DashboardRequest) -> dict:
+        return {**stale, "name": "Work", "reused": True}
+
+    gw = _Gateway([_OPS, stale])
+    out = _call(
+        "chat_folder_create",
+        {"name": "Work"},
+        {"GET /api/{route}": lambda req: gw.get(req.path), "POST /api/{route}": _post},
+    )
+    assert "`Work` already exists" in out, out
+    assert "`Old`" not in out, out
+
+
+def test_a_parent_the_walk_reuses_is_named_as_the_endpoint_returns_it() -> None:
+    """The path walk's reuse also takes the returned row over the stale read,
+    so the leaf's reported path names the parent as it now is."""
+    stale_parent = {"id": "0000000000c1", "name": "Old", "parent_id": ""}
+    leaf = {"id": "0000000000c2", "name": "Leaf", "parent_id": stale_parent["id"]}
+
+    def _post(req: DashboardRequest) -> dict:
+        if req.body.get("name") == "Proj":
+            return {**stale_parent, "name": "Proj", "reused": True}
+        return dict(leaf)
+
+    gw = _Gateway([_OPS, stale_parent])
+    out = _call(
+        "chat_folder_create",
+        {"name": "Leaf", "parent": "Proj"},
+        {"GET /api/{route}": lambda req: gw.get(req.path), "POST /api/{route}": _post},
+    )
+    assert "Created folder `Proj/Leaf`" in out, out
 
 
 # ── The preview misses nothing the real create refuses ───────────────────────

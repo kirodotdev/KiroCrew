@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import reducer, {
   sseStatus,
   setYoloDuration,
@@ -22,7 +22,8 @@ import reducer, {
 } from '../store/dashboardSlice'
 import type { StatusData, ChatSlot } from '../types'
 import { sharedItem } from './unreadStorageTestUtils'
-import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread } from '../store/dashboard/unread'
+import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread, relayedUnreadKeys } from '../store/dashboard/unread'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => ({
   api: { chatSlots: vi.fn(), chatMode: vi.fn() },
@@ -44,11 +45,11 @@ describe('dashboardSlice', () => {
   })
 
   describe('sseStatus', () => {
-    it('sets status and connected', () => {
+    it('sets status and leaves connected to the socket', () => {
       const status = { uptime: '1h', sessions: 2, messages: 10, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
       const state = reducer(initial, sseStatus(status))
       expect(state.status).toEqual(status)
-      expect(state.connected).toBe(true)
+      expect(state.connected).toBe(false)
     })
 
     it('syncs yolo mode from backend', () => {
@@ -226,6 +227,13 @@ describe('dashboardSlice', () => {
   })
 
   describe('unread drain hold (partial slot list)', () => {
+    // The embedded relay posts only to a hub referrer; jsdom has none.
+    beforeEach(() => {
+      Object.defineProperty(document, 'referrer', { value: 'http://127.0.0.1:8899/', configurable: true })
+    })
+    afterEach(() => {
+      Object.defineProperty(document, 'referrer', { value: '', configurable: true })
+    })
     // A gateway mid-restart labels its slots frames `slotsPartial` while
     // sessions are still being restored. A session not yet restored is absent
     // from such a list without having been deleted, so the drain that clears a
@@ -752,6 +760,24 @@ describe('dashboardSlice', () => {
       expect(selectUnreadByMode('')(state)).toBe(2)
     })
 
+    it('leaves a Crew Mode crew member out of the badge and the relayed count, keeping its unread entry', () => {
+      // A crew member is no row of the person's lists (its root's Crew panel
+      // lists it), so its finished turn must not count an unread session the
+      // Sessions list never shows. The entry stays for the Crew panel.
+      const root: ChatSlot = { key: 'root', title: 'R', messages: 1, running: false, mode: '', crew_mode_root: true }
+      const member: ChatSlot = { key: 'w1', title: 'W', messages: 1, running: false, mode: '', crew_root: 'root' }
+      const plain: ChatSlot = { key: 'chat-1', title: 'C', messages: 1, running: false, mode: '' }
+      const state = buildState([root, member, plain], ['w1', 'chat-1'])
+      expect(selectUnreadByMode('')(state)).toBe(1)
+      expect(relayedUnreadKeys(state.dashboard)).toEqual(['chat-1'])
+      expect(state.dashboard.unreadSlots).toEqual(['w1', 'chat-1'])
+      // Its root closed, the crew member is a row of the list again, so it counts.
+      const orphan: ChatSlot = { key: 'w2', title: 'W2', messages: 1, running: false, mode: '', crew_root: 'gone-root' }
+      const closed = buildState([plain, orphan], ['w2', 'chat-1'])
+      expect(selectUnreadByMode('')(closed)).toBe(2)
+      expect(relayedUnreadKeys(closed.dashboard)).toEqual(['w2', 'chat-1'])
+    })
+
     it('keeps an unheld orphan in the chat badge but leaves a held orphan out', () => {
       // An unheld orphan is about to be drained by the next reconcile, so it
       // keeps counting. A held one (a tab the restore could not reopen) is never
@@ -1030,3 +1056,6 @@ describe('dashboardSlice per-slot unread teardown', () => {
     expect(next.unreadSlots).toEqual(['chat-1'])
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

@@ -141,7 +141,9 @@ class TestExportOn:
 
     def test_redaction_leaves_the_source_spec_untouched(self, home, tmp_path):
         portability.create_export_zip(include_agent_templates=True)
-        source = json.loads((tmp_path / "kiro_agents" / "researcher.json").read_text())
+        source = json.loads(
+            (tmp_path / "kiro_agents" / "researcher.json").read_text(encoding="utf-8")
+        )
         assert source["mcpServers"]["search"]["env"] == {"SEARCH_TOKEN": FAKE_ENV_VALUE}
 
     def test_linked_spec_is_not_carried(self, home, tmp_path):

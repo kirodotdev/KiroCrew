@@ -83,7 +83,7 @@ const status = {
 
 /** The pinned state: an administrator's policy has pinned tailnet access off,
  *  so the card can only ever tell the operator to go ask someone. That is the
- *  dead end an enterprise edition wants gone from its Overview. */
+ *  dead end an LTS edition wants gone from its Overview. */
 const tailnetPinned = {
   step: 'pinned',
   host: '', origin: '',

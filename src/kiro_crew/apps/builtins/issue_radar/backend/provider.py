@@ -354,6 +354,15 @@ class ProviderClient(Protocol):
         self, owner: str, repo: str, number: int, body: str, **kwargs: object
     ) -> dict: ...
 
+    # The timeline composer. ``target`` is ``"issue"`` or ``"pull"`` for the same
+    # independent-numbering reason as the two functions above; each item's
+    # ``thread_id`` is the reply handle the timeline reader put on a comment. See
+    # ``comment_batch``.
+    def post_comment_batch(
+        self, owner: str, repo: str, number: int, target: str, items: list[dict],
+        **kwargs: object
+    ) -> dict: ...
+
     # Merging comes in two forms and NEITHER can bypass a gate: the provider
     # adjudicates branch protection / approval rules on both endpoints. See
     # github_client.merge_pull_request.

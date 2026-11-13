@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from named_cases_helpers import named_cases
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 from source_providers_helpers import _ISSUE_URL, _app
@@ -413,6 +413,7 @@ async def test_fetch_github_issue_normalizes_the_contract_payload(monkeypatch) -
         "comments",
         "linkedChanges",
         "partialSections",
+        "failedSections",
     }
     # Identity is the validated ref, never the provider echo.
     assert data["url"] == "https://github.com/acme/repo/issues/12"
@@ -477,6 +478,7 @@ async def test_fetch_github_issue_degrades_failed_sections(monkeypatch) -> None:
     assert data["comments"] == []
     assert data["linkedChanges"] == []
     assert data["partialSections"] == ["comments", "linked changes"]
+    assert data["failedSections"] == ["comments", "linked changes"]
     # The provider's own count survives a failed comment page.
     assert data["commentCount"] == 4
 

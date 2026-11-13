@@ -38,7 +38,7 @@ type OneShotAction = 'approve' | 'reject' | 'reject_once'
  * The ONE mapping from a UI decision token onto the one-shot approval endpoint.
  *
  * `POST /api/approvals/{id}/{action}` honors exactly `approve`, `reject` and
- * `reject_once` (`dashboard/handlers/sessions.py`), and records NO standing
+ * `reject_once` (`dashboard/handlers/sessions_parts/live_turn.py`), and records NO standing
  * grant — the next identical call prompts again. A trust verb (`trust`,
  * `trust_reads`, `trust_command`, `trust_base`) therefore has no representation
  * here at all, and belongs on a grant-recording endpoint instead
@@ -54,14 +54,14 @@ type OneShotAction = 'approve' | 'reject' | 'reject_once'
  * anywhere a fourth author would have to read. This is that place.
  *
  * WHY A SHARED MAPPING AND NOT A LOCAL TERNARY: the backend rejects a trust
- * verb SENT to the one-shot endpoint with a 400, and `api.resolveApproval` is
+ * verb SENT to the one-shot endpoint with a 400, and `api.decideApproval` is
  * typed to the three honored actions — but neither check can fire, because a
  * local `action === 'rejected' ? 'reject' : 'approve'` converts the verb into
  * `approve` BEFORE the call is made. By then the evidence that standing trust
  * was requested is destroyed, so no runtime guard downstream can recover it.
  * The mapping is the only layer that still sees the verb as itself, so it has
  * to be single. `eslint-rules/approval-one-shot-decision.js` enforces that every
- * `resolveApproval` argument comes from here rather than from a fresh ternary.
+ * `decideApproval` argument comes from here rather than from a fresh ternary.
  */
 export function toApiDecision(decision: string): OneShotAction {
   if (decision === 'approved') return 'approve'

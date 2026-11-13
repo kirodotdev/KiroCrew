@@ -40,6 +40,21 @@ class TestShippedInventory:
             if r["runnable"] in ("native-only", "needs-secret", "excluded"):
                 assert r["priority"] == "P3", r["id"]
 
+    def test_incognito_row_says_history_keeps_the_session(self) -> None:
+        # History and its search list incognito and temporary sessions like any
+        # other (the docs/decisions/ record "Incognito and Temporary chats keep
+        # their transcript in History"); the modes withhold only what is
+        # derived from the chat. A scenario written from this row must assert the listing, not
+        # an exclusion the product does not make.
+        rows = {r["id"]: r for r in fc.validate(fc.load())}
+        row = rows["chat-incognito-badge-and-history-exclusion"]
+        claims = " ".join((row["title"], row["user_story"], row["rationale"])).lower()
+        assert "still listed in history and search" in row["title"].lower()
+        assert "history still lists them" in row["user_story"].lower()
+        assert "excluded from history" not in claims
+        assert "out of history" not in claims
+        assert "history/search exclusion" not in claims
+
     def test_seeds_are_shipped_fixtures(self) -> None:
         fixtures = {
             p.name

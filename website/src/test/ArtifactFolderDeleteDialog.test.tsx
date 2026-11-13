@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
 import type { ArtifactFolder } from '../types'
 
@@ -26,21 +26,27 @@ describe('ArtifactFolderDeleteDialog', () => {
     expect(screen.getByText(/1 subfolder\b/)).toBeInTheDocument()
   })
 
-  it('confirms the destructive cascade with deleteContents=true', () => {
+  it('confirms the destructive cascade with deleteContents=true', async () => {
     const onConfirm = vi.fn()
     render(
       <ArtifactFolderDeleteDialog folder={folders[0]} folders={folders} onConfirm={onConfirm} onClose={() => {}} />,
     )
-    fireEvent.click(screen.getByText('Delete folder and all contents'))
+    const button = screen.getByText('Delete folder and all contents')
+    await act(async () => {
+      fireEvent.click(button)
+    })
     expect(onConfirm).toHaveBeenCalledWith(true)
   })
 
-  it('confirms the safe path with deleteContents=false', () => {
+  it('confirms the safe path with deleteContents=false', async () => {
     const onConfirm = vi.fn()
     render(
       <ArtifactFolderDeleteDialog folder={folders[0]} folders={folders} onConfirm={onConfirm} onClose={() => {}} />,
     )
-    fireEvent.click(screen.getByText('Delete folder only, keep artifacts'))
+    const button = screen.getByText('Delete folder only, keep artifacts')
+    await act(async () => {
+      fireEvent.click(button)
+    })
     expect(onConfirm).toHaveBeenCalledWith(false)
   })
 

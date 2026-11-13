@@ -184,9 +184,8 @@ async function main() {
       slots,
       theme,
       extra: extraFor(monitor),
-      localStorageEntries: { 'mc-lang': 'en' },
+      localStorageEntries: { 'mc-lang': 'en', 'mc-active-slot': SLOT },
     })
-    await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
 

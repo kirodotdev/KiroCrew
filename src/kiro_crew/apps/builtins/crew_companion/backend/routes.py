@@ -206,6 +206,21 @@ def _text_error(text: Any) -> web.Response | None:
     return None
 
 
+def _schedule_error(fire_at: Any, every: Any) -> web.Response | None:
+    if not isinstance(fire_at, str) or not fire_at.strip():
+        return _bad_request("fireAt is required", "fire_at_required")
+    # A bounded range by comparison alone, never `math.isfinite` (it raises on a
+    # 400-digit int): comparisons are total over every JSON number, `inf` and NaN
+    # fail them, and the cap keeps `timedelta(minutes=...)` from overflowing.
+    if every is not None and not (
+        isinstance(every, (int, float))
+        and not isinstance(every, bool)
+        and 0 < every <= _MAX_RECURRENCE_MINUTES
+    ):
+        return _bad_request("everyMinutes must be a positive number", "invalid_recurrence")
+    return None
+
+
 async def _handle_add(request: web.Request) -> web.StreamResponse:
     """Store an already-resolved reminder.
 
@@ -220,29 +235,15 @@ async def _handle_add(request: web.Request) -> web.StreamResponse:
 
     text = body.get("text")
     fire_at = body.get("fireAt")
+    every = body.get("everyMinutes")
     if (bad := _text_error(text)) is not None:
         return bad
-    if not isinstance(fire_at, str) or not fire_at.strip():
-        return _bad_request("fireAt is required", "fire_at_required")
-
-    every = body.get("everyMinutes")
-    # A bounded RANGE check, not `isfinite` + `> 0`: `math.isfinite` itself
-    # raises OverflowError on an int too large for a float (a 400-digit
-    # integer), so the previous guard moved the crash instead of removing
-    # it. Pure comparisons are total for every JSON number — an arbitrary-
-    # precision int compares exactly, `inf` fails the upper bound, and NaN
-    # fails both — and the cap also keeps `timedelta(minutes=...)` in the
-    # recurrence scheduler from overflowing downstream.
-    if every is not None and not (
-        isinstance(every, (int, float))
-        and not isinstance(every, bool)
-        and 0 < every <= _MAX_RECURRENCE_MINUTES
-    ):
-        return _bad_request("everyMinutes must be a positive number", "invalid_recurrence")
+    if (bad := _schedule_error(fire_at, every)) is not None:
+        return bad
 
     try:
         result = await asyncio.to_thread(
-            store.add, str(text), fire_at, int(every) if every else None
+            store.add, str(text), str(fire_at), int(every) if every else None
         )
     except ValueError as exc:
         return _bad_request(str(exc), "invalid_reminder")
@@ -268,6 +269,27 @@ async def _handle_update(request: web.Request) -> web.StreamResponse:
     if (bad := _text_error(text)) is not None:
         return bad
     result = await asyncio.to_thread(store.update, ident, str(text))
+    if not result["ok"]:
+        return web.json_response({"error": "not found", "code": "reminder_not_found"}, status=404)
+    return web.json_response(result)
+
+
+async def _handle_reschedule(request: web.Request) -> web.StreamResponse:
+    """Set an existing reminder's schedule by hand; ``everyMinutes: null`` is one-time."""
+    store = get_store()
+    assert store is not None
+    body = await _body(request)
+    ident, fire_at, every = body.get("id"), body.get("fireAt"), body.get("everyMinutes")
+    if not isinstance(ident, str) or not ident:
+        return _bad_request("id is required", "id_required")
+    if (bad := _schedule_error(fire_at, every)) is not None:
+        return bad
+    try:
+        result = await asyncio.to_thread(
+            store.reschedule, ident, str(fire_at), int(every) if every else None
+        )
+    except ValueError as exc:
+        return _bad_request(str(exc), "invalid_reminder")
     if not result["ok"]:
         return web.json_response({"error": "not found", "code": "reminder_not_found"}, status=404)
     return web.json_response(result)
@@ -441,6 +463,10 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post(f"{_BASE}/reminders/skip", _owner_write("reminders_skip", _handle_skip))
     app.router.add_post(
         f"{_BASE}/reminders/update", _owner_write("reminders_update", _handle_update)
+    )
+    app.router.add_post(
+        f"{_BASE}/reminders/reschedule",
+        _owner_write("reminders_reschedule", _handle_reschedule),
     )
     app.router.add_post(
         f"{_BASE}/reminders/config", _owner_write("reminders_config", _handle_config)

@@ -9,15 +9,18 @@ write surface (store, MCP tools) validates it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from kiro_crew import cron as cron_facade
 from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule, CronService
+from kiro_crew.cron_service.execution import close_run
 from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_MAX,
     _NEVER_PAUSE_BACKOFF_BASE_SECS,
@@ -438,6 +441,138 @@ class TestStore:
         records = {r["id"]: r for r in (data["jobs"] if isinstance(data, dict) else data)}
         assert "auto_pause_after_failures" not in records[plain.id]
         assert records[custom.id]["auto_pause_after_failures"] == 0
+
+
+class TestLimitSavedWhileARunIsInFlight:
+    """The failure a run records is checked against the limit the store holds when it lands."""
+
+    @pytest.fixture()
+    def pause_rows(self, monkeypatch) -> list[str]:
+        rows: list[str] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kw: object) -> None:
+                if kw.get("tool_kind") == "cron_auto_pause":
+                    rows.append(str(kw["outcome"]))
+
+        monkeypatch.setattr(cron_facade.sel, "sel", lambda: _Sel())
+        return rows
+
+    @staticmethod
+    def _land_third_failure(
+        tmp_path: Path, *, run_limit: int, saved_limit: int, saved_by_another_process: bool
+    ) -> CronJob:
+        """Run a job to its 3rd failure while the limit moves; return the job as stored."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(
+            name="flaky", message="m", every_secs=60, auto_pause_after_failures=run_limit
+        )
+        # The run's start, as _run_job_isolated and _execute_with_timeout leave it.
+        job.consecutive_failures, job.auto_paused_at_start, job.failure_recorded = 2, False, False
+        if saved_by_another_process:
+            # This process reads the new limit only when the result merge reloads.
+            other = CronService(base_dir=tmp_path)
+            other._load()
+            other.update_job(job.id, auto_pause_after_failures=saved_limit)
+            job.last_status = "error"
+            job.record_failure()
+        else:
+            # Saved here while the failure alert goes out, after the run counted it.
+            job.last_status = "error"
+            job.record_failure()
+            svc.update_job(job.id, auto_pause_after_failures=saved_limit)
+        terminal, _, _ = close_run(job, started_at=1_000.0, generation=1, being_cancelled=False)
+        svc._hold_run_record(job, terminal)
+        svc._merge_job_result(terminal)
+        stored = CronService(base_dir=tmp_path)
+        stored._load()
+        landed = stored.get_job(job.id)
+        assert landed is not None and landed.consecutive_failures == 3
+        return landed
+
+    @pytest.mark.parametrize("saved_by_another_process", [True, False])
+    def test_a_limit_lowered_mid_run_pauses_at_its_end(
+        self, tmp_path: Path, pause_rows: list[str], saved_by_another_process: bool
+    ) -> None:
+        landed = self._land_third_failure(
+            tmp_path,
+            run_limit=10,
+            saved_limit=3,
+            saved_by_another_process=saved_by_another_process,
+        )
+        assert landed.auto_paused is True and landed.enabled is False
+        assert pause_rows == ["auto_paused"]
+
+    @pytest.mark.parametrize("saved_limit", [10, 0])
+    @pytest.mark.parametrize("saved_by_another_process", [True, False])
+    def test_a_limit_raised_mid_run_keeps_the_job_running(
+        self,
+        tmp_path: Path,
+        pause_rows: list[str],
+        saved_limit: int,
+        saved_by_another_process: bool,
+    ) -> None:
+        landed = self._land_third_failure(
+            tmp_path,
+            run_limit=3,
+            saved_limit=saved_limit,
+            saved_by_another_process=saved_by_another_process,
+        )
+        assert landed.auto_paused is False and landed.enabled is True
+        # The run paused its own copy at the old limit; the landing lifts it, once.
+        assert pause_rows == ["auto_paused", "auto_pause_cleared"]
+
+    def test_a_limit_raised_with_a_new_interval_keeps_the_job_running(
+        self, tmp_path: Path, pause_rows: list[str]
+    ) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="m", every_secs=60, auto_pause_after_failures=3)
+        job.consecutive_failures, job.auto_paused_at_start, job.failure_recorded = 2, False, False
+        job.last_status = "error"
+        job.record_failure()
+        # A save while the failure alert goes out stores the run's paused copy.
+        svc._save()
+        other = CronService(base_dir=tmp_path)
+        other._load()
+        other.update_job(job.id, every_secs=120, auto_pause_after_failures=10)
+        terminal, _, _ = close_run(job, started_at=1_000.0, generation=1, being_cancelled=False)
+        svc._hold_run_record(job, terminal)
+        svc._merge_job_result(terminal)
+        # The copy this process's timer scans, which the merge does not reload.
+        landed = svc.get_job(job.id)
+        assert landed is not None and landed.consecutive_failures == 3
+        assert landed.auto_paused is False and landed.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_a_run_stopped_in_its_jitter_wait_does_not_reuse_the_last_failure(
+        self, tmp_path: Path, pause_rows: list[str]
+    ) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="m", every_secs=3600, auto_pause_after_failures=10)
+        # The previous run's third failure, still marked on the cached job.
+        job.consecutive_failures, job.auto_paused_at_start, job.failure_recorded = 2, False, False
+        job.last_status = "error"
+        job.record_failure()
+        svc._save()
+        svc.update_job(job.id, auto_pause_after_failures=3)
+        claim = svc._claim_run(job.id, "scheduled")
+
+        async def _stopped_in_jitter(_seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(svc, "_compute_jitter", return_value=42.0),
+            patch.object(cron_facade, "_sleep_out_jitter", _stopped_in_jitter),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await svc._run_job_isolated(job, claim)
+        landed = svc.get_job(job.id)
+        assert landed is not None and landed.consecutive_failures == 3
+        assert landed.auto_paused is False and landed.enabled is True
+        assert pause_rows == []
 
 
 class TestMcpTools:

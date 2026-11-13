@@ -196,7 +196,15 @@ export function createCloudEndpoints({ get, post, del, j }: ClientTransport) {
       const s = p.toString()
       return get('/api/cloud/preflight' + (s ? '?' + s : '')).then(j) as Promise<CloudPreflight>
     },
-    cloudIamPolicy: () => get('/api/cloud/iam-policy').then(j) as Promise<{ policy: string }>,
+    // `host_policies` is a second launcher policy, present only when the edition
+    // attaches host policies to each instance role; `host_policies_notice` says how
+    // to apply it, `host_policies_error` why it could not be built.
+    cloudIamPolicy: () => get('/api/cloud/iam-policy').then(j) as Promise<{
+      policy: string
+      host_policies?: string
+      host_policies_notice?: string
+      host_policies_error?: string
+    }>,
     // Which provisioners this gateway offers. Answers on every platform (a Windows
     // host still lists the POSIX-only built-in, and refuses the launch itself), so
     // the setup tab can pick a form before it knows whether a launch would be

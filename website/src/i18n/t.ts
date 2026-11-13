@@ -38,10 +38,13 @@ import { i18next } from './index'
  * key itself only if English lacks it too.
  *
  * @param key   dotted catalog path, e.g. `pages.settings.displayPanel.view`
- * @param vars  interpolation values for `{{placeholders}}` in the string
+ * @param vars  interpolation values for `{{placeholders}}` in the string. Each
+ *              text value is displayed exactly as given and i18next never
+ *              parses it (see `showValuesLiterally` in `./index`).
  */
 export function i18nT(key: string, vars?: Record<string, unknown>): string {
-  if (vars !== undefined || !i18next.isInitialized) return i18next.t(key, vars ?? {}) as string
+  if (vars !== undefined) return i18next.t(key, vars) as string
+  if (!i18next.isInitialized) return i18next.t(key, {}) as string
   if (watchedStore !== i18next.store) watchStore()
   if (cachedLanguage !== i18next.language) {
     plainCache.clear()

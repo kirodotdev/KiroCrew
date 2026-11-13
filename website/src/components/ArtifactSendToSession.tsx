@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { selectPersonSlots } from '../store/dashboardSlice'
 import { Forward, Plus } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector } from '../store'
-import { selectSlotsWithLiveLastTs } from '../store/slotLastTs'
 import { createSlot } from '../store/chatSlice'
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from './ui/dropdown-menu'
 import { prepareCurrentSlots, isEmptyNewSlot } from './commandPalette/providers/recentsProvider'
@@ -49,9 +49,9 @@ export function useArtifactSendToSession({ name, slug, active, onSend, beforeSen
   onError: (message: string | null) => void
 }) {
   const dispatch = useAppDispatch()
-  // Live message recency: prepareCurrentSlots orders by last_ts, which the
-  // row does not carry while a turn streams (see store/slotLastTs).
-  const slots = useAppSelector(selectSlotsWithLiveLastTs)
+  // The person's list: a Crew Mode root's workers are its side panel's to show.
+  // Its rows carry live message recency, which prepareCurrentSlots orders by.
+  const slots = useAppSelector(selectPersonSlots)
   const [creating, setCreating] = useState(false)
   const liveRef = useRef(active)
   liveRef.current = active

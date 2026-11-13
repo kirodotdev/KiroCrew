@@ -317,8 +317,8 @@ def _advance_history_marker_now(self: HistoryConsolidator, key: str, span: Attem
     A NON-FINAL sub-slice (its prompt advanced the sub-offset but did not reach
     the end of the head, so ``prompted`` is still at ``offset``) advances the
     durable sub-offset; every other span advances ``last_consolidated`` to
-    ``prompted`` and clears the sub-offset. Unfenced: callers hold
-    :meth:`_lease_fence`.
+    ``prompted`` and clears the sub-offset. Unfenced: callers check
+    the lease at the commit (see :meth:`_advance_history_marker_fenced`).
 
     Blocking file IO — call it off the event loop.
     """
@@ -333,11 +333,27 @@ def _advance_history_marker_now(self: HistoryConsolidator, key: str, span: Attem
 def _advance_history_marker_fenced(
     self: HistoryConsolidator, key: str, span: AttemptedSpan, lease: str | None
 ) -> None:
-    """:meth:`_advance_history_marker_now` under the lease fence.
+    """:meth:`_advance_history_marker_now`, committed only while *lease* is ours.
+
+    The marker writers stage and sync the whole transcript before taking the
+    transcript lock, so this does not hold :meth:`_lease_fence` around them: that
+    would make every appender of the session wait on the flush. The lease is
+    checked under the lock that commits the rename instead, so a pass that lost
+    its lease while staging writes nothing. ``lease`` ``None`` is not fenced.
 
     Blocking file IO — call it off the event loop.
     """
-    with self._lease_fence(key, lease):
+    if lease is None:
+        self._advance_history_marker_now(key, span)
+        return
+    # Lazy, as _lease_fence imports the facade: history_rewrite reaches it.
+    from kiro_crew.history_rewrite import commit_check
+
+    def validate() -> None:
+        if not self._lease_is_current(key, lease):
+            raise _LeaseLostMidRun(key)
+
+    with commit_check(validate):
         self._advance_history_marker_now(key, span)
 
 
@@ -349,7 +365,18 @@ def _mark_consolidated_fenced(
     For the marker writes that do not come from an :class:`AttemptedSpan` (an
     empty span, a replayed member receipt, a retired head).
 
+    Checked on *lease* at the commit, as in :meth:`_advance_history_marker_fenced`.
+
     Blocking file IO — call it off the event loop.
     """
-    with self._lease_fence(key, lease):
+    if lease is None:
+        self._log.mark_consolidated(key, offset, generation)
+        return
+    from kiro_crew.history_rewrite import commit_check
+
+    def validate() -> None:
+        if not self._lease_is_current(key, lease):
+            raise _LeaseLostMidRun(key)
+
+    with commit_check(validate):
         self._log.mark_consolidated(key, offset, generation)

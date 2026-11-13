@@ -1,29 +1,13 @@
 """What a whole dashboard turn does, in order, for each canonical script.
 
-Each test drives ``chat_runner._run_chat`` end to end through
-``turn_harness.run_turn`` and reads only the :class:`~turn_harness.TurnRecord` and
-what the turn's collaborators saw while it ran, never the runner's source, so a
-change that keeps the turn's behaviour keeps them green and a reordering a reader
-of the turn could notice turns them red.
+Each test drives ``chat_runner._run_chat`` through ``turn_harness.run_turn`` and reads only
+the :class:`~turn_harness.TurnRecord` and what collaborators saw, never the runner's source.
+Frames, crew-log entries and session calls are compared as ordered subsequences, so an
+added frame in between changes nothing a client orders by. The cycle ends with one idle
+``slots`` push, then exactly one ``chat_done``.
 
-What is pinned per canonical turn (landed text; a tool call approved; a prompt
-nobody answers; an empty reply that requeues; a chunk then an error; a refused
-session; a local slash command; a warm second turn):
-
-* the order of the frames a client renders the turn from, as an ordered
-  subsequence (a frame added between two of them changes nothing a client
-  orders by);
-* the persisted rows, the provider calls, the hand-offs and the stop reason;
-* the crew-log entries and the session-manager calls as ordered subsequences,
-  with exactly one turn closer and it last, and ``release`` last of the
-  session calls;
-* the end of the cycle: one ``slots`` push reporting the slot idle, then exactly
-  one ``chat_done``, with no content frame after it, by which point the turn has
-  handed back its lock, its identity and its in-flight marker.
-
-Status frames (``activity_event``, ``chat_status``, ``context_usage``,
-``refresh``) and the wall-clock ``heartbeat`` are never recorded: they carry no
-order contract, and ids, timestamps and durations are never compared.
+Status frames (``activity_event``, ``chat_status``, ``context_usage``, ``refresh``) and
+``heartbeat`` carry no order contract and are not recorded.
 """
 
 from __future__ import annotations
@@ -37,11 +21,13 @@ from typing import Any
 import pytest
 from turn_harness import (
     APPROVED,
+    Do,
     Raise,
     ScriptedProvider,
     TurnContext,
     TurnRecord,
     TurnScript,
+    Wait,
     run_turn,
 )
 
@@ -103,12 +89,8 @@ class _SecondSessionProvider(ScriptedProvider):
 class _Journal:
     """One ordered log across the collaborators a turn talks to while it runs.
 
-    The record keeps each collaborator's calls in its own list; this keeps them
-    in ONE list, so an order between a session call, a content frame and a
-    ``slots`` push can be asserted. Each entry also notes the slot's dispatch
-    lock, its active session key and its in-flight marker at that moment. Only
-    content frames are logged: status frames and the wall-clock heartbeat carry
-    no order.
+    ONE list lets an order across session calls, content frames and ``slots`` pushes be
+    asserted. Each entry notes the slot's lock, session key and in-flight marker.
     """
 
     def __init__(self) -> None:
@@ -274,6 +256,23 @@ class TestCanonicalTurnSequence:
         assert record.stop_reason == STOP_REASON_END_TURN
         _assert_cycle_ends_once(record, journal)
 
+    @pytest.mark.parametrize(
+        ("script", "counted"),
+        [
+            (TurnScript(events=[_REPLY, _DONE]), 1),
+            (TurnScript(allocation_error=RuntimeError("spawn refused")), 0),
+            (TurnScript(message="/goal ship the release"), 0),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_turn_sequence_counts_only_a_turn_that_started(
+        self, script: TurnScript, counted: int
+    ) -> None:
+        # Resume all reads this count to tell whether a turn ran since it looked.
+        seen: list[Any] = []
+        await _run(dataclasses.replace(script, setup=lambda ctx: seen.append(ctx.slot)))
+        assert seen[0]._turns_started == counted
+
     @pytest.mark.asyncio
     async def test_turn_sequence_tool_call_approved_then_result_then_text(self) -> None:
         record, journal = await _run(
@@ -388,6 +387,39 @@ class TestCanonicalTurnSequence:
         assert journal.index("session", "release") < journal.index("frame", "queue_pop")
         [popped] = journal.named("frame", "queue_pop")
         assert (popped["active_key"], popped["marker"], popped["lock_held"]) == ("", 0, False)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("left", "cancelled"),
+        [("queued", False), ("queued", True), ("steer", False)],
+        ids=["queued-finished", "queued-cancelled", "unconsumed-steer"],
+    )
+    async def test_turn_sequence_work_left_mid_turn_starts_once_the_turn_ends(
+        self, left: str, cancelled: bool
+    ) -> None:
+        # Finished or cancelled, the turn's end dispatches what it leaves behind: a
+        # queued message, or a steer the backend never consumed. So a teardown that
+        # must not relaunch clears both before it cancels.
+        def _leave(ctx: TurnContext) -> None:
+            if left == "steer":
+                ctx.slot._pending_steers.append("second")
+            else:
+                ctx.slot.queue_append("second", directive_user_origin=True)
+
+        def _cancel(ctx: TurnContext) -> None:
+            ctx.slot.task.cancel()
+
+        end = [Do(_cancel), Wait(1), _DONE] if cancelled else [_DONE]
+        record, journal = await _run(
+            TurnScript(events=[Do(_leave), Wait(5), _REPLY, *end], message="first")
+        )
+
+        [successor] = record.successors
+        assert successor.args[0] == "second"
+        # Not when it was queued, at virtual 0, but once the turn had ended.
+        assert successor.at == 5.0
+        assert [call.args for call in record.calls("stream")] == [("first",)]
+        assert journal.index("session", "release") < journal.index("frame", "queue_pop")
 
     @pytest.mark.asyncio
     async def test_turn_sequence_chunk_then_error_keeps_the_text_above_the_card(self) -> None:

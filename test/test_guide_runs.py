@@ -376,3 +376,88 @@ def test_a_cancel_reason_outside_the_allowlist_is_refused(rig):
         )
     assert exc.value.code == "invalid_reason"
     assert _cancel(store, g)["reason"] == "cancelled_by_user"
+
+
+# ── a reloaded tab: take over, keep why the step is missing, cancel ──
+
+
+def _missing_ambiguous(store, guide):
+    return progress(store, claim(store, guide), outcome="target_missing", detail="ambiguous")
+
+
+def test_a_takeover_at_the_revision_read_before_the_old_lease_lapsed_succeeds(rig):
+    """A reloaded tab reads the guide while the old tab's lease still holds; the
+    lease lapses before Take over is pressed. The lapse is the gateway's own
+    move, so the claim at the read revision is not stale (#H2 b)."""
+    store, guide, now = rig
+    owned = claim(store, guide)
+    (read,) = store.pending()
+    assert read["owner_tab"] == "tab-one"
+    now[0] = owned["lease_expires_at"] + 1
+    taken = claim(store, read, "tab-two", take_over=True)
+    assert taken["owner_tab"] == "tab-two"
+    # Only a claim is forgiven: the lapsed tab's own progress is still stale.
+    with pytest.raises(GuideError) as exc:
+        progress(store, owned)
+    assert exc.value.code == "stale_revision"
+
+
+def test_a_claim_at_a_pre_lapse_revision_is_stale_once_anything_else_moved(rig):
+    store, guide, now = rig
+    owned = claim(store, guide)
+    now[0] = owned["lease_expires_at"] + 1
+    (lapsed,) = store.pending()
+    claim(store, lapsed, "tab-two")
+    with pytest.raises(GuideError) as exc:
+        claim(store, owned, "tab-three", take_over=True)
+    assert exc.value.code == "stale_revision"
+
+
+def test_a_lapse_and_a_takeover_keep_why_the_step_is_missing(rig):
+    """A missing step's reason describes the step, not its owner: a tab that
+    takes it over draws "pick one", never "the guide stopped" (#H2 c)."""
+    store, guide, now = rig
+    missing = _missing_ambiguous(store, guide)
+    assert missing["reason"] == "ambiguous_target"
+    now[0] = missing["lease_expires_at"] + 1
+    (lapsed,) = store.pending()
+    assert (lapsed["status"], lapsed["owner_tab"], lapsed["reason"]) == (
+        "target_missing",
+        None,
+        "ambiguous_target",
+    )
+    taken = claim(store, missing, "tab-two", take_over=True)
+    assert (taken["status"], taken["reason"]) == ("target_missing", "ambiguous_target")
+    # An active guide's claim still clears an old reason.
+    found = progress(store, taken, outcome="target_found")
+    assert claim(store, found, "tab-three", take_over=True)["reason"] == ""
+
+
+def test_cancel_works_from_any_tab_at_any_revision_and_again_after_it_ended(rig):
+    """Cancel is the person's word: a reloaded tab (not the owner, holding an
+    older revision) ends the guide, and a second press answers as it stands
+    (#H2 d)."""
+    store, guide, _ = rig
+    owned = progress(store, claim(store, guide))
+    ended = store.cancel_by_tab(guide_id=guide["guide_id"], tab_id="tab-two", revision=1)
+    assert (ended["status"], ended["reason"]) == ("cancelled", "cancelled_by_user")
+    again = store.cancel_by_tab(guide_id=guide["guide_id"], tab_id="tab-two", revision=1)
+    assert again == ended
+    assert owned["revision"] < ended["revision"]
+    with pytest.raises(GuideError) as exc:
+        store.cancel_by_tab(guide_id=guide["guide_id"], tab_id="tab-two", revision=0)
+    assert exc.value.code == "invalid_revision"
+
+
+def test_the_saved_without_guide_close_keeps_its_compare_and_set(rig):
+    store, guide, _ = rig
+    owned = claim(store, guide)
+    for tab, rev, code in (("tab-one", 1, "stale_revision"), ("tab-two", None, "not_owner_tab")):
+        with pytest.raises(GuideError) as exc:
+            store.cancel_by_tab(
+                guide_id=guide["guide_id"],
+                tab_id=tab,
+                revision=owned["revision"] if rev is None else rev,
+                reason="saved_without_guide",
+            )
+        assert exc.value.code == code

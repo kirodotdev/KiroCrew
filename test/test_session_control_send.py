@@ -1,14 +1,7 @@
 """Tests for ``send_to_target``: one session delivering a message to another.
 
-Covers the provenance tag on the delivered prompt and the quoting of a forged
-provenance line in the body, the ``sanitize_outbound`` pass, the raw-body length
-and empty-message gates, and the refusal of an out-of-bounds or remote-bound
-target. An idle target starts a turn and a busy one queues the message.
-
-The ``steer=True`` arm cuts into a running turn, falls back to the queue without
-delivering twice, and re-gates after the steer RPC. Also pinned: the admission
-baseline a requeued steer carries, which steers keep the LINKED exemption, and
-the turn stop and cross-surface reply fence for a mirror linked mid-RPC.
+Covers provenance, the outbound guard, the input gates and target refusals, and the
+``steer=True`` arm: no double delivery, the post-RPC re-gate and the reply fence.
 """
 
 from __future__ import annotations
@@ -148,13 +141,8 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
 def test_the_sent_body_passes_through_the_outbound_guard(tmp_path, monkeypatch):
     """The message goes through `sanitize_outbound` before it is persisted.
 
-    It arrives from ANOTHER session's model, is appended to the target's
-    transcript as a user row and broadcast to every dashboard client, so this is
-    the same surface the steer path sanitizes before `slot.append`
-    (`chat_delivery`: "raw content must never reach an external surface"). A
-    credential-shaped string would otherwise be stored and displayed.
-
-    Mutation guard: dropping the `sanitize_outbound` call leaves the raw value.
+    It comes from another session's model and is broadcast to every dashboard client,
+    so a credential-shaped string would otherwise be stored and displayed.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -243,11 +231,8 @@ def test_send_to_a_busy_target_queues_instead_of_racing(tmp_path):
 async def test_steer_cuts_into_the_running_turn_instead_of_queueing(tmp_path):
     """`steer=True` on a busy target delivers NOW, and delivers exactly once.
 
-    The real ``steer_into_running_turn`` runs here against a steer-capable client,
-    because the whole value of the arm is that the target reads the text during
-    the turn — a stubbed helper would assert the wiring and prove nothing about
-    the delivery. The queue must stay EMPTY: a steered message that is also queued
-    runs twice.
+    The real ``steer_into_running_turn`` runs, since a stub proves nothing about
+    delivery. The queue must stay EMPTY: a steered message also queued runs twice.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -303,11 +288,8 @@ async def test_a_steer_the_client_cannot_take_falls_back_to_the_queue(tmp_path):
 async def test_a_steer_requeued_by_the_teardown_is_not_queued_a_second_time(tmp_path):
     """The turn ended during the steer RPC and its teardown requeued the text.
 
-    It WILL run, so taking the queue arm as well would deliver it twice. The
-    requeue is reproduced the way ``_requeue_unconsumed_steers`` does it: the
-    pending entry becomes a queue entry carrying the steer's delivery id.
-
-    Mutation guard: treating REQUEUED like UNAVAILABLE leaves two entries.
+    It WILL run, so taking the queue arm as well would deliver it twice. The requeue
+    mimics ``_requeue_unconsumed_steers``: a queue entry with the steer's delivery id.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -346,13 +328,8 @@ async def test_a_steer_requeued_by_the_teardown_is_not_queued_a_second_time(tmp_
 async def test_the_queue_fallback_re_runs_the_gate_after_the_steer_rpc(tmp_path):
     """The steer RPC is a suspension, so the gate that admitted the send is stale.
 
-    The queue arm stamps the containment holding at APPEND time for the drain to
-    re-assert. If the target gains a channel link while the RPC is in flight, an
-    unchecked fallback would record that link as "held at admission" and the drain
-    would then read a widened audience as the authorized one. So the fallback
-    re-authorizes and the send is refused instead.
-
-    Mutation guard: drop the re-gate and this queues the message.
+    A channel link gained during the RPC would be stamped as "held at admission", and
+    the drain would accept the widened audience. So the fallback re-authorizes.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -386,13 +363,8 @@ async def test_the_queue_fallback_re_runs_the_gate_after_the_steer_rpc(tmp_path)
 async def test_a_same_key_replacement_during_the_rpc_is_refused(tmp_path):
     """The re-gate compares slot IDENTITY, not its key string.
 
-    A target closed and resumed during the steer RPC comes back as a FRESH slot
-    object under the same name. Delivery below uses the object this call captured,
-    so a key-string comparison passes while the message lands on the replaced
-    object -- gone from the live session, with `ok: True` reported to the caller.
-
-    Mutation guard: compare `regated.key != slot.key` instead of identity and this
-    queues the message onto the detached slot.
+    A target resumed during the RPC is a FRESH slot under the same key, so a key
+    comparison would deliver onto the detached object and report `ok: True`.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -429,18 +401,10 @@ async def test_a_same_key_replacement_during_the_rpc_is_refused(tmp_path):
 async def test_a_mirror_linked_during_the_rpc_stops_the_steered_turn(tmp_path, monkeypatch):
     """A successful steer whose audience changed under it does not get to keep going.
 
-    `STEER_STEERED` means kiro-cli acknowledged consumption, so the text cannot be
-    recalled and the fallback arm's refusal is unavailable. What is still
-    preventable is the turn's REMAINING output: `_deliver_cross_surface_reply`
-    resolves the mirror live at reply-delivery time, so a mirror linked while the
-    RPC was suspended would receive a reply shaped by a peer's text that
-    `authorize_target` would have refused outright.
-
-    Success semantics are kept deliberately -- the delivery did happen, and
-    reporting `ok: False` would invite a retry that double-sends -- so the stop is
-    recorded in the audit trail instead.
-
-    Mutation guard: drop the post-RPC comparison and the turn runs on.
+    `STEER_STEERED` means the text was consumed and cannot be recalled, but the turn's
+    remaining output would reach a mirror linked mid-RPC, so the turn is stopped.
+    The result stays `ok: True` (`ok: False` would invite a double-sending retry); the
+    stop is recorded in the audit trail.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -528,14 +492,8 @@ async def test_an_unchanged_audience_leaves_the_steered_turn_alone(tmp_path, mon
 async def test_a_peer_steer_does_not_inherit_the_composers_linked_exemption(tmp_path):
     """A requeued peer steer is plain queued speech, not the session owner's.
 
-    `directive_user_origin` exempts a queue entry from the drain's LINKED drop
-    because "the author typed into the session's own surface". That is the composer;
-    a `session_send` steer has no such author. The slot cannot tell the two callers
-    apart, so the requeue reads the provenance the caller recorded instead of
-    deriving it.
-
-    Mutation guard: restore `directive_user_origin=not bool(slot._app)` and the
-    entry comes back exempt.
+    `directive_user_origin` exempts the composer's text from the drain's LINKED drop.
+    The slot cannot tell the callers apart, so the requeue reads recorded provenance.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -595,14 +553,8 @@ async def test_a_composer_steer_keeps_its_linked_exemption(tmp_path):
 async def test_a_requeued_steer_keeps_the_admission_the_gate_cleared(tmp_path):
     """The requeued entry is stamped with the SEND's containment, not the teardown's.
 
-    The requeue runs in the turn's teardown, past the steer RPC's suspension. Reading
-    the slot there folds a mirror linked during that suspension into the entry's
-    admission baseline, after which `newly_held_constraints` sees nothing new and the
-    drain forwards the output to an audience `authorize_target` refuses outright. The
-    stamp has to come from the moment the gate cleared the send.
-
-    Mutation guard: stamp `containment_meta(state, slot)` at the requeue and the
-    drain reads the widened audience as admitted, so the entry survives.
+    Reading the slot at teardown would fold a mirror linked mid-RPC into the baseline,
+    so `newly_held_constraints` sees nothing new and the drain forwards the output.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -666,18 +618,81 @@ async def test_the_send_records_its_admission_before_the_rpc_suspends(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_a_steered_peer_text_the_turn_never_echoes_requeues_with_its_admission(tmp_path):
+    """The RPC accepted the steer, then the turn ended before `steering_consumed`.
+
+    Accepting the write is not consumption: the teardown requeues the text, so
+    `_steer_admissions` must keep the admission until then.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    text = "accepted but never echoed"
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(return_value=True)
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message=text,
+        steer=True,
+    )
+    assert out["steered"] is True
+    (pending,) = target._pending_steers
+    assert sc.QUEUED_CONTAINMENT_META_KEY in target._steer_admissions[pending]
+
+    # The turn ends with no echo.
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if q["content"] == pending)
+    assert sc.QUEUED_CONTAINMENT_META_KEY in entry["meta"]
+    assert entry.get("_directive_user_origin") is not True, "a peer's text is not the human's"
+    assert target._steer_admissions == {}, "the requeue copies and releases it"
+    assert target._steer_user_origin == {} and target._steer_channel_origin == {}
+
+
+@pytest.mark.asyncio
+async def test_a_consumed_steer_releases_its_held_admission(tmp_path):
+    """The other exit: the echo settles the steer, so nothing requeues it and the
+    held admission must not outlive it."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(return_value=True)
+    target._acp_client = client
+
+    await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="consumed by the turn",
+        steer=True,
+    )
+    (pending,) = target._pending_steers
+    assert pending in target._steer_admissions
+
+    cr._settle_consumed_steers(target, f"<user_message>\n{pending}\n</user_message>", state)
+
+    assert target._pending_steers == []
+    assert target._steer_admissions == {}
+    assert target._steer_user_origin == {} and target._steer_channel_origin == {}
+    cr._requeue_unconsumed_steers(state, target)
+    assert not [q for q in target._queue if q["content"] == pending]
+
+
+@pytest.mark.asyncio
 async def test_a_requeued_steer_with_no_recorded_admission_carries_no_baseline(tmp_path):
     """No stamp means no containment key, not a slot read at teardown.
 
-    The requeue has exactly ONE source for the baseline. Reading the slot as a
-    fallback would reintroduce the hole for whichever caller omitted the stamp, and
-    the LINKED exemption would not cover it: a new outbound mirror is never exempt,
-    because the author does not control mirror links. An entry with no key lands on
-    the drain's documented fail-closed floor instead, checked against every
-    currently held constraint.
-
-    Mutation guard: restore `else containment_meta(state, slot)` and the entry comes
-    back stamped with the widened audience.
+    A slot-read fallback would stamp the widened audience. An entry with no key hits
+    the drain's fail-closed floor: checked against every currently held constraint.
     """
     state = _make_state(tmp_path)
     slot = _busy(state.get_or_create_slot("chat-1"))
@@ -701,15 +716,8 @@ async def test_a_requeued_steer_with_no_recorded_admission_carries_no_baseline(t
 async def test_a_changed_audience_withholds_the_cross_surface_reply(tmp_path, monkeypatch):
     """The stop cannot outrun the turn, so the fence is what actually holds.
 
-    `_deliver_cross_surface_reply` runs from the turn's own completion path and
-    resolves the mirror live, so a turn that finishes while this send is suspended on
-    `stdin.drain()` would publish to the new audience before any post-RPC check
-    resumes -- and a sent reply cannot be recalled. The token is therefore added
-    BEFORE the RPC and kept when a constraint newly holds, so the turn withholds its
-    cross-surface leg regardless of who wins the race.
-
-    Mutation guard: drop the pre-RPC `add`, or discard on the changed path, and the
-    fence is empty here.
+    A turn finishing during `stdin.drain()` would publish before any post-RPC check,
+    so the token is added BEFORE the RPC and kept when a constraint newly holds.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -756,8 +764,6 @@ async def test_an_unchanged_audience_still_gets_its_cross_surface_reply(tmp_path
 
     Without this the safe direction would be indistinguishable from "any peer steer
     silences the target's channel audience for that turn".
-
-    Mutation guard: stop discarding the token on the unchanged path and this fails.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -790,11 +796,8 @@ async def test_an_unchanged_audience_still_gets_its_cross_surface_reply(tmp_path
 async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
     """The predicate the turn's cross-surface leg is gated on, and the gate itself.
 
-    Two halves, because either alone can be green while the feature is broken: the
-    decision must be right, and the call site must actually ask it. The source check
-    is a ratchet rather than a behavioural assertion -- `_run_chat` is not unit
-    -testable at this seam -- and it pins the one line that makes the fence load
-    -bearing.
+    Either half alone can pass while the feature is broken. The source check is a
+    ratchet because `_run_chat` is not unit-testable at this seam.
     """
     state = _make_state(tmp_path)
     slot = _busy(_peer_target(state, "chat-2", _slot(state, "chat-1")))
@@ -890,11 +893,7 @@ async def test_steer_on_an_idle_target_just_starts_the_turn(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_busy_target_still_queues_when_steer_is_not_asked_for(tmp_path):
-    """The default is unchanged: no `steer`, no injection, even with a live client.
-
-    Mutation guard: defaulting the flag on turns every existing caller's send into
-    a mid-turn interruption.
-    """
+    """The default is unchanged: no `steer`, no injection, even with a live client."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _busy(_peer_target(state, "chat-2", caller))
@@ -911,13 +910,10 @@ async def test_a_busy_target_still_queues_when_steer_is_not_asked_for(tmp_path):
 
 
 def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monkeypatch):
-    """A crew-bound target executes on the peer; session_send must not run its
-    turn on THIS machine.
+    """A crew-bound target runs on the peer, so session_send refuses it with a 409.
 
-    ``send_to_target`` hands ``_run_chat`` to ``enqueue_or_run_prompt``, which has
-    no remote/executor branch — so a bound target would run the crew's work here
-    and diverge the local and peer transcripts. It is refused with a
-    409 before any dispatch, and nothing is queued.
+    ``enqueue_or_run_prompt`` has no remote branch, so running it here would diverge
+    the local and peer transcripts. Nothing is queued.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -1013,3 +1009,342 @@ async def test_a_send_names_its_peer_origin_to_the_session_entry_point(tmp_path,
     assert out["steered"] is False and out["started"] is False
     assert calls == [("peer", True, False), ("peer", False, True)]
     assert any("route me" in q.get("content", "") for q in target._queue)
+
+
+# ── The gateway-set structured sender (meta.relay) on the delivered row ──
+#
+# The receiver's transcript draws the incoming session-message card from this
+# structured field, NOT by parsing the ``[sent by session …]`` prefix (which a
+# peer could type into its own composer). So every delivery arm must stamp it.
+
+
+def test_idle_delivery_stamps_meta_relay_on_the_user_row(tmp_path, monkeypatch):
+    """The idle-target run arm stamps ``meta.relay`` on the user row it appends."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    async def _fake_run_chat(_state, _slot, _prompt):
+        return None
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        out = await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="do the thing"
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return out
+
+    asyncio.run(_drive())
+
+    rows = [
+        m
+        for m in target.messages
+        if m.get("role") == "user" and m.get("content", "").endswith("do the thing")
+    ]
+    assert len(rows) == 1
+    relay = (rows[0].get("meta") or {}).get("relay")
+    assert relay, "the run-arm user row must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+    # The structured key names the SAME sender the provenance prefix does.
+    assert relay["senderKey"] in rows[0]["content"]
+    # And says where that prefix sits, so the bubble drops it by position.
+    ((start, end),) = relay["envelope"]
+    assert start == 0
+    assert rows[0]["content"][end:] == "do the thing"
+
+
+def test_busy_target_carries_meta_relay_on_the_queue_entry(tmp_path):
+    """A busy target queues; the entry carries ``meta.relay`` so the drain unions
+    it onto the row it later appends."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="queued relay"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "queued relay" in q.get("content", ""))
+    relay = (entry.get("meta") or {}).get("relay")
+    assert relay, "the queued entry must carry meta.relay for the drain to union"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_steered_delivery_stamps_meta_relay_on_the_consumed_row(tmp_path):
+    """A steer into a running target stamps ``meta.relay`` on the consumed-steer
+    row, so the steered bubble also draws the incoming card."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="steered relay",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    rows = [m for m in target.messages if "steered relay" in m.get("content", "")]
+    assert len(rows) == 1
+    relay = (rows[0].get("meta") or {}).get("relay")
+    assert relay, "the consumed-steer row must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_steered_delivery_carries_meta_relay_on_the_live_steer_push(tmp_path):
+    """The live ``steer_push`` frame carries ``meta.relay``: an open tab draws the
+    steered row from that frame, so without it the row shows the raw provenance
+    prefix until a reload.
+
+    Mutation guard: drop the ``push_payload`` relay stamp and the frame has none.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+    frames: list[tuple[str, dict]] = []
+    real_broadcast = state.broadcast_ws
+
+    def _record(kind, payload, *args, **kwargs):
+        frames.append((kind, payload))
+        return real_broadcast(kind, payload, *args, **kwargs)
+
+    state.broadcast_ws = _record
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="live steered relay",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    pushes = [
+        payload
+        for kind, payload in frames
+        if kind == "steer_push" and "live steered relay" in payload["content"]
+    ]
+    assert len(pushes) == 1
+    relay = (pushes[0].get("meta") or {}).get("relay")
+    assert relay, "the live steer frame must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_peer_steer_keeps_meta_relay_on_its_queue_entry(tmp_path):
+    """A peer steer the turn never takes is requeued WITH ``meta.relay``, so the
+    row the drain later writes still draws the incoming card instead of a raw
+    ``[sent by session …]`` bubble.
+
+    Mutation guard: drop ``relay`` from the ``_steer_attachment_meta`` record and
+    the requeued entry has no sender.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="steered but never consumed",
+        steer=True,
+    )
+    assert out["steered"] is True
+    # The turn ends without the consumption echo: the teardown requeues the steer.
+    pending = [m for m in target._pending_steers if "steered but never consumed" in m]
+    assert len(pending) == 1, "an accepted steer stays pending until the turn consumes it"
+
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if "steered but never consumed" in q["content"])
+    relay = (entry.get("meta") or {}).get("relay")
+    assert relay, "the requeued entry must carry meta.relay for the drain to union"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+def test_editing_a_queued_peer_send_drops_its_sender(tmp_path):
+    """A queued peer send that someone edits loses ``meta.relay``: the new words
+    are the editor's, so the drained row must not draw as the peer's card.
+
+    Mutation guard: drop the ``relay`` pop in ``queue_edit_by_id`` and the edited
+    entry still names the peer.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="peer words"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "peer words" in q.get("content", ""))
+    assert (entry.get("meta") or {}).get("relay"), "precondition: the queued send names the peer"
+
+    assert target.queue_edit_by_id(entry["id"], "the recipient's own words") is True
+
+    edited = next(q for q in target._queue if q["id"] == entry["id"])
+    assert edited["content"] == "the recipient's own words"
+    assert "relay" not in (edited.get("meta") or {})
+
+
+def test_a_drained_peer_send_carries_meta_relay_on_its_queue_pop(tmp_path):
+    """A queued peer send reaches every open tab as the drain's ``queue_pop``:
+    the client rebuilds the user row from that frame alone, so the sender rides
+    it or the live row draws as a raw ``[sent by session …]`` bubble until a
+    reload.
+
+    Mutation guard: drop the ``relay`` copy into ``_pop_meta`` in
+    ``queue_drain`` and the pop names no sender.
+    """
+    from test_queue_drain_preserve_attachments import _drain_once
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="drained relay"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "drained relay" in q.get("content", ""))
+    stored = (entry.get("meta") or {}).get("relay")
+    assert stored, "precondition: the queued send names the peer"
+
+    target.task = None
+    state.subagents = None
+    state.broadcast_ws = MagicMock()
+    asyncio.run(_drain_once(state, target))
+
+    pops = [
+        c.args[1]
+        for c in state.broadcast_ws.call_args_list
+        if c.args and c.args[0] == "queue_pop" and c.args[1].get("queue_id") == entry["id"]
+    ]
+    assert pops, "the drain must broadcast the entry's queue_pop"
+    envelope = f"[sent by session {stored['senderKey']} via {stored['via']}]\n\n"
+    assert pops[-1].get("meta", {}).get("relay") == {
+        "senderKey": stored["senderKey"],
+        "via": stored["via"],
+        # Where the provenance line sits in the popped text, rebuilt for it.
+        "envelope": [[0, len(envelope)]],
+    }
+    assert pops[-1]["content"].startswith(envelope)
+
+
+def _merged_drain_row(tmp_path, monkeypatch, sends):
+    """Queue *sends* ``(caller, via)`` on a busy ``chat-2``, drain them merged,
+    and return the one user row the drain writes."""
+    from test_queue_drain_preserve_attachments import _drain_once
+
+    state = _make_state(tmp_path)
+    callers = {key: _slot(state, key) for key, _ in sends}
+    target = _busy(_peer_target(state, "chat-2", next(iter(callers.values()))))
+
+    async def _drive():
+        for n, (key, via) in enumerate(sends):
+            await sc.send_to_target(
+                state,
+                caller_session_key=_key(callers[key]),
+                target="chat-2",
+                message=f"merged part {n}",
+                via=via,
+            )
+
+    asyncio.run(_drive())
+    assert len([q for q in target._queue if "merged part" in q.get("content", "")]) == len(sends)
+
+    cfg = MagicMock()
+    cfg.load.return_value.dashboard.merge_queued_messages = True
+    monkeypatch.setattr(cr, "KiroCrewConfig", cfg)
+    target.task = None
+    state.subagents = None
+    state.broadcast_ws = MagicMock()
+    asyncio.run(_drain_once(state, target))
+    rows = [
+        m
+        for m in target.messages
+        if m.get("role") == "user" and "merged part" in m.get("content", "")
+    ]
+    assert rows and "queued messages merged" in rows[-1]["content"]
+    return rows[-1]
+
+
+def test_a_merged_drain_of_one_sender_keeps_its_sender_across_delivery_verbs(tmp_path, monkeypatch):
+    """One session's ``session_send`` and its ``session_broadcast`` merge into one
+    row: the sender is the same, so the row keeps ``relay`` although the two
+    records differ in their verb.
+
+    Mutation guard: compare the whole ``relay`` record in the drain's address
+    loop and the merged row loses its sender.
+    """
+    from kiro_crew.dashboard.session_control_parts.session_messaging import BROADCAST_VIA
+
+    row = _merged_drain_row(
+        tmp_path, monkeypatch, [("chat-1", "session_send"), ("chat-1", BROADCAST_VIA)]
+    )
+    relay = (row.get("meta") or {}).get("relay")
+    assert relay and relay["senderKey"] == "chat-1"
+    # One span per send, each covering exactly that send's provenance line.
+    content = row["content"]
+    assert [content[a:b] for a, b in relay["envelope"]] == [
+        "[sent by session chat-1 via session_send]\n\n",
+        f"[sent by session chat-1 via {BROADCAST_VIA}]\n\n",
+    ]
+    kept = content[: relay["envelope"][0][0]]
+    for (_, end), (start, _) in zip(relay["envelope"], relay["envelope"][1:] + [[len(content), 0]]):
+        kept += content[end:start]
+    assert kept == "[2 queued messages merged]\n\nmerged part 0\n\nmerged part 1"
+
+
+def test_a_merged_drain_of_two_senders_drops_the_sender(tmp_path, monkeypatch):
+    """Two sessions' queued sends merge into one row of both their words: no one
+    sender is true of it, so the row carries no ``relay``."""
+    row = _merged_drain_row(
+        tmp_path, monkeypatch, [("chat-1", "session_send"), ("chat-3", "session_send")]
+    )
+    assert "relay" not in (row.get("meta") or {})
+
+
+def test_a_queue_pop_carries_no_relay_for_an_entry_without_a_sender(tmp_path):
+    """Only a well-formed gateway stamp rides the pop: an entry with none, or one
+    whose stored value is not a sender record, pops without ``relay``."""
+    from test_queue_drain_preserve_attachments import _drain_once
+
+    state = _make_state(tmp_path)
+    target = _slot(state, "chat-2")
+    target.queue_append("plain words", meta={})
+    target.queue_append("odd words", meta={"relay": "not-a-record"})
+    state.subagents = None
+    state.broadcast_ws = MagicMock()
+    asyncio.run(_drain_once(state, target))
+
+    pops = [
+        c.args[1] for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "queue_pop"
+    ]
+    assert pops
+    assert all("relay" not in (p.get("meta") or {}) for p in pops)

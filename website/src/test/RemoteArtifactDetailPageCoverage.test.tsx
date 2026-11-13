@@ -424,7 +424,24 @@ describe('RemoteArtifactDetailPage', async () => {
       fireEvent.click(btn)
       expect(await screen.findByText('network down')).toBeInTheDocument()
       // `finally` clears the in-flight flag, so a retry is possible.
-      await waitFor(() => expect(screen.getByRole('button', { name: /Fork/ })).not.toBeDisabled())
+      await waitFor(() => expect(screen.getByRole('button', { name: /Fork/ })).not.toHaveAttribute('aria-disabled'))
+    })
+
+    it('keeps keyboard focus on Fork while it runs and ignores a second press', async () => {
+      let reject!: (e: Error) => void
+      vi.mocked(api).forkRemoteArtifact = vi.fn().mockReturnValue(new Promise((_, r) => { reject = r }))
+      renderPage()
+      const btn = await screen.findByRole('button', { name: /Fork/ })
+      btn.focus()
+      fireEvent.click(btn)
+      await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
+      expect(btn).not.toBeDisabled()
+      expect(document.activeElement).toBe(btn)
+      fireEvent.click(btn)
+      expect(vi.mocked(api).forkRemoteArtifact).toHaveBeenCalledTimes(1)
+      reject(new Error('network down'))
+      expect(await screen.findByText('network down')).toBeInTheDocument()
+      expect(document.activeElement).toBe(btn)
     })
   })
 
@@ -995,7 +1012,7 @@ describe('RemoteArtifactDetailPage', async () => {
 
     it('opens the composer for a selection made inside the iframe and posts the anchor', async () => {
       const frame = await renderHtmlPage()
-      postFromIframe(frame, {
+      act(() => postFromIframe(frame, {
         type: 'mc-comment-select',
         quote: 'widget body',
         prefix: 'before ',
@@ -1003,7 +1020,7 @@ describe('RemoteArtifactDetailPage', async () => {
         startOffset: 7,
         endOffset: 18,
         rect: { x: 20, y: 40 },
-      })
+      }))
       fireEvent.change(await screen.findByLabelText(COMPOSER_INPUT), { target: { value: 'from the frame' } })
       fireEvent.click(screen.getByRole('button', { name: 'Add comment' }))
       await waitFor(() => expect(vi.mocked(api).postRemoteArtifactComment).toHaveBeenCalled())
@@ -1022,7 +1039,7 @@ describe('RemoteArtifactDetailPage', async () => {
       vi.mocked(api).remoteArtifactComments = vi.fn().mockResolvedValue({ comments: [mkComment()] })
       const frame = await renderHtmlPage()
       await waitFor(() => expect(commentToggle()).toHaveAttribute('aria-pressed', 'true'))
-      postFromIframe(frame, { type: 'mc-comment-highlight-click', id: 'c1', rect: { x: 1, y: 2, w: 3, h: 4 } })
+      act(() => postFromIframe(frame, { type: 'mc-comment-highlight-click', id: 'c1', rect: { x: 1, y: 2, w: 3, h: 4 } }))
       // The clicked highlight flashes its sidebar row; the row itself stays put.
       expect(await screen.findByText('first review note')).toBeInTheDocument()
     })

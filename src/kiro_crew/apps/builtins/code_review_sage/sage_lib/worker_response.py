@@ -191,6 +191,22 @@ def _persist_worker_response(
             if key in record:
                 accepted_record[key] = record[key]
         record = accepted_record
+    # Response capabilities authorize review content, never delivery state.
+    # A worker-written posted_keys/post_ok could otherwise mark findings delivered
+    # that were never posted.
+    record = dict(record)
+    for key in (
+        "github_review_payload",
+        "pending_comments",
+        "posted_keys",
+        "posted_review_id",
+        "posted_comments",
+        "design_comment_posted",
+        "post_ok",
+        "post_error",
+        "post_partial",
+    ):
+        record.pop(key, None)
     try:
         results.write_result(record, root, run_id)
     except (OSError, ValueError, RecursionError) as exc:

@@ -267,9 +267,9 @@ class TestAgentTagPolicy:
                 return (sig[0] + 1,) + tuple(sig[1:]) if sig is not None else None
             return None
 
-        monkeypatch.setattr(chat_tag_grants, "_stat_signature", _stat)
-        chat_tag_grants.refresh_cache()
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(chat_tag_grants, "_stat_signature", _stat)
+            chat_tag_grants.refresh_cache()
         snap = chat_tag_grants.capture_grants_snapshot()
         # The stale healthy row is gone; the store reads as missing/unavailable.
         assert snap.has_row("planned") is False
@@ -425,17 +425,10 @@ _VOCAB = [
 
 @pytest.fixture(autouse=True)
 def _no_disk(monkeypatch, tmp_path):
-    """Neutralize the persist so the applier does no real slot IO, and isolate
-    the grants store under a per-test data home. The fake mirrors the real
-    return contract: True = committed write.
+    """Fake the persist (True = committed) and isolate the grants store per test.
 
-    The store isolation follows the skill-trust test pattern: ``config_dir()``
-    memoizes the resolved home in ``paths._resolved_home``, so the env var
-    alone is not enough — the memo (and the grants read cache) must be reset
-    on entry AND exit so no test leaks a resolved home or parsed store into
-    its neighbours. Grants for the shared ``_VOCAB`` are seeded through the
-    module's own TOFU path, so every applier test exercises the real
-    store-backed resolution.
+    ``config_dir()`` memoizes ``paths._resolved_home``, so the memo and the grants cache
+    are reset on entry AND exit, not just the env var.
     """
     home = tmp_path / "crew-home"
     home.mkdir()
@@ -464,11 +457,8 @@ def _no_disk(monkeypatch, tmp_path):
 def _seed_grants(vocab):
     """(Re)build the grants store to MATCH a test vocabulary's intent.
 
-    The production seed now mints only code-constant default ids (a hazard:
-    file contents must never be promoted into the store), so tests express
-    grants EXPLICITLY here: status tags get the out-of-the-box add-remove row
-    the dashboard create path would mint; a legacy ``agent`` field on a test
-    fixture is honoured as if a PATCH had minted it.
+    The production seed mints only code-constant ids, so grants are explicit here; an
+    ``agent`` field on a fixture is honoured as if a PATCH had minted it.
     """
     path = chat_tag_grants._store_path()
     if path.exists():

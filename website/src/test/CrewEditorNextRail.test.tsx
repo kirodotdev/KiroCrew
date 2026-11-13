@@ -124,3 +124,38 @@ describe('mate editor rail — the mobile select mirrors the rail', () => {
     expect(screen.getByTestId('next-rail-locked-hint')).toHaveTextContent('Save or discard your draft to switch sections.')
   })
 })
+
+// The rail is a vertical tablist, so it follows the shared Tablist keyboard
+// model with the Up/Down pair: one Tab stop, the arrows move between sections.
+describe('mate editor rail — keyboard', () => {
+  const tabStops = () => screen.getAllByRole('tab').filter(t => t.getAttribute('tabindex') === '0')
+
+  it('keeps the rail to one Tab stop and moves with Up/Down, Home and End', () => {
+    const onSelect = vi.fn()
+    const { rerender } = render(
+      <CrewEditorNextRail<Key> sections={SECTIONS} value="general" onSelect={onSelect} locked={false} ariaLabel="Sections" />,
+    )
+    expect(tabStops()).toEqual([screen.getByRole('tab', { name: 'General' })])
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'General' }), { key: 'ArrowDown' })
+    expect(onSelect).toHaveBeenLastCalledWith('memory')
+    expect(screen.getByRole('tab', { name: 'Memory' })).toHaveFocus()
+
+    rerender(<CrewEditorNextRail<Key> sections={SECTIONS} value="memory" onSelect={onSelect} locked={false} ariaLabel="Sections" />)
+    expect(tabStops()).toEqual([screen.getByRole('tab', { name: 'Memory' })])
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Memory' }), { key: 'ArrowUp' })
+    expect(onSelect).toHaveBeenLastCalledWith('general')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Memory' }), { key: 'End' })
+    expect(onSelect).toHaveBeenLastCalledWith('danger')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Memory' }), { key: 'Home' })
+    expect(onSelect).toHaveBeenLastCalledWith('general')
+  })
+
+  it('does not leave the active section by arrow while locked', () => {
+    const onSelect = vi.fn()
+    render(<CrewEditorNextRail<Key> sections={SECTIONS} value="general" onSelect={onSelect} locked ariaLabel="Sections" />)
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'General' }), { key: 'ArrowDown' })
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'General' }), { key: 'End' })
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+})

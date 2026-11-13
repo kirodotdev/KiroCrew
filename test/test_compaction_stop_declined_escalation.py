@@ -76,9 +76,12 @@ async def test_clear_queue_only_unlinks_the_handles_even_when_the_session_is_gon
     await mgr.close_all()
 
 
-def test_decline_markers_are_count_bounded_and_the_overflow_is_counted(caplog):
+def test_decline_markers_are_count_bounded_and_the_overflow_is_counted(caplog, monkeypatch):
     from kiro_crew import session_lifecycle as sl
+    from kiro_crew.session_lifecycle_parts import stop_decline
 
+    # The drop counter is module-wide; start this test's count from zero.
+    monkeypatch.setattr(stop_decline, "_stop_declined_dropped", 0)
     with caplog.at_level("WARNING", logger=sl.__name__):
         for i in range(sl.STOP_DECLINED_MARKERS_MAX + 3):
             sl.note_stop_declined(f"k{i}", "u", now=100.0)
@@ -87,7 +90,6 @@ def test_decline_markers_are_count_bounded_and_the_overflow_is_counted(caplog):
     assert sl.consume_stop_declined("k0", "u", now=110.0) is False
     assert sl.consume_stop_declined(f"k{sl.STOP_DECLINED_MARKERS_MAX + 2}", "u", now=110.0)
     assert sum("evicted" in r.message for r in caplog.records) == 3
-    # flake-ok: pre-existing read of the module-wide drop counter, which no test before it in collection order advances, moved verbatim; tracked for a de-flake pass
     assert "3 dropped so far" in caplog.records[-1].message
 
 
@@ -250,10 +252,17 @@ def test_decline_stop_arms_nothing_unless_delivery_is_reported_as_true(reported)
     assert sl.consume_stop_declined("k", "u", now=101.0) is False
 
 
-def test_the_shared_channel_decline_sends_before_it_arms():
+def test_the_shared_channel_decline_sends_before_it_arms(monkeypatch):
     """``stop_running_turn`` owns the send for exactly this reason: a channel
     that posted the text after the arm could leave the escalation live."""
     from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.session_lifecycle_parts import stop_decline
+    from kiro_crew.testing.clock import ManualClock
+
+    # Arm and read on one frozen clock, so the escalation window cannot lapse
+    # between the two reads on a slow host.
+    ManualClock().install(monkeypatch, stop_decline)
 
     import kiro_crew.session_lifecycle as sl
     from kiro_crew.messaging.commands import STOP_REPLY_COMPACTING, stop_running_turn
@@ -283,7 +292,6 @@ def test_the_shared_channel_decline_sends_before_it_arms():
     )
     assert reply == STOP_REPLY_COMPACTING
     assert sent == [STOP_REPLY_COMPACTING]
-    # flake-ok: pre-existing decline marker armed and read back to back inside the real-clock escalation window, moved verbatim; tracked for a de-flake pass
     assert sl.consume_stop_declined("telegram:1", "u1") is True
 
 

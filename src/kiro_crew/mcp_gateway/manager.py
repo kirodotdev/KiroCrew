@@ -34,7 +34,7 @@ from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_runtime_path, resolve_krb5_ccname
 from kiro_crew.jsonl_util import rotate_jsonl_at
-from kiro_crew.mcp_gateway import backend_record, transport
+from kiro_crew.mcp_gateway import agent_socket, backend_record, transport
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.metrics.events import (
@@ -43,6 +43,7 @@ from kiro_crew.metrics.events import (
     emit_counter,
     emit_histogram,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER, default_ladder
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
@@ -53,6 +54,11 @@ _GATEWAYD_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 # Max time to wait for the gateway's unix socket to appear after spawn.
 _SOCKET_READY_TIMEOUT_SECS = 5.0
+# Total wait while the spawned daemon is still running past the fast bound. A
+# cold start on a slow host (on-access antivirus scanning every imported file is
+# common on Windows) can take longer than 5s to bind; killing that daemon drops
+# every session to per-session MCP, which spawns many more cold processes.
+_SOCKET_READY_SLOW_START_SECS = 30.0
 # Polling interval while waiting for the socket.
 _SOCKET_POLL_INTERVAL_SECS = 0.1
 # Ping/pong round-trip deadline after the socket appears. The daemon is
@@ -159,7 +165,9 @@ _GATEWAYD_MODULE = "kiro_crew.mcp_gateway.gatewayd"
 # (the previous hand-maintained tuple carried a stale
 # "Mirrors sandbox" comment that could silently drift). ``AWS_ACCESS`` is kept
 # on top because the daemon is more exposed than a credential_process-backed
-# session.
+# session. The scrub always runs; the one thing added back after it is the
+# gateway's boot-time ``SSH_AUTH_SOCK``, for the backends an operator names
+# (``agent_socket``), on its own channel and never through this list.
 #
 # We deliberately do NOT scrub ``sandbox._AGENT_DENIED_ENV_KEYS``
 # (SLACK_BOT_TOKEN/APP/USER, KIROCREW_OWNER_ID). config/loader_config.py seeds those
@@ -174,6 +182,11 @@ _SENSITIVE_ENV_PREFIXES: tuple[str, ...] = (
     *_SANDBOX_SENSITIVE_ENV_PREFIXES,
 )
 
+#: gatewayd's env key for the one directory every backend it spawns runs in
+#: (:attr:`GatewaySpec.backend_work_dir`). In the daemon's env, not argv, like the
+#: target map; read by ``daemon.launch._backend_work_dir``.
+BACKEND_WORK_DIR_ENV = "KIROCREW_MCP_BACKEND_WORK_DIR"
+
 
 def is_credential_env_key(key: str) -> bool:
     """Return ``True`` if ``key`` matches :data:`_SENSITIVE_ENV_PREFIXES`.
@@ -184,8 +197,12 @@ def is_credential_env_key(key: str) -> bool:
     ``hashing.ENV_SCRUB_PREFIXES`` (it also covers ``AWS_ACCESS``,
     ``SSH_AUTH_SOCK``, ``GNUPGHOME``, ``GIT_ASKPASS``), so forwarding must
     honour both.
+
+    The match folds case: Windows env names are case-insensitive, so a child
+    reads ``ssh_auth_sock`` as ``SSH_AUTH_SOCK``.
     """
-    return any(key.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
+    upper = key.upper()
+    return any(upper.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
 
 
 def _scrub_sensitive_env(env: dict[str, str]) -> dict[str, str]:
@@ -210,6 +227,8 @@ class GatewaySpec:
     max_backends: int = 64  # keep in sync w/ McpGatewayConfig.max_backends (cover N agents x S servers)
     mcp_target_env: dict[str, str] = None  # type: ignore[assignment]
     prewarm_count: int = 0  # keep in sync w/ McpGatewayConfig.prewarm_count; 0 = disabled
+    # McpGatewayConfig.keep_alive_servers; empty = every backend idles out.
+    keep_alive_servers: tuple[str, ...] = ()
     # Admission (keep in sync w/ McpGatewayConfig.spawn_concurrency_* etc.).
     spawn_concurrency_initial: int = 4
     spawn_concurrency_min: int = 1
@@ -221,6 +240,11 @@ class GatewaySpec:
     host_budget_max_procs: int = 0
     host_budget_max_rss_mb: int = 0
     host_budget_max_fds: int = 0
+    # The ``work_dir`` the rewrite wrote into every stub. Handed to gatewayd in
+    # its env (``BACKEND_WORK_DIR_ENV``) so the daemon spawns backends in this
+    # directory, never one a register frame names. Empty = the daemon resolves
+    # the default work dir itself.
+    backend_work_dir: str = ""
 
     def __post_init__(self) -> None:
         # dataclass(frozen) + mutable default → use object.__setattr__.
@@ -247,6 +271,16 @@ class GatewayManager:
     #: and at DEBUG thereafter. Class-level default for the same ``__new__``
     #: reasoning as above.
     _cap_settle_logged: bool = False
+    #: The port this gateway's listener bound, once the gateway has told this
+    #: manager (:meth:`set_owner_port`); ``None`` before that. The daemon binds
+    #: pooled control-plane backends to it, so it comes only from the gateway's
+    #: own record of its bind, never from an environment read before the bind.
+    #: Class-level default for the same ``__new__`` reasoning as above.
+    _owner_port: Optional[int] = None
+    #: Whether the current run of failed announces was already logged at WARNING.
+    _owner_port_warned: bool = False
+    #: Whether adopting an unowned daemon was already logged at WARNING.
+    _unowned_adoption_warned: bool = False
 
     def __init__(self, spec: GatewaySpec) -> None:
         self._spec = spec
@@ -257,6 +291,9 @@ class GatewayManager:
         self._stand_downs_issued = 0
         self._last_drift_check = 0.0
         self._cap_settle_logged = False
+        self._owner_port = None
+        self._owner_port_warned = False
+        self._unowned_adoption_warned = False
         self._lifecycle_lock = asyncio.Lock()
         # Detached fire-and-forget telemetry tasks (saturation-signal emits).
         # Held only so the event loop keeps a strong reference until each
@@ -278,7 +315,119 @@ class GatewayManager:
         callers treat a ``False`` return as "fall back to per-session MCP".
         """
         async with self._lifecycle_lock:
-            return await self._start_locked()
+            started = await self._start_locked()
+        if started and self._owner_port is not None:
+            # Spawned or adopted, the daemon now serving may not hold this
+            # gateway's port: an adopted one holds its previous owner's, and the
+            # boot spawn holds none. A miss is retried by the watchdog.
+            await self._send_owner_port()
+        return started
+
+    def set_owner_port(self, port: int) -> bool:
+        """Record the port this gateway's listener bound, without sending it.
+
+        For a manager created after the bind (a broker restart), before
+        :meth:`start`: the spawn passes it on argv and the start announces it.
+        Returns False, and keeps the previous value, for anything but an ``int``
+        in 1..65535.
+        """
+        if type(port) is not int or not 0 < port < 65536:
+            logger.warning("mcp-gateway: ignoring an owner port that is not a port: %r", port)
+            return False
+        self._owner_port = port
+        return True
+
+    @property
+    def owner_port(self) -> Optional[int]:
+        """The stored port (:meth:`set_owner_port`), or ``None`` before the bind."""
+        return self._owner_port
+
+    async def announce_owner_port(self, port: int) -> bool:
+        """Record this gateway's bound port and send it to the daemon.
+
+        The daemon binds pooled Kiro Crew control-plane backends to this port and
+        holds any that it cannot bind until the port arrives. Returns whether the
+        daemon acknowledged it. A miss never fails anything: it is logged, and the
+        watchdog sends the stored port again on its next liveness reconcile, as it
+        does after every respawn and adoption.
+        """
+        if not self.set_owner_port(port):
+            return False
+        return await self._send_owner_port()
+
+    async def _send_owner_port(self) -> bool:
+        """Send the stored port on its own connection; True iff the daemon took it."""
+        port = self._owner_port
+        if port is None:
+            return False
+        reply = await self._control_roundtrip({"type": "owner-port", "port": port})
+        if reply is not None and reply.get("type") == "owner-port-set" and reply.get("port") == port:
+            self._owner_port_warned = False
+            logger.info("mcp-gateway: the daemon on %s has owner port %d", self._spec.socket_path, port)
+            return True
+        # WARNING once per run of misses: the watchdog retries every liveness
+        # interval, and a daemon that keeps refusing must not flood the log.
+        log = logger.debug if self._owner_port_warned else logger.warning
+        self._owner_port_warned = True
+        log(
+            "mcp-gateway: the daemon on %s did not take owner port %d (%s); an owned "
+            "daemon holds pooled Kiro Crew backends for the port, while an unowned "
+            "daemon, or one whose host reports no peer pid, binds them from its "
+            "environment; the watchdog sends it again to an owned daemon that waits "
+            "for it. To fix a daemon that keeps refusing, stop it; this gateway then "
+            "starts its own, which takes the port",
+            self._spec.socket_path,
+            port,
+            (reply or {}).get("reason") or (reply or {}).get("type") or "no answer",
+        )
+        return False
+
+    async def _reconcile_owner_port(self, pong: dict) -> None:
+        """Send the stored port again when the daemon that answered lacks it.
+
+        Read off the liveness pong the watchdog fetches anyway. A pong with no
+        ``owner_port`` key is from a daemon that predates the announce, which
+        cannot take it. An unowned daemon, and an owned one whose pong shows
+        ``owner_port`` 0 with ``owner_port_unverifiable``, bind from their
+        environment and refuse every announce. Nothing is sent to any of them:
+        a send every liveness interval would only add a refused frame and a
+        ``denied`` audit row each time. A pong without
+        ``owner_port_unverifiable`` is from an older daemon and is reconciled.
+        """
+        if self._owner_port is None or "owner_port" not in pong or self._unowned(pong):
+            return
+        if pong.get("owner_port") == 0 and pong.get("owner_port_unverifiable") is True:
+            return
+        if pong.get("owner_port") != self._owner_port:
+            await self._send_owner_port()
+
+    @staticmethod
+    def _unowned(pong: Optional[dict]) -> bool:
+        """True for a pong from a daemon started without ``--owner-pid``.
+
+        Only a daemon that knows the ``owner-port`` frame (its pong has the
+        ``owner_port`` key) counts: it refuses every announce and binds pooled
+        Kiro Crew control-plane backends from its own environment.
+        """
+        if not pong or "owner_port" not in pong:
+            return False
+        owner = pong.get("owner_pid")
+        return type(owner) is int and owner == 0
+
+    def _warn_if_unowned(self, pong: Optional[dict]) -> None:
+        """Say once, at WARNING, that the adopted daemon takes no port from this gateway."""
+        if self._unowned_adoption_warned or not self._unowned(pong):
+            return
+        self._unowned_adoption_warned = True
+        logger.warning(
+            "mcp-gateway: the adopted daemon on %s (pid %s) was started without "
+            "--owner-pid, so it refuses this gateway's port and binds pooled Kiro "
+            "Crew control-plane servers from its own environment, which can name "
+            "another gateway's port. To fix it, stop the hand-started daemon; this "
+            "gateway then starts its own",
+            self._spec.socket_path,
+            (pong or {}).get("pid", "?"),
+        )
 
     async def _start_locked(self) -> bool:
         """Inner start implementation, called under ``_lifecycle_lock``."""
@@ -337,10 +486,10 @@ class GatewayManager:
                 stale_code = self._code_drift(incumbent)
                 orphaned = self._orphaned(incumbent)
                 if not missing and not stale_code and not orphaned:
-                    return self._adopt_incumbent()
+                    return self._adopt_incumbent(incumbent)
                 verdict = await self._repair_or_adopt(missing, stale_code, orphaned)
                 if verdict == _ADOPT:
-                    return self._adopt_incumbent()
+                    return self._adopt_incumbent(incumbent)
                 if verdict == _ABORT:
                     # A draining incumbent: no longer adoptable (it has closed
                     # its accept loop) and not yet replaceable (it still holds
@@ -374,7 +523,7 @@ class GatewayManager:
                 # need. Adopt rather than fight: a fit daemon is fit regardless
                 # of who started it, and leaving _adopted False here would send
                 # the watchdog spawning doomed competitors.
-                return self._adopt_incumbent()
+                return self._adopt_incumbent(spawned)
             # A foreign daemon holds the socket and cannot serve our stems. Drop
             # our exited handle and let the next round assess it as an incumbent.
             logger.warning(
@@ -391,8 +540,13 @@ class GatewayManager:
         )
         return False
 
-    def _adopt_incumbent(self) -> bool:
-        """Adopt the daemon on the socket and supervise it. Always ``True``."""
+    def _adopt_incumbent(self, pong: Optional[dict] = None) -> bool:
+        """Adopt the daemon on the socket and supervise it. Always ``True``.
+
+        *pong* is the adopted daemon's ping reply, read only for the warning
+        that an unowned daemon binds pooled control-plane servers from its own
+        environment.
+        """
         self._adopted = True
         self._process = None
         # The caller just assessed coverage, so start the watchdog's
@@ -403,6 +557,7 @@ class GatewayManager:
             "mcp-gateway: a healthy daemon already owns %s — adopting "
             "(no spawn)", self._spec.socket_path,
         )
+        self._warn_if_unowned(pong)
         # Supervise even when adopting: the adopted daemon may be a
         # prior-gateway survivor with no other watchdog in this process.
         # The watchdog's adopted branch re-checks liveness by ping and
@@ -621,11 +776,22 @@ class GatewayManager:
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
 
-        ok = await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS)
+        waited = _SOCKET_READY_TIMEOUT_SECS
+        ok = await self._wait_for_socket(self._spec.socket_path, waited)
+        if not ok and self.is_running and not self._stopping:
+            logger.info(
+                "mcp-gateway daemon is still starting after %.1fs; waiting up to %.1fs",
+                waited,
+                _SOCKET_READY_SLOW_START_SECS,
+            )
+            ok = await self._wait_for_socket(
+                self._spec.socket_path, _SOCKET_READY_SLOW_START_SECS - waited
+            )
+            waited = _SOCKET_READY_SLOW_START_SECS
         if not ok:
             logger.warning(
                 "mcp-gateway socket did not appear within %.1fs; gateway unreachable",
-                _SOCKET_READY_TIMEOUT_SECS,
+                waited,
             )
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
@@ -692,10 +858,15 @@ class GatewayManager:
         # sandbox's per-session env scrub is not enough on its own here.
         base_env = _scrub_sensitive_env(dict(os.environ))
         env = {**base_env, **self._spec.mcp_target_env}
+        # The backend cwd is this spec's, never one inherited from this process.
+        env.pop(BACKEND_WORK_DIR_ENV, None)
+        if self._spec.backend_work_dir:
+            env[BACKEND_WORK_DIR_ENV] = self._spec.backend_work_dir
         # Repair the Kerberos ccache pointer for pooled MCP backends so a
         # long-lived background daemon's forked children inherit a usable
-        # ticket for any credential-gated MCP server.
-        resolve_krb5_ccname(env)
+        # ticket for any credential-gated MCP server. Off the loop: it stats
+        # the ccache candidates and may read the krb5 config files.
+        await asyncio.to_thread(resolve_krb5_ccname, env)
         # A background daemon can inherit a minimal PATH (e.g. launched from
         # Electron or under systemd-user), so extend it with the well-known MCP
         # launcher dirs. This MUST be ``mcp_runtime_path``: operator-contributed
@@ -714,6 +885,14 @@ class GatewayManager:
         # with no ceiling on a slow or remote home, and this method already
         # offloads a single chmod.
         env["PATH"] = await asyncio.to_thread(mcp_runtime_path, env.get("PATH", ""))
+        # The agent socket this gateway was started with, for the shared backends
+        # the operator named in ssh_auth_sock_consent.json: added after the scrub,
+        # under a name the scrub matches, and only with a grant, so without one the
+        # daemon env is unchanged. Not argv: any local process can read a command
+        # line, only the owner an environment.
+        backend_agent_socket = await asyncio.to_thread(self._backend_agent_socket)
+        if backend_agent_socket:
+            env[agent_socket.DAEMON_ENV] = backend_agent_socket
         # ``-P``: the daemon inherits this process's cwd -- the home directory
         # under the service unit -- and ``-m`` would put it ahead of the stdlib.
         argv = platform_compat.isolated_python_argv(
@@ -726,10 +905,18 @@ class GatewayManager:
             "--idle-timeout-secs", str(self._spec.idle_timeout_secs),
             "--max-backends", str(self._spec.max_backends),
         )
+        # A spawn after the listener bound (a watchdog respawn, a broker restart)
+        # starts with the port, so no stub waits for an announce. Absent before
+        # the bind, which keeps the boot command line unchanged.
+        if self._owner_port is not None:
+            argv += ["--owner-port", str(self._owner_port)]
         # Only pass --prewarm-count when enabled so the daemon command line
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Same rule: nothing on the command line unless the operator named one.
+        for name in self._spec.keep_alive_servers:
+            argv += ["--keep-alive-server", name]
         # Admission: the spawn gate's fixed capacity and bounds, the queue wait
         # and initialize budgets, and the host-budget ceilings. Ceilings left at
         # 0 are derived in the daemon from ``--host-available-mb``, which is
@@ -759,7 +946,7 @@ class GatewayManager:
         # This file persists across restarts so operators can diagnose
         # startup failures and stub rejections without attaching a debugger.
         log_path = self._gatewayd_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        mkdirs_owner_only(log_path.parent)
         try:
             log_path.parent.chmod(0o700)
         except OSError:
@@ -838,6 +1025,35 @@ class GatewayManager:
             fallback=[],
             log_message="identity.credential_watch_paths failed; no watcher",
         )
+
+    @staticmethod
+    def _backend_agent_socket() -> Optional[str]:
+        """The boot-time agent socket to offer named shared backends, or ``None``.
+
+        ``None`` on Windows, when the gateway recorded no socket at boot, when the
+        operator named no backend, and when the grant cannot be read: each leaves
+        the daemon env unchanged. BLOCKING (reads the consent leaf).
+        """
+        if platform_compat.IS_WINDOWS:
+            return None
+        from kiro_crew import ssh_auth_sock_consent
+
+        try:
+            granted = ssh_auth_sock_consent.mcp_gateway_backends_granted()
+        except Exception:
+            logger.debug("ssh-agent backend grant unreadable; offering no socket", exc_info=True)
+            return None
+        if not granted:
+            return None
+        socket_path = agent_socket.boot_agent_socket()
+        if not socket_path:
+            logger.warning(
+                "mcp-gateway: ssh_auth_sock_consent.json names %s, but this gateway was "
+                "started without a usable SSH_AUTH_SOCK, so no backend receives one",
+                ", ".join(sorted(granted)),
+            )
+            return None
+        return socket_path
 
     @staticmethod
     def _gatewayd_log_path() -> Path:
@@ -943,29 +1159,18 @@ class GatewayManager:
         already closed its accept loop, so it is no longer adoptable, whereas one
         that refused is still serving and is.
 
-        Voluntary by design. The starting gateway must not take the endpoint
-        itself: :meth:`_clear_stale_socket` is a connect-probe-then-unlink, and
-        in its documented false-stale window that unlinks a LIVE incumbent's
-        socket -- the socket-theft class the flock guard exists to prevent. Here
-        the incumbent runs its own SIGTERM-equivalent drain and removes its own
-        endpoint, so there is no stale-vs-live judgement to get wrong.
+        Voluntary by design: :meth:`_clear_stale_socket` can unlink a LIVE
+        incumbent's socket in its false-stale window, so the incumbent drains
+        and removes its own endpoint. ``need`` lets a daemon that resolves every
+        stem refuse (see ``gatewayd._apply_stand_down``).
 
-        ``need`` travels with the request so a daemon that already resolves every
-        requested stem can refuse (see ``gatewayd._apply_stand_down``).
+        Waits for the singleton LOCK to free, not the endpoint to vanish: a
+        draining daemon drops the endpoint first and the lock last (on Windows
+        for its whole drain). A replacement spawned in that gap loses the lock,
+        exits rc=0, and the start fails with no watchdog to retry.
 
-        What is waited ON is the singleton LOCK becoming free, not the endpoint
-        disappearing, and the difference is load-bearing. A draining daemon stops
-        accepting first and releases the lock last, so the endpoint goes away
-        while the lock is still held -- on Windows for the daemon's whole drain,
-        since the kernel drops a pipe name as soon as the last handle closes. A
-        replacement spawned in that gap loses the lock, exits rc=0 without
-        binding, and ``_wait_for_socket`` then fails the start with no watchdog
-        left to retry. The lock is precisely what the replacement must win, so it
-        is the only correct readiness signal.
-
-        Bounded by the daemon's own published shutdown budget, and abandoned as
-        soon as ``_stopping`` is set so a shutdown racing a start is not made to
-        wait out another process's drain.
+        Bounded by the daemon's published shutdown budget; abandoned once
+        ``_stopping`` is set.
         """
         self._stand_downs_issued += 1
         frame: dict[str, Any] = {"type": "stand-down", "need": sorted(need)}
@@ -1302,36 +1507,18 @@ class GatewayManager:
             proc = self._process
             if proc is None:
                 if self._adopted:
-                    # Supervise a foreign-owned (adopted) daemon by ping —
-                    # we hold no process handle. While it answers, keep
-                    # watching; when it dies, surface it and re-elect: drop
-                    # adoption and try to become the owner. The flock
-                    # arbitrates if a sibling races us; a flock-loser exits
-                    # rc=0 and we re-adopt on the next loop.
-                    #
-                    # The reply also carries the daemon's target coverage,
-                    # so the round-trip that proves liveness re-checks
-                    # drift too: an adopted daemon never re-applies a spec,
-                    # so without this a survivor that goes stale after
-                    # adoption stays stale for its whole life.
-                    # A miss here gets the same escalated probe the owned path
-                    # uses, and then acts on it -- deliberately, on ONE miss,
-                    # unlike the owned path's three-cycle grace. The two paths
-                    # differ in what a slow verdict costs. If an adopted daemon
-                    # really is gone, nothing is listening on its address, and
-                    # every attached stub is unable to serve a call until a
-                    # replacement binds -- so here the verdict's latency IS the
-                    # outage. One escalated miss displaces at 26s worst case
-                    # (2+2+2 fast, then 20 escalated); three cycles would take
-                    # 26 + 30 + 26 + 30 + 26 = 138s, five times the outage for
-                    # evidence the escalation already provides. The owned path
-                    # can afford its grace because its own socket stays bound
-                    # while it waits, so waiting there costs nothing.
-                    # A load misverdict is already handled by the escalation:
-                    # a daemon that answers either
-                    # probe is alive and is never displaced.
+                    # Supervise an adopted daemon by ping (no process handle).
+                    # When it dies, drop adoption and re-elect; the flock
+                    # arbitrates a racing sibling. The pong also re-checks
+                    # drift, since an adopted daemon never re-applies a spec.
+                    # Act on ONE escalated miss, not the owned path's
+                    # three-cycle grace: a gone adopted daemon leaves nothing
+                    # listening, so the verdict's latency IS the outage (26s
+                    # worst case vs 138s). A daemon answering either probe is
+                    # alive and never displaced.
                     pong = await self._ping_with_escalation(observe=True)
                     if pong is not None:
+                        await self._reconcile_owner_port(pong)
                         if await self._reconcile_adopted(pong):
                             continue
                         await asyncio.sleep(_LIVENESS_PING_INTERVAL_SECS)
@@ -1504,6 +1691,7 @@ class GatewayManager:
                         "— adopting; watchdog will supervise it via ping",
                         self._spec.socket_path,
                     )
+                    self._warn_if_unowned(incumbent)
                     # continue (NOT return): re-enter the loop so the adopted
                     # branch (proc is None and self._adopted) supervises the
                     # incumbent by ping and re-elects if it later dies. Returning
@@ -1554,8 +1742,12 @@ class GatewayManager:
             # gives up at it, so a healthy daemon serving 100+ connections looks
             # identical to a dead one. Killing the wrong one costs every attached
             # session its tools.
-            if await self._ping_with_escalation(observe=True) is not None:
+            pong = await self._ping_with_escalation(observe=True)
+            if pong is not None:
                 consecutive_failures = 0
+                # A daemon this watchdog respawned took the port on argv; one
+                # that missed an announce gets it again here.
+                await self._reconcile_owner_port(pong)
                 continue
             consecutive_failures += 1
             logger.warning(
@@ -1590,21 +1782,12 @@ class GatewayManager:
         ``transport.probe_live`` reports live in place. See the daemon-lifecycle
         spec.
 
-        Observability (``observe=True`` only): the escalation itself is the
-        precursor state to every kill/reconnect cycle — the fast bound missed,
-        so the daemon is loaded, and this longer probe is the only thing that
-        can tell loaded-but-alive from dead. That state is otherwise silent, so
-        the watchdog callers surface it: a counter of escalated probes
-        (``answered`` distinguishes loaded-but-alive from dead) and, when the
-        daemon answers, the OBSERVED round-trip latency the fast bound throws
-        away — the load evidence an operator needs to see saturation before it
-        becomes an outage, and the field data against which
-        ``_LIVENESS_ESCALATED_TIMEOUT_SECS`` can be checked. ``observe`` is
-        False for the start-up confirmation caller: a fast miss there is a
-        daemon still coming up, not a saturated one, and would pollute the
-        series with start-up noise. The emit is fire-and-forget so telemetry
-        never gates the verdict — on the adopted path this probe's duration IS
-        the outage, and an awaited emit on a saturated executor would extend it.
+        ``observe=True`` (watchdog callers) emits a counter of escalated probes
+        (``answered`` tells loaded-but-alive from dead) and the observed
+        round-trip latency, so saturation is visible before it is an outage.
+        The start-up caller passes False: a miss there is a daemon still coming
+        up. The emit is fire-and-forget: on the adopted path this probe's
+        duration IS the outage.
         """
         pong = await self._ping_payload()
         if pong is not None:
@@ -1669,16 +1852,22 @@ class GatewayManager:
             # SIGKILL skips gatewayd's pool.shutdown_all(), so its pooled MCP
             # backends (each a session leader via start_new_session) reparent to
             # init and leak. Reap the pgids gatewayd persisted out-of-band.
-            await self._reap_orphaned_backends()
+            await self._reap_orphaned_backends("supervisor SIGKILLed a wedged gatewayd")
+            return
+        if platform_compat.IS_WINDOWS:
+            # SIGTERM on Windows is TerminateProcess: gatewayd never ran its
+            # drain, so its backends are as orphaned as after a SIGKILL.
+            logger.info("mcp-gateway: reaping pooled backends of terminated pid=%s", proc.pid)
+            await self._reap_orphaned_backends("TerminateProcess skips gatewayd's drain on Windows")
 
-    async def _reap_orphaned_backends(self) -> None:
-        """Best-effort tree-kill of pooled backends left orphaned by a SIGKILLed
-        gatewayd, read from the ``<socket>.backends`` record the daemon
-        maintains. Only entries whose start id still matches the live process
-        are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
+    async def _reap_orphaned_backends(self, reason: str) -> None:
+        """Best-effort tree-kill of pooled backends left orphaned by a gatewayd
+        that died without draining, read from the ``<socket>.backends`` record
+        the daemon maintains. Only entries whose start id still matches the live
+        process are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
         await backend_record.reap(
             backend_record.record_path(self._spec.socket_path),
-            reason="supervisor SIGKILLed a wedged gatewayd",
+            reason=reason,
         )
 
     async def _clear_stale_socket(self) -> None:

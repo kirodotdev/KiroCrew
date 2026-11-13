@@ -114,10 +114,11 @@ class TestApplyJobLimits:
         pin. The security property is that unbounded forking stops.
         """
         child = subprocess.Popen(
-            [sys.executable, "-c", _MEMBER_SRC],
+            [sys.executable, "-X", "utf8", "-c", _MEMBER_SRC],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             creationflags=platform_compat._SUBPROCESS_NO_WINDOW,
         )
         try:
@@ -186,9 +187,10 @@ class TestSuspendedSpawnHandshake:
         child might simply have been running the whole time.
         """
         child = subprocess.Popen(
-            [sys.executable, "-c", "print('RAN', flush=True)"],
+            [sys.executable, "-X", "utf8", "-c", "print('RAN', flush=True)"],
             stdout=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             creationflags=(
                 platform_compat.CREATE_NEW_PROCESS_GROUP | platform_compat.CREATE_SUSPENDED
             ),
@@ -202,9 +204,10 @@ class TestSuspendedSpawnHandshake:
 
     def test_assign_while_suspended_then_resume_runs_the_child(self) -> None:
         child = subprocess.Popen(
-            [sys.executable, "-c", "print('RAN', flush=True)"],
+            [sys.executable, "-X", "utf8", "-c", "print('RAN', flush=True)"],
             stdout=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             creationflags=(
                 platform_compat.CREATE_NEW_PROCESS_GROUP | platform_compat.CREATE_SUSPENDED
             ),

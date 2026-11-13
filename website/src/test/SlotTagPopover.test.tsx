@@ -44,8 +44,8 @@ const dashboardState = {
  * Seed the open slot via TagPopoverProvider (the context owns open-state);
  * the slot's tags still live in the Redux store, so `slots` seeds those.
  */
-function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?: Partial<ChatSlot>[] }) {
-  const store = createTestStore({ dashboard: { ...dashboardState, slots } as unknown as RootState['dashboard'] })
+function renderPopover({ slotKey, slots = [], connected = true }: { slotKey: string | null; slots?: Partial<ChatSlot>[]; connected?: boolean }) {
+  const store = createTestStore({ dashboard: { ...dashboardState, connected, slots } as unknown as RootState['dashboard'] })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <QueryClientProvider client={qc}>
@@ -64,6 +64,76 @@ function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?
 }
 
 beforeEach(() => vi.clearAllMocks())
+
+describe('SlotTagPopover (gateway offline)', () => {
+  it('still opens and lists the tags, because the picker renders from cached state', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: ['t1'] }], connected: false })
+    expect(await screen.findByTestId('slot-tag-picker')).toBeInTheDocument()
+    expect(await screen.findByText('Alpha')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /Alpha/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('refuses a toggle and says why, rather than posting a write the gateway cannot take', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: false })
+    const alpha = await screen.findByRole('option', { name: /Alpha/ })
+    expect(alpha).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(alpha)
+    expect(api.setSlotTags).not.toHaveBeenCalled()
+    expect(screen.getByTestId('tag-offline-reason')).toBeInTheDocument()
+  })
+
+  it('spaces the reason row for a popover, not for a menu row, now that both share one component', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: false })
+    const reason = await screen.findByTestId('tag-offline-reason')
+    // `w-0 min-w-full`: the sentence wraps inside the popover instead of widening it.
+    expect(reason.className.split(/\s+/).sort()).toEqual(['block', 'min-w-full', 'mt-2', 'px-1', 'text-[11px]', 'text-muted', 'w-0'])
+  })
+
+  it('still filters offline, but refuses creating a tag, announced rather than natively disabled', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: false })
+    await screen.findByText('Alpha')
+    const input = screen.getByPlaceholderText(/Find or create a tag/i) as HTMLInputElement
+    // Searching is a local read, so the box itself stays operable offline.
+    expect(input).not.toHaveAttribute('readonly')
+    fireEvent.change(input, { target: { value: 'Gamma' } })
+    expect(screen.queryByText('Alpha')).toBeNull()
+    // The create row announces like its sibling rows; native disabled would
+    // drop it from the arrow-key order and put the tooltip out of reach.
+    const create = screen.getByTestId('slot-tag-create')
+    expect(create).not.toBeDisabled()
+    expect(create).toHaveAttribute('aria-disabled', 'true')
+    expect(create).toHaveClass('opacity-40')
+    expect(create.getAttribute('title')).toMatch(/Gateway offline/)
+    // Enter is refused offline, so the highlighted row carries no Enter hint.
+    expect(input.getAttribute('aria-activedescendant')).toBe(create.id)
+    expect(create.querySelector('svg.lucide-corner-down-left')).toBeNull()
+    fireEvent.click(create)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(api.createChatTag).not.toHaveBeenCalled()
+  })
+
+  it('creates the tag when connected — the control for the refusal above', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: true })
+    await screen.findByTestId('slot-tag-picker')
+    const input = screen.getByPlaceholderText(/Find or create a tag/i)
+    fireEvent.change(input, { target: { value: 'Gamma' } })
+    const create = screen.getByTestId('slot-tag-create')
+    expect(create).toHaveAttribute('aria-disabled', 'false')
+    expect(create).not.toHaveClass('opacity-40')
+    expect(create.querySelector('svg.lucide-corner-down-left')).not.toBeNull()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.createChatTag).toHaveBeenCalledWith('Gamma'))
+  })
+
+  it('when connected the same controls take writes and show no refusal', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: true })
+    const alpha = await screen.findByRole('option', { name: /Alpha/ })
+    expect(alpha).toHaveAttribute('aria-disabled', 'false')
+    expect(screen.queryByTestId('tag-offline-reason')).not.toBeInTheDocument()
+    fireEvent.click(alpha)
+    await waitFor(() => expect(api.setSlotTags).toHaveBeenCalled())
+  })
+})
 
 describe('SlotTagPopover (connected)', () => {
   it('renders nothing when no slot is targeted', () => {
@@ -93,7 +163,7 @@ describe('SlotTagPopover (connected)', () => {
   it('keeps a refused create draft and shows why', async () => {
     vi.mocked(api.createChatTag).mockRejectedValueOnce(new Error('Tag could not be created: tag permissions cannot be loaded right now.'))
     renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
-    const input = await screen.findByPlaceholderText('New tag…') as HTMLInputElement
+    const input = await screen.findByPlaceholderText('Find or create a tag…') as HTMLInputElement
     input.focus()
     fireEvent.change(input, { target: { value: 'Escalated' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -105,7 +175,7 @@ describe('SlotTagPopover (connected)', () => {
   it('shows the task-shaped message for a server-side create failure', async () => {
     vi.mocked(api.createChatTag).mockRejectedValueOnce(Object.assign(new Error('persist failed'), { status: 500 }))
     renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
-    const input = await screen.findByPlaceholderText('New tag…') as HTMLInputElement
+    const input = await screen.findByPlaceholderText('Find or create a tag…') as HTMLInputElement
     input.focus()
     fireEvent.change(input, { target: { value: 'Escalated' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -116,7 +186,7 @@ describe('SlotTagPopover (connected)', () => {
 
   it('clears the create draft only after the tag exists', async () => {
     renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
-    const input = await screen.findByPlaceholderText('New tag…') as HTMLInputElement
+    const input = await screen.findByPlaceholderText('Find or create a tag…') as HTMLInputElement
     input.focus()
     fireEvent.change(input, { target: { value: 'Escalated' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -239,7 +309,7 @@ describe('SlotTagPopover — right-click on the backdrop', () => {
     const backdrop = screen.getByLabelText('Close tag picker')
     stubPointHit(backdrop, screen.getByTestId('other-row'))
 
-    const input = screen.getByPlaceholderText('New tag…')
+    const input = screen.getByPlaceholderText('Find or create a tag…')
     const native = createEvent.contextMenu(input, { clientX: 300, clientY: 200, button: 2 })
     fireEvent(input, native)
 

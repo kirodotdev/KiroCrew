@@ -142,10 +142,15 @@ class TestReplayGap:
         dispatch._set_replay_gap(sessions, "k", opened=False)
         assert calls == [("open", "k"), ("close", "k")]
 
-    def test_a_failing_gap_method_is_swallowed(self) -> None:
+    def test_a_failing_gap_method_is_swallowed(self, caplog: pytest.LogCaptureFixture) -> None:
         sessions = SimpleNamespace(open_replay_gap=_Raises(), close_replay_gap=_Raises())
-        dispatch._set_replay_gap(sessions, "k", opened=True)
-        dispatch._set_replay_gap(sessions, "k", opened=False)
+        with caplog.at_level("DEBUG", logger="kiro_crew.messaging.dispatch"):
+            dispatch._set_replay_gap(sessions, "k", opened=True)
+            dispatch._set_replay_gap(sessions, "k", opened=False)
+        logged = [
+            r.getMessage() for r in caplog.records if r.name == "kiro_crew.messaging.dispatch"
+        ]
+        assert logged == ["replay gap open failed for k", "replay gap close failed for k"]
 
 
 class TestBreakerThreshold:

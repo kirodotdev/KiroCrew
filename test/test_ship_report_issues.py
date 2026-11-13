@@ -44,6 +44,33 @@ pytestmark = pytest.mark.skipif(
     reason="requires the workflow file plus a POSIX bash and jq",
 )
 
+
+def _has_gnu_date() -> bool:
+    """The Deliver step formats its header with GNU ``date -d``; BSD ``date``
+    (macOS) has no such flag. The workflow only runs on Linux runners."""
+    if shutil.which("date") is None:
+        return False
+    probe = subprocess.run(
+        ["date", "-u", "-d", "@0", "+%s"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return probe.returncode == 0
+
+
+# Stands in for GNU `date -d` where date(1) lacks it: any `-d` call prints a
+# fixed header date; every other call runs the real date.
+BSD_DATE_STUB = r"""#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "-d" ]; then
+    echo "Aug 09 12:00 AM"
+    exit 0
+  fi
+done
+exec "@REAL_DATE@" "$@"
+"""
+
 START = "2026-08-09T00:00:00Z"
 END = "2026-08-09T12:00:00Z"
 
@@ -122,6 +149,9 @@ class Runner:
             "GITHUB_OUTPUT": str(self.outputs_file),
             "START": START,
             "END": END,
+            # The content tests read the plain rendering; the link tests below
+            # pass mrkdwn explicitly.
+            "LINK_STYLE": "plain",
         }
 
     def _run(self, name: str, script: str | None = None, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -129,7 +159,7 @@ class Runner:
             ["bash", "-c", script if script is not None else self.steps[name]["run"]],
             cwd=self.work,
             env={**self.env, **extra},
-            text=True,
+            text=True, encoding="utf-8",
             capture_output=True,
         )
 
@@ -154,7 +184,7 @@ class Runner:
         self.part = self._outputs()
         return self.part
 
-    def render(self, verdict: dict | None = None) -> str:
+    def render(self, verdict: dict | None = None, link_style: str = "plain") -> str:
         """Run the two-section render, substituting ${{ }} the way Actions does."""
         target = self.work / "issue-verdict.json"
         target.unlink(missing_ok=True)
@@ -166,7 +196,7 @@ class Runner:
             script = script.replace("${{ steps.partition.outputs.%s }}" % key, value)
         assert not re.search(r"\$\{\{", script), "unsubstituted expression left in the script"
 
-        step = self._run(RENDER_STEP, script=script)
+        step = self._run(RENDER_STEP, script=script, LINK_STYLE=link_style)
         assert step.returncode == 0, step.stderr
         self.render_stdout = step.stdout
         return (self.work / "body.txt").read_text()
@@ -207,7 +237,7 @@ def test_boundary_issue_belongs_to_the_previous_report(runner: Runner) -> None:
 
 
 def test_an_inbound_spike_does_not_fail_the_run(runner: Runner) -> None:
-    """Unlike the 300-PR cap, overflow here must NOT withhold the report.
+    """Overflow here must NOT withhold the report.
 
     Failing would leave the window unadvanced, so a quiet inbound spike would
     suppress the shipping half it has nothing to do with.
@@ -547,3 +577,71 @@ def test_the_two_narratives_are_independent_model_calls() -> None:
     assert steps["bedrock"]["continue-on-error"] is True
     assert steps["issue_narrative"]["continue-on-error"] is True
     assert steps["issue_narrative"]["id"] != steps["bedrock"]["id"]
+
+
+# ── Issue links ──────────────────────────────────────────────────────────────
+
+
+def test_mrkdwn_links_each_issue_filed_in_the_window(runner: Runner) -> None:
+    """A link is rebuilt from the URL GitHub returned; the model never writes one."""
+    runner.fetch()
+    verdict = {**VERDICT, "bugs": "Dashboard defects (#4001), plus an older one (#3999)."}
+    body = runner.render(verdict, link_style="mrkdwn")
+    assert "<https://github.com/o/r/issues/4004|#4004> — rc.8 regression" in body
+    assert "<https://github.com/o/r/issues/4001|#4001>" in body
+    assert "<https://github.com/o/r/issues/4002|#4002>" in body
+    # Filed before the window opened, so it is not this window's issue.
+    assert "#3999" in body and "|#3999>" not in body
+
+
+def test_the_fallback_list_links_its_issues_in_mrkdwn(runner: Runner) -> None:
+    runner.fetch()
+    body = runner.render(None, link_style="mrkdwn")
+    assert "<https://github.com/o/r/issues/4003|#4003> Sandbox fence misses relative paths" in body
+
+
+def test_plain_mode_links_no_issue(runner: Runner) -> None:
+    runner.fetch()
+    assert "<" not in runner.render(VERDICT, link_style="plain")
+
+
+def test_the_delivery_sanitizer_keeps_issue_and_pr_links_only(runner: Runner) -> None:
+    """mrkdwn delivery escapes every '<' except a github.com PR or issue link."""
+    if not _has_gnu_date():
+        # The step only formats its header with `date -d`; this test checks the
+        # body, so a fixed header date keeps it running on BSD date (macOS).
+        stub = runner.work.parent / "bin" / "date"
+        stub.write_text(BSD_DATE_STUB.replace("@REAL_DATE@", shutil.which("date") or "/bin/date"))
+        stub.chmod(0o755)
+    body = (
+        "<https://github.com/o/r/issues/7|#7> <https://github.com/o/r/pull/8|#8> "
+        "<https://evil.example/x|#9> <!channel>\n"
+    )
+    (runner.work / "body.txt").write_text(body)
+    step = runner._run(
+        "Deliver report",
+        LINK_STYLE="mrkdwn",
+        DRY_RUN="true",
+        COUNT="1",
+        ICOUNT="1",
+        GITHUB_STEP_SUMMARY=str(runner.work / "summary.md"),
+    )
+    assert step.returncode == 0, step.stderr
+    safe = (runner.work / "body_safe.txt").read_text()
+    assert "<https://github.com/o/r/issues/7|#7>" in safe
+    assert "<https://github.com/o/r/pull/8|#8>" in safe
+    assert "&lt;https://evil.example/x|#9>" in safe
+    assert "&lt;!channel>" in safe
+
+
+def test_no_bare_variable_runs_into_non_ascii_text(steps: dict[str, dict]) -> None:
+    """macOS bash 3.2 reads a byte past 0x7f as part of a variable name, so
+    `$A–$B` expands an unset `A\\xe2...` and `set -u` fails. Braces end the name."""
+    bare = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]")
+    offenders = [
+        f"{name}: {line.strip()}"
+        for name, step in steps.items()
+        for line in str(step.get("run", "")).splitlines()
+        if bare.search(line)
+    ]
+    assert not offenders, offenders

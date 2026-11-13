@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, fireEvent, act } from '@testing-library/react'
+import { render, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 import { Provider } from 'react-redux'
@@ -11,6 +11,7 @@ import chatReducer, { sseChatMessage } from '../store/chatSlice'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { FORCE_KILL_ARMING_MS } from '../utils/stopDebounce'
+import { namedCeiling } from './namedCeiling'
 
 /* The Stop button in a pane that is NOT the active slot — the Crew Members DM
  * thread is the everyday case — must behave like the main chat's (#9547):
@@ -68,6 +69,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { ThemeProvider } from '../hooks/useTheme'
 
 const SLOT = 'member-default'
 const OTHER = 'chat-1-main'
@@ -107,9 +109,11 @@ function mount(store: ReturnType<typeof makeStore>, slotKey: string = SLOT) {
   const tree = (key: string) => (
     <Provider store={store}>
       <QueryClientProvider client={qc}>
+        <ThemeProvider>
         <MemoryRouter>
           <ChatPane slotKey={key} agentLocked frameless />
         </MemoryRouter>
+        </ThemeProvider>
       </QueryClientProvider>
     </Provider>
   )
@@ -123,8 +127,12 @@ beforeEach(() => {
 })
 
 describe('ChatPane Stop: parity with the main chat', () => {
-  it('shows the pending-cancel state and the force hint while the slot is soft_pending', () => {
-    const { queryByTestId } = mount(makeStore('tool_running', { stop_state: 'soft_pending', stopping: true }))
+  it('shows the pending-cancel state and the force hint while the slot is soft_pending', async () => {
+    const store = makeStore('tool_running', { stop_state: 'soft_pending', stopping: true })
+    const { queryByTestId } = mount(store)
+    // Chain: the pane's detail query resolves after mount, then its hydrate effect marks the slot hydrated in the
+    // store. Each hop is a render, so the wait carries a named ceiling rather than the 1000ms default.
+    await waitFor(() => expect(store.getState().chat.slotHydrated?.[SLOT]).toBe(true), namedCeiling('PANE_DETAIL_HYDRATED', 5000))
     expect(queryByTestId('stop-button-pulsing')).not.toBeNull()
     expect(queryByTestId('stop-force-hint')).not.toBeNull()
     expect(queryByTestId('stop-button-armed')).toBeNull()
@@ -378,6 +386,19 @@ describe('ChatPane Stop: parity with the main chat', () => {
     await act(async () => { fireEvent.click(getByTestId('stop-button-armed')) })
     expect(store.getState().chat.slotRun[SLOT]?.state).toBe('idle')
     expect(queryByTestId('stop-button-armed')).toBeNull()
+  })
+
+  it('a late refusal for a press in turn N is not shown during turn N+1 (#34416)', async () => {
+    // The queue drain hands the floor straight to the next turn, so the pane
+    // never renders idle in between: only the slot's turn identity moves.
+    let settle: (v: unknown) => void = () => {}
+    apiMock.stopChatSlot.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve }))
+    const store = makeStore('streaming', { turn: 4, turn_gen: 'g' })
+    const { getByTestId, queryByTestId } = mount(store)
+    fireEvent.click(getByTestId('stop-button-armed'))
+    act(() => { store.dispatch(sseSlots([slotRow({ running: true, turn: 5, turn_gen: 'g' })])) })
+    await act(async () => { settle({ ok: false, error: 'stop refused' }) })
+    expect(queryByTestId('chat-pane-stop-error')).toBeNull()
   })
 
   it('a late failure for the slot the pane used to show does not disarm the current slot', async () => {

@@ -16,7 +16,9 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
     _doctor_reads_the_warm_probe_cache,
 )
 
+from kiro_crew.gateway_lock import LockHolder
 from kiro_crew.service.common import RestartReport
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestRestart:
@@ -32,8 +34,7 @@ class TestRestart:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _fast_restart_ready(self, monkeypatch):
+    def _fast_restart_ready(self, _floor_monkeypatch):
         """Collapse the post-spawn readiness work so these tests don't spin.
 
         These tests mock the gateway lifecycle (``_spawn_detached_gateway`` /
@@ -53,8 +54,8 @@ class TestRestart:
         """
         from kiro_crew import cli_server
 
-        monkeypatch.setattr("kiro_crew.cli_server._RESTART_TOKEN_WAIT", 0)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr("kiro_crew.cli_server._RESTART_TOKEN_WAIT", 0)
+        _floor_monkeypatch.setattr(
             "kiro_crew.cli_server._wait_gateway_ready",
             lambda *a, **kw: (cli_server._READY_OK, None),
         )
@@ -85,6 +86,17 @@ class TestRestart:
         # refusal test overrides it.
         with patch(
             "kiro_crew.cli_server.service_controller.service_alias_holder",
+            return_value=None,
+        ):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _no_installed_unit(self):
+        # ``_restart`` refuses the foreground path when a service is installed
+        # but not running. The real lookup reads the host's unit files and asks
+        # systemctl, so pin "nothing installed"; the refusal tests override it.
+        with patch(
+            "kiro_crew.cli_server.service_controller.installed_unit_path",
             return_value=None,
         ):
             yield
@@ -254,6 +266,93 @@ class TestRestart:
         audit = mock_sel.log_api_access.call_args.kwargs
         assert audit["outcome"] == "denied"
         assert "reason=service_restart_not_up" in audit["resources"]
+
+    def test_unit_not_up_on_a_truncated_key_prints_the_repair_steps(self, capsys, tmp_path):
+        # A service gateway's refusal lands in the journal. The restart names
+        # the journal command and, when the key is short, the steps themselves.
+        from kiro_crew import cli_server
+        from kiro_crew.service.common import RESTART_NOT_UP, RestartReport, ScopeRestart
+
+        key = tmp_path / "token_signing.key"
+        not_up = RestartReport(
+            (
+                ScopeRestart(
+                    "user",
+                    False,
+                    reason="kirocrew.service is activating (auto-restart)",
+                    kind=RESTART_NOT_UP,
+                    hint="journalctl --user -u kirocrew.service -n 50 --no-pager",
+                ),
+            )
+        )
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=MagicMock()),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=not_up,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value=None),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", key),
+            ),
+            patch(
+                "kiro_crew.service.common.restart_command_hint",
+                return_value="systemctl --user restart kirocrew",
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+
+        assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Read why it exits:  journalctl --user -u kirocrew.service" in out
+        assert f"token signing key at {key} is shorter than 32 bytes" in out
+        assert "systemctl --user restart kirocrew" in out
+
+    def test_unit_the_manager_refused_to_restart_gets_no_key_steps(self, capsys, tmp_path):
+        # A refused verb never ran the gateway, so its boot cannot be the cause.
+        from kiro_crew import cli_server
+        from kiro_crew.service.common import RESTART_REFUSED, RestartReport, ScopeRestart
+
+        refused = RestartReport(
+            (
+                ScopeRestart(
+                    "system",
+                    False,
+                    reason="Interactive authentication required",
+                    kind=RESTART_REFUSED,
+                    hint="sudo systemctl restart kirocrew",
+                ),
+            )
+        )
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=MagicMock()),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=refused,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway"),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", tmp_path / "token_signing.key"),
+            ) as mock_health,
+        ):
+            with pytest.raises(SystemExit):
+                cli_server._restart(None)
+
+        assert "Repair it by hand" not in capsys.readouterr().out
+        mock_health.assert_not_called()
 
     def test_attempted_restart_that_left_the_unit_failed_never_spawns_a_foreground_gateway(
         self, capsys
@@ -449,6 +548,252 @@ class TestRestart:
         assert "4321" in out
         assert "NOT restarted" not in out
 
+    @pytest.mark.parametrize(
+        "unit_kind, scope", [("system", "system"), ("user", "user"), ("plist", "launchd")]
+    )
+    def test_installed_but_stopped_service_is_refused_not_bypassed(
+        self, tmp_path, capsys, unit_kind, scope
+    ):
+        # After `kirocrew stop` the unit is installed but inactive. Restart must
+        # not start a detached gateway outside it; it names the unit and scope.
+        from kiro_crew import cli_server
+        from kiro_crew.service import linux as svc_linux
+        from kiro_crew.service import macos as svc_macos
+
+        system_unit = tmp_path / "kirocrew.service"
+        plist = tmp_path / "agent.plist"
+        unit = {"system": system_unit, "user": tmp_path / "user.service", "plist": plist}
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch.object(svc_linux, "UNIT_PATH", system_unit),
+            patch.object(svc_macos, "PLIST_PATH", plist),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=unit[unit_kind],
+            ),
+            patch("kiro_crew.service.linux.system_unit_is_ours", return_value=True, create=True),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.lock_holder",
+                return_value=LockHolder(pid=None, alive=False, source="none"),
+            ),
+            patch("kiro_crew.cli_server._stop") as mock_stop,
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+        assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        mock_stop.assert_not_called()
+        out = capsys.readouterr().out
+        assert f"kirocrew {scope} service is installed ({unit[unit_kind]})" in out
+        assert "start it with your service manager" in out
+        # No exact command: each one failed in some environment (sudo, bus, domain).
+        assert "systemctl" not in out and "launchctl" not in out
+        audit = mock_sel.log_api_access.call_args.kwargs
+        assert audit["outcome"] == "denied"
+        assert "reason=service_installed_not_running" in audit["resources"]
+
+    def test_stopped_system_alias_is_not_mistaken_for_our_stopped_unit(self, tmp_path, capsys):
+        # The system unit file is a symlink to another, inactive unit and no
+        # per-user unit of ours is installed: the manager's canonical Id is not
+        # ours, so restart keeps today's path instead of printing a start
+        # command that would start that other unit.
+        from kiro_crew import cli_server
+        from kiro_crew.service import linux as svc_linux
+
+        system_unit = tmp_path / "kirocrew.service"
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch.object(svc_linux, "UNIT_PATH", system_unit),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=system_unit,
+            ),
+            patch("kiro_crew.service.linux.system_unit_is_ours", return_value=False, create=True),
+            patch("kiro_crew.service.linux.user_unit_path", return_value=None),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.lock_holder",
+                return_value=LockHolder(pid=None, alive=False, source="none"),
+            ),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
+        ):
+            cli_server._restart(None)
+        mock_spawn.assert_called_once()
+        out = capsys.readouterr().out
+        assert "start it with your service manager" not in out
+        assert "systemctl start" not in out
+
+    def test_system_alias_does_not_hide_our_stopped_user_unit(self, tmp_path, capsys):
+        # A stopped system alias of another unit sits beside our canonical
+        # per-user unit, also stopped: restart refuses and names the user unit
+        # instead of starting a gateway outside it.
+        from service_helpers import _DEAD, _fake_systemctl
+
+        from kiro_crew import cli_server
+        from kiro_crew.service import linux as svc_linux
+
+        system_unit = tmp_path / "kirocrew.service"
+        user_unit = tmp_path / "user.service"
+        user_unit.write_text("[Service]\n")
+        run = _fake_systemctl(
+            system=_DEAD, system_id="other.service", user=_DEAD, user_fragment=str(user_unit)
+        )
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch.object(svc_linux, "UNIT_PATH", system_unit),
+            patch("kiro_crew.service.linux.subprocess.run", side_effect=run),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=system_unit,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.lock_holder",
+                return_value=LockHolder(pid=None, alive=False, source="none"),
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+        assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        assert f"kirocrew user service is installed ({user_unit})" in capsys.readouterr().out
+        audit = mock_sel.log_api_access.call_args.kwargs
+        assert "reason=service_installed_not_running" in audit["resources"]
+
+    def test_unloadable_system_unit_keeps_todays_path(self, tmp_path, capsys):
+        # A unit whose file fails to load cannot be started, so restart must not
+        # refuse with a start command; it keeps the foreground path, as on main.
+        from service_helpers import _DEAD, _fake_systemctl
+
+        from kiro_crew import cli_server
+        from kiro_crew.service import linux as svc_linux
+
+        system_unit = tmp_path / "kirocrew.service"
+        run = _fake_systemctl(system=_DEAD, system_load="bad-setting")
+        with (
+            self._mock_sel(),
+            patch.object(svc_linux, "UNIT_PATH", system_unit),
+            patch("kiro_crew.service.linux.subprocess.run", side_effect=run),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=system_unit,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.lock_holder",
+                return_value=LockHolder(pid=None, alive=False, source="none"),
+            ),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
+        ):
+            cli_server._restart(None)
+        mock_spawn.assert_called_once()
+        out = capsys.readouterr().out
+        assert "start it with your service manager" not in out
+        assert "systemctl start" not in out
+
+    def test_running_foreground_gateway_beside_a_stopped_unit_still_restarts(self, capsys):
+        # A gateway already listens: the refusal is only for the `stop` then
+        # `restart` case where nothing runs, so this keeps today's restart.
+        from kiro_crew import cli_server
+
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=Path("/etc/systemd/system/kirocrew.service"),
+            ),
+            patch("kiro_crew.service.linux.system_unit_is_ours", return_value=True, create=True),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[1234]),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server._wait_for_pids_exit", return_value=[]),
+            patch("kiro_crew.cli_server._stop") as mock_stop,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(5678),
+            ) as mock_spawn,
+        ):
+            cli_server._restart(None)
+        mock_stop.assert_called_once_with(None)
+        mock_spawn.assert_called_once()
+        assert "5678" in capsys.readouterr().out
+        reasons = [c.kwargs.get("resources", "") for c in mock_sel.log_api_access.call_args_list]
+        assert not any("service_installed_not_running" in r for r in reasons)
+
+    def test_lock_held_gateway_beside_a_stopped_unit_is_not_the_stopped_refusal(self, capsys):
+        # No TCP listener, but gateway.lock names a live gateway (unix socket):
+        # a gateway IS running, so the stopped-unit refusal must not fire; the
+        # existing lock-holder path decides, unchanged.
+        from kiro_crew.cli_server import _restart
+
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=Path("/etc/systemd/system/kirocrew.service"),
+            ),
+            patch("kiro_crew.service.linux.system_unit_is_ours", return_value=True, create=True),
+            self._probe_missed_gateway(4242, kirocrew=True),
+        ):
+            with pytest.raises(SystemExit):
+                _restart(None)
+        out = capsys.readouterr().out
+        assert "pid 4242" in out
+        assert "start it with your service manager" not in out
+        audit = mock_sel.log_api_access.call_args.kwargs
+        assert "reason=lock_holder_kirocrew" in audit["resources"]
+
+    def test_explicit_port_bypasses_the_stopped_service_refusal(self, capsys):
+        from kiro_crew import cli_server
+
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=Path("/etc/systemd/system/kirocrew.service"),
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
+        ):
+            cli_server._restart(5999)
+        mock_spawn.assert_called_once()
+
     @contextlib.contextmanager
     def _probe_missed_gateway(self, holder_pid: int, *, kirocrew: bool):
         """Patches for the tool-present path where the port probe finds nothing
@@ -626,6 +971,9 @@ class TestRestart:
             self._mock_sel(),
             self._tool_absent_acked_shutdown(4242, kirocrew=False),
             patch("kiro_crew.cli_server.lock_holder", side_effect=_probe),
+            # The up-front desktop-app check reads the lock too; these tests
+            # count the reads the stop-and-wait path makes.
+            patch("kiro_crew.cli_server._config_dir_owner", return_value=None),
             patch("kiro_crew.cli_server.os.kill") as mock_kill,
             patch("kiro_crew.cli_server.platform_compat.kill_process_tree") as mock_tree,
             patch("kiro_crew.cli_server._wait_for_pids_exit", side_effect=_wait),
@@ -722,6 +1070,9 @@ class TestRestart:
             self._mock_sel(),
             self._tool_absent_acked_shutdown(4242),
             patch("kiro_crew.cli_server.lock_holder", side_effect=_probe),
+            # The up-front desktop-app check reads the lock too; these tests
+            # count the reads the stop-and-wait path makes.
+            patch("kiro_crew.cli_server._config_dir_owner", return_value=None),
             patch("kiro_crew.cli_server._wait_for_pids_exit", side_effect=_wait),
             patch(
                 "kiro_crew.cli_server._spawn_detached_gateway",
@@ -753,6 +1104,8 @@ class TestRestart:
         out = capsys.readouterr().out
         assert "Gateway (pid 4242) did not exit within" in out
         assert "Not starting a replacement" in out
+        # The fixture runs the POSIX path: the hint is main's text, byte for byte.
+        assert "   If the process is wedged, force it: kill -9 4242\n" in out
         audit = mock_sel.log_api_access.call_args.kwargs
         assert audit["outcome"] == "denied"
         assert "reason=incumbent_still_running" in audit["resources"]
@@ -1013,13 +1366,13 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=4321)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway(6776)
+            spawned = _spawn_detached_gateway(6776)
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == [
             "/usr/local/bin/kirocrew",
             "gateway",
@@ -1027,7 +1380,7 @@ class TestRestart:
             "6776",
         ]
 
-    def test_restart_passes_resolved_port_to_spawn(self, tmp_path, monkeypatch):
+    def test_restart_passes_resolved_port_to_spawn(self, tmp_path, monkeypatch, capsys):
         """`restart` with no --port must hand its resolved port to the child."""
         from kiro_crew import cli_server
 
@@ -1051,6 +1404,7 @@ class TestRestart:
         ):
             cli_server._restart(None)
         assert mock_spawn.call_args.args[0] == 6776
+        assert "Started detached gateway (pid 1234)" in capsys.readouterr().out
 
     def test_spawn_detached_gateway_uses_kirocrew_bin(self, tmp_path, monkeypatch):
         # When ``kirocrew`` is on PATH, the detached child must invoke it
@@ -1059,8 +1413,12 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=9999)
+        # The Windows flag values, pinned on every OS so the choice of flags is
+        # checked on POSIX runners too (there the real names resolve to 0).
+        monkeypatch.setattr("kiro_crew.platform_compat.DETACHED_PROCESS", 0x8)
+        monkeypatch.setattr("kiro_crew.platform_compat.CREATE_NEW_PROCESS_GROUP", 0x200)
+        monkeypatch.setattr("kiro_crew.platform_compat._SUBPROCESS_NO_WINDOW", 0x08000000)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
@@ -1070,17 +1428,17 @@ class TestRestart:
         # poll the child for early death (and its exit status) before it reports
         # success.
         assert spawned is proc
-        assert spawned.pid == 9999
+        assert spawned.pid == UNALLOCATABLE_PID
         argv = mock_popen.call_args.args[0]
         assert argv == ["/usr/local/bin/kirocrew", "gateway"]
         # Must detach from the controlling terminal — otherwise the detached
         # process would die when the calling shell exits. POSIX: start_new_session;
-        # Windows: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP creationflags.
+        # Windows: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP creationflags, and
+        # never DETACHED_PROCESS: a console-less gateway makes every console
+        # child it starts open a visible window.
         kw = mock_popen.call_args.kwargs
+        assert kw["creationflags"] == 0x08000200
         if sys.platform == "win32":
-            flags = kw["creationflags"]
-            assert flags & subprocess.DETACHED_PROCESS
-            assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
             # Passed explicitly as False (mypy-safe explicit flags, not **dict
             # unpack); Windows ignores it, the creationflags do the detaching.
             assert kw.get("start_new_session") is False
@@ -1104,13 +1462,13 @@ class TestRestart:
         own.write_text("#!/bin/sh\n")
         own.chmod(0o755)
         monkeypatch.setattr(sys, "argv", [str(own), "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=7777)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway()
+            spawned = _spawn_detached_gateway()
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == [str(own), "gateway"]
 
     def test_spawn_detached_gateway_ignores_non_kirocrew_argv0(self, tmp_path, monkeypatch):
@@ -1124,13 +1482,13 @@ class TestRestart:
         other.write_text("#!/bin/sh\n")
         other.chmod(0o755)
         monkeypatch.setattr(sys, "argv", [str(other), "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=6666)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway()
+            spawned = _spawn_detached_gateway()
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == ["/usr/local/bin/kirocrew", "gateway"]
 
     def test_spawn_detached_gateway_ignores_missing_argv0_path(self, tmp_path, monkeypatch):
@@ -1141,13 +1499,13 @@ class TestRestart:
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
         monkeypatch.setattr(sys, "argv", [str(tmp_path / "ghost" / "kirocrew"), "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=5555)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            _spawn_detached_gateway()
+            spawned = _spawn_detached_gateway()
+        assert spawned is proc
         assert mock_popen.call_args.args[0] == ["/usr/local/bin/kirocrew", "gateway"]
 
     def test_spawn_detached_gateway_absolutizes_relative_argv0(self, tmp_path, monkeypatch):
@@ -1178,8 +1536,7 @@ class TestRestart:
         monkeypatch.chdir(tmp_path)
         rel = os.path.join(".venv", venv_bin.name, script_name)
         monkeypatch.setattr(sys, "argv", [rel, "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=4444)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen:
             _spawn_detached_gateway()
         spawned = Path(mock_popen.call_args.args[0][0])
@@ -1196,8 +1553,7 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=8888)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value=None),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,

@@ -179,9 +179,7 @@ class PanelError(ValueError):
         self.code = code
 
 
-# --------------------------------------------------------------------------
 # paths
-# --------------------------------------------------------------------------
 
 
 def shipped_templates_dir() -> Path:
@@ -368,9 +366,7 @@ def panel_path(slug: str) -> Path:
     return target
 
 
-# --------------------------------------------------------------------------
 # templates
-# --------------------------------------------------------------------------
 
 
 def available_templates() -> list[str]:
@@ -426,14 +422,9 @@ def template_for_crew(name: str) -> str:
     table and no per-crew config: installing ``<crew-name>.html`` is the whole
     act of wiring it up. Everything else falls back to the generic template.
 
-    The name is SLUGIFIED, not merely lowercased. Lowercasing alone made that
-    promise true only for a crew whose name is a single already-lowercase word:
-    every multi-word name kept its spaces, ``TEMPLATE_ID_RE`` rejects a space,
-    and the match therefore fell back to the generic template no matter what was
-    installed. A crew called ``Pipeline Conductor`` could not reach
-    ``pipeline-conductor.html`` -- the mechanism was dead for exactly the names
-    a bespoke template is worth writing for. Slugifying also makes this agree
-    with how the crew's own record path is addressed, which was already a slug.
+    The name is SLUGIFIED, not merely lowercased: ``TEMPLATE_ID_RE`` rejects a
+    space, so ``Pipeline Conductor`` reaches ``pipeline-conductor.html`` only as a
+    slug. It also matches how the crew's own record path is addressed.
     """
     candidate = _slug_candidate(name)
     if TEMPLATE_ID_RE.match(candidate) and candidate in available_templates():
@@ -469,9 +460,7 @@ def resolve_template(template_id: str) -> str:
     raise PanelError("unknown_template", f"no such template: {template_id!r}")
 
 
-# --------------------------------------------------------------------------
 # validation
-# --------------------------------------------------------------------------
 
 
 def _check_depth(value: Any, limit: int) -> None:
@@ -519,9 +508,7 @@ def _clamp(value: Any, limit: int) -> str:
     return value[:limit]
 
 
-# --------------------------------------------------------------------------
 # the escaping boundary
-# --------------------------------------------------------------------------
 
 #: Escaped inside the JSON string literals so the serialized data cannot end the
 #: script element that carries it, cannot open a tag, and cannot terminate a
@@ -575,9 +562,7 @@ def compose(template_html: str, data_json: str) -> str:
     return template_html.replace(DATA_MARKER, island, 1)
 
 
-# --------------------------------------------------------------------------
 # read and write
-# --------------------------------------------------------------------------
 
 
 @contextmanager
@@ -613,17 +598,10 @@ def _locked(lock_path: Path) -> Iterator[None]:
 def _now_iso() -> str:
     """The publish time as UTC with an explicit ``+00:00`` offset.
 
-    Zone-LESS local time was wrong for a value that leaves the host: the drawer
-    hands ``published_at`` to ``new Date()``, which reads an offset-free string as
-    the BROWSER's local time. On the loopback dashboard that is the same clock that
-    wrote it and the bug is invisible; from a remote browser in another zone every
-    age is skewed by the offset between them, so `2m ago` could read as hours.
-
-    Fixed now rather than later because schema v1 has no consumers yet, so this
-    costs nothing today and would be a migration once a stored record has readers.
-    An offset-carrying stamp also parses identically in JS, Python
-    (``datetime.fromisoformat``) and CLDR, so no reader needs to know the
-    convention.
+    The drawer hands ``published_at`` to ``new Date()``, which reads an
+    offset-free string as the BROWSER's local time, so a remote browser in another
+    zone would skew every age. An offset-carrying stamp parses identically in JS,
+    Python (``datetime.fromisoformat``) and CLDR.
     """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -788,16 +766,10 @@ def publish(
     # SHAPE AND DEPTH BEFORE ANYTHING RECURSES.
     #
     # ``_scrub_published`` walks the payload with no depth limit of its own, so a
-    # 1000-level nested object blew the stack inside the SCRUBBER -- an uncaught
-    # RecursionError and a 500, on a payload the depth cap exists to refuse
-    # politely. Adding redaction is what inverted the order that made the cap
-    # meaningful, so the cap now runs first.
-    #
-    # Safe to run first precisely because ``_check_depth`` is bounded: it counts
-    # DOWN from the limit and raises on reaching zero, so it never descends further
-    # than the cap allows. ``_validate_data`` re-checks the scrubbed copy -- it is
-    # the canonical validator and has other callers -- and the second pass is
-    # cheap once this one has already bounded the input.
+    # deeply nested object would raise RecursionError (a 500) inside the scrubber
+    # instead of the polite ``data_too_deep`` refusal. ``_check_depth`` is bounded
+    # (it counts DOWN and raises at zero), so it is safe to run first;
+    # ``_validate_data`` re-checks the scrubbed copy cheaply.
     if not isinstance(data, dict):
         raise PanelError("data_not_object", "panel data must be a JSON object")
     _check_depth(data, _MAX_DATA_DEPTH)
@@ -935,7 +907,7 @@ def read(slug: str) -> dict[str, Any] | None:
         path = panel_path(slug)
         if path.stat().st_size > _MAX_RECORD_BYTES:
             return None
-    # ``MemberSlugError`` is a ``ValueError``, so a bad slug is caught here too;
+    # ``CrewSlugError`` is a ``ValueError``, so a bad slug is caught here too;
     # a stat that fails (absent file) reads as "no panel published".
     except (OSError, ValueError):
         return None
@@ -967,10 +939,8 @@ def render_record(record: dict[str, Any] | None) -> str | None:
     """Compose an ALREADY-READ record, or ``None`` when it is absent.
 
     Takes an already-read record so a caller that also needs the record's fields
-    can serve both halves from ONE snapshot. Reading twice -- once here and once
-    for the metadata -- let a publish land in between and returned the OLD document
-    beside the NEW summary: the docked chip and the expanded view would then
-    disagree, which is the one thing a drawer showing both must not do.
+    serves both halves from ONE snapshot: two reads let a publish land between them,
+    and the docked chip and the expanded view would disagree.
 
     Composition still happens on READ rather than at publish, so an edited template
     takes effect on the next drawer open with no republish. Composition failures
@@ -982,8 +952,7 @@ def render_record(record: dict[str, Any] | None) -> str | None:
     # ``board`` when a provider derived one, else ``data`` as published. The two keys
     # serve the two surfaces: the DOCUMENT renders whatever the provider computed, while
     # the drawer's native docked card walks ``data`` and prints its leading keys, so a
-    # derived board placed there would headline the reader's least useful numbers. A
-    # record with no ``board`` is every other crew's, and composes exactly as before.
+    # derived board placed there would headline the reader's least useful numbers.
     island = record.get("board")
     if not isinstance(island, dict):
         island = record["data"]

@@ -24,8 +24,6 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.embedder import embedder_signature
 
-# ------------------------------------------------------- chat-context search
-
 
 def _patch_retriever(monkeypatch, results):
     """Route the handler's hybrid search at a fixed result list, off-pool."""

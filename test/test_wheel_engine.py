@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from opener_helpers import answer_with, redirect_to
 from spawn_test_helpers import (
     LONG_CHILD_WITH_GRANDCHILD,
     await_gone,
@@ -345,6 +346,15 @@ class TestSignatureVerification:
         assert "timed out after 0s" in str(info.value)
         assert "signature verification failed" not in str(info.value)
 
+    def test_a_missing_openssl_names_the_package_to_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(wheel_engine, "trusted_system_bin", lambda _name: None)
+        with pytest.raises(WheelUpdateError) as info:
+            wheel_engine._openssl_bin()
+        assert "'sudo apt-get install -y openssl'" in str(info.value)
+        assert "'sudo dnf install -y openssl'" in str(info.value)
+
 
 class TestEngineLockMatchesInstaller:
     def test_cli_sh_takes_the_engine_lock_in_its_managed_venv_branch(self) -> None:
@@ -380,11 +390,7 @@ class TestWheelDownload:
             return None
 
     def _serve(self, monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
-        monkeypatch.setattr(
-            wheel_engine.urllib.request,
-            "urlopen",
-            lambda req, timeout: self._FakeResponse(body),
-        )
+        answer_with(monkeypatch, lambda req, timeout: self._FakeResponse(body))
 
     def test_streamed_download_verifies_incrementally(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -411,6 +417,35 @@ class TestWheelDownload:
         with pytest.raises(WheelUpdateError, match="SHA-256 mismatch"):
             wheel_engine.download_verified_wheel(payload, tmp_path)
         assert not list(tmp_path.iterdir()), "no wheel may survive a digest mismatch"
+
+    def test_a_redirect_off_the_cdn_host_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The release CDN serves the wheel itself, so a hop to another host is never followed."""
+        monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
+        body = b"wheel-bytes" * 100
+        url = f"{_ARTIFACT_BASE}/cli/stable/9.9.9/kirocrew-9.9.9-py3-none-any.whl"
+        requested = redirect_to(monkeypatch, url, "https://elsewhere.example/w.whl", body)
+        payload = {"wheel_url": url, "sha256": hashlib.sha256(body).hexdigest(), "version": "9.9.9"}
+        with pytest.raises(WheelUpdateError, match="to elsewhere.example refused"):
+            wheel_engine.download_verified_wheel(payload, tmp_path)
+        assert requested == [url], "the hop off the CDN host was followed"
+        assert not list(tmp_path.iterdir()), "nothing from another host may be installed"
+
+    def test_an_operator_mirror_may_redirect_to_another_https_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A url under ``KIROCREW_CDN_BASE`` is the operator's own mirror, as for every
+        environment-set url the shared opener serves; the digest still decides."""
+        monkeypatch.setenv("KIROCREW_CDN_BASE", "https://mirror.example/crew/")
+        body = b"wheel-bytes" * 100
+        url = "https://mirror.example/crew/cli/stable/9.9.9/kirocrew-9.9.9-py3-none-any.whl"
+        hop = "https://storage.example/w.whl"
+        requested = redirect_to(monkeypatch, url, hop, body)
+        dest = tmp_path / "w.whl"
+        wheel_engine._download_to_file(url, dest, 1 << 20, 5, hashlib.sha256(body).hexdigest())
+        assert requested == [url, hop]
+        assert dest.read_bytes() == body
 
     def test_cap_enforced_against_received_bytes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -501,13 +536,9 @@ class TestFetchBytes:
             def __exit__(self, *exc: object) -> None:
                 return None
 
-        monkeypatch.setattr(
-            wheel_engine.urllib.request, "urlopen", lambda req, timeout: _Resp(b"ok")
-        )
+        answer_with(monkeypatch, lambda req, timeout: _Resp(b"ok"))
         assert wheel_engine._fetch_bytes("https://x.example/f", 10, 1) == b"ok"
-        monkeypatch.setattr(
-            wheel_engine.urllib.request, "urlopen", lambda req, timeout: _Resp(b"x" * 20)
-        )
+        answer_with(monkeypatch, lambda req, timeout: _Resp(b"x" * 20))
         with pytest.raises(WheelUpdateError, match="ceiling"):
             wheel_engine._fetch_bytes("https://x.example/f", 10, 1)
 
@@ -517,7 +548,7 @@ class TestFetchBytes:
         def raising(req: object, timeout: float) -> object:
             raise _ue.URLError("boom")
 
-        monkeypatch.setattr(wheel_engine.urllib.request, "urlopen", raising)
+        answer_with(monkeypatch, raising)
         with pytest.raises(WheelUpdateError, match="could not fetch"):
             wheel_engine._fetch_bytes("https://x.example/f", 10, 1)
 
@@ -580,11 +611,7 @@ class TestRealHttpResponse:
         # route the loopback request elsewhere.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         loopback = f"http://127.0.0.1:{server.server_port}/"
-        monkeypatch.setattr(
-            wheel_engine.urllib.request,
-            "urlopen",
-            lambda req, timeout: opener.open(loopback, timeout=timeout),
-        )
+        answer_with(monkeypatch, lambda req, timeout: opener.open(loopback, timeout=timeout))
         sockets: list[object] = []
         real_socket = wheel_engine._response_socket
 

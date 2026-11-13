@@ -7,6 +7,7 @@ import random
 import zlib
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.security import StreamRedactor, redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
@@ -160,9 +161,38 @@ def test_a_diagram_whose_source_holds_a_key_is_not_kept(source: str) -> None:
 
 @pytest.mark.parametrize(
     "encoded",
-    ["", "SyfF", SEGMENT_KEY, SEGMENT_KEY + "AA", SAMPLE[:-4], SAMPLE + "AAAA", _encode("a\x00b")],
+    [
+        *named_cases(
+            "test_text_that_is_not_a_whole_diagram_is_not_one",
+            "encoded",
+            [
+                "",
+                "SyfF",
+                SEGMENT_KEY,
+                SEGMENT_KEY + "AA",
+                SAMPLE[:-4],
+                SAMPLE + "AAAA",
+                _encode("a\x00b"),
+            ],
+        ),
+        *named_cases(
+            "test_a_diagram_cut_mid_group_or_with_a_further_group_is_not_kept",
+            "encoded",
+            [
+                SAMPLE[:-1],
+                SAMPLE[:-2],
+                SAMPLE[:-3],
+                SAMPLE + "A",
+                SAMPLE + "AAAA",
+                # `0` is PlantUML's zero digit: a further group of padding is still a group.
+                SAMPLE + "0",
+                SAMPLE + "0000",
+                SAMPLE + SEGMENT_KEY[:4],
+            ],
+        ),
+    ],
 )
-def test_text_that_is_not_a_whole_diagram_is_not_one(encoded: str) -> None:
+def test_a_partial_diagram_is_not_kept(encoded: str) -> None:
     assert not _kept(encoded)
 
 
@@ -200,24 +230,6 @@ def test_a_diagram_link_inside_a_diagram_is_not_decoded_again() -> None:
         _redaction._IN_DIAGRAM_SCAN.set(previous)
     # Inside a diagram the inner link is judged by the other passes only.
     assert _kept(outer) is inner_unchanged
-
-
-@pytest.mark.parametrize(
-    "encoded",
-    [
-        SAMPLE[:-1],
-        SAMPLE[:-2],
-        SAMPLE[:-3],
-        SAMPLE + "A",
-        SAMPLE + "AAAA",
-        # `0` is PlantUML's zero digit: a further group of padding is still a group.
-        SAMPLE + "0",
-        SAMPLE + "0000",
-        SAMPLE + SEGMENT_KEY[:4],
-    ],
-)
-def test_a_diagram_cut_mid_group_or_with_a_further_group_is_not_kept(encoded: str) -> None:
-    assert not _kept(encoded)
 
 
 def test_no_cut_of_a_key_glued_to_a_diagram_is_kept() -> None:

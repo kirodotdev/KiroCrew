@@ -327,7 +327,7 @@ await shot('08-measured-one-of-two-attempted')
 
 // 9. The bulk action, in the state a reader meets it: the button names what it
 //     does and the line beside it says what will be measured and what will be
-//     left alone. It lives on the Servers view because the assessment view states
+//     left alone. It lives on the Per-server sharing view because the assessment view states
 //     it changes nothing.
 measureProgress = { running: false, done: 0, measured: 0, total: 0 }
 everythingMeasured = false

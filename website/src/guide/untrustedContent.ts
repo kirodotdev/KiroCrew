@@ -21,15 +21,12 @@ export function installGuideMarkerStrip(purify: typeof DOMPurify = DOMPurify): v
 installGuideMarkerStrip()
 
 /**
- * *html* (already sanitized) without any guide marker on any element. A pass
- * of its own, beside the hook: it does not depend on how the sanitizer walks
- * namespaced (SVG) attributes.
+ * Remove every guide marker from the elements under *root* (already sanitized).
+ * A pass of its own, beside the hook: it does not depend on how the sanitizer
+ * walks namespaced (SVG) attributes.
  */
-export function stripGuideMarkers(html: string): string {
-  if (!/data-?(?:ui|guide|setting)/i.test(html)) return html
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  for (const el of Array.from(doc.querySelectorAll('*'))) {
+export function stripGuideMarkers(root: ParentNode): void {
+  for (const el of Array.from(root.querySelectorAll('*'))) {
     for (const name of el.getAttributeNames()) if (isGuideMarkerAttr(name)) el.removeAttribute(name)
   }
-  return doc.body.innerHTML
 }

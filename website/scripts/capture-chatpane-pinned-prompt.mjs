@@ -50,7 +50,6 @@ async function prime(page, theme) {
     await skip.waitFor({ state: 'hidden', timeout: 10000 })
   }
   await page.evaluate(async (th) => {
-    localStorage.setItem('mc-preview-crew', '1')
     await fetch('/api/config/theme', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

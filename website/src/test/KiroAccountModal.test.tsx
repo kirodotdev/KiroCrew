@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import KiroAccountModal, { type KiroAccountUsage } from '../components/KiroAccountModal'
@@ -34,12 +34,25 @@ vi.mock('../api/client', async importOriginal => {
       ...mod.api,
       sessionsUsageRefresh: vi.fn(),
       kiroUsage: vi.fn(async () => KIRO_USAGE_EMPTY),
+      // The sign-out link's harness read; its own cases live in
+      // KiroAccountModal.signOutLink.test.tsx.
+      kirocrewConfig: vi.fn(async () => ({ agent: { acp_backend: 'kas' } })),
+      kasLoginStatus: vi.fn(async () => ({ authenticated: true, provider: 'Google', identity: 'social' })),
     },
   }
 })
 
 const refreshMock = vi.mocked(api.sessionsUsageRefresh)
 const kiroUsageMock = vi.mocked(api.kiroUsage)
+/** The next config read names the kiro-cli harness, whose sign-in-required state
+ *  sends the user to `kiro-cli login`. On KAS that state names Crew's own sign-in
+ *  instead (KiroAccountModal.signOutLink.test.tsx). */
+const onKiroCliHarness = () =>
+  vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'kiro' } } as never)
+// A queued answer a test left unread must not reach the next test: back to the KAS default.
+beforeEach(() => {
+  vi.mocked(api.kirocrewConfig).mockReset()
+})
 
 const BASE_USAGE: KiroCreditUsage = {
   used: 10,
@@ -435,23 +448,10 @@ describe('KiroAccountModal', () => {
     expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
   })
 
-  it('explains API-key auth instead of spinning or claiming a generic failure', async () => {
-    // 'api-key' is terminal by construction: the usage API needs an SSO/OIDC
-    // token that auth type never has (#5728). The panel must say so — not spin,
-    // and not show the generic unavailable line that reads as a transient error.
-    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="api-key" />)
-
-    expect(
-      await screen.findByText('Credit usage isn’t available for API key authentication'),
-    ).toBeInTheDocument()
-    expect(screen.queryByText('Could not read your balance.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
-  })
-
   it('tells the user to sign in again and offers no Refresh for it', async () => {
     // 'signin-required' is terminal until the user re-authenticates. The /usage
     // read needs the same sign-in, so a Refresh here could only fail again.
+    onKiroCliHarness()
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="signin-required" />)
 
     expect(await screen.findByText(/Sign in to Kiro again/)).toBeInTheDocument()
@@ -468,6 +468,7 @@ describe('KiroAccountModal', () => {
     // (AUTOSDE errors-use-error-notice). The hand-off opens the chat this modal
     // sits over, so the modal must close with it: a hand-off the user cannot see
     // reads as a dead button.
+    onKiroCliHarness()
     const onClose = vi.fn()
     renderWithProviders(
       <KiroAccountModal open onClose={onClose} usage="signin-required" />,
@@ -482,21 +483,16 @@ describe('KiroAccountModal', () => {
   })
 
   it('leaves the hand-off off the state that reports a configuration, not a failure', async () => {
-    // 'api-key' describes how the account is set up; there is no error for the
-    // agent to act on, so it keeps the passive notice. This pins the split — a
-    // blanket migration would put a recovery button next to a line that needs
-    // no recovery.
-    for (const usage of ['api-key'] as const) {
-      const { unmount } = renderWithProviders(
-        <KiroAccountModal open onClose={vi.fn()} usage={usage} />,
-      )
+    // An account-only sign-in (a provider named, no user) describes how the
+    // account is set up; there is no error for the agent to act on, so it keeps
+    // the passive notice. This pins the split — a blanket migration would put a
+    // recovery button next to a line that needs no recovery.
+    const usage = { accountOnly: true, accountType: 'ExternalIdP' } as const
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
 
-      expect(
-        screen.queryByRole('button', { name: /Ask the agent/i }),
-      ).not.toBeInTheDocument()
-
-      unmount()
-    }
+    expect(
+      screen.queryByRole('button', { name: /Ask the agent/i }),
+    ).not.toBeInTheDocument()
   })
 
   it('calls onClose from the accessible close control', async () => {
@@ -613,9 +609,9 @@ describe('KiroAccountModal refresh', () => {
       expect(screen.getByRole('button', REFRESH)).toBeEnabled()
       unmount()
     }
-    // API-key auth has no credit readout to refresh; an expired sign-in would
-    // fail again; a loading cache has nothing to refresh yet.
-    for (const usage of ['api-key', 'signin-required', null] as const) {
+    // An expired sign-in would fail again; a loading cache has nothing to
+    // refresh yet.
+    for (const usage of ['signin-required', null] as const) {
       const { unmount } = renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
       expect(screen.queryByRole('button', REFRESH)).not.toBeInTheDocument()
       unmount()
@@ -650,6 +646,43 @@ describe('KiroAccountModal refresh', () => {
 
     settle({ usage: { credits_plan: 1000, credits_used: 41 } })
     await screen.findByRole('progressbar', { name: 'Kiro credit usage' })
+  })
+
+  // #23655: the label swap resized the button while `transition-all` animated
+  // it, which left a second, stale button painted over it on mobile WebKit. The
+  // residue came from animating the resize, not from the resize -- so only
+  // colors transition, and the button is free to be the width of the label it
+  // shows. #25265 froze the width instead, by holding both labels in one grid
+  // cell; that padded the idle button out to "Refreshing…" in every locale and
+  // left dead space after "Refresh", so the width change is taken deliberately
+  // and the slack is what this pins against.
+  it('swaps the single label it carries, with only colors transitioning (#23655)', async () => {
+    let settle: (v: { usage: Record<string, unknown> }) => void = () => {}
+    refreshMock.mockImplementation(() => new Promise(resolve => { settle = resolve }))
+    renderWithProviders(<QueryFedModal initial={{ ...BASE_USAGE }} />)
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    const idleLabel = i18nT('components.kiroAccountModal.refresh_balance')
+    const pendingLabel = i18nT('components.kiroAccountModal.refreshing_balance')
+    // Exactly one label is in the button, so its width is that label's own and
+    // carries no room reserved for the other. The name is that same text, which
+    // rules out an `aria-label` carrying a state the button does not show.
+    const expectOneLabel = (button: HTMLElement, shown: string) => {
+      expect(button.className).not.toMatch(/\btransition-all\b/)
+      expect(button.className).toMatch(/\btransition-colors\b/)
+      expect(button.textContent).toBe(shown)
+      expect(button).toHaveAccessibleName(shown)
+    }
+
+    const idle = within(dialog).getByRole('button', REFRESH)
+    expectOneLabel(idle, idleLabel)
+    fireEvent.click(idle)
+    const pending = await within(dialog).findByRole('button', REFRESHING)
+    expect(pending).toBe(idle)
+    expectOneLabel(pending, pendingLabel)
+
+    settle({ usage: { credits_plan: 1000, credits_used: 41 } })
+    const settled = await within(dialog).findByRole('button', REFRESH)
+    expectOneLabel(settled, idleLabel)
   })
 
   it('renders the meter from the refreshed payload and keeps Refresh beside it', async () => {
@@ -712,7 +745,7 @@ describe('KiroAccountModal refresh', () => {
       // The click retries the forecast's Usage report; the pill's reading is
       // not re-read until the other refresh has had time to finish.
       expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['kiro-usage'] })
-      await vi.advanceTimersByTimeAsync(3100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kiro-usage'] })
       // The re-read has landed: the notice has done its job and Refresh is offered again.
       await waitFor(() => expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument())
@@ -896,6 +929,7 @@ describe('KiroAccountModal refresh', () => {
     // signin_required. The pill's query must hold that state NOW -- not after
     // its next poll -- so neither the modal nor the pill keeps showing A.
     refreshMock.mockResolvedValue({ usage: { available: false, reason: 'signin_required' } })
+    onKiroCliHarness()
     const { queryClient } = renderWithProviders(<QueryFedModal initial={BASE_USAGE} />)
     expect(screen.getByText('owner@example.com')).toBeInTheDocument()
 

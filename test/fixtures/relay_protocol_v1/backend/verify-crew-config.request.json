@@ -1,0 +1,48 @@
+{
+  "fixture": "backend/verify-crew-config.request",
+  "kind": "backend-request",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.7",
+  "status": "provisional",
+  "summary": "VerifyCrewConfig request, from a team Crew host at start, before its first RenewCrewLease.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "awsJson1_0 per the backend model. That the server routes on X-Amz-Target at POST / is pending the backend team, contract section 13 item 18."
+    },
+    {
+      "field": "team Crew credential",
+      "why": "The team Crew sends its crew API key as the Bearer with TokenType API_KEY, with no exchange step. Whether the backend means to refuse every other token type here with its Crew-for-Teams switch on is pending, contract section 13 item 29."
+    }
+  ],
+  "planPosition": [
+    "The team Crew calls it at every start. Pending the backend team, contract section 13 item 21."
+  ],
+  "operation": "VerifyCrewConfig",
+  "caller": "A team Crew host. The model says only a Crew principal may call it.",
+  "wire": {
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "X-Amz-Target": "KiroControlPlaneBearerService.VerifyCrewConfig",
+      "Content-Type": "application/x-amz-json-1.0",
+      "Authorization": "Bearer <the caller's credential>",
+      "TokenType": "Matched case-sensitively. A team Crew sends its crew API key as the Bearer, as is, with TokenType API_KEY. A personal Crew sends its owner's sign-in: TokenType omitted for IAM Identity Center, AWS Builder ID and Kiro social sign-ins, and EXTERNAL_IDP for an Okta or Microsoft Entra ID sign-in. KIRO_MACHINE_TOKEN is refused on this operation. SSO_OIDC is not accepted. An unrecognized value counts as an omitted header and fails as a generic authentication failure. With the backend's Crew-for-Teams switch on, anything but API_KEY is refused today, a personal Crew included, pending contract section 13 item 29."
+    }
+  },
+  "fields": {
+    "crewVersion": "Required. A version string.",
+    "protocolVersion": "Required. A string, \"1\" in version 1."
+  },
+  "examples": [
+    {
+      "name": "team Crew start",
+      "body": {
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": "1"
+      }
+    }
+  ]
+}

@@ -102,7 +102,11 @@ describe('side panel mount decision', () => {
    */
   it('passes the same visibility signal to the artifact body', () => {
     const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanelTabBodies.tsx'))
-    expect(src).toMatch(/<ArtifactPanel\s+embedded\s+active=\{active\}/)
+    // `docActive` is the tab's `active` narrowed by DocumentPanelTabs: false while
+    // an edition tab covers the artifact, so a hidden body takes no keys.
+    expect(src).toMatch(/<ArtifactPanel\s+embedded\s+active=\{docActive\}/)
+    const tabs = readSource(join(__dirname, '..', 'pages', 'chat', 'DocumentPanelTabs.tsx'))
+    expect(tabs).toContain('const docActive = active && !current')
     const panel = readSource(join(__dirname, '..', 'components', 'ArtifactPanel.tsx'))
     // The guard, and the flag in the effect's deps so a switch re-binds it. The
     // prop is aliased to `visible` there because a local `active` in that file
@@ -112,8 +116,9 @@ describe('side panel mount decision', () => {
     // whole local dashboard, this panel included, is then off screen.
     expect(panel).toContain('if (!visible || crewHidden) return')
     // Close and exit-fullscreen go through the comment-draft guard, so those
-    // guarded callbacks are the deps rather than `onClose` itself.
-    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden])')
+    // guarded callbacks are the deps rather than `onClose` itself. `confirmOpen`
+    // re-binds it so Escape stands down while the discard prompt is open.
+    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden, confirmOpen])')
   })
 
   describe('find pane claims the dock', () => {

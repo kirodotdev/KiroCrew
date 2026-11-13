@@ -76,6 +76,17 @@ class ChannelDescriptor:
     operator's own Messages.app, so there is nothing to store or rotate, and an
     empty tuple must read as "nothing missing" rather than "not configured".
     """
+    #: Credential keys whose ``.env`` change RESTARTS the channel but which are
+    #: NOT required for it to connect, so they are deliberately kept out of
+    #: ``credentials``: folding them in would make readiness report the channel
+    #: un-startable whenever one is unset. Teams' ``MICROSOFT_APP_TENANT_ID`` is
+    #: the case — a live ``TeamsClient`` authenticates against a fixed tenant and
+    #: cannot adopt a corrected one, so a tenant-only ``.env`` edit must restart
+    #: the channel; but an unset tenant is the supported MULTI-TENANT mode, so it
+    #: is not a missing credential. The restart matcher
+    #: (:func:`changed_credential_keys`) unions this with ``credentials``;
+    #: :func:`kiro_crew.channels.channel_readiness` consults only ``credentials``.
+    restart_credentials: tuple[str, ...] = ()
     #: ``credential key -> config attribute`` for the channels that accept the
     #: secret from ``config.json`` as well as the environment. Readiness has to
     #: consult BOTH, or it reports a missing credential for a channel the gateway
@@ -134,6 +145,43 @@ def changed_boot_keys(
     prefix = desc.channel_type + "."
     keys = {p[len(prefix) :].split(".", 1)[0] for p in changed_paths if p.startswith(prefix)}
     return frozenset(keys & desc.boot_keys)
+
+
+def changed_credential_keys(
+    desc: ChannelDescriptor, changed_paths: "frozenset[str] | set[str]"
+) -> frozenset[str]:
+    """The restart-relevant credential keys of *desc* that *changed_paths* touches.
+
+    The credential twin of :func:`changed_boot_keys`: *changed_paths* here are
+    the watcher's synthetic ``credentials.<KEY>`` paths for ``.env`` edits (the
+    prefix is ``config.live.CREDENTIAL_CHANGE_PREFIX``, defined once there so the
+    dispatch side and this matching side cannot drift), and a key counts when it
+    is one of the channel's declared ``credentials`` OR ``restart_credentials``
+    -- the tokens its transport authenticates with (plus the optional ones, like
+    the Teams tenant, that it still cannot adopt live), which a live socket
+    cannot change, so a change to one restarts the channel exactly as a
+    ``boot_keys`` change does. ``restart_credentials`` is unioned in so a
+    tenant-only edit restarts Teams even though the tenant is not a readiness
+    credential. A channel with no credentials (iMessage, WhatsApp) never
+    matches. Empty means no credential this channel needs changed.
+
+    Matching is by canonical environment-entry name: on Windows ``os.environ``
+    is case-insensitive, so a ``.env`` key whose case differs from the declared
+    credential constant (``telegram_bot_token`` vs ``TELEGRAM_BOT_TOKEN``)
+    addresses the same token the transport authenticates with; matching its
+    literal case against the constant would miss the rotation and never restart
+    the channel. The returned keys are the DECLARED constants, so the restart
+    path downstream still sees the canonical names. On POSIX the canonical form
+    is the name itself, so behaviour is unchanged.
+    """
+    from kiro_crew.config.live import CREDENTIAL_CHANGE_PREFIX
+    from kiro_crew.config.loader import _env_name_key
+
+    prefix = CREDENTIAL_CHANGE_PREFIX + "."
+    changed = {p[len(prefix) :] for p in changed_paths if p.startswith(prefix)}
+    changed_canon = {_env_name_key(k) for k in changed}
+    declared = set(desc.credentials) | set(desc.restart_credentials)
+    return frozenset(k for k in declared if _env_name_key(k) in changed_canon)
 
 
 async def start_channels(

@@ -9,15 +9,14 @@ tool with which a checkout could be completed.
 Two distinct routes had to be closed, and the second is why this file pins an
 ALLOWLIST rather than listing forbidden names:
 
-1. **A shell.** Browsing IS shell (``playwright-cli``), and ``click``
-   and ``attach`` are both on the auto-approve page-verb allowlist, so a shell
-   grant means an injected advisor can click "Place Order" on the operator's
-   logged-in store with no human in the loop.
-2. **Delegation to something holding a shell.** ``@kirocrew-core`` carries
-   ``spawn_run``, whose ``agent`` is validated against the installed TEMPLATES --
-   so the advisor could bind a template that has ``execute_bash``. The browser
-   auto-approve gate is agent-agnostic, so the subagent's ``attach``/``click``
-   auto-approve too. "No shell" is worth nothing if the agent can ask for one.
+1. **A shell.** A shell grant lets an injected advisor script a checkout on the
+   operator's logged-in store (any HTTP client, any browser automation it can
+   install) with no human in the loop.
+2. **Delegation to something holding a shell or a browser.** ``@kirocrew-core``
+   carries ``spawn_run``, whose ``agent`` is validated against the installed
+   TEMPLATES -- so the advisor could bind a template that has ``execute_bash`` or
+   the ``browser`` tool, whose ``click`` op needs no approval. "No shell" is worth
+   nothing if the agent can ask for one.
 
 A denylist cannot express that: route 2 was not a variant spelling of route 1,
 it was a tool nobody would think to forbid. Any future tool that delegates, runs
@@ -61,8 +60,8 @@ ALLOWED_TOOLS = frozenset({"web_search", "web_fetch"})
 # Named routes to a checkout, kept only so a failure explains ITSELF rather than
 # just reporting an unexpected string. The allowlist above is what enforces.
 ESCALATION_ROUTES = {
-    "execute_bash": "a shell runs playwright-cli, whose click/attach auto-approve",
-    "shell": "a shell runs playwright-cli, whose click/attach auto-approve",
+    "execute_bash": "a shell can script a checkout on the operator's logged-in store",
+    "shell": "a shell can script a checkout on the operator's logged-in store",
     "@playwright-mcp": "a browser tool clicks the checkout control directly",
     "@kirocrew-core": "spawn_run can bind an agent template that has execute_bash",
     "fs_read": "reads the app's own store off disk, making the honesty claim prose-only",
@@ -100,7 +99,6 @@ def test_advisor_prompt_states_the_limit_as_a_capability() -> None:
     # It must not resurrect the deleted MCP surface or the removed toggle.
     assert "browser_" not in prompt
     assert "Browser Mode" not in prompt
-    assert "playwright-cli" not in prompt
 
 
 def test_escalation_routes_name_tools_that_really_exist() -> None:

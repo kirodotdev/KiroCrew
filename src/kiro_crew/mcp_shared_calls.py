@@ -95,16 +95,10 @@ def _remember_cancelled_id(
     cancelled_ids.add(rid)
     order.append(rid)
     protected = protected or set()
-    # Two independent bounds keep the pair from leaking:
-    #   1. Set bound -- evict oldest evictable ids once membership exceeds cap.
-    #   2. Deque bound -- completion sites discard consumed ids from the *set*
-    #      only (the deque is untouched), so without this second guard the
-    #      deque would accumulate one stale entry per cancel and grow without
-    #      limit even while the set stays small. Popping stale entries (already
-    #      discarded from the set) is harmless.
-    # Eviction skips protected ids (rotating them to the back); if only
-    # protected ids remain, ``_evict_oldest_evictable`` returns False and we
-    # stop -- a bounded overflow is preferable to executing a cancelled call.
+    # Both are bounded: completion sites discard ids from the set only, so the
+    # deque needs its own cap or it grows one stale entry per cancel. Protected
+    # ids are never evicted; if only they remain we stop, since a bounded
+    # overflow beats executing a cancelled call.
     while len(cancelled_ids) > cap and order:
         if not _evict_oldest_evictable(cancelled_ids, order, protected):
             break
@@ -116,25 +110,17 @@ def _remember_cancelled_id(
 class DeferredTool:
     """A tool call whose remaining work is a sequence of SHORT steps.
 
-    The dispatch loop runs one worker thread per server, so a tool that spends
-    its whole duration asleep (``wait`` sleeps up to 1800s; ``spawn_sub_agents``
-    polls for up to 7200s) parks that worker and every other caller's call
-    behind it -- on the pooled ``kirocrew-core`` backend that is every dashboard
-    session at once. A handler that only has to WAIT returns one of these from
-    the worker instead of a result string: the worker frees the moment the
-    handler returns, and the loop runs :meth:`step` from its own timer whenever
-    :meth:`due_at` has passed. The call is settled when a step returns text.
+    The loop has one worker thread per server, so a tool that sleeps (``wait`` up
+    to 1800s) would block every caller behind it, on pooled ``kirocrew-core`` every
+    dashboard session. A handler that only waits returns one of these: the worker
+    frees at once, and the loop runs :meth:`step` whenever :meth:`due_at` passes,
+    until a step returns text.
 
-    Contract for a ``step``: it is short (an HTTP round-trip to the loopback
-    gateway, never a sleep), it runs with the call's caller identity installed
-    exactly as the worker had it, and it may raise :class:`ToolCancelled` to end
-    the call with no response. Steps run on a small shared pool, not on the
-    dispatch thread, so a step that blocks on a stalled gateway delays other
-    steps, never the loop's ``ping`` answers or the single worker.
-
-    Outside the dispatch loop -- a direct ``_call_tool`` from a test or the
-    CLI -- :func:`drive_deferred` runs the steps inline, so a deferred tool
-    behaves exactly like a blocking one there.
+    A ``step`` is short (one loopback HTTP round-trip, never a sleep), runs with the
+    call's caller identity installed, and may raise :class:`ToolCancelled` to end
+    the call with no response. Steps run on a shared pool, so a stalled step never
+    blocks ``ping`` answers or the worker. Outside the loop (tests, CLI)
+    :func:`drive_deferred` runs the steps inline.
     """
 
     def due_at(self) -> float:
@@ -148,6 +134,17 @@ class DeferredTool:
     def cancel(self) -> None:
         """Best-effort hook when the call is cancelled before it settled."""
         return None
+
+    def progress_phase(self) -> str:
+        """What the call is doing now, in a word, for its MCP progress heartbeat.
+
+        Read on the dispatch thread every :data:`PROGRESS_HEARTBEAT_SECS` while the
+        call is parked and progressing. The default is the tool's own ``phase``
+        attribute when it keeps one, else ``"running"``; a tool overrides it when
+        it has a better word (``"waiting_for_answer"``).
+        """
+        phase = getattr(self, "phase", "")
+        return phase if isinstance(phase, str) and phase else "running"
 
     def abandon(self) -> str | None:
         """Called instead of :meth:`cancel` when the loop must answer this
@@ -173,18 +170,36 @@ class DeferredTool:
         """
         return None
 
+    def on_answered(self, written: bool) -> None:
+        """Hook run once, AFTER the driver wrote the answer that carries the text
+        :meth:`on_settled` was handed.
+
+        ``written`` is True only when the whole frame reached the client's own pipe:
+        False on a torn write, and always False on a pooled backend, whose broker
+        relay confirms nothing. Mark a result delivered here, and only on True.
+
+        Runs on the driver's thread with the caller identity installed and blocks
+        it, so send at most one short request. Calls that end any other way
+        (cancelled, refused, failed) never hear this.
+        """
+        return None
+
 
 def drive_deferred(deferred: DeferredTool, *, clock: Any = time) -> str:
     """Run ``deferred`` to completion inline, sleeping between steps.
 
     ``clock`` is a module-like object with ``monotonic`` and ``sleep``, so a
     caller can hand in the one its tests patch (``mcp_core.time``). Nothing
-    can cancel an inline drive, so the settling text is committed at once.
+    can cancel an inline drive, so the settling text is committed at once. The
+    text is returned to the caller itself, so :meth:`DeferredTool.on_answered`
+    hears True; an ``on_settled`` that raises propagates first and nothing
+    hears it.
     """
     while True:
         result = deferred.step()
         if result is not None:
             deferred.on_settled(result)
+            deferred.on_answered(True)
             return result
         delay = deferred.due_at() - clock.monotonic()
         if delay > 0:
@@ -213,12 +228,18 @@ class _MappedDeferred(DeferredTool):
     def cancel(self) -> None:
         self._inner.cancel()
 
+    def progress_phase(self) -> str:
+        return self._inner.progress_phase()
+
     def abandon(self) -> str | None:
         text = self._inner.abandon()
         return None if text is None else self._fn(text)
 
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)
 
 
 #: How often the loop reports in-flight deferred ids while any exist
@@ -228,15 +249,23 @@ class _MappedDeferred(DeferredTool):
 #: late enough for a healthy call to cross the slow-request threshold.
 INFLIGHT_REPORT_SECS = 30.0
 
+#: How often a parked call that asked for progress (its ``tools/call`` carried a
+#: ``_meta.progressToken``) gets an MCP ``notifications/progress`` naming its
+#: current phase. A long tool's heartbeat: well inside every per-call silence
+#: bound a client keeps (the session handle's shortest is 5 min), so a call that
+#: is only waiting never reads as one that was lost.
+PROGRESS_HEARTBEAT_SECS = 30.0
+
 #: A deferred call whose current step has run longer than this is NOT reported
 #: as progressing: a step is an HTTP round-trip, so one that holds a pool
 #: thread for a minute is the stall the report exists to expose.
 DEFERRED_STEP_STUCK_SECS = 60.0
 
 #: Threads the loop runs deferred steps on. A ``wait`` step is a millisecond
-#: keepalive and a ``spawn_sub_agents`` step one poll pass, but an
-#: ``ask_question`` step holds the server's fixed ``ASK_WAIT_SLICE_SECS``
-#: long-poll and a parent's resume probe is held server-side up to 8s, so the pool is sized
+#: keepalive, but an ``ask_question`` step holds the server's fixed
+#: ``ASK_WAIT_SLICE_SECS`` long-poll, a parent's resume probe is held server-side
+#: up to 8s and a ``spawn_sub_agents`` pass waits on its children for up to 2s (in
+#: at most half of these threads at once), so the pool is sized
 #: for a few of those in flight at once without starving the quick steps. The
 #: bound exists so a gateway that stops answering cannot grow threads without limit.
 DEFERRED_STEP_WORKERS = 8
@@ -245,19 +274,12 @@ DEFERRED_STEP_WORKERS = 8
 class _StepPool:
     """A fixed set of worker threads, all created UP FRONT, fed by one queue.
 
-    Not ``concurrent.futures.ThreadPoolExecutor``: that starts its threads
-    lazily inside ``submit``, AFTER the work item is queued, so a thread start
-    that fails under the process's thread ceiling raises out of ``submit`` while
-    the item stays queued and an idle worker runs it later -- for a deferred
-    step, a call just answered with an error could then consume an answer or a
-    collect nobody receives. Here ``submit`` only enqueues and cannot fail; the
-    one place a thread start can fail is construction, where nothing is queued
-    yet, so the caller fails that single call and retries the pool next tick.
-    A PARTIALLY started pool is not kept: ``DEFERRED_PARKED_MAX`` admits calls
-    on the assumption of ``workers`` threads, and one or two threads behind a
-    full table queue an ask's poll past the coordinator's answer grace, so an
-    answer would be lost. The started threads are released and construction
-    raises, which is the refusal path the caller already has.
+    Not ``ThreadPoolExecutor``: it starts threads inside ``submit`` after queueing
+    the item, so a failed thread start raises while the item still runs later,
+    consuming an answer for a call already failed. Here ``submit`` cannot fail;
+    only construction can, with nothing queued. A partly started pool is released
+    and construction raises, because ``DEFERRED_PARKED_MAX`` assumes ``workers``
+    threads and too few would delay an ask's poll past its answer grace.
     """
 
     def __init__(self, workers: int, name: str) -> None:
@@ -331,7 +353,11 @@ class _DeferredEntry:
     queue wait never reads as a stuck step, while a step that never gets a
     thread stops being vouched for. ``cancelled`` marks a call whose cancel
     arrived mid-step: its step's result is dropped when the step returns, since
-    a cancelled request gets no response.
+    a cancelled request gets no response. ``tool_call_id`` is the harness call
+    the request was approved under, installed for each step as it was for the
+    worker; ``progress_token`` is the request's own ``_meta.progressToken``
+    (None when it sent none), and ``progress_sent`` / ``next_progress`` pace the
+    progress heartbeat (:data:`PROGRESS_HEARTBEAT_SECS`).
     """
 
     __slots__ = (
@@ -344,6 +370,10 @@ class _DeferredEntry:
         "step_queued",
         "step_started",
         "cancelled",
+        "tool_call_id",
+        "progress_token",
+        "progress_sent",
+        "next_progress",
     )
 
     def __init__(
@@ -353,6 +383,9 @@ class _DeferredEntry:
         caller_ctx: "CallerContext | None",
         tenant_nonce: str,
         deferred: DeferredTool,
+        *,
+        tool_call_id: str = "",
+        progress_token: Any = None,
     ) -> None:
         self.req_id = req_id
         self.tool_name = tool_name
@@ -363,6 +396,10 @@ class _DeferredEntry:
         self.step_queued = 0.0
         self.step_started = 0.0
         self.cancelled = False
+        self.tool_call_id = tool_call_id
+        self.progress_token = progress_token
+        self.progress_sent = 0
+        self.next_progress = time.monotonic() + PROGRESS_HEARTBEAT_SECS
 
     @property
     def session_key(self) -> str:
@@ -378,6 +415,54 @@ class _DeferredEntry:
             return True
         since = self.step_started if self.step_started else self.step_queued
         return (now - since) < DEFERRED_STEP_STUCK_SECS
+
+
+#: The MCP progress notification a parked call's heartbeat is sent as.
+PROGRESS_NOTIFICATION = "notifications/progress"
+#: Longest phase word a progress heartbeat carries.
+PROGRESS_PHASE_MAX_CHARS = 64
+
+
+def request_progress_token(params: dict[str, Any]) -> Any:
+    """A ``tools/call`` request's own ``_meta.progressToken``, or None.
+
+    MCP lets a progress notification name only a token its request carried, a
+    string or an integer; anything else is no token, and the call then gets no
+    progress heartbeat.
+    """
+    meta = params.get("_meta")
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return None
+    return token
+
+
+def progress_heartbeat(entry: _DeferredEntry, now: float) -> dict[str, Any] | None:
+    """The ``notifications/progress`` params *entry* is due at *now*, or None.
+
+    Every :data:`PROGRESS_HEARTBEAT_SECS` a parked call that asked for progress
+    gets one: its own token, a count that only grows, and its current phase as
+    the message. A long tool's heartbeat, so a client that times calls by their
+    silence (the session handle's per-call timer, an SDK that resets its timer
+    on progress) does not read a call that is only waiting as one that was lost.
+    A call whose step is stuck (:meth:`_DeferredEntry.progressing`) or whose
+    cancel landed is not vouched for, and skips that beat.
+    """
+    if entry.progress_token is None or now < entry.next_progress:
+        return None
+    entry.next_progress = now + PROGRESS_HEARTBEAT_SECS
+    if entry.cancelled or not entry.progressing(now):
+        return None
+    entry.progress_sent += 1
+    try:
+        phase = entry.deferred.progress_phase()
+    except Exception:  # noqa: BLE001 - a phase is a label, never the call's fate
+        phase = "running"
+    return {
+        "progressToken": entry.progress_token,
+        "progress": entry.progress_sent,
+        "message": str(phase)[:PROGRESS_PHASE_MAX_CHARS],
+    }
 
 
 def _declares_inflight_capability(init_params: dict[str, Any]) -> bool:
@@ -535,9 +620,15 @@ class _AuditedDeferred(DeferredTool):
     def cancel(self) -> None:
         self._inner.cancel()
 
+    def progress_phase(self) -> str:
+        return self._inner.progress_phase()
+
     def abandon(self) -> str | None:
         return self._inner.abandon()
 
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
         self._audit(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)

@@ -276,20 +276,19 @@ async def test_a_rejected_id_is_redacted_before_it_reaches_the_message():
 async def test_kas_still_sends_exactly_one_config_write():
     """KAS is NOT in the ladder's membership set, and must stay out of it.
 
-    KAS advertises the option and accepts the resolved id. A ladder here would
-    add two doomed writes after a failure that is already terminal, and would
-    turn a refusal into a silent stay-on-default where today it raises -- so the
-    dashboard would report a switch KAS never made.
+    A ladder would turn KAS's terminal refusal into a silent stay-on-default, so the
+    dashboard would report a switch KAS never made. Spelling: test_kas_model_verb.py.
     """
     assert ACP_BACKEND_KAS not in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     handle = _make_handle(ACP_BACKEND_KAS)
     writes = _Writes()
     handle.set_config_option = writes  # type: ignore[method-assign]
+    kas_id = "claude-opus-4.8"
 
-    await handle.set_model(_THREE_RUNG)
+    await handle.set_model(kas_id)
 
-    assert writes.calls == [(MODEL_CONFIG_ID, _THREE_RUNG)]
-    assert handle.model == _THREE_RUNG
+    assert writes.calls == [(MODEL_CONFIG_ID, kas_id)]
+    assert handle.model == kas_id
     _mock(handle).send_request.assert_not_called()
 
 
@@ -495,14 +494,8 @@ async def test_an_error_frame_carries_its_jsonrpc_code_onto_the_exception():
 def test_both_drivers_classify_a_config_option_rejection_alike():
     """The two model-push copies must recognise the same rejection signals.
 
-    The ladder's ORDER is shared -- both drivers call
-    ``AcpClient._model_config_candidates`` -- and so is the CLASSIFICATION now:
-    both call the module-level ``_is_config_value_rejection``, so the value
-    signals ("the host rejected the VALUE, try the next spelling") have one home
-    and cannot drift. What each copy still owns is the ``unknown config option``
-    branch (the OPTION does not exist) and the effort-pair split that runs once
-    the ladder is exhausted; this guard pins that both copies carry both, and
-    that the shared classifier carries every value signal.
+    Value signals live in the shared ``_is_config_value_rejection``. Each copy owns the
+    ``unknown config option`` branch and the effort-pair split; this pins both.
     """
     import inspect
 

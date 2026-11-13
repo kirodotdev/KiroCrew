@@ -38,6 +38,7 @@ import { memberBriefingQueryKey } from '../../api/membersQuery'
 import { Btn, Skeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { fmtList } from '../../i18n/format'
 import { timeAgo } from '../../utils/timeAgo'
 
 interface CrewNotesTabProps {
@@ -113,7 +114,7 @@ export default function CrewNotesTab({ slug, member, displayName, header, visibl
           written for them and looks for the edit control that deliberately does
           not exist (see the module comment for why there is no editor). */}
       <p className="px-3 pt-1.5 shrink-0 text-[11.5px] text-muted" data-testid="member-notes-agent-only">
-        {t('pages.membersPage.notes_agent_only', { name: member })}
+        {t('pages.membersPage.notes_agent_only', { name: displayName ?? member })}
       </p>
       <div className="flex-1 min-h-0 overflow-y-auto px-3 pt-2 pb-3">
         {upkeep ? (
@@ -165,7 +166,7 @@ export default function CrewNotesTab({ slug, member, displayName, header, visibl
                 )}
                 {upkeep.scripts.length ? (
                   <p className="mt-1.5 text-[11.5px] text-muted" data-testid="member-upkeep-scripts">
-                    {t('pages.membersPage.notes_upkeep_scripts', { names: upkeep.scripts.join(', ') })}
+                    {t('pages.membersPage.notes_upkeep_scripts', { names: fmtList(upkeep.scripts, { style: 'narrow' }) })}
                   </p>
                 ) : null}
                 {upkeep.pointer ? (

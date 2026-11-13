@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# KiroCrew — Minimal OSS Quickstart
+# Kiro Crew — Minimal OSS Quickstart (contributor / from-source layout)
 #
-# The canonical public install. Builds KiroCrew from a local clone using
-# only public tooling: python3 + pip (backend) and npm + vite (frontend).
-# No Brazil, no Builder Toolbox, no internal registries.
+# Builds Kiro Crew from a local clone using only public tooling: python3 + pip
+# (backend) and npm + vite (frontend). No Brazil, no Builder Toolbox, no
+# internal registries.
+#
+# This is NOT the end-user install: the result follows the clone's branch, and
+# `main` is the Nightly lane (dev builds ahead of Stable). For Stable on a laptop
+# or server, use the signed wheel:
+#   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 #
 # Run from inside a cloned repo:
 #   git clone https://github.com/kirodotdev/KiroCrew.git

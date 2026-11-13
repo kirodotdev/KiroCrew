@@ -1,22 +1,34 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import { LayoutDashboard, MessageSquare, ShieldCheck } from 'lucide-react'
 import { PanelSectionHeader } from '../../../components/ui'
 import SegmentedControl from '../../../components/SegmentedControl'
 import ErrorNotice from '../../../components/ErrorNotice'
-import ErrorBoundary from '../../../components/ErrorBoundary'
+import { lazyRetry } from '../../../components/lazyRetry'
+import { i18nT } from '../../../i18n/t'
 import InfoTip from '../../../components/InfoTip'
 import { fmtDateTime } from '../../../i18n/format'
 import { useAppSelector } from '../../../store'
 import { membersRosterQuery } from '../../../api/membersQuery'
 import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
-import { APPROVAL_MODE_KEYS, runTitle } from './model'
+import { APPROVAL_MODE_KEYS, isRootSession, runTitle } from './model'
 import { PANEL_HEADING_ATTR } from './panelHeading'
 import { slotRowByKey } from '../../../store/slotIndex'
 
-const CrewDynamicDashboard = lazy(() => import('../../members/CrewDynamicDashboard'))
+// The Overview chunk is lazy-loaded. A chunk that fails to load (a 404 after a
+// frontend rebuild on an open tab) shows its notice in the Overview region, with
+// Try Again, and leaves the cards and their drafts mounted. Without a boundary of
+// its own the rejection would climb to SidePanel's and unmount this whole panel,
+// taking the unsent answer draft the Questions tab holds in local state.
+// No hand-off: it would discard that draft too.
+const CrewDynamicDashboard = lazyRetry(() => import('../../members/CrewDynamicDashboard'), {
+  layout: 'block',
+  title: () => i18nT('pages.membersPage.dashboard_unavailable'),
+  scope: 'command-center-overview',
+  askAgent: false,
+})
 
 /** The side panel's Dashboard view.
  *
@@ -65,14 +77,14 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
   const hasDraft = data.hasQuestionDraft
   useEffect(() => { draftCb.current?.(hasDraft) }, [hasDraft])
   useEffect(() => () => { draftCb.current?.(false) }, [])
-  // A ROOT session: one no other session dispatched (`created_by`) or adopted
-  // (`parent`). The gateway decides with the same two readings and refuses the read
-  // otherwise, so this only withholds a segment it would refuse. This is the test for
-  // the dashboard PACKAGE; whether a session has a derived CARD to show is a different
-  // question on a different route, and `canCarryCard` in `./model` is the one predicate
-  // for that.
+  // A ROOT session (`isRootSession`): one no other session dispatched (`created_by`)
+  // or adopted (`parent`). The gateway decides with the same two readings and refuses
+  // the read otherwise, so this only withholds a segment it would refuse. This is the
+  // test for the dashboard PACKAGE; whether a session has a derived CARD to show is a
+  // different question on a different route, and `canCarryCard` in `./model` is the
+  // one predicate for that.
   const owner = useAppSelector(s => slot ? slotRowByKey(s.dashboard.slots, slot) : undefined)
-  const root = !!slot && !!owner && !owner.created_by && !owner.parent
+  const root = !!slot && isRootSession(owner)
   // A crewmate's DM slot is a root too, but its agent writes the CREWMATE's page,
   // not a session page, so the Overview shows that page. Decided by the roster's
   // own slot binding; until the roster answers, nothing is mounted rather than a
@@ -156,28 +168,12 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
           nobody is looking at. */}
       {/* No hand-off: the Questions tab beside this can hold unsent answer drafts. */}
       {active && showingOverview && rosterFailed && <ErrorNotice className="m-3" message={t('pages.membersPage.dashboard_unavailable')} testId="command-center-roster-error" />}
-      {/* A dashboard-only boundary: the Overview chunk is lazy-loaded, and a
-          failed import (a 404 after a frontend rebuild on an open tab) rejects
-          inside this Suspense. Without a boundary of its own that rejection
-          climbs to SidePanel's outer boundary and unmounts this whole panel,
-          taking the unsent answer draft the Questions tab holds in local state.
-          Contained here, the failure shows a notice in the Overview region and
-          leaves the cards and their drafts mounted. retryOnly: the hand-off is a
-          hard /chat navigation that would discard the draft too. */}
-      {active && showingOverview && target && <ErrorBoundary
-        scope="command-center-overview"
-        retryOnly
-        fallback={<ErrorNotice className="m-3" message={t('pages.membersPage.dashboard_unavailable')} testId="command-center-overview-error" />}
-      >
-        <Suspense fallback={null}>
-          <CrewDynamicDashboard
-            key={target.kind === 'member' ? `member:${target.slug}` : slot}
-            target={target}
-            displayName={dm ? dm.display_name || dm.name : owner?.title || t('commandCenter.title')}
-            onAct={onAct}
-          />
-        </Suspense>
-      </ErrorBoundary>}
+      {active && showingOverview && target && <CrewDynamicDashboard
+        key={target.kind === 'member' ? `member:${target.slug}` : slot}
+        target={target}
+        displayName={dm ? dm.display_name || dm.name : owner?.title || t('commandCenter.title')}
+        onAct={onAct}
+      />}
     </div>}
     </div>
   </div>

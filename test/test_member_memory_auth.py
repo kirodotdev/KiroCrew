@@ -333,15 +333,23 @@ def test_owner_bootstrap_requires_transport_and_available_tcp_resolver(monkeypat
     assert not auth.local_owner_bootstrap_allowed(SimpleNamespace(transport=transport))
 
 
+class _Transport:
+    """An accepted connection's transport, weak-referenceable as asyncio's are."""
+
+    def __init__(self, server, client):
+        self._extra = {"sockname": server, "peername": client}
+
+    def get_extra_info(self, name):
+        return self._extra[name]
+
+
 @pytest.mark.parametrize("pid", [123, True, None])
 def test_owner_bootstrap_uses_exact_tcp_pair_and_valid_process_identity(monkeypatch, pid):
     from kiro_crew.dashboard import token_auth
 
     monkeypatch.setattr(token_auth, "_unix_request_socket", lambda _request: None)
     server, client = ("::1", 1234, 0, 0), ("::1", 5678, 0, 0)
-    transport = SimpleNamespace(
-        get_extra_info=lambda name: {"sockname": server, "peername": client}[name]
-    )
+    transport = _Transport(server, client)
     resolve = Mock(return_value=pid)
     provenance = Mock(return_value=True)
     monkeypatch.setattr(auth.platform_compat, "get_tcp_peer_pid", resolve)
@@ -353,6 +361,28 @@ def test_owner_bootstrap_uses_exact_tcp_pair_and_valid_process_identity(monkeypa
         provenance.assert_called_once_with(123)
     else:
         provenance.assert_not_called()
+
+
+def test_owner_bootstrap_resolves_a_tcp_caller_once_per_connection(monkeypatch):
+    from kiro_crew.dashboard import token_auth
+
+    monkeypatch.setattr(token_auth, "_unix_request_socket", lambda _request: None)
+    server, client = ("127.0.0.1", 1234), ("127.0.0.1", 5678)
+    resolve = Mock(return_value=123)
+    start_ids = {123: "start-a"}
+    monkeypatch.setattr(auth.platform_compat, "get_tcp_peer_pid", resolve)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", start_ids.get)
+    kept_alive = SimpleNamespace(transport=_Transport(server, client))
+
+    assert [auth._request_peer_pid(kept_alive) for _ in range(3)] == [123, 123, 123]
+    assert resolve.call_count == 1
+    # A new connection resolves its own caller, whatever an earlier one resolved.
+    assert auth._request_peer_pid(SimpleNamespace(transport=_Transport(server, client))) == 123
+    assert resolve.call_count == 2
+    # A recycled pid on the kept-alive connection is resolved afresh, never trusted.
+    start_ids[123] = "start-b"
+    assert auth._request_peer_pid(kept_alive) == 123
+    assert resolve.call_count == 3
 
 
 def test_owner_bootstrap_probe_exception_cannot_grant_permission(monkeypatch):

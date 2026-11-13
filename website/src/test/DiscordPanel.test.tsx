@@ -181,9 +181,9 @@ describe('DiscordPanel', () => {
     expect(await screen.findByRole('switch', { name: REACTIONS }))
       .toHaveAttribute('aria-checked', 'true')
     expect(toggle(THINKING)).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByText(/queued → thinking → coding → done/)).toBeInTheDocument()
+    expect(screen.getByTitle(/queued → thinking → coding → done/)).toBeInTheDocument()
     // Discord posts a subtext note, not Slack's separate reasoning reply.
-    expect(screen.getByText(/subtext note above the answer/)).toBeInTheDocument()
+    expect(screen.getByTitle(/subtext note above the answer/)).toBeInTheDocument()
   })
 
   it('reflects a config that has already opted into thinking and out of reactions', async () => {

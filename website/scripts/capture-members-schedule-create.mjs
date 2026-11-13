@@ -84,8 +84,6 @@ async function openMembers(theme, { jobs = JOBS, hangCreate = false } = {}) {
   await stubDashboardApi(page, {
     theme,
     slots: SLOTS,
-    // The Crew Members surface is preview-gated (`utils/previewFlags.ts`).
-    localStorageEntries: { 'mc-preview-crew': '1' },
     extra: async (path, route) => {
       if (path === '/api/members') {
         await json(route, { members: MEMBERS, default_agent: 'kirocrew' })

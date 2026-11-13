@@ -5,18 +5,21 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { area, curveMonotoneX, scaleLinear, stack } from 'd3'
 import type { Series, SeriesPoint } from 'd3'
 import { api } from '../../api/client'
+import { failedWithNoData } from '../../api/queryState'
 import type {
   UsageSeriesDimension,
   UsageSeriesLayer,
+  UsageSeriesMetric,
   UsageSeriesPayload,
 } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, Toggle } from '../../components/ui'
 import { useSessionPalette } from '../../hooks/useSessionPalette'
-import { fmtCompact, fmtCredits, fmtDate, fmtDateFields, fmtNumber } from '../../i18n/format'
+import { fmtCompact, fmtCredits, fmtCurrency, fmtDate, fmtDateFields, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { formatCost } from '../../utils/formatCost'
 
 export const DIMENSIONS: UsageSeriesDimension[] = ['channel', 'agent', 'model', 'cohort']
 
@@ -157,7 +160,15 @@ function layerLabel(layer: UsageSeriesLayer, by: UsageSeriesDimension, oldest: s
  * Layers come from the backend already in stack order and already folded to
  * top-N + other + unattributed; the browser only sums, stacks and draws.
  */
-export function TokenStackedAreaChart() {
+/** Stacks whole-install spend over time: credits by default, or dollars
+ *  (`metric="cost"`) on a harness that bills in dollars. */
+export function TokenStackedAreaChart({ metric = 'credits' }: { metric?: UsageSeriesMetric } = {}) {
+  const fmtValue = metric === 'cost' ? formatCost : fmtCredits
+  // Axis ticks: compact, and in dollars (`$3K`) when the chart stacks dollars.
+  const fmtTick = (value: number) =>
+    metric === 'cost'
+      ? fmtCurrency(value, 'USD', { notation: 'compact', maximumFractionDigits: 2 })
+      : value === 0 ? fmtNumber(0) : fmtCompact(value)
   const [prefs, setPrefs] = useState<Prefs>(readPrefs)
   const [hover, setHover] = useState<number | null>(null)
   const plotRef = useRef<HTMLDivElement>(null)
@@ -176,14 +187,20 @@ export function TokenStackedAreaChart() {
   // until the new one answers; without `keepPreviousData` every first switch
   // collapses the card to the skeleton. The answer carries the dimension it was
   // split by, so a stand-in stack keeps its own labels and caption.
-  const { data, error: queryErr, isPlaceholderData, isFetching, refetch } = useQuery<SeriesView>({
-    queryKey: ['usage-series', prefs.by],
-    queryFn: async () => ({ ...(await api.usageSeries(prefs.by)), by: prefs.by }),
+  const seriesQuery = useQuery<SeriesView>({
+    queryKey: ['usage-series', prefs.by, metric],
+    queryFn: async () => ({ ...(await api.usageSeries(prefs.by, metric)), by: prefs.by }),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   })
+  const { data, error: queryErr, isPlaceholderData, isFetching, refetch } = seriesQuery
   const shownBy = data?.by ?? prefs.by
-  const err = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
+  const liveErr = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
+  // A retry with nothing cached clears `error` while it reads; the last
+  // message is held so the notice stays up beside the busy Try again.
+  const [heldErr, setHeldErr] = useState('')
+  if (liveErr && liveErr !== heldErr) setHeldErr(liveErr)
+  const err = liveErr || (failedWithNoData(seriesQuery) ? heldErr : '')
 
   const layers = useMemo(() => {
     if (!data) return []
@@ -279,13 +296,17 @@ export function TokenStackedAreaChart() {
   // With nothing drawn there are no "last values" to keep showing, so a failed
   // refresh over an empty window reads like a failed first load.
   const nothingDrawn = !data || data.total <= 0 || days === 0
+  // `err` holds through a first-load retry (see heldErr), so this branch, and
+  // the Try again the user just pressed, stay mounted instead of swapping for
+  // the skeleton. The busy button is aria-disabled, not disabled, so it keeps
+  // keyboard focus.
   if (err && nothingDrawn) {
     return (
       <div>
         {controls}
         <ErrorNotice title={i18nT('pages.overview.usageSeriesChart.load_failed')} message={err} messagePlacement="below" askAgent />
-        <Btn className="mt-3 min-h-11" disabled={isFetching} onClick={() => void refetch()}>
-          {i18nT('pages.overview.usageSeriesChart.retry')}
+        <Btn className="mt-3 min-h-11 aria-disabled:opacity-60 aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100" aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
+          {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.overview.usageSeriesChart.retry')}
         </Btn>
       </div>
     )
@@ -310,7 +331,7 @@ export function TokenStackedAreaChart() {
   const hoverRows = hover == null ? [] : rowsAt(hover)
   const hoverTotal = hoverRows.reduce((sum, r) => sum + r.value, 0)
   const totalLine = (total: number) =>
-    i18nT(prefs.cumulative ? 'pages.overview.usageSeriesChart.total_to_date' : 'pages.overview.usageSeriesChart.total_that_day', { value: fmtCredits(total) })
+    i18nT(prefs.cumulative ? 'pages.overview.usageSeriesChart.total_to_date' : 'pages.overview.usageSeriesChart.total_that_day', { value: fmtValue(total) })
   // What a screen reader hears for the focused day: the slider's value text,
   // the same facts the pointer tooltip shows.
   const focusedDay = hover ?? days - 1
@@ -322,7 +343,7 @@ export function TokenStackedAreaChart() {
   const valueText = [
     fmtDate(localDay(data.dates[focusedDay])),
     totalLine(focusedRows.reduce((sum, r) => sum + r.value, 0)),
-    ...focusedRows.map(({ layer, value }) => `${layerLabel(layer, shownBy, oldestCohort, lastDay)} ${fmtCredits(value)}`),
+    ...focusedRows.map(({ layer, value }) => `${layerLabel(layer, shownBy, oldestCohort, lastDay)} ${fmtValue(value)}`),
   ].join('. ')
   const transition = reducedMotion ? { duration: 0 } : { duration: 0.35, ease: 'easeOut' as const }
 
@@ -338,9 +359,9 @@ export function TokenStackedAreaChart() {
         <div className="flex gap-2">
           {/* Y axis: HTML labels so the stretched SVG never distorts text. */}
           <div className="relative w-10 shrink-0 h-44 text-[10px] text-muted tabular-nums text-right">
-            <span className="absolute right-0 top-0 leading-none">{fmtCompact(top)}</span>
-            <span className="absolute right-0 top-1/2 -translate-y-1/2 leading-none">{fmtCompact(top / 2)}</span>
-            <span className="absolute right-0 bottom-0 leading-none">{fmtNumber(0)}</span>
+            <span className="absolute right-0 top-0 leading-none">{fmtTick(top)}</span>
+            <span className="absolute right-0 top-1/2 -translate-y-1/2 leading-none">{fmtTick(top / 2)}</span>
+            <span className="absolute right-0 bottom-0 leading-none">{fmtTick(0)}</span>
           </div>
           <div
             ref={plotRef}
@@ -352,7 +373,7 @@ export function TokenStackedAreaChart() {
             // value text reads that day out, so the tooltip needs no live region.
             role="slider"
             tabIndex={0}
-            aria-label={`${i18nT('pages.overview.usageSeriesChart.aria_label')}. ${i18nT('pages.overview.usageSeriesChart.keyboard_hint')}`}
+            aria-label={i18nT('pages.overview.usageSeriesChart.aria_label_keyboard_hint')}
             aria-orientation="horizontal"
             aria-valuemin={0}
             aria-valuemax={days - 1}
@@ -417,7 +438,7 @@ export function TokenStackedAreaChart() {
                   <div key={layer.key} className="flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-sm inline-block shrink-0" style={{ background: colorOf(layer, i) }} />
                     <span className="truncate max-w-56">{layerLabel(layer, shownBy, oldestCohort, lastDay)}</span>
-                    <span className="ml-auto pl-3 tabular-nums shrink-0">{fmtCredits(value)}</span>
+                    <span className="ml-auto pl-3 tabular-nums shrink-0">{fmtValue(value)}</span>
                   </div>
                 ))}
               </div>
@@ -434,7 +455,7 @@ export function TokenStackedAreaChart() {
             <span key={layer.key} className="flex items-center gap-1.5 min-w-0 max-w-full">
               <span className="w-3 h-3 rounded-sm inline-block shrink-0" style={{ background: colorOf(layer, i) }} />
               <span className="truncate max-w-64">{layerLabel(layer, shownBy, oldestCohort, lastDay)}</span>
-              <span className="tabular-nums shrink-0">{fmtCredits(layer.total)}</span>
+              <span className="tabular-nums shrink-0">{fmtValue(layer.total)}</span>
             </span>
           ))}
         </div>

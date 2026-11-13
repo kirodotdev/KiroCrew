@@ -117,6 +117,10 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
     import kiro_crew.member_mate_tools as mmt
 
     mmt.binding_has_mate_tools = lambda _b: tools  # type: ignore[assignment]
+    # Whether the crewmate's chat mounts the work ledger: off unless the fixture says
+    # so, as on a conductor spec that does not mount ``kirocrew-work``.
+    ledger = fx.get("has_ledger_tools", False)
+    mmt.binding_has_ledger_tools = lambda _b: ledger  # type: ignore[assignment]
     worker = fx.get("worker_servers") or []
     lacks = fx.get("gateway_has_beyond_worker") or []
     cc.worker_has = lambda _s, _c: {"servers": [{"name": n} for n in worker]}
@@ -125,17 +129,19 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
     gid = rec["goals"][0]["id"]
     out = {
         "conductor": cm.build_member_section(member),
-        "operating_mode": cm.operating_mode_block(member),
+        "operating_mode": cm.operating_mode_block(member, ledger=ledger),
         "worker": mate_worker.MATE_WORKER_PROMPT,
         "heartbeat": goal_reminder.heartbeat_prompt(
             rec,
             has_session_tools=fx.get("has_session_tools", True),
             milestones_waiting=fx.get("milestones_card_waiting", False),
+            ledger=ledger,
         ),
         "daily": goal_reminder.reminder_prompt(rec, "daily"),
         "weekly": goal_reminder.reminder_prompt(rec, "weekly", finished=fx.get("finished") or []),
         "monthly": goal_reminder.reminder_prompt(rec, "monthly", finished=fx.get("finished") or []),
-        "goal_setup": goal_setup.kickoff_prompt(rec, gid, has_mate_tools=tools) or "",
+        "goal_setup": goal_setup.kickoff_prompt(rec, gid, has_mate_tools=tools, ledger=ledger)
+        or "",
         "milestones_confirmed": goal_setup.milestones_prompt(rec, has_mate_tools=tools) or "",
         "goal_removed": "",
         "worker_report": (

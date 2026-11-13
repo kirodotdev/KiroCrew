@@ -217,18 +217,27 @@ class TestCompactions:
         # reports as different outcomes. This case is the FAILED one, so the set is
         # empty -- present rather than absent, because the real ``CompactionState``
         # always has it and a double without it would pass by accident.
-        stub.state = SimpleNamespace(on_compacted=None, uncompactable_recycles=set())
+        # ``compaction_triggers`` likewise: empty means the threshold trigger.
+        stub.state = SimpleNamespace(
+            on_compacted=None, uncompactable_recycles=set(), compaction_triggers={}
+        )
         asyncio.run(
             CompactionCoordinator._fire_compact_callback(coordinator, "k", 0.9, success=success)
         )
 
     def test_a_compaction_verdict_is_counted(self, rec):
         self._fire(True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": True}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": True,
+            "trigger": "threshold",
+        }
 
     def test_a_failed_compaction_is_still_an_attempt(self, rec):
         self._fire(False)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "trigger": "threshold",
+        }
 
     def test_a_failed_compact_that_recycles_is_not_counted_successful(self, rec):
         """The counter's success is not the callback's success.
@@ -243,7 +252,10 @@ class TestCompactions:
         this test is what notices.
         """
         self._fire(True, recycling=True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "trigger": "threshold",
+        }
 
     def test_a_surface_with_no_callback_is_still_counted(self, rec):
         """The early return below the emit would otherwise drop those surfaces."""
@@ -507,27 +519,13 @@ class TestSubagentCompleted:
     def test_the_enum_covers_every_outcome_the_runtime_can_report(self):
         """``SubagentInfo.outcome`` is THE classifier, and this enum restates it
         because ``metrics`` sits below the sub-agent manager in the dependency
-        order. A fourth value appearing in that property without a row in the
-        metrics doc would silently land on ``unknown``, so harvest the property's
-        own return literals and fail here instead.
+        order. The property is the coarse fold of ``SubagentEnding``, so a fourth
+        value appearing in that fold without a row in the metrics doc would
+        silently land on ``unknown``; read the fold itself and fail here instead.
         """
-        from kiro_crew.subagent_parts import run_record
+        from kiro_crew.subagent_ending import SubagentEnding
 
-        tree = ast.parse(Path(run_record.__file__).read_text(encoding="utf-8"))
-        prop = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "outcome"
-            and any(isinstance(d, ast.Name) and d.id == "property" for d in node.decorator_list)
-        )
-        returned = {
-            node.value.value
-            for node in ast.walk(prop)
-            if isinstance(node, ast.Return)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        }
+        returned = {o.coarse for o in SubagentEnding}
         assert returned == {"completed", "failed", "stopped"}
         assert returned <= ev.SUBAGENT_OUTCOMES
         assert ev.SUBAGENT_OUTCOMES == returned | {ev.SUBAGENT_OUTCOME_UNKNOWN}
@@ -544,7 +542,8 @@ class TestSubagentCompleted:
         coordinator._record_terminal_metric(_Info())
         calls = _named(rec, ev.SUBAGENT_COMPLETED)
         assert len(calls) == 1
-        assert calls[0]["attrs"] == {"outcome": "completed"}
+        # A record with no result text is a completed run with an empty result.
+        assert calls[0]["attrs"] == {"outcome": "completed", "result": "empty"}
 
     @pytest.mark.parametrize("outcome", ["completed", "failed", "stopped"])
     def test_a_stopped_run_is_not_reported_as_a_completion(self, rec, outcome):
@@ -573,7 +572,93 @@ class TestSubagentCompleted:
         coordinator._record_terminal_metric(_Info())
         calls = _named(rec, ev.SUBAGENT_COMPLETED)
         assert len(calls) == 1
-        assert calls[0]["attrs"] == {"outcome": ev.SUBAGENT_OUTCOME_UNKNOWN}
+        assert calls[0]["attrs"] == {"outcome": ev.SUBAGENT_OUTCOME_UNKNOWN, "result": "none"}
+
+    @pytest.mark.parametrize(
+        "outcome,result,truncated,expected",
+        [
+            ("completed", "the answer", False, "text"),
+            ("completed", "a long answer, cut", True, "text"),
+            ("completed", "", False, "empty"),
+            ("completed", "   \n", False, "empty"),
+            # The runner's no-reply placeholder, alone or with the notice it
+            # appends after a run that called tools, is not a reply.
+            ("completed", "_No response._", False, "empty"),
+            ("completed", "_No response._\n\nThe sub-agent ran tools.", False, "empty"),
+            ("failed", "partial text", False, "none"),
+            ("stopped", "", False, "none"),
+        ],
+    )
+    def test_result_says_only_whether_the_result_was_empty(
+        self, rec, outcome, result, truncated, expected
+    ):
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            pass
+
+        info = _Info()
+        info.outcome = outcome
+        info.result = result
+        info.result_truncated = truncated
+        # The runner assigns a result path to every run, so it says nothing.
+        info.result_path = "/tmp/result.txt"
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(info)
+        (call,) = _named(rec, ev.SUBAGENT_COMPLETED)
+        assert call["attrs"] == {"outcome": outcome, "result": expected}
+
+    @pytest.mark.parametrize(
+        "returned_reply,result,expected",
+        [
+            # A fallback notice is added to an empty reply, so the stored result
+            # is not empty; the flag read before the notice decides.
+            (False, "_Note: served by a fallback model._", "empty"),
+            (True, "_Note: served by a fallback model._\n\nthe answer", "text"),
+        ],
+    )
+    def test_the_runners_reply_flag_decides_over_the_stored_text(
+        self, rec, returned_reply, result, expected
+    ):
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            pass
+
+        info = _Info()
+        info.outcome = "completed"
+        info.result = result
+        info.result_truncated = False
+        info.returned_reply = returned_reply
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(info)
+        (call,) = _named(rec, ev.SUBAGENT_COMPLETED)
+        assert call["attrs"] == {"outcome": "completed", "result": expected}
+
+    def test_the_runner_sets_the_reply_flag_before_annotating(self):
+        """``returned_reply`` is read from the reply before the fallback notice."""
+        from kiro_crew.subagent_manager import run_turn
+
+        source = Path(run_turn.__file__).read_text(encoding="utf-8")
+        flag = source.index("info.returned_reply = not _no_reply")
+        assert source.index("_no_reply = not cleaned.strip()") < flag
+        assert flag < source.index("cleaned = annotate_model_fallback(")
+
+    def test_the_no_reply_placeholder_is_the_runners_own(self):
+        """``empty`` is read from the placeholder the runner stores for a run with
+        no reply, so the two spellings must not drift apart."""
+        from kiro_crew.subagent_manager import run_turn
+
+        source = Path(run_turn.__file__).read_text(encoding="utf-8")
+        assert (
+            f"info.result = cleaned or {ev.SUBAGENT_NO_REPLY_RESULT!r}".replace("'", '"') in source
+        )
+
+    def test_result_values_are_pinned(self):
+        assert ev.SUBAGENT_RESULT_VALUES == ("text", "empty", "none")
+        for outcome in ev.SUBAGENT_OUTCOMES:
+            for result in ("", "x", None, 3):
+                assert ev.subagent_result_kind(outcome, result) in ev.SUBAGENT_RESULT_VALUES
 
     def test_the_emit_is_not_gated_on_the_crew_log_emitter(self):
         """It is called BESIDE ``_record_crew_log_terminal``, not inside it: that
@@ -596,7 +681,7 @@ class TestSubagentCompleted:
         assert emits == [], "the terminal counter must not sit behind the crew log flag"
         calls = [
             node
-            for node in ast.walk(bodies["_report_terminal_impl"])
+            for node in ast.walk(bodies["_finish"])
             if isinstance(node, ast.Call)
             and getattr(node.func, "attr", "") == "_record_terminal_metric"
         ]

@@ -88,6 +88,7 @@ import json
 import logging
 import posixpath
 import re
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -183,6 +184,9 @@ _RESERVED_SEGMENT_STEMS = frozenset(
 _REF_SEGMENT = r"\.?[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*"
 _REF_RE = re.compile(rf"^{_REF_SEGMENT}(?:/{_REF_SEGMENT})*\Z")
 
+# The files whose presence makes a directory a skill (the bundle's own root test).
+# A pasted blob URL to one of them addresses the directory that holds it.
+_INSTRUCTION_FILES = ("SKILL.md", "AGENTS.md")
 # An owner/repo address, optionally in pasted tree/blob-URL form.
 _ADDRESS_RE = re.compile(
     r"^(?P<owner>[^/@:]+)/(?P<repo>[^/@:]+)(?:/(?P<kind>tree|blob)/(?P<rest>.+))?\Z"
@@ -210,6 +214,7 @@ _URL_PREFIXES = (
     "https://github.com/",
     "http://github.com/",
     "https://www.github.com/",
+    "http://www.github.com/",
     "www.github.com/",
     "github.com/",
 )
@@ -361,6 +366,12 @@ def parse_repo_spec(raw: Any) -> RepoSpec | None:
     for prefix in _URL_PREFIXES:
         if lowered.startswith(prefix):
             text = text[len(prefix) :]
+            # A pasted URL may carry a fragment (``#readme``) or a query
+            # (``?tab=readme-ov-file``); neither names a ref or a path, so both are
+            # dropped. Only for a URL: no part of an address may hold ``?`` or
+            # ``#``, so a bare address keeps refusing them. Cut BEFORE the
+            # percent-decode below, so an encoded ``%3F`` still meets the path rules.
+            text = text.partition("#")[0].partition("?")[0]
             break
     text = text.strip("/")
     if not text:
@@ -389,6 +400,14 @@ def parse_repo_spec(raw: Any) -> RepoSpec | None:
         # literal one.
         ref = urllib.parse.unquote(ref)
         path = urllib.parse.unquote(path)
+        # A blob URL names a FILE, and "Copy link" on a skill's own SKILL.md or
+        # AGENTS.md is the natural way to share one skill. That file's directory is
+        # the skill, so the address is the directory: kept as the file, the tree
+        # request would be rooted at a blob and GitHub answers "no directory".
+        # Only the two instruction files are trimmed. Any other file still reads
+        # as a directory and is refused by the listing, as a tree URL to a file is.
+        if matched.group("kind") == "blob" and posixpath.basename(path) in _INSTRUCTION_FILES:
+            path = posixpath.dirname(path)
 
     if repo.endswith(".git"):
         repo = repo[: -len(".git")]
@@ -505,32 +524,41 @@ class GitHubRepoProvider:
         if not blobs:
             return []
 
-        skill_dirs = _skill_directories(blobs)
-        if not skill_dirs:
+        installable: list[tuple[str, str]] = []
+        for skill_dir in _skill_directories(blobs):
+            full_path = posixpath.join(spec.path, skill_dir) if skill_dir else spec.path
+            problem = _path_problem(full_path)
+            if problem:
+                # Offering a row that cannot be installed is worse than omitting
+                # it: the user would only find out at the refusal. Dropped BEFORE
+                # the cap, so a refused directory never takes a result slot (a
+                # ".claude/skills/..." tree sorts ahead of "skills/") and is never
+                # fetched for a row that was not going to exist.
+                logger.warning(
+                    "Skipping GitHub skill %r because %s",
+                    spec.address(ref=commit, path=full_path),
+                    problem,
+                )
+                continue
+            installable.append((skill_dir, full_path))
+        if not installable:
             return []
-        capped = skill_dirs[: max(1, min(limit, _MAX_SKILLS_PER_REPO))]
+        capped = installable[: max(1, min(limit, _MAX_SKILLS_PER_REPO))]
 
         # One raw fetch per skill, concurrently: the frontmatter is what gives a
         # row its real name and description, and it is the same file the preview
         # and the install will read. A failed fetch degrades that row to its
         # directory name rather than dropping it — the skill is genuinely there.
-        heads = await asyncio.gather(*[self._fetch_skill_md(spec, commit, d) for d in capped])
+        heads = await asyncio.gather(*[self._fetch_skill_md(spec, commit, d) for d, _ in capped])
 
         results: list[SkillSearchResult] = []
-        for skill_dir, head in zip(capped, heads, strict=True):
-            full_path = posixpath.join(spec.path, skill_dir) if skill_dir else spec.path
+        for (_skill_dir, full_path), head in zip(capped, heads, strict=True):
             # The FULL commit, never an abbreviation. A 7-hex ref gets re-resolved
             # at preview and install time, and a branch whose NAME is hex can
             # shadow that prefix -- so the row would name one commit and the
             # install fetch another. The full SHA, plus the equality check in
             # ``_resolve_commit``, closes that substitution.
             address = spec.address(ref=commit, path=full_path)
-            problem = _path_problem(full_path)
-            if problem:
-                # Offering a row that cannot be installed is worse than omitting
-                # it: the user would only find out at the refusal.
-                logger.warning("Skipping GitHub skill %r because %s", address, problem)
-                continue
             fallback_name = posixpath.basename(full_path) or spec.repo
             meta = _frontmatter_of(head)
             results.append(
@@ -758,6 +786,11 @@ class GitHubRepoProvider:
                 size = int(entry.get("size", 0) or 0)
             except (TypeError, ValueError):
                 size = 0
+            except OverflowError:
+                # ``1e999`` parses as an infinite float: as large as a size can be,
+                # so the bundle's size ceiling refuses it by name rather than the
+                # whole listing failing (and never read as zero, under the cap).
+                size = sys.maxsize
             blobs.append((path, size))
         return blobs
 

@@ -1,13 +1,13 @@
 /**
- * `isKiroBackend` decides whether the pill's Kiro-only surfaces (the no-reading
- * dash) render. It must be POSITIVE — true only for the kiro id, and never for a
- * config that has not loaded — because a guess here puts a "could not read your
- * balance; open to refresh" control in front of a user whose harness has no
- * balance to read.
+ * `isKiroHarness` decides whether the pill's Kiro-account surfaces (the
+ * no-reading and failed dashes) render. It must be POSITIVE — true only for the
+ * Kiro harness ids, and never for a config that has not loaded — because a guess
+ * here puts a "could not read your balance; open to refresh" control in front of
+ * a user whose harness has no balance to read.
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, kasInUse, mcpServerDeny, mcpWholeServerDeny, reportsCredits, reportsDollars, isKiroHarness } from './acpBackend'
 import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
@@ -58,6 +58,19 @@ describe('reportsCredits', () => {
   })
 })
 
+describe('reportsDollars', () => {
+  it('is true only for a loaded config naming a harness that records a dollar cost', () => {
+    expect(reportsDollars({ agent: { acp_backend: 'claude' } })).toBe(true)
+    expect(reportsDollars(undefined)).toBe(false)
+  })
+
+  it('is false for a credit harness and for one that reports no cost', () => {
+    for (const backend of ['', 'kiro', 'kas', 'codex', 'pi', 'deepseek', 'copilot', 'strands', 'some-future-harness']) {
+      expect(reportsDollars({ agent: { acp_backend: backend } }), backend).toBe(false)
+    }
+  })
+})
+
 describe('mcpWholeServerDeny', () => {
   // The one reader of a probe row's deny reach. Settings → Agent Harness and the
   // MCP Servers tool list both render what it returns, so these cases are what
@@ -71,14 +84,14 @@ describe('mcpWholeServerDeny', () => {
 
   it('states the rule, naming the harness, where the server classed the reach as whole-server', () => {
     const out = mcpWholeServerDeny(row({ per_tool_deny: 'whole-server', costs_whole_server: true, ineffective: [] }))
-    expect(out.rule).toMatch(/^Turning off one MCP tool on Goose stops every tool on the same server/)
+    expect(out.rule).toMatch(/^Turning off one MCP tool on goose stops every tool on the same server/)
     expect(out.exception).toBe('')
   })
 
   it('adds the exception on a per-call reach', () => {
     const out = mcpWholeServerDeny(row({ per_tool_deny: 'per-call', costs_whole_server: true, ineffective: [] }, 'codex', 'Codex'))
-    expect(out.rule).toContain('on Codex')
-    expect(out.exception).toMatch(/^One exception: .*kirocrew-core.* on Codex\.$/)
+    expect(out.rule).toContain('on OpenAI Codex')
+    expect(out.exception).toMatch(/^One exception: .*kirocrew-core.* on OpenAI Codex\.$/)
   })
 
   it('says nothing on a reach that stops only the named tool', () => {
@@ -103,17 +116,17 @@ describe('mcpServerDeny', () => {
   it('gives a spared server only the tool-by-tool fact', () => {
     const out = mcpServerDeny(perCall(['kirocrew-core']), 'kirocrew-core')
     expect(out.rule).toBe('')
-    expect(out.exception).toMatch(/on Codex turning off one tool here stops only that tool\.$/)
+    expect(out.exception).toMatch(/on OpenAI Codex turning off one tool here stops only that tool\.$/)
   })
 
   it('gives every other server only the rule', () => {
     const out = mcpServerDeny(perCall(['kirocrew-core']), 'github')
-    expect(out.rule).toContain('on Codex')
+    expect(out.rule).toContain('on OpenAI Codex')
     expect(out.exception).toBe('')
   })
 
   it('reads the names from the gateway, not from a list of its own', () => {
-    expect(mcpServerDeny(perCall(['someone-else']), 'kirocrew-core').rule).toContain('on Codex')
+    expect(mcpServerDeny(perCall(['someone-else']), 'kirocrew-core').rule).toContain('on OpenAI Codex')
   })
 
   it('keeps the pair on a gateway that sends no list', () => {
@@ -153,5 +166,22 @@ describe('acpBackendName / acpBackendShortName', () => {
     expect(acpBackendName({ id: ACP_BACKEND_KAS })).toBe('Kiro Agent')
     expect(acpBackendShortName(ACP_BACKEND_KAS)).toBe('Kiro Agent')
     expect(acpBackendName({ id: ACP_BACKEND_KIRO })).toBe('Kiro CLI')
+  })
+})
+
+describe('kasInUse', () => {
+  it('takes the gateway\'s answer when it sends one', () => {
+    expect(kasInUse({ agent: { acp_backend: 'kiro' }, kas_in_use: true })).toBe(true)
+    expect(kasInUse({ agent: { acp_backend: 'kas' }, kas_in_use: false })).toBe(false)
+  })
+
+  it('falls back to the main harness on a gateway that sends no answer', () => {
+    expect(kasInUse({ agent: { acp_backend: 'kas' } })).toBe(true)
+    expect(kasInUse({ agent: { acp_backend: '' } })).toBe(true)
+    expect(kasInUse({ agent: { acp_backend: 'kiro' } })).toBe(false)
+  })
+
+  it('reads a body with no agent section as naming no harness, not as KAS', () => {
+    expect(kasInUse({})).toBe(false)
   })
 })

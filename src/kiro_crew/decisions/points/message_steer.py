@@ -200,14 +200,10 @@ def turn_budget() -> int:
 def redacted(text: str, limit: int) -> str:
     """*text* with credentials and exfiltration URLs removed, clipped to *limit*.
 
-    The canonical redactors, not the gate's scrub: the two answer different
-    questions. The gate REFUSES a whole request that carries a credential, which
-    is right for text a caller chose to send; this excerpt is whatever the agent
-    printed into a running turn, so refusing on it would turn "the reply happened
-    to quote an env file" into "the seam silently stops deciding". Cleaning
-    instead keeps the decision available and still sends no secret -- and the
-    gate's own scan still runs over the cleaned result, so a spelling this pass
-    misses refuses the request rather than sending it.
+    The canonical redactors, not the gate's scrub: the gate REFUSES a whole request
+    carrying a credential, but this excerpt is whatever the agent printed, so a reply
+    quoting an env file would silently stop the decision. Cleaning keeps it
+    available, and the gate still scans the cleaned result and refuses a miss.
 
     Redaction runs over the WHOLE text and the tail is taken AFTER it, never
     before: a cut placed inside a secret leaves a fragment neither redactor
@@ -231,22 +227,17 @@ def redacted(text: str, limit: int) -> str:
 def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tuple[str, str]:
     """The running turn's ``(request, activity)`` excerpts, inside *budget*.
 
-    A pure walk over the transcript tail -- newest first -- so it is testable
-    without a slot and cannot alter one. It stops at the first
-    :data:`REQUEST_ROLE` row, whose content is the running turn's own request:
-    everything after that row was produced BY this turn, and everything before it
-    belongs to a turn that has already ended.
+    A pure newest-first walk over the transcript tail that stops at the first
+    :data:`REQUEST_ROLE` row: the running turn's request. Earlier rows belong to
+    turns that have ended.
 
-    *budget* is the consented ceiling (:func:`turn_budget`) and covers BOTH halves
-    together, because both are conversation the sender did not type into this send.
-    It is spent newest-first within the activity and on the request before the
-    activity: the request is what the activity is an answer to, so a budget too
-    small for both buys the more useful half. At 0 both halves are empty.
+    *budget* (the consented :func:`turn_budget`) covers BOTH halves and goes to the
+    request first, since the activity only makes sense against it. At 0 both are
+    empty.
 
-    Both halves come back REDACTED and THEN clipped, in that order, so a caller can
-    forget neither and no cut can halve a secret into a fragment the scanners miss.
-    Never raises: an unreadable row is skipped, and an unreadable list yields two
-    empty strings, which is a question about the new message alone.
+    Both halves are REDACTED and THEN clipped, so no cut can halve a secret.
+    Never raises: an unreadable row is skipped, an unreadable list yields two
+    empty strings.
     """
     if budget <= 0:
         return "", ""
@@ -276,19 +267,14 @@ def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tup
             break
         if role not in ACTIVITY_ROLES or spent >= activity_room:
             continue
-        # A row that fits is taken WHOLE. Bounding a row that CROSSES the budget
-        # means CUTTING it, and a cut inside a secret leaves a fragment neither
-        # redactor matches -- the fragment, not the secret, is then what goes on the
-        # wire. So the row goes through :func:`redacted` FIRST, which cleans the
-        # whole row and takes the tail after: a placeholder cannot be halved, and
-        # the tail is the part the budget keeps anyway. Credential branches that
-        # span whitespace (a newline-broken PEM body) are covered by that ordering,
-        # not by where the cut lands.
+        # A row that fits is taken WHOLE. A row that CROSSES the budget goes through
+        # :func:`redacted` FIRST, which cleans the whole row and then takes the tail,
+        # so no cut can halve a secret into a fragment the redactors miss. That
+        # ordering, not the cut, covers secrets spanning whitespace (a PEM body).
         #
-        # The cut is then advanced to the first whitespace in the margin, and the
-        # row dropped when the margin has none: the GATE's table is wider than the
-        # redactors' -- it carries a bare ``sk-`` form -- and no shape in it
-        # contains whitespace, so a whitespace cut cannot halve one.
+        # The cut then moves to the first whitespace in the margin (the row is dropped
+        # when there is none): the GATE's table also has a bare ``sk-`` form, and no
+        # shape in it contains whitespace.
         room_left = activity_room - spent
         if len(content) > room_left:
             # Too long to scan in one bounded pass: skipped, for the reason the
@@ -382,15 +368,12 @@ async def steer_or_queue(
     """Which path this send should take, or ``None`` to take the shipped default.
 
     Returns the outcome the caller applies and the strip renders:
-    ``{turn_id, choice, p, latency_ms, baseline}``. ``choice`` is one of
-    :data:`CHOICES`; there is no third value, and no answer at all is ``None``
-    rather than a choice of :data:`BASELINE`, so a caller can tell "the oracle
-    said steer" from "nothing was asked or nothing came back" -- the first is a
-    decision with a receipt, the second is the product behaving as it always has.
+    ``{turn_id, choice, p, latency_ms, baseline}``, ``choice`` in :data:`CHOICES`.
+    No answer is ``None``, not :data:`BASELINE`, so a decision with a receipt stays
+    distinct from nothing asked.
 
-    *rows* is the slot's transcript list. It is SLICED and read off the event loop
-    (:func:`running_turn_excerpts`), and nothing is written back, so a caller hands
-    over the live list rather than copying it.
+    *rows* is the live transcript list: sliced and read off the loop, never
+    written, so callers need not copy it.
 
     Never raises except :class:`asyncio.CancelledError`, which ``decide``
     propagates: cancellation is the request going away, not a decision failure.
@@ -460,19 +443,15 @@ def build_outcome(decided: Mapping[str, Any]) -> dict[str, Any]:
 def record_outcome(session_key: str | None, decided: Mapping[str, Any]) -> dict[str, Any] | None:
     """Write one outcome row for the decided send and RETURN it. Never raises.
 
-    ``None`` means no row was written -- the build raised, or ``append`` refused
-    it (the day-file ceiling, a sealed directory). The caller stamps nothing in
-    that case, which is the same rule ``skills.select`` follows for its publish: a
-    strip whose durable row was refused describes a decision no verdict could be
-    filed against, and the thumbs on this line POST that turn id.
+    ``None`` means no row was written (the build raised, or ``append`` refused it)
+    and the caller stamps nothing: the strip's thumbs POST this turn id, and a
+    refused row leaves no decision to file a verdict against.
 
-    Returned rather than published through :mod:`kiro_crew.decisions.outcomes` for
-    the reason the module docstring gives: that registry's one slot per session
-    belongs to the next assistant reply, and this receipt belongs to the user row
-    the caller is about to append.
+    Returned, not published through :mod:`kiro_crew.decisions.outcomes`: that
+    registry's per-session slot belongs to the next assistant reply, and this
+    receipt belongs to the user row the caller appends.
 
-    Blocking (the append is filesystem IO), so a caller on the event loop hands it
-    to a thread.
+    Blocking filesystem IO; callers on the event loop use a thread.
     """
     try:
         row = _log.build_row(

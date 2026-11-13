@@ -8,6 +8,8 @@ import {
   iconMotionVars,
   poseBodyDataUri,
   poseDataUri,
+  poseEyeVars,
+  poseEyesDataUri,
   resolvePose,
   seedIconBg,
   seedIconPose,
@@ -104,7 +106,7 @@ describe('icon working motion', () => {
     // An animation inside an <img>'s SVG is re-rastered every frame, and iOS
     // Safari re-rastered it in pieces: head, tail and one eye drew out of step.
     for (const pose of [...POSE_IDS, 'pose-99', 'constructor', '']) {
-      for (const uri of [poseDataUri(pose, DEFAULT_POSE_BG), poseBodyDataUri(pose)]) {
+      for (const uri of [poseDataUri(pose, DEFAULT_POSE_BG), poseBodyDataUri(pose), poseEyesDataUri(pose)]) {
         const svg = svgOf(uri)
         expect(svg).not.toContain('<style')
         expect(svg).not.toMatch(/animation|@keyframes|<animate/)
@@ -112,15 +114,44 @@ describe('icon working motion', () => {
     }
   })
 
-  it('moves the same face: the body layer is the still pose minus its tile', () => {
+  it('moves the same face: body and eye layers split the still pose, minus its tile', () => {
+    const paths = (svg: string) => svg.match(/<path\b[^>]*\/>/g) ?? []
     for (const pose of POSE_IDS) {
       const still = svgOf(poseDataUri(pose, '#25679d'))
       const body = svgOf(poseBodyDataUri(pose))
-      const rect = still.match(/<rect\b[^>]*\/>/)![0]
+      const eyes = svgOf(poseEyesDataUri(pose))
       expect(body).not.toMatch(/<rect\b/)
-      // Silhouette and both eyes byte for byte: nothing was redrawn to move it.
-      expect(body).toBe(still.replace(rect, ''))
+      expect(eyes).not.toMatch(/<rect\b/)
+      // The body is the white silhouette alone; the eyes are the two unfilled paths.
+      expect(paths(body)).toHaveLength(1)
+      expect(paths(body)[0]).toContain('fill="#fff"')
+      expect(paths(eyes)).toHaveLength(2)
+      for (const eye of paths(eyes)) expect(eye).not.toContain('fill=')
+      // Byte for byte the still frame's paths, on the same canvas: nothing redrawn.
+      expect([...paths(body), ...paths(eyes)]).toEqual(paths(still))
+      expect(eyes.match(/<svg\b[^>]*>/)![0]).toBe(still.match(/<svg\b[^>]*>/)![0])
     }
+  })
+
+  it('blinks each pose toward its own eyes', () => {
+    for (const pose of POSE_IDS) {
+      const v = poseEyeVars(pose)
+      const x = parseFloat(v['--crew-icon-eye-x'])
+      const y = parseFloat(v['--crew-icon-eye-y'])
+      // Every shipped pose has its eyes in the upper half, away from the tile's centre.
+      expect(x).toBeGreaterThan(30)
+      expect(x).toBeLessThan(80)
+      expect(y).toBeGreaterThan(30)
+      expect(y).toBeLessThan(45)
+    }
+    expect(poseEyeVars('constructor')).toEqual(poseEyeVars(DEFAULT_POSE))
+  })
+
+  it('lays the moving root out as a block, the same box as the still icon img', () => {
+    // An inline-block sits on the text baseline, so the header stack's wrapper
+    // grew past the face and its ring drew a dark band around a raised face.
+    const root = motionCss.match(/\.crew-icon-motion\s*\{([^}]*)\}/)![1]
+    expect(root).toMatch(/display:\s*block;/)
   })
 
   it("feeds the ghost's full body-motion numbers to the CSS, scaled to the box", () => {
@@ -136,7 +167,9 @@ describe('icon working motion', () => {
   })
 
   it('reads every variable it sets, and keeps a still frame for reduced motion', () => {
-    for (const name of Object.keys(iconMotionVars())) expect(motionCss).toContain(`var(${name})`)
+    for (const name of Object.keys({ ...iconMotionVars(), ...poseEyeVars(DEFAULT_POSE) })) {
+      expect(motionCss).toContain(`var(${name})`)
+    }
     const reduced = motionCss.slice(motionCss.indexOf('prefers-reduced-motion'))
     expect(reduced).toMatch(/animation:\s*none\s*!important/)
     expect(reduced).toMatch(/\.crew-icon-fit\s*\{\s*transform:\s*none/)

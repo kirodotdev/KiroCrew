@@ -234,7 +234,13 @@ def _spawn_app() -> tuple[web.Application, MagicMock]:
     info = SimpleNamespace(id="a1", agent_id="a1", done=False, error=None, error_code=None)
     spawn = MagicMock(return_value=info)
     app = web.Application()
-    app["state"] = MagicMock(subagents=MagicMock(spawn=spawn, max_concurrent=3), owner_id=OWNER)
+    app["state"] = MagicMock(
+        subagents=MagicMock(spawn=spawn, max_concurrent=3),
+        owner_id=OWNER,
+        # The internal row's parent has no execution record, so the route reads
+        # its live selection: the default template.
+        sessions=MagicMock(get_agent_selection=MagicMock(return_value=("template", ""))),
+    )
     app.router.add_post("/api/spawn", api_spawn)
     return app, spawn
 
@@ -328,7 +334,10 @@ class _FakeWorkflowService:
         self.from_intent: tuple | None = None
         self.saved: tuple | None = None
         self.updated: tuple | None = None
+        self.removed: tuple | None = None
         self.promoted: tuple | None = None
+        self.run_updated: tuple | None = None
+        self.previewed: tuple | None = None
         self.started_definition: tuple | None = None
         self.rerun: tuple | None = None
 
@@ -346,6 +355,10 @@ class _FakeWorkflowService:
         self.updated = (workflow_id, kwargs)
         return {"ok": True, "definition": {"id": workflow_id, "revision": 3}}
 
+    def remove_definition(self, workflow_ref: str, **kwargs):
+        self.removed = (workflow_ref, kwargs)
+        return {"ok": True, "definition": {"id": "wfd_1", "removed_at": "now"}}
+
     async def start(self, source: str, **kwargs):
         self.started = (source, kwargs)
         return {"run_id": "wf_1"}
@@ -362,6 +375,22 @@ class _FakeWorkflowService:
         self.promoted = (run_id, kwargs)
         return {"ok": True, "definition": {"id": "wfd_2", "slug": "promoted"}}
 
+    async def update_run_definition(self, run_id: str, workflow_ref: str, **kwargs):
+        self.run_updated = (run_id, workflow_ref, kwargs)
+        return {"ok": True, "definition": {"id": "wfd_1", "revision": 3}}
+
+    async def preview_run_definition_update(self, run_id: str, workflow_ref: str = ""):
+        self.previewed = (run_id, workflow_ref)
+        return {
+            "ok": True,
+            "target": None,
+            "target_source": "",
+            "run_source": "source",
+            "run_source_sha256": "s",
+            "unchanged": False,
+            "format_mismatch": False,
+        }
+
     async def rerun_subtree(self, run_id: str, from_index: int = 0, **kwargs):
         self.rerun = (run_id, from_index, kwargs)
         return {"run_id": "wf_4"}
@@ -369,6 +398,7 @@ class _FakeWorkflowService:
 
 def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
     from kiro_crew.dashboard.handlers.workflows import (
+        api_workflow_definition_remove,
         api_workflow_definition_run,
         api_workflow_definition_update,
         api_workflow_definitions,
@@ -377,6 +407,8 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
         api_workflow_run_intent,
         api_workflow_run_promote,
         api_workflow_run_rerun,
+        api_workflow_run_update_definition,
+        api_workflow_run_update_preview,
     )
 
     service = _FakeWorkflowService()
@@ -389,10 +421,19 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
     app.router.add_patch(
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
     )
+    app.router.add_delete(
+        "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_remove
+    )
     app.router.add_post(
         "/api/workflows/definitions/{workflow_ref}/run", api_workflow_definition_run
     )
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_get(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_preview
+    )
+    app.router.add_post(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_definition
+    )
     app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
     return app, service
 
@@ -513,6 +554,16 @@ async def test_owner_can_update_a_workflow_definition() -> None:
     assert service.updated is not None, "owner's definition update never landed"
 
 
+async def test_owner_can_remove_a_workflow_definition() -> None:
+    app, service = _workflow_app()
+    async with _client(app, _owner_claims()) as client:
+        response = await client.delete("/api/workflows/definitions/wfd_1")
+        status, body = response.status, await _body(response)
+
+    _assert_not_owner_refused(status, body, "DELETE /api/workflows/definitions/{ref}")
+    assert service.removed is not None, "owner's removal never landed"
+
+
 async def test_owner_can_promote_a_run() -> None:
     app, service = _workflow_app()
     async with _client(app, _owner_claims()) as client:
@@ -521,6 +572,25 @@ async def test_owner_can_promote_a_run() -> None:
 
     _assert_not_owner_refused(status, body, "POST /api/workflows/runs/{id}/promote")
     assert service.promoted is not None, "owner's promote never landed"
+
+
+async def test_owner_can_update_a_workflow_from_a_run() -> None:
+    app, service = _workflow_app()
+    async with _client(app, _owner_claims()) as client:
+        previewed = await client.get("/api/workflows/runs/wf_1/update-definition")
+        preview_status, preview_body = previewed.status, await _body(previewed)
+        response = await client.post(
+            "/api/workflows/runs/wf_1/update-definition",
+            json={"workflow": "wfd_1", "expected_revision": 2, "expected_source_sha256": "s"},
+        )
+        status, body = response.status, await _body(response)
+
+    _assert_not_owner_refused(
+        preview_status, preview_body, "GET /api/workflows/runs/{id}/update-definition"
+    )
+    _assert_not_owner_refused(status, body, "POST /api/workflows/runs/{id}/update-definition")
+    assert service.previewed is not None, "owner's update preview never ran"
+    assert service.run_updated is not None, "owner's update from a run never landed"
 
 
 # ── reads stay open ──

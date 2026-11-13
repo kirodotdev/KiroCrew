@@ -994,6 +994,40 @@ class TestValidateMcpToolArguments:
         self._raises({"xs": [1, 2, 3]}, schema, "exceeds maxItems")
         self._raises({"xs": ["s"]}, schema, "expected integer")
 
+    def test_integral_float_accepted_as_integer_and_passed_on_as_int(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "minimum": 1},
+                "xs": {"type": "array", "items": {"type": "integer"}},
+                "m": {"type": "object", "additionalProperties": {"type": "integer"}},
+                "either": {"type": ["integer", "string"]},
+                "num": {"type": ["integer", "number"]},
+            },
+        }
+        args = {"n": 3.0, "xs": [1.0, 2], "m": {"k": 4.0}, "either": 5.0, "num": 6.0}
+        self._v(args, schema)
+        assert args == {"n": 3, "xs": [1, 2], "m": {"k": 4}, "either": 5, "num": 6.0}
+        assert type(args["n"]) is int
+        assert type(args["xs"][0]) is int
+        assert type(args["m"]["k"]) is int
+        assert type(args["either"]) is int
+        # A slot that admits `number` keeps the float.
+        assert type(args["num"]) is float
+
+    @pytest.mark.parametrize("value", [3.5, float("inf"), float("nan")])
+    def test_non_integral_float_still_rejected_as_integer(self, value):
+        schema = {"type": "object", "properties": {"n": {"type": "integer"}}}
+        self._raises({"n": value}, schema, "expected integer")
+
+    def test_unique_items_compares_integral_float_as_int(self):
+        schema = {
+            "type": "object",
+            "properties": {"xs": {"type": "array", "items": {"type": "integer"},
+                                  "uniqueItems": True}},
+        }
+        self._raises({"xs": [3, 3.0]}, schema, "items not unique")
+
     def test_unknown_schema_type_rejects(self):
         schema = {"type": "object",
                   "properties": {"a": {"type": "no-such-type"}}}

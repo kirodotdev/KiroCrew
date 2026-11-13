@@ -51,7 +51,9 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 afterEach(() => {
-  __resetBottomTerminal()
+  // RTL unmounts after this hook, so the reset still notifies every mounted
+  // subscriber of the store (TabChip, the detached bar, renderHook's host).
+  act(() => { __resetBottomTerminal() })
 })
 
 describe('TerminalTabsView dock variant — pop out', () => {

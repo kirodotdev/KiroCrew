@@ -523,16 +523,18 @@ async def test_resume_grant_keeps_the_run_parked_when_the_durable_wake_fails(mon
         # (a) the store cannot be reached: retryable, so the run stays parked.
         info, gen, record = _park_live_run(harness, "unreachable")
         before = harness.mgr._running_count
-        monkeypatch.setattr(
-            store, "wake_wait", lambda *a, **k: (_ for _ in ()).throw(TaskStoreUnavailable("down"))
-        )
-        assert admission.resume_grant({"_resume_id": info.id}) is False
-        assert info._slot_released is True and info._wait_record == record
-        assert info._taskq_generation == gen and info._resume_pending is False
-        assert not info._resume_event.is_set()
-        assert harness.mgr._running_count == before
-        assert store.state_of(info.id) == model.WAITING_INPUT
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                store,
+                "wake_wait",
+                lambda *a, **k: (_ for _ in ()).throw(TaskStoreUnavailable("down")),
+            )
+            assert admission.resume_grant({"_resume_id": info.id}) is False
+            assert info._slot_released is True and info._wait_record == record
+            assert info._taskq_generation == gen and info._resume_pending is False
+            assert not info._resume_event.is_set()
+            assert harness.mgr._running_count == before
+            assert store.state_of(info.id) == model.WAITING_INPUT
 
         # (b) the wake is refused and the row is NOT running: the row moved out
         # from under this run, so the grant is refused too.
@@ -557,12 +559,12 @@ async def test_resume_grant_keeps_the_run_parked_when_the_durable_wake_fails(mon
         )
         info._taskq_generation = store.get(info.id).generation
         assert store.state_of(info.id) == model.RUNNING
-        monkeypatch.setattr(store, "wake_wait", lambda *a, **k: None)
-        assert admission.resume_grant({"_resume_id": info.id}) is True
-        assert info._slot_released is False and info._wait_record is None
-        assert info._resume_event is None
-        assert harness.mgr._running_count == before + 1
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(store, "wake_wait", lambda *a, **k: None)
+            assert admission.resume_grant({"_resume_id": info.id}) is True
+            assert info._slot_released is False and info._wait_record is None
+            assert info._resume_event is None
+            assert harness.mgr._running_count == before + 1
 
         # (d) a STALE generation: another dispatcher woke and re-claimed the row
         # while this resume sat in the window, so the wake is fenced and the

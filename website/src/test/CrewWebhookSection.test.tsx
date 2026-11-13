@@ -40,7 +40,11 @@ function view(tokens: unknown[], over: Record<string, unknown> = {}) {
   return { enabled: true, switch_on: true, has_tokens: tokens.length > 0, tokens, ...over }
 }
 
-function renderPane(crew = 'oncall') {
+// A crew with no memory of its own on the `oncall` template: the binding a
+// token pinned to `oncall` runs as.
+const ONCALL = { name: 'pager', kiro_agent: 'oncall', memory_store: 'default' }
+
+function renderPane(crew: { name: string; kiro_agent: string; memory_store: string } = ONCALL) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={qc}>
@@ -61,7 +65,7 @@ describe('crew webhook pane — lists only this crew\'s bindings', () => {
       token({ label: 'CI runner', agent: 'oncall' }),
       token({ label: 'Deploy bot', agent: 'deploy' }),
     ]))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByText('CI runner')).toBeInTheDocument())
     expect(screen.queryByText('Deploy bot')).not.toBeInTheDocument()
     expect(screen.getAllByTestId('crew-webhook-row')).toHaveLength(1)
@@ -71,15 +75,39 @@ describe('crew webhook pane — lists only this crew\'s bindings', () => {
     mockApi.webhooks.mockResolvedValue(view([
       token({ agent: 'oncall', require_signature: true }),
     ]))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByText(/kc_whk_4f2b…9c1d/)).toBeInTheDocument())
     expect(screen.getByText('Signed')).toBeInTheDocument()
     expect(screen.getByText(/never used/)).toBeInTheDocument()
   })
 
+  it('lists a token pinned to the template the default crew runs', async () => {
+    // A token can pin only an agent template, and its call runs that template on
+    // the shared memory: the built-in `default` crew on `kirocrew` is that run.
+    mockApi.webhooks.mockResolvedValue(view([token({ label: 'Poller', agent: 'kirocrew' })]))
+    renderPane({ name: 'default', kiro_agent: 'kirocrew', memory_store: 'default' })
+    await waitFor(() => expect(screen.getByText('Poller')).toBeInTheDocument())
+  })
+
+  it('still lists a token on its template for a crew with its own memory', async () => {
+    // A hook this crew registers keeps its own memory, and a token on its template
+    // can deliver to that hook: hiding the token would hide real access.
+    mockApi.webhooks.mockResolvedValue(view([token({ label: 'Poller', agent: 'kirocrew' })]))
+    renderPane({ name: 'radar', kiro_agent: 'kirocrew', memory_store: 'radar' })
+    await waitFor(() => expect(screen.getByText('Poller')).toBeInTheDocument())
+  })
+
+  it('lists a token pinned to the declared name a file-name binding runs', async () => {
+    // An older row stores the template's file name; dispatch runs the name the
+    // file declares, which is the crew's own name here and what the token pins.
+    mockApi.webhooks.mockResolvedValue(view([token({ label: 'Pager', agent: 'captain' })]))
+    renderPane({ name: 'captain', kiro_agent: 'KiroPkg-captain', memory_store: 'default' })
+    await waitFor(() => expect(screen.getByText('Pager')).toBeInTheDocument())
+  })
+
   it('states the empty case in words when nothing is bound', async () => {
     mockApi.webhooks.mockResolvedValue(view([]))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByTestId('crew-webhook-empty')).toBeInTheDocument())
   })
 })
@@ -87,14 +115,14 @@ describe('crew webhook pane — lists only this crew\'s bindings', () => {
 describe('crew webhook pane — honesty rules', () => {
   it('reports a failed fetch as unknown, never as "nothing wakes this crew"', async () => {
     mockApi.webhooks.mockRejectedValue(new Error('boom'))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(screen.queryByTestId('crew-webhook-empty')).not.toBeInTheDocument()
   })
 
   it('discloses unbound tokens beside the empty state — they can wake this crew too', async () => {
     mockApi.webhooks.mockResolvedValue(view([token({ agent: '' })]))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByTestId('crew-webhook-empty')).toBeInTheDocument())
     expect(screen.getByTestId('crew-webhook-unbound-note').textContent).toContain('1 token')
     // Not listed as a row: it is not bound to this crew, it merely can reach it.
@@ -105,7 +133,7 @@ describe('crew webhook pane — honesty rules', () => {
     mockApi.webhooks.mockResolvedValue(view(
       [token({ agent: 'oncall' })], { switch_on: false },
     ))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByTestId('crew-webhook-switch-off')).toBeInTheDocument())
     // The list still renders — the tokens exist — the line qualifies them, and
     // the rows dim the same way a per-token Off does, so a user scanning for
@@ -125,14 +153,14 @@ describe('crew webhook pane — a disabled binding is visible but not live', () 
     mockApi.webhooks.mockResolvedValue(view([
       token({ label: 'CI runner', agent: 'oncall', enabled: false }),
     ]))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByText('CI runner')).toBeInTheDocument())
     expect(screen.getByTestId('crew-webhook-row-off')).toBeInTheDocument()
   })
 
   it('excludes a disabled unbound token from the any-crew disclosure', async () => {
     mockApi.webhooks.mockResolvedValue(view([token({ agent: '', enabled: false })]))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByTestId('crew-webhook-empty')).toBeInTheDocument())
     expect(screen.queryByTestId('crew-webhook-unbound-note')).not.toBeInTheDocument()
   })
@@ -143,7 +171,7 @@ describe('crew webhook pane — a disabled binding is visible but not live', () 
     mockApi.webhooks.mockResolvedValue(view(
       [token({ agent: '' })], { switch_on: false },
     ))
-    renderPane('oncall')
+    renderPane()
     await waitFor(() => expect(screen.getByTestId('crew-webhook-switch-off')).toBeInTheDocument())
     expect(screen.queryByTestId('crew-webhook-unbound-note')).not.toBeInTheDocument()
   })

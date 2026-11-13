@@ -62,10 +62,10 @@ SLACK_CAPABILITIES = TransportCapabilities(
     # Slack's established format pipeline already flattens tables byte-for-byte.
     table_mode=TABLE_POLICY_OFF,
     max_message_chars=SLACK_MSG_LIMIT,
-    # 10 = the platform cap on a checkboxes element's options[] — the widget
-    # Slack actually renders for [OPTIONS:]. The previous 5 was copied from
-    # the 5-buttons-per-actions-row limit, which does not govern checkboxes.
-    # Enforced at build_options_blocks (slack/format.py) via cap_choices.
+    # 10 = two rows of five one-click buttons, the card Slack renders for
+    # [OPTIONS:], and also the platform cap on the checkboxes in its
+    # "Choose several..." modal. Enforced at build_options_blocks
+    # (slack/format.py) via cap_choices.
     max_buttons=10,
     supports_proactive_send=True,
 )

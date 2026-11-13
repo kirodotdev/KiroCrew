@@ -42,15 +42,22 @@ function setAnnotationHighlightRanges(owner: object, ranges: Range[]): void {
 /**
  * Paint `range` for `owner`, split per text node so a selection spanning
  * several nodes highlights each of them exactly (a single multi-node Range
- * renders unevenly in some engines).
+ * renders unevenly in some engines). A text node under a `select-none` element
+ * inside the range is left unpainted: the reader dragged across it but could
+ * not select it, such as the Copy buttons under a table between two cells and
+ * the paragraph after it.
  */
 export function paintAnnotationHighlight(owner: object, range: Range): void {
   if (!HighlightCtor || !cssHighlights) return
-  const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT)
+  const root = range.commonAncestorContainer
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   const textNodes: Text[] = []
   let node: Node | null
   while ((node = walker.nextNode())) {
-    if (range.intersectsNode(node)) textNodes.push(node as Text)
+    if (!range.intersectsNode(node)) continue
+    const off = node.parentElement?.closest('.select-none')
+    if (off && off !== root && root.contains(off)) continue
+    textNodes.push(node as Text)
   }
   if (textNodes.length === 0 && range.startContainer.nodeType === Node.TEXT_NODE) {
     textNodes.push(range.startContainer as Text)

@@ -103,32 +103,15 @@ class _Record:
 class HazardLedger:
     """Per-server hazard observations, persisted as one small JSON object.
 
-    ``record``/``clear`` run on gatewayd's event loop; ``flush`` runs off it
-    (offloaded via ``asyncio.to_thread``) and reads the same ``_records``
-    state while building its payload — genuinely concurrent OS threads, not
-    just interleaved coroutines. Rather than share a lock between them (which
-    would make the event-loop side wait, however briefly, on whatever the
-    worker-thread side happens to be doing), ``_records`` and every
-    ``_Record`` are copy-on-write: ``record``/``clear`` never mutate an
-    existing dict or ``_Record`` in place, they build new ones and swap in a
-    new ``self._records`` with a single attribute assignment — atomic under
-    the GIL, so no reader ever observes a partially-updated structure and no
-    lock is needed for that swap. ``flush`` reads ``self._records`` into a
-    local variable ONCE at the very top (also just an atomic reference read)
-    and iterates that frozen snapshot; a concurrent ``record`` cannot mutate
-    the dict/set objects that snapshot points to, because it never mutates
-    ANY existing dict/set -- it only ever builds new ones and moves
-    ``self._records`` to point at them. So ``record``/``clear`` take no lock
-    at all, and can never block on anything ``flush`` is doing, I/O included.
+    ``record``/``clear`` run on gatewayd's event loop; ``flush`` runs on a
+    worker thread and reads the same state. So that the loop never waits on a
+    lock, ``_records`` and every ``_Record`` are copy-on-write: writers build
+    new objects and swap ``self._records`` in one assignment (atomic under the
+    GIL), and ``flush`` reads ``self._records`` ONCE and iterates that
+    snapshot. Never mutate an existing dict, set or ``_Record`` in place.
 
-    ``_flush_lock`` is the one lock left, and only ``flush`` ever touches it:
-    it serializes concurrent flushers against EACH OTHER (the periodic sweep
-    and the shutdown flush can overlap) across the whole call, disk write
-    included -- unrelated to the record/flush relationship above, and never a
-    concern for the event-loop side. The dashboard only ever reads the
-    persisted file, never this in-memory state; a reader that races a writer
-    there sees either the old or the new file because the write is atomic —
-    never a torn one.
+    ``_flush_lock`` only serializes concurrent flushers (periodic sweep vs
+    shutdown flush). The persisted file is written atomically.
     """
 
     def __init__(self, path: Path) -> None:

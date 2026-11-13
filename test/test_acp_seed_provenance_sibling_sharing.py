@@ -39,6 +39,7 @@ from kiro_crew.acp import seed_provenance as sp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import default_timeout
 
 
 class _HalfSecondPolls(ManualClock):
@@ -55,24 +56,32 @@ class _HalfSecondPolls(ManualClock):
         self.advance(0.5 - seconds)
 
 
+class _ArrivalLock:
+    """A lock that reports each arrival at it, then takes the real lock.
+
+    A thread that reaches ``__enter__`` is about to block on the real lock, so
+    ``arrived`` marks the moment an absence window can start.
+    """
+
+    def __init__(self, real_lock) -> None:
+        self._real_lock = real_lock
+        self.arrived = threading.Event()
+
+    def __enter__(self):
+        self.arrived.set()
+        return self._real_lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real_lock.__exit__(*exc)
+
+
 class TestSharedPermissionSurfaceEligibility:
     """A sibling seed carrying this session's permissions is shared, never rewritten.
 
-    The one relaxation of the live-holder rule: two sessions of the same agent
-    in the same ``work_dir`` render the same permissions, and without sharing only
-    the FIRST one gets Crew's MCP tools -- the second
-    lost the live slot, fell to the leave-it-alone branch, and ran with the
-    whole ``mcpServers`` array withheld. The hazard the live-holder rule guards
-    against (re-seeding with a different ``permissions.defaultMode``, unlinking
-    the owner's file) only exists when the permissions DIFFER, so they -- on a
-    seed whose bytes match both the durable record and the file on disk -- are
-    the boundary of what may be shared. The model half may differ only where the
-    session still runs its own model.
-
-    ``TestSharedPermissionSurfaceCreateRaces`` below pins the create race and a record
-    refused on the create or re-seed path, and ``TestSharedPermissionSurfaceTeardownAndReseed``
-    in ``test_acp_seed_provenance_sharer_teardown.py`` pins teardown, the settle hand-back, a
-    re-seed under a sharer and the no-clobber restore.
+    Without sharing, only the first session gets Crew's MCP tools. The live-holder
+    hazard exists only when permissions differ, so matching permissions on matching
+    bytes bound what may be shared; the model half may differ only where the session
+    runs its own model. Teardown pins live in ``test_acp_seed_provenance_sharer_teardown.py``.
     """
 
     def test_a_sibling_with_an_identical_payload_shares_the_surface(self, tmp_path, monkeypatch):
@@ -421,12 +430,8 @@ class TestSharedPermissionSurfaceEligibility:
     ):
         """A client that never became a sharer leaves no in-memory pin.
 
-        The share persists, the disk validation then fails (a user-replaced
-        file), and the withdrawal's own persist fails on a disk error. The
-        retain-on-refusal rule exists for REAL sharers whose delivered tools
-        depend on the file; kept here it would pin the owner's seed behind a
-        phantom lease for the process lifetime, because teardown skips
-        withdrawal when the shared flag is off.
+        Disk validation fails, then the withdrawal's persist fails. Retain-on-refusal is
+        for real sharers; here it would pin the owner's seed for the process lifetime.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -453,11 +458,8 @@ class TestSharedPermissionSurfaceEligibility:
     def test_a_failed_revalidation_keeps_an_existing_lease(self, tmp_path, monkeypatch):
         """A sharer's later failed validation must not drop its earned lease.
 
-        The lease is what pins the file the sharer already delivered its MCP
-        array against. A re-validation whose payload moved (a model refresh)
-        can fail; dropping the registration then would read as no-sharers to
-        the owner's teardown, which would delete the governed seed beneath a
-        client whose surface still reports governed.
+        Dropping it would let the owner's teardown delete the seed under a client that
+        still reports governed.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -627,11 +629,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     def test_an_unrelated_persist_keeps_a_sharer_pinned_record(self, tmp_path, monkeypatch):
         """A missing-file record survives persists while its sharer's lease is live.
 
-        The shared seed can vanish out-of-band; an UNRELATED session recording a
-        different path then runs _persist, whose dead-file prune would drop the
-        shared path's record — and with it the digest the sharer's byte-identical
-        repair validates against, leaving the sharer governed with no path back
-        to a restorable seed. A live lease pins the record.
+        An unrelated _persist's dead-file prune would drop the digest the sharer's repair
+        validates against.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -662,11 +661,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     def test_a_promoted_sharer_drops_its_own_reader_lease(self, tmp_path, monkeypatch):
         """A sharer that becomes the author must not stay its own sharer.
 
-        The shared file can vanish out-of-band; the sharer's next re-seed then
-        takes the O_EXCL create path and AUTHORS a replacement. An author still
-        registered as its own reader would pin its own teardown -- the settle
-        transaction reads has_sharers() and would leave the authored
-        permissions.defaultMode behind for every later session.
+        After the file vanishes, the re-seed authors a replacement. A self-lease would make
+        has_sharers() true and leave the authored permissions.defaultMode behind.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -717,11 +713,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     def test_a_mismatched_loser_declines_once_at_the_deadline(self, tmp_path, monkeypatch):
         """A settled, differing record never ends the poll early; the deadline does.
 
-        The poll exits early only on a record naming the LOSER's own bytes -- any
-        other durable entry could be a stale one a killed session left behind, so
-        it proves nothing about the winner. A loser whose payload mismatches
-        therefore runs to the bounded 2 s deadline and declines exactly once;
-        the clock is mocked so that deadline is a few iterations, not real time.
+        Any other record could be stale, so only the loser's own bytes end the poll. The
+        clock is mocked, so the 2 s deadline is a few iterations.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -758,12 +751,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     ):
         """A differing record from ANOTHER process is not the winner's word for THIS loser.
 
-        The create-race winner lives in a different process (a gateway and a
-        concurrent CLI on the same work dir), so its record exists only in the
-        durable sidecar -- this process's in-memory cache never sees it. The
-        poll's exit probe reads that sidecar, but a durable entry ends the poll
-        early only when it names the loser's own bytes: the winner's differing
-        record, like a stale one, leaves the loser to its bounded deadline.
+        The winner's record exists only in the durable sidecar. Like a stale one, a
+        differing record leaves the loser to its bounded deadline.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -803,12 +792,9 @@ class TestSharedPermissionSurfaceCreateRaces:
     def test_a_recreate_is_refused_while_the_owner_is_still_live(self, tmp_path, monkeypatch):
         """A sibling must not recreate a vanished seed under a LIVE owner.
 
-        record() displaces the live slot unconditionally, so a sibling that
-        authored a replacement would become the holder -- and its teardown
-        would remove a file the original owner still governs. The create path
-        refuses while a different session's live client holds the path;
-        promotion stays possible once the owner is gone
-        (test_a_promoted_sharer_drops_its_own_reader_lease).
+        record() displaces the live slot, so the sibling's teardown would remove the
+        owner's file. Promotion after the owner is gone is pinned by
+        test_a_promoted_sharer_drops_its_own_reader_lease.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -979,12 +965,22 @@ class TestSharedPermissionSurfaceCreateRaces:
                 done.set()
 
         monkeypatch.setattr(sp, "record", refuse_record)
-        with sp.SETTLE_LOCK:
+        real_lock = sp.SETTLE_LOCK
+        settle_lock = _ArrivalLock(real_lock)
+        with real_lock:
+            # The cleanup reads the lock by module name once the record is
+            # refused, so it reaches the stand-in, which reports the arrival
+            # and then waits on the real lock this test holds.
+            monkeypatch.setattr(sp, "SETTLE_LOCK", settle_lock)
             worker = threading.Thread(target=create_seed)
             worker.start()
             assert record_called.wait(5)
-            # flake-ok: a 300 ms absence window while this test holds SETTLE_LOCK; moved verbatim
-            assert not done.wait(0.3)
+            assert settle_lock.arrived.wait(
+                timeout=default_timeout()
+            ), "the cleanup never reached the settle lock"
+            assert not done.wait(
+                timeout=0.3
+            ), "the cleanup finished while a sharer validation held the lock"
         assert done.wait(5)
         worker.join(5)
 
@@ -997,13 +993,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     ):
         """A registry lock that dies mid-create never strands an unrecorded seed.
 
-        The cross-process lock is one ``os.open`` on ``.settings_seeds.lock`` under
-        Crew's data home, and it can stop opening between the pre-create barriers
-        and the record: the mount flips read-only, or a ``sudo`` run leaves the
-        lock file root-owned. ``record`` already reports that as ``False``; the
-        cleanup that follows must not itself raise on the same lock, or the
-        just-written ``permissions.defaultMode`` outlives every session with no
-        record and no author -- the exact file this module exists to remove.
+        The lock can stop opening (read-only mount, root-owned lock file). The cleanup
+        must not raise on it, or the new ``permissions.defaultMode`` outlives every session.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         path = _settings(tmp_path)
@@ -1021,11 +1012,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     ):
         """Positive control: an unreadable registry never over-removes a live sharer.
 
-        The in-process sharer registry answers BEFORE the cross-process lock, so a
-        sibling that validated these bytes in this process keeps its file even
-        when the durable registry cannot be consulted -- and no sibling in another
-        process can newly register while the lock is down, because ``share``
-        requires the same lock to persist its lease.
+        The in-process registry answers before the lock. No other process can register
+        while the lock is down, since ``share`` needs it.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         prior_owner = _client(tmp_path, permission_mode="default")
@@ -1061,13 +1049,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     ):
         """Positive control for the take-back above: same re-create, record lands.
 
-        Pins that the withheld-on-failure assertions are not vacuous -- when the
-        durable record does land, the byte-identical re-create publishes the
-        file, promotes the sharer to author and leaves ``_permission_surface_governed``
-        TRUE, the precondition the claude mirror admits the tool array on
-        (test_an_unowned_permission_surface_withholds_the_stubs_too). Governance
-        is therefore lost at the failure exit because of the failure, not because
-        a re-create never governs.
+        Shows the failure assertions are not vacuous: here the sharer becomes author and
+        ``_permission_surface_governed`` stays true.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")
@@ -1126,11 +1109,8 @@ class TestSharedPermissionSurfaceCreateRaces:
     ):
         """Authorship of a vacant pathname is serialized against the registry.
 
-        A registered reader validated the RECORDED bytes. A session whose
-        payload differs must not take the vacant name -- its permission mode
-        would sit under the sibling's governed surface. The byte-identical
-        re-creation (a sharer repairing its own vanished seed) stays allowed
-        and is pinned by test_a_promoted_sharer_drops_its_own_reader_lease.
+        A differing payload must not take the vacant name under a registered reader. The
+        byte-identical repair is pinned by test_a_promoted_sharer_drops_its_own_reader_lease.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, permission_mode="default")

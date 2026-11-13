@@ -435,13 +435,13 @@ async def test_recovery_never_calls_site_stop(monkeypatch: Any) -> None:
         dead = guard.site
         # A live client connection the rebind must neither wait for nor drop.
         held = socket.create_connection(("127.0.0.1", served.port), timeout=2.0)
-        monkeypatch.setattr(guard, "listener_open", lambda: False)
-        monkeypatch.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
         try:
-            assert await guard.check_now("test") is True
+            # Restored before the served context exits: runner.cleanup() stops the sites.
+            with monkeypatch.context() as mp:
+                mp.setattr(guard, "listener_open", lambda: False)
+                mp.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
+                assert await guard.check_now("test") is True
         finally:
-            # Undone inside the context: runner.cleanup() below stops the sites.
-            monkeypatch.undo()
             held.close()
         assert guard.site is not dead
         assert dead not in served.runner.sites

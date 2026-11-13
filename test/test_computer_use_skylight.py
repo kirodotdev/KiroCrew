@@ -27,6 +27,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.computer_use import macos_skylight as sky
 from kiro_crew.computer_use import policy
@@ -335,7 +336,14 @@ class TestSkyClickIsLeftButtonOnly:
             for button in (MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE, MOUSE_BUTTON_LEFT):
                 assert policy.check_method_button(method, button) is None, (method, button)
 
-    def test_the_gate_permits_sky_click_with_the_left_button(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_the_gate_permits_sky_click_with_the_left_button"),
+            *named_cases("test_sky_click_accepts_the_left_button"),
+        ],
+    )
+    def test_sky_click_with_the_left_button_is_permitted(self):
         assert policy.check_method_button(CLICK_METHOD_SKY_CLICK, MOUSE_BUTTON_LEFT) is None
 
     def test_the_driver_PASSES_the_button_rather_than_assuming_it(self):

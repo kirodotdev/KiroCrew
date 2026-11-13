@@ -11,7 +11,7 @@
  * connected.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -334,7 +334,7 @@ describe('Session menu — independence and offers', () => {
     fireEvent.click(screen.getByText('Pause replies to Discord DM'))
     await waitFor(() => expect(api.pauseMirror).toHaveBeenCalledWith('both-session', true, false))
 
-    releaseSlack?.({ ok: true, was_paused: false })
+    await act(async () => { releaseSlack?.({ ok: true, was_paused: false }) })
   })
 
   it('offers a channel the session does not hold, and links it on click', async () => {

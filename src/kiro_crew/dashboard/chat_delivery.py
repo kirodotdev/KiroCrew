@@ -19,16 +19,23 @@ import asyncio
 import logging
 import re
 import uuid
+import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
 from kiro_crew.dashboard.chat_utils import (
-    STEER_INTENT_META,
+    COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
     _redact_for_display,
     _redact_meta,
 )
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
+from kiro_crew.dashboard.slot_queue_repository import (
+    ATTACHMENT_META_KEYS,
+    RESTORED_QUEUE_KEY,
+    refused_durable_ids,
+    warn_if_not_durable,
+)
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -61,6 +68,7 @@ STEER_UNAVAILABLE = "unavailable"
 #              in-flight generation was actually redirected.
 #   requeued -- the turn ended with no consumption echo, so the teardown moved the
 #              message to the queue and it runs as its own turn.
+#   superseded -- that own turn has written its row, so this one is not drawn.
 #
 # A steer can only be injected at a model-inference boundary, so a turn that is
 # streaming text without dispatching a tool may never reach one before it ends
@@ -79,6 +87,9 @@ STEER_STATE_RETRACTED = "retracted"
 # harness can drop a steer its turn has not read -- so the dashboard draws the
 # controls from the row alone.
 STEER_RETRACTABLE_META = "steerRetract"
+# A requeued row whose own turn has since written a fresh row with the same text:
+# the transcript keeps it, the client does not draw it again.
+STEER_STATE_SUPERSEDED = "superseded"
 
 # Upper bound on a client-minted ``meta.sendId`` accepted into the steer path.
 # Client mints are ~17 chars; the bound exists because the value is raw client
@@ -119,6 +130,35 @@ QUOTE_META_KEY = "quote"
 QUOTE_TEXT_MAX_LEN = 2048
 QUOTE_FIELD_MAX_LEN = 256
 QUOTE_ROLES = frozenset({"user", "assistant"})
+
+# Bounds on a knowledge envelope mark (``knowledge_meta``): no envelope is longer
+# than the gateway's 60 MiB request body, and the base36 djb2 hash is 7 characters.
+KNOWLEDGE_ENVELOPE_META_KEY = "knowledgeEnvelope"
+KNOWLEDGE_ENVELOPE_MAX_LEN = 60 * 1024 * 1024
+KNOWLEDGE_HASH_MAX_LEN = 16
+
+# The short display label a scripted ``POST /api/chat`` may carry (``banner`` in
+# the body). It rides on the user row's meta; the row's ``content`` and the turn's
+# input stay the full message. Bounded and redacted by ``normalize_banner``, the
+# monitor-loop banner's validator, so the two labels share one cap.
+CHAT_BANNER_META_KEY = "banner"
+
+
+def banner_meta(meta: object) -> dict[str, str]:
+    """``{"banner": ...}`` for a queue entry's label when it is usable, else ``{}``.
+
+    A restored queue file is hand-editable, so the label goes through the send
+    handler's validator again: the same cap and credential redaction, and a
+    label it rejects is dropped.
+    """
+    # Deferred: autonudge_authz pulls in the autonudge service at import time.
+    from kiro_crew.autonudge_authz import normalize_banner
+
+    value = meta.get(CHAT_BANNER_META_KEY) if isinstance(meta, dict) else None
+    if not isinstance(value, str):
+        return {}
+    banner, error = normalize_banner(value, absent_ok=True)
+    return {CHAT_BANNER_META_KEY: banner} if banner and error is None else {}
 
 
 def normalize_send_id(value: object) -> str | None:
@@ -381,12 +421,17 @@ async def steer_into_running_turn(
     send_id: str | None = None,
     user_origin: bool = False,
     channel_origin: bool = False,
+    owner_origin: bool = False,
     admission: dict | None = None,
     decision_strip: dict | None = None,
     attachments: dict | None = None,
+    app_label: str | None = None,
+    app_actor: bool = False,
     delivery_id: str | None = None,
     responsive: bool = False,
     nudge_meta: dict | None = None,
+    banner: str = "",
+    relay_meta: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -430,6 +475,17 @@ async def steer_into_running_turn(
     provenance, as every steer does. Defaults to FALSE for the composer and the
     peer path, whose text did not come through a channel.
 
+    ``owner_origin`` says the text was sent by the OWNER's dashboard request
+    (``is_owner_dashboard_request``), which ``user_origin`` does not: a channel
+    user allow-listed for ``/kirocrew dashboard`` holds a dashboard token too, and
+    the composer passes ``user_origin=True`` for them. Two readers, both narrower
+    than the flags above. The running turn's ``_turn_owner_sent`` is cleared at
+    admission for a steer that is not the owner's, since the model can act on the
+    injected text before the RPC returns and a crew-scoped session read it then
+    makes would carry the owner's authority. The requeue reads it for
+    ``directive_owner_origin`` on the queue entry. Defaults to FALSE: the owner's
+    mark is the one thing a caller cannot acquire by saying nothing.
+
     ``admission`` is the containment that held when the caller's gate cleared this
     send (``session_control.containment_meta``). It is recorded for the REQUEUE,
     which runs in the turn's teardown -- on the far side of this function's
@@ -462,7 +518,8 @@ async def steer_into_running_turn(
     a restored transcript, and only an id names THIS delivery.
 
     ``nudge_meta`` says the text is AUTOMATION (a monitor loop's work-ledger
-    wake), and is the ``meta.nudge`` (``{"cycle", "loop_id"}``) its row carries.
+    wake), and is the ``meta.nudge`` (``{"cycle", "loop_id"}``) its row carries,
+    plus the loop's ``session_deliver.WAKE_GENERATION``, which no row carries.
     The row's role follows the origin, not the branch that ran: the steer is
     persisted as a ``nudge`` row, the same role the idle fire writes, so it
     draws as the nudge chip rather than a bubble the person typed. It
@@ -470,6 +527,26 @@ async def steer_into_running_turn(
     (``AUTOMATION_STEER_META``), so the drained row is a ``nudge`` row too and
     never merges into a person's queued text. Absent for every other caller,
     which keeps their rows unchanged.
+
+    ``app_label`` stamps ``meta.appLabel`` on the persisted row (and on a requeued
+    steer's drained row), the attribution pill an app inject row uses. The
+    app-facing ``/question/steer`` route passes the authenticated app's identity
+    so a native card's answer reads as the app's; a human steer passes None and
+    the row keeps its prior shape. It is display attribution ONLY.
+
+    ``app_actor`` is the separate ROUTING signal: True stamps
+    ``meta.turnActor='app'`` on the row and the requeued entry, so a requeued app
+    answer drains as an app turn, not a ``user`` turn eligible for the user-only
+    routing gate. It is decoupled from ``app_label`` on purpose: an app caller
+    whose display label is malformed or over-long (dropped by the label's
+    length/control-char bound) must still stamp the app ACTOR, or its answer would
+    requeue as ``user``. The caller passes it from the authenticated identity
+    (``bool(request_app)``), never from the label surviving validation. The
+    human-turn marker remains governed by ``user_origin`` (an app steer sets it
+    False). ``app_actor`` also stamps :data:`COMMANDS_OFF_META_KEY` on the
+    requeued entry: an app native-card answer is the app user's own text (it may
+    be "/clear"), so a requeued app steer drains as plain text, never a run
+    command -- the same treatment a channel steer's requeue gets.
     """
     if nudge_meta is not None:
         user_origin = False
@@ -480,7 +557,13 @@ async def steer_into_running_turn(
     responsive = responsive and user_origin and not channel_origin
     send_id = normalize_send_id(send_id)
     quote = quote_meta(attachments)
+    knowledge = knowledge_meta(attachments)
     attachments = attachment_meta(attachments)
+    # Display attribution for an app-authored steer, kept separate from the
+    # attachment-list reduction above (which allowlists only the file/paste
+    # lists). Coerced to a plain string so a non-str caller cannot stamp a
+    # structured value onto the row; empty becomes None (no stamp).
+    app_label = app_label if isinstance(app_label, str) and app_label else None
     # A take-back's `_session/steer/clear` drops every steer kiro-cli holds when it
     # runs, so this steer is not written until that clear has been answered.
     # circular import: steer_retract imports this module at module level.
@@ -497,11 +580,11 @@ async def steer_into_running_turn(
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
     if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
-        # codex can drop a steer it already took when a later approval in the turn
-        # is denied. That limit is accepted only for the composer, where the
-        # session's own human watches the turn and can resend; a peer's text
-        # takes the caller's queue path instead.
-        return STEER_UNAVAILABLE
+        # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
+        # A snapshot, not a load: no file read on the loop, no await before registering.
+        live_config = live.snapshot()
+        if live_config is None or not live_config.agent.peer_steer_loss_recovery:
+            return STEER_UNAVAILABLE
     if _engine_has_no_prompt(client):
         # The slot reads running from the moment its turn task exists, which is
         # before the prompt reaches the engine (context build) and after it
@@ -509,6 +592,10 @@ async def steer_into_running_turn(
         # prompt and nothing consumes it; the queue path delivers it as
         # the next turn instead.
         logger.info("no prompt in flight for slot %s; queueing instead of steering", slot.key)
+        return STEER_UNAVAILABLE
+    if getattr(slot, "_compact_command_turn", False) is True:
+        # The turn IS a manual /compact: no prompt runs that a steer could join.
+        logger.info("slot %s is compacting; queueing instead of steering", slot.key)
         return STEER_UNAVAILABLE
 
     # Register as pending BEFORE the await: ``steer()`` suspends on
@@ -557,6 +644,7 @@ async def steer_into_running_turn(
             slot._steer_send_ids,
             slot._steer_user_origin,
             slot._steer_channel_origin,
+            slot._steer_owner_origin,
             slot._steer_admissions,
             slot._steer_attachment_meta,
             slot._steer_act_now,
@@ -603,6 +691,9 @@ async def steer_into_running_turn(
     # ``directive_channel_origin`` and must find a definite value for every
     # in-flight steer, so it is stored for the composer's False as well.
     slot._steer_channel_origin[message] = bool(channel_origin)
+    # Same lockstep again: the requeue reads this for the entry's
+    # ``directive_owner_origin`` and a definite False is what fails it closed.
+    slot._steer_owner_origin[message] = bool(owner_origin)
     if channel_origin:
         # NARROW the running turn's directive provenance, at admission. The turn's
         # ``_directive_channel_origin`` is its opener's -- False for a
@@ -623,20 +714,51 @@ async def steer_into_running_turn(
         # (``update_self``), so the turn counts as one the user did not send.
         # Set before the RPC for the reason above; ``chat_runner`` resets it.
         slot._turn_user_sent = False
+    if not owner_origin:
+        # And for "the owner sent this turn": text that is not the owner's --
+        # a peer's, an app's, a channel user's who holds a dashboard token --
+        # can ask the model for a crew-scoped session read, which only the
+        # owner's own turn may make. Same timing, same reset.
+        slot._turn_owner_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
-    if attachments or quote:
+    if attachments or quote or knowledge or app_label or app_actor or banner or relay_meta:
         # Retained for the REQUEUE with the attachment lists: a steer the turn
         # ended before consuming is drained as a queued row, and that row is
         # rebuilt from this map -- without the quote here it would render its
-        # blockquote as text instead of the card.
-        slot._steer_attachment_meta[message] = {**attachments, **quote}
+        # blockquote as text instead of the card, without the knowledge mark
+        # its queue card would show the knowledge envelope, without a peer's
+        # cross-session sender (``relay``) it would draw as a raw
+        # ``[sent by session …]`` bubble instead of the session-message card,
+        # without appLabel the drained
+        # row would lose the app attribution the delivered row carries, and
+        # without turnActor the drain would read the requeued turn's actor as
+        # ``user`` (``_actor_for_queue_items`` has no kind and no stamp to read),
+        # making an app answer eligible for the user-only routing gate. The actor
+        # is keyed on ``app_actor``, NOT on ``app_label`` surviving its bound: an
+        # app whose label is dropped must still requeue as an app turn.
+        slot._steer_attachment_meta[message] = {
+            **attachments,
+            **quote,
+            **knowledge,
+            **({"relay": dict(relay_meta)} if relay_meta else {}),
+            **({"appLabel": app_label} if app_label else {}),
+            **({TURN_ACTOR_META_KEY: "app"} if app_actor else {}),
+            **({CHAT_BANNER_META_KEY: banner} if banner else {}),
+            # An app native-card answer is the app user's own words -- a chosen
+            # option, or a free-text answer that may literally be "/clear". A
+            # channel steer gets commands-off on requeue for the same reason
+            # (steer_queue.py); an app steer re-enters the queue the same way and
+            # must not have its answer run as a dashboard command on drain. Keyed
+            # on app_actor so a composer steer's requeue meta is unchanged.
+            **({COMMANDS_OFF_META_KEY: True} if app_actor else {}),
+        }
     if user_origin and not channel_origin:
         # The composer's own human asked this to act now. Held for the requeue
         # with the attachment lists rather than in the lockstep origin maps,
         # which the persisting tail drops while the steer is still unconsumed: a
         # steer the turn ends before taking keeps its intent past the sub-agent
-        # hold (``STEER_INTENT_META``) instead of parking behind a wave its
+        # hold (``COMPOSER_SEND_META``) instead of parking behind a wave its
         # sender chose not to wait for.
         slot._steer_act_now.add(message)
     if decision_strip:
@@ -726,6 +848,7 @@ async def steer_into_running_turn(
         slot._steer_send_ids.pop(message, None)
         slot._steer_user_origin.pop(message, None)
         slot._steer_channel_origin.pop(message, None)
+        slot._steer_owner_origin.pop(message, None)
         slot._steer_admissions.pop(message, None)
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
@@ -768,6 +891,7 @@ async def steer_into_running_turn(
             slot._steer_send_ids.pop(message, None)
             slot._steer_user_origin.pop(message, None)
             slot._steer_channel_origin.pop(message, None)
+            slot._steer_owner_origin.pop(message, None)
             slot._steer_admissions.pop(message, None)
             slot._steer_attachment_meta.pop(message, None)
             slot._steer_act_now.discard(message)
@@ -863,9 +987,6 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
-    slot._steer_user_origin.pop(message, None)
-    slot._steer_channel_origin.pop(message, None)
-    slot._steer_admissions.pop(message, None)
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
     # turn-end requeue stamping it on the queue entry too would put one decision on
@@ -883,6 +1004,18 @@ async def steer_into_running_turn(
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
         slot._steer_automation.pop(message, None)
+        slot._steer_admissions.pop(message, None)
+        slot._steer_user_origin.pop(message, None)
+        slot._steer_channel_origin.pop(message, None)
+        slot._steer_owner_origin.pop(message, None)
+    # Still registered, the provenance is held like the attachments: the RPC
+    # accepting the write is not consumption, and a turn that ends before the
+    # `steering_consumed` echo requeues the text from these records. Dropping them
+    # here would requeue an entry with no containment baseline and no origin marks:
+    # the drain would check it against every currently held constraint, a channel
+    # human's steer would lose its channel narrowing, and the session's own human's
+    # would lose the user origin that vouches for a member self-arm. The echo's
+    # settle or the requeue pops all three.
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -946,6 +1079,14 @@ async def steer_into_running_turn(
     meta: dict[str, Any] = {
         "steer": True,
         "steerState": _state,
+        # The gateway-set cross-session sender, when a ``session_send`` peer was
+        # steered into the running turn: the receiver's consumed-steer row carries
+        # it so the transcript draws the incoming session-message card instead of
+        # the raw provenance prefix. Only on a peer relay (``relay_meta`` set). A
+        # steer the turn never takes is requeued with it from
+        # ``_steer_attachment_meta``, so the row that drain writes carries it too;
+        # the live ``steer_push`` below carries it for open tabs.
+        **({"relay": dict(relay_meta)} if relay_meta else {}),
         # The row names its delivery, as a drained row names the deliveries it
         # stands for (``steer_delivery_ids``): a caller reconciling after this
         # call -- the channel hand-off on a slot that moved under the RPC -- finds
@@ -976,6 +1117,20 @@ async def steer_into_running_turn(
         meta.update(attachments)
     if quote:
         meta.update(quote)
+    if banner and nudge_meta is None:
+        # Already bounded and redacted by the caller (``normalize_banner``).
+        meta[CHAT_BANNER_META_KEY] = banner
+    if app_label:
+        # App-authored steer: the attribution pill an app inject row uses, so a
+        # native card's answer reads as the app's rather than a bare user bubble.
+        # Display only; separate from HUMAN_TURN_META_KEY above (gated on
+        # user_origin).
+        meta["appLabel"] = app_label
+    if app_actor:
+        # The routing actor, keyed on the authenticated identity rather than on
+        # the label surviving its bound: records the app as the row's actor, the
+        # same stamp a requeued app steer carries, so the two delivery paths agree.
+        meta[TURN_ACTOR_META_KEY] = "app"
     # Offered only on a steer still waiting for the turn, typed by the session's
     # own human into the composer, on a harness that can drop it unread. A peer's,
     # a channel's or an automation's steer is not that person's to take back.
@@ -1050,6 +1205,12 @@ async def steer_into_running_turn(
         # Another open tab draws the steer row from this frame: without the
         # quote it would render the blockquote as text until a reload.
         push_payload.setdefault("meta", {}).update(quote)
+    if banner:
+        push_payload.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
+    if relay_meta:
+        # A peer's steer: an open tab draws the row from this frame, so without
+        # the sender it would show the raw provenance prefix until a reload.
+        push_payload.setdefault("meta", {})["relay"] = dict(relay_meta)
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 
@@ -1078,6 +1239,22 @@ TURN_ACTOR_META_KEY = "turnActor"
 #: provenance flags, which grant authority and are therefore never persisted.
 COMMANDS_OFF_META_KEY = "commands_off"
 
+#: Entry meta key asking for a BACKGROUND cold start for the turn the entry runs as,
+#: whoever's provenance it carries. The bulk Resume stamps it on every entry it
+#: queues: its request answers at once, so no person waits on any one of those
+#: starts. The drain honours it only when every consumed entry carries it, so a
+#: typed message drained beside it keeps its FOREGROUND start. A ``meta`` key, so
+#: the durable copy keeps it; like ``COMMANDS_OFF_META_KEY`` it only ever REMOVES
+#: something (a place in the person-only start reserve).
+START_BACKGROUND_META_KEY = "start_background"
+
+#: The turn tasks the queue drain started from entries that ALL carried
+#: ``START_BACKGROUND_META_KEY``: a bulk Resume's own turns and the retries they
+#: queue for themselves. A bulk Resume reads it to keep its place in its bound
+#: while a turn of its own hands over to such a retry; a turn started from a
+#: person's message is never in it. Weak, so a finished task leaves on its own.
+BACKGROUND_START_TASKS: "weakref.WeakSet[asyncio.Task[Any]]" = weakref.WeakSet()
+
 
 def queue_for_next_turn(
     state: "DashboardState",
@@ -1086,6 +1263,7 @@ def queue_for_next_turn(
     *,
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
+    directive_owner_origin: bool = False,
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
     decision_strip: dict | None = None,
@@ -1093,18 +1271,24 @@ def queue_for_next_turn(
     channel_recipient: dict[str, Any] | None = None,
     quote: dict[str, Any] | None = None,
     commands_off: bool = False,
-    steer_intent: bool = False,
+    composer_send: bool = False,
+    author: dict[str, Any] | None = None,
     admission: dict[str, Any] | None = None,
+    banner: str = "",
+    queued_work: Any = None,
+    knowledge: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
+
+    *queued_work* is the fair-admission result for a parked send; its work id is
+    stamped on the entry before the durable verdict, because the write weighs it.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
 
-    *steer_intent* stamps :data:`STEER_INTENT_META`: the session's own human asked
-    this send to act now and the running turn could not take it, so the sub-agent
-    hold releases it at the turn's end rather than parking it behind the wave.
-    Only the composer's steer fallback passes it.
+    *composer_send* stamps :data:`COMPOSER_SEND_META`: the session's own human
+    typed this into the composer, so the sub-agent hold releases it at the turn's
+    end rather than parking it behind the wave. Only the composer passes it.
 
     *admission* supplies containment captured before an asynchronous queue path
     began. When absent, containment is captured here at enqueue like every direct
@@ -1134,6 +1318,14 @@ def queue_for_next_turn(
     by a channel conversation resumed into this session; the composer leaves it
     False.
 
+    *directive_owner_origin* marks the entry as the OWNER's words
+    (``_directive_owner_origin``): the request that queued it passed
+    ``is_owner_dashboard_request``, which a dashboard token minted for a channel
+    user does not. The drain reduces the consumed entries' marks into the
+    successor turn's ``_turn_owner_sent``, the one thing a crew-scoped session
+    read accepts. Only the composer and the responsive path pass it, and only
+    for the owner; every other producer leaves it False.
+
     *send_id* is the client-minted ``meta.sendId`` the plain send path persists
     on its user row, already passed through ``normalize_send_id`` by the caller.
     When present it is stamped onto the queue entry's meta: the drain unions
@@ -1160,6 +1352,9 @@ def queue_for_next_turn(
     the row it appends, so this is the only way a QUEUED send's row carries the
     receipt for the decision that queued it. Absent on every send that was not
     decided, which keeps the entry's prior shape.
+
+    *knowledge* is the send's :func:`knowledge_meta`, stamped on the entry and its
+    ``queue_push`` frame so the queue card finds the knowledge envelope exactly.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
@@ -1192,14 +1387,29 @@ def queue_for_next_turn(
         meta["decisions_strip"] = decision_strip
     if commands_off:
         meta[COMMANDS_OFF_META_KEY] = True
-    if steer_intent:
-        meta[STEER_INTENT_META] = True
+    if composer_send:
+        meta[COMPOSER_SEND_META] = True
+    if author:
+        # *author* is the server-derived Shared Crew author of a person's send
+        # (``attribution.author_meta``). The drain unions it onto the row and
+        # charges the drained turn to that person.
+        meta["author"] = dict(author)
+    if banner:
+        # Already bounded and redacted by the caller (``normalize_banner``).
+        meta[CHAT_BANNER_META_KEY] = banner
+    if knowledge:
+        meta.update(knowledge)
     qid = slot.queue_append(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
+        directive_owner_origin=directive_owner_origin,
     )
+    if queued_work is not None:
+        from kiro_crew.shared_crew import admission_entry as _sc_entry
+
+        _sc_entry.stamp_queued_work(slot, qid, queued_work)
     # Append-only session ledger. The session id comes off the client the running
     # turn published on the slot -- a message is only queued because a turn IS
     # running, so it is there. No turn ordinal: this message belongs to no turn
@@ -1237,12 +1447,16 @@ def queue_for_next_turn(
     push_identity = normalize_send_id(send_id)
     if push_identity:
         push.setdefault("meta", {})["sendId"] = push_identity
-    state.broadcast_ws("queue_push", push)
+    if banner:
+        push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
+    if knowledge:
+        push.setdefault("meta", {}).update(knowledge)
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
-    # that case is reported at WARNING rather than left silent. It is not a field
-    # on this frame: a caller-visible flag was carried here and read by nothing.
-    warn_if_not_durable(slot._queue, qid, slot.key)
+    # that case is logged at WARNING and drawn on the card this frame makes.
+    if not warn_if_not_durable(slot._queue, qid, slot.key):
+        push.setdefault("meta", {})["durable"] = False
+    state.broadcast_ws("queue_push", push)
     start_queue_persist(state, slot)
     return qid
 
@@ -1252,9 +1466,9 @@ def start_queue_persist(state: "DashboardState", slot: "_ChatSlot") -> None:
 
     Called from both places a prompt is accepted onto a slot queue: the busy-slot
     path in this module, and the sub-agent hold branch in ``chat_api/chat_send``. Both
-    answer the sender a receipt saying whether the entry is durable, so both must
-    start the write that makes it so; a receipt from one path and a write from
-    only the other is the asymmetry this seam exists to prevent.
+    accept a prompt onto the queue, so both must start the write that keeps it; an
+    accept from one path and a write from only the other is the asymmetry this
+    seam exists to prevent.
 
     The prompt's transcript row is written by the DRAIN, so between this accept
     and that drain the queue is the ONLY record of the user's words. Waiting for
@@ -1396,6 +1610,29 @@ def quote_meta(user_meta: dict | None, *, user_origin: bool = True) -> dict[str,
     return {QUOTE_META_KEY: redacted[QUOTE_META_KEY]}
 
 
+def knowledge_meta(meta: object) -> dict[str, dict[str, Any]]:
+    """``{"knowledgeEnvelope": {"len": ..., "hash": ...}}`` for the queue card, or ``{}``.
+
+    Read off a send's ``meta.knowledge.envelope``, or a queue entry's own key.
+    Only the mark, never the knowledge text: the card needs nothing else to find
+    the envelope at the head of the entry's text, and the client checks the mark
+    against that text, so a mark that does not match the edited text hides nothing.
+    """
+    if not isinstance(meta, dict):
+        return {}
+    mark = meta.get(KNOWLEDGE_ENVELOPE_META_KEY)
+    if mark is None and isinstance(meta.get("knowledge"), dict):
+        mark = meta["knowledge"].get("envelope")
+    if not isinstance(mark, dict):
+        return {}
+    length, digest = mark.get("len"), mark.get("hash")
+    if type(length) is not int or not 0 < length <= KNOWLEDGE_ENVELOPE_MAX_LEN:
+        return {}
+    if not isinstance(digest, str) or not 0 < len(digest) <= KNOWLEDGE_HASH_MAX_LEN:
+        return {}
+    return {KNOWLEDGE_ENVELOPE_META_KEY: {"len": length, "hash": digest}}
+
+
 def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
     """The attachment lists of a send's ``meta``, reduced to lists of strings.
 
@@ -1494,6 +1731,10 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     quote = quote_meta(item.get("meta"), user_origin=queue_entry_is_user_origin(item))
     if quote:
         view.setdefault("meta", {}).update(quote)
+    if banner := banner_meta(item.get("meta")):
+        view.setdefault("meta", {}).update(banner)
+    if knowledge := knowledge_meta(item.get("meta")):
+        view.setdefault("meta", {}).update(knowledge)
     # The structural kind tag rides in ``meta`` so the queue card can classify
     # a system entry (an MCP-App message, for one) without parsing its text —
     # the same enqueue-time source the server's own drain reads, and the same
@@ -1508,4 +1749,33 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     label = (item.get("meta") or {}).get("appLabel")
     if isinstance(label, str) and label:
         view.setdefault("meta", {})["appLabel"] = label
+    # Entries loaded from disk on restart carry RESTORED_QUEUE_KEY=True.
+    # Projecting this as a boolean lets the client skip a restored queued row
+    # when deciding whether to offer Resume — matching the backend gate in
+    # continue_slot_turn that checks RESTORED_QUEUE_KEY.
+    if item.get(RESTORED_QUEUE_KEY):
+        view.setdefault("meta", {})["restored"] = True
+    edit_rev = item.get("edit_rev")
+    if isinstance(edit_rev, int) and not isinstance(edit_rev, bool):
+        view["editRev"] = edit_rev
     return view
+
+
+def queue_view(
+    queue: list[dict[str, Any]], refused: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """The slot-detail ``queue[]`` field: :func:`queue_entry_view` per entry, with
+    ``meta.durable: false`` on each prompt the durable write will not keep. Judged
+    on this read, so a refresh corrects the verdict a ``queue_push`` frame drew.
+
+    A caller rendering a trimmed copy of the queue passes ``refused``, read off the
+    LIVE entries: the writer weighs fields such a copy drops (source channels, the
+    system-entry stamps), so judging the copy would mark the wrong prompts."""
+    snapshot = list(queue)
+    if refused is None:
+        refused = refused_durable_ids(snapshot)
+    views = [queue_entry_view(item) for item in snapshot]
+    for view in views:
+        if view["id"] in refused:
+            view.setdefault("meta", {})["durable"] = False
+    return views

@@ -1,12 +1,13 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ArrowUpRight, Check, ShieldCheck } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../../../api/client'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { appendSlotMessage, clearQuestionCard, isAnsweredQuestionEnding, markQuestionSettled, resolveQuestionCard, selectComposerBusy, setQuestionRequestInFlight } from '../../../store/chatSlice'
 import { restoreToComposer } from '../../../utils/composerRestore'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { answerFailureKey, answerRejectionReason, answerRestoredCommandCenterNotice, answersAsText, questionName } from '../../../utils/questionAnswers'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../../../components/chat-input/busySend'
@@ -17,7 +18,10 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
-import { ApiError, apiErrorCode, isTerminalApprovalRefusal } from '../../../api/apiError'
+import { coordinatorTarget, nativeTarget } from '../../../types/approvalTarget'
+import { ApiError, apiErrorCode, isTerminalApprovalRefusal, noPendingApprovalError } from '../../../api/apiError'
+import { useCrewRoot } from '../../../components/crew/useCrewRoot'
+import { reopenCrewSession } from './CrewWorkerList'
 
 export function RestoredQuestionNotice({ slot, question, title, onDismiss }: {
   slot: string
@@ -41,6 +45,70 @@ export function RestoredQuestionNotice({ slot, question, title, onDismiss }: {
     >
       {t('commandCenter.open_session')}<ArrowUpRight size={13} />
     </Link>
+  </section>
+}
+
+/** A Crew Mode worker's tool approval, outside the conductor's approval card:
+ *  information with a link to that card, never a decision (`crewApprovalDecidableHere`). */
+function CrewCardNotice({ item, title, onOpenSession }: {
+  item: AttentionItem
+  title: string
+  onOpenSession?: (slot: string) => void
+}) {
+  const { t } = useTranslation()
+  const dispatch = useAppDispatch()
+  const store = useAppStore()
+  const navigate = useNavigate()
+  const root = item.crewCard!
+  const rootRow = useAppSelector(state => state.dashboard.slots.find(slot => slot.key === root))
+  // A closed conductor's saved title, from the same worker-list read its crew
+  // members' views use; the generic Crew Mode name until that read answers.
+  const { rootTitle: savedRootTitle } = useCrewRoot(rootRow ? '' : root)
+  const rootTitle = rootRow ? sessionDisplayTitle(rootRow) : savedRootTitle
+  const [reopening, setReopening] = useState(false)
+  const [reopenFailed, setReopenFailed] = useState(false)
+  // False once this notice is gone (the person went elsewhere): a reopen that
+  // lands after that must not pull them back.
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  // A closed conductor is not a live slot, so a link to its key finds no session:
+  // reopen it from its saved transcript first, then go to its card. The
+  // reopen needs no leave guard (it changes no route); the hand-off after it
+  // takes the host's guarded exit when there is one. It moves the person only
+  // when the reopened conductor took the view: a session they picked while the
+  // reopen was pending wins, and so does a page they left for.
+  const openClosedRoot = () => {
+    if (reopening) return
+    setReopening(true)
+    setReopenFailed(false)
+    void reopenCrewSession(dispatch, store.getState, root, rootTitle, true).then(result => {
+      if (!mounted.current) return
+      setReopening(false)
+      if (!result.ok) { setReopenFailed(true); return }
+      if (!result.activated) return
+      if (onOpenSession) onOpenSession(result.key)
+      else navigate(`/chat?sid=${encodeURIComponent(result.key)}`)
+    })
+  }
+  const rollup = item.crewCount !== undefined
+  const heading = rollup
+    ? t('commandCenter.crew_approval_waiting', { count: item.crewCount })
+    : item.approval ? approvalTitle(item.approval) || t('commandCenter.approval_needed') : t('commandCenter.approval_needed')
+  const linkClass = 'text-accent text-[12px] inline-flex items-center gap-1 shrink-0'
+  const linkLabel = <>{t('commandCenter.open_approval_card')}<ArrowUpRight size={13} /></>
+  return <section className="rounded-lg border border-border bg-card p-3 space-y-2" data-testid="crew-approval-notice">
+    <div className="flex items-center gap-2 min-w-0">
+      <h3 className="text-sm font-semibold break-words min-w-0 flex-1"><ShieldCheck size={15} className="lucide-inline" />{heading}</h3>
+      {!rootRow
+        ? <button type="button" onClick={openClosedRoot} disabled={reopening} className={`${linkClass} disabled:opacity-50 disabled:cursor-not-allowed`} data-testid="crew-approval-reopen-root">{linkLabel}</button>
+        : onOpenSession
+          ? <button type="button" onClick={() => onOpenSession(root)} className={linkClass}>{linkLabel}</button>
+          : <Link to={`/chat?sid=${encodeURIComponent(root)}`} className={linkClass}>{linkLabel}</Link>}
+    </div>
+    {!rollup && <p className="text-[12px] text-muted break-words">{t('commandCenter.from_session', { name: title })}</p>}
+    <p className="text-[12px] text-warn break-words">{t('commandCenter.crew_approval_on_card', { name: rootTitle })}</p>
+    {/* Nothing is lost: the request waits on the server, and a retry is one click. */}
+    {reopenFailed && <ErrorNotice variant="inline" message={t('commandCenter.worker_reopen_failed')} askAgent />}
   </section>
 }
 
@@ -83,8 +151,12 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     retry: false,
     mutationFn: async (action: { answers: Record<string, string> } | { approval: 'approve' | 'reject_once' }) => {
       if ('approval' in action && item.approval) {
-        if (item.native) await api.approveChatSlot(item.slot, action.approval === 'approve' ? 'approved' : 'rejected_once', { request_id: item.approval.id, request_mid: item.approval.request_mid || '', origin: 'native' })
-        else await api.resolveApproval(item.approval.id, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'), { origin: 'coordinator', slot: item.approval.slot || '', instance: item.approval.instance || '' })
+        // Bound to the one request the card shows (types/approvalTarget).
+        const target = item.native
+          ? nativeTarget(item.approval.id, item.slot, item.approval.request_mid)
+          : coordinatorTarget(item.approval.id, item.approval.slot || '', item.approval.instance)
+        if (!target) throw noPendingApprovalError()
+        await api.decideApproval(target, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'))
       } else if ('answers' in action && item.question) {
         const q = item.question
         if (q.ask_id) {
@@ -169,7 +241,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
   const expired = !!item.approval && isTerminalApprovalRefusal(mutation.error)
   // A refused answer body carries a code; its prose is the server's, not the catalog's.
   const answerRefused = !!item.question?.ask_id && apiErrorCode(mutation.error) === 'answers_too_long'
-  const approvalHeading = item.approval ? approvalTitle(item.approval) || t('commandCenter.approval_needed') : ''
+  const approvalHeading = item.approval ? approvalTitle(item.approval) || (expired ? '' : t('commandCenter.approval_needed')) : ''
   const submit = (action: Parameters<typeof mutation.mutate>[0]) => {
     if (locked.current || delivered || restored || expired) return
     locked.current = true
@@ -185,6 +257,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     mutation.mutate(action)
   }
   if (settledElsewhere) return null
+  if (item.crewCard) return <CrewCardNotice item={item} title={title} onOpenSession={onOpenSession} />
   return <section className="rounded-lg border border-border bg-card p-3 space-y-3">
     <div className="flex items-center gap-2 min-w-0">
       <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{item.approval && <ShieldCheck size={15} className="lucide-inline" />}{approvalHeading || title}</h3>
@@ -194,16 +267,18 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     </div>
     {item.approval && <p className="text-[12px] text-muted break-words">{t('commandCenter.from_session', { name: title })}</p>}
     {context && <p className="text-sm text-muted break-words">{context}</p>}
-    {item.approval && <p className="text-[12px] text-warn">{t('commandCenter.approval_needed')}{item.approvalMode ? ` · ${t('commandCenter.permission_mode', { mode: t(APPROVAL_MODE_KEYS[item.approvalMode]) })}` : ''}</p>}
-    {item.approval && item.approvalMode === 'normal' && <p className="text-[12px] text-muted">{t('commandCenter.normal_help')}</p>}
+    {item.approval && !expired && <p className="text-[12px] text-warn">{t('commandCenter.approval_needed')}{item.approvalMode ? ` · ${t('commandCenter.permission_mode', { mode: t(APPROVAL_MODE_KEYS[item.approvalMode]) })}` : ''}</p>}
+    {item.approval && !expired && item.approvalMode === 'normal' && <p className="text-[12px] text-muted">{t('commandCenter.normal_help')}</p>}
     {(item.approval || item.question) && <p className="text-[12px] text-muted">{t('commandCenter.explicit_input')}</p>}
     {/* No hand-off: retryable question failures retain the unsent answer draft,
         and a rejected submission's answer now sits in that session's composer,
         which the hand-off's prefill would overwrite. */}
     {/* A rejected submission is an error surface (errors-use-error-notice), even
         though its answer is safe in that session's composer. A retirement with no
-        failed submission is RestoredQuestionNotice's warn-tone status instead. */}
-    <ErrorNotice message={restored ? restoredNotice : expired ? t('components.approvalCard.approval_no_longer_pending') : answerRefused ? t(answerFailureKey(mutation.error)) : mutation.error?.message} />
+        failed submission is RestoredQuestionNotice's warn-tone status instead,
+        and an approval the decide found gone is status too. */}
+    <StatusNotice tone="info" message={expired ? t('components.approvalCard.approval_no_longer_pending') : null} />
+    <ErrorNotice message={restored ? restoredNotice : expired ? null : answerRefused ? t(answerFailureKey(mutation.error)) : mutation.error?.message} />
     {restored ? null
       : delivered ? <p role="status" className="text-sm text-ok flex items-center gap-2"><Check size={15} />{t('commandCenter.recorded')}</p>
       : item.question ? <QuestionCard questions={followUpQuestions || item.question.questions} askId={item.question.ask_id} submitLabel={t('commandCenter.send_answer')} busy={mutation.isPending} onDraftChange={onDraftChange} onSubmit={answers => submit({ answers })} />
@@ -211,12 +286,15 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
         <p className="text-sm break-words">{item.approval.tool_purpose?.trim() || t('commandCenter.purpose_missing')}</p>
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the exact command without splitting its tokens. */}
         <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono">{typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''}</pre>
-        <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>
-        <p className="text-[12px] text-muted">{t('commandCenter.shared_request_help')}</p>
-        {!expired && <div className="flex gap-2">
-          <Btn primary className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>
-          <Btn className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'reject_once' })}>{t('commandCenter.reject')}</Btn>
-        </div>}
+        {/* A gone approval has nothing left to answer: no buttons, no help on them. */}
+        {!expired && <>
+          <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>
+          <p className="text-[12px] text-muted">{t('commandCenter.shared_request_help')}</p>
+          <div className="flex gap-2">
+            <Btn primary className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>
+            <Btn className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'reject_once' })}>{t('commandCenter.reject')}</Btn>
+          </div>
+        </>}
       </> : <p className="text-sm text-muted">{t('commandCenter.open_to_answer')}</p>}
   </section>
 }

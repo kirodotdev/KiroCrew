@@ -20,6 +20,7 @@ import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
 import { AcceptedBodyUnreadable, ApiError } from '../api/apiError'
 import { AppApiPermissionError } from './apiError'
 import { useAppIdentity } from './identity'
+import type { SlotPush } from './slotPush'
 
 export interface AppApi {
   /** Unparsed successful response for downloads or streaming; HTTP failures still throw AppApiError.
@@ -112,6 +113,8 @@ export interface AppSdkContextValue {
   subscribe: (event: string, cb: (data: unknown) => void) => () => void
   navigate: (path: string) => void
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
+  /** The host's per-slot change signal; absent when the host has none (see slotPush.ts). */
+  slotPush?: SlotPush
 }
 
 export const AppSdkContext = createContext<AppSdkContextValue | null>(null)
@@ -236,11 +239,21 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     })
   }
 
+  // A session this app's page creates names the app (`embed_app`), the way the
+  // embed's own send does: the request carries the person's session, so only
+  // this client knows which app asks. The gateway records it on a conversation
+  // the create begins, so uninstalling the app resets that conversation.
+  const namingApp = (path: string, body: unknown): unknown => {
+    const plain = body == null || (typeof body === 'object' && !Array.isArray(body))
+    const creates = new URL(path, 'http://localhost').pathname === '/api/chat/slots'
+    return plain && creates ? { ...((body ?? {}) as Record<string, unknown>), embed_app: appName } : body
+  }
+
   return {
     raw: rawFetch,
     request: (path, init) => jsonFetch(path, init),
     get: (path, init) => jsonFetch(path, { ...init, method: 'GET' }),
-    post: (path, body, init) => jsonRequest(path, 'POST', body, init),
+    post: (path, body, init) => jsonRequest(path, 'POST', namingApp(path, body), init),
     put: (path, body, init) => jsonRequest(path, 'PUT', body, init),
     patch: (path, body, init) => jsonRequest(path, 'PATCH', body, init),
     del: (path, init) => jsonFetch(path, { ...init, method: 'DELETE' }),
@@ -296,6 +309,7 @@ export function AppScopedApiProvider({
   subscribeFn = noopSubscribe,
   notifyFn = hostNotify,
   sessionKey,
+  slotPush,
   children,
 }: {
   allowedApiPaths: string[]
@@ -325,6 +339,8 @@ export function AppScopedApiProvider({
    * restricted-session guard fire, since that guard fails open on absence.
    */
   sessionKey?: string
+  /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
+  slotPush?: SlotPush
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -359,8 +375,9 @@ export function AppScopedApiProvider({
     subscribe: subscribeFn,
     navigate: navigateFn,
     notify: notifyFn,
+    slotPush,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

@@ -19,7 +19,7 @@
  * a search suspends the hide entirely. Two numbers for one fact, on one screen, is the
  * defect this file also pins against.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { render, fireEvent } from '@testing-library/react'
@@ -59,8 +59,10 @@ vi.mock('framer-motion', async () => {
   const make = (tag: string) => React.forwardRef<unknown, Record<string, unknown>>(
     (props, ref) => React.createElement(tag, { ...strip(props), ref }),
   )
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
   return {
-    motion: new Proxy({} as Record<string, unknown>, { get: (_t, tag: string) => make(tag) }),
+    motion: new Proxy({} as Record<string, unknown>, { get: (_t, tag: string) => { if (!byTag.has(tag)) byTag.set(tag, make(tag)); return byTag.get(tag) } }),
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
@@ -296,6 +298,30 @@ describe('a board says on screen how many folders it is hiding', () => {
     expect(queryByTestId(`folder-filter-${HIDDEN_FOLDER}`)).not.toBeNull()
   })
 
+  it('lands the menu on the folder list, which sits last and can open below the fold', () => {
+    // Folders sit last in the menu, so on a menu taller than the room below the funnel
+    // the click opened the list it promised out of sight, and a keyboard reader's first
+    // arrow started from the top. The funnel's own open is the control: it starts the
+    // menu at the top, as it always has.
+    const rect = (top: number, bottom: number) => ({ x: 0, y: top, left: 0, right: 300, top, bottom, width: 300, height: bottom - top, toJSON() { return {} } }) as DOMRect
+    const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'menu') return rect(100, 300)
+      if (this.getAttribute('data-testid') === 'folder-filter-section') return rect(500, 600)
+      return rect(0, 0)
+    })
+    onTestFinished(() => rects.mockRestore())
+    hideFolders(HIDDEN_FOLDER)
+    const { container, getByLabelText, getByRole, getByTestId } = renderSidebar(true)
+    fireEvent.keyDown(getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    expect(getByRole('menu').scrollTop, 'the funnel scrolled the menu it opened').toBe(0)
+    fireEvent.keyDown(getByRole('menu'), { key: 'Escape' })
+    fireEvent.click(notice(container) as Element)
+    // The section ends 300 px below the menu's visible bottom and is shorter than the
+    // visible area, so the menu scrolls exactly that far and shows all of it.
+    expect(getByRole('menu').scrollTop).toBe(300)
+    expect(document.activeElement, 'focus did not land on the Folders heading').toBe(getByTestId('folder-filter-shelve'))
+  })
+
   it('wears the same muted gray as the other lanes\' reveal row, not a warning (#14087)', () => {
     // The hide is something the person chose, so the notice matches the tree, flat and
     // conductor lanes' reveal row (`data-folder-hidden-reveal`, `text-muted`) instead of
@@ -390,6 +416,20 @@ describe('one derived count, reported the same way everywhere', () => {
     const { container } = renderSidebar(false)
     expect(container.querySelector('[data-folder-hide-active]')).toBeNull()
     expect(container.querySelector('[data-testid="hidden-reveal-root"]')).toBeNull()
+  })
+
+  it('stays silent about it on a flat board, which draws no folder block to take away', () => {
+    // Board-flat keeps the columns but draws no folder block, so the uncheck takes nothing
+    // this folder's own attribute had not already taken, and only the ordinary hide beside
+    // it withholds anything.
+    hideFolders(HIDE_WHEN_EMPTY_FOLDER, HIDDEN_FOLDER)
+    localStorage.setItem('mc-sidebar-lane', 'flat')
+    const { container, getByTestId } = renderSidebar(true)
+    expect(getByTestId('column-col-idle')).not.toBeNull()
+    expect(header(container, SHOWN_FOLDER), 'not the flat board: a folder block is drawn').toBeNull()
+    expect(notice(container)?.getAttribute('data-hidden-folder-count')).toBe('1')
+    expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
+    expect(container.querySelector('[data-folder-hide-active]')?.getAttribute('data-folder-hide-active')).toBe('1')
   })
 
   it('says nothing is withheld while a search suspends the hide', () => {

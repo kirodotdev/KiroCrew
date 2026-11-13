@@ -666,7 +666,7 @@ function ExpandedList({ fileChanges, omittedFiles, onFileOpen, artifactPaths, di
           >
             {expanded
               ? <><ChevronUp size={13} className="shrink-0" /> {i18nT('components.fileChangeChips.show_less')}</>
-              : <><ChevronDown size={13} className="shrink-0" /> {i18nT('components.fileChangeChips.show')} {hiddenCount} {i18nT('components.fileChangeChips.more')}</>}
+              : <><ChevronDown size={13} className="shrink-0" /> {i18nT('components.fileChangeChips.show_more_count', { count: hiddenCount })}</>}
           </button>
         )}
       </div>

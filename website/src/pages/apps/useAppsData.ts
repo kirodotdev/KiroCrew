@@ -21,6 +21,7 @@ import { compareText } from '../../i18n/format'
 import type { EditorialArtwork } from '../../components/appstore/useEditorialArt'
 import type { SourceRow } from '../../components/appstore/CategoryRail'
 import { orderByReview } from '../../components/appstore/registryOrder'
+import type { RegistryFetchFailure } from '../../components/appstore/registryRefreshMessage'
 import { categoryCounts, mergeCategoryOrder, type Category } from '../../components/appstore/categories'
 import { hasHeroArt } from '../../components/appstore/useHeroArt'
 import {
@@ -88,6 +89,8 @@ export type LibraryApp = InstalledApp & {
 const MIN_COLLECTION_APPS = 2
 /** The schema's collection ceiling, re-applied at the fetch boundary. */
 const MAX_SECTION_APPS = 6
+/** One empty list, so a listing that has not landed hands out a stable value. */
+const NO_FETCH_FAILURES: RegistryFetchFailure[] = []
 
 /**
  * An artwork URL safe to hand an `<img src>`, or undefined.
@@ -189,16 +192,13 @@ export type AppsData = {
    * consent gate shows the not-vetted box rather than read the listing as vetted.
    */
   registriesUnknown: boolean
+  /**
+   * The registries whose latest index fetch failed, as the listing reported
+   * them: their apps are missing from the shelf, or shown as last synced.
+   */
+  registryFetchFailures: RegistryFetchFailure[]
   /** The Library list: installed apps with update state attached. */
   installedApps: LibraryApp[]
-  /**
-   * How many admissible Library rows the "enabled only" view is hiding — the
-   * count the "Show N disabled" affordance names. Zero when `showAll` is on
-   * (nothing is hidden) or when no admissible row is outside the enabled group.
-   * Computed from the same `libraryView` latch as `installedApps`, so the
-   * number and the rows it describes can never disagree.
-   */
-  disabledCount: number
   /** Library apps Update All would touch (gateway-lifecycle with a pending update). */
   updatables: LibraryApp[]
   /** Dispatch mc:apps-changed (module-level function, re-exported for convenience). */
@@ -208,7 +208,7 @@ export type AppsData = {
 // ---- Pending-update derivation ------------------------------------------
 // Shared by this hook's `updatables` and the rail's Discover badge
 // (shell/nav/railBadges.ts) —
-// the sidebar count must equal the Updates sub-tab count, and one shared
+// the sidebar count is the enabled rows of the Updates list, and one shared
 // derivation is the only arrangement two surfaces cannot drift under.
 
 /** The registry-row fields the update derivation reads. */
@@ -258,22 +258,10 @@ export type LibrarySlot = { listed: boolean; wasEnabled: boolean }
  * place instead of moving it off-screen or deleting it. A previously concealed
  * row is promoted if an out-of-band action enables it, so the per-visit cache
  * cannot keep an enabled app unreachable. Uninstalled rows are forgotten.
- *
- * `showAll` is the reader's view control. When it is on, every admissible row is
- * listed — the reachability the store depends on, since Library is the only
- * surface that can enable a locally-shipped builtin. When it is off (the
- * default), a row is listed only if it earned a place in the enabled group:
- * either it is enabled now, or its slot remembers it was enabled when first
- * placed this visit. That second clause is why the control clicked does not
- * vanish — disabling a row flips `enabled` to false but the slot's `wasEnabled`
- * still holds, so the row stays put; a builtin that was never enabled this visit
- * is the clutter the off view drops. The decision runs through the SAME
- * per-slot `wasEnabled` the ordering already reads, so the filter cannot
- * contradict the latch it sits beside.
  */
 export function libraryView<
   T extends Pick<InstalledApp, 'origin' | 'enabled' | 'manifest'> & { name: string },
->(apps: T[], view: Map<string, LibrarySlot>, showAll = true): T[] {
+>(apps: T[], view: Map<string, LibrarySlot>): T[] {
   const live = new Set(apps.map(app => app.name))
   for (const name of view.keys()) {
     if (!live.has(name)) view.delete(name)
@@ -290,29 +278,20 @@ export function libraryView<
         slot.wasEnabled = !!app.enabled
       }
       // Enablement latches for the visit: once a row has been enabled, it stays
-      // in the enabled group so a later disable keeps it listed under the off
-      // view instead of dropping under the cursor. A row enabled out-of-band
-      // AFTER it was first placed disabled reaches this branch (already
-      // `listed`, so the promotion above does not fire) — without this its
-      // `wasEnabled` would stay false and the off view would drop it the moment
-      // the reader disabled it. Monotonic: it never clears, so a never-enabled
-      // builtin stays out of the group and remains the clutter the off view hides.
+      // in the enabled group so a later disable keeps its place in the order. A
+      // row enabled out-of-band AFTER it was first placed disabled reaches this
+      // branch (already `listed`, so the promotion above does not fire).
+      // Monotonic: it never clears.
       if (app.enabled) slot.wasEnabled = true
     }
   }
   // A slot is in the enabled group when it is enabled right now OR its latch
-  // remembers it was enabled at first placement — the same predicate the
-  // ordering below groups on. The off view keeps exactly that group, so a row
-  // disabled mid-visit (enabled false, wasEnabled still true) stays listed.
+  // remembers it was enabled at first placement.
   const inEnabledGroup = (app: T) => {
     const slot = view.get(app.name)
     return !!app.enabled || !!slot?.wasEnabled
   }
-  const rows = apps.filter(app => {
-    const slot = view.get(app.name)
-    if (!slot?.listed) return false
-    return showAll || inEnabledGroup(app)
-  })
+  const rows = apps.filter(app => !!view.get(app.name)?.listed)
   return [
     ...rows.filter(inEnabledGroup),
     ...rows.filter(app => !inEnabledGroup(app)),
@@ -320,7 +299,7 @@ export function libraryView<
 }
 
 /** name → new version for every registry row with an update available. */
-function buildUpdateMap(
+export function buildUpdateMap(
   registry: readonly UpdatableRegistryRow[],
 ): Map<string, string> {
   return new Map(registry.filter(r => r.updateAvailable).map(r => [r.name, r.version]))
@@ -339,10 +318,11 @@ function isUpdatable(
 }
 
 /**
- * The updates count every badge surface shows (sidebar Discover row, Discover
- * Updates sub-tab) — the length of the same list `useAppsData.updatables`
- * builds, computed from the same two payloads. Tolerates absent inputs so a
- * cold cache (store pages never visited yet) reads as "no known updates".
+ * The rail's Discover badge count: the ENABLED rows of the list
+ * `useAppsData.updatables` builds, from the same two payloads (a disabled app
+ * stays on that list but does not run). An enabled app always passes
+ * `keepInLibrary`. Tolerates absent inputs so a cold cache (store pages never
+ * visited yet) reads as "no known updates".
  */
 export function countUpdatables(
   registry: readonly UpdatableRegistryRow[] | undefined,
@@ -351,7 +331,30 @@ export function countUpdatables(
   if (!registry?.length || !installed?.length) return 0
   const updateMap = buildUpdateMap(registry)
   if (updateMap.size === 0) return 0
-  return installed.filter(a => keepInLibrary(a) && isUpdatable(a, updateMap)).length
+  return installed.filter(a => a.enabled && isUpdatable(a, updateMap)).length
+}
+
+/** How long a ['registry'] answer serves a page switch before it is fetched again. */
+export const REGISTRY_STALE_MS = 5 * 60_000
+
+/**
+ * The registries whose latest index fetch failed, from the listing's
+ * `registryStatus`. Each entry arrives over HTTP like any other payload, so one
+ * without a string `name`, or not reporting a failure, is dropped here.
+ */
+function normalizeRegistryFetchFailures(value: unknown): RegistryFetchFailure[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return []
+    const s = raw as Record<string, unknown>
+    if (typeof s.name !== 'string' || !s.name || s.ok !== false) return []
+    return [{
+      name: s.name,
+      cause: typeof s.cause === 'string' ? s.cause : undefined,
+      host: typeof s.host === 'string' && s.host ? s.host : undefined,
+      cached: s.cached === true,
+    }]
+  })
 }
 
 /**
@@ -361,9 +364,16 @@ export function countUpdatables(
  * hook MUST reference the same function: a second, raw fetcher would win the
  * registration race and hand normalized-shape consumers an unnormalized
  * payload.
+ *
+ * `rawApps` is the server's rows as sent, kept for the one reader that must
+ * not see normalization's fallbacks (`AppDetailPage` hands a built-in row to
+ * the row-first `mergeBuiltinRow`). Every other reader uses `apps`.
  */
 export async function registryQueryFn(): Promise<{
   apps: RegistryApp[]
+  rawApps: unknown[]
+  catalogUnavailable: boolean
+  registryFetchFailures: RegistryFetchFailure[]
   categoryOrder: string[]
   editorialSections: EditorialBlock[]
 }> {
@@ -437,14 +447,20 @@ export async function registryQueryFn(): Promise<{
           return [{ form: b.form, items, curated: true }]
         })
       : []
+    const rawApps: unknown[] = res.apps
     return {
-      apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
+      apps: (rawApps as RegistryApp[]).map(normalizeRegistryApp),
+      rawApps,
+      // True when the server could not read the official catalog and answered
+      // with its offline listing; the store's refresh reports it.
+      catalogUnavailable: res.catalogUnavailable === true,
+      registryFetchFailures: normalizeRegistryFetchFailures(res.registryStatus),
       categoryOrder: publishedOrder,
       editorialSections: publishedSections,
     }
 }
 
-export default function useAppsData({ showAll = true }: { showAll?: boolean } = {}): AppsData {
+export default function useAppsData(): AppsData {
   const libraryViewRef = useRef(new Map<string, LibrarySlot>())
   const { data: apps = [], isLoading: appsLoading, error: appsError } = useQuery<InstalledApp[]>({
     queryKey: ['apps'],
@@ -461,13 +477,14 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
 
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
     apps: RegistryApp[]
+    registryFetchFailures: RegistryFetchFailure[]
     categoryOrder: string[]
     editorialSections: EditorialBlock[]
   }>({
     queryKey: ['registry'],
     // Shared fetch boundary — see registryQueryFn's contract comment.
     queryFn: registryQueryFn,
-    staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on page switch
+    staleTime: REGISTRY_STALE_MS,
   })
   const registry: RegistryApp[] = useMemo(() => registryData?.apps || [], [registryData])
 
@@ -677,32 +694,17 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
   const updateMap = useMemo(() => buildUpdateMap(registry), [registry])
   const installedApps: LibraryApp[] = useMemo(
     () =>
-      libraryView(apps, libraryViewRef.current, showAll)
+      libraryView(apps, libraryViewRef.current)
         .map(a => ({
           ...a,
           updateAvailable: updateMap.has(a.name),
           _newVersion: updateMap.get(a.name),
         })),
-    [apps, updateMap, showAll],
-  )
-  // Rows the "enabled only" view is hiding, from the SAME latch that produced
-  // `installedApps`: the full admissible list minus the enabled-group list. Off
-  // the toggle this is the count the "Show N disabled" label names; on the
-  // toggle nothing is hidden, so it is zero. Read against the same visit map, so
-  // a row held in place by the latch is counted as shown, never as hidden.
-  // Depends on `apps` alone: both `libraryView` calls read `apps` and mutate the
-  // ref (non-reactive), and neither reads `showAll` — the count is view-
-  // independent by construction (it always compares the full list to the
-  // enabled group).
-  const disabledCount = useMemo(
-    () =>
-      libraryView(apps, libraryViewRef.current, true).length
-      - libraryView(apps, libraryViewRef.current, false).length,
-    [apps],
+    [apps, updateMap],
   )
   const updatables = useMemo(
     // Keep this live-filtered rather than visit-held: `countUpdatables` powers
-    // the shell badge from the same raw cache and must equal the Updates list.
+    // the shell badge from the same raw cache and counts this list's enabled rows.
     () => apps
       .filter(keepInLibrary)
       .map(a => ({ ...a, updateAvailable: updateMap.has(a.name), _newVersion: updateMap.get(a.name) }))
@@ -722,8 +724,8 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
     categories,
     sources,
     registriesUnknown: registriesData === undefined,
+    registryFetchFailures: registryData?.registryFetchFailures ?? NO_FETCH_FAILURES,
     installedApps,
-    disabledCount,
     updatables,
     announceAppsChanged,
   }

@@ -31,6 +31,7 @@ from kiro_crew.dashboard import revocation_gen, token_auth, websocket_hub
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import _websocket_for
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG
+from kiro_crew.dashboard.ws_snapshot_hold import HELD_FRAMES_KEY
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until
 
@@ -111,9 +112,16 @@ async def _harness(state, body):
 
         reader = asyncio.ensure_future(_read())
         sock = await _stalled_socket(client.host, client.port, token, origin)
+
+        def _ready() -> bool:
+            # Registered is not ready: a connect still waiting for its slot list holds
+            # its frames (ws_snapshot_hold), and the limit is about frames in a buffer.
+            return len(state._ws_clients) >= 2 and all(
+                ws.get(HELD_FRAMES_KEY) is None for ws in state._ws_clients
+            )
+
         await async_wait_until(
-            lambda: len(state._ws_clients) >= 2,
-            describe=lambda: f"{len(state._ws_clients)} of 2 tabs registered",
+            _ready, describe=lambda: f"{len(state._ws_clients)} of 2 tabs registered"
         )
         local = sock.getsockname()
         stalled = next(
@@ -510,27 +518,34 @@ async def test_a_stalled_tab_does_not_delay_a_reading_tab(ws_state):
     """Control: one fan-out task per send, so a stalled tab holds only its own sends."""
 
     async def body(state, stalled, reading, received):
-        # How many frames fill the stalled tab's socket buffers depends on the
-        # host, so send until writing to it is paused rather than a fixed count.
+        transport = stalled._req.transport
+        # Send until the stalled tab's transport holds a backlog the kernel will not
+        # take: past its socket buffers (which a kernel can grow, so a first pause
+        # may clear again), and under the drop limit, so the tab stays registered.
+        # From then on each send to it waits on a drain that never comes. How many
+        # frames that takes depends on the host, so no fixed count.
         n = 0
+        backlog = 0
         try:
             async with asyncio.timeout(30):
-                while not stalled._req.protocol._paused and n < 2000:
+                while backlog <= 256 * 1024 and n < 2000:
                     n, _ = await _broadcast(state, n, 1)
+                    # Read the level in the same step as the send, with no await
+                    # between: once the test yields, a kernel that grows its send
+                    # buffer (macOS does) can take queued bytes and lower it.
+                    backlog = transport.get_write_buffer_size()
         except TimeoutError:
             pass
-        assert stalled._req.protocol._paused, (
-            f"precondition: writing to the stalled tab never paused after {n} frames of "
-            f"{FRAME // 1024} KiB ({stalled._req.transport.get_write_buffer_size()} bytes buffered)"
-        )
+        # The reading tab must get every frame, including those sent while sends to
+        # the stalled tab waited on its drain. A hub that let one of those waiting
+        # sends hold up the other tab's sends stops the reading tab short here.
         await _wait_received(received, n)
-        # The reading tab got every frame while writing to the stalled tab is
-        # paused, so no frame waited on the stalled tab's buffer.
+        assert backlog > 256 * 1024, (
+            f"precondition: the stalled tab's backlog never passed 256 KiB after {n} "
+            f"frames of {FRAME // 1024} KiB ({backlog} bytes buffered)"
+        )
+        assert stalled._req.protocol._paused, "precondition: writing to the stalled tab is paused"
         assert stalled in state._ws_clients, "a tab under the limit must stay registered"
-        # Under the selector loops the stalled tab's frames show in its level. The
-        # proactor loop's level can read 0 by now, once the kernel holds them all.
-        if _level_moves_on_this_loop():
-            assert stalled._req.transport.get_write_buffer_size() > 0
         assert reading in state._ws_clients
 
     await _harness(ws_state, body)

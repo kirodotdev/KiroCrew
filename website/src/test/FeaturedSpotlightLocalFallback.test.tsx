@@ -54,6 +54,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
+import { i18next } from '../i18n/all'
 import DiscoverPage from '../pages/apps/DiscoverPage'
 import { useHeroArt, type InstalledArtSource } from '../components/appstore/useHeroArt'
 import type { RegistryApp } from '../components/appstore/types'
@@ -328,5 +329,39 @@ describe('DiscoverPage — threads the installed record to the featured lead (#6
     fireEvent.error(primary)
     await waitFor(() => expect(document.querySelector('img')).toBeNull())
     expect(document.querySelector(`img[src^="/apps/"]`)).toBeNull()
+  })
+})
+
+// A desktop-only built-in's Enable button keeps its visible label as its name
+// and carries the desktop hint as its description (same contract as
+// AppListRow). The test DOM is not the desktop shell, so `needsDesktopApp` is
+// true for an app that declares the requirement.
+describe('FeaturedSpotlight desktop-only Enable name', () => {
+  const noopFn = () => {}
+  const desktopOnly = {
+    name: 'demo-app', displayName: 'Demo App', description: 'A demo.', version: '1.0.0', author: 'acme', tags: [],
+    origin: 'builtin', installed: true, enabled: false, platform: { requiresDesktopApp: true },
+  } as unknown as RegistryApp
+
+  function renderCard() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <FeaturedSpotlight type="app" apps={[desktopOnly]} onOpenApp={noopFn} onGet={noopFn} onEnable={noopFn} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('keeps the visible Chinese label as the name, with no English period', async () => {
+    await act(async () => { await i18next.changeLanguage('zh-CN') })
+    try {
+      renderCard()
+      const btn = screen.getByRole('button', { name: '启用' })
+      expect(btn).toHaveAccessibleDescription('在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。')
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 })

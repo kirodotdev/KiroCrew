@@ -14,10 +14,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.worker_auto_approve import WorkerAutoApprove
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.safety_override import safety_override
 
 from . import crew_model, crew_store, provider
 from .crew_runtime_prompt import compose_turn_prompt_async
@@ -42,9 +42,9 @@ APP_NAME = "issue-radar"
 
 
 #: Crews get a turn on this idle gap when the sweep has nothing to report. The
-#: watcher is the real scheduler (it fires on an actual signal); this is the
-#: fallback clock that lets an idle crew pick up NEW work, so it is deliberately
-#: slow. ``autonudge`` clamps it to [15s, 24h].
+#: watcher is the real scheduler (it fires on an actual signal, new work included);
+#: this is the fallback clock for whatever the watcher cannot see, so it is
+#: deliberately slow. ``autonudge`` clamps it to [15s, 24h].
 DEFAULT_IDLE_SECS = 300
 
 
@@ -83,15 +83,20 @@ def _slot_title(owner: str, repo: str, crew: dict[str, Any], slot_key: str) -> s
 # never expires, and nothing audits it as a grant because the human's click IS
 # the record. A backend stamping it produces an unbounded auto-approval with no
 # activation trail — which is why ``spec_builder`` was made to stop doing exactly
-# that. Crews take the TASK RUNNER's shape instead (scope
-# ``taskrunner:{task_id}:autoapprove``): the record's ``unattended`` flag is only
-# the operator's intent, and the live decision is a ``SafetyOverride`` scoped
-# grant that is SEL-audited fail-closed before it exists, expires by itself, and
-# is re-checked on every single approval.
+# that. Crews take the TASK RUNNER's shape instead: the record's ``unattended``
+# flag is only the operator's intent, and the live decision is a scoped grant
+# that is SEL-audited fail-closed before it exists, expires by itself, and is
+# re-checked on every single approval. The grant is held through the App Kit's
+# worker auto-approve seam, which this app declares in its manifest
+# (``permissions.workerAutoApprove``); the seam lets it reach only its own crew
+# slots and its own scope keys, and ends every grant when the app is disabled.
+
+#: The app's handle on the seam.
+_GRANTS = WorkerAutoApprove(APP_NAME)
 
 # Recorded on every SEL entry for a crew grant, so an auditor can tell an
 # unattended crew's grant from a human's dashboard click.
-GRANT_SOURCE = "issue-radar-crew"
+GRANT_SOURCE = _GRANTS.source
 
 # How long ONE crew grant lives. This is not the renewal interval — the watchdog
 # re-derives the grant every ``watch.POLL_INTERVAL_SEC`` (60s) — it is how long
@@ -103,37 +108,48 @@ GRANT_SOURCE = "issue-radar-crew"
 TRUST_TTL_SECS = 900
 
 
+def _grant_name(crew_id: str) -> str:
+    """The seam's name for one crew's grant."""
+    return f"crew-{crew_id}"
+
+
 def autoapprove_scope(crew_id: str) -> str:
-    """``SafetyOverride`` scope key holding one crew's auto-approve grant.
+    """Scope key holding one crew's auto-approve grant.
 
-    Deliberately shaped like ``taskrunner:{task_id}:autoapprove``. Enforcement is
-    ``safety_override().is_scope_active(scope)``; the crew record's ``unattended``
-    flag carries no authority of its own.
+    Built by the seam inside this app's own namespace. Enforcement is the shared
+    approval path's per-approval ``is_scope_active(scope)``; the crew record's
+    ``unattended`` flag carries no authority of its own.
     """
-    return f"crew:{crew_id}:autoapprove"
+    return _GRANTS.scope(_grant_name(crew_id))
 
 
-def _hold_grant(scope: str) -> bool:
+def _hold_grant(slot: Any, crew_id: str) -> bool:
     """Extend a live grant, or mint a freshly-audited one. True if usable after.
 
     RENEWAL IS A SLIDE, NOT A RE-ACTIVATION, and that choice is load-bearing twice
     over. Re-activating every 60s would write a critical SEL entry per cycle —
     1,440 a day per crew, burying the one activation an auditor came to find — and
-    it would reset ``activated_at``, so ``SafetyOverride``'s 24h ceiling could
-    never be reached and "expiring" would be a word rather than a bound.
-    ``renew_scoped`` is documented as not audited per call for the same reason: it
-    extends an already-audited grant within its already-audited ceiling.
+    it would reset ``activated_at``, so the 24h ceiling could never be reached and
+    "expiring" would be a word rather than a bound. The seam's ``hold`` slides a
+    live grant (not audited per call: it extends an already-audited grant within
+    its already-audited ceiling) and mints only when there is none.
 
     When the ceiling IS reached the slide is refused, and rather than let the grant
-    lapse under a crew that is mid-turn, a NEW grant is minted — which goes through
-    ``activate_scoped`` and so is freshly audited. A crew running for a week
-    therefore leaves one activation record per day, not one for all time.
+    lapse under a crew that is mid-turn, a NEW grant is minted — which is freshly
+    audited. A crew running for a week therefore leaves one activation record per
+    day, not one for all time.
     """
-    so = safety_override()
-    if so.is_scope_active(scope):
-        if so.renew_scoped(scope, source=GRANT_SOURCE, ttl=TRUST_TTL_SECS).renewed:
-            return True
-    return bool(so.activate_scoped(scope, source=GRANT_SOURCE, ttl=TRUST_TTL_SECS).active)
+    return _GRANTS.hold(slot, _grant_name(crew_id), ttl_secs=TRUST_TTL_SECS)
+
+
+def release_grant(crew_id: str, slot: Any = None) -> bool:
+    """End one crew's grant, and clear it from *slot*. True if anything was held."""
+    return _GRANTS.release(_grant_name(crew_id), slot)
+
+
+def release_slot_grant(slot: Any) -> bool:
+    """Clear whatever scoped grant this app's crew *slot* carries. True if any."""
+    return _GRANTS.release_slot(slot)
 
 
 def sync_trust(slot: Any, crew: dict[str, Any]) -> bool:
@@ -145,38 +161,38 @@ def sync_trust(slot: Any, crew: dict[str, Any]) -> bool:
     and not only by the caller, so this function cannot hand a grant to a paused
     crew whatever path reaches it.
 
-    ``slot._trust_scope`` carries the scope key onto the slot, because the consumer
-    of the grant is the shared dashboard approval path — a grant nothing consults
-    is a control in name only. That attribute is the whole opt-in: a slot without
-    it is unaffected by any of this, and the interactive ``slot._trust`` flag is
-    never written here.
+    ``slot._trust_scope`` carries the scope key onto the slot (the seam writes
+    it), because the consumer of the grant is the shared dashboard approval path —
+    a grant nothing consults is a control in name only. That attribute is the whole
+    opt-in: a slot without it is unaffected by any of this, and the interactive
+    ``slot._trust`` flag is never written here.
 
     What bounds the grant, stated plainly because it is a security control: it is
     SEL-audited fail-closed before it exists, it expires ``TRUST_TTL_SECS`` after
     the last watchdog cycle that touched it, it is re-checked on every approval
-    rather than sampled once, and it cannot be extended past ``SafetyOverride``'s
-    24h ceiling without a fresh audited activation. If the audit write fails there
-    is no grant at all and the crew falls back to the ordinary approval path.
+    rather than sampled once, and it cannot be extended past the 24h ceiling
+    without a fresh audited activation. If the audit write fails, or the seam
+    refuses (the app is off or does not declare the grant), there is no grant at
+    all and the crew falls back to the ordinary approval path.
     """
-    scope = autoapprove_scope(str(crew.get("id") or ""))
+    crew_id = str(crew.get("id") or "")
     want = bool(crew.get("unattended")) and is_live(crew)
     had = bool(getattr(slot, "_trust_scope", ""))
     if not want:
-        safety_override().deactivate_scope(scope)
-        slot._trust_scope = ""
+        release_grant(crew_id, slot)
         if had:
             logger.info("issue-radar crew %s: trust revoked", crew.get("id"))
         return False
-    granted = _hold_grant(scope)
-    slot._trust_scope = scope if granted else ""
+    granted = _hold_grant(slot, crew_id)
     if not granted:
-        # ``activate_scoped`` audits fail-closed, so the only way here is a SEL
-        # write that failed. Fail closed too: no grant, and say so loudly, because
-        # the visible symptom is otherwise just a crew that mysteriously stalls on
-        # an approval prompt nobody is watching.
+        # The seam audits fail-closed and refuses an app that is off, so the ways
+        # here are a SEL write that failed or a refused grant. Fail closed too: no
+        # grant, and say so loudly, because the visible symptom is otherwise just a
+        # crew that mysteriously stalls on an approval prompt nobody is watching.
         logger.error(
             "issue-radar crew %s: auto-approve grant REFUSED (its audit could not "
-            "be written); the crew will fall back to interactive approval",
+            "be written, or the app may not hold one); the crew will fall back to "
+            "interactive approval",
             crew.get("id"),
         )
     elif not had:
@@ -351,6 +367,23 @@ NO_PERMIT_CARD = (
 )
 
 
+#: ``async (slot_key, prompt, consumed)``, set by ``crew_wake_inflight``: told when
+#: the model consumed a crew turn's prompt, or the turn ended before it did.
+_ADMISSION_HOOK: Any = None
+
+
+async def _tell_admission(slot: Any, prompt: str, admitted: bool) -> bool:
+    hook = _ADMISSION_HOOK
+    if hook is None:
+        return True
+    try:
+        await hook(str(getattr(slot, "key", "")), prompt, admitted)
+    except Exception:  # never let the bookkeeping fail a turn
+        logger.warning("issue-radar: crew admission hook failed", exc_info=True)
+        return False
+    return True
+
+
 async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
     """One crew turn, charged against the app-owned background-turn cap.
 
@@ -368,20 +401,108 @@ async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
     expires. That is reported here rather than swallowed: a refused turn and a
     finished one must not look the same from the outside.
     """
+    # The hook hears ``True`` only once the model has CONSUMED the prompt: the
+    # runner's consumption callbacks (output streamed, or a real end of turn), which
+    # also ride any retry it queues. A cancel or a permit timeout before that tells
+    # it ``False``; a restart tells it nothing, and the carry's process stamp hands
+    # the ask back. ``finalized`` is set before the shielded write, so a cancel that
+    # lands during it cannot race another write. A completed failed write clears the
+    # flag so the end-of-turn settlement retries it.
+    #
+    # Each attempt is settled when it ends. The first one here: consumed, or else
+    # returned unless a retry carrying these callbacks is queued (a cancellation the
+    # runner swallowed ends it the same way). A retry the queue drain runs later is
+    # watched from its own ``_on_consumed(True)``: when that turn ends still
+    # consumed (an empty response retracts it), the ask is consumed.
+    consumed = False
+    finalized = False
+    first_done = False
+    watched: set[Any] = set()
+
+    async def _finalize() -> None:
+        nonlocal finalized
+        if not finalized:
+            finalized = True
+            if not await asyncio.shield(_tell_admission(slot, prompt, True)):
+                finalized = False
+
+    async def _settle_after(turn: Any) -> None:
+        try:
+            await turn
+        except (asyncio.CancelledError, Exception):
+            if not turn.done():
+                raise
+        if consumed:
+            await _finalize()
+
+    def _note_consumed(value: bool = True) -> None:
+        nonlocal consumed
+        consumed = value
+        turn = asyncio.current_task()
+        if value and first_done and turn is not None and turn not in watched:
+            watched.add(turn)
+            watcher = asyncio.ensure_future(_settle_after(turn))
+            tasks = getattr(state, "_background_tasks", None)
+            keep = tasks if isinstance(tasks, set) else watched
+            keep.add(watcher)
+            watcher.add_done_callback(keep.discard)
+
+    def _retry_queued() -> bool:
+        queue = getattr(slot, "_queue", None)
+        items = queue if isinstance(queue, list) else []
+        return any(isinstance(e, dict) and e.get("_on_consumed") is _note_consumed for e in items)
+
+    async def _admitted_chat() -> None:
+        nonlocal first_done
+        # The prompt is composed by the crew runtime, so the ledger records the crew
+        # as the actor rather than a user.
+        try:
+            await _run_chat(
+                state,
+                slot,
+                prompt,
+                _directive_user_origin=False,
+                _turn_actor="crew",
+                _on_consumed=_note_consumed,
+                _on_irreversibly_consumed=_finalize,
+            )
+        finally:
+            # On every exit, a cancellation included: a retry it left queued is then
+            # watched like any other.
+            first_done = True
+        if consumed:
+            await _finalize()
+        elif not finalized and not _retry_queued():
+            await _tell_admission(slot, prompt, False)
+
     try:
-        await state.run_background_turn(
-            slot,
-            # The prompt is composed by the crew runtime, so the ledger records
-            # the crew as the actor rather than a user.
-            _run_chat(state, slot, prompt, _directive_user_origin=False, _turn_actor="crew"),
-        )
+        await state.run_background_turn(slot, _admitted_chat())
+    except asyncio.CancelledError:
+        if not finalized and (consumed or not _retry_queued()):
+            await asyncio.shield(_tell_admission(slot, prompt, consumed))
+        raise
     except (asyncio.TimeoutError, TimeoutError):
+        if not finalized:
+            await _tell_admission(slot, prompt, consumed)
         logger.warning(
             "issue-radar: crew turn on %s never got a background-turn permit",
             getattr(slot, "key", "?"),
         )
         try:
-            slot.append("error", NO_PERMIT_CARD, "msg msg-err")
+            # Lazy import: this module is a crew_runtime facade owner, so a
+            # module-level import becomes a mirror export the facade must
+            # re-declare. Keeping it local avoids that contract.
+            from kiro_crew.dashboard.gateway_notice import (
+                GATEWAY_NOTICE_CREW_TURN_NO_PERMIT,
+                gateway_notice_meta,
+            )
+
+            slot.append(
+                "error",
+                NO_PERMIT_CARD,
+                "msg msg-err",
+                meta=gateway_notice_meta(GATEWAY_NOTICE_CREW_TURN_NO_PERMIT),
+            )
         except Exception:  # pragma: no cover - the card is never load-bearing
             logger.debug("issue-radar: could not render the no-permit card", exc_info=True)
         _call_if_present(state, "push_slots_update")

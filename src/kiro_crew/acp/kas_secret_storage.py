@@ -1,12 +1,19 @@
-"""Crew as the KAS engine's store for remote MCP sign-ins (opt-in).
+"""Crew as the KAS engine's store for remote MCP sign-ins (on by default).
 
-When ``agent.kas_persist_mcp_sign_in`` is on, the KAS handshake declares
-``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth state
-through three connection-level requests that name no session:
+When ``agent.kas_persist_mcp_sign_in`` is on (the default), the KAS handshake
+declares ``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth
+state through three connection-level requests that name no session:
 ``_kiro/secret/get {key}`` -> ``{value}``, ``_kiro/secret/store {key, value}``
-and ``_kiro/secret/delete {key}``. Off (the default), nothing is declared, the
-engine holds every grant in its own memory, and a stray request is answered
--32601 by the reader loop like any other unclaimed method.
+and ``_kiro/secret/delete {key}``. Off (a stored ``false``, any non-``true``
+value, or a config read that failed or degraded -- :func:`persistence_enabled`),
+nothing is declared, the engine holds every grant in its own memory, and a stray
+request is answered -32601 by the reader loop like any other unclaimed method.
+
+The vault is the gateway's, not one person's: every session the gateway runs
+reads the same grants. That is the access model the rest of Crew has (a Shared
+Crew collaborator can use everything the Crew can) and the one the ``kiro``
+backend has for the same sign-ins, which kiro-cli keeps host-wide in
+``~/.aws/sso/cache``.
 
 What is stored, and where:
 
@@ -41,6 +48,8 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
+
+from kiro_crew.mcp_grant_kas import persistence_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -86,25 +95,26 @@ _PERSISTED_KINDS = frozenset({"client", "tokens"})
 MAX_VALUE_CHARS = 64 * 1024
 
 
+#: The entry kind that IS the sign-in; the only one gateway.log reports on.
+_TOKENS_KIND = "tokens"
+_KEY_PREFIX = "kiro.mcp."
+#: How many hex characters of the engine's connection hash name a server in
+#: gateway.log. The hash is the engine's digest of the server's connection
+#: config, never a token, and a prefix keeps one server's lines easy to follow.
+_SERVER_ID_CHARS = 12
+
+
 class SecretStorageRefused(Exception):
     """A secret request Crew will not serve. The message never holds a value."""
 
 
-def persistence_enabled() -> bool:
-    """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
+def _server_id(key: str) -> str:
+    """The short server name a log line uses for an already-validated *key*."""
+    return key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]
 
-    Any failure to read config is OFF: the feature is opt-in, so a broken config
-    keeps today's in-memory behaviour rather than starting to store tokens.
-    """
-    try:
-        from kiro_crew.config.loader import KiroCrewConfig
 
-        return bool(KiroCrewConfig.load().agent.kas_persist_mcp_sign_in)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "MCP sign-in persistence stays off: config unreadable (%s)", type(exc).__name__
-        )
-        return False
+def _is_tokens_key(key: str) -> bool:
+    return key.endswith("." + _TOKENS_KIND)
 
 
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -122,10 +132,12 @@ class McpGrantStore:
     """The dedicated vault holding persisted MCP ``client`` / ``tokens`` entries."""
 
     def __init__(self, data_home: str | Path) -> None:
+        from kiro_crew.mcp_grant_kas import grant_store_root
         from kiro_crew.secrets import SecretVault
 
-        self._kas_dir = Path(data_home) / "kas"
-        self._root = self._kas_dir / "mcp-grants"
+        # One layout, shared with the Connections probe's name-only presence check.
+        self._root = grant_store_root(data_home)
+        self._kas_dir = self._root.parent
         self._vault = SecretVault(self._root)
 
     def _assert_unlinked(self) -> None:
@@ -196,6 +208,15 @@ class SecretStorageServer:
         # revision it records happen under that key's lock. Bounded by the
         # namespace: one lock per key this engine process has touched.
         self._locks: dict[str, asyncio.Lock] = {}
+        # The last read outcome logged per ``tokens`` key, so an engine that asks
+        # again with the same answer adds no line. Bounded like ``_locks``.
+        self._logged_read: dict[str, str] = {}
+
+    def _log_read(self, key: str, outcome: str) -> None:
+        if not _is_tokens_key(key) or self._logged_read.get(key) == outcome:
+            return
+        self._logged_read[key] = outcome
+        logger.info("MCP sign-in for server %s: %s", _server_id(key), outcome)
 
     async def answer(self, method: str, params: Any) -> dict[str, Any]:
         """Build the result for one secret request, or raise :class:`SecretStorageRefused`."""
@@ -235,16 +256,24 @@ class SecretStorageServer:
     async def _get(self, key: str, persisted: bool) -> str | None:
         if not persisted:
             return self._memory.get(key)
-        found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        try:
+            found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        except SecretStorageRefused:
+            self._log_read(key, "saved sign-in not read (store error)")
+            raise
         if found is None:
             self._seen[key] = None
+            self._log_read(key, "no saved sign-in, the server will ask to sign in")
             return None
         value, self._seen[key] = found
+        self._log_read(key, "saved sign-in found")
         return str(value)
 
     async def _store_value(self, key: str, value: str, persisted: bool) -> None:
         if persisted:
             self._seen[key] = await self._guarded(self._store.store(key, value))
+            if _is_tokens_key(key):
+                logger.info("MCP sign-in for server %s: sign-in saved", _server_id(key))
             return
         self._memory[key] = value
 

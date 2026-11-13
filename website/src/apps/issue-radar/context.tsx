@@ -367,6 +367,14 @@ export interface IssueRadarContextValue {
    * shape as `openSettings(target?)`, so a rail row can navigate in one call
    * instead of setting the page and the view separately. */
   openCrews: (view?: CrewView) => void
+  /** The name of the crew this tab just retired, for the notice the crews column
+   * shows wherever the selection lands next (another crew, or the empty state).
+   * Cleared by dismissing it or by switching repo. */
+  retiredCrewName: string | null
+  /** Raise (or, with null, clear) the retired notice. The repo comes from the
+   *  retire request, not the active repo: a repo switch while the request is out
+   *  must not move the notice onto the repo the user switched to. */
+  setRetiredCrew: (retired: { name: string, ref: ActiveRepo } | null) => void
   /** Which pane a narrow viewport is showing, for the list-detail drill-down.
    * Hosted here rather than in the shell because the row handlers that drill in
    * live in the list components, which already consume this context — passing a
@@ -477,6 +485,15 @@ export function IssueRadarProvider({
   const [crewFilter, setCrewFilter] = useState<CrewFilter>(restoredCrewUi.crewFilter)
   const [crewSortKey, setCrewSortKey] = useState<CrewSortKey>(restoredCrewUi.crewSortKey)
   const [crewSortDir, setCrewSortDir] = useState<SortDir>(restoredCrewUi.crewSortDir)
+  // Session-only, deliberately not in CREW_UI_KEY: a retire notice is about this
+  // tab's own action and means nothing after a reload. Held with the repo it was
+  // raised in and shown only while that repo is active, so a repo switch clears
+  // it without an effect.
+  const [retiredCrewState, setRetiredCrewState] = useState<{ name: string, scope: string } | null>(null)
+  const retiredCrewName = retiredCrewState?.scope === scopeKey ? retiredCrewState.name : null
+  const setRetiredCrew = useCallback((retired: { name: string, ref: ActiveRepo } | null) => {
+    setRetiredCrewState(retired === null ? null : { name: retired.name, scope: repoScopeKey(retired.ref) })
+  }, [])
 
   // ── pull-request view state (parallels the issue filters/sort/selection) ──
   const [prQuery, setPrQuery] = useState(restored.prQuery ?? '')
@@ -833,6 +850,10 @@ export function IssueRadarProvider({
       queryClient.setQueryData(['issue-radar', 'pulls', scopeKey, prFetchState], data)
     },
   })
+  // Same as `resetRefresh` below: a PR refresh's error describes the list it
+  // refreshed, so drop it when the shown list changes.
+  const resetPullsRefresh = refreshPullsMutation.reset
+  useEffect(() => { resetPullsRefresh() }, [scopeKey, prFetchState, resetPullsRefresh])
   // Progressive first paint for PRs — the same shape as `firstPageQuery` for
   // issues, and the larger win: a cold `pullsQuery` blocks on BOTH the full
   // pagination AND the GraphQL enrichment before it resolves, so the PR pane is
@@ -907,6 +928,11 @@ export function IssueRadarProvider({
       queryClient.invalidateQueries({ queryKey: ['issue-radar', 'members', scopeKey] })
     },
   })
+  // A refresh's error describes the list it refreshed. The provider outlives a
+  // repo or state switch, so drop that error when the shown list changes;
+  // otherwise `issuesError` would report the old list's failure on the new one.
+  const resetRefresh = refreshMutation.reset
+  useEffect(() => { resetRefresh() }, [scopeKey, stateFilter, resetRefresh])
 
   // The full list once it exists, else the cold-start first page. Falling back
   // only when `issuesQuery.data` is undefined means the authoritative set ALWAYS
@@ -1310,7 +1336,9 @@ export function IssueRadarProvider({
     // `issues.length` is the honest signal — it is fed by both queries above.
     issuesLoading: issuesQuery.isLoading && issues.length === 0,
     issuesPartial,
-    issuesError: (issuesQuery.error as Error) ?? null,
+    // A manual refresh goes through refreshMutation, so its failure is reported
+    // here too, as `pullsError` reports refreshPullsMutation's.
+    issuesError: ((issuesQuery.error ?? refreshMutation.error) as Error) ?? null,
     labelsLoading: labelsQuery.isLoading,
     labelsError: (labelsQuery.error as Error) ?? null,
     refresh,
@@ -1389,12 +1417,14 @@ export function IssueRadarProvider({
     crewsError: (crewsQuery.error as Error) ?? null,
     crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
     crewSortKey, crewSortDir, cycleCrewSort,
+    retiredCrewName, setRetiredCrew,
     listDetail,
   }), [
     listDetail,
     repos, active, switchRepo, onAddRepo, activePermissions, canWrite,
     me, issues, repoLabels, issuesQuery.isLoading, issuesQuery.error, issuesQuery.dataUpdatedAt,
     issuesPartial, labelsQuery.isLoading, labelsQuery.error, refresh, refreshMutation.isPending,
+    refreshMutation.error,
     repoSettings, needsTriage, isGoodFirstIssue,
     colorByName, countByLabel, sortedRepoLabels, filteredIssues, sortedIssues, activeIssue,
     memberRoleByLogin, query, setQuery,
@@ -1427,6 +1457,7 @@ export function IssueRadarProvider({
     crews, crewCounts, crewsQuery.data, crewsQuery.isLoading, crewsQuery.error,
     crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
     crewSortKey, crewSortDir, cycleCrewSort,
+    retiredCrewName, setRetiredCrew,
   ])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

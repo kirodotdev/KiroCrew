@@ -10,7 +10,8 @@ Importing this module is cheap by design. ``kirocrew``'s argument parser imports
 ``cli_kas`` while it is built, and the dashboard's route registrar imports the
 handler, both before the gateway is ready and whether or not ``agent.kas_bundle``
 is on. Only the pin (its constants, an env lookup and the engine's spec
-``permissions`` gate) is imported eagerly; the installer -- tarfile, zipfile, subprocess, urllib and the data-home resolver --
+``permissions`` gate) and the stdlib-only ``host_auth`` sign-in wording are imported
+eagerly; the installer -- tarfile, zipfile, subprocess, urllib and the data-home resolver --
 is imported on the first attribute that needs it, through :func:`__getattr__`
 (:pep:`562`), so a disabled bundle route costs the boot path nothing
 (``no-new-work-on-gateway-boot-path`` item 5).
@@ -28,16 +29,40 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_pin as _pin
+from kiro_crew.agent_sdk.host_auth import KAS_TERMINAL_SIGN_IN
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from kiro_crew.acp.kas_bundle import InstalledKasBundle
+    # The lazy names below, typed for the checker only. Without them mypy reads
+    # each one through ``__getattr__``, and in an import cycle it can do that
+    # before the hook's own ``-> Any`` is analysed: the call then fails as
+    # ``Any? not callable``, but only for runs that reach this module in that
+    # order. Nothing here runs, so the lazy import stays lazy. Keep this list
+    # equal to ``_OWNED`` (``test_kas_bundle_facade_types_every_owned_name``).
+    from kiro_crew.acp.kas_bundle import (  # noqa: F401 - typed re-exports
+        KAS_BUNDLE_INSTALL_RECORD_NAME,
+        KAS_BUNDLE_MANIFEST_NAME,
+        InstalledKasBundle,
+        KasBundleError,
+        KasBundleManifest,
+        KasHostUnsupported,
+        fetch_manifest,
+        host_node_key,
+        host_platform_key,
+        install_bundle,
+        install_pinned,
+        installed_bundle,
+        installed_versions,
+        kas_engines_root,
+        parse_manifest,
+        sweep_stale_staging,
+    )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
 KAS_PIN_MANIFEST_SHA256 = _pin.KAS_PIN_MANIFEST_SHA256
@@ -56,6 +81,7 @@ _OWNED: dict[str, str] = {
         "InstalledKasBundle",
         "KasBundleError",
         "KasBundleManifest",
+        "KasHostUnsupported",
         "parse_manifest",
         "fetch_manifest",
         "host_node_key",
@@ -65,6 +91,7 @@ _OWNED: dict[str, str] = {
         "installed_bundle",
         "installed_versions",
         "kas_engines_root",
+        "sweep_stale_staging",
     )
 }
 
@@ -75,21 +102,25 @@ __all__ = [
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
+    "engine_install_snapshot",
     "engine_spec_permissions_supported",
+    "install_pinned_engine",
     "installed_engine_label",
     "kas_bundle_route",
+    "kas_route",
+    "kas_spawn_takes_bundle",
+    "last_kas_route",
     "pinned_version",
+    "require_loadable_host",
     "sha256_bytes",
     "sha256_file",
     *sorted(_OWNED),
 ]
 
-#: How a bundle-route host signs in. kiro-cli is never the owner there, so the
-#: remedy names only Crew's own sign-in; the relay route's remedy
-#: (``host_auth._KAS_REMEDY``) names both because that spawn can draw on either.
+#: How a bundle-route host signs in, as ``kirocrew doctor`` prints it. kiro-cli is
+#: never the owner there, so the remedy names only Crew's own sign-in.
 KAS_BUNDLE_SIGN_IN_REMEDY = (
-    "Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat. "
-    "kiro-cli is not used on this route."
+    f"{KAS_TERMINAL_SIGN_IN}, then send your message again. kiro-cli is not used on this route."
 )
 
 
@@ -139,6 +170,20 @@ def sha256_file(path: Path) -> str:
     return _owner("installed_bundle")._sha256_file(path)
 
 
+def require_loadable_host() -> None:
+    """Raise ``KasHostUnsupported`` when the engine cannot run on this host.
+
+    The local checks :func:`install_bundle` runs before any transfer: the glibc
+    floor, then a published build for this OS and architecture. For a caller that
+    prints progress before calling it and must refuse first, and for ``doctor``,
+    which names the cause instead of a download that is refused every time.
+    """
+    owner = _owner("install_bundle")
+    owner._require_loadable_glibc(None, None)
+    owner.host_platform_key()
+    owner.host_node_key()
+
+
 def sha256_bytes(data: bytes) -> str:
     """Hex sha256 of bytes already read, so a caller verifies the buffer it parses."""
     import hashlib
@@ -153,8 +198,23 @@ def bundle_spawn_argv(installed: InstalledKasBundle) -> list[str]:
     return build_kas_bundle_argv(str(installed.node_bin), str(installed.acp_server))
 
 
+def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
+    """Whether the KAS harness treats *binary* as the operator's ``KIROCREW_KIRO_BIN``.
+
+    The harness's own rule (``KasHarness.resolve_spawn`` never swaps that binary
+    for its ``kiro-cli-chat`` sibling), read at call time, so ``kirocrew doctor``
+    predicts the relay spawn with the same comparison instead of a copy.
+    """
+    from kiro_crew.acp.harness.kas import _is_operator_override
+
+    return _is_operator_override(binary, environ)
+
+
 def kas_bundle_route() -> bool:
-    """Whether the next agent spawn runs Crew's own engine: KAS selected AND the bundle on.
+    """Whether the next agent spawn runs Crew's own engine: KAS selected AND the bundle route.
+
+    The bundle route is ``agent.kas_bundle`` on, or the automatic switch when
+    kiro-cli's relay cannot run here (:func:`kas_route`, ``acp/kas_route.py``).
 
     The one predicate the kiro-cli-facing diagnostics share -- ``kirocrew doctor``,
     the diagnostics bundle's version line, the gateway self-update's ``kiro-cli
@@ -173,9 +233,67 @@ def kas_bundle_route() -> bool:
 
     try:
         agent = KiroCrewConfig.load().agent
-        return agent.acp_backend == ACP_BACKEND_KAS and bool(agent.kas_bundle)
+        return agent.acp_backend == ACP_BACKEND_KAS and kas_spawn_takes_bundle(agent)
     except Exception:
         return False
+
+
+def kas_spawn_takes_bundle(agent: Any) -> bool:
+    """The route half of :func:`kas_bundle_route`, over a loaded ``agent`` section.
+
+    ``agent.kas_bundle`` on, or the automatic switch (:func:`kas_route`). No backend
+    half, for readers that ask about KAS whatever ``agent.acp_backend`` is. The flag
+    is read off the caller's section first, so a switch that is on answers without
+    resolving kiro-cli. Blocking, as :func:`kas_route` is.
+    """
+    return bool(getattr(agent, "kas_bundle", False)) or bool(kas_route().bundle)
+
+
+def kas_route() -> Any:
+    """The route the next KAS spawn takes, computed fresh (``acp.kas_route.KasRoute``).
+
+    The bundle route is taken when ``agent.kas_bundle`` is on, or automatically
+    when kiro-cli's relay cannot run on this host. Blocking (reads config, resolves
+    kiro-cli, reads the sign-in stores); never raises.
+    """
+    from kiro_crew.acp.kas_route import resolve_kas_route
+
+    return resolve_kas_route()
+
+
+def crew_sign_in_starts_spawn() -> bool:
+    """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
+
+    ``acp.kas_route.crew_sign_in_starts_spawn``, for the dashboard. Blocking
+    (vault, config and kiro-cli reads); never raises.
+    """
+    from kiro_crew.acp.kas_route import crew_sign_in_starts_spawn as starts
+
+    return starts()
+
+
+def last_kas_route() -> dict[str, Any] | None:
+    """The route the last KAS spawn in this process took, as plain data, or ``None``."""
+    from kiro_crew.acp.kas_route import last_spawn_route
+
+    route = last_spawn_route()
+    return None if route is None else route.as_dict()
+
+
+def engine_install_snapshot() -> dict[str, Any]:
+    """The gateway's engine install state: ``running``, ``done``, ``total``, ``error``."""
+    from kiro_crew.acp.kas_engine_install import install_snapshot
+
+    return install_snapshot()
+
+
+def install_pinned_engine(
+    base_url: str, *, caller: str, on_progress: ProgressCallback | None = None
+) -> InstalledKasBundle:
+    """Install the pinned engine through the gateway's one-at-a-time installer."""
+    from kiro_crew.acp.kas_engine_install import install_pinned_engine as _install
+
+    return _install(base_url, caller=caller, on_progress=on_progress)
 
 
 def installed_engine_label() -> str | None:

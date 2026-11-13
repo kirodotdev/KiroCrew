@@ -1,8 +1,24 @@
-import { useCallback } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { updateSlotFolder } from '../store/dashboardSlice'
+import { setAgentSwitchNotice } from '../store/chatSlice'
+import { errMessage } from '../utils/thunkError'
+import { i18nT } from '../i18n/t'
+
+/* The session the user last moved here, in memory only: it marks a move, so a
+ * session created into a folder, or seen after a reload, is never marked. */
+let movedSlot: string | null = null
+const movedListeners = new Set<() => void>()
+export function setMovedSlot(key: string | null) {
+  if (movedSlot === key) return
+  movedSlot = key
+  movedListeners.forEach(l => l())
+}
+export function useMovedSlot(): string | null {
+  return useSyncExternalStore(cb => { movedListeners.add(cb); return () => { movedListeners.delete(cb) } }, () => movedSlot)
+}
 
 /** Options for a single move. */
 export type MoveSlotOptions = {
@@ -13,6 +29,10 @@ export type MoveSlotOptions = {
    * fact: a caller that treats the store as proof (the drag-move undo bar) would
    * offer an undo before the original move is durable, and the two writes can
    * then race and cancel each other.
+   *
+   * Runs from the mutation's own success handler, so it still fires after the
+   * calling component unmounted or fired another move: a per-call `mutate`
+   * callback is dropped in both cases.
    */
   onCommitted?: () => void
 }
@@ -39,9 +59,45 @@ export function useMoveSlotToFolder(): (
   folderId: string | null,
   opts?: MoveSlotOptions,
 ) => void {
+  const { mutate } = useMoveSlotMutation({ reportRollback: true })
+  // `mutate` is referentially stable across renders, so the returned callback is too.
+  return useCallback((slotKey: string, folderId: string | null, opts?: MoveSlotOptions) => {
+    mutate({ slotKey, folderId, onCommitted: opts?.onCommitted })
+  }, [mutate])
+}
+
+/**
+ * The same move, as a promise that settles with the server's answer: resolves
+ * once the write is acknowledged and rejects with its error after the rollback.
+ *
+ * For a caller that must not report success before the move is durable, or
+ * must show the failure itself (the session menus' New folder dialog, which
+ * has just created the destination). The promise is per call, so a second move
+ * through the same hook cannot swallow this one's outcome the way per-call
+ * `mutate` callbacks can. Callers own the rejection.
+ */
+export function useMoveSlotToFolderAsync(): (slotKey: string, folderId: string | null) => Promise<void> {
+  // 'always', not the default 'online': the gateway is often local, and an
+  // offline browser would PAUSE the mutation before mutationFn, so the promise
+  // a caller awaits (and any dismissal it holds while waiting) would not settle
+  // until the browser came back online. Running it lets the request reach the
+  // gateway, or fail fast through the usual rollback.
+  const { mutateAsync } = useMoveSlotMutation({ networkMode: 'always' })
+  return useCallback(
+    async (slotKey: string, folderId: string | null) => { await mutateAsync({ slotKey, folderId }) },
+    [mutateAsync],
+  )
+}
+
+/** The optimistic move with its guarded rollback, shared by both hooks above.
+ *  `networkMode` left unset keeps React Query's default for the existing hook.
+ *  `reportRollback` puts a rolled-back move on the shell banner, for the callers
+ *  that fire and forget; the async hook's callers show the failure themselves. */
+function useMoveSlotMutation({ networkMode, reportRollback = false }: { networkMode?: 'always'; reportRollback?: boolean } = {}) {
   const dispatch = useAppDispatch()
-  const { mutate } = useMutation({
-    mutationFn: ({ slotKey, folderId }: { slotKey: string; folderId: string | null }) =>
+  return useMutation({
+    networkMode,
+    mutationFn: ({ slotKey, folderId }: { slotKey: string; folderId: string | null; onCommitted?: () => void }) =>
       api.setSlotFolder(slotKey, folderId),
     onMutate: ({ slotKey, folderId }) => {
       const prev = store.getState().dashboard.slots.find(s => s.key === slotKey)?.folder_id ?? ''
@@ -49,22 +105,22 @@ export function useMoveSlotToFolder(): (
       dispatch(updateSlotFolder({ key: slotKey, folderId: target }))
       return { slotKey, prev, target }
     },
-    onError: (_err, _vars, ctx) => {
+    onSuccess: (_data, { slotKey, onCommitted }) => { setMovedSlot(slotKey); onCommitted?.() },
+    onError: (err, _vars, ctx) => {
       if (!ctx) return
       // Guarded rollback: only revert if a later move hasn't already changed
       // this slot's folder. Without this, a rapid move A→B where the A call
       // fails would clobber B's optimistic update even though B succeeded.
       const current = store.getState().dashboard.slots.find(s => s.key === ctx.slotKey)?.folder_id ?? ''
-      if (current === ctx.target) dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      if (current !== ctx.target) return
+      dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      // The session just jumped back to where it was: say so, with the
+      // gateway's reason (a Bot's folder, a folder that changed owner), or the
+      // rollback reads as the move never having been asked for.
+      if (!reportRollback) return
+      const title = i18nT('hooks.useMoveSlotToFolder.move_refused')
+      const reason = errMessage(err)
+      dispatch(setAgentSwitchNotice(reason ? { title, message: reason, error: true } : { message: title, error: true }))
     },
   })
-  // `mutate` is referentially stable across renders, so the returned callback is too.
-  return useCallback((slotKey: string, folderId: string | null, opts?: MoveSlotOptions) => {
-    mutate({ slotKey, folderId }, {
-      // Per-call callback, running in addition to the hook's own rollback
-      // handler: the caller learns the server ACKNOWLEDGED the write without
-      // taking over the rollback.
-      onSuccess: () => opts?.onCommitted?.(),
-    })
-  }, [mutate])
 }

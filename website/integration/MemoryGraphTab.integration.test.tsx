@@ -174,11 +174,13 @@ describe('MemoryGraphTab Integration Tests', () => {
     await graphReady()
   })
 
-  it('handles API error gracefully', async () => {
+  it('says a failed read failed, not that memory is empty', async () => {
     memoryGraph.mockRejectedValueOnce(new Error('memory graph unavailable'))
     renderWithProviders(<MemoryGraphTab />)
 
-    expect(await screen.findByText(/No memory data to visualize/)).toBeInTheDocument()
+    const notice = await screen.findByTestId('memory-graph-load-error')
+    expect(notice.textContent).toContain('memory graph unavailable')
+    expect(screen.queryByText(/No memory data to visualize/)).toBeNull()
   })
 
   it('refresh button reloads data', async () => {

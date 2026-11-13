@@ -87,7 +87,9 @@ export interface AvailableProfile {
  * A scan that FAILS on a supported platform answers 503 `profiles_unavailable`
  * rather than a 200 carrying an empty list, so this payload is only ever the
  * real listing: `profiles: []` with `supported: true` does mean none are left to
- * register. The failed scan surfaces through the query's error state instead.
+ * register. The failed scan surfaces through the query's error state instead,
+ * and when the gateway's `aws` is AWS CLI v1 (no `configure list-profiles`) it
+ * answers 501 `unsupported_aws_cli_v1`, which no retry clears.
  */
 export interface AvailableProfilesResponse {
   profiles: AvailableProfile[]
@@ -102,7 +104,9 @@ export interface AvailableProfilesResponse {
  * winners. Error codes: `invalid_names` (400), `unknown_profile` (400),
  * `profiles_unavailable` (503, the local profile scan could not run, so no name
  * could be checked and nothing was registered), `unsupported_platform` (501, the
- * same but on a platform that cannot scan at all, so retrying never clears it).
+ * same but on a platform that cannot scan at all, so retrying never clears it),
+ * `unsupported_aws_cli_v1` (501, the gateway's `aws` is AWS CLI v1, which cannot
+ * list profiles).
  */
 export interface RegisterProfilesResult {
   added: number
@@ -463,6 +467,10 @@ export interface RemoteBackup {
   others: number
   truncated: boolean
   max: number
+  /** Kinds whose listing stopped at the backend page cap with keys left unread.
+   *  Archive names sort oldest first, so the unread ones are the newest. Absent
+   *  from a backend older than the cap, which reads as none. */
+  archives_truncated?: string[]
 }
 
 /**
@@ -479,6 +487,13 @@ export interface InstallIdentity {
  * Payload of `GET /backup/{account}`. `runs` holds the last local run per kind;
  * `remote` lists the archive in the bucket (null when it could not be read,
  * with the reason in `remoteError`). `nightly` is the scheduled-snapshot toggle.
+ * `nightlyBlocked` is why THAT snapshot grant cannot run on the account being
+ * viewed, or absent when it can. Same shape and reasoning as
+ * `nightlySessionsBlocked`: the grant reads back as the owner set it, while this
+ * says whether the schedule reaches the account they are looking at. The snapshot
+ * kind has only the `other_account` condition -- the grant is recorded per account
+ * while the loop runs for the default one, so a grant on a non-default account is
+ * authorized and never runs.
  * `nightlySessions` is the SEPARATE grant for the scheduled sessions archive,
  * and is absent from an older backend, which reads as off -- the safe direction
  * for a field that authorizes uploading transcripts.
@@ -498,6 +513,7 @@ export interface InstallIdentity {
  */
 export interface BackupStatus {
   nightly: boolean
+  nightlyBlocked?: string | null
   nightlySessions?: boolean
   nightlySessionsBlocked?: string | null
   runs: Partial<Record<BackupKind, BackupRun>>

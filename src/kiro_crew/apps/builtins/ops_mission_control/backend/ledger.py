@@ -169,7 +169,7 @@ class _LedgerLock:
     def __enter__(self) -> _LedgerLock:
         lock_file = app_data_dir(APP_NAME) / _LOCK_FILENAME
         ensure_directory(lock_file.parent)
-        self._fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+        self._fd = platform_compat.open_create_or_existing(str(lock_file), os.O_RDWR, 0o600)
         platform_compat.acquire_lock(self._fd, exclusive=True)
         return self
 

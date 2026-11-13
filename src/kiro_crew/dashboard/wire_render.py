@@ -52,6 +52,12 @@ from collections.abc import Callable
 from threading import Lock
 
 from kiro_crew.dashboard import chat_utils as _cu
+from kiro_crew.security.exfil import (
+    allowed_host_audit_epoch,
+    current_scoped_audit_epoch,
+    current_scoped_workspace,
+)
+from kiro_crew.security.redaction_allow import normalize_workspace
 from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
 logger = logging.getLogger(__name__)
@@ -212,7 +218,16 @@ def _context_digest() -> bytes:
     (redaction_context, _), _ = _cu._display_redaction_cache_key("")
     # Link restoration reads the workspace hosts alone, not their union with
     # policy exemptions. Keep that distinction even if the union is unchanged.
-    restored_hosts = _dumps(sorted(_cu.current_scoped_exempt_hosts())).encode("ascii")
+    # The workspace and the revoke epoch key the use audit a restore writes: a
+    # memo hit skips the restore, so a re-allowed host or another workspace's
+    # allowance must miss once to be audited.
+    restored_hosts = _dumps(
+        [
+            sorted(_cu.current_scoped_exempt_hosts()),
+            current_scoped_workspace(),
+            current_scoped_audit_epoch(),
+        ]
+    ).encode("ascii")
     return hashlib.blake2b(redaction_context + restored_hosts, key=_KEY, digest_size=16).digest()
 
 
@@ -291,7 +306,9 @@ def prepare_message_rows(
     chunk, an OAuth row (its render reads live endpoint approvals), a row that is
     not plain JSON, and every row inside an owner-view scope.
     """
-    with _cu.scoped_exempt_hosts(_cu.allowed_hosts_for(workspace)):
+    epoch = allowed_host_audit_epoch()
+    hosts = _cu.allowed_hosts_for(workspace)
+    with _cu.scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
         bypassed = credential_pass_bypassed()
         memo = use_memo and not bypassed
         context = b"" if bypassed else _context_digest()

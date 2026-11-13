@@ -1,9 +1,5 @@
 """Tests for the history consolidator's skill detection and auto-skills.
 
-Covers the eligibility helpers (tool-call counts and the sensitive-session check,
-in both message schemas), ``_process_auto_skills`` end to end, its SEL audit on
-every no-write decision, the new-skill prompt's JSON shape and recurrence gate,
-detection over the full session window, and candidate dedupe and script checks.
 The consolidator's memory and lesson writes are in ``test_history_consolidator.py``.
 """
 
@@ -896,13 +892,9 @@ class TestAutoSkillSELAuditCompleteness:
 
 
 class TestConsolidationPromptJsonShape:
-    """The new_skill prompt
-    JSON shape example must itself be a valid JSON fragment so the LLM
-    doesn't see an unclosed string and emit malformed output.
+    """The new_skill prompt's JSON shape example must be a balanced JSON fragment.
 
-    We can't parse the whole prompt as JSON (it's English instructions
-    containing JSON), but we CAN extract the shape example and verify
-    every curly brace / quote is balanced.
+    An unclosed string there leads the LLM to emit malformed output.
     """
 
     def test_new_skill_prompt_shape_quotes_balanced(self):
@@ -932,13 +924,8 @@ class TestConsolidationPromptJsonShape:
     async def test_prompt_gates_on_recurrence_not_effort(self, tmp_path):
         """The built prompt must demand recurrence and must not bias toward yes.
 
-        The observed failure this pins: the prompt would instruct the model to
-        "lean toward returning it" on any plausible procedure and judged only
-        triviality, so elaborate ONE-OFF sessions (a single bug's fix, a
-        one-time component audit, a probe answering a now-answered question)
-        were staged as skills and piled up unreviewable in the pending queue.
-        Asserts on the prompt the code actually builds, not on source text, so
-        the check survives refactors of how the string is assembled.
+        A "lean toward returning it" prompt stages one-off sessions (a single bug fix)
+        as skills. Checks the built prompt, not source text.
         """
         import asyncio as _asyncio
         from unittest.mock import patch
@@ -1178,6 +1165,8 @@ class TestSkillDetectionFullWindow:
             with patch.object(c, "_process_auto_skills"):
                 await c._run_skill_detection(key)
                 assert m1.call_count == 1  # first pass evaluates
+                # The guard keys on (rotation generation, message count).
+                assert c._last_skillgen_marker[key] == (0, 6)
                 await c._run_skill_detection(key)
                 assert m1.call_count == 1, (
                     "an unchanged session must NOT be re-judged on the next "
@@ -1188,13 +1177,9 @@ class TestSkillDetectionFullWindow:
     async def test_claim_lock_stall_reopens_detection_on_the_next_pass(self, tmp_path):
         """A candidate refused by the slug claim lock must be re-judged immediately.
 
-        The length guard above is what makes the lock refusal lossy: the marker is
-        recorded before staging runs, so a pass that staged nothing because another
-        process held the claim lock would be skipped until a further message changed
-        the count or a restart cleared the marker. A session that goes quiet right
-        after the stall would drop the candidate. The claim path reports that one
-        refusal as retryable and the marker is retracted, so the next pass re-judges
-        the SAME unchanged session -- no new message and no rotation.
+        The marker is recorded before staging, so a quiet session would drop the
+        candidate. The refusal is retryable and the marker is retracted, so the next
+        pass re-judges the SAME session with no new message.
         """
         import asyncio as _asyncio
         from unittest.mock import patch
@@ -1308,6 +1293,7 @@ class TestSkillDetectionFullWindow:
                     "a rotation (generation bump) must force a fresh detection "
                     "pass even when the message count is unchanged"
                 )
+                assert c._last_skillgen_marker[key] == (meta["rotation_generation"], 6)
 
 
 @pytest.mark.asyncio
@@ -1339,7 +1325,7 @@ async def test_dedupe_candidate_falls_back_to_lexical_without_judge_model(tmp_pa
 
 @pytest.mark.asyncio
 async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
-    """judge_model set → _dedupe_candidate drives metadata_dedupe through the
+    """judge_model set → _dedupe_candidate drives metadata_dedupe_verdict through the
     async judge, bridged from the worker thread back onto the loop."""
     from unittest.mock import MagicMock
 

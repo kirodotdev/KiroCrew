@@ -26,8 +26,10 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -37,17 +39,17 @@ from kiro_crew.agent_sdk.backends import (
 # that never starts and leaves the agent process unconfined. Only kiro-cli
 # qualifies; a Node or Python harness does not, however it is spawned.
 #
-# KAS is NOT a member even though Crew now spawns it as ``kiro-cli acp
-# --agent-engine v3`` and the process on the end of the argv IS kiro-cli. The
-# relay spawns the KAS server without an ``--sandbox`` argument, and KAS's
-# sandbox factory resolves an absent config to its no-op backend, so no OS
-# sandbox starts inside — adding KAS here would skip Crew's seatbelt in favour of
-# a layer that does not exist. See :mod:`kiro_crew.acp.kas_transport`.
+# KAS is NOT a member, because whether it carries kiro-cli's sandbox depends on
+# the route, and a membership here is per harness. Its kiro-cli relay route does,
+# and is granted the same delegation by ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+# below; its bundle route runs Node directly, with no kiro-cli in the chain, and
+# must keep Crew's layer.
 #
 # codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
-# is the only OS confinement a codex session gets. The Codex sandbox modes the
-# adapter can apply are in-process policy, not an OS sandbox that Crew's would
-# nest inside.
+# is the only OS confinement a codex session gets. Codex's read-only mode would
+# build a second OS sandbox inside it, which cannot start there, so Crew selects
+# the adapter's external-sandbox mode whenever the adapter offers it
+# (``ACP_BACKEND_PREFERRED_PERMISSION_CONFIG``).
 #
 # opencode is excluded, and here the exclusion is load-bearing rather than
 # conservative: Crew's own sandbox layer carries the credential mask that is the
@@ -63,7 +65,37 @@ from kiro_crew.agent_sdk.backends import (
 # tool executors from inside the same process -- it is not an OS sandbox that Crew's
 # seatbelt would nest inside, and it does not carry Crew's credential mask. Skipping
 # Crew's layer for it would drop the compensating control for its passive reads.
+# mimocode is excluded on opencode's ground, unchanged by the fork: it is the same
+# single binary with no OS sandbox of its own, and Crew's layer carries the
+# credential mask that stands in for the reads it never asks about.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
+
+# Backends whose kiro-cli RELAY route carries kiro-cli's internal sandbox, so a
+# spawn on that route takes the delegation ``ACP_BACKENDS_INTERNAL_SANDBOX`` gives
+# kiro-cli, and a spawn on any other route of the same harness does not. The
+# route is the harness's own positive statement
+# (``SpawnPlan.kiro_cli_internal_sandbox``, set only while that sandbox is live on
+# the host); this set is what lets that statement count, so a harness cannot waive
+# Crew's layer by setting a plan field alone. Read through
+# :func:`kiro_crew.agent_sdk.backends.spawn_delegates_to_internal_sandbox`, never
+# on its own.
+#
+# KAS qualifies on its relay route, ``kiro-cli acp --agent-engine v3``: the
+# process Crew spawns is kiro-cli, reading the same settings switch as the v2
+# engine, and it starts the same internal sandbox before it spawns the KAS
+# server, which runs as its child. Measured in the field on macOS (kiro-cli
+# 2.34.3-nightly): under Crew's seatbelt the relay printed ``sandbox
+# initialization failed: Operation not permitted`` and exited before
+# ``initialize``, the nesting refusal the v2 engine gets for the same reason.
+# Delegating fixes that refusal; Crew's seatbelt stays on whenever the switch is
+# off, exactly as for kiro-cli. Windows is not covered, unlike kiro-cli's own row:
+# measured there (kiro-cli 2.35.1), the relay's KAS child runs unconfined with the
+# switch on or off, so there is nothing to delegate to and the harness never says
+# so. The bundle route is not covered either: it spawns Node with no kiro-cli in
+# the chain, and KAS's own sandbox stays off because nothing passes it a
+# ``--sandbox`` argument (:mod:`kiro_crew.acp.kas_transport`).
+ACP_BACKENDS_RELAY_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KAS})
+
 
 # Backends whose pod-spawned child has its ambient ``HOME`` relocated onto the
 # pod's own tree, so the MCP OAuth grant artifacts the harness derives from
@@ -97,6 +129,10 @@ ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 # override and a ``$HOME`` relocation reaches nothing the override does not.
 # KAS is excluded although Crew spawns it through ``kiro-cli`` too: where KAS keeps
 # its MCP OAuth grants is not measured, so it stays out under the rule above.
+# mimocode is excluded for opencode's reason: its credential follows ``XDG_DATA_HOME``,
+# which its auth declaration names. Its second override, ``MIMOCODE_HOME``, moves the
+# file to a spelling the floor cannot re-anchor, so the launch refuses a session
+# that sets it rather than relying on a ``$HOME`` relocation to reach it.
 ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 
 
@@ -141,6 +177,21 @@ class SelfServedLaunch:
 #: entry they do not know.
 #: Re-measure against a fresh capture before raising it.
 COPILOT_VERIFIED_VERSION = "1.0.100"
+
+#: The one Strands CLI release Crew's Strands gate is verified on: its
+#: Python-project ACP server forwards a Strands interrupt as
+#: ``session/request_permission`` and refuses a non-empty ``session/new``
+#: ``mcpServers`` array, and its worker reads the project and session overrides the
+#: gate module depends on. Measured on 0.2.3; the published 0.2.4 package differs
+#: from it only in its version. The install hint pins it; another release is named
+#: at the handshake (``acp.harness.strands``). Re-measure against a fresh capture
+#: before raising it to a release whose code differs.
+STRANDS_VERIFIED_VERSION = "0.2.4"
+#: The Python packages the Strands CLI's project worker imports, at the versions the
+#: gate was measured on. Installed into the project environment Crew runs Strands in.
+STRANDS_PYTHON_REQUIREMENT = "strands-harness==0.3.3"
+#: The CLI's own ``engines.node`` floor.
+STRANDS_NODE_FLOOR = (22, 0, 0)
 
 #: Harness id -> the fixed facts of LAUNCHING it, for the harnesses whose own binary
 #: serves ACP.
@@ -224,6 +275,33 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         ),
         bin_env_var="COPILOT_BIN",
         install_command=f"npm i -g @github/copilot@{COPILOT_VERIFIED_VERSION}",
+        protocol_version=1,
+        missing_hint="No adapter package is needed: this harness serves ACP itself.",
+    ),
+    # ``--acp-server`` is the CLI's own ACP mode; the project it runs (``--agent``)
+    # and the MCP file (``--mcp-config``) are per-launch values the Strands adapter
+    # appends, because their paths carry this gateway's data home.
+    ACP_BACKEND_STRANDS: SelfServedLaunch(
+        label="Strands",
+        binary="strands",
+        acp_args=("--acp-server",),
+        bin_env_var="STRANDS_BIN",
+        install_command=f"npm i -g @strands-agents/cli@{STRANDS_VERIFIED_VERSION}",
+        protocol_version=1,
+        missing_hint=(
+            "Install the official Strands CLI; its default --acp-server profile is "
+            "not used, Kiro Crew starts it on a Python project it gates."
+        ),
+    ),
+    ACP_BACKEND_MIMOCODE: SelfServedLaunch(
+        label="MiMo Code",
+        binary="mimo",
+        acp_args=("acp",),
+        bin_env_var="MIMO_BIN",
+        # Pinned to the tested 0.1 line, for opencode's reason: an unpinned name
+        # installs the latest release, which the version gate in
+        # acp/harness/mimocode.py refuses until it has been measured.
+        install_command="npm i -g @mimo-ai/cli@0.1",
         protocol_version=1,
         missing_hint="No adapter package is needed: this harness serves ACP itself.",
     ),
@@ -335,3 +413,12 @@ def launch_for(backend: str) -> SelfServedLaunch:
 # These classes keep the facade as their module: it is the path every caller
 # imports them from, so a pickled or logged reference names that path.
 SelfServedLaunch.__module__ = "kiro_crew.agent_sdk.backends"
+
+
+#: Why the codex CLI the codex-acp adapter runs could not be resolved: the
+#: ``reason`` values of ``kiro_crew.acp.client_spawn_env.CodexCliResolution``.
+#: Declared here so application code (dictation) can tell them apart through
+#: :mod:`kiro_crew.agent_sdk` without importing the ACP layer. Empty means found.
+CODEX_CLI_OVERRIDE_UNUSABLE = "override_unusable"
+CODEX_CLI_ADAPTER_MISSING = "adapter_missing"
+CODEX_CLI_UNRESOLVED = "cli_unresolved"

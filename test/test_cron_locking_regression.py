@@ -1,32 +1,15 @@
-"""Regression tests for the cron-locking / cron.py audit fixes (cluster C).
+"""Cron store locking and event-loop rules.
 
-Each test encodes the exact failure scenario from the audit so it fails against
-the pre-fix code and passes against the remediation:
+1. ``_file_lock`` uses a bounded non-blocking ``try_acquire_lock`` spin.
+2. ``list_jobs`` / ``get_job`` are cache-only (no filesystem I/O); callers that
+   need a fresh read use ``list_jobs_async`` / ``get_job_async``.
+3. ``_sync`` compares a content DIGEST of the bytes it parses, so same-mtime and
+   equal-length rewrites are reloaded.
+4. ``_arm_timer`` never cancels ``asyncio.current_task()``.
+5. The skip-date advance is bounded by a wall-clock horizon, not an iteration count.
 
-1. Blocking ``fcntl.flock`` on the event loop in store mutators
-   → ``_file_lock`` now uses a bounded non-blocking ``try_acquire_lock`` spin.
-2. Unlocked read paths (``list_jobs`` / ``get_job`` / ``run_job`` / reaper)
-   racing the off-loop batch-remove worker → the loop-resident write paths
-   sync under the lock; the loop-resident READ paths (``list_jobs`` /
-   ``get_job``) are cache-only — they perform NO filesystem I/O at all (no
-   ``read_bytes``/hash, no lock-file open), so a large store can never freeze
-   the loop. Cross-process freshness is maintained off-loop by the timer tick
-   and mutators; callers needing a guaranteed-fresh read use the offloaded
-   ``list_jobs_async`` / ``get_job_async`` variants.
-3. mtime-equality staleness in ``_sync`` losing same-second external writes,
-   and (mtime_ns, size) collisions losing equal-length content rewrites
-   → ``_sync`` compares a content DIGEST derived from the same bytes it parses.
-4. ``_arm_timer`` cancelling the currently-running timer task
-   → ``_arm_timer`` never cancels ``asyncio.current_task()``.
-5. Skip-date lookahead bound coupled to schedule granularity (silently
-   returning ``None`` for schedules finer than the cap was sized for)
-   → the advance is bounded by a wall-clock horizon, not an iteration count.
-
-The loop-resident scheduling paths (timer tick, reaper sweep, ``run_job``) never
-take the store lock or ``_sync()`` on the event loop: the timer tick and
-``run_job`` offload their locked sync + snapshot to a worker thread
-(``asyncio.to_thread``) and run only the mutation-free scan/claim on the loop,
-while the reaper snapshots the atomically-swapped in-memory job list cache-only.
+The timer tick, reaper sweep and ``run_job`` never take the store lock or
+``_sync()`` on the event loop; the locked work runs in ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
@@ -59,10 +42,8 @@ class TestFileLockNonBlocking:
     def test_file_lock_is_bounded_when_contended(self, tmp_path: Path) -> None:
         """A held lock must make ``_file_lock`` fail fast, not park forever.
 
-        Pre-fix, ``_file_lock`` used a blocking ``fcntl.flock(LOCK_EX)``; with a
-        separate fd already holding the lock this call would block the event
-        loop indefinitely (the audit's failure mode). The non-blocking spin
-        raises ``TimeoutError`` within the bounded timeout instead.
+        A blocking ``fcntl.flock(LOCK_EX)`` would park the event loop while another
+        fd holds the lock; the non-blocking spin raises ``TimeoutError`` in time.
         """
         svc = CronService(base_dir=tmp_path)
         svc._dir.mkdir(parents=True, exist_ok=True)
@@ -93,19 +74,12 @@ class TestFileLockNonBlocking:
     def test_file_lock_open_does_not_truncate(self, tmp_path: Path) -> None:
         """``_file_lock`` must open the lock file WITHOUT truncating it.
 
-        A truncating open (``"w"``) empties the lock file before the
-        ``try_acquire_lock`` spin ever runs. On Windows a truncating open of a
-        file whose first byte another holder has under ``msvcrt.locking``
-        raises a sharing violation (``PermissionError``) at ``open()`` time, so
-        a contending acquirer crashes instead of spinning until release; POSIX
-        ``flock`` tolerates it, hiding the defect on Linux. Seeding the file
-        and asserting the bytes survive a real acquire/release cycle fails on
-        EVERY platform if a truncating open comes back (same class as
-        ``work_ledger._open_lock``).
+        On Windows a truncating open (``"w"``) of a file held under ``msvcrt.locking``
+        raises ``PermissionError``, so a contender crashes instead of spinning; POSIX
+        hides it. Checking that seeded bytes survive fails on every platform.
 
-        The seeded bytes are checked only AFTER release: ``msvcrt.locking`` is
-        a mandatory lock on byte 0, so reading the file while the lock is held
-        would itself raise ``PermissionError`` on Windows.
+        The bytes are read only AFTER release: ``msvcrt.locking`` is a mandatory lock
+        on byte 0, so reading while held would itself raise on Windows.
         """
         svc = CronService(base_dir=tmp_path)
         svc._dir.mkdir(parents=True, exist_ok=True)
@@ -124,12 +98,8 @@ class TestReadPathsLocked:
     def test_on_loop_reads_do_not_touch_the_filesystem(self, tmp_path: Path) -> None:
         """``list_jobs`` / ``get_job`` are cache-only — zero filesystem I/O.
 
-        GPT 5.6 HIGH (cron.py:2026): the read paths ran ``_sync()`` on the
-        event loop, which ``read_bytes()`` + blake2b-hashed the ENTIRE
-        ``crons.json`` on every call — and ``list_jobs`` fires directly on the
-        loop from the dashboard WS status push and Slack handlers, so a large
-        store froze the loop with synchronous I/O. The reads are now cache-only:
-        they must never open the lock file, stat, read, or hash the store.
+        ``list_jobs`` runs on the loop from the dashboard WS push and Slack handlers,
+        so it must never open the lock file, stat, read, or hash a large store.
         """
         svc = CronService(base_dir=tmp_path)
         job = svc.add_job(name="j", message="m", every_secs=60)
@@ -189,11 +159,8 @@ class TestReadPathsLocked:
     async def test_async_reads_observe_external_write_offloaded(self, tmp_path: Path) -> None:
         """``list_jobs_async`` / ``get_job_async`` pick up a cross-process write.
 
-        The cache-only sync reads intentionally do not observe another
-        process's write until the next timer refresh; the async variants
-        offload a locked ``_sync()`` + snapshot to a worker thread so a caller
-        that needs guaranteed freshness sees it immediately — without blocking
-        the event loop (the read/hash/parse happens off-loop).
+        The cache-only reads wait for the next timer refresh; the async variants run a
+        locked ``_sync()`` in a worker thread and see the write at once.
         """
         svc = CronService(base_dir=tmp_path)
         svc.add_job(name="j1", message="m", every_secs=60)
@@ -239,16 +206,9 @@ class TestReadPathsLocked:
     async def test_timer_tick_does_no_store_io_on_the_loop(self, tmp_path: Path) -> None:
         """The timer tick's locked ``_sync()`` runs OFF the event loop.
 
-        GPT 5.6 HIGH (cron.py:1652, BLOCK-MERGE): ``_on_timer`` did
-        ``async with self._afile_lock(): self._sync()`` directly on the loop,
-        so every tick ``read_bytes()`` + blake2b-hashed the WHOLE
-        ``crons.json`` on the loop — freezing chat/WS/timers/heartbeat for a
-        large or slow store. The locked sync + deferred-removal drain + snapshot
-        is now offloaded to a worker thread (``_tick_scan_locked`` via
-        ``asyncio.to_thread``); the loop only runs the mutation-free due-scan.
-        This asserts, mechanically, that no ``_sync()`` and no
-        ``read_bytes(crons.json)`` ever executes on the loop thread during a
-        tick — mirroring the ``list_jobs``/``get_job`` forbidden-I/O test.
+        ``_tick_scan_locked`` runs in ``asyncio.to_thread``; the loop runs only the
+        mutation-free due-scan. No ``_sync()`` or ``read_bytes(crons.json)`` may run on
+        the loop thread, or a large store freezes chat, WS and heartbeat.
         """
         svc = CronService(base_dir=tmp_path)
         # every_secs=3600 created now → NOT due, so no run task spawns and the
@@ -347,16 +307,10 @@ class TestReadPathsLocked:
 
 
 # ── Constructor / startup initial load: off-loop on the gateway path ──
-# GPT 5.6 HIGH (BLOCK-MERGE, head c2601f20): the exhaustive read-path/timer/
-# reaper sweep left ONE loop-resident blocking-I/O site — INITIALIZATION. The
-# plain constructor calls _load() (a whole-file read_bytes() + blake2b hash of
-# crons.json) synchronously, and the gateway constructs its CronService INSIDE
-# its running async startup coroutine, so that initial load blocked the sole
-# event loop (chat, WS, timers, heartbeat). The fix: loop contexts construct via
-# the async factory CronService.create() (which offloads the initial _load via
-# asyncio.to_thread), and start() also offloads its _load. Genuinely-sync,
-# loop-less callers (CLI/MCP/apps-SDK/tests) keep the inline-loading plain
-# constructor.
+# The gateway builds its CronService inside its running startup coroutine, so it
+# uses CronService.create(), which runs the initial _load in asyncio.to_thread;
+# start() offloads its _load too. Loop-less callers (CLI, MCP, apps SDK, tests)
+# keep the inline-loading plain constructor.
 
 
 class TestConstructionLoadOffLoop:
@@ -364,10 +318,8 @@ class TestConstructionLoadOffLoop:
     async def test_create_factory_loads_off_the_event_loop(self, tmp_path: Path) -> None:
         """``await CronService.create(...)`` runs the initial _load off-loop.
 
-        Mechanical proof: no ``_load()`` and no ``read_bytes(crons.json)`` may
-        execute on the event-loop thread while the factory builds the service.
-        Pre-fix (plain constructor on the loop) this read+hashed the whole store
-        on the loop thread.
+        No ``_load()`` and no ``read_bytes(crons.json)`` may execute on the event-loop
+        thread while the factory builds the service.
         """
         # Seed a store on disk so the initial load has real bytes to read.
         seed = CronService(base_dir=tmp_path)
@@ -454,11 +406,8 @@ class TestSyncFingerprint:
     def test_sync_detects_equal_mtime_external_write(self, tmp_path: Path) -> None:
         """An external write landing on the SAME mtime tick is still reloaded.
 
-        Pre-fix ``_sync`` used ``mtime > self._last_mtime``; a second write in
-        the same coarse mtime second had an equal mtime and was skipped,
-        silently dropping the update. We force the on-disk mtime back to the
-        exact nanosecond of our last load — only the size changes — and assert
-        the reload still happens.
+        The on-disk mtime is forced back to the exact nanosecond of the last load, so
+        only the size changes; an mtime comparison would skip the update.
         """
         svc = CronService(base_dir=tmp_path)
         svc.add_job(name="a", message="m", every_secs=60)
@@ -482,11 +431,8 @@ class TestSyncFingerprint:
     def test_sync_detects_equal_mtime_and_size_content_rewrite(self, tmp_path: Path) -> None:
         """An external write preserving BOTH mtime and byte length is reloaded.
 
-        A (mtime_ns, size) fingerprint collides when a rewrite keeps the coarse
-        timestamp and the exact length (e.g. renaming a job to an equal-length
-        name). The digest-based check catches it where the tuple check could
-        not, preventing the stale in-memory state from being re-saved over the
-        external change.
+        A (mtime_ns, size) fingerprint collides on an equal-length rename; the digest
+        catches it, so stale memory is not re-saved over the external change.
         """
         svc = CronService(base_dir=tmp_path)
         job = svc.add_job(name="aaaa", message="m", every_secs=60)
@@ -523,11 +469,9 @@ class TestArmTimerNoSelfCancel:
     async def test_arm_timer_does_not_cancel_current_task(self, tmp_path: Path) -> None:
         """Re-arming from within the running timer task must not self-cancel.
 
-        Pre-fix, ``_arm_timer`` blindly cancelled ``self._timer_task``; when the
-        tick's own ``finally`` re-armed (``self._timer_task`` == the running
-        task) this fired a CancelledError into the in-flight ``_on_timer``
-        dispatch. Here the standby task re-arms and then yields — under the old
-        code the yield raises CancelledError; under the fix it completes.
+        The tick's own ``finally`` re-arms while ``self._timer_task`` is the running
+        task. The standby task re-arms then yields; a self-cancel would raise
+        CancelledError at the yield.
         """
         svc = CronService(base_dir=tmp_path)
         svc._running = True
@@ -536,7 +480,7 @@ class TestArmTimerNoSelfCancel:
         async def fake_tick() -> None:
             # Stand in for the running timer task re-arming from its finally.
             svc._arm_timer()
-            await asyncio.sleep(0)  # old code delivers the self-cancel here
+            await asyncio.sleep(0)  # a self-cancel would be delivered here
             result["completed"] = True
 
         task = asyncio.create_task(fake_tick())
@@ -561,16 +505,10 @@ class TestArmTimerNoSelfCancel:
                     await svc._timer_task
 
 
-# ── Bug 6: _arm_timer performing event-loop task work off the loop ──
-# GPT 5.6 HIGH cron.py:1041 — an async mutator offloads its locked core to an
-# asyncio.to_thread worker; when an external write changed the digest, that
-# worker's _sync()->_load() reached _arm_timer(), which called
-# asyncio.create_task() with NO running loop (RuntimeError) after possibly
-# cancelling the live timer — silently stopping every scheduled job. The fix
-# makes _arm_timer safe off the loop AND self-healing: it never touches asyncio
-# tasks off-loop, and instead hands the (re)arm back to the bound event loop
-# (captured in create()/start()) via loop.call_soon_threadsafe(self._arm_timer).
-# Arming is thus owned by CronService — no caller drains a deferred arm.
+# ── _arm_timer called off the event loop ──
+# A worker's _sync()->_load() can reach _arm_timer(). Off the loop it never touches
+# asyncio tasks (create_task would raise and the timer could stay cancelled); it
+# hands the arm to the bound loop via loop.call_soon_threadsafe(self._arm_timer).
 
 
 class TestArmTimerOffLoopReload:
@@ -617,12 +555,9 @@ class TestArmTimerOffLoopReload:
     ) -> None:
         """An async mutator that triggers a worker-thread reload stays healthy.
 
-        External write changes the digest; the mutator's offloaded core
-        _sync()->_load()s in the worker and reaches _arm_timer there. Pre-fix
-        that raised RuntimeError (and left the timer cancelled). Post-fix the
-        mutator completes, observes the external change, and the timer stays
-        armed on the loop (the mutator's own on-loop arm plus the worker's
-        self-healing re-arm both target the bound loop).
+        An external write makes the worker's _sync()->_load() reach _arm_timer off the
+        loop. The mutator completes, sees the change, and the timer stays armed on the
+        bound loop.
         """
         svc = CronService(base_dir=tmp_path)
         svc._loop = asyncio.get_running_loop()
@@ -654,14 +589,10 @@ class TestArmTimerOffLoopReload:
                 await svc._timer_task
 
 
-# ── GPT 5.6 HIGH (cron.py:2068) + Arbiter BLOCK item 1 — the app CronSDK ──
-# surface. The app-facing CronSDK mutation API is now async and routes through
-# CronService's *_async mutators, so an app hook / route handler calling it from
-# the event loop performs NO blocking store-lock spin (time.sleep) on the loop
-# thread. And timer arming is owned by CronService IN-SERVICE (see _arm_timer),
-# so a newly registered cron's timer is (re)armed WITHOUT any caller-side drain
-# (the removed _arm_after_offload / rearm_after_offload pairing that every future
-# offload site would otherwise have had to remember).
+# ── the app CronSDK surface ──
+# The async CronSDK mutators route through CronService's *_async mutators, so an
+# app hook on the event loop does no blocking lock spin there. CronService arms the
+# timer itself (see _arm_timer), so no caller has to re-arm after an offload.
 
 
 class TestAppSDKMutationLoopSafety:
@@ -727,15 +658,14 @@ class TestAppSDKMutationLoopSafety:
             await svc.stop()
 
 
-# ── Bug 5: _MAX_SKIP_DATE_LOOKAHEAD too small for daily crons ──
+# ── _MAX_SKIP_DATE_LOOKAHEAD covers long skip ranges on daily crons ──
 
 class TestSkipDateLookahead:
     def test_daily_cron_with_long_skip_range_resolves(self) -> None:
         """A daily cron skipping a long consecutive range still finds a fire.
 
-        60 consecutive skipped days exceeds the old cap of 52, so the pre-fix
-        code exhausted the loop and returned None — the job never fired again.
-        The bumped bound advances past the whole range to the first open day.
+        60 skipped days is past an iteration cap of 52, where the advance would return
+        None and the job never fire again; it must reach the first open day.
         """
         base = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
         now = base.timestamp()
@@ -802,13 +732,9 @@ class TestSkipDateLookahead:
 class TestMutatorContract:
     """The mutator boundary: named CronStoreBusy contract + async offload.
 
-    Arbiter BLOCK item 1: the sync mutators surfaced a bare ``TimeoutError`` at
-    every public scheduling boundary with no handling story. The fix (a) makes
-    that a named, greppable ``CronStoreBusy`` (still a ``TimeoutError`` subclass
-    so the reaper/timer guards keep catching it), and (b) adds ``*_async``
-    variants that run the lock+save off the event loop so the gateway boundaries
-    never park the loop and can translate contention into a clean retryable
-    error.
+    Lock contention raises ``CronStoreBusy``, a ``TimeoutError`` subclass so the
+    reaper and timer guards still catch it. The ``*_async`` variants run lock+save
+    off the event loop, so gateway boundaries can return a retryable error.
     """
 
     def test_cronstorebusy_is_timeouterror_subclass(self) -> None:
@@ -921,12 +847,10 @@ class TestMutatorContract:
 
 
 class TestMergeResultOffLoop:
-    """GPT 5.6 HIGH [BLOCK-MERGE] cron.py:1799 — _merge_job_result on the loop.
+    """_merge_job_result runs in asyncio.to_thread, off the event loop.
 
-    _run_job_isolated is an event-loop task, and its result-merge entered the
-    bounded sync _file_lock whose spin does time.sleep(poll) under contention,
-    freezing the whole gateway loop. The fix offloads the merge to a worker
-    thread via asyncio.to_thread.
+    The sync _file_lock spin does time.sleep(poll) under contention, which would
+    freeze the gateway loop from _run_job_isolated.
     """
 
     @pytest.mark.asyncio
@@ -1016,15 +940,11 @@ class TestMergeResultOffLoop:
         assert got.last_status == "ok"
 
 
-# ── Arbiter BLOCK item 1: deferred one-shot removal must be real ──
-# _deliver_script_result caught CronStoreBusy on the fire-and-forget removal of
-# a completed delete_after_run/Done job and only LOGGED "deferring" — but no
-# deferral existed, so the finished job lingered ENABLED with its recurring
-# schedule and re-fired (duplicate execution + duplicate user notification).
-# The fix: CronService.defer_removal disables the job in memory immediately and
-# queues its id; the timer tick drains the queue under the store lock (in its
-# worker-thread transaction, _tick_scan_locked) before the due-scan, so the job
-# is always eventually removed and never re-fires.
+# ── deferred one-shot removal ──
+# When removing a finished delete_after_run/Done job hits CronStoreBusy,
+# CronService.defer_removal disables it in memory and queues its id; the tick drains
+# the queue under the lock (_tick_scan_locked) before the due-scan, so it never
+# re-fires.
 
 
 class TestDeferredRemoval:
@@ -1109,21 +1029,14 @@ class TestDeferredRemoval:
                     await svc._timer_task
 
     def test_drain_atomic_swap_never_loses_concurrent_add(self, tmp_path: Path) -> None:
-        """Mechanical proof of the GPT 5.6 HIGH / Arbiter item-1 race fix.
+        """A removal deferred during the drain survives for the next tick.
 
-        ``_drain_pending_removals_locked`` runs in the timer tick's WORKER
-        thread while ``defer_removal`` adds ids from the EVENT-LOOP thread. If
-        the drain read the queue (``& present``) and then ``.clear()``-ed it as
-        two separate steps, an id added in between would be erased without ever
-        being deleted from disk — the completed one-shot would re-fire.
+        ``_drain_pending_removals_locked`` runs in the WORKER thread while
+        ``defer_removal`` adds ids from the loop. A read-then-``.clear()`` would erase
+        an id added in between, and the completed one-shot would re-fire.
 
-        This test injects that exact concurrent ``defer_removal`` at the
-        intersection step via a ``set`` subclass whose ``__and__`` adds a new
-        id to the LIVE queue attribute. Post-fix (atomic swap first, fresh set
-        installed as ``self._pending_removals`` before the intersection) the
-        injected id lands in the fresh queue and survives for the next tick.
-        Pre-fix (read-then-``.clear()`` on the same set) it was wiped — this
-        assertion fails against the old code.
+        A ``set`` subclass whose ``__and__`` adds an id to the LIVE queue injects that
+        add at the intersection step; the atomic swap puts it in the fresh queue.
         """
         svc = CronService(base_dir=tmp_path)
         keep = svc.add_job(name="drained-now", message="m", every_secs=60)
@@ -1154,18 +1067,11 @@ class TestDeferredRemoval:
         assert _InjectingSet._fired, "premise: the concurrent add was injected"
 
 
-# ── GPT 5.6 HIGH [BLOCK-MERGE] cron.py:697 / 892: reaper & cancel persist ──
-# _force_reap and cancel are event-loop coroutines that mutated the in-memory
-# job and called a BARE, unlocked self._save() directly on the loop. That both
-# (a) parked the loop on the bounded _file_lock spin and (b) — the lost-update
-# race GPT flagged — serialized a STALE self._jobs: between a concurrent
-# add_job_async/update_job_async worker's _sync and its _save, the unlocked
-# terminal save re-wrote crons.json from a job list that never saw the worker's
-# add, silently dropping it (API reported success; the job vanished across
-# restart and other processes). The fix routes both through the locked
-# worker-thread helper _merge_terminal_state_locked via asyncio.to_thread, so
-# every _jobs mutation + _save participates in ONE lock transaction that
-# _sync()s first.
+# ── reaper and cancel persist under the lock ──
+# _force_reap and cancel save through _merge_terminal_state_locked in
+# asyncio.to_thread, one lock transaction that _sync()s first. An unlocked save on
+# the loop would park it on the lock spin and could write a stale self._jobs over a
+# concurrent add_job_async, dropping the new job.
 
 
 class TestTerminalStateMergeLocked:
@@ -1179,8 +1085,7 @@ class TestTerminalStateMergeLocked:
         """A job added by a concurrent worker/process (on disk, not yet in this
         service's in-memory snapshot) MUST survive the reaper's terminal save.
 
-        Fails against the pre-fix bare on-loop ``self._save()`` (which
-        re-serialized the stale ``self._jobs`` and dropped the concurrent add).
+        A bare ``self._save()`` would re-serialize the stale ``self._jobs`` and drop it.
         """
         svc = CronService(base_dir=tmp_path)
         running = svc.add_job(name="running-job", message="m", every_secs=60)

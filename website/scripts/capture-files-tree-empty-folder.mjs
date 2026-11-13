@@ -843,7 +843,7 @@ async function main() {
       const panelEl = document.querySelector('div > .side-panel-strip')?.parentElement
       const text = (panelEl?.innerText ?? '').replace(/\s+/g, ' ')
       return {
-        limit: text.includes('Workspace too large to list: limit of 10,000 items reached'),
+        limit: text.includes('Nothing is wrong. This project has too many files and folders to list here (the limit is 10,000).'),
         marked: !!panelEl?.querySelector('[data-testid="workspace-tree-root-truncated"]'),
         empty: text.includes('No files in this workspace yet'),
         tree: !!document.querySelector('file-tree-container'),
@@ -854,7 +854,7 @@ async function main() {
     if (!truncatedRoot.limit || !truncatedRoot.marked || truncatedRoot.empty || truncatedRoot.tree) {
       throw new Error(`frame 32: expected the limit notice in the tree's place, got ${JSON.stringify(truncatedRoot)}`)
     }
-    await shot('32-root-truncated', [`"Workspace too large to list: limit of 10,000 items reached" (data-testid workspace-tree-root-truncated) in the tree's place; no "No files in this workspace yet", no tree mounted (text: ${truncatedRoot.text})`])
+    await shot('32-root-truncated', [`"Nothing is wrong. This project has too many files and folders to list here (the limit is 10,000)." (data-testid workspace-tree-root-truncated) in the tree's place; no "No files in this workspace yet", no tree mounted (text: ${truncatedRoot.text})`])
 
     // Frame 33: `pkg` folded into the `pkg/core` chain row keeps its badge.
     treeState = 'chain-truncated'

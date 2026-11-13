@@ -53,8 +53,7 @@ def _allowed(*decls: str) -> frozenset[str]:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the test_ws_event_scoping suites' autouse pin; none of them calls monkeypatch.undo()
-def _clear_ws_scope_module_caches(monkeypatch):
+def _clear_ws_scope_module_caches(_floor_monkeypatch):
     """Isolate the module-level caches between tests.
 
     ``ws_event_scope`` keeps process-wide dicts (declaration refresh, exposeToApps,
@@ -72,7 +71,7 @@ def _clear_ws_scope_module_caches(monkeypatch):
     """
     from kiro_crew.dashboard import ws_event_scope as mod
 
-    monkeypatch.setattr(mod, "is_app_enabled", lambda _name: True)
+    _floor_monkeypatch.setattr(mod, "is_app_enabled", lambda _name: True)
     for cache in (mod._declared_cache, mod._exposeto_cache, mod._sel_last_audit):
         cache.clear()
     for pending in (mod._declared_refreshing, mod._exposeto_refreshing):

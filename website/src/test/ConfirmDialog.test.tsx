@@ -146,4 +146,45 @@ describe('useConfirm', () => {
     unmount()
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
   })
+
+  it('cancel() answers "no" so a caller can withdraw an ask whose subject is gone', async () => {
+    function CancelProbe({ onAnswer }: { onAnswer: (ok: boolean) => void }) {
+      const { confirm, cancel, confirmDialog } = useConfirm()
+      return (
+        <>
+          <button onClick={async () => onAnswer(await confirm({ title: 'Clear?', confirmLabel: 'Clear' }))}>ask</button>
+          <button onClick={cancel}>withdraw</button>
+          {confirmDialog}
+        </>
+      )
+    }
+    const onAnswer = vi.fn()
+    const user = userEvent.setup()
+    render(<CancelProbe onAnswer={onAnswer} />)
+    await user.click(screen.getByText('ask'))
+    await screen.findByRole('dialog')
+    await user.click(screen.getByText('withdraw'))
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('keeps cancel() the same function across renders, so it is safe in an effect dependency list', async () => {
+    const seen: Array<() => void> = []
+    function IdentityProbe() {
+      const { confirm, cancel, confirmDialog } = useConfirm()
+      seen.push(cancel)
+      return (
+        <>
+          <button onClick={() => { void confirm({ title: 'Clear?', confirmLabel: 'Clear' }) }}>ask</button>
+          {confirmDialog}
+        </>
+      )
+    }
+    const user = userEvent.setup()
+    render(<IdentityProbe />)
+    await user.click(screen.getByText('ask'))
+    await screen.findByRole('dialog')
+    expect(seen.length).toBeGreaterThan(1)
+    expect(new Set(seen).size).toBe(1)
+  })
 })

@@ -48,7 +48,9 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
     model_registry_namespace,
     selectable_backend_values,
     selectable_stored_backend_values,
@@ -75,6 +77,7 @@ from kiro_crew.agent_discovery import (  # noqa: F401
     AgentInfo,
     _read_agent_spec,
     clear_list_agents_cache,
+    is_internal_agent_spec,
     list_agents,
     project_agent_names,
     spec_model,
@@ -93,6 +96,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     resolve_kiro_bin_for_spawn,
     resolve_pin_spelling,
     resolve_ssh_auth_sock,
+    settings_default_model,
 )
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401
@@ -109,10 +113,12 @@ from kiro_crew.apps.manager import (  # noqa: F401
     apps_dir,
 )
 from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
+from kiro_crew.bounded_read import bounded_read  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     _overlay_kiro_agent,
     _safe_color,
     coerce_dict_section,
@@ -215,6 +221,7 @@ from kiro_crew.dashboard.agent_admin.capabilities import (  # noqa: F401
 )
 from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
+    _created_response,
     _crew_effort_rejected,
     _crew_memory_store_rejected,
     _eager_copy_mate_config,
@@ -224,11 +231,14 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     api_kirocrew_agents_create,
 )
 from kiro_crew.dashboard.agent_admin.crew_removal import (  # noqa: F401
+    _destroy_member_thread_sessions,
     _member_slug_is_claimed,
     _prune_private_copy_of_deleted_crew,
+    _prune_private_copy_outcome,
     _reclaim_deleted_member_crew_log,
-    _reclaim_deleted_member_dashboard_lock,
+    _reclaim_deleted_member_page_offer,
     _remove_goal_check_ins,
+    _remove_member_leftovers,
     api_kirocrew_agent_delete,
 )
 from kiro_crew.dashboard.agent_admin.crew_update import (  # noqa: F401
@@ -283,7 +293,8 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
     _UnverifiableLineage,
     _write_spec_file,
 )
-from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
+from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _DASHBOARD_SERVED_SLASH_COMMANDS,
@@ -295,6 +306,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     run_config_write,
 )
 from kiro_crew.dashboard.conditional_get import conditional_response, strong_content_etag
+from kiro_crew.dashboard.handlers import models_cold_probe
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     MAX_AGENT_SKILLS,
     SkillCatalogSnapshot,
@@ -310,6 +322,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     TEMPLATE_DEFINITION_KEYS,
+    TEMPLATE_READ_ONLY_KEYS,
     ControlPlaneNotDeclarable,
     apply_definition_patch,
     control_plane_declarations,
@@ -317,12 +330,22 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     validate_definition_patch,
 )
 from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
-from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
+from kiro_crew.dashboard.handlers.agents_effort_levels import api_effort_levels  # noqa: F401
+from kiro_crew.dashboard.handlers.agents_session_commands import (
+    menu_backend,
+    menu_with_session_commands,
+)
+from kiro_crew.dashboard.handlers.models_kas_bundle import (
+    api_models_kas_bundle,
+    api_models_kas_crew_relay,
+)
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
+from kiro_crew.dashboard.kas_local_commands import local_harness_menu
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
+    kiro_latched_ready,
     reject_if_kiro_unverified,
 )
 from kiro_crew.dashboard.state import DashboardState
@@ -486,7 +509,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
         _supply_live_enum(d)
-        # An enterprise build ignores this local value (RFC D3, kiro_crew.edition_locks).
+        # An LTS build ignores this local value (RFC D3, kiro_crew.edition_locks).
         if config_path_locked(entry.path):
             d["lockedByPolicy"] = LOCKED_BY_POLICY
         result.append(d)
@@ -870,6 +893,7 @@ def _advertised_backend_models(
     """
     namespace = model_registry_namespace(backend)
     advertised = _advertised_cc_models(request, namespace)
+    models_cold_probe.probe_if_cold(request, backend, advertised)  # answers now regardless
 
     rows: list[dict] = [
         {"model_name": "auto", "display_name": "Auto", "description": "Backend default"}
@@ -925,18 +949,13 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
 
 
 def _scoped_default(cfg: Any, backend: str) -> str:
-    """The stored pin, but only when *backend*'s own harness can claim it.
+    """The stored pin when *backend*'s harness can claim it, else none (the factory's rule).
 
-    A pin chosen in another harness is not a default here: marking it as one puts
-    an id the returned list does not even contain into the picker's selected slot,
-    while every turn runs the harness default. Same rule the provider factory
-    sends by, so the marker and the wire agree.
-
-    Called from the two branches that read the pin rather than once above them:
-    the kiro branch does not consult ``agent.model`` at all, and pulling the read
-    up would make it pay for a value it never uses (harness-parity H13 -- the
-    test is whether the kiro path changed, not whether it still works).
+    A pin from another harness would mark an id the list lacks. A harness whose models
+    its own settings name answers with those. Read only where used: kiro pays nothing (H13).
     """
+    if backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
+        return settings_default_model(cfg.agent, backend)
     return model_scope.scoped_pin(
         getattr(cfg.agent, "model", "") or "",
         capabilities_for(backend).model_id_namespace,
@@ -1323,12 +1342,13 @@ async def _fetch_kiro_catalog() -> list[dict]:
     return [wire_row(m) for m in models if not is_deprecated_model(m.get("model_name", ""))]
 
 
-def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
+def _shared_catalog_fetch(gate_req: web.Request | None = None) -> "asyncio.Task[list[dict]]":
     """Return the in-flight catalog fetch, starting one if none is running.
 
     Single-flight: concurrent polls share one spawn. The task caches its result
     (and clears itself) when it finishes, so the next poll after a slow success
     is served straight from the cache rather than starting another cold start.
+    A *gate_req* runs the sign-in gate right before the spawn (see api_models).
     """
     existing = _catalog_cache.task
     if existing is not None and not existing.done():
@@ -1336,6 +1356,12 @@ def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
 
     async def _run() -> list[dict]:
         try:
+            if gate_req is not None and await reject_if_kiro_unverified(gate_req) is not None:
+                raise _CatalogUnavailable(  # nothing spawned, so no backoff entry
+                    "kiro sign-in not verified; catalog refresh skipped",
+                    backoff=False,
+                    code=KIRO_PREREQUISITE_REQUIRED_CODE,
+                )
             models = await _fetch_kiro_catalog()
         except _CatalogUnavailable as exc:
             # Remember a failed spawn so the polls inside the backoff window
@@ -1393,12 +1419,22 @@ async def api_models(request: web.Request) -> web.Response:
     adapter's namespace, because they do not accept ids from that catalog.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    backend = getattr(cfg.agent, "acp_backend", "")
+    from kiro_crew.crewmate_harness import models_route  # ``?backend=``: the mate picker's list
+
+    route = await asyncio.to_thread(models_route, cfg, request.query)
+    if route is None:
+        return web.json_response(
+            {"error": "backend is not a selectable harness", "code": "invalid_acp_backend"},
+            status=400,
+        )
+    backend, bundle_route = route
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
         )
-    if capabilities_for(backend).resolves_model_from_advertised_list:
+    if capabilities_for(backend).resolves_model_from_advertised_list or (
+        backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+    ):
         return web.json_response(
             _advertised_backend_models(
                 request, backend, configured_default=_scoped_default(cfg, backend)
@@ -1409,33 +1445,23 @@ async def api_models(request: web.Request) -> web.Response:
     # narrowing below never apply (the engine's select is already the signed-in
     # account's list). Decided per ROUTE (backend AND the bundle switch), not per
     # backend, which is why it is not a capability-set branch like the one above.
-    # The one shared predicate (``agent_sdk.kas_bundle``); it re-reads config, so
-    # off the loop. Deferred like the handler module's own engine probe.
-    from kiro_crew.agent_sdk import kas_bundle
-
-    if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+    if bundle_route:
         return await api_models_kas_bundle(request)
-    # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
-    # an interactive browser login for ANY subcommand run unauthenticated
-    # (--no-interactive does not suppress it, and there is no opt-out env var),
-    # and the frontend polls this endpoint every 8s while the model list is
-    # degraded — which is exactly the signed-out state. Ungated, that pairing
-    # opened a browser window every 8s indefinitely. The 503 is the same
-    # degraded response the timeout/unresolved branches already return, so the
-    # client contract is unchanged; only the subprocess is skipped.
-    #
-    # Keep the tight destructive bound here: this endpoint polls only while the
-    # model list is a degraded fallback and stops the instant a live fetch wins
-    # (website/src/providers/modelListHealth.ts), so it is not polled at all when
-    # healthy and gains no latency from a wider window. Its only server-side
-    # cooldown is the short failure backoff below, so a wide stale-authorize window
-    # would still let a stale ready=True latch spawn a browser-opening login on
-    # most degraded ticks.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
+    # kiro-cli opens a browser login for ANY subcommand run signed out, and the
+    # frontend polls here every 8s while degraded, so no spawn below may run unless
+    # reject_if_kiro_unverified passes (tight 30 s bound: the only server-side
+    # cooldown is the short failure backoff). It runs inline on a cold miss, in the
+    # background refresh right before it spawns, and while the latch says signed
+    # out. A cached list with a ready latch skips it (its re-probe is 5 serial
+    # kiro-cli runs). Trade-off: an external sign-out shows the cached list until
+    # the next refresh (TTL) or a chat turn narrows the latch.
     try:
         cached = _catalog_cache.models
+        if cached is None or not await kiro_latched_ready(request):
+            blocked = await reject_if_kiro_unverified(request)
+            if blocked is not None:
+                crew_relay = await api_models_kas_crew_relay(request, backend)
+                return blocked if crew_relay is None else crew_relay
         if cached is not None:
             # Serve the last good catalog straight away; a stale one is refreshed
             # behind the reply (stale-while-revalidate). Entitlement narrowing
@@ -1444,7 +1470,7 @@ async def api_models(request: web.Request) -> web.Response:
             # A refresh that just failed is not retried until its backoff ends.
             stale = time.monotonic() - _catalog_cache.fetched_at >= _LIST_MODELS_CATALOG_TTL_SECS
             if stale and _catalog_cache.recent_failure() is None:
-                _shared_catalog_fetch()
+                _shared_catalog_fetch(gate_req=request)
             models = await _entitled_kiro_models(request, list(cached))
             return web.json_response(models)
 
@@ -1530,84 +1556,64 @@ async def api_models(request: web.Request) -> web.Response:
         )
 
 
-async def api_effort_levels(request: web.Request) -> web.Response:
-    """GET /api/effort-levels — list available reasoning effort levels.
-
-    Per-slot: when a ``?slot=`` query param resolves to a live ACP provider,
-    return the levels that slot's CURRENT model reported (ACP escalation order),
-    so concurrent slots on different models/backends each see their own set and
-    a model switch is reflected immediately. Falls back to the process-global
-    ordered list (cold start / no live provider / provider without the getter).
-    """
-    slot = request.query.get("slot")
-    if slot:
-        try:
-            state: DashboardState = request.app["state"]
-            provider = state.sessions.get_provider(_history_key_for(slot))
-            getter = getattr(provider, "get_valid_effort_levels", None) if provider else None
-            if callable(getter):
-                levels = getter()
-                if levels:
-                    return web.json_response(levels)
-        except (KeyError, AttributeError):
-            pass
-    return web.json_response(get_reasoning_effort_ordered())
-
-
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
-    # This global endpoint has no session/member key; the configured default
-    # backend is its capability authority, independent of the provider label.
+    # The ``?slot=`` chat's backend decides the base list, the one the slash gate
+    # resolves for that chat, so a chat pinned off the configured default lists
+    # what runs there. With no slot it is the configured default. ``?slot=`` then
+    # adds what that chat's live session advertised.
+    backend = await menu_backend(request, cfg.agent.acp_backend)
     blocked_commands = _BLOCKED_SLASH_COMMANDS
-    if capabilities_for(cfg.agent.acp_backend).supports_native_todos:
+    if capabilities_for(backend).supports_native_todos:
         blocked_commands = blocked_commands - {"/todos"}
-    if is_claude_code(cfg.agent.provider):
-        state: DashboardState = request.app["state"]
-        cc_commands: list[str] = []
-        for provider in state.sessions.active_providers():
-            cmds = getattr(provider, "_slash_commands", [])
-            if cmds:
-                cc_commands = cmds
-                break
-        if not cc_commands:
-            cc_commands = [
-                "compact",
-                "clear",
-                "context",
-                "help",
-                "init",
-                "review",
-                "security-review",
-                "usage",
-            ]
+    # A harness that runs its own commands gets its own list, not kiro-cli's.
+    if capabilities_for(backend).runs_own_slash_commands or is_claude_code(cfg.agent.provider):
+        cc_commands = [
+            "compact",
+            "clear",
+            "context",
+            "help",
+            "init",
+            "review",
+            "security-review",
+            "todos",
+            "usage",
+        ]
         result = [
             {"name": f"/{c}", "description": SLASH_COMMAND_DESCRIPTIONS.get(f"/{c}", "")}
             for c in cc_commands
             if f"/{c}" not in blocked_commands
         ]
-        for command in ("/side", "/workflow"):
+        # The commands the dashboard answers before any harness sees the turn.
+        for command in ("/agent", "/goal", "/prompts", "/side", "/workflow"):
             if not any(item["name"] == command for item in result):
                 result.append(
                     {"name": command, "description": SLASH_COMMAND_DESCRIPTIONS.get(command, "")}
                 )
-        return web.json_response(result)
+        return web.json_response(
+            await menu_with_session_commands(request, result, blocked_commands)
+        )
 
     # Blocked commands stay in _SLASH_COMMANDS (typing one still gets the
     # explicit "not available in the dashboard" rejection in chat_runner), but
     # the suggestion payload must not advertise them: a menu entry that only
     # ever produces a warning is an inert affordance.
     offered = _SLASH_COMMANDS - blocked_commands
-    # The same holds for a harness with no command channel: the slash gate
-    # answers each of its harness commands with a notice, so list only what the
-    # dashboard serves there. /compact stays: it has a gate of its own, which
-    # sends the engine's compaction verb or explains that the harness compacts
-    # by itself, and never gives that notice.
-    if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
-        offered = offered & (_DASHBOARD_SERVED_SLASH_COMMANDS | {"/compact"})
-    return web.json_response(
-        [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
-    )
+    # The same holds for a harness with no command channel: the slash gate answers
+    # its commands with a notice, so list only what the dashboard serves there
+    # (local_harness_menu, which /help prints too).
+    if backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
+        offered = offered & local_harness_menu(backend)
+    # A harness whose prompt handler runs only some harness commands gets the
+    # notice for the rest too, so list what the dashboard serves and that row.
+    runs_from_prompt = ACP_BACKEND_PROMPT_HANDLER_COMMANDS.get(backend)
+    if runs_from_prompt is not None:
+        offered = offered & (local_harness_menu(backend) | runs_from_prompt)
+    rows = [
+        {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)
+    ]
+    return web.json_response(await menu_with_session_commands(request, rows, blocked_commands))
 
 
 # Windows reserves these basenames (before the first dot, any extension) at the
@@ -1665,11 +1671,27 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.members import unchatted_legacy_bindings
 
     hidden = await unchatted_legacy_bindings(cfg, state)
-    agents = [
-        _agent_roster_row(name, "global", agent_cfg, redact=redact)
-        for name, agent_cfg in cfg.agents.items()
-        if name not in hidden
-    ]
+
+    # Which rows are bound to their own mate file: one file stat per row, so it
+    # runs off the loop, against the config already in hand.
+    from kiro_crew.mate_capabilities import owns_mate_file
+
+    def _mate_file_owners() -> set[str]:
+        return {
+            name
+            for name, agent_cfg in cfg.agents.items()
+            if name not in hidden and owns_mate_file(name, agent_cfg.kiro_agent)
+        }
+
+    mate_owners = await asyncio.to_thread(_mate_file_owners)
+    agents = []
+    for name, agent_cfg in cfg.agents.items():
+        if name in hidden:
+            continue
+        row = _agent_roster_row(name, "global", agent_cfg, redact=redact)
+        # Keyed on the config name: the row's own ``name`` may be masked.
+        row["owns_mate_file"] = name in mate_owners
+        agents.append(row)
 
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
@@ -1710,8 +1732,8 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
             # their config-insertion index and form a stable bottom block.
             sorted_agents = sorted(
                 enumerate(agents),
-                # ``str(...)`` because the row's value type widened to ``object``
-                # for ``avatar`` (the one structured field); ``name`` is always a
+                # ``str(...)`` because the row's value type is ``object`` for
+                # ``avatar`` and ``owns_mate_file``; ``name`` is always a
                 # ``str`` -- masked or verbatim, ``_roster_mask`` returns one.
                 key=lambda item: (
                     -usage.get(str(item[1]["name"]), (0, 0.0))[0],
@@ -1739,36 +1761,41 @@ def _get_config_lock() -> LoopBoundLock:
     return _config_lock
 
 
-def _pin_entitlement_backend(cfg: Any) -> str:
+def _pin_entitlement_backend(
+    cfg: Any, crew: str = "", acp_backend: str | None = None, *, for_workers: bool = False
+) -> str:
     """The harness whose live catalog may judge a crew's model pin.
 
-    Every agent the crew create and update handlers write is a Crew Member whose DM slot
-    (``member-<slug>``) routes through ``agent.member_acp_backend`` — not
-    through the configured default harness ``agent.acp_backend``. When the two
-    share a model-registry namespace, the default backend scopes the
-    entitlement evidence correctly (kiro, including the empty default backend,
-    and kas share ``acp``). When they do not, the default's catalog cannot
-    establish whether the pin the DM thread will actually run is usable — a
-    live kiro session's catalog would deterministically reject a
-    claude-advertised id — so the evidence must come from the harness the DM
-    thread will ACTUALLY run on, which is ``member_backend``. Returning it (not
-    ``None``) keeps the scope on the member's own namespace: a provider from an
-    unrelated harness can neither admit nor reject the pin, and when no member
-    -namespace provider is live the catalog is simply unknown (fail-open) rather
-    than judged by the wrong backend's advertised ids.
+    A Crew bot's own harness pin decides first and may raise (see
+    ``crewmate_harness.pinned_entitlement_backend``). With no pin, the answer is
+    always the Bot's own route: the resolved ``agent.member_acp_backend``, which
+    is what the Bot's DM slot (``member-<slug>``) runs on and what the editor's
+    Inherited option shows. It is never ``agent.acp_backend`` (a Kiro CLI install
+    runs its Bots on KAS). Returning that route (not ``None``) keeps the evidence
+    on the Bot's own namespace: a provider from an unrelated harness can neither
+    admit nor reject the pin, and when no provider for that route is live the
+    catalog is unknown (fail-open) rather than judged by another harness's ids.
     """
-    default_backend = getattr(cfg.agent, "acp_backend", "")
-    member_backend = getattr(cfg.agent, "member_acp_backend", "")
-    if (
-        capabilities_for(member_backend).model_id_namespace
-        != capabilities_for(default_backend).model_id_namespace
-    ):
-        return member_backend
-    return default_backend
+    from kiro_crew.crewmate_harness import pinned_entitlement_backend as pin_backend
+
+    if (pinned := pin_backend(cfg, crew, acp_backend, for_workers=for_workers)) is not None:
+        return pinned
+    # The Bot's own route, the harness the editor's Inherited shows
+    # (``crewmate_harness.crewmate_inherited_source``): never the install's
+    # ``agent.acp_backend``, which a Bot does not run on (a Kiro CLI install runs
+    # its Bots on KAS).
+    from kiro_crew.acp_backends import resolve_selected_backend
+
+    return resolve_selected_backend(getattr(cfg.agent, "member_acp_backend", ""))
 
 
 async def _revalidate_crew_pin(
-    model: str, request: web.Request, *, for_workers: bool = False
+    model: str,
+    request: web.Request,
+    *,
+    for_workers: bool = False,
+    crew: str = "",
+    acp_backend: str | None = None,
 ) -> str | None:
     """Revalidate the snapshot a crew's model pin is about to be judged by.
 
@@ -1783,8 +1810,7 @@ async def _revalidate_crew_pin(
     the retained claude_code seam and a known wrong-flavour spelling -- so no probe
     is spent on a value the snapshot does not decide.
 
-    ``for_workers`` names the crew's ``worker_model``: it is judged against the
-    harness the crewmate's worker runs on (``mate_worker.crewmate_worker_backend``).
+    ``for_workers`` judges ``worker_model`` on its worker's harness; an unstartable pin denies.
     """
     if not model or model == "auto" or model_registry.acp_id_correction(model):
         return None
@@ -1792,15 +1818,22 @@ async def _revalidate_crew_pin(
     if is_claude_code(cfg.agent.provider):
         return None
     # circular import: see _model_pin_rejected.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
     from kiro_crew.dashboard.handlers.core import _revalidate_role_pin_evidence
-    from kiro_crew.mate_worker import crewmate_worker_backend
 
-    backend = crewmate_worker_backend(cfg.agent) if for_workers else _pin_entitlement_backend(cfg)
+    try:
+        backend = _pin_entitlement_backend(cfg, crew, acp_backend, for_workers=for_workers)
+    except CrewmateHarnessUnavailable as exc:
+        return str(exc)
     return await _revalidate_role_pin_evidence(model, request, backend=backend)
 
 
 def _model_pin_rejected(
-    model: str, request: web.Request, provider: str, *, backend: str | None = None
+    model: str,
+    request: web.Request,
+    provider: str,
+    *,
+    backend: str | None = None,
 ) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
@@ -1837,7 +1870,12 @@ def _model_pin_rejected(
     # kiro-cli serves; the others reach the child verbatim and kill it at startup.
     # Check this before live entitlement because a wrong-flavour id is naturally
     # absent from that set and would otherwise produce a less actionable error.
-    correction = model_registry.acp_id_correction(model)
+    from kiro_crew.crewmate_harness import kiro_spelling_applies
+
+    # *backend* is the harness the pin runs on; one with its own ids has no
+    # kiro-cli spelling to fix.
+    spelled = kiro_spelling_applies(backend)
+    correction = model_registry.acp_id_correction(model) if spelled else None
     if correction:
         # Deliberately NOT prescriptive. Upstream naming does not line up across
         # providers — Bedrock's ``claude-opus-4-8`` is the registry's
@@ -1879,9 +1917,7 @@ _AVATAR_CONTENT_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image
 _AVATAR_MAX_BYTES = 1024 * 1024
 
 
-# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation --
-# moved to chat_utils so the files handler's staging copy can share the one
-# implementation; the local name is kept for its callers.
+# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation (``chat_utils``).
 _drained_to_thread = drained_to_thread
 
 
@@ -1895,7 +1931,8 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
     denied = await _require_owner(request, "agent.avatar_get")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    if (name := agent_route_name(request)) is None:
+        return invalid_agent_name_response()
     # The file is served only while the crew's config actually selects it —
     # a leftover file after an out-of-band config edit or a failed cleanup
     # must not remain silently retrievable. The file pin narrows that further:
@@ -1934,9 +1971,8 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
 
 
 # Every function the owners define runs on this module's globals, so a patch of
-# ``kiro_crew.dashboard.handlers.agents.<name>`` reaches it wherever it lives;
-# see ``kiro_crew.dashboard.agent_admin``. Run once, after this body has bound every
-# name.
+# ``kiro_crew.dashboard.handlers.agents.<name>`` reaches it wherever it lives; see
+# ``kiro_crew.dashboard.agent_admin``. Run once, after this body has bound every name.
 _facade_compose(
     globals(),
     (

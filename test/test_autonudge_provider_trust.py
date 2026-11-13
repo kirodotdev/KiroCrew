@@ -1149,11 +1149,8 @@ async def test_MUTATION_a_removal_cannot_land_between_the_liveness_check_and_the
 ) -> None:
     """A displacing arm that reaches the row mid-write leaves no grant behind.
 
-    The grant continuation has already passed its liveness check and its trust
-    write is running when a displacing ``add_monitor`` arrives for the same slot.
-    The displacement revokes the old row's trust once it holds the service lock,
-    so it must land after the write completed; otherwise the write re-records an
-    active grant for a row that is gone.
+    The revoke under the service lock must land after the running trust write, or that
+    write re-records an active grant for a row that is gone.
     """
     svc = AutoNudgeService(tmp_path / "store")
     loop = await svc.add_monitor(

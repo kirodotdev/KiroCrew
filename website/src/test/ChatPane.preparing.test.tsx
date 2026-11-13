@@ -54,7 +54,8 @@ import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
 const SLOT = 'member-radar'
-const OPENER = { role: 'assistant', content: 'Welcome back, let me catch you up on where we are.', cls: 'msg msg-a', ts: '2026-10-21T10:00:00Z', meta: { kind: 'warm_task_brief_preparing' } }
+// An earlier, ordinary row: the catch-up has no separate opener any more.
+const OPENER = { role: 'assistant', content: 'The fix is in review.', cls: 'msg msg-a', ts: '2026-10-21T10:00:00Z' }
 
 const row = (preparing: boolean) => ({ key: SLOT, messages: 1, running: false, preparing, mode: 'member', pending_approval: false, waiting_for_input: false })
 
@@ -101,6 +102,8 @@ describe('a message prepared outside a turn', () => {
     const view = renderPane(store, true)
     const line = await view.findByTestId('crewmate-live-activity')
     expect(line.dataset.activity).toBe('working')
+    // The caption names what is coming; the finished message replaces it.
+    expect(line).toHaveTextContent('Preparing your catch-up…')
     expect(view.getByTestId('crewmate-typing-bubble').dataset.shown).toBe('true')
     // Not a turn: a send now goes straight through, never queued behind it.
     expect(selectComposerBusy(store.getState(), SLOT)).toBe(false)
@@ -113,8 +116,24 @@ describe('a message prepared outside a turn', () => {
     const store = makeStore(true)
     const view = renderPane(store, false)
     expect(await view.findByTestId('chat-footer')).not.toBeNull()
+    expect(view.getByTestId('chat-pane-preparing-catch-up')).toHaveTextContent('Preparing your catch-up…')
     act(() => { store.dispatch(sseSlots([row(false)] as Parameters<typeof sseSlots>[0])) })
     expect(view.queryByTestId('chat-footer')).toBeNull()
+    expect(view.queryByTestId('chat-pane-preparing-catch-up')).toBeNull()
+  })
+
+  it("shows the gateway's caption naming what is checked, in both pane kinds", async () => {
+    const caption = 'Checking 2 PRs on GitHub, 3 tasks for “Ship the fix”.'
+    const withCaption = () => {
+      const store = makeStore(true)
+      store.dispatch(sseSlots([{ ...row(true), preparing_text: caption, preparing_lang: 'en' }] as Parameters<typeof sseSlots>[0]))
+      return store
+    }
+    const mate = renderPane(withCaption(), true)
+    expect(await mate.findByTestId('crewmate-live-activity')).toHaveTextContent(caption)
+    mate.unmount()
+    const pane = renderPane(withCaption(), false)
+    expect(await pane.findByTestId('chat-pane-preparing-catch-up')).toHaveTextContent(caption)
   })
 
   it('a pane opened on a slot that is not preparing shows no indicator', async () => {

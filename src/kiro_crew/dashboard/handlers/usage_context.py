@@ -104,7 +104,7 @@ def context_occupancy(days: float = 14, until: float | None = None) -> dict[str,
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue

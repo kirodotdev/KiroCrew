@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from compaction_stop_declined_helpers import _clear_channel_decline_markers  # noqa: F401
-from compaction_stop_declined_helpers import KEY, _settle, _setup
+from compaction_stop_declined_helpers import KEY, _setup
 
 from kiro_crew.acp_backends import ACP_BACKEND_DEEPSEEK
 from kiro_crew.session_compaction import (
@@ -23,7 +23,20 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
 )
 from kiro_crew.session_lifecycle import compaction_in_flight
-from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
+from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
+
+
+class _ArrivalSemaphore(asyncio.BoundedSemaphore):
+    """The turn permit, reporting the moment a task has to queue behind its holder."""
+
+    def __init__(self) -> None:
+        super().__init__(1)
+        self.queued = asyncio.Event()
+
+    async def acquire(self) -> bool:
+        if self.locked():
+            self.queued.set()
+        return await super().acquire()
 
 
 @pytest.mark.asyncio
@@ -40,11 +53,9 @@ async def test_the_claude_arm_ignores_a_stop_that_ended_the_previous_turn():
     # A turn holds the session; the compaction queues behind it. The Stop lands
     # on THAT turn, after the compaction task started but before it holds the
     # permit -- the window a counter read before the wait mistakes for its own.
-    # flake-ok: pre-existing acquire of a permit no other task holds, so it returns at once; moved verbatim
-    await session.semaphore.acquire()
+    await finished(session.semaphore.acquire(), "the live turn taking the permit")
     task = asyncio.ensure_future(mgr._compaction._compact_session(key, 90.0))
-    # flake-ok: pre-existing yield barrier that lets the scheduled task reach its wait, moved verbatim; tracked for a de-flake pass
-    await _settle()
+    await until_parked(session.semaphore)  # the compaction is queued behind that turn
     assert mgr.note_stop(KEY) is True
     session.semaphore.release()
     result = await await_until(task, what="the compaction settling")
@@ -54,25 +65,31 @@ async def test_the_claude_arm_ignores_a_stop_that_ended_the_previous_turn():
 
 
 @pytest.mark.asyncio
-async def test_the_claude_arm_times_out_behind_a_live_turn_as_a_failure_not_a_cancel():
+async def test_the_claude_arm_times_out_behind_a_live_turn_as_a_failure_not_a_cancel(monkeypatch):
     """A session with an old Stop in its history (the counter is never popped)
     whose compaction waits out its budget behind a live turn: a timeout, not
     "Stop ended the compaction"."""
     mgr, key, compact, order, notices = await _setup()
     session = mgr._sessions[key]
+    live_turn = _ArrivalSemaphore()
+    monkeypatch.setattr(session, "semaphore", live_turn)
     mgr._compaction._deps = dataclasses.replace(
         mgr._compaction._deps,
         is_claude_backend=lambda _p: True,
-        # flake-ok: pre-existing 50 ms compaction wait budget the test lets run out on purpose: the timeout is the behaviour under test, moved verbatim
+        # The budget is the input this test drives to expiry, so it stays tight. Nothing
+        # races it: the permit stays held until the verdict is in, and the verdict is
+        # awaited under the lost-run bound instead of for a duration.
         compact_wait_timeout_secs=lambda: 0.05,
     )
     assert mgr.note_stop(KEY) is True  # an earlier Stop, long settled
-    # flake-ok: pre-existing acquire of a permit no other task holds, so it returns at once; moved verbatim
-    await session.semaphore.acquire()  # a live turn the compaction parks behind
+    await finished(live_turn.acquire(), "the live turn taking the permit")
     try:
-        result = await mgr._compaction._compact_session(key, 90.0)
+        result = await finished(
+            mgr._compaction._compact_session(key, 90.0), "the compaction giving up on the live turn"
+        )
     finally:
-        session.semaphore.release()
+        live_turn.release()
+    assert live_turn.queued.is_set(), "the compaction never queued behind the live turn"
     assert result == "failed"
     assert notices == [(False, "compacted")]
     await mgr.close_all()
@@ -89,8 +106,7 @@ async def test_the_claude_arm_hands_the_permit_to_the_waiter_on_a_force_stop():
 
     async def _compact():
         started.set()
-        # flake-ok: pre-existing unbounded wait inside the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the stubbed compaction")
         raise RuntimeError("cancelled by the harness")
 
     session.provider.compact = AsyncMock(side_effect=_compact)
@@ -101,17 +117,15 @@ async def test_the_claude_arm_hands_the_permit_to_the_waiter_on_a_force_stop():
     await await_until(started, what="the compaction starting")
 
     async def _claimant():
-        # flake-ok: pre-existing acquire inside a claimant task the test awaits under a bounded await_until, moved verbatim; tracked for a de-flake pass
-        await session.semaphore.acquire()
-        # flake-ok: pre-existing 50 ms hold inside the claimant task before it releases the permit, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        await finished(session.semaphore.acquire(), "the claimant taking the permit")
+        # Hold the permit until the compaction has settled, so whatever the compaction does
+        # with the permit has run before this release.
+        await await_until(task, what="the compaction settling")
         session.semaphore.release()  # must not raise
         return "released-cleanly"
 
     claimant = asyncio.ensure_future(_claimant())
-    # flake-ok: pre-existing yield barrier that lets the scheduled task reach its wait, moved verbatim; tracked for a de-flake pass
-    await _settle()
+    await until_parked(session.semaphore)  # the claimant is queued behind the compaction
     assert not claimant.done()
     mgr._compacting.add(key)
     try:
@@ -155,8 +169,16 @@ class _SharedSubagent:
     def __init__(self, key: str, gate: asyncio.Event) -> None:
         self.gate = gate
         self.child = SimpleNamespace(
-            id="a1", parent_session_key=key, conversation_key="", _stop_origin=""
+            id="a1",
+            parent_session_key=key,
+            conversation_key="",
+            _stop_origin="",
+            _reap_reason="",
+            _reap_started=False,
+            done=False,
         )
+        # The stop origin the run carried when it was cancelled: which caller ended it.
+        self.stopped_by: str | None = None
 
     @property
     def running(self):
@@ -169,6 +191,8 @@ class _SharedSubagent:
         return ()
 
     async def cancel(self, _i):
+        self.stopped_by = self.child._stop_origin
+        self.child.done = True
         self.gate.set()
         return True
 
@@ -204,16 +228,16 @@ async def _parked_on(session) -> None:
 async def test_a_hard_stop_during_the_uncompactable_restart_wait_settles_cancelled():
     """The restart for a backend with no ``/compact`` holds the permit while it
     waits for sub-agents. A force Stop there resets the session and hands the
-    permit to a parked claimant; the restart must settle cancelled, spare the
-    live sub-agent, and not release the claimant's permit a second time."""
+    permit to a parked claimant; the restart must settle cancelled, leave the
+    sub-agent to the Stop, and not release the claimant's permit a second time."""
     mgr, key, session, gate, task, order, notices = await _uncompactable_restart(30.0)
+    runs = mgr._lifecycle_boundary()._child_teardown
     assert not task.done()
     holds = asyncio.Event()
     let_go = asyncio.Event()
 
     async def _claimant() -> str:
-        # flake-ok: pre-existing acquire inside a claimant task the test awaits under a bounded await_until, moved verbatim; tracked for a de-flake pass
-        await session.semaphore.acquire()
+        await finished(session.semaphore.acquire(), "the claimant taking the permit")
         holds.set()
         # holds the permit while the restart's finally runs
         await await_until(let_go, what="the test letting the permit go")
@@ -234,7 +258,9 @@ async def test_a_hard_stop_during_the_uncompactable_restart_wait_settles_cancell
     let_go.set()
 
     assert task.result() == "cancelled"
-    assert not gate.is_set(), "the live sub-agent was cancelled"
+    # The hard Stop stopped the sub-agent sharing the process it reset; the
+    # stale restart did not stop it a second time under its own name.
+    assert runs.stopped_by == "stopped by a hard Stop of the parent"
     assert (
         await await_until(claimant, what="the claimant releasing the permit") == "released-cleanly"
     )
@@ -252,8 +278,7 @@ async def test_a_stop_recorded_during_the_uncompactable_restart_wait_releases_th
     woke = asyncio.Event()
 
     async def _claimant():
-        # flake-ok: pre-existing acquire inside a claimant task whose wake the test waits for under a bounded await_until, moved verbatim; tracked for a de-flake pass
-        await session.semaphore.acquire()
+        await finished(session.semaphore.acquire(), "the claimant taking the permit")
         woke.set()
         session.semaphore.release()
 
@@ -266,8 +291,7 @@ async def test_a_stop_recorded_during_the_uncompactable_restart_wait_releases_th
     assert not gate.is_set(), "the sub-agent was cancelled"
     assert order == [], "the session was shut down"
     await await_until(woke, what="the parked claimant waking")
-    # flake-ok: pre-existing await of a claimant task already seen to wake, moved verbatim; tracked for a de-flake pass
-    await claimant
+    await await_until(claimant, what="the claimant releasing the permit")
     gate.set()
     await mgr.close_all()
 
@@ -275,8 +299,9 @@ async def test_a_stop_recorded_during_the_uncompactable_restart_wait_releases_th
 @pytest.mark.asyncio
 async def test_an_unstopped_uncompactable_restart_still_stops_the_subagent_and_recycles():
     """Control: with no Stop the wait runs out, stops the sub-agent and recycles."""
-    # flake-ok: pre-existing 0.5 s cotenant wait the control lets run out on purpose: the deadline is the behaviour under test, moved verbatim
-    mgr, key, session, gate, task, order, notices = await _uncompactable_restart(0.5)
+    # A wait of zero is already out on the restart's first look at the clock, so the deadline
+    # path runs with no duration for the test to wait through.
+    mgr, key, session, gate, task, order, notices = await _uncompactable_restart(0.0)
     assert await await_until(task, what="the compaction settling") == "recycled"
     assert gate.is_set(), "the sub-agent was not stopped at the deadline"
     assert order == ["shutdown"]

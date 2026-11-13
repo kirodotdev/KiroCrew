@@ -244,18 +244,18 @@ async def test_cancellation_mid_stream_leaves_nothing_on_disk(
     def refuse(_self, _data) -> int:  # noqa: ANN001, ANN202
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(part_stream._TempSink, "write", refuse)
-    form = aiohttp.FormData()
-    form.add_field(
-        "file",
-        MOV_HEADER + b"\x00" * 512,
-        filename="interrupted.mov",
-        content_type="video/quicktime",
-    )
-    async with TestClient(TestServer(_make_app())) as client:
-        with pytest.raises(BaseException):  # noqa: B017,PT011 - CancelledError
-            await client.post("/api/upload/file", data=form)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(part_stream._TempSink, "write", refuse)
+        form = aiohttp.FormData()
+        form.add_field(
+            "file",
+            MOV_HEADER + b"\x00" * 512,
+            filename="interrupted.mov",
+            content_type="video/quicktime",
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            with pytest.raises(BaseException):  # noqa: B017,PT011 - CancelledError
+                await client.post("/api/upload/file", data=form)
     # Neither the destination nor the `.part` temp may survive: a truncated
     # recording that looks complete is worse than a failed upload to retry.
     assert list(upload_dir.glob("*")) == []
@@ -281,10 +281,10 @@ async def test_dest_is_never_published_when_the_commit_rename_fails(
     def boom(src, dst) -> None:  # noqa: ANN001 - os.replace signature
         raise OSError("replace failed")
 
-    monkeypatch.setattr(part_stream.os, "replace", boom)
-    with pytest.raises(Exception):
-        await _post(MOV_HEADER + b"\x00" * 512, "doomed.mov", "video/quicktime")
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(part_stream.os, "replace", boom)
+        with pytest.raises(Exception):
+            await _post(MOV_HEADER + b"\x00" * 512, "doomed.mov", "video/quicktime")
     # Neither the destination nor the `.part` temp may survive.
     assert list(upload_dir.glob("*")) == []
 

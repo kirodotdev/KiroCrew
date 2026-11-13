@@ -1,19 +1,6 @@
 """Coverage tests for :mod:`kiro_crew.history`.
 
-Targets whole uncovered helpers and error branches rather than the happy paths
-the existing ``test_history*.py`` files already exercise:
-
-- the off-loop persistence wrappers' inline / offloaded failure reporting,
-- pure text helpers (``_content_text``, ``transcript_stems``, the tool-call and
-  sensitive-path scanners),
-- bounded tail readers (``_read_tail_messages``, ``last_message_preview``),
-- ``list_sessions`` metadata fallbacks and canonical-key dedupe,
-- ``clear_closed``'s compare-and-clear guards,
-- the durable consolidation retry accounting (environment failures, bad
-  persisted values) and ``HistoryConsolidator``'s ``_note_*`` bookkeeping,
-- the structured-memory / lesson writers and the two background-session LLM
-  turns (``_dedupe_judge``, ``_merge_skill_update``).
-
+Targets helpers and error branches the other ``test_history*.py`` files skip.
 Every test writes only under ``tmp_path``; no network, no subprocess.
 """
 
@@ -43,6 +30,10 @@ from kiro_crew.history import (
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import SemanticRejectCode
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 
 def _write(path: Path, text: str) -> None:
@@ -82,11 +73,8 @@ class TestOffLoopWrappers:
     def test_append_rows_groups_the_pair_under_one_atomic_hold(self, tmp_path) -> None:
         """A prompt+result pair must not be two independent off-loop writes.
 
-        Dispatched separately, two worker threads can land them out of order or
-        land one alone, leaving the replay with a reversed or half-written run
-        that no timestamp ordering repairs. The rows go through one
-        ``atomic_appends`` hold instead, which is that contract's stated
-        companion for a multi-append caller that offloads.
+        Two worker threads could land them reversed or one alone, which no timestamp
+        order repairs, so the rows share one ``atomic_appends`` hold.
         """
         log = H.ConversationLog(base_dir=tmp_path)
         holds: list[str] = []
@@ -398,6 +386,7 @@ class TestReadFileChangeMessages:
         assert rows == [
             {
                 "ts": "2026-08-25T18:00:00Z",
+                "role": "assistant",
                 "meta": {"file_changes": [{"path": "/tmp/report.md"}]},
             }
         ]
@@ -431,7 +420,7 @@ class TestReadFileChangeMessages:
         _write(path, _jsonl({"_type": "metadata"}, second))
 
         assert log.read_file_change_messages("changed") == [
-            {"ts": second["ts"], "meta": second["meta"]}
+            {"ts": second["ts"], "role": "assistant", "meta": second["meta"]}
         ]
 
     def test_session_write_invalidates_cached_projection(self, tmp_path: Path) -> None:
@@ -653,12 +642,15 @@ class TestListSessions:
 
 class TestClearClosed:
     def test_missing_file_is_noop(self, tmp_path: Path) -> None:
-        _log(tmp_path).clear_closed("nope")
+        log = _log(tmp_path)
+        log.clear_closed("nope")
+        assert not log._path("nope").exists()
 
     def test_empty_file_is_noop(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         _write(log._path("k"), "")
         log.clear_closed("k")
+        assert log._path("k").read_text(encoding="utf-8") == ""
 
     def test_unparseable_first_line_is_noop(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
@@ -812,11 +804,14 @@ class TestNoteFailedAttempt:
         log.mark_consolidated.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_deleted_session_records_nothing(self) -> None:
+    async def test_deleted_session_records_nothing(self, caplog) -> None:
         log = MagicMock()
         log.record_consolidation_failure.return_value = (0, 0.0)
         c = _consolidator(log=log)
-        await c._note_failed_attempt("k", _SPAN, "boom")
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+            assert await c._note_failed_attempt("k", _SPAN, "boom") is True
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.history"]
+        assert [m for m in messages if "attempt" in m] == []
         log.mark_consolidated.assert_not_called()
 
     @pytest.mark.asyncio
@@ -946,11 +941,9 @@ class TestWriteStructuredMemory:
     def test_refusal_logs_the_reason_and_points_at_the_audit_trail(self, caplog) -> None:
         """A bare reject code cannot say WHICH rule refused the write.
 
-        ``set_semantic`` returns ``(code, reason)`` and the reason carries the
-        specific cause -- here which confidence won. Dropping it left an operator
-        with ``conflict`` and no way to tell a confidence loss from a queued
-        proposal, so the warning must carry the reason and name the table that
-        holds the audit row, saying which values that row keeps.
+        The warning carries ``set_semantic``'s reason (here which confidence won) and
+        names the table holding the audit row, so ``conflict`` alone is not all an
+        operator sees.
         """
         vs = MagicMock()
         vs.set_semantic.return_value = (
@@ -971,13 +964,16 @@ class TestWriteStructuredMemory:
         ) in caplog.text
         assert "carry both values" not in caplog.text
 
-    def test_semantic_is_capped(self) -> None:
+    def test_semantic_is_capped(self, caplog) -> None:
         vs = MagicMock()
         vs.set_semantic.return_value = None
         c = _consolidator(vector_store=vs)
         items = [{"key": f"k{i}", "value": "v"} for i in range(200)]
-        c._write_structured_memory({"semantic": items}, "k")
-        assert vs.set_semantic.call_count == H._MAX_SEMANTIC_PER_CONSOLIDATION
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._write_structured_memory({"semantic": items}, "k")
+        cap = H._MAX_SEMANTIC_PER_CONSOLIDATION
+        assert f"Semantic consolidation: {cap} written," in caplog.text
+        assert vs.set_semantic.call_count == cap
 
     def test_episodic_write_and_skips(self, caplog) -> None:
         vs = MagicMock()
@@ -1024,13 +1020,16 @@ class TestWriteStructuredMemory:
             c._write_structured_memory({"episodic": [{"text": "x"}]}, "k")
         assert "episodic entries from consolidation" not in caplog.text
 
-    def test_episodic_is_capped(self) -> None:
+    def test_episodic_is_capped(self, caplog) -> None:
         vs = MagicMock()
         vs.write_episodic.return_value = True
         c = _consolidator(vector_store=vs)
         items = [{"text": f"t{i}"} for i in range(200)]
-        c._write_structured_memory({"episodic": items}, "k")
-        assert vs.write_episodic.call_count == H._MAX_EPISODIC_PER_CONSOLIDATION
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._write_structured_memory({"episodic": items}, "k")
+        cap = H._MAX_EPISODIC_PER_CONSOLIDATION
+        assert f"Wrote {cap} episodic entries from consolidation" in caplog.text
+        assert vs.write_episodic.call_count == cap
 
     def test_non_list_sections_are_ignored(self) -> None:
         vs = MagicMock()
@@ -1102,10 +1101,12 @@ class TestSaveLessons:
         assert lesson.ts
         assert "Extracted 1 lesson(s) from chat" in caplog.text
 
-    def test_lesson_store_defaults_category(self) -> None:
-        store = MagicMock()
+    def test_lesson_store_defaults_category(self, tmp_path: Path) -> None:
+        from kiro_crew.learn import LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
         _consolidator(lesson_store=store)._save_lessons([{"rule": "r"}])
-        assert store.save.call_args.args[0].category == "knowledge"
+        assert [(le.rule, le.category) for le in store.load_all()] == [("r", "knowledge")]
 
 
 # ── background-session LLM turns ───────────────────────────────────────────
@@ -1731,18 +1732,9 @@ class TestTranscriptPrivacyMode:
 class TestSidecarSummariesSurviveMtimePreservingRewrites:
     """Housekeeping that CHANGES the transcript must drop the summary sidecars.
 
-    ``get_cached_summary`` / ``get_cached_intent_summary`` validate their
-    sidecars against ``session_mtime`` — and ``session_mtime``'s docstring calls
-    that "a faithful 'has this conversation changed?' signal". It is not, for
-    housekeeping: ``_rewrite_session_locked`` and ``_maybe_rotate`` deliberately
-    restore the pre-write mtime (``_restore_mtime``) so they do not float stale
-    sessions to the top of ``list_sessions``.
-
-    So a compaction that drops half a transcript leaves the recorded signature
-    still matching, and the sidecar describing the PRE-rewrite conversation is
-    served as valid. Unlike the in-process caches guarded with a generation
-    counter, these are files on disk: the staleness outlives the process and is
-    permanent until a genuine ``append`` lands.
+    The sidecars validate against ``session_mtime``, but ``_rewrite_session_locked`` and
+    ``_maybe_rotate`` restore the pre-write mtime (``_restore_mtime``), so the signature
+    alone still matches after a compaction. The files outlive the process.
     """
 
     def _seed(self, log, key: str) -> float:
@@ -1772,17 +1764,9 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
     def test_an_advanced_content_generation_invalidates_both_sidecars(self, tmp_path: Path) -> None:
         """The general contract, independent of which writer moved the content.
 
-        ``rotation_generation`` is the module's content-identity counter: it is
-        advanced by every write that makes the transcript a DIFFERENT body of
-        content — a rotation, the dashboard rewrite save
-        (regenerate / rewind / fork, ``chat_persistence``) and a channel
-        transcript merge. Those are exactly the writers that also restore the
-        pre-write mtime, so the counter is the half of the signature that can
-        still tell the sidecars their subject changed.
-
-        Here the metadata is advanced the same way those writers advance it,
-        with the mtime restored, so the ONLY thing that moved is the content
-        identity.
+        ``rotation_generation`` advances on every content-changing write (rotation,
+        dashboard rewrite save, channel merge), the same writers that restore the mtime.
+        Here only the generation moves; the mtime is restored.
         """
         log = _log(tmp_path)
         sig = self._seed(log, "k")
@@ -1832,13 +1816,10 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
         assert path.stat().st_mtime == prev_mtime
 
     def test_a_metadata_only_write_keeps_them(self, tmp_path: Path) -> None:
-        """The deliberate exclusion, and the reason this is not "invalidate on
-        every preserved-mtime write".
+        """A metadata-only write keeps the summary sidecars.
 
-        ``mark_consolidated`` rewrites ``lines[0]`` only — the bookkeeping
-        offset — and never touches a message. The conversation the summary
-        describes is unchanged, so discarding an LLM-generated summary here
-        would be a pure cost with no correctness gain.
+        ``mark_consolidated`` rewrites only ``lines[0]``, so the summarised conversation
+        is unchanged and discarding the LLM summary would be pure cost.
         """
         log = _log(tmp_path)
         self._seed(log, "k")
@@ -1862,16 +1843,9 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
     def test_a_rewrite_during_generation_cannot_bless_a_stale_summary(self, tmp_path: Path) -> None:
         """The write side of the same hole.
 
-        Summary generation holds no lock while the model call is in flight, so
-        the caller captures the signature BEFORE reading the transcript. If the
-        setter read the generation at WRITE time, a rewrite landing in that
-        window would stamp the NEW content's identity onto the OLD summary — and
-        because the rewrite also preserves the mtime, nothing else would ever
-        catch it. The summary would then be served as fresh forever.
-
-        The generation therefore comes from the caller, captured with the
-        signature, exactly as ``mark_consolidated`` already takes the generation
-        its caller snapshotted.
+        No lock is held during the model call, so the generation comes from the caller,
+        captured with the signature before the read (as ``mark_consolidated`` does). Read
+        at write time, a rewrite in that window would stamp new identity on an old summary.
         """
         log = _log(tmp_path)
         sig = self._seed(log, "k")

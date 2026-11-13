@@ -1,14 +1,8 @@
 """Agents, workspaces and memory stores: parsing, migration and the bindings resolver.
 
-Property tests for the agent-workspace bindings (field metadata, the workspaces
-migration, serialization, memory-store merging, ``resolve_agent_bindings`` and its
-fallbacks, kiro-agent reference warnings, workspace paths), the memory-store
-binding floor and resource independence. The bindings edge cases also pin
-``memory.history_max_days``, the dashboard's ``recent_tint_count``,
-``folder_sort``, ``session_sort`` and ``update_nudge``, and the embedding-provider
-coercion. The
-``agent`` section's ``subagent_cwd_allowed_roots`` and each agent's ``triggers``
-are here too.
+Also pins ``memory.history_max_days``, the dashboard's ``recent_tint_count``,
+``folder_sort``, ``session_sort`` and ``update_nudge``, the embedding-provider coercion,
+``subagent_cwd_allowed_roots`` and each agent's ``triggers``.
 """
 
 from __future__ import annotations
@@ -51,9 +45,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
 logger = logging.getLogger("kiro_crew.config.loader")
 
 
-# ---------------------------------------------------------------------------
 # Phase 2: Agent-Workspace Bindings Property Tests
-# ---------------------------------------------------------------------------
 
 
 class TestAgentWorkspaceBindingsProperties:
@@ -1056,13 +1048,9 @@ class TestEdgeCases:
 class TestUnsatisfiableSubagentCwdRoots(unittest.TestCase):
     """``subagent_cwd_allowed_roots`` is never widened, and never probed on load.
 
-    A config persisted when the shipped default was narrower keeps that list
-    through every upgrade, so a host with no ``~/workspace`` rejects every
-    ``spawn_run`` cwd. Tempting as it is to repair that, these roots are a
-    least-privilege allowlist: an operator who allowlisted a single directory
-    sitting on an unmounted automount looks exactly like a stale default, so
-    auto-repairing the second case would grant access the first withheld. The
-    operator edits the config; nothing here rewrites it for them.
+    These roots are a least-privilege allowlist: a stale narrow default looks the same
+    as one deliberate directory on an unmounted automount, so a repair could grant
+    access. The operator edits the config.
     """
 
     def _agents(self) -> dict:

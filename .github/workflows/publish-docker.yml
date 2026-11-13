@@ -30,7 +30,9 @@ name: Publish Docker (reusable)
 #     re-running an old release must never roll a channel backward.
 #   - The CHANNEL alias (nightly | insider | stable, + latest ≡ stable) is
 #     mutable and written AFTER the version tag + attestation, so it never
-#     points at bytes that are not yet live and attested.
+#     points at bytes that are not yet live and attested. A stable release
+#     also moves insider, behind the insider feed guard, so insider is
+#     never behind stable.
 
 on:
   workflow_call:
@@ -97,7 +99,14 @@ jobs:
   publish-docker:
     name: Publish Docker Image (${{ inputs.channel }})
     if: ${{ inputs.publish }}
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. nightly.yml calls this lane with no repository guard, so a
+    # fork running its own nightly starts it too; there an organization runner
+    # group is unreachable and a job asking for a label no runner there carries
+    # would wait out GitHub's pending limit instead of running. See
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       CHANNEL: ${{ inputs.channel }}
@@ -157,7 +166,7 @@ jobs:
           echo "name=ghcr.io/${OWNER}/kirocrew" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -208,27 +217,24 @@ jobs:
 
       - name: Set up QEMU (arm64 emulation)
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
         if: steps.existing.outputs.exists == 'false'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      # Resolve the kiro-cli version BEFORE the build so (a) the Dockerfile
-      # can cross-check that the manifest did not move mid-build and (b) the
-      # resolved version lands in the dev.kirocrew.kiro-cli.version OCI
-      # label — an auditable record of the agent runtime a digest carries.
-      # The Dockerfile independently sha256-verifies the downloaded bytes
-      # against the manifest (fail-closed).
+      # Read the pinned kiro-cli version BEFORE the build so it lands in the
+      # dev.kirocrew.kiro-cli.version OCI label -- an auditable record of the
+      # agent runtime a digest carries. The Dockerfile installs the same pin
+      # (packaging/kiro-cli-version), sha256-verified against
+      # packaging/kiro-cli-sha256, and fails if the two disagree.
       - name: Resolve kiro-cli version
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
         id: kirocli
         run: |
           set -euo pipefail
-          VERSION_RESOLVED=$(curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json" \
-            | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
-          echo "Resolved kiro-cli ${VERSION_RESOLVED}"
+          VERSION_RESOLVED="$(tr -d '[:space:]' < packaging/kiro-cli-version)"
+          echo "Pinned kiro-cli ${VERSION_RESOLVED}"
           echo "version=${VERSION_RESOLVED}" >> "$GITHUB_OUTPUT"
 
       # Version tag ONLY here — channel aliases move after attestation.
@@ -415,6 +421,36 @@ jobs:
             exit 1
           fi
           echo "Promoted stable alias reconciled to recorded digest ${EXPECTED_DIGEST}."
+
+      # Insider carries the newest of its RCs and stable, as the CDN lanes'
+      # "Mirror stable feed to insider" steps do. The insider feed guard counts
+      # every version tag, and a tag is pushed before the run that publishes
+      # it, so an insider line already ahead of this release holds the alias.
+      # The guard is also what keeps a re-run safe: re-running an old release
+      # holds, and re-running the current one repairs an alias a first run
+      # never reached. Last of the alias writes, so an insider-side failure
+      # never leaves stable or latest unwritten.
+      - name: Mirror stable alias to insider
+        if: env.CHANNEL == 'stable'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.digest.outputs.value }}"
+          # awk drops the ^{} peel refs; an ls-remote failure aborts via pipefail.
+          git ls-remote --tags origin 'refs/tags/v*' \
+            | awk -F/ '$NF !~ /\^\{\}$/ {print $NF}' > "$RUNNER_TEMP/repo-tags.txt"
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel insider \
+            --tags-file "$RUNNER_TEMP/repo-tags.txt" --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::${IMAGE}:insider already carries a newer insider release; insider alias NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          docker buildx imagetools create -t "${IMAGE}:insider" "${IMAGE}@${DIGEST}"
+          echo "Insider alias moved: ${IMAGE}:insider -> ${DIGEST}"
 
       # Public distribution is an explicit release-policy switch. GHCR creates
       # every new package PRIVATE and never inherits visibility from the linked

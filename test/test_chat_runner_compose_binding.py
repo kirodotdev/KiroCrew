@@ -273,12 +273,16 @@ def test_the_runner_importer_scan_sees_a_by_name_import() -> None:
 
 
 def test_every_name_the_runner_imports_is_read() -> None:
+    # Only files mentioning "chat_runner" can hold a by-name import from the runner;
+    # pre-filtering avoids parsing ~3,900 irrelevant files that would never match.
     importers = [
-        path.read_text(encoding="utf-8")
+        text
         for path in sorted(
             (Path(__file__).resolve().parents[1] / "src" / "kiro_crew").rglob("*.py")
         )
         if path.name != "chat_runner.py" and "chat_turn" not in path.parts
+        for text in (path.read_text(encoding="utf-8"),)
+        if "chat_runner" in text
     ]
     keep = set(_BASE_NAMES) | _facade_patched_names() | _imported_from_the_runner(importers)
     runner = Path(cr.__file__).read_text(encoding="utf-8")

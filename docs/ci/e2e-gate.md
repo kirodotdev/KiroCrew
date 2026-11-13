@@ -8,8 +8,10 @@ One command is the whole offline browser gate. It boots a real gateway wired to 
 packaged fake model backend, then shells the in-tree Playwright suite at it. No
 model, no credentials, no network, no cost.
 
-The main browser job is Linux-only: it uses the CodeBuild fleet where eligible
-and otherwise falls back to `ubuntu-latest`. It cannot rely on an unprivileged
+The main browser job is Linux-only: it uses the CodeBuild fleet where eligible,
+otherwise the `kirocrew-runners` larger-runner group when the run executes in
+this repository, and `ubuntu-latest` in a fork running its own CI. It cannot
+rely on an unprivileged
 user namespace (CodeBuild refuses `unshare(CLONE_NEWUSER)`, and this job does not
 alter the hosted runner's namespace policy). Its disposable fake-backend gateway
 alone seeds `agent.sandbox_allow_unsandboxed_exec=true`; authenticated browser setup
@@ -116,7 +118,7 @@ Config facts worth knowing before you touch a spec:
 | `workers` | 1 under `CI` | The harness sets `CI=1`, so the browser leg is serial. |
 | `retries` | 2 under `CI` | A detector, not a fix. A spec that passes only on a retry is counted under `flaky` in the JSON report (the HTML report lists it too), and `MAX_FLAKY_SPECS` then fails the run: fix the spec, never raise `retries`. |
 | `timeout` | 30s per test | Assertion (`expect`/`poll`) timeout stays at Playwright's 5s default so a genuine slowdown surfaces instead of passing inside a wide window. |
-| `grepInvert` | excludes `@needs-agent` unless `PLAYWRIGHT_RUN_AGENT_SPECS` | The default run is the credential-less green set. The harness wires the fake backend, so it opts the agent specs back in. `@needs-live-agent` stays excluded either way and currently tags nothing. |
+| `grepInvert` | excludes `@needs-agent` unless `PLAYWRIGHT_RUN_AGENT_SPECS` | The default run is the credential-less green set. The harness wires the fake backend, so it opts the agent specs back in. `@needs-live-agent` stays excluded either way and currently tags nothing. `@shared-crew` (two verified principals) is excluded unless `PLAYWRIGHT_RUN_SHARED_CREW`. |
 | browser | Playwright's own bundled Chromium | This fork vends no browser binary; CI installs it with `npx playwright install chromium`, restored from an `actions/cache` entry keyed on the exact `@playwright/test` version. `--with-deps` is deliberately NOT used — see [what CI does](#what-ci-does-around-the-command). |
 
 ### Auth flow
@@ -181,8 +183,9 @@ darkening rather than at the reported failure):
   `area: tests`, as the `kirocrew-prepare-pr` skill describes) and rerun the job once.
   Never raise the ceiling or `retries` for it.
 
-The run itself is bounded by `PLAYWRIGHT_RUN_CEILING_SECS` (17 min, so the stop, the
-report and the summary fit inside the job's 25), and the harness stops Playwright as
+The run itself is bounded by `PLAYWRIGHT_RUN_CEILING_SECS`: the job's
+`timeout-minutes` less a 300 s reserve for the steps around the run,
+capped at 1500 s, which both routes' budgets reach. The harness stops Playwright as
 soon as the gateway it drives exits, quoting the gateway's own output, so a dead
 gateway is reported as one, not as every remaining spec timing out on retries. A
 stopped run first gets SIGINT so it writes its report, and the failure quotes
@@ -204,9 +207,10 @@ owns the real private-workflow MCP test and does not serialize the browser job.
 The CI-only helper overlaps the unchanged `python setup.py test_e2e` command and
 the dedicated Memory UI pytest command. Both outcomes are awaited; no failure
 cancels or hides the other lane. Both helper outcomes remain mandatory, with the
-same 25-minute browser-job ceiling. The private namespace coverage is a separate
-mandatory CI job instead of a serial prerequisite, so it does not consume the
-browser lane's critical path.
+same browser-job ceiling (30 minutes on the CodeBuild fleet, 40 off it; see
+"The browser install is budgeted" below). The private namespace coverage is a
+separate mandatory CI job instead of a serial prerequisite, so it does not
+consume the browser lane's critical path.
 
 The head+base i18n render gate is its own `i18n-render` job rather than a third
 lane here, for the same reason: it needs no gateway, and on the hosted 4-vCPU
@@ -251,9 +255,13 @@ failure propagation and cancellation cleanup, not private-MCP or browser proof.
 
 ### The browser install is budgeted, and installs no apt packages
 
-The job's ceiling is `timeout-minutes: 25`, and the browser install is the step
-that historically consumed it. It carries three constraints, all in service of
-leaving the specs enough of that budget to actually run:
+The job's ceiling is route-aware, like `backend-test`'s: 30 minutes when the run
+is admitted to the CodeBuild fleet, the smallest budget whose derived Playwright
+run ceiling reaches the 1500 s cap, and 40 when it is not and the job falls back to
+`kirocrew-linux-4-core`, where the slowest observed fork run took 23.9 of the
+old 25. The browser install is the step that historically consumed that budget.
+It carries three constraints, all in service of leaving the specs enough of it
+to actually run:
 
 - **`${RUNNER_TEMP}/ms-playwright` is cached**, keyed on the exact `@playwright/test`
   version read out of `website/package-lock.json`. `PLAYWRIGHT_BROWSERS_PATH`
@@ -328,10 +336,10 @@ supplies these recordings; source authoring alone is not rendered evidence.
 Its retention is seven days, and it does not fail when setup produced no images.
 
 `website/playwright/dashboard-preview-link.spec.ts` opens the link
-`dashboard_preview` hands a mate and asserts that it resolves: the Members page
+`dashboard_preview` hands a Bot and asserts that it resolves: the Members page
 draws the staged page under its **Preview, not applied** label, and the dashboard read accepts the
-mate the link names. Before the browser starts, the harness
-(`test_playwright_e2e._stage_dashboard_preview`) seeds one mate in the disposable
+Bot the link names. Before the browser starts, the harness
+(`test_playwright_e2e._stage_dashboard_preview`) seeds one Bot in the disposable
 config, stages the `standup` template for it with the production store, and passes
 the link that store's `wire()` returns in `KIROCREW_E2E_DASHBOARD_PREVIEW`. The spec
 never builds the link itself. `standup` is not the default page, so a tab still
@@ -433,6 +441,11 @@ app store answers from the bundled seed, so `GET /api/apps/registry` never pays
 the live catalog's uncached HTTPS round trip (bounded by `FETCH_TIMEOUT`, the
 same 10 s the Discover specs wait for their ready signal) or a per-row manifest
 clone. `kiro_crew.apps.official_catalog.SKIP_FETCH_ENV` owns the name.
+It pins `KIROCREW_HARNESS_ADOPTION_PINS` too, to a path under the home that nothing
+writes: the former built-in adoption pin table is read from there instead of the
+wheel, so a harness boot never fetches a shipped app from GitHub, and a test that
+drives adoption writes a fixture pin there (app-kit-platform.md § Former built-in
+adoption). `kiro_crew.apps.builtin_adoption_pins.HARNESS_PINS_ENV` owns the name.
 The supervisor restart test also verifies that only the download switch changes:
 all other environment values retain the initial launch snapshot. The failed
 mirror port stays bound without listening until teardown, and loopback hosts
@@ -528,7 +541,7 @@ managed-server invocation resolves.
 `build.yml`'s `build-windows-installer` job compiles an NSIS installer on every
 qualifying PR (one that changed a Windows-packaging input, per `desktop-matrix`'s
 `windows_installer` filter; a merge group always qualifies, and so does a push
-to main unless `MERGE_QUEUE_ENABLED` is `'true'`),
+to main unless the merge queue landed it with `MERGE_QUEUE_ENABLED` `'true'`),
 installs it silently, and runs
 `.github/scripts/test-windows-installer.ps1` with NO `-SkipGatewayValidation`.
 The script starts the just-installed bundled interpreter against an isolated data
@@ -588,15 +601,15 @@ states:
 | Event | OS legs | `needs` |
 |---|---|---|
 | `pull_request`, `merge_group` | `ubuntu-latest`, `windows-latest` | must succeed (`lint-gate` too) |
-| push to `main`, `MERGE_QUEUE_ENABLED == 'true'` | `macos-15` alone | skipped (including `lint-gate`); the condition admits the push |
-| push to `main`, variable not `'true'` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed (`lint-gate` too) |
+| push to `main` the merge queue landed (`MERGE_QUEUE_ENABLED == 'true'`, `github.actor == 'github-merge-queue[bot]'`) | `macos-15` alone | skipped (including `lint-gate`); the condition admits the push |
+| any other push to `main` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed (`lint-gate` too) |
 
 The mac leg is event-conditional for the queue, not the runtime: a `macos-15`
 runner waits about 200 minutes, so a mac leg on every pull request would hold
-every PR behind it, while on main the wait costs nobody a merge. With the queue
-on, the merge group already booted Linux and Windows on the same tree, so the
-push runs mac alone. The real-Darwin boot is covered twice: that leg, and
-`nightly.yml`'s `pod-scenarios`, which boots a real service-managed pod on
+every PR behind it, while on main the wait costs nobody a merge. On a
+queue-landed push the merge group already booted Linux and Windows on the same
+tree, so the push runs mac alone. The real-Darwin boot is covered twice: that
+leg, and `nightly.yml`'s `pod-scenarios`, which boots a real service-managed pod on
 `macos-15`.
 
 ### Why it exists

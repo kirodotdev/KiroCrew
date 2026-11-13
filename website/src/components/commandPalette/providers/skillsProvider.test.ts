@@ -75,6 +75,21 @@ describe('createSkillsProvider — listing + filtering', () => {
   it('returns nothing when no skill name matches', async () => {
     expect(await run(createSkillsProvider(deps(true).d), 'zzzqqq')).toEqual([])
   })
+
+  it('leaves out a project skill the operator has not trusted, whose token would not expand', async () => {
+    const { d } = deps(true)
+    const p = createSkillsProvider({
+      ...d,
+      fetchSkills: () => Promise.resolve([
+        { name: 'trusted-proj', source: 'kiro-workspace', trusted: true },
+        { name: 'untrusted-proj', source: 'kiro-workspace', trusted: false },
+        // An untrusted row does not hide a usable skill of the same name.
+        { name: 'shared', source: 'kiro-workspace', trusted: false },
+        { name: 'shared', source: 'kirocrew' },
+      ]),
+    })
+    expect((await run(p, '')).map((r) => r.title).sort()).toEqual(['shared', 'trusted-proj'])
+  })
 })
 
 describe('createSkillsProvider — §2 Enter matrix', () => {

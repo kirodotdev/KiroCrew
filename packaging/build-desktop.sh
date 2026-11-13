@@ -46,6 +46,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The backend bytecode steps (bytecode_coverage_gate, precompile_macos_backend).
+. "$ROOT/packaging/desktop-bytecode.sh"
+
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 # Git Bash / MSYS on Windows reports MINGW64_NT-10.0-... / MSYS_NT-...;
 # normalize to "windows" so the branches below read naturally.
@@ -72,6 +75,58 @@ esac
 # dist label here; the packaging step re-stamps between invocations. The
 # expensive work (PBS interpreter + pip closure) still happens once.
 LINUX_TARGET_DISTS=( "AppImage:appimage" "deb:deb" "rpm:rpm" )
+
+# Per-target electron-builder overrides for the Linux packaging loop. Two
+# AppImage-only overrides live here, applied to NO other format:
+#   - the spaced display name: the AppImage's bundled .desktop entry is the
+#     template website/electron/linux-desktop-integration.js copies into the
+#     user's launcher, the one place that name is shown;
+#   - the multi-size hicolor icon directory (nightly): the common nightly block
+#     keeps canonical `icon-nightly.png` so deb/rpm are byte-identical to
+#     canonical main, and only the AppImage, whose in-app integration installs
+#     hicolor icons, overrides to the `build/icons-nightly` tree.
+# deb/rpm receive nothing here, so their launcher keeps electron-builder's
+# productName-derived Name and their icon stays the canonical per-channel png.
+# Prints one argument per line; a target with no override prints nothing.
+# Self-contained on purpose (parameters only, no globals) so
+# website/electron/test/packaging.test.js can execute it in isolation.
+linux_target_eb_args() {
+  local target="$1" product_name="$2"
+  case "$target" in
+    AppImage)
+      if [ "$product_name" = "KiroCrew Nightly" ]; then
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew Nightly"
+        printf '%s\n' "-c.linux.icon=build/icons-nightly"
+      elif [ "$product_name" = "KiroCrew LTS" ]; then # brand-ok -- product name
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew LTS"
+      else
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew"
+      fi
+      ;;
+  esac
+}
+
+# Usage: drop_overridden_eb_args <override>... -- <base arg>...
+# Prints each base argument, one per line, except a `-c.<key>=` argument whose
+# key one of the overrides also sets. electron-builder turns a repeated `-c`
+# key into a list, which its config validation rejects for scalar keys such as
+# linux.icon, so an override must replace the common value, not sit beside it.
+# Self-contained (parameters only) so packaging.test.js can execute it.
+drop_overridden_eb_args() {
+  local -a overrides=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do overrides+=( "$1" ); shift; done
+  if [ "$#" -gt 0 ]; then shift; fi
+  local arg override keep
+  for arg in "$@"; do
+    keep=1
+    for override in ${overrides[@]+"${overrides[@]}"}; do
+      case "$override" in
+        -c.*=*) if [ "${arg%%=*}" = "${override%%=*}" ]; then keep=0; fi ;;
+      esac
+    done
+    if [ "$keep" = 1 ]; then printf '%s\n' "$arg"; fi
+  done
+}
 
 # Universal is the macOS default; Linux has no universal concept (AppImage is
 # per-arch). UNIVERSAL=0 opts a macOS build out.
@@ -161,6 +216,28 @@ if [ -z "$KC_VERSION" ]; then
   exit 1
 fi
 
+# The shell's version (app.getVersion(), Settings > About, the artifact names)
+# is the core release above, or the build of it an edition stamped into
+# website/electron/package.json before running this script. An edition that
+# repackages one core release as several builds of its own writes its build
+# there as semver (0.13.0.11 as "0.13.0-11"); the extraMetadata.version
+# override at packaging would otherwise replace it with the core release, and
+# every build of one release would report the same version. Accepted the way
+# kiro_crew/__init__ accepts a BUILD_VERSION stamp: the base itself, or the
+# base plus one numeric "-N" over a bare numeric base. Anything else names a
+# build this core is not, so it is ignored with a warning and the base stays.
+PKG_VERSION="$( { grep -m1 -E '^  "version":' "$ELECTRON_DIR/package.json" || true; } \
+  | sed -E 's/^  "version":[[:space:]]*"([^"]*)".*/\1/')"
+if [ -n "$PKG_VERSION" ] && [ "$PKG_VERSION" != "$KC_VERSION" ]; then
+  PKG_BUILD="${PKG_VERSION#"$KC_VERSION"-}"
+  if [[ "$KC_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] && [ "$PKG_BUILD" != "$PKG_VERSION" ] \
+      && [[ "$PKG_BUILD" =~ ^[0-9]+$ ]]; then
+    KC_VERSION="$PKG_VERSION"
+  else
+    echo "WARNING: website/electron/package.json version '$PKG_VERSION' is not a build of $KC_VERSION (expected $KC_VERSION or $KC_VERSION-N); the shell reports $KC_VERSION" >&2
+  fi
+fi
+
 # Channel identity from the version stamp. Nightly ships as a SEPARATE
 # side-by-side app (its own bundle id, name, icon) so it can be installed
 # next to the production app. Insider/stable share the production identity —
@@ -172,6 +249,16 @@ case "$KC_VERSION" in
   *-nightly.*) PRODUCT_NAME="KiroCrew Nightly" ;;
   *)           PRODUCT_NAME="KiroCrew" ;;
 esac
+# The LTS edition (`EDITION=lts`) is a separate side-by-side app as well, on
+# the same pattern as nightly: it updates only from its own `lts` channel (RFC
+# crew-lts-edition D11), so sharing the production app's install identity would
+# let one edition's installer replace the other.
+if [ "${KIROCREW_BUILD_EDITION:-oss}" = "lts" ]; then
+  case "$KC_VERSION" in
+    *-nightly.*) echo "ERROR: an LTS build cannot carry a nightly version ($KC_VERSION)" >&2; exit 1 ;;
+  esac
+  PRODUCT_NAME="KiroCrew LTS" # brand-ok -- product name
+fi
 
 log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 
@@ -467,6 +554,15 @@ provision_pbs() {
   printf '%s\n' "$dir"
 }
 
+# Remove the precompressed .br/.gz twins of the dashboard's hashed assets from a
+# staged dist ($1). They save transfer time over a tunnel, not on the localhost
+# link the desktop app uses, and the server falls back to the plain file when a
+# twin is missing (dist_file_response._open_variant). They are ~28 MiB per
+# backend, and the universal macOS zip holds two backends under a size gate.
+drop_precompressed_dist() {
+  find "$1/assets" -type f \( -name '*.br' -o -name '*.gz' \) -delete
+}
+
 # Build ONE self-contained backend tree.
 #   $1 = PBS interpreter dir   $2 = output dir   $3 = required Mach-O arch tag
 #        ("" skips the arch gate — used by the non-universal Linux path)
@@ -497,19 +593,21 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check "$ROOT"
 
-  # The voice extras, in TWO steps.
+  # Each voice provider's dependencies install separately so a recogniser
+  # resolution failure cannot omit the independent cloud transports.
   #
   # They have to be in the bundle at all because `local` is the default
   # speech-to-text provider and nothing in the app can install it later: the
   # pip-invoking endpoint was deliberately removed, so a bundle without them
   # reports the default provider as unavailable with no in-app way to fix it.
   #
-  # Two steps because pip resolves an extra ATOMICALLY, and this bundle is
+  # Separate steps because pip resolves an extra ATOMICALLY, and this bundle is
   # UNIVERSAL on macOS where Intel has no published pywhispercpp wheel. A single
   # `[voice]` install there fails as a whole and omits boto3 and amazon-transcribe
   # with it, taking the `transcribe` provider down alongside the `local` one it has
-  # nothing to do with. So the cloud half goes in first and unconditionally, then
-  # the recogniser is attempted on its own.
+  # nothing to do with. The cloud transports go in unconditionally, then
+  # the recogniser is attempted on its own. Codex remains opt-in and its media
+  # packages load only when selected; a sealed bundle cannot pip-install later.
   #
   # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
@@ -519,6 +617,10 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
     "$ROOT[voice-aws]"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check \
+    "$ROOT[voice-codex]"
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -532,6 +634,12 @@ build_backend() {
     fi
   fi
 
+  # The Feishu channel SDK. Settings offers no install command for this bundle,
+  # and every app update replaces the whole bundle, so it ships here or not at all.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT[feishu]"
+
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
   install_desktop_decoder "$out/bin/python3.12" "$sp" "$want_arch"
@@ -541,6 +649,7 @@ build_backend() {
   [ -f "$sp/kiro_crew/static/dist/index.html" ] || {
     echo "ERROR: dashboard dist not staged" >&2; exit 1
   }
+  drop_precompressed_dist "$sp/kiro_crew/static/dist"
 
   # Beacon provenance, stamped into the INSTALLED tree (not $ROOT) so a
   # universal build's two backends are each stamped and no state leaks into the
@@ -587,6 +696,10 @@ unset PYTHONPATH PYTHONHOME
 exec "$DIR/python3.12" -s -P -m kiro_crew "$@"
 LAUNCH
   chmod +x "$out/bin/kirocrew"
+  # Every other pip console script in bin/ (httpx, tqdm, f2py, ...) names this
+  # build's absolute bin/python3.12, and env.py puts bin/ on every agent's PATH.
+  # Rewrite each header to start the interpreter beside it; before signing.
+  "$out/bin/python3.12" -B -s "$ROOT/packaging/relocate_posix_scripts.py" --root "$out"
 
   # Arch gate: the bundled interpreter must be the arch this tree claims to be
   # (a mismatch ships an app whose backend crashes at launch on the other arch).
@@ -626,72 +739,38 @@ LAUNCH
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"
 
-  # Compile the WHOLE shipped tree as checked-hash pycs, then let the runtime
-  # forbid writing any.
+  # Ship hash-based bytecode beside the sources, never TIMESTAMP bytecode.
   #
-  # This is what keeps the signed .app's seal intact. codesign seals every file
-  # under Contents/, so bytecode written there after signing invalidates the
-  # signature and Gatekeeper refuses the app as "damaged" -- which is what
+  # The prune above deletes the TIMESTAMP pycs pip left behind, and deleting
+  # them is not squeamishness -- a timestamp pyc records the mtime of the source
+  # it was built from, `ditto` restamps sources at extraction, so every shipped
+  # timestamp pyc is guaranteed to look stale on the user's machine and be
+  # rewritten in place. On macOS that rewrite IS the corruption: codesign seals
+  # every file under Contents/, so bytecode written there after signing
+  # invalidates the signature and Gatekeeper refuses the app as "damaged" (what
   # managed Macs report, because their policy re-evaluates instead of reusing a
-  # cached accept verdict.
+  # cached accept verdict). CHECKED_HASH validates against contents, so an
+  # extraction-restamped source still matches.
   #
-  # Deliberately the whole tree, not the traced startup closure the Windows lane
-  # ships. The pipeline signs a COMPLETE bundle, so nothing on a user's machine
-  # has any business writing into it -- and a module left uncompiled is exactly
-  # what creates the reason to. Windows can afford the narrower closure because
-  # Authenticode seals no resource tree, so a later write there is harmless; on
-  # macOS an uncovered module is a latent signature break, so coverage has to be
-  # total rather than measured.
-  #
-  # The MODE is the other half. The prune above deletes the TIMESTAMP pycs pip
-  # left behind, and deleting them is not squeamishness -- a timestamp pyc
-  # records the mtime of the source it was built from, `ditto` restamps sources
-  # at extraction, so every shipped timestamp pyc is guaranteed to look stale on
-  # the user's machine and be rewritten in place. That rewrite IS the corruption.
-  # CHECKED_HASH validates against contents, so an extraction-restamped source
-  # still matches.
-  #
-  # `-q -f`: quiet, and force so nothing is skipped on a stale timestamp cache.
-  # A failure to compile one module must not fail the build -- compileall exits
-  # non-zero on a syntax error in any file it walks, including vendored samples
-  # that are not importable on this interpreter -- so the exit code is reported
-  # and tolerated while the coverage assertion below is what actually gates.
-  log "Precompiling the shipped tree as checked-hash pycs ($(basename "$out"))…"
-  env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
-    "$out/bin/python3.12" -s -m compileall -q -f \
-    --invalidation-mode checked-hash "$out/lib" \
-    || echo "    compileall reported errors (unimportable vendored samples are expected)"
-
-  # Coverage gate: the point of the exercise is that the runtime never needs to
-  # write, so a tree that shipped without caches would silently reintroduce the
-  # defect the moment PYTHONDONTWRITEBYTECODE is honoured.
-  "$out/bin/python3.12" -s - "$out/lib" <<'COVERAGE'
-import os, sys
-root = sys.argv[1]
-missing = []
-for dirpath, dirnames, filenames in os.walk(root):
-    if os.path.basename(dirpath) == "__pycache__":
-        continue
-    cache = os.path.join(dirpath, "__pycache__")
-    for name in filenames:
-        if not name.endswith(".py"):
-            continue
-        stem = name[:-3]
-        if not any(
-            f.startswith(stem + ".") and f.endswith(".pyc")
-            for f in (os.listdir(cache) if os.path.isdir(cache) else ())
-        ):
-            missing.append(os.path.join(dirpath, name))
-if missing:
-    print(f"    {len(missing)} module(s) shipped without a bytecode cache", file=sys.stderr)
-    for path in missing[:10]:
-        print(f"      {os.path.relpath(path, root)}", file=sys.stderr)
-    # A handful of unimportable vendored samples is tolerable; a wholesale miss
-    # means compileall did not run and every launch would want to write.
-    if len(missing) > 50:
-        print("ERROR: bytecode coverage is too low to forbid runtime writes", file=sys.stderr)
-        raise SystemExit(1)
-COVERAGE
+  # macOS ships caches for the standard library and the traced startup closure
+  # only, and bars the bundled interpreter from writing any other: see
+  # precompile_macos_backend. Linux keeps the whole tree compiled.
+  if [ "$OS" = "darwin" ]; then
+    precompile_macos_backend "$out"
+  else
+    # `-q -f`: quiet, and force so nothing is skipped on a stale timestamp
+    # cache. A failure to compile one module must not fail the build --
+    # compileall exits non-zero on a syntax error in any file it walks,
+    # including vendored samples that are not importable on this interpreter --
+    # so the exit code is reported and tolerated while the coverage gate is what
+    # actually gates.
+    log "Precompiling the shipped tree as checked-hash pycs ($(basename "$out"))…"
+    env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
+      "$out/bin/python3.12" -s -m compileall -q -f \
+      --invalidation-mode checked-hash "$out/lib" \
+      || echo "    compileall reported errors (unimportable vendored samples are expected)"
+    bytecode_coverage_gate "$out" "$out/lib" ""
+  fi
 
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
@@ -724,7 +803,7 @@ build_backend_windows() {
   root_uri="$(cd "$ROOT" && "$out/python.exe" -c \
     'import sys; from pathlib import Path; sys.stdout.write(Path.cwd().as_uri())')"
 
-  # The voice extras, in two steps so an independent AWS-provider dependency
+  # The voice providers install separately so independent cloud dependencies
   # cannot be omitted by recogniser resolution. Windows is a supported local-
   # dictation target, so the recogniser is a hard gate. Model weights remain an
   # explicit one-click download after installation.
@@ -743,6 +822,11 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
+  # The Feishu channel SDK, for the same reason as in build_backend.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/python.exe" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check \
+    "kirocrew[feishu] @ $root_uri"
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""
@@ -771,6 +855,17 @@ build_backend_windows() {
   # interactive cmd window keeps their own PYTHONPATH afterwards.
   mkdir -p "$out/bin"
   printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
+  # pip also dropped Scripts\kirocrew.exe, whose embedded shebang is THIS build
+  # machine's absolute python.exe path, so it dies with "Fatal error in
+  # launcher" once the bundle is installed anywhere else. Replace it
+  # with the same relocatable shim: Scripts\ is one level below the bundle
+  # root like bin\, so "%~dp0..\python.exe" resolves the same interpreter.
+  rm -f "$out/Scripts/kirocrew.exe" "$out/Scripts/kirocrew-script.py"
+  printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/Scripts/kirocrew.cmd"
+  # Every other pip console script in Scripts\ (httpx, pwcpp, tqdm, ...) has
+  # the same frozen shebang, and env.py puts Scripts\ on every agent's PATH.
+  # Turn each into a relocatable <name>.cmd; native uv.exe is left alone.
+  "$out/python.exe" -B -s "$ROOT/packaging/relocate_windows_scripts.py" --root "$out"
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -P -m kiro_crew --version >/dev/null \
@@ -785,6 +880,7 @@ build_backend_windows() {
     rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 \
            include libs tcl \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64_dotprod \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_x86_64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_arm64 \
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_x86_64 \
@@ -804,13 +900,16 @@ build_backend_windows() {
   # checked-hash pyc makes the loader read and hash each .py in ADDITION to the
   # .pyc, which measured 43.55 MB and 1639 extra cold file opens per boot -- a
   # median 12.5 s on a cold file cache. Both hash modes ignore mtime, which is
-  # the property this needs; only the re-read is dropped. The posix tree above
-  # stays checked-hash: it is a different mechanism (whole tree, codesigned) and
-  # does not show the symptom.
+  # the property this needs; only the re-read is dropped. The POSIX trees above
+  # are checked-hash: a codesigned macOS bundle and a Linux package, neither of
+  # which shows the symptom. lark_oapi is traced too: the Feishu channel
+  # imports its ~11k modules on the gateway loop, and compiling them there on
+  # the first start stalls that loop. (macOS leaves it out; see
+  # precompile_macos_backend.)
   log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
-    --root "$out" --module kiro_crew.cli_server
+    --root "$out" --module kiro_crew.cli_server --module lark_oapi
 
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
@@ -980,21 +1079,33 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     let parsed;
     try { parsed = JSON.parse(buf.toString("utf8")); } catch (e) { console.error(`marker is not JSON: ${e.message}`); process.exit(1); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { console.error("marker must be a JSON object"); process.exit(1); }
-    const allowed = ["managedBy", "updateCommand", "checkCommand"];
+    const allowed = ["managedBy", "updateCommand", "checkCommand", "relaunchPath", "updatePrompts"];
     // The reader TRIMS each field and slices it to a cap (auto-update.js:
     // MANAGED_BY_MAX_CHARS / UPDATE_COMMAND_MAX_CHARS / CHECK_COMMAND_MAX_CHARS).
     // Validate the value the reader will actually see: a whitespace-only
     // command would trim to nothing and turn the marker bare, and an over-cap
     // one would be truncated into a DIFFERENT command. Both are refused here.
-    const caps = { managedBy: 128, updateCommand: 512, checkCommand: 512 };
+    const caps = { managedBy: 128, updateCommand: 512, checkCommand: 512, relaunchPath: 1024 };
     for (const k of Object.keys(parsed)) {
       if (!allowed.includes(k)) { console.error(`marker has unknown field "${k}" (allowed: ${allowed.join(", ")})`); process.exit(1); }
       if (typeof parsed[k] !== "string") { console.error(`marker field "${k}" must be a string`); process.exit(1); }
       if (parsed[k].trim() !== parsed[k]) { console.error(`marker field "${k}" has leading/trailing whitespace the reader would trim`); process.exit(1); }
-      if (parsed[k].length > caps[k]) { console.error(`marker field "${k}" is ${parsed[k].length} chars; the reader caps at ${caps[k]} and would truncate the command`); process.exit(1); }
+      if (k in caps && parsed[k].length > caps[k]) { console.error(`marker field "${k}" is ${parsed[k].length} chars; the reader caps at ${caps[k]} and would truncate the command`); process.exit(1); }
     }
+    // The reader honours one updatePrompts value and ignores any other, which
+    // would ship the core update dialogs beside the edition widget meant to own them.
+    if ("updatePrompts" in parsed && parsed.updatePrompts !== "edition") { console.error("marker field \"updatePrompts\" must be \"edition\", the only value the reader honours"); process.exit(1); }
     if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
     if (!parsed.checkCommand) { console.error("marker has updateCommand but no checkCommand: every managed-lane check will fail; no update will ever be offered"); process.exit(1); }
+    // resolveRelaunchPath (auto-update.js) drops anything that is not absolute
+    // or ~/-relative, and the lane would then quietly relaunch the old path.
+    // The app may run on either platform family, so an absolute path in the
+    // form of either is accepted: C:/..., C:\..., \\server\share, /...
+    if ("relaunchPath" in parsed) {
+      const p = parsed.relaunchPath;
+      const path = require("path");
+      if (!(p.startsWith("~/") || path.posix.isAbsolute(p) || path.win32.isAbsolute(p))) { console.error("marker field \"relaunchPath\" must be an absolute path or start with ~/"); process.exit(1); }
+    }
   ' "$MARKER_SRC" || { echo "❌ KIROCREW_MANAGED_INSTALL_MARKER rejected: $MARKER_SRC" >&2; exit 1; }
   # Staged for THIS build only: electron-builder packs it below, and the copy
   # must not outlive the run -- a later build of a different edition from the
@@ -1033,9 +1144,9 @@ if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
   log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
 
-# --- 3b3. Baked EDITION (enterprise only) ------------------------------------
+# --- 3b3. Baked EDITION (lts only) -------------------------------------------
 # The same stamp the backend's kiro_crew/edition.py gets from setup.py:
-# KIROCREW_BUILD_EDITION (`make desktop EDITION=enterprise`). An enterprise build
+# KIROCREW_BUILD_EDITION (`make desktop EDITION=lts`). An LTS build
 # stages $ELECTRON_DIR/EDITION, packed into app.asar by package.json's `files`
 # list and read by website/electron/edition.js, so the app gives its local
 # gateway time for the login and policy checks it runs before binding. An oss
@@ -1043,13 +1154,13 @@ fi
 # build, as setup.py refuses it. Removed on exit with the other baked inputs.
 case "${KIROCREW_BUILD_EDITION:-oss}" in
   oss) ;;
-  enterprise)
+  lts)
     trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"' EXIT
-    printf 'enterprise\n' > "$ELECTRON_DIR/EDITION"
-    log "Baking EDITION=enterprise into the app"
+    printf 'lts\n' > "$ELECTRON_DIR/EDITION"
+    log "Baking EDITION=lts into the app"
     ;;
   *)
-    echo "❌ KIROCREW_BUILD_EDITION must be oss or enterprise, not: ${KIROCREW_BUILD_EDITION}" >&2
+    echo "❌ KIROCREW_BUILD_EDITION must be oss or lts, not: ${KIROCREW_BUILD_EDITION}" >&2
     exit 1
     ;;
 esac
@@ -1283,33 +1394,44 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
     # Stage the four beside the executable, where the loader looks first. This
     # is the deployment the bundle already relies on elsewhere: the Python
     # runtime it ships carries vcruntime140.dll next to its own interpreter,
-    # for the same reason.
+    # for the same reason. They come from Microsoft's redistributable, pinned
+    # in packaging/vc-runtime-pin.json (installer and each DLL sha256-verified,
+    # fail closed), never from this build host's System32: the application
+    # directory wins over System32, so a stale host copy would shadow a user's
+    # newer runtime. vc_runtime.py also records the version in
+    # VC-RUNTIME-VERSION beside BUNDLED-VERSION.
     #
     # The runtime is one of two things the executable needs and the MSI does not
     # bring. The other is DirectML: it imports DMLCreateDevice1 from
     # directml.dll as a static import, so the loader resolves it before main.
-    # That one is left to the host because it is an OS component on desktop
-    # Windows, which is where the app runs and what an unbundled kiro-cli
-    # install already relies on -- but a build host without it (a Windows Server
-    # Core image carries none) needs it supplied, and the probe below is where
-    # that shows up.
-    local crt_dir crt
-    local -a crt_missing=()
-    crt_dir="$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:\\Windows}}")/System32"
-    for crt in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
-      if [ -f "$crt_dir/$crt" ]; then
-        cp -a "$crt_dir/$crt" "$dest/$crt"
-      else
-        crt_missing+=("$crt")
-      fi
-    done
-    if [ "${#crt_missing[@]}" -ne 0 ]; then
-      echo "ERROR: this build host has no Visual C++ runtime to stage beside kiro-cli" >&2
-      echo "       $crt_dir lacks: ${crt_missing[*]}" >&2
-      echo "       kiro-cli.exe imports them and cannot start without them." >&2
-      echo "       Install the Visual C++ 2015-2022 x64 redistributable." >&2
-      exit 1
+    # DirectML is deliberately NOT bundled: it is an OS component on desktop
+    # Windows, which is where the app runs and what upstream's own standalone
+    # kiro-cli installer relies on too. A build host without it (a Windows
+    # Server Core image carries none) needs it supplied, and the probe below is
+    # where that shows up.
+    #
+    # Fetched exactly like the kiro-cli archive above: a sha-verified cache
+    # entry, else a fresh download into a cache-local temp file renamed into
+    # place only once it verifies.
+    local vcrt_cache vcrt_source vcrt_sha vcrt_url vcrt_bundle vcrt_fresh
+    vcrt_cache="$HOME/.cache/kirocrew-build/vc-runtime"
+    mkdir -p "$vcrt_cache"
+    vcrt_source="$(python3 "$ROOT/packaging/vc_runtime.py" source)"
+    # Native Windows Python prints CRLF; command substitution removes only LF.
+    vcrt_source="${vcrt_source%$'\r'}"
+    vcrt_sha="${vcrt_source%% *}"
+    vcrt_url="${vcrt_source#* }"
+    vcrt_bundle="$vcrt_cache/$vcrt_sha-VC_redist.x64.exe"
+    if [ ! -f "$vcrt_bundle" ] || ! kiro_cli_sha_ok "$vcrt_sha" "$vcrt_bundle"; then
+      vcrt_fresh="$(mktemp "$vcrt_cache/.download.XXXXXX")"
+      curl --proto '=https' --tlsv1.2 -fsSL "$vcrt_url" -o "$vcrt_fresh"
+      kiro_cli_sha_ok "$vcrt_sha" "$vcrt_fresh" \
+        || { rm -f "$vcrt_fresh"; echo "ERROR: VC++ redistributable sha256 mismatch: refusing to bundle" >&2; exit 1; }
+      rm -f "$vcrt_bundle"
+      mv -f "$vcrt_fresh" "$vcrt_bundle"
     fi
+    python3 "$ROOT/packaging/vc_runtime.py" stage "$(cygpath -w "$dest")" \
+      --bundle "$(cygpath -w "$vcrt_bundle")"
   else
     local tmp
     tmp="$(mktemp -d)"
@@ -1688,6 +1810,26 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       # packaged shortcuts and the running process finally agree.
       "-c.win.appId=com.amazon.kiro.crew.nightly"
     )
+  elif [ "$PRODUCT_NAME" = "KiroCrew LTS" ]; then # brand-ok -- product name
+    # Same side-by-side identity split as nightly above, for the same reasons
+    # and with the same shared macOS appId (no new signing identifier). The
+    # standard icon: the name and the About channel row tell the editions apart.
+    # The Windows appId is package.json's build.appId plus ".lts", read here so
+    # the base ID has one source. nsis.guid is UUID v5 of that appId in
+    # electron-builder's namespace, the same derivation as nightly's.
+    BASE_APP_ID="$(node -p 'require(process.argv[1]).build.appId' "$ELECTRON_DIR/package.json")"
+    [ -n "$BASE_APP_ID" ] || { echo "ERROR: website/electron/package.json has no build.appId" >&2; exit 1; }
+    EB_ARGS+=(
+      "-c.productName=KiroCrew LTS" # brand-ok -- product name
+      "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew LTS"
+      "-c.deb.packageName=kirocrew-lts"
+      "-c.rpm.packageName=kirocrew-lts"
+      "-c.linux.executableName=kirocrew-desktop-lts"
+      "-c.extraMetadata.desktopName=kirocrew-desktop-lts.desktop"
+      "-c.extraMetadata.name=kirocrew-desktop-lts"
+      "-c.nsis.guid=fec201a5-e96c-5955-8d08-750be2d446a1"
+      "-c.win.appId=${BASE_APP_ID}.lts"
+    )
   fi
   # Start from a pristine output dir. A prior interrupted universal build can
   # leave dist/mac-universal-<arch>-temp dirs behind (with a .DS_Store inside);
@@ -1743,12 +1885,23 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
     # AppImage and the deb do not both claim the label of whichever was built
     # last. Targets are named explicitly rather than letting package.json's
     # target array drive a single invocation, because a single invocation shares
-    # one stamped backend tree between both artifacts.
+    # one stamped backend tree between both artifacts. Each target also gets its
+    # own overrides from linux_target_eb_args (defined with LINUX_TARGET_DISTS);
+    # deb and rpm get none.
     for pair in "${LINUX_TARGET_DISTS[@]}"; do
       target="${pair%%:*}"; dist="${pair##*:}"
+      TARGET_EB_ARGS=()
+      while IFS= read -r arg; do
+        [ -n "$arg" ] && TARGET_EB_ARGS+=( "$arg" )
+      done < <(linux_target_eb_args "$target" "$PRODUCT_NAME")
+      LINUX_EB_ARGS=()
+      while IFS= read -r arg; do
+        LINUX_EB_ARGS+=( "$arg" )
+      done < <(drop_overridden_eb_args ${TARGET_EB_ARGS[@]+"${TARGET_EB_ARGS[@]}"} -- "${EB_ARGS[@]}")
       log "Packaging Linux ${target} (dist=${dist})…"
       restamp_backends "$dist"
-      run_electron_builder_with_retry "${EB_ARGS[@]}" --linux "$target"
+      run_electron_builder_with_retry "${LINUX_EB_ARGS[@]}" \
+        ${TARGET_EB_ARGS[@]+"${TARGET_EB_ARGS[@]}"} --linux "$target"
     done
   fi
 )

@@ -42,6 +42,25 @@ from .turn_guard import (
 logger = logging.getLogger("kirocrew.app.spec-builder")
 
 
+def _row_carries_delivery_id(row: Any, delivery_id: str) -> bool:
+    """Whether a chat row's meta names *delivery_id* as a relayed decision answer.
+
+    The drain stamps a single answer's id as the scalar ``spec_decision_delivery_id``
+    and, when it merges several answers into one row, lists every folded id under
+    ``spec_decision_delivery_ids`` (the scalar then holds only the last). Reading
+    both finds an earlier merged answer the scalar lost, so it is not redispatched.
+    """
+    if not isinstance(row, dict):
+        return False
+    meta = row.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    if meta.get("spec_decision_delivery_id") == delivery_id:
+        return True
+    ids = meta.get("spec_decision_delivery_ids")
+    return isinstance(ids, list) and delivery_id in ids
+
+
 async def _deliver_pending_decision(
     state: Any,
     slot: Any,
@@ -65,6 +84,12 @@ async def _deliver_pending_decision(
     delivery_id = pending.get("delivery_id", "")
     if not delivery_id:
         return False
+    # The app's process-local outbox claims, keyed by directory + delivery and held
+    # on the dashboard state, which declares neither set: the app creates both on
+    # first use. Directory scope matters because aliases use different slots for
+    # the same files; durable status stays with the decision ledger. A consumed
+    # claim whose ledger finalization failed stays blocked from redispatch while a
+    # later detail poll retries that write.
     inflight = getattr(state, "_spec_decision_deliveries_inflight", None)
     if not isinstance(inflight, set):
         inflight = set()
@@ -119,10 +144,7 @@ async def _deliver_pending_decision(
     durable_relay_started = pending.get("status") == "relayed"
     already_relayed = False
     for row in getattr(slot, "messages", []) or []:
-        if not isinstance(row, dict):
-            continue
-        meta = row.get("meta")
-        if isinstance(meta, dict) and meta.get("spec_decision_delivery_id") == delivery_id:
+        if _row_carries_delivery_id(row, delivery_id):
             already_relayed = True
             break
     still_current = await _pending_decision_is_current(spec_dir, pending)
@@ -293,6 +315,9 @@ async def _deliver_pending_decision(
         message_meta={"spec_decision_delivery_id": delivery_id},
         append_user=not already_relayed,
         directive_user_origin=True,
+        # Composed from the agent's decision title and options: the person only
+        # picked one, so it must not start an MCP sign-in.
+        message_is_typed=False,
         on_consumed=_on_consumed,
         on_irreversibly_consumed=_on_irreversibly_consumed,
     )

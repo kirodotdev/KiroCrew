@@ -65,10 +65,11 @@ def _seed_attempts(session_id: str, log: CrewLog) -> None:
     is precisely the collision this field exists to prevent -- and the in-memory map
     cannot survive the restart that makes the collision possible.
 
-    NOT on every open. The scan is O(file) and runs on the single writer thread, so
-    seeding a session that already holds its counts would cost one full rescan per
-    open against a file that only grows -- paid by every other session's appends
-    too, since they queue behind it.
+    NOT on every open. The scan walks the whole file on the single writer thread
+    (decoding only the records that name ``turn/started``), so seeding a session
+    that already holds its counts would cost one full rescan per open against a
+    file that only grows -- paid by every other session's appends too, since they
+    queue behind it.
 
     Best-effort: a file this cannot read leaves the map empty, which degrades to
     the old behaviour rather than failing the resume.
@@ -76,7 +77,9 @@ def _seed_attempts(session_id: str, log: CrewLog) -> None:
     highest: dict[int, int] = {}
     try:
         # Like read_page, this best-effort scan keeps readable records; folds still refuse seq damage.
-        for entry in log.iter_from(1, strict_seq=False):
+        # Only records whose bytes hold the type as a JSON string are decoded, so the cost
+        # follows the turns, not the whole file; the type check below still decides.
+        for entry in log.iter_from(1, strict_seq=False, contains=b'"turn/started"'):
             if entry.type != "turn/started":
                 continue
             turn = entry.data.get("turn")
@@ -554,6 +557,8 @@ def on_session_opened(
     # the values are not all bools.
     announce: "dict[str, Any]" = {}
 
+    from kiro_crew.crew_log.pending_open import drain as _drain_pending
+
     def _job() -> None:
         created = False
         if _crew_log().CrewLog.exists(_KIND, session_id):
@@ -713,6 +718,7 @@ def on_session_opened(
             # what the session was CREATED as, and a fold over the transitions
             # after it is what gives a reader the whole life.
             _note_class_change(session_id, log, observed)
+            _drain_pending(session_id, log)
             return
         data: dict[str, Any] = {
             "agent": agent or _DEFAULT_AGENT,
@@ -845,6 +851,9 @@ def on_session_opened(
             # ``session/opened`` is retained and this job runs again, and queueing
             # above would queue one repair per attempt.
             _queue_tail_repair(repair_target, slot)
+        # After every opening append, retried or not: entries held while this unit had
+        # no crew log go in behind its ``session/opened``.
+        _drain_pending(session_id, log)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append
@@ -853,8 +862,12 @@ def on_session_opened(
         with _lock:
             _creation_failed.add(session_id)
 
+    # Imported here: the writer modules stay off the gateway boot path.
+    from kiro_crew.crew_log import writer_groups
     from kiro_crew.crew_log.writer import WriteJob
 
+    # Before the hand-over, so the writer knows this unit's slot for its first claim.
+    writer_groups.note_unit_slot(session_id, slot)
     _hand_over(
         session_id,
         WriteJob.opening(_job, "opening a crew log", on_drop=_flag_creation_failed),

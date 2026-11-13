@@ -317,6 +317,18 @@ describe('note endpoints', () => {
     })
   })
 
+  it('saves a note with the content-hash guard and returns the new hash', async () => {
+    reply({ json: { ok: true, mtime: 9, contentHash: 'h2' } })
+    const res = await notesApi.saveNote('v1', 'a.md', 'body', 8, 'h1')
+    expect(JSON.parse(String(callAt(0).init.body))).toEqual({
+      path: 'a.md',
+      content: 'body',
+      baseMtime: 8,
+      baseHash: 'h1',
+    })
+    expect(res.contentHash).toBe('h2')
+  })
+
   it('omits baseMtime when the caller has no snapshot', async () => {
     reply({ json: { ok: true, mtime: 1 } })
     await notesApi.saveNote(null, 'a.md', 'body')

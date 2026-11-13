@@ -1,5 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion, type MotionValue } from 'framer-motion'
 import { coversPaneProps } from '../hooks/paneVisibility'
+import { layoutMorphActive } from '../lib/layoutFormTransition'
 
 interface Props {
   open: boolean
@@ -70,6 +71,12 @@ interface Props {
 const EASE = [0.32, 0.72, 0, 1] as const
 const DUR = 0.24
 
+/** The desktop drawer's exit: its width collapse, or nothing at all when a
+ *  form-switch view transition is moving it (`custom` is that flag). */
+const drawerExit = {
+  gone: (now: boolean) => (now ? { width: 0, transition: { duration: 0 } } : { width: 0 }),
+}
+
 export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, slideStyle, coversPane = false, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
   const reduce = useReducedMotion()
   // Gesture end settles from the live presentation value via a critically
@@ -133,14 +140,30 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
         from: expandFrom ? insetFor(expandFrom.x, expandFrom.y, expandFrom.w, expandFrom.h, 12) : null,
       }
     : null
+  // The clip's own rect, for the card edge that rides it.
+  const rects = morphable
+    ? {
+        full: { top: 0, left: 0, width, height: panelH },
+        button: { top: morphTarget.y, left: morphTarget.x, width: morphTarget.size, height: morphTarget.size },
+        from: expandFrom ? { top: expandFrom.y, left: expandFrom.x, width: expandFrom.w, height: expandFrom.h } : null,
+      }
+    : null
+  // A phone/desktop form switch the view transition is animating
+  // (lib/layoutFormTransition) mounts or unmounts this drawer as part of it:
+  // the transition slides it, so it enters already open and leaves at once
+  // rather than playing its own width and clip morph inside the new snapshot.
+  // `custom` reaches the exit too, which keeps the props it was last rendered
+  // with (AnimatePresence's documented channel for exactly that).
+  const instant = layoutMorphActive()
   return (
-    <AnimatePresence initial={false}>
+    <AnimatePresence initial={false} custom={instant}>
       {open && (
         <motion.div
           key="drawer"
-          initial={{ width: 0 }}
+          initial={instant ? false : { width: 0 }}
           animate={{ width }}
-          exit={{ width: 0 }}
+          variants={drawerExit}
+          exit="gone"
           transition={
             dragging
               ? { duration: 0 }
@@ -159,13 +182,42 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
                empty panel header under the real toggle — fades in the last
                ~15% so the unmount never pops. */
             <motion.div
-              style={{ width, height: '100%' }}
-              initial={{ clipPath: clips.from ?? clips.button, opacity: 1 }}
+              style={{ width, height: '100%', position: 'relative' }}
+              initial={instant ? false : { clipPath: clips.from ?? clips.button, opacity: 1 }}
               animate={{ clipPath: clips.full, opacity: 1 }}
-              exit={{ clipPath: clips.button, opacity: [1, 1, 0], transition: { duration: DUR, ease: EASE, opacity: { duration: DUR, times: [0, 0.85, 1] } } }}
+              variants={{
+                gone: (now: boolean) => now
+                  ? { opacity: 0, transition: { duration: 0 } }
+                  : { clipPath: clips.button, opacity: [1, 1, 0], transition: { duration: DUR, ease: EASE, opacity: { duration: DUR, times: [0, 0.85, 1] } } },
+              }}
+              exit="gone"
               transition={dragging ? { duration: 0 } : { duration: DUR, ease: EASE }}
             >
-              {children}
+              {/* The clip cuts through the panel, so a card face tracks its rect to give the
+                  window a rounded, bordered edge, and the content fades instead of being sliced. */}
+              {rects && (
+                <motion.div
+                  aria-hidden
+                  data-testid="drawer-morph-edge"
+                  className="pointer-events-none absolute rounded-xl border border-border bg-bg-elevated shadow-sm"
+                  initial={instant ? false : (rects.from ?? rects.button)}
+                  animate={rects.full}
+                  variants={{ gone: (now: boolean) => ({ ...rects.button, transition: now ? { duration: 0 } : { duration: DUR, ease: EASE } }) }}
+                  exit="gone"
+                  transition={{ duration: DUR, ease: EASE }}
+                />
+              )}
+              <motion.div
+                data-testid="drawer-morph-content"
+                className="relative h-full"
+                initial={instant ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                variants={{ gone: (now: boolean) => ({ opacity: 0, transition: { duration: now ? 0 : DUR * 0.5 } }) }}
+                exit="gone"
+                transition={{ duration: DUR * 0.6, delay: DUR * 0.4 }}
+              >
+                {children}
+              </motion.div>
             </motion.div>
           ) : children}
         </motion.div>

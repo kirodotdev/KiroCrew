@@ -86,8 +86,9 @@ type KeyOwner = 'gesture' | 'latch'
 export interface UsePushToTalkOpts {
   /**
    * Stop the key from starting capture (e.g. STT off, or a modal owns the
-   * keyboard). A press, release or reconciling keystroke that ENDS a capture
-   * already running still works, so disabling never strands an open mic.
+   * keyboard). Turning it on mid-press ends that press at once: a hold
+   * commits, a press still arming is discarded. A press that ENDS a latched
+   * capture still works, so disabling never strands an open mic.
    */
   disabled?: boolean
   /**
@@ -264,6 +265,18 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
     }
   }, [clearTimers, session, setPhase])
   coreSeamsRef.current.disarm = disarm
+
+  // Losing the binding mid-press ends the press here and now, the way a lost
+  // window focus does: a hold commits what was said (never sent, since the
+  // person did not choose to finish) and a press still arming is discarded.
+  // The common case is split view moving the binding to another pane while
+  // the key is down; waiting for the key-up would leave this composer
+  // recording while the person is looking at a different chat. A latch is
+  // not a press in progress, so it keeps running and the key still stops it
+  // (see the `disabled` guard in the keydown handler).
+  useEffect(() => {
+    if (disabled && phaseRef.current !== 'idle') disarm(true)
+  }, [disabled, disarm])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

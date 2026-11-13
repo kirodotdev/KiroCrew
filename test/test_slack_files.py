@@ -152,6 +152,8 @@ class TestProcessSlackFiles:
             }
         ]
         image_paths, text_blocks = await process_slack_files(orch, files)
+        for path in image_paths:
+            os.unlink(path)
         assert len(text_blocks) == 1
         assert "truncated" in text_blocks[0]
 

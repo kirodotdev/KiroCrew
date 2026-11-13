@@ -63,10 +63,29 @@ class TestTheTablesMatchTheRecordedEngine:
         path = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
+    @classmethod
+    def _mountable(cls) -> set[str]:
+        """Every id the engine's allowlist matcher can match: the local built-ins,
+        the ones its remote wrapper serves under a ``remote_`` prefix, and the
+        background-process control tools."""
+        reg = cls._registry()
+        return (
+            set(reg["registered"]) | set(reg["remote"]["ids"]) | set(reg["process_control"]["ids"])
+        )
+
     def test_every_mounted_id_is_a_registered_engine_tool(self):
-        registered = set(self._registry()["registered"])
+        mountable = self._mountable()
         for family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.values():
-            assert set(family) <= registered, sorted(set(family) - registered)
+            assert set(family) <= mountable, sorted(set(family) - mountable)
+
+    def test_every_remote_id_carries_the_engine_s_prefix(self):
+        """The remote wrapper names a tool ``remote_<name>``; an id recorded
+        without the prefix would be a local built-in filed in the wrong list."""
+        reg = self._registry()
+        assert reg["remote"]["ids"]
+        for remote_id in reg["remote"]["ids"]:
+            assert remote_id.startswith("remote_"), remote_id
+            assert remote_id not in reg["registered"], remote_id
 
     def test_the_first_verified_release_is_the_fixture_s_measured_version(self):
         """The release the id tables were first read on (the fixture's
@@ -140,7 +159,7 @@ class TestTheTablesMatchTheRecordedEngine:
         """A policy key is either a registered id or the permission-frame id the
         engine reports instead of one; anything else names nothing."""
         reg = self._registry()
-        receivable = set(reg["registered"]) | set(reg["permission_tool_id"].values())
+        receivable = self._mountable() | set(reg["permission_tool_id"].values())
         assert set(KIRO_CLI_NAME_BY_KAS_TOOL) <= receivable, sorted(
             set(KIRO_CLI_NAME_BY_KAS_TOOL) - receivable
         )
@@ -205,8 +224,23 @@ class TestPolicyAliasSplit:
             for kas_id in KIRO_CLI_NAME_BY_KAS_TOOL
             if kas_id not in mounted and kas_id != "run_command"
         }
-        assert POLICY_ALIAS_DENY_ONLY_IDS == unmounted_policy_keys == {"delete_file"}
+        process_control = {"control_bash_process", "control_pwsh_process"}
+        assert unmounted_policy_keys == {"delete_file"}
+        assert POLICY_ALIAS_DENY_ONLY_IDS == unmounted_policy_keys | process_control
         assert POLICY_ALIAS_DENY_ONLY_IDS <= set(KIRO_CLI_NAME_BY_KAS_TOOL)
+
+    @pytest.mark.parametrize("kas_id", ["control_bash_process", "control_pwsh_process"])
+    def test_an_execute_bash_rule_denies_process_control_but_never_admits_it(self, kas_id):
+        """Mounted beside the shell, but ``start`` runs a command the shell's
+        command checks do not read, so an ``execute_bash`` grant must not
+        auto-approve it while an ``execute_bash`` deny still reaches it."""
+        assert policy_alias_split(kas_id) == ((), ("execute_bash",))
+
+    def test_the_shell_row_still_leads_with_run_command(self):
+        """A PostToolUse call that stated no id falls back to the row's first id."""
+        from kiro_crew.acp.kas_tool_rows import KAS_TOOL_IDS_BY_KIRO_TOOL
+
+        assert KAS_TOOL_IDS_BY_KIRO_TOOL["execute_bash"][0] == "run_command"
 
 
 class TestExpand:
@@ -228,6 +262,51 @@ class TestExpand:
         ]
         assert entries == ["@a", "fs_read", "@b", "fs_read"], "input untouched"
         assert expand_kiro_cli_tool_names([]) == []
+
+
+class TestUseSubagentReachesTheEngineTool:
+    """KAS registers kiro-cli's sub-agent tool as ``invoke_sub_agent``. A spec
+    spelling the kiro-cli name must mount it, and both other readings of the
+    table must agree with that."""
+
+    def test_mounting_use_subagent_mounts_invoke_sub_agent(self):
+        assert expand_kiro_cli_tool_names(["use_subagent"]) == [
+            "use_subagent",
+            "invoke_sub_agent",
+        ]
+
+    def test_excluding_use_subagent_withholds_invoke_sub_agent(self):
+        assert expand_kiro_cli_tool_exclusions(["use_subagent"]) == [
+            "use_subagent",
+            "invoke_sub_agent",
+        ]
+
+    def test_a_rule_written_as_use_subagent_binds_invoke_sub_agent(self):
+        assert policy_aliases("invoke_sub_agent") == ("use_subagent",)
+        assert policy_alias_split("invoke_sub_agent") == (("use_subagent",), ())
+
+
+class TestWebSearchReachesTheRemoteTool:
+    """KAS serves web search as ``remote_web_search``. A spec spelling the
+    kiro-cli ``web_search`` must mount it, exclude it, and govern it under the
+    name an operator's rule is written in."""
+
+    def test_mounting_web_search_mounts_the_remote_tool(self):
+        assert expand_kiro_cli_tool_names(["web_fetch", "web_search"]) == [
+            "web_fetch",
+            "web_search",
+            "remote_web_search",
+        ]
+
+    def test_excluding_web_search_withholds_the_remote_tool(self):
+        assert expand_kiro_cli_tool_exclusions(["web_search"]) == [
+            "web_search",
+            "remote_web_search",
+        ]
+
+    def test_a_rule_written_as_web_search_binds_the_remote_tool(self):
+        assert policy_aliases("remote_web_search") == ("web_search",)
+        assert policy_alias_split("remote_web_search") == (("web_search",), ())
 
 
 class TestTheTwoReadingsHaveOppositePolarity:
@@ -252,7 +331,7 @@ class TestTheTwoReadingsHaveOppositePolarity:
         (``execute_bash`` included), less the ids the engine's exclusion matcher
         cannot see -- the permission-frame-only ids the fixture records."""
         reg = TestTheTablesMatchTheRecordedEngine._registry()
-        registered = set(reg["registered"])
+        registered = TestTheTablesMatchTheRecordedEngine._mountable()
         frame_only = set(reg["permission_tool_id"].values()) - registered
         assert frame_only == {"run_command"}
         owners = set(KIRO_CLI_NAME_BY_KAS_TOOL.values())
@@ -265,8 +344,14 @@ class TestTheTwoReadingsHaveOppositePolarity:
 
     def test_excluding_the_shell_emits_only_its_registered_id(self):
         """``run_command`` is reported, not registered; emitting it would exclude
-        nothing, and ``execute_bash`` already withholds the shell."""
-        assert expand_kiro_cli_tool_exclusions(["execute_bash"]) == ["execute_bash"]
+        nothing, and ``execute_bash`` already withholds the shell. The
+        background-process tools are registered, so excluding the shell
+        withholds them too."""
+        assert expand_kiro_cli_tool_exclusions(["execute_bash"]) == [
+            "execute_bash",
+            "control_bash_process",
+            "control_pwsh_process",
+        ]
 
     def test_exclusion_reading_passes_unknown_names_through(self):
         assert expand_kiro_cli_tool_exclusions(["@srv", "tool_search", ""]) == [

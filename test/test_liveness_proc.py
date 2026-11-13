@@ -73,6 +73,25 @@ class TestChildLists:
         assert sorted(proc.direct_children(str(tmp_path), 1)) == [2, 3, 4]
         assert proc.direct_children(str(tmp_path), 8) == []
 
+    def test_strict_walk_requires_every_nested_children_file(self, tmp_path: Path) -> None:
+        _write(tmp_path, "1/task/1/children", "2")
+        _write(tmp_path, "2/task/2/children", "")
+        assert proc.strict_direct_children(str(tmp_path), 1) == [2]
+        assert proc.strict_descendants(str(tmp_path), 1) == [1, 2]
+
+        (tmp_path / "2" / "task" / "2" / "children").unlink()
+        assert proc.strict_descendants(str(tmp_path), 1) is None
+
+    def test_strict_direct_children_refuses_malformed_or_duplicate_rows(
+        self, tmp_path: Path
+    ) -> None:
+        _write(tmp_path, "1/task/1/children", "2")
+        _write(tmp_path, "1/task/9/children", "2")
+        assert proc.strict_direct_children(str(tmp_path), 1) is None
+
+        _write(tmp_path, "1/task/9/children", "junk")
+        assert proc.strict_direct_children(str(tmp_path), 1) is None
+
     def test_the_children_interface_is_readable_only_when_a_file_reads(
         self, tmp_path: Path
     ) -> None:
@@ -216,8 +235,14 @@ class TestLibprocBackend:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         live = SimpleNamespace(zombie=False, start_secs=10.0)
-        self._stub(monkeypatch, facts={1: live}, children={1: [2, 3], 2: [4, 1], 3: [], 4: []})
-        assert sorted(proc.LibprocBackend().descendants(1) or []) == [2, 3, 4]
+        self._stub(
+            monkeypatch,
+            facts={1: live, 2: live, 3: live, 4: live},
+            children={1: [2, 3], 2: [4, 1], 3: [], 4: []},
+        )
+        backend = proc.LibprocBackend()
+        assert backend.direct_children(1) == [2, 3]
+        assert sorted(backend.descendants(1) or []) == [2, 3, 4]
 
     def test_an_unreadable_root_or_branch_hides_the_whole_tree(
         self, monkeypatch: pytest.MonkeyPatch
@@ -227,6 +252,16 @@ class TestLibprocBackend:
         backend = proc.LibprocBackend()
         assert backend.descendants(1) is None
         assert backend.descendants(9) is None
+
+    def test_an_inner_zombie_keeps_the_tree_but_not_its_cleanup_edge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live = SimpleNamespace(zombie=False, start_secs=10.0)
+        self._stub(monkeypatch, facts={100: live, 200: live}, children={100: [200], 200: [300]})
+        backend = proc.LibprocBackend()
+        assert sorted(backend.descendants(100) or []) == [200, 300]
+        assert backend.direct_children(200) == [300]
+        assert backend.direct_children(300) is None
 
     def test_a_row_reads_argv_then_the_executable_path(
         self, monkeypatch: pytest.MonkeyPatch

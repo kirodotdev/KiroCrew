@@ -1,0 +1,203 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "read",
+        "tool_call_id": "call-1",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "~/mimo-proj/nb.ipynb"
+        },
+        "title": "read",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"file_path\": \"~/mimo-proj/nb.ipynb\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "file_path": "~/mimo-proj/nb.ipynb"
+        },
+        "request_id": 3,
+        "shell_classified": true,
+        "title": "read",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"file_path\": \"~/mimo-proj/nb.ipynb\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "<path>~/mimo-proj/nb.ipynb</path>\n<type>file</type>\n<content>\n1: {\n2:  \"cells\": [\n3:   {\n4:    \"cell_type\": \"code\",\n5:    \"id\": \"c1\",\n6:    \"metadata\": {},\n7:    \"source\": [\n8:     \"print('old')\"\n9:    ],\n10:    \"outputs\": [],\n11:    \"execution_count\": null\n12:   }\n13:  ],\n14:  \"metadata\": {},\n15:  \"nbformat\": 4,\n16:  \"nbformat_minor\": 5\n17: }\n\n(End of file - total 17 lines)\n</content>",
+        "tool_output_bytes": 388,
+        "tool_output_digest": "8cc14a78efab793b5efa84c3331d100dc0b740e95eea8fe9043a96dd1a236120",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "~/mimo-proj/nb.ipynb"
+        },
+        "title": "mimo-proj/nb.ipynb",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"file_path\": \"~/mimo-proj/nb.ipynb\"\n}",
+        "tool_kind": "read",
+        "wire_title": "mimo-proj/nb.ipynb"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "notebook_edit",
+        "tool_call_id": "call-2",
+        "tool_kind": "other",
+        "wire_title": "notebook_edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "cell_id": "c1",
+          "new_source": "print('nb-ok')",
+          "notebook_path": "~/mimo-proj/nb.ipynb"
+        },
+        "title": "notebook_edit",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"notebook_path\": \"~/mimo-proj/nb.ipynb\",\n  \"cell_id\": \"c1\",\n  \"new_source\": \"print('nb-ok')\"\n}",
+        "tool_kind": "other",
+        "wire_title": "notebook_edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "cell_id": "c1",
+          "new_source": "print('nb-ok')",
+          "notebook_path": "~/mimo-proj/nb.ipynb"
+        },
+        "request_id": 7,
+        "shell_classified": true,
+        "title": "edit",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"notebook_path\": \"~/mimo-proj/nb.ipynb\",\n  \"cell_id\": \"c1\",\n  \"new_source\": \"print('nb-ok')\"\n}",
+        "tool_kind": "edit"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_output": "The user rejected permission to use this specific tool call.",
+        "tool_output_bytes": 60,
+        "tool_output_digest": "429de7bbbb8f2cde584cf8b969d2a96af527a0d0330efac23eab6f549b46abd4",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "cell_id": "c1",
+          "new_source": "print('nb-ok')",
+          "notebook_path": "~/mimo-proj/nb.ipynb"
+        },
+        "title": "notebook_edit",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"notebook_path\": \"~/mimo-proj/nb.ipynb\",\n  \"cell_id\": \"c1\",\n  \"new_source\": \"print('nb-ok')\"\n}",
+        "tool_kind": "other",
+        "wire_title": "notebook_edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

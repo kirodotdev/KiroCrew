@@ -109,9 +109,13 @@ EXTERNALLY_MANAGED_STAMPS = _ELECTRON_DISTRIBUTIONS | _CONTAINER_DISTRIBUTIONS
 _GIT_TIMEOUT_SECS = 5
 
 #: What the gateway's unattended update loop does with an available update.
-#: ``install``: with ``auto_update`` on, it installs and restarts. ``notify``: it
-#: only tells the user, whatever ``auto_update`` says. ``mandatory``: a policy
-#: floor this build is below installs it whatever ``auto_update`` says.
+#: ``install``: with ``auto_update`` on, it builds the new version beside the
+#: running install and leaves it staged for the next restart; it never restarts a
+#: running gateway. ``notify``: it only tells the user, whatever ``auto_update``
+#: says (because no route can install here, because the route replaces the
+#: running tree in place, or because policy turns unattended installs off; the
+#: route is left to a person's Update). ``mandatory``: a policy floor this build
+#: is below stages it whatever ``auto_update`` says, where staging is possible.
 #: ``unknown`` is the status surface's value before the first derivation; the
 #: loop never sees it.
 AUTO_EFFECT_INSTALL = "install"
@@ -493,9 +497,11 @@ class AutoUpdateEffect:
     """The answer :func:`auto_update_effect` gives: what, which path, and why not."""
 
     effect: str
-    #: The apply path that installs here, or ``None`` when nothing can.
+    #: The apply path that installs here, or ``None`` when nothing can. With
+    #: ``notify`` a route is the path a person's Update takes; the loop never
+    #: takes it by itself.
     route: str | None
-    #: Why no path can install here; empty when one can.
+    #: Why the loop does not install here by itself; empty when it does.
     reason: str = ""
 
     @property
@@ -503,12 +509,30 @@ class AutoUpdateEffect:
         """The policy source pin is the reason: no path, manual ones included, may install."""
         return self.reason == _SOURCE_PIN_REASON
 
+    @property
+    def manual_only(self) -> bool:
+        """The loop only notifies, but a person's Update still installs by :attr:`route`.
+
+        The ``notify`` that keeps its route: ``updates.unattended_apply`` turned
+        the unattended install off, or the route replaces the running tree in
+        place; neither is the install shape failing.
+        """
+        return self.effect == AUTO_EFFECT_NOTIFY and self.route is not None
+
 
 #: Default for :func:`auto_update_effect`'s ``provider``: resolve it from policy.
 _RESOLVE_PROVIDER: Any = object()
 
 #: The reason a route's update source fails the policy source pin.
 _SOURCE_PIN_REASON = "the update source is not the one the security policy pins"
+
+#: The reason a route that can install only notifies: ``updates.unattended_apply``.
+_UNATTENDED_OFF_REASON = "the security policy turns off unattended installs"
+
+#: The reason a route that replaces the running tree in place only notifies: the
+#: gateway is never updated while it runs (decision entry "updates never restart a
+#: running gateway").
+_IN_PLACE_REASON = "it replaces the running install in place, so a person applies it"
 
 
 def bundled_by_desktop_app(dist: str | None = None) -> bool:
@@ -609,7 +633,10 @@ def auto_update_effect(
     and a managed venv install only past their unattended path's static gates
     (dynamic ones, such as the git path's "a release, not just new commits",
     stay with the update itself); anything else is updated elsewhere. A build
-    below the policy floor is ``mandatory`` wherever a path can install.
+    below the policy floor is ``mandatory`` wherever a path can install. Above
+    the floor, a policy with ``updates.unattended_apply: false`` makes a path
+    that can install ``notify`` and keeps its route, so a person's Update (and
+    the ``can_apply`` the dashboard reads off the route) still works.
 
     Blocking I/O (git, policy, the filesystem): call it off the event loop.
     *provider* defaults to the policy's; pass ``None`` when the caller already
@@ -658,7 +685,7 @@ def auto_update_effect(
     if route is None:
         return AutoUpdateEffect(AUTO_EFFECT_NOTIFY, None, reason)
 
-    from kiro_crew.platform.update_governance import update_required
+    from kiro_crew.platform.update_governance import unattended_apply_allowed, update_required
 
     if running_version is None:
         import kiro_crew
@@ -666,6 +693,13 @@ def auto_update_effect(
         running_version = kiro_crew.__version__
     if update_required(running_version):
         return AutoUpdateEffect(AUTO_EFFECT_MANDATORY, route)
+    if not unattended_apply_allowed():
+        return AutoUpdateEffect(AUTO_EFFECT_NOTIFY, route, _UNATTENDED_OFF_REASON)
+    if route != AUTO_ROUTE_WHEEL:
+        # A git reset or a policy command rewrites the tree this process serves
+        # from, which is the very disturbance a running gateway must not get. Only
+        # the managed venv builds beside it.
+        return AutoUpdateEffect(AUTO_EFFECT_NOTIFY, route, _IN_PLACE_REASON)
     return AutoUpdateEffect(AUTO_EFFECT_INSTALL, route)
 
 

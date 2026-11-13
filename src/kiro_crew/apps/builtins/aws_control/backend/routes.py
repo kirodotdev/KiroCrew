@@ -257,6 +257,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.accounts import (  # noqa: F401
         _MAX_REGISTERED,
+        _aws_cli_v1,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.backups import (  # noqa: F401
         _account_jobs,
@@ -314,6 +315,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _trim_preview,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.drive_writes import (  # noqa: F401
+        _TLS_POLICY_CHECKED,
+        _confirm_tls_policy,
         _drive_object_keys,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.library import (  # noqa: F401

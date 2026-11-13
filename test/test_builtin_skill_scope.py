@@ -320,14 +320,24 @@ class TestTheCommittedTreeAgrees:
         failed sibling skip it, and an ``if:`` (a path filter's surface output,
         say) would let a diff shape dodge it -- either one turns the absolute,
         baseline-free rule into one that only sometimes runs. The one condition
-        it carries, by exact text, skips a push to main only while the merge
-        queue is on -- the merge group already ran this gate on that tree.
+        it carries, by exact text, skips a push to main only when the merge
+        queue landed it -- the merge group already ran this gate on that tree.
         """
         workflow = yaml.safe_load(
             (ROOT / ".github" / "workflows" / "fast-gate.yml").read_text(encoding="utf-8")
         )
-        job = workflow["jobs"]["builtin-skill-scope"]
-        assert "needs" not in job, "builtin-skill-scope gained a dependency and can now be skipped"
+        job = workflow["jobs"]["source-gates"]
+        assert "needs" not in job, "source-gates gained a dependency and can now be skipped"
         assert (
-            job.get("if") == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
-        ), "builtin-skill-scope's condition is not exactly the merge-queue push skip"
+            job.get("if")
+            == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'"
+        ), "source-gates's condition is not exactly the merge-queue push skip"
+        step = next(
+            s
+            for s in job["steps"]
+            if "scripts/check_builtin_skill_scope.py" in str(s.get("run", ""))
+        )
+        # The step's own condition only keeps a cancelled run from spending its
+        # runner; it admits every diff shape.
+        assert step.get("if") == "${{ !cancelled() }}"
+        assert "continue-on-error" not in step

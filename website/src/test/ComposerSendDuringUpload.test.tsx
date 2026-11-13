@@ -658,10 +658,10 @@ describe('ChatPage composer: Send waits for a snip in progress', () => {
     await waitFor(() => expect(sendButton()).not.toBeDisabled())
     // A second release for the same snip must not under-count another
     // producer's hold on the slot.
-    holdComposerSend(slot)
+    act(() => { holdComposerSend(slot) })
     await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }) })
     expect(isComposerSendHeld(slot)).toBe(true)
-    releaseComposerSend(slot)
+    act(() => { releaseComposerSend(slot) })
   })
 
   it('keeps each preview snip hold until its own capture settles', async () => {

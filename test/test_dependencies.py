@@ -189,6 +189,32 @@ class TestCapabilitySeamResolution:
         assert result.installed == ["capability/mcp/some-mcp", "capability/skills/SomeSkill"]
         assert result.failed == []
 
+    async def test_unreadable_ledger_reports_dependency_failed(self, fake_manager, monkeypatch):
+        from pathlib import Path
+
+        from kiro_crew.apps.dependency_ledger import _ledger_path
+
+        mgr = fake_manager()
+        deps = Dependencies(capabilities=CapabilityDependencies(mcp=["some-mcp"]))
+        initial = await resolve_dependencies("app-a", deps)
+        assert initial.installed == ["capability/mcp/some-mcp"]
+        path = _ledger_path()
+        before = path.read_bytes()
+        real_read_text = Path.read_text
+
+        def read_text(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError("Permission denied")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        result = await resolve_dependencies("app-b", deps)
+
+        assert mgr.calls == [("install_mcp", "some-mcp"), ("install_mcp", "some-mcp")]
+        assert result.failed == ["capability/mcp/some-mcp"]
+        assert result.installed == []
+        assert path.read_bytes() == before
+
     async def test_unavailable_manager_records_failure_not_crash(self, fake_manager):
         """The public edition has no capability manager: the app still installs,
         but the unmet dep must be reported rather than silently 'succeeding'."""

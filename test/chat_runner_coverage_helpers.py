@@ -196,11 +196,8 @@ def _runner_state(tmp_path, *, hook_store=None, context_builder=None):
 def _set_stream(client, events) -> None:
     """Script ``client.stream`` so only the FIRST turn yields *events*.
 
-    A turn that produced no visible assistant text arms the empty-response
-    auto-continue, which re-queues the prompt and runs a second turn. With a
-    stream that replays unconditionally, that second turn re-processes the same
-    permission event and every ``assert_awaited_once`` on the provider counts
-    two calls. Later turns therefore complete immediately.
+    An empty reply auto-continues into a second turn, which would replay the events and
+    double every ``assert_awaited_once``; later turns complete immediately.
     """
     calls = {"n": 0}
 
@@ -225,12 +222,8 @@ def _quiet_sel():
 async def _drive(state, slot, message: str = "hello", *, _turn_actor: str = "") -> None:
     """Run exactly one turn and leave no task behind.
 
-    ``_empty_response_retries`` is pre-spent on purpose. A turn that streams no
-    assistant text re-queues itself, and the finally block then dispatches a
-    SECOND turn through ``spawn_guarded_turn`` — which doubles every
-    ``assert_awaited_once`` on the provider and leaves a task running past the
-    test's event loop. Starting at the exhausted count sends the empty response
-    to its terminal notice branch instead, so one call is one turn.
+    ``_empty_response_retries`` is pre-spent so an empty reply takes the terminal notice
+    branch instead of dispatching a SECOND turn that outlives the event loop.
     """
     slot._empty_response_retries = 2
     with _quiet_sel():

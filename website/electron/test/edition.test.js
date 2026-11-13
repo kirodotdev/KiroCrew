@@ -11,9 +11,9 @@ const {
 } = require("../edition");
 const {
   DEFAULT_GATEWAY_WAIT_MS,
-  WINDOWS_LOCAL_GATEWAY_WAIT_MS,
-  ENTERPRISE_PRE_BIND_CHECKS_MS,
-  ENTERPRISE_PRE_BIND_HEADROOM_MS,
+  LOCAL_GATEWAY_WAIT_MS,
+  LTS_PRE_BIND_CHECKS_MS,
+  LTS_PRE_BIND_HEADROOM_MS,
   gatewayWaitTimeoutMs,
 } = require("../gateway-wait");
 
@@ -28,8 +28,8 @@ test("no baked file reads as oss", () => {
   assert.equal(readBakedEdition({ bakedPath: bakedPath() }), "oss");
 });
 
-test("the file build-desktop.sh writes reads as enterprise", () => {
-  assert.equal(readBakedEdition({ bakedPath: bakedPath("enterprise\n") }), "enterprise");
+test("the file build-desktop.sh writes reads as lts", () => {
+  assert.equal(readBakedEdition({ bakedPath: bakedPath("lts\n") }), "lts");
 });
 
 test("anything else reads as oss", () => {
@@ -46,42 +46,32 @@ test("the source tree carries no baked edition", () => {
   assert.equal(readBakedEdition(), "oss");
 });
 
-test("oss wait budgets are unchanged", () => {
-  for (const platform of ["darwin", "linux", "win32"]) {
-    for (const watchSpawn of [false, true]) {
-      const expected = platform === "win32" && watchSpawn
-        ? WINDOWS_LOCAL_GATEWAY_WAIT_MS
-        : DEFAULT_GATEWAY_WAIT_MS;
-      assert.equal(gatewayWaitTimeoutMs({ platform, watchSpawn }), expected);
-      assert.equal(gatewayWaitTimeoutMs({ platform, watchSpawn, edition: "oss" }), expected);
-    }
+test("an oss local gateway gets the cold-start budget, a connection tab the ordinary one", () => {
+  for (const watchSpawn of [false, true]) {
+    const expected = watchSpawn ? LOCAL_GATEWAY_WAIT_MS : DEFAULT_GATEWAY_WAIT_MS;
+    assert.equal(gatewayWaitTimeoutMs({ watchSpawn }), expected);
+    assert.equal(gatewayWaitTimeoutMs({ watchSpawn, edition: "oss" }), expected);
   }
   assert.equal(DEFAULT_GATEWAY_WAIT_MS, 30_000);
-  assert.equal(WINDOWS_LOCAL_GATEWAY_WAIT_MS, 120_000);
+  assert.equal(LOCAL_GATEWAY_WAIT_MS, 120_000);
 });
 
-test("an enterprise local gateway gets the pre-bind checks plus headroom", () => {
-  const extra = ENTERPRISE_PRE_BIND_CHECKS_MS + ENTERPRISE_PRE_BIND_HEADROOM_MS;
+test("an LTS local gateway gets the pre-bind checks plus headroom", () => {
+  const extra = LTS_PRE_BIND_CHECKS_MS + LTS_PRE_BIND_HEADROOM_MS;
   // kiro-cli --version 10s + whoami 30s + policy fetch 10s.
-  assert.equal(ENTERPRISE_PRE_BIND_CHECKS_MS, 50_000);
-  assert.ok(ENTERPRISE_PRE_BIND_HEADROOM_MS > 0);
+  assert.equal(LTS_PRE_BIND_CHECKS_MS, 50_000);
+  assert.ok(LTS_PRE_BIND_HEADROOM_MS > 0);
   assert.equal(
-    gatewayWaitTimeoutMs({ platform: "darwin", watchSpawn: true, edition: "enterprise" }),
-    DEFAULT_GATEWAY_WAIT_MS + extra,
-  );
-  assert.equal(
-    gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: true, edition: "enterprise" }),
-    WINDOWS_LOCAL_GATEWAY_WAIT_MS + extra,
+    gatewayWaitTimeoutMs({ watchSpawn: true, edition: "lts" }),
+    LOCAL_GATEWAY_WAIT_MS + extra,
   );
 });
 
-test("an enterprise connection tab keeps the ordinary deadline", () => {
-  for (const platform of ["darwin", "linux", "win32"]) {
-    assert.equal(
-      gatewayWaitTimeoutMs({ platform, watchSpawn: false, edition: "enterprise" }),
-      DEFAULT_GATEWAY_WAIT_MS,
-    );
-  }
+test("an LTS connection tab keeps the ordinary deadline", () => {
+  assert.equal(
+    gatewayWaitTimeoutMs({ watchSpawn: false, edition: "lts" }),
+    DEFAULT_GATEWAY_WAIT_MS,
+  );
 });
 
 test("both wait callers pass the baked edition", () => {
@@ -102,8 +92,8 @@ test("the baked edition is packed into app.asar and staged by build-desktop.sh",
     path.join(__dirname, "..", "..", "..", "packaging", "build-desktop.sh"),
     "utf8",
   );
-  // Staged only for enterprise, from the same build stamp the backend uses.
-  assert.match(script, /case "\$\{KIROCREW_BUILD_EDITION:-oss\}" in\n {2}oss\) ;;\n {2}enterprise\)/);
-  assert.match(script, /printf 'enterprise\\n' > "\$ELECTRON_DIR\/EDITION"/);
+  // Staged only for LTS, from the same build stamp the backend uses.
+  assert.match(script, /case "\$\{KIROCREW_BUILD_EDITION:-oss\}" in\n {2}oss\) ;;\n {2}lts\)/);
+  assert.match(script, /printf 'lts\\n' > "\$ELECTRON_DIR\/EDITION"/);
   assert.match(script, /^rm -f .*"\$ELECTRON_DIR\/EDITION"$/m);
 });

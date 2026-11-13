@@ -334,11 +334,12 @@ class TestAdmissionAndSkills:
     def test_native_mapped_skills_receive_only_scoped_discovery(self, rig, monkeypatch):
         builder, _, skills, _, _ = rig
         mapped = seed_skill(skills._dir, "mapped")
-        seed_skill(skills._dir, "outside")
+        # Named so no fixed prompt text contains it: "outside" is in a critical rule.
+        seed_skill(skills._dir, "unscoped-zebra")
         monkeypatch.setattr(ctx, "agent_skill_globs", lambda agent, **kwargs: [str(mapped)])
         text = builder.build_session_context(agent="kirocrew", provider_type="acp")
         assert "skill_search" in text and "mapped" in text
-        assert "outside" not in text
+        assert "unscoped-zebra" not in text
         assert "Synthetic procedure" not in text
 
     def test_lazy_setting_does_not_expand_admission(self, rig):
@@ -712,7 +713,7 @@ def test_overflow_keeps_mandatory_framing_not_optional_skills(rig, monkeypatch):
     cfg.skills.lazy_load = True
     memory.write_preferences("Required preference.\n" * ctx._CONTEXT_BUDGET_BASE)
     seed_skill(skills._dir, "optional-summary")
-    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg: True)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg, crew="": True)
     builder.conversation_log = Mock()
     builder.conversation_log.recent_with_provenance.return_value = []
     builder.conversation_log.recent.return_value = [

@@ -300,6 +300,18 @@ def test_an_agent_fork_of_a_pinned_session_is_not_pinned(tmp_path):
     assert state.get_slot(result["target"]).pinned is False
 
 
+def test_an_agent_fork_keeps_the_sources_color(tmp_path):
+    """Unlike the pin, color groups sessions the way the folder does, so the
+    agent's child keeps it too (``test_chat_fork_inherits_color.py``)."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller.color_index = 4
+
+    result = _fork(state, caller)
+
+    assert state.get_slot(result["target"]).color_index == 4
+
+
 def test_an_unknown_folder_refuses_the_whole_fork(tmp_path):
     state = _make_state(tmp_path)
     caller = _seed(state, "chat-1")
@@ -324,6 +336,20 @@ def test_the_child_takes_the_callers_posture_and_nothing_narrower(tmp_path):
     assert child._trust is True and child._trust_reads is True
     assert not getattr(child, "_trusted_patterns", set())
     assert not getattr(child, "_trust_scope", "")
+
+
+def test_a_card_scoped_trust_is_not_carried_into_a_fork(tmp_path):
+    """A conductor card's "Trust this crew member" covers that member's own tools
+    only (``trust_carries``), so a fork it opens starts without it."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller._trust = True
+    caller._trust_card_scoped = True
+
+    child = state.get_slot(_fork(state, caller)["target"])
+
+    assert child._trust is False
+    assert getattr(child, "_trust_card_scoped", False) is False
 
 
 # ── the core: naming another session ────────────────────────────────────────────
@@ -519,7 +545,19 @@ def test_the_slot_cap_refuses_a_fork_before_the_copy(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as exc:
         _fork(state, caller)
     assert exc.value.code == "slot_cap_reached"
-    assert exc.value.status == 429
+    assert exc.value.status == 409
+    assert set(state._slots) == before
+
+
+def test_the_creator_cap_refuses_a_fork_before_the_copy(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    monkeypatch.setattr("kiro_crew.dashboard.state.max_slots_per_creator", lambda: 0)
+    before = set(state._slots)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _fork(state, caller)
+    assert exc.value.code == "creator_slot_cap_reached"
+    assert exc.value.status == 409
     assert set(state._slots) == before
 
 
@@ -542,7 +580,28 @@ def test_the_ceilings_are_re_read_at_the_mint(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as exc:
         _fork(state, caller)
     assert exc.value.code == "slot_cap_reached"
+    assert exc.value.status == 409
     assert set(state._slots) == before, "no child is minted over the ceiling"
+
+
+def test_the_creator_cap_is_re_read_at_the_mint(tmp_path, monkeypatch):
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    real_resolve = chat_fork.resolve_fork_source
+
+    async def _fill_then_resolve(*a, **kw):
+        source = await real_resolve(*a, **kw)
+        held = state.creator_slot_count(caller.key)
+        monkeypatch.setattr("kiro_crew.dashboard.state.max_slots_per_creator", lambda: held)
+        return source
+
+    monkeypatch.setattr(sc, "resolve_fork_source", _fill_then_resolve)
+    before = set(state._slots)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _fork(state, caller)
+    assert exc.value.code == "creator_slot_cap_reached"
+    assert exc.value.status == 409
+    assert set(state._slots) == before
 
 
 def test_trust_revoked_during_preparation_is_not_inherited(tmp_path, monkeypatch):

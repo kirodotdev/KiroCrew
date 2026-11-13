@@ -29,6 +29,7 @@ from kiro_crew.voice_reply import (
     SYSTEM_ENGINE_ESPEAK,
     SYSTEM_ENGINE_SAPI,
     SYSTEM_ENGINE_SAY,
+    VoiceSynthesisError,
     _produced_audio,
     _synthesize_polly,
     _synthesize_system,
@@ -629,15 +630,45 @@ class TestSystemSubprocessOwnership:
 
 class TestSynthesizePolly:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _passthrough_sandbox(self, monkeypatch, _polly_consented):
+    def _passthrough_sandbox(self, _floor_monkeypatch, _polly_consented):
         # _synthesize_polly() calls wrap_argv before create_subprocess_exec.
         # wrap_argv fail-closes on any host with no OS sandbox backend (macOS 26,
         # every Windows host), which is caught and returns None. Patch to
         # passthrough so the existing create_subprocess_exec mocks run.
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
         # cgroup_scope_argv is neutralized module-wide by _no_cgroup_scope.
-        _patch_aws_on_path(monkeypatch)
+        _patch_aws_on_path(_floor_monkeypatch)
+
+    @pytest.mark.asyncio
+    async def test_the_aws_child_gets_no_python_interpreter_settings(self, monkeypatch) -> None:
+        """A Python ``aws`` (aws-cli v1) must not import the gateway's packages.
+
+        The voice list already drops them from its ``aws`` child; synthesis spawns
+        the same ``aws`` for the same user. ``env=None`` means the child inherits
+        the gateway's own environment.
+        """
+        monkeypatch.setenv("PYTHONPATH", "/bundle/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/bundle")
+        monkeypatch.setenv("KC_UNRELATED_SETTING", "kept")
+        proc = _mock_subprocess(returncode=0)
+        seen: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            seen["env"] = kwargs.get("env")
+            with open(cmd[-1], "wb") as f:
+                f.write(b"x" * 200)
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await _synthesize_polly("<speak>hi</speak>")
+        assert result is not None
+        os.unlink(result)
+        env = dict(os.environ) if seen["env"] is None else seen["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env.get("KC_UNRELATED_SETTING") == "kept"
 
     @pytest.mark.asyncio
     async def test_invalid_engine_falls_back_to_default(self, tmp_path) -> None:
@@ -704,6 +735,65 @@ class TestSynthesizePolly:
         proc = _mock_subprocess(returncode=1, stderr=b"denied")
         with patch("asyncio.create_subprocess_exec", return_value=proc):
             assert await _synthesize_polly("<speak>hi</speak>") is None
+
+    @pytest.mark.asyncio
+    async def test_engine_region_rejection_raises_for_a_waiting_caller(self) -> None:
+        """``raise_refusal`` turns the engine/region rejection into a coded error.
+
+        The unattended path returns None (above) so the caller falls back to
+        text, but an engine/region-unsupported rejection repeats identically for
+        every sentence, so the dashboard stream stops at the first one with the
+        code whose remedy fixes it rather than retry a doomed call per sentence
+        into the generic notice. The AWS message can echo the SSML, so the
+        raised text is fixed, not the CLI's stderr.
+        """
+        proc = _mock_subprocess(
+            returncode=255,
+            # The AWS CLI stderr reported for this failure.
+            stderr=(
+                b"An error occurred (ValidationException) when calling the "
+                b"SynthesizeSpeech operation: The selected engine is not supported "
+                b"in this region"
+            ),
+        )
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            pytest.raises(VoiceSynthesisError) as rejected,
+        ):
+            await _synthesize_polly("<speak>hi</speak>", raise_refusal=True)
+        assert rejected.value.code == "voice_polly_rejected"
+        assert "ValidationException" not in str(rejected.value)
+        assert str(rejected.value) == (
+            "Amazon Polly does not offer the selected voice or engine in the "
+            "selected AWS region. In the Text-to-speech settings, pick a different "
+            "Voice, Engine, or Region."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_error_is_not_classified_as_engine_region(self) -> None:
+        """A credential/access error is NOT the engine/region case.
+
+        Its remedy is the profile, not the engine or region, so it takes the
+        skip-per-sentence ``None`` path rather than raising a remedy that would
+        send the user to fix something that is not broken.
+        """
+        proc = _mock_subprocess(
+            returncode=255,
+            stderr=b"An error occurred (ExpiredTokenException): the security token has expired",
+        )
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            assert await _synthesize_polly("<speak>hi</speak>", raise_refusal=True) is None
+
+    @pytest.mark.asyncio
+    async def test_unclassified_aws_failure_still_returns_none(self) -> None:
+        """Any failure that is not the engine/region case stays None.
+
+        Naming a remedy that does not fit is worse than the honest generic
+        notice, so an unfamiliar failure keeps the skip-per-sentence path.
+        """
+        proc = _mock_subprocess(returncode=52, stderr=b"Could not connect to the endpoint URL")
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            assert await _synthesize_polly("<speak>hi</speak>", raise_refusal=True) is None
 
     @pytest.mark.asyncio
     async def test_output_too_small_returns_none(self) -> None:
@@ -1069,10 +1159,11 @@ class TestSynthesizePollyCancelOwnership:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _sandbox_and_consent(self, monkeypatch, _polly_consented):
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
-        _patch_aws_on_path(monkeypatch)
+    def _sandbox_and_consent(self, _floor_monkeypatch, _polly_consented):
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(_floor_monkeypatch)
 
     @staticmethod
     def _owned_mp3(tmp_path, monkeypatch):

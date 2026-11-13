@@ -102,7 +102,7 @@ not a transactional command, execution, and delivery ledger.
 ### 2.3 The submission boundary has an uncertainty seam
 
 The `spawn_run` MCP tool submits wave members through separate HTTP requests
-(`src/kiro_crew/mcp_tools/spawn.py:484-598`). A response can fail after the
+(`src/kiro_crew/mcp_tools/spawn.py::spawn_run`). A response can fail after the
 gateway accepted the request, so the caller and gateway maintain extra
 submission accounting and lost-submission reconciliation. The manager exposes
 `record_lost_submission()` and a stuck-wave reaper `_sweep_stuck_waves()`

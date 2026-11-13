@@ -1,11 +1,6 @@
 """Durable retry accounting for history consolidation: attempts, backoff and the cap.
 
-Among the cases: a failure after the billed LLM call arming the durable backoff, the
-attempt cap abandoning its span, success clearing the accounting, a fresh consolidator
-reading the persisted backoff, uncached and hostile metadata reads, a contended Windows
-rename, a pre-dispatch failure leaving the cap unspent, and accounting that never
-resurrects a deleted session. The shared helpers come from
-``history_consolidation_retry_helpers.py``.
+Shared helpers are in ``history_consolidation_retry_helpers.py``.
 """
 
 import asyncio
@@ -34,6 +29,10 @@ from kiro_crew.history import (
     ConversationLog,
 )
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 
 class _OneTurnProvider:
@@ -503,13 +502,8 @@ class TestHostileMetadataDoesNotBreakTheGate:
 class TestAContendedRenameNeedsTheWriteOffTheLoop:
     """The metadata write ends in a rename Windows can refuse; offloading retries it.
 
-    ``_update_metadata_locked`` finishes on ``replace_with_retry``, which absorbs the
-    ``PermissionError`` a concurrent transcript READER causes on Windows -- but only
-    off the event loop, because retrying sleeps and sleeping on the loop would stall
-    every other session. Production earns the retry by offloading every session
-    mutator, exactly as ``on_event_loop`` documents. A test that instead drives the
-    mutator ON the loop under ``allow_on_loop_persist`` opts out of the retry, so one
-    routine contended rename fails it outright -- which is what Windows CI hit here.
+    ``replace_with_retry`` absorbs the reader-caused ``PermissionError`` only off the
+    loop, since its retry sleeps. Under ``allow_on_loop_persist`` there is no retry.
     """
 
     @pytest.fixture
@@ -812,6 +806,146 @@ class TestOnlyASentTurnConsumesTheCap:
             AsyncMock(side_effect=RuntimeError("stream died")),
         ):
             assert await c._call_llm("prompt") is None
+
+
+class _SignedOutProvider(_OneTurnProvider):
+    """Fails every prompt with ``AcpAuthRequired``, optionally after a billed or streamed start."""
+
+    def __init__(
+        self, *, billed_first: float = 0.0, streams_text: bool = False, metered: bool = True
+    ) -> None:
+        super().__init__("", credits=0.0)
+        self.reports_turn_usage = metered
+        self._billed_first = billed_first
+        self._streams_text = streams_text
+        self.calls = 0
+
+    async def stream(self, _message: str, *, allow_image: bool = True):
+        from kiro_crew.acp.client import AcpAuthRequired, AcpError
+
+        self.calls += 1
+        if self._billed_first and self.calls == 1:
+            self.last_prompt_stats = SimpleNamespace(credits=self._billed_first)
+            raise AcpError("transient error (http 5xx)")
+        self.last_prompt_stats = SimpleNamespace(credits=0.0)
+        if self._streams_text:
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text='{"history_entry": "par')
+        raise AcpAuthRequired("kiro-cli is not logged in")
+
+
+class TestALapsedLoginIsNotAFailedAttempt:
+    """A signed-out kiro-cli runs no model, so it must not spend the abandon budget.
+
+    The turn fails inside ``stream_and_collect_json`` with ``AcpAuthRequired``; an
+    overnight lapse must not burn all five attempts and mark the span consolidated
+    unread. A content-shaped failure in the same place is still charged, and so is
+    an auth failure after the turn streamed text or billed on an earlier attempt.
+    """
+
+    @staticmethod
+    def _consolidator(log, provider):
+        c = _make_consolidator(log, sessions=object())
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+        turn = patch.object(history_consolidation, "background_turn", _background_turn_on(provider))
+        return c, abandoned, turn
+
+    @pytest.mark.asyncio
+    async def test_an_auth_failure_inside_the_turn_is_not_dispatched(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, _, turn = self._consolidator(log, _SignedOutProvider())
+
+        with turn, pytest.raises(history_mod._ConsolidationNotDispatched, match="not logged in"):
+            await c._call_llm("prompt")
+
+    @pytest.mark.asyncio
+    async def test_repeated_auth_failures_never_abandon_the_history_span(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, abandoned, turn = self._consolidator(log, _SignedOutProvider())
+
+        with turn:
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == 0, "a lapsed login consumed the abandon budget"
+        assert retry_at > time.time(), "the environment backoff was not armed"
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3, "a lapsed login dropped the span unread"
+        # Re-login: the same span consolidates once the backoff expires.
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+        assert c.retry_eligible(KEY) is True
+
+    @pytest.mark.asyncio
+    async def test_an_auth_failure_leaves_the_prefs_window_pending(self, tmp_path):
+        from kiro_crew.history_consolidation import _CONSOLIDATION_EMPTY
+
+        log = _seed_log(tmp_path)
+        c, abandoned, turn = self._consolidator(log, _SignedOutProvider())
+
+        with turn:
+            outcome = await c._consolidate(KEY, include_history=False)
+
+        assert outcome is _CONSOLIDATION_EMPTY
+        assert log.consolidation_retry_state(KEY) == (0, 0.0)
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provider_kwargs",
+        [
+            pytest.param({"billed_first": 2.0}, id="billed-attempt-then-auth"),
+            pytest.param({"streams_text": True}, id="text-streamed-then-auth"),
+            pytest.param({"billed_first": 2.0, "metered": False}, id="unmetered-billed-then-auth"),
+            pytest.param({"metered": False}, id="unmetered-backend"),
+        ],
+    )
+    async def test_an_auth_failure_after_spend_or_without_metering_is_charged(
+        self, tmp_path, provider_kwargs
+    ):
+        """Only a metered backend showing zero billing and no text proves the turn was free."""
+        log = _seed_log(tmp_path)
+        provider = _SignedOutProvider(**provider_kwargs)
+        c, _, turn = self._consolidator(log, provider)
+
+        with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.consolidation_retry_state(KEY)[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_content_shaped_failure_still_abandons_after_the_cap(self, tmp_path):
+        sessions = MagicMock()
+        sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
+        sessions.release = MagicMock()
+        sessions.recycle_background = AsyncMock()
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=sessions)
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+
+        with patch.object(
+            history_mod,
+            "stream_and_collect_json",
+            AsyncMock(side_effect=RuntimeError("context window exceeded")),
+        ):
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS - 1):
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+                assert abandoned == []
+            assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS - 1
+            assert log.unconsolidated_count(KEY) == 3
+            with history_mod.allow_on_loop_persist():
+                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await c._consolidate(KEY, include_history=True)
+
+        assert len(abandoned) == 1
+        assert log.unconsolidated_count(KEY) == 0
 
 
 class TestAccountingNeverResurrectsADeletedSession:

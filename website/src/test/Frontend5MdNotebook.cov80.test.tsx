@@ -287,6 +287,32 @@ describe('md-notebook/ConnectVault', () => {
     expect(onConnected).not.toHaveBeenCalled()
   })
 
+  it('keeps keyboard focus on the clone button while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press would drop focus to the page for the whole clone.
+    let fail: (e: Error) => void = () => {}
+    notesApi.cloneVault.mockReturnValue(new Promise((_, reject) => { fail = reject }))
+    render(<ConnectVault onConnected={vi.fn()} />)
+    fireEvent.change(document.getElementById('mdnb-repoUrl') as HTMLInputElement, {
+      target: { value: 'zz://repo' },
+    })
+    const button = submitBtn()
+
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+
+    fail(new Error('zz-clone-broke'))
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    // Counted after the clone settles, so a second clone started by the
+    // second press would already show here.
+    expect(notesApi.cloneVault).toHaveBeenCalledTimes(1)
+    expect(button).toHaveFocus()
+  })
+
   it('rolls the knowledge flag back when registration fails, and keeps the vault', async () => {
     knowledgeRegister.mockRejectedValue(new Error('zz-knowledge-broke'))
     const onConnected = vi.fn()

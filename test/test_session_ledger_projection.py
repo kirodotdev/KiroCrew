@@ -1,20 +1,11 @@
 """The session ledger as a PROJECTION of the session's crew log.
 
-One test per property the change has to keep true. The load-bearing ones are
-:func:`test_a_slot_folds_across_every_unit_it_ran_under` -- a slot owns one ACP
-session id at a time, so a record that did not join those units would answer with
-whichever part of the workstream happened to land in the newest session -- and
-:func:`test_the_injected_snapshot_is_byte_identical_to_the_stored_document_s`,
-which pins that the block a nudge cycle carries did not change shape when the
-record stopped being a file.
+A slot owns one ACP session id at a time, so the record must fold across every unit
+(:func:`test_a_slot_folds_across_every_unit_it_ran_under`).
 
-Two sibling files hold the rest of the projection's tests.
-``test_session_ledger_projection_carry_forward.py`` covers the upgrade carry-forward and
-the slot control files around it: the carry claim, the delete exclusions and tombstone,
-and the recorded unit order. ``test_session_ledger_projection_durability_and_cache.py``
-covers the durability answer an update gives and the slot-map and fold caches a read
-goes through. The slot and session constants, the autouse home fixture, ``_unit`` and
-``_entries`` that all three files use live in ``session_ledger_projection_helpers.py``.
+Siblings: ``test_session_ledger_projection_carry_forward.py`` (carry-forward and slot
+control files) and ``test_session_ledger_projection_durability_and_cache.py``
+(durability and caches); shared helpers live in ``session_ledger_projection_helpers.py``.
 """
 
 from __future__ import annotations
@@ -22,6 +13,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from crew_log_drain import assert_drained
 from session_ledger_projection_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     LATER_SESSION,
     SESSION,
@@ -99,13 +91,8 @@ def test_record_returns_the_record_the_appended_entry_produces():
     The writer is asynchronous, so a read-back would race the drain and could
     report a phase the caller just set as still unset.
 
-    Every field a caller can act on has to agree with what the log then reports. The
-    DERIVED timestamps deliberately do not: the entry this record is folded from is
-    never written, so its stamp is the caller's own sample while the log's is the
-    store's, and no position for either sample makes them one value. They are pinned
-    by the relationship that IS a property -- the returned record never claims a time
-    later than the entry the log holds -- rather than by an equality that holds only
-    while both samples happen to land inside the same second.
+    Derived timestamps come from two clock samples, so they are pinned by ordering (the
+    returned time is never later than the log's), not equality.
     """
     _unit()
     returned = sl.record(
@@ -116,7 +103,7 @@ def test_record_returns_the_record_the_appended_entry_produces():
         event_kind="progress",
     )
     assert returned["phase"] == "awaiting-ci"
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     settled = sl.read_state(SLOT)
 
     # The field SET is compared whole, so a field added to the record in future is
@@ -436,23 +423,9 @@ def test_a_ledger_entry_with_a_wrong_shape_is_refused_at_the_append():
 def test_a_subagent_entry_does_not_stop_the_fold(caplog):
     """A log that recorded a dispatched child still folds.
 
-    The regression this pins: every entry the emitter writes reaches the fold through
-    ``known=KNOWN_TYPES``, which refuses a type it does not know and that is not
-    marked ignorable. ``subagent/spawned`` was written non-ignorable and never
-    declared, so one dispatched child made this slot's record unreadable FOREVER --
-    the fold stopped at that entry and ``read_state`` answered with the empty record
-    for the rest of the session's life, while the log itself was perfectly intact.
-
-    Ordered so the READ is what fails: the ledger entry lands first and the child
-    entry after it, so the fold has to walk past the child to finish, and a refusal
-    there loses an entry it had already read. That is the shape the failure takes in
-    the field. The same refusal also makes ``record`` raise, since it folds to
-    compute the state it returns; this asserts the quieter half, because a read that
-    answers empty reports nothing to the caller.
-
-    Driven through ``read_state`` rather than over ``iter_from`` directly: the refusal
-    is caught there and converted to the empty record, so a test that called the
-    reader itself would see an exception where a real caller sees a blank record.
+    The fold (``known=KNOWN_TYPES``) refuses an undeclared, non-ignorable type, and
+    ``read_state`` turns that refusal into a silent empty record. The ledger entry comes
+    first so the fold must walk past the child entry.
     """
     _unit()
     sl.record(SLOT, session_id=SESSION, goal="ship the declared types")

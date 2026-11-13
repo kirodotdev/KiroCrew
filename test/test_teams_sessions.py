@@ -618,6 +618,7 @@ class TestRoutingComesFirst:
         acquired: list[str] = []
         sessions.try_acquire = lambda key: _record_and_refuse(acquired, key)  # type: ignore
         sessions.has_session = lambda key: False  # type: ignore
+        sessions.is_retiring = lambda key: False  # type: ignore
         d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
 
         await d.handle_message(_inbound("/compact"))
@@ -1485,3 +1486,33 @@ class TestSharedTitleLoader:
         force every caller onto the loop thread.
         """
         assert not asyncio.iscoroutinefunction(core.session_title_of)
+
+
+class TestAReplayThatFindsTheLeaseFree:
+    """A drained payload that re-enters through the busy fallback stays turn content."""
+
+    @pytest.mark.asyncio
+    async def test_a_drained_command_word_still_reaches_the_model(self, monkeypatch) -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def _drive(turn, **_kw):
+            seen.append((turn.session_key, turn.user_text))
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _drive)
+        client = _Client()
+        sessions = _Sessions()
+        busy = {"held": True}
+        monkeypatch.setattr(sessions, "is_busy", lambda key: busy["held"])
+        d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
+        real_handle_busy = d._handle_busy
+
+        async def _lease_frees_first(*args, **kwargs):
+            # The running turn ends between the busy check and the busy path.
+            busy["held"] = False
+            await real_handle_busy(*args, **kwargs)
+
+        monkeypatch.setattr(d, "_handle_busy", _lease_frees_first)
+
+        await d.handle_message(_inbound("/new"), interpret_commands=False, drain=False)
+
+        assert seen == [(d._session_key(_OWNER), "/new")], "a drained /new is text, not a command"

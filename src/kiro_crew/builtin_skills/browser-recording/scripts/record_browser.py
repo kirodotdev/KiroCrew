@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             [node, str(DRIVER), cfg_path],
             cwd=str(project),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=600,
         )
     finally:

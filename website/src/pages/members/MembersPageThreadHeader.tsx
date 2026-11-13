@@ -14,9 +14,11 @@ import { PanelLeftLight, PanelLeftSolid, PanelRightSolid } from '../../component
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
+import { useLabelTip } from '../../components/InstantTip'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Glass from '../../components/Glass'
 import HeaderControl from './HeaderControl'
+import BotLinkedChannels from './BotLinkedChannels'
 import CrewmateSwitcher, { CrewmateUnreadColumn } from './CrewmateSwitcher'
 import { createPortal } from 'react-dom'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -48,6 +50,34 @@ interface MembersPageThreadHeaderProps {
   active: MemberRosterRow
 }
 
+/** The side panel's opener. Icon-only, like the chat page's side-panel toggle,
+ *  so it shows its aria-label in an InstantTip on hover or keyboard focus, at
+ *  once, instead of a native title the browser holds back for about a second.
+ *  Its own component so the tip's state mounts and unmounts with the button:
+ *  a click that docks the panel removes the opener under the pointer, and a
+ *  tip held by the header would paint again, stale, when the opener returns. */
+function PanelOpener({ inBar, pressed, onToggle }: { inBar: boolean; pressed: boolean; onToggle: () => void }) {
+  const { t } = useTranslation()
+  const tip = useLabelTip(t('pages.membersPage.panel_toggle'))
+  return (
+    <HeaderControl
+      inBar={inBar}
+      chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
+      barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+      onClick={onToggle}
+      aria-pressed={pressed}
+      aria-controls="member-side-panel"
+      aria-label={t('pages.membersPage.panel_toggle')}
+      data-testid="member-panel-toggle"
+      {...uiLocation('members.details')}
+      {...tip.handlers}
+    >
+      <PanelRightSolid size={inBar ? 18 : 15} />
+      {tip.bubble}
+    </HeaderControl>
+  )
+}
+
 /** The thread header, portaled into the shell's top bar while the page has one there. */
 export function MembersPageThreadHeader({
   layout, profileCard, drawers, rosterView, thread, threadView, rosterSignals, profileFlight, navigation,
@@ -57,8 +87,8 @@ export function MembersPageThreadHeader({
   const { rosterPinned, switcherSlotRef, setRosterPin, panelVisible, showOpener } = layout
   const { pillFaceRef, openProfile, schedGuardRef, schedAtStakeRef, requestCloseProfile, togglePanel } = profileCard
   const { rosterDrawerOpen, openRosterDrawer, rosterDrawerAvailable } = drawers
-  const { isRunning, orderedMembers } = rosterView
-  const { activeSlot, entranceFaceHidden } = thread
+  const { isRunning, orderedMembers, toggleStar, starPending } = rosterView
+  const { activeSlot, confirmedSlot, entranceFaceHidden } = thread
   const {
     threadHeaderRef, setSwitcherOpenRequest, switcherOpenRequest, topbarSlot, headerInBar, pillActivity,
   } = threadView
@@ -114,6 +144,8 @@ export function MembersPageThreadHeader({
           }}
           onCreate={createHeld ? undefined : openQuick}
           onShowRoster={() => setRosterPin(true)}
+          onToggleStar={toggleStar}
+          starPending={starPending}
           openRequest={switcherOpenRequest}
           faceOnStageFor={entranceFaceHidden ? active.name : ''}
         />
@@ -268,7 +300,7 @@ export function MembersPageThreadHeader({
           announcing it taught the user a term for a thing that can
           never be otherwise. The member's edit entry is not a peer of
           this toggle: it is the identity pill in the middle. */}
-      <div className="flex items-center justify-end min-w-0 [&>*]:pointer-events-auto">
+      <div className="flex items-center justify-end gap-1.5 min-w-0 [&>*]:pointer-events-auto">
         {/* The activity line for assistive tech: the same text, outside
             the button so it never joins the crewmate's name, and NOT a
             live region — a line that changes several times a turn
@@ -278,22 +310,13 @@ export function MembersPageThreadHeader({
         {/* A Glass chip over the pane, like the switcher opposite
             (#18325): there a bare icon sat on scrolled text. Bare in the
             shell bar, like the bell beside it and the Sessions bar. */}
-        {showOpener && (
-          <HeaderControl
-            inBar={headerInBar}
-            chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
-            barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
-            onClick={togglePanel}
-            aria-pressed={panelVisible}
-            aria-controls="member-side-panel"
-            aria-label={t('pages.membersPage.panel_toggle')}
-            title={t('pages.membersPage.panel_toggle')}
-            data-testid="member-panel-toggle"
-            {...uiLocation('members.details')}
-          >
-            <PanelRightSolid size={headerInBar ? 18 : 15} />
-          </HeaderControl>
-        )}
+        {/* A Bot chat has no session menu, so its channel link's pause,
+            unlink and connect live here, beside the opener, while it has a
+            link or a channel it can connect to. Only on
+            the CONFIRMED slot: these rows write, and a cached or roster key
+            can name a session the thread endpoint refused. */}
+        {confirmedSlot && <BotLinkedChannels slotKey={confirmedSlot} inBar={headerInBar} />}
+        {showOpener && <PanelOpener inBar={headerInBar} pressed={panelVisible} onToggle={togglePanel} />}
       </div>
       {/* The unread column (issue #19045), hanging under the switcher
           chip. Absolutely placed at the header's bottom edge (pulled

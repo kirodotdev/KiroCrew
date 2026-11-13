@@ -22,7 +22,7 @@
 import { memo, useId, useMemo, useState } from 'react'
 import { CheckCircle2, XCircle, Loader2, ChevronRight, Square, Workflow as WorkflowIcon } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { agentState, groupByPhase, isTerminalRunStatus, latestBudget, type WfEvent } from './runModel'

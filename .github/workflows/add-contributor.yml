@@ -71,7 +71,11 @@ concurrency:
 jobs:
   add:
     name: Add contributors to README
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays off the CodeBuild fleet.
+    # Use the larger-runner label upstream; forks cannot reach the org group.
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       # Check out the default branch. github.event.repository is absent on
@@ -138,7 +142,29 @@ jobs:
           # `first: 50` on the closing-issues connection is a cap, not a page: a
           # single PR closing more than 50 issues would truncate. None come
           # close, and the miss would be a missing credit, never a wrong one.
-          gh api graphql --paginate \
+          #
+          # `mergeCommit { oid }` is a single object, not a connection, so it
+          # adds no cost. The commit sweep below uses it to tell which
+          # default-branch commits landed through a merged PR.
+          #
+          # Each sweep is ~130 pages. One 5xx page (GitHub answers an HTML error
+          # page, which gh reports as "invalid character '<'") would fail the
+          # whole run, so a sweep is retried from the start, with its output
+          # file truncated on every attempt so a partial page set never survives.
+          sweep() {
+            local out="$1" attempt
+            shift
+            for attempt in 1 2 3; do
+              if "$@" >"$out"; then
+                return 0
+              fi
+              echo "::warning::GraphQL sweep into $out failed (attempt $attempt of 3)"
+              sleep $((attempt * 20))
+            done
+            return 1
+          }
+
+          sweep /tmp/merged.jsonl gh api graphql --paginate \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" \
             -f query='
               query($owner: String!, $name: String!, $endCursor: String) {
@@ -147,6 +173,7 @@ jobs:
                                orderBy: {field: UPDATED_AT, direction: DESC}) {
                     pageInfo { hasNextPage endCursor }
                     nodes {
+                      mergeCommit { oid }
                       author { login __typename }
                       closingIssuesReferences(first: 50) {
                         nodes { author { login __typename } }
@@ -155,7 +182,7 @@ jobs:
                   }
                 }
               }' \
-            --jq '.data.repository.pullRequests.nodes[]' >/tmp/merged.jsonl
+            --jq '.data.repository.pullRequests.nodes[]'
 
           jq -r 'select(.author != null and .author.__typename == "User")
                  | .author.login' /tmp/merged.jsonl | sort -u >/tmp/pr_logins.txt
@@ -175,8 +202,15 @@ jobs:
           # with no self-recovery. A flat history walk keeps each page's cost
           # bounded and independent of the PR sweep.
           #
-          # The walk is SCOPED to commits that landed via a MERGED pull request
-          # (`associatedPullRequests` with `merged: true`). This is the boundary
+          # The walk is SCOPED to commits that landed via a MERGED pull request.
+          # The set is built from the merged-PR sweep's `mergeCommit` oids, plus,
+          # for a PR merged with a merge commit, every commit that merge brought
+          # in (`git rev-list <oid>^1..<oid>`, from the full-history checkout).
+          # Asking GraphQL per commit (`associatedPullRequests`) gave the same
+          # answer but cost ~50 ms per commit: ~11 minutes for this repository's
+          # history, past the job's 10-minute limit, with the heaviest pages
+          # timing out as 5xx. That per-commit question is now asked only for
+          # the commits the oid set misses (see below). This is the boundary
           # the PR-author and issue-reporter paths already use, and it is what the
           # README promises: a merged PR is a public contribution, whereas a raw
           # branch commit can be internal work pushed directly or merged by other
@@ -202,7 +236,16 @@ jobs:
           # `.github/contributors-optout.txt` for `User`-typed service accounts,
           # and the script's `_LOGIN_RE` for `[bot]`-suffixed logins (`[` is
           # invalid) -- so there is no second bot list on this path to drift.
-          gh api graphql --paginate \
+          jq -r '.mergeCommit.oid // empty' /tmp/merged.jsonl | sort -u >/tmp/merge_oids.txt
+          git rev-list --merges HEAD | sort -u >/tmp/main_merges.txt
+          {
+            cat /tmp/merge_oids.txt
+            comm -12 /tmp/merge_oids.txt /tmp/main_merges.txt | while IFS= read -r oid; do
+              git rev-list "$oid^1..$oid"
+            done
+          } | sort -u >/tmp/pr_commit_oids.txt
+
+          sweep /tmp/commits.jsonl gh api graphql --paginate \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" \
             -f query='
               query($owner: String!, $name: String!, $endCursor: String) {
@@ -213,9 +256,7 @@ jobs:
                         history(first: 100, after: $endCursor) {
                           pageInfo { hasNextPage endCursor }
                           nodes {
-                            associatedPullRequests(first: 1) {
-                              nodes { merged }
-                            }
+                            oid
                             authors(first: 10) {
                               nodes { user { login } }
                             }
@@ -226,7 +267,7 @@ jobs:
                   }
                 }
               }' \
-            --jq '.data.repository.defaultBranchRef.target.history.nodes[]' >/tmp/commits.jsonl
+            --jq '.data.repository.defaultBranchRef.target.history.nodes[]'
 
           # Keep the linked (`user != null`) authors of commits that reached the
           # default branch through a MERGED pull request. Bots are handled by the
@@ -236,7 +277,33 @@ jobs:
           # `.github/contributors-optout.txt`, which `update_contributors.py`
           # already skips case-insensitively for every source. Keeping one list
           # means the two cannot drift apart when the next service account lands.
-          jq -r 'select(any(.associatedPullRequests.nodes[]?; .merged == true))
+          # The few commits the oid set does not cover (~3% here: the earlier
+          # commits of a rebase merge, plus direct pushes) still get the exact
+          # per-commit answer, asked only for them: 50 commits per request via
+          # `object(oid:)` aliases. Without this a co-author who appears only
+          # on an earlier commit of a rebase-merged PR would never be credited.
+          # Each oid is checked as 40 hex characters before it is put into the
+          # query text.
+          jq -r '.oid' /tmp/commits.jsonl | sort -u | comm -23 - /tmp/pr_commit_oids.txt \
+            | { grep -E '^[0-9a-f]{40}$' || true; } >/tmp/leftover_oids.txt
+          : >/tmp/leftover_landed.txt
+          rm -f /tmp/leftover_batch.*
+          split -l 50 /tmp/leftover_oids.txt /tmp/leftover_batch.
+          for batch in /tmp/leftover_batch.*; do
+            [ -e "$batch" ] || continue
+            fields="$(awk '{ printf "c%d: object(oid: \"%s\") { ... on Commit { oid associatedPullRequests(first: 1) { nodes { merged } } } }\n", NR, $1 }' "$batch")"
+            sweep /tmp/leftover_page.txt gh api graphql \
+              -f owner="${REPO%/*}" -f name="${REPO#*/}" \
+              -f query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) { $fields } }" \
+              --jq '.data.repository[] | select(any(.associatedPullRequests.nodes[]?; .merged == true)) | .oid'
+            cat /tmp/leftover_page.txt >>/tmp/leftover_landed.txt
+          done
+          sort -u /tmp/pr_commit_oids.txt /tmp/leftover_landed.txt -o /tmp/pr_commit_oids.txt
+
+          # The oid set is built once (`-n` + `inputs`), not once per commit.
+          jq -rn --rawfile oids /tmp/pr_commit_oids.txt '
+                 ($oids | split("\n") | map(select(length > 0) | {(.): true}) | add // {}) as $landed
+                 | inputs | select($landed[.oid])
                  | .authors.nodes[]? | select(.user != null) | .user.login' \
                  /tmp/commits.jsonl | sort -u >/tmp/commit_logins.txt
 

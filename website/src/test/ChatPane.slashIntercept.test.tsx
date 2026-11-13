@@ -44,6 +44,7 @@ vi.mock('../api/client', () => ({
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
+    forkChatSlot: vi.fn().mockResolvedValue({ ok: true, key: 'pane-fork' }),
   },
   SEARCH_MIN_CHARS: 2,
   ApiError: class ApiError extends Error {
@@ -84,6 +85,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { PANE_DICTATION_SCOPE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
 
 const SLOT = 'pane-slash'
 
@@ -143,6 +145,16 @@ describe('ChatPane client-only slash commands', () => {
     await waitFor(() => expect(box.value).toBe(''))
   })
 
+  it('a /side that runs takes the composer\'s dictation mark with its words', async () => {
+    // Otherwise the next message, typed by hand, would go out with the note.
+    _resetDictationProvenance()
+    renderPane({ openSideChat: () => true })
+    markDictated(SLOT, PANE_DICTATION_SCOPE)
+    const box = await typeAndSend('/side what changed?')
+    await waitFor(() => expect(box.value).toBe(''))
+    expect(isDictated(SLOT, PANE_DICTATION_SCOPE)).toBe(false)
+  })
+
   it('/btw is refused on a pane whose host has no Side Chat, and the text stays', async () => {
     renderPane()
     const box = await typeAndSend('/btw quick one')
@@ -160,6 +172,15 @@ describe('ChatPane client-only slash commands', () => {
     expect(box.value).toBe('/kb deploy runbook')
     // The notice offers the way to where /kb does work.
     expect(screen.getByRole('button', { name: i18nT('pages.chatPage.open_chat_page') })).toBeTruthy()
+  })
+
+  it('/fork is refused on the pane (its fork opens in the main chat), and the text stays', async () => {
+    renderPane({ openSideChat: () => true })
+    const box = await typeAndSend('/fork try it')
+    expect(await screen.findByText(i18nT('pages.chatPage.command_not_available_here', { command: '/fork' }))).toBeTruthy()
+    expect(api.forkChatSlot).not.toHaveBeenCalled()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(box.value).toBe('/fork try it')
   })
 
   it('/onboarding replays the tour locally instead of being sent', async () => {
@@ -241,8 +262,8 @@ describe('ChatPane client-only slash commands', () => {
   })
 
   it.each([
-    ['with a host Side Chat', true, ['/side', '/btw'], ['/kb']],
-    ['without a host Side Chat', false, [], ['/kb', '/side', '/btw']],
+    ['with a host Side Chat', true, ['/side', '/btw'], ['/kb', '/fork']],
+    ['without a host Side Chat', false, [], ['/kb', '/fork', '/side', '/btw']],
   ])('the slash menu leaves out what the pane refuses (%s)', async (_label, side, shown, hidden) => {
     renderPane(side ? { openSideChat: () => true } : {})
     const box = (await screen.findAllByRole('textbox'))[0]

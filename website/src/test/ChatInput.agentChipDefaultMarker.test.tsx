@@ -17,6 +17,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import i18next from 'i18next'
+import { act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
@@ -37,6 +38,12 @@ const props = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
+// Mount inside act so the composer's mount-time commits (the error notice
+// that reads the agent state) land before the test reads the chip.
+async function mountComposer(ui: Parameters<typeof renderWithProviders>[0]) {
+  await act(async () => { renderWithProviders(ui) })
+}
+
 // The chip's visible label lives in a span, not in an accessible name (the
 // `components.chatInput.agent` title key is interpolated), so read the span.
 function agentChip(): HTMLButtonElement {
@@ -52,16 +59,17 @@ function agentChipText(): string {
 
 describe('ChatInput — agent chip inherited-default marker', () => {
   beforeEach(() => vi.clearAllMocks())
-  afterEach(async () => { await i18next.changeLanguage('en') })
+  // The language switch re-renders the mounted composer, so it runs in act.
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
 
-  it('marks an inherited default so it differs from a pin to the same alias', () => {
+  it('marks an inherited default so it differs from a pin to the same alias', async () => {
     // agent-less slot resolving to `kirocrew` -> the call site composes this.
     const inherited = agentOrDefaultLabel(undefined, 'kirocrew')
     const pinned = agentOrDefaultLabel('kirocrew', 'kirocrew')
     // The two states MUST render differently on the chip; that is the whole bug.
     expect(inherited).not.toEqual(pinned)
 
-    renderWithProviders(
+    await mountComposer(
       <ChatInput {...props({ agentName: 'kirocrew', agentLabel: inherited })} />,
     )
     expect(agentChipText()).toBe(inherited)
@@ -69,9 +77,9 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     expect(agentChipText()).toContain('default')
   })
 
-  it('shows the built-in default alias once when a remote-bound slot inherits it', () => {
+  it('shows the built-in default alias once when a remote-bound slot inherits it', async () => {
     const inherited = agentOrDefaultLabel(undefined, 'default')
-    renderWithProviders(
+    await mountComposer(
       <ChatInput
         {...props({
           agentName: 'default',
@@ -105,8 +113,8 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     expect(agentOrDefaultLabel(undefined, defaultLabel)).toBe(`${defaultLabel} · ${defaultLabel}`)
   })
 
-  it('shows the bare alias when the slot is pinned to that agent', () => {
-    renderWithProviders(
+  it('shows the bare alias when the slot is pinned to that agent', async () => {
+    await mountComposer(
       <ChatInput
         {...props({
           agentName: 'kirocrew',
@@ -117,19 +125,19 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     expect(agentChipText()).toBe('kirocrew')
   })
 
-  it('falls back to the raw alias when no display label is supplied', () => {
+  it('falls back to the raw alias when no display label is supplied', async () => {
     // Callers that do not compose a label (nothing to distinguish) keep the
     // pre-fix behaviour: the chip renders `agentName` verbatim.
-    renderWithProviders(<ChatInput {...props({ agentName: 'mochi' })} />)
+    await mountComposer(<ChatInput {...props({ agentName: 'mochi' })} />)
     expect(agentChipText()).toBe('mochi')
   })
 
-  it('keeps the raw alias in the switch tooltip, not the display label', () => {
+  it('keeps the raw alias in the switch tooltip, not the display label', async () => {
     // Everything keyed on the agent (the skills query, the `agent` prop, the
     // switch title) must see the real alias, never the ` · default`-suffixed
     // label — otherwise the chip would try to switch to an agent named
     // "kirocrew · default".
-    renderWithProviders(
+    await mountComposer(
       <ChatInput
         {...props({ agentName: 'kirocrew', agentLabel: agentOrDefaultLabel(undefined, 'kirocrew') })}
       />,
@@ -139,11 +147,11 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     expect(title).not.toContain('· default')
   })
 
-  it('explains the inherited default on hover and keyboard focus', () => {
+  it('explains the inherited default on hover and keyboard focus', async () => {
     // The marker alone reads as opaque (#8770 UX). The inherited case carries an
     // explanatory tooltip reachable BOTH by hover (title) and by keyboard focus /
     // screen readers (aria-label) -- no glyph, no layout change.
-    renderWithProviders(
+    await mountComposer(
       <ChatInput
         {...props({
           agentName: 'kirocrew',
@@ -163,10 +171,10 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     expect(title.split('\n')[0]).toBe(aria)
   })
 
-  it('does not put the explanation on a pinned chip', () => {
+  it('does not put the explanation on a pinned chip', async () => {
     // A pinned chip has nothing to explain; a tooltip on both would dilute the
     // signal. It keeps the plain switch hint.
-    renderWithProviders(
+    await mountComposer(
       <ChatInput
         {...props({
           agentName: 'kirocrew',

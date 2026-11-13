@@ -195,6 +195,83 @@ class TestMeetingMeta:
         assert not store.meeting_dir("m1", root).exists()
         assert store.list_meetings(root) == []
 
+    @staticmethod
+    def _meeting_with_sidecars(root: Path) -> list[Path]:
+        """One meeting with a transcript, an edits sidecar and a note; returns every tree."""
+        store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Standup"), root)
+        store.append_transcript("m1", "Held open by an editor.", "speech", root)
+        store.write_note("m1", "Private memo", root)
+        edits = store.agent_edits_dir("m1", root)
+        edits.mkdir(parents=True)
+        (edits / "notes.md").write_text("edited")
+        return [store.meeting_dir("m1", root), edits, store.note_dir("m1", root)]
+
+    @staticmethod
+    def _hold_transcript(monkeypatch, *, times: int | None) -> list[str]:
+        """Make unlinking ``transcript.jsonl`` raise Windows' sharing violation *times* times."""
+        import kiro_crew.platform_compat_files as files_mod
+
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        real_unlink = os.unlink
+        attempts: list[str] = []
+
+        def held_unlink(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == k.TRANSCRIPT_FILE and (
+                times is None or len(attempts) < times
+            ):
+                attempts.append(os.fspath(path))
+                exc = PermissionError(13, "in use", os.fspath(path))
+                exc.winerror = 32
+                raise exc
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", held_unlink)
+        return attempts
+
+    def test_delete_waits_out_a_file_held_open_briefly(self, root: Path, monkeypatch):
+        trees = self._meeting_with_sidecars(root)
+        attempts = self._hold_transcript(monkeypatch, times=1)
+
+        assert store.delete_meeting("m1", root) is True
+        assert len(attempts) == 1
+        assert [tree for tree in trees if tree.exists()] == []
+
+    def test_delete_held_past_the_budget_keeps_the_marker_for_a_retry(
+        self, root: Path, monkeypatch
+    ):
+        trees = self._meeting_with_sidecars(root)
+        real_unlink = os.unlink
+        self._hold_transcript(monkeypatch, times=None)
+
+        with pytest.raises(store.MeetingsPathError, match="held open by another process") as err:
+            store.delete_meeting("m1", root)
+        assert (err.value.status, err.value.code) == (500, "meeting_delete_failed")
+        assert (store.meeting_dir("m1", root) / k.SESSION_META_FILE).is_file()
+
+        monkeypatch.setattr(os, "unlink", real_unlink)
+        assert store.delete_meeting("m1", root) is True
+        assert [tree for tree in trees if tree.exists()] == []
+
+    def test_delete_unlinks_a_directory_link_inside_the_meeting_without_following_it(
+        self, root: Path, tmp_path: Path
+    ):
+        """A symlink on POSIX, a junction on Windows (no privilege needed for one)."""
+        store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Standup"), root)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep")
+        link = store.meeting_dir("m1", root) / "linked"
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(link))
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+
+        assert store.delete_meeting("m1", root) is True
+        assert not store.meeting_dir("m1", root).exists()
+        assert (outside / "keep.txt").read_text() == "keep"
+
     def test_delete_unknown_meeting_returns_false(self, root: Path):
         assert store.delete_meeting("missing", root) is False
 

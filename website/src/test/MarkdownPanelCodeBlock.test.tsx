@@ -161,10 +161,10 @@ describe('MarkdownPanel — commenting on a fenced code block', () => {
     expect(stored[FILE][0]).toMatchObject({ anchor: 'rm NAME --force', line: 6, column: 7 })
   })
 
-  /** Mounts `content`, drags over `text` in its `block`th block and adds a comment; resolves to the comment as saved. */
-  async function commentOn(content: string, text: string, block = 0) {
+  /** Mounts `content`, drags over `text` on line `lineIndex` of its `block`th block and adds a comment; resolves to the comment as saved. */
+  async function commentOn(content: string, text: string, block = 0, lineIndex = 0) {
     mountPanel(content)
-    dragInCode((await screen.findAllByTestId('code-host'))[block], { text })
+    dragInCode((await screen.findAllByTestId('code-host'))[block], { text, lineIndex })
     fireEvent.change(await screen.findByLabelText('Comment on the selected text'), { target: { value: 'note' } })
     fireEvent.click(screen.getByLabelText('Add comment'))
     await screen.findByText('note')
@@ -182,7 +182,7 @@ describe('MarkdownPanel — commenting on a fenced code block', () => {
   })
 
   it('puts no line on a nested block\'s selection that starts on a newline when another block opens with the same words', async () => {
-    const saved = await commentOn('1. Clean up:\n   ```bash\n   ls\n   mycli rm NAME\n   ```\n\n```bash\nmycli rm NAME --force\n```\n', '\nmycli rm NAME')
+    const saved = await commentOn('1. Clean up:\n   ```bash\n   ls\n   mycli rm NAME\n   ```\n\n```bash\nmycli rm NAME --force\n```\n', '\nmycli rm NAME', 0, 1)
     expect(saved).toMatchObject({ anchor: 'mycli rm NAME', inCode: true })
     expect(saved).not.toHaveProperty('line')
     expect(saved).not.toHaveProperty('column')

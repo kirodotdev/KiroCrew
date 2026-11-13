@@ -175,6 +175,7 @@ class TestAttachment:
 
         mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]
+        mod._load_session_from_envvar = lambda _variable: None  # type: ignore[attr-defined]
         monkeypatch.setitem(
             sys.modules,
             "opentelemetry.exporter.otlp.proto.http.metric_exporter",
@@ -225,6 +226,7 @@ class TestTemporalityIsACoreDecision:
 
         mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]
+        mod._load_session_from_envvar = lambda _variable: None  # type: ignore[attr-defined]
         monkeypatch.setitem(
             sys.modules,
             "opentelemetry.exporter.otlp.proto.http.metric_exporter",

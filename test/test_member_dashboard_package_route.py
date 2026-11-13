@@ -1,20 +1,10 @@
 """The package page's route: the binding it resolves, and the version it serves.
-Like its sibling, this drives the real route, the real artifact store and the real
-owner gate. Five claims:
-1. The resolver finds the one package bound to a crewmate, and the route falls back
-   to the page the crewmate already has when that binding cannot be proven.
-2. A slug is a name too: a credential-shaped slug is refused before any read, and
-   the armed live pages are bounded.
-3. A preview read never serves the bound package, never arms a live page, and never
-   even looks the binding up.
-4. A bound package with nothing to serve renders the empty state.
-5. Only a version a person applied is served: an agent write, an annotation, an app
-   write or a content-less snapshot is not an approval, and the script grant is
-   audited.
-The page the route serves and arms, the fields a fold pushes, the refetch and the
-worker refused at the write path are in
-``test_member_dashboard_package_route_live_page.py``. The fixtures and fakes both
-files share live in ``member_dashboard_package_route_helpers.py``.
+
+Drives the real route, artifact store and owner gate: binding resolution and fallback,
+credential-shaped slugs, preview reads, the empty state, and which version counts as
+applied. The live page and pushed fields are in
+``test_member_dashboard_package_route_live_page.py``; shared fixtures live in
+``member_dashboard_package_route_helpers.py``.
 """
 
 from __future__ import annotations
@@ -99,14 +89,8 @@ def library(monkeypatch: pytest.MonkeyPatch) -> Any:
 class TestTheBindingResolver:
     """``resolve_bound_slug``, the ONE lookup that answers "which package is bound here".
 
-    These pin behaviour this route needs and the shared function now owns. They were
-    written against a private copy in this handler; the copy is gone and the behaviour
-    moved into the shared function, so the tests moved with it rather than being deleted
-    alongside it -- a deleted test is how a protection quietly stops being one.
-
-    The route's own wrapper (`md._bound_package_slug`) maps every refusal to "", because
-    a read that draws a page answers an unprovable binding with the page the crewmate
-    already has. Both layers are asserted: the function refuses, and the route falls back.
+    The route's wrapper (`md._bound_package_slug`) maps every refusal to "", so an
+    unprovable binding draws the page the crewmate already has. Both layers are asserted.
     """
 
     def _resolved(self, member: str = CREW) -> Any:
@@ -125,15 +109,10 @@ class TestTheBindingResolver:
         assert md._bound_package_slug(CREW) == ""
 
     def test_two_packages_claiming_one_crewmate_are_refused(self, library: Any) -> None:
-        """THE PROTECTION A PLAIN DEDUP WOULD COST, which is why it moved into the
-        shared function rather than going with the copy.
+        """Two packages bound to one crewmate make the binding ambiguous, so it is refused.
 
-        Returning the first match is arbitrary -- the listing order is the store's, not
-        a statement about which package is live -- and a reader cannot tell an arbitrary
-        pick from a correct one, so a relisted library silently swaps which page a
-        crewmate shows. Both are bound to the same crewmate, so nothing shows a
-        stranger's work; what is lost is determinism, and the honest answer is that the
-        binding is ambiguous.
+        Taking the first match follows the store's listing order, so a relisted library
+        would silently swap which page the crewmate shows.
         """
         from kiro_crew.artifact_store.dashboard_package import (
             BindingAmbiguous,
@@ -222,16 +201,10 @@ class TestTheBindingResolver:
     def test_it_resolves_against_the_REAL_store_not_a_fake_that_carries_content(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """THE FIXTURE'S PREMISE, measured rather than assumed.
+        """The resolver works on a real `ArtifactStore`, whose `list()` carries no content.
 
-        Every other test here hands the resolver a fake library, and a fake is free to
-        put content on a listed record. The real store does not: `list()` reads
-        meta.json and `content` comes back None, so a resolver that parsed the listed
-        record finds nothing to parse and every crewmate silently falls back to the
-        template page.
-
-        Written against a real `ArtifactStore` on disk for that reason -- it is the only
-        thing that can tell the two apart.
+        A fake may put content on a listed record; the real store returns None, so a
+        resolver that parsed the listed record would send every crewmate to the template.
         """
         from kiro_crew.artifacts import ArtifactStore
 
@@ -307,20 +280,13 @@ async def test_a_crewmate_with_no_package_still_gets_its_template_page(
     assert not wired.app.get("member_dashboard_live_pages"), "a page was armed with no package"
 
 
-# --------------------------------------------------------------------------
 # 5. the slug is a name too, and the armed pages are bounded
-# --------------------------------------------------------------------------
 
-#: Artifact slugs that are legal names AND strings the egress redactor rewrites. An
-#: artifact slug is ``[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?``, which forbids ``_`` and
-#: upper case -- so a `ghp_` token and an AWS key cannot be slugs at all, and these two
-#: are the whole overlap: a Slack bot token and a GitLab PAT.
+#: Artifact slugs that are legal names AND strings the egress redactor rewrites. A slug
+#: forbids ``_`` and upper case, so a Slack bot token and a GitLab PAT are the whole overlap.
 #:
-#: ASSEMBLED FROM PARTS, never written out: as a literal the first one is a shape
-#: GitHub's own push protection refuses, and a test fixture is not worth an exemption on
-#: a secret-scanning rule. Nothing is lost, because each test asserts at runtime that
-#: the redactor really rewrites the value it was handed -- the fixture's whole premise is
-#: measured rather than spelled.
+#: Assembled from parts because GitHub push protection refuses the literal; each test
+#: asserts at runtime that the redactor really rewrites the value.
 _CREDENTIAL_SLUGS = [
     "-".join(("xoxb", "1" * 12, "a" * 24)),
     "glpat-" + "a" * 20,
@@ -377,16 +343,11 @@ class _StoreAny:
 async def test_a_credential_shaped_slug_is_refused_before_the_package_is_read(
     wired: Any, monkeypatch: pytest.MonkeyPatch, bad: str
 ) -> None:
-    """A slug travels further than any other name on this surface: the body carries it
-    twice, every pushed frame carries it, and the refetch answers with it.
+    """A credential-shaped slug is refused, not redacted, before the package is read.
 
-    The premise is asserted rather than assumed -- the shape has to be one the redactor
-    actually rewrites, or this test passes while measuring nothing. A package DOES
-    exist under the slug, which is what makes the refusal the subject: without it the
-    route reads that package and serves a 200 naming it.
-
-    Refused rather than redacted, because the page, the push and the refetch JOIN on
-    this string: rewriting it would make the three disagree.
+    The page, the push and the refetch join on the slug, so rewriting it would make
+    them disagree. A package does exist under the slug, so without the refusal the
+    route would serve a 200 naming it.
     """
     assert (
         redact_via_context(bad) != bad
@@ -538,16 +499,11 @@ async def test_the_binding_resolves_in_this_fixture(bound: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_a_preview_read_does_not_serve_the_bound_package(bound: Any) -> None:
-    """A PREVIEW SHOWS THE STAGED PAGE OR NOTHING -- never the live one.
+    """A preview shows the staged page or nothing, never the live one.
 
-    `preview=1` exists for one purpose: show a person the page they are about to say
-    yes to. The tab's preview link carries no `dashboard=`, so a binding resolved ahead
-    of this branch serves a crewmate with a bound package its LIVE package page under a
-    panel labelled "not applied yet" -- the person then approves a page they never saw,
-    which is the one thing this route must not do.
-
-    Nothing is staged here, so the honest answer is `no_preview`. What matters is that
-    it is not 200 with the package's page in it.
+    The preview link carries no `dashboard=`, so resolving the binding first would show
+    the LIVE page under "not applied yet" and the person would approve a page unseen.
+    Nothing is staged here, so the answer is `no_preview`.
     """
     status, body = await _call(md.api_member_dashboard, _request(bound.app, "GET", PREVIEW_PATH))
     assert status == 404, body
@@ -596,17 +552,10 @@ async def test_a_package_named_explicitly_still_wins_over_preview(bound: Any) ->
 
 
 class _VanishingStore:
-    """The bound package is there when the BINDING is resolved and gone when the page
-    is read.
+    """The bound package is there when the binding is resolved and gone when it is read.
 
-    The reachable shape of "a bound package with nothing to serve". A stored record
-    always carries a version from the moment `create` makes it, so a record with no
-    version does not exist; what does happen is that the record goes away between the
-    listing the binding is resolved from and the read that would serve it -- a delete,
-    a prune, or a library pointing at a record this process cannot open.
-
-    Modelled by letting the first `get` succeed (the resolver's) and refusing every
-    later one (the route's), which is exactly that ordering.
+    A stored record always has a version, so "nothing to serve" means the record vanished
+    between the two reads. The first `get` (the resolver's) succeeds; later ones fail.
     """
 
     def __init__(self, content: str) -> None:
@@ -634,21 +583,10 @@ class _VanishingStore:
 
 
 class TestABoundPackageWithNothingToServe:
-    """A BOUND PACKAGE WITH NO VERSION RENDERS NOTHING AT ALL.
+    """A bound package with no version renders the empty state (RFC decision 3).
 
-    `rfc-crewmate-dynamic-dashboard.md`'s decision 3 puts it in those words: naming a
-    package and publishing one are different acts, and "a bound package with no applied
-    version renders nothing at all". The binding answers WHICH package a
-    reader would see; whether there is yet anything to see is a separate question.
-
-    Three answers are therefore wrong here, and each was reachable: an error page (the
-    route's own 404, which the tab draws as a failure the reader could clear), the
-    DEFAULT TEMPLATE (the fallback the no-package path takes, which would show a
-    stranger's page under this crewmate's name), and the last page that happened to
-    load. The right answer is the frame's own empty state.
-
-    The caller that NAMES a slug still gets told -- it asked a question and a 404 is the
-    answer. Only the binding-sourced case renders empty, because nobody asked.
+    Not a 404, not the default template (a stranger's page under this name), and not the
+    last page loaded. A caller that names the slug still gets a 404, since it asked.
     """
 
     @pytest.fixture()
@@ -714,17 +652,11 @@ class TestABoundPackageWithNothingToServe:
 
 
 class TestAnApprovalDoesNotAuthorizeAReplacement:
-    """THE APPROVAL AND ITS BYTES ARE TWO READS, so the record can be swapped between.
+    """The approval and its bytes are two reads, so the record can be swapped between.
 
-    ``_serve_package`` reads the record to find the version a person applied, then
-    fetches that version's bytes by SLUG AND NUMBER in a second call. A slug is
-    reusable and a version number restarts at 1, so a delete-and-recreate in between
-    answers the second read with a different artifact's version N -- whatever its own
-    agent wrote -- served under an approval a person gave to the record that is gone.
-
-    ``created_at`` is minted once per record and never rewritten, so comparing it
-    across the two reads is what makes them one record. The window is small; the
-    comparison is one tuple.
+    A slug is reusable and versions restart at 1, so a delete-and-recreate between the
+    reads would serve another record's version N. Comparing ``created_at`` (minted once
+    per record) across both reads proves they are one record.
     """
 
     @pytest.mark.asyncio
@@ -773,24 +705,11 @@ class TestAnApprovalDoesNotAuthorizeAReplacement:
 
 
 class TestTheRenderPathServesAnAppliedVersion:
-    """THE GATE, measured on a REAL store so the events are the ones the product writes.
+    """The render path serves the newest version whose event has ``by == "user"``.
 
-    The render path must serve a page a PERSON put there. The marker already exists on
-    main and needs no new field: a version is cut only by
-    ``ArtifactStore.update(..., snapshot=True)``, each cut appends a lifecycle event
-    carrying ``by=actor`` (``artifacts_writes.update``), and that actor is derived from HOW
-    the request authenticated -- ``actor = "agent" if is_mcp else "user"`` where
-    ``is_mcp`` is the presence of the ``X-Internal-Secret`` header
-    (``dashboard/handlers/artifacts_parts/create_update.py``). So:
-
-        applied version := the newest version whose event has ``by == "user"``
-
-    Keyed on ``by`` and never on ``type``: ``event_type`` is settable from the request
-    body, so an agent can write ``type="edited"``; ``by`` comes from the auth path and
-    the body cannot reach it.
-
-    Written against a real `ArtifactStore` because a fake is free to put any event on a
-    record, and the claim under test is about the events the store itself writes.
+    ``by`` comes from how the request authenticated (``X-Internal-Secret`` means agent),
+    so the body cannot reach it; ``type`` is body-settable, so an agent can write
+    ``edited``. Uses a real `ArtifactStore` so the events are the ones the store writes.
     """
 
     @pytest.fixture()
@@ -941,26 +860,12 @@ class TestTheRenderPathServesAnAppliedVersion:
 
 
 class TestAnAnnotationIsNotAnApproval:
-    """READING A PACKAGE IS NOT APPROVING IT.
+    """Reading a package is not approving it.
 
-    The applied marker takes the newest version a person CUT. The trap is that ``by`` is
-    stamped on every lifecycle event, not only on the ones that cut a version, and two
-    of them are things a person does while merely looking:
-
-    * ``referenced`` -- the chat panel posts one every time a person opens an artifact
-      in a slot, and the store stamps it with ``version=meta.version``;
-    * ``comment`` -- resolving or adding a comment does the same.
-
-    Both arrive from the browser, so both carry ``by="user"`` and the version the AGENT
-    last wrote. A marker keyed on the actor alone therefore reads ordinary reading as
-    approval, and the agent's unapproved draft renders with script. That is not a corner
-    case: opening the page is the commonest thing a person does with it.
-
-    So the marker takes BOTH halves -- a user actor AND an event type that cut a version.
-    The actor is what an agent cannot forge; the type is what separates a cut from a
-    glance. Keeping only the actor was the defect; keeping only the type would let an
-    agent spell its own save ``edited``, which
-    ``test_an_agent_cannot_spell_its_way_to_an_applied_version`` pins.
+    ``referenced`` (opening an artifact) and ``comment`` events carry ``by="user"`` and
+    the agent's latest version, so the marker needs a user actor AND a version-cutting
+    type. The type alone is forgeable; see
+    ``test_an_agent_cannot_spell_its_way_to_an_applied_version``.
     """
 
     @pytest.fixture()
@@ -1031,19 +936,11 @@ class TestAnAnnotationIsNotAnApproval:
 
 
 class TestTheAppRefusalIsWhatKeepsTheMarkerHonest:
-    """THE MARKER DEPENDS ON THE APP REFUSAL, end to end.
+    """The applied marker depends on the app refusal, end to end.
 
-    ``by == "user"`` is assigned to a request that carries no ``X-Internal-Secret``, and
-    an app backend is proxied with that header STRIPPED -- so an app's artifact write
-    would be stamped ``by="user"`` and would apply its own page. What stops it is
-    ``member_dashboard_fields.package_write_refusal``, which identifies an app
-    POSITIVELY from ``request["app"]`` and refuses before the person's exemption is
-    reached.
-
-    The refusal has its own unit tests and the marker has its own; NOTHING tied the two
-    together, so moving the app check below the person exemption would leave every one of
-    them green while an app quietly became a person. This is that tie: an app writes a
-    dashboard package and the page renders nothing, because no approval exists.
+    An app backend is proxied without ``X-Internal-Secret``, so its write would be stamped
+    ``by="user"``. ``package_write_refusal`` must refuse an app before the person's
+    exemption; this ties that order to the rendered page.
     """
 
     @pytest.mark.asyncio
@@ -1106,18 +1003,10 @@ class TestTheAppRefusalIsWhatKeepsTheMarkerHonest:
 
 
 def test_a_create_cannot_name_itself_the_person(tmp_path: Path) -> None:
-    """THE ONE EVENT WHOSE ACTOR THE REQUEST BODY REACHES, and why it is still closed.
+    """A create cannot stamp its `created` event with the person as actor.
 
-    `ArtifactStore.create` stamps the `created` event's `by` from its `source`, and the
-    create route honours `body["source"]` as given ("Honor an explicitly-supplied source
-    (MCP tool / import path)"). That would be a way to mint an approval for one's own
-    first version -- except `source` is validated against a closed label set, and no
-    label is `user`.
-
-    Pinned on the real store rather than reasoned about, and pinned as the LABEL SET
-    rather than as one rejected string: the applied marker leaves `created` out because
-    it can never carry a user actor, so a `user` label added to that set later must fail
-    HERE, where the reason is written down, rather than silently widen the gate.
+    The create route honours `body["source"]`, but `source` is checked against a closed
+    label set with no `user`. Pinned as the whole label set, so adding `user` fails here.
     """
     from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError
 
@@ -1180,18 +1069,10 @@ async def test_a_package_a_person_created_is_not_applied_by_the_create_alone(
 
 
 class TestTheApprovingTypeSetIsAnAllowlist:
-    """THE SET ITSELF, guarded -- because the finding that produced it was a set that
-    admitted too much, and the next annotation type someone adds is the same shape of
-    mistake.
+    """`_VERSION_CUTTING_EVENTS` is an allowlist, so a new lifecycle type is excluded.
 
-    `_VERSION_CUTTING_EVENTS` is an ALLOWLIST: `applied_package_version` skips any type
-    not in it, so a lifecycle type added to the store tomorrow is excluded until someone
-    decides otherwise. A denylist of annotations would admit it silently, which is
-    exactly how `referenced` came to count as an approval.
-
-    These tests pin the three premises the set rests on, each against the module that
-    owns it rather than against a copy here, so a change to any of them fails with the
-    reason written next to it.
+    A denylist would admit a new annotation type silently. Each premise is pinned against
+    the module that owns it, not a copy.
     """
 
     def test_every_approving_type_is_a_real_lifecycle_type(self) -> None:
@@ -1233,17 +1114,10 @@ class TestTheApprovingTypeSetIsAnAllowlist:
         )
 
     def test_a_created_event_can_never_carry_the_person_as_its_actor(self) -> None:
-        """WHY `created` IS OUT, and it is not the reason one might assume.
+        """A `created` event's actor comes from `source`, and `ALLOWED_SOURCES` has no `user`.
 
-        `create` stamps the event's actor from its `source` (`by=source if source !=
-        "chat" else "agent"`), and `source` is validated against `ALLOWED_SOURCES` --
-        which has no `user` member. So a `created` event's actor is one of those labels
-        or `agent`, and never the person. Putting `created` in the approving set would
-        add a rule that matches nothing while telling the next reader that creating a
-        page approves it.
-
-        Pinned on the real constant: if `user` ever joins `ALLOWED_SOURCES`, this fails
-        and the decision gets made again with the new fact in hand.
+        So `created` stays out of the approving set. If `user` joins `ALLOWED_SOURCES`,
+        this fails and the decision must be made again.
         """
         from kiro_crew.artifact_store.rules import ALLOWED_SOURCES
 
@@ -1300,23 +1174,11 @@ class TestTheApprovingTypeSetIsAnAllowlist:
 
 
 class TestTheGenericSnapshotButtonIsNotAnApproval:
-    """A PERSON TIDYING VERSION HISTORY DOES NOT PUBLISH THE AGENT'S PAGE.
+    """The generic Snapshot button does not publish the agent's page.
 
-    The artifact detail page and the markdown panel both offer a generic Snapshot
-    control that sends `updateArtifact(slug, { snapshot: true })` with NO content. On
-    the generic path that versions the record's current bytes and stamps the event
-    `by="user"`, `type="edited"` -- which is exactly the shape this marker approves on.
-    A person pressing it to keep a restore point would then be publishing whatever the
-    agent wrote last, with nothing on screen saying so.
-
-    It does not happen, and the reason is a guard in the store rather than anything this
-    handler does: for `kind="dashboard"` a content-less update sets `snapshot = False`
-    ("No content, so no layout change, so no version -- this also disarms the explicit
-    Snapshot path below, which would otherwise re-version the live package unchanged").
-
-    So this class pins the PREMISE the marker leans on. If that guard is ever removed,
-    the marker silently starts treating a history button as an approval, and these tests
-    are what fail instead.
+    A content-less snapshot would be stamped `by="user"`, `type="edited"`, the approving
+    shape. The store's guard (no content means no version for `kind="dashboard"`) is the
+    premise these tests pin.
     """
 
     @pytest.fixture()
@@ -1386,20 +1248,11 @@ class TestTheGenericSnapshotButtonIsNotAnApproval:
 
 
 class TestTheScriptGrantIsAudited:
-    """THE GRANT IS AN AUTHORIZATION DECISION, so it leaves a record.
+    """The script grant is an authorization decision, so it is audited.
 
-    It decides whether a page a crewmate wrote may run script against that crewmate's
-    own fold values, and the repository's backend security controls require a decision
-    of that kind to be auditable. The row goes through the shared governance helper
-    (``sel().log_governance_decision``), the one every other permission check in the
-    product uses, rather than a second emitter with its own vocabulary.
-
-    DEDUPED ON ``(crewmate, package, version, decision)`` because the tab POLLS: a
-    fallback refetch every few minutes plus two WS frames re-decide this with the same
-    answer for as long as a dashboard is open, and a row per read would turn an
-    authorization log into a page-view log and push the rows that matter out of any
-    practical retention window. A change in any part of that tuple is exactly when
-    there is something new to record.
+    Logged through ``sel().log_governance_decision``. Deduped on
+    ``(crewmate, package, version, decision)`` because the tab polls, and a row per
+    read would push the rows that matter out of retention.
     """
 
     @pytest.fixture

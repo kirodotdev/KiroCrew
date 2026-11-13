@@ -52,6 +52,13 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_sandbox_launcher_program_parts")
 
+SHARED_FACADE_CHECKS = (
+    "the_sweep_reports_a_global_the_namespace_does_not_bind",
+    "the_package_init_defines_nothing",
+    "the_value_check_can_fail",
+)
+
+
 #: The stages run against real files with a stand-in libc, which only Linux launches.
 _LINUX_ONLY = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
@@ -370,15 +377,6 @@ def test_every_part_function_runs_on_the_facade_globals_as_the_facade_binds_it()
     assert wrong == []
 
 
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
-
-
 def test_every_global_a_part_function_reads_is_bound_on_the_facade() -> None:
     """Nested code included: ``_pin_mount_path`` defines its refusals inline."""
     missing = {label: names for label, fn in _part_functions() if (names := _unbound_globals(fn))}
@@ -635,13 +633,6 @@ def _module_values(tree: ast.Module) -> list[str]:
     return found
 
 
-def test_the_value_check_can_fail() -> None:
-    assert _module_values(ast.parse('"""doc"""\nimport os\nLIMIT = 3\nclass K: ...\n')) == [
-        "3: Assign",
-        "4: ClassDef",
-    ]
-
-
 def test_no_part_defines_a_module_level_value() -> None:
     """The program's constants stay on the facade: a test that rebinds one there rebinds
     what every composed stage reads, and a part copy would read stale."""
@@ -651,12 +642,6 @@ def test_no_part_defines_a_module_level_value() -> None:
         if (values := _module_values(_tree(path)))
     }
     assert found == {}
-
-
-def test_the_package_init_defines_nothing() -> None:
-    init = _PARTS_DIR / "__init__.py"
-    assert _facade_mirror._defined_names(_tree(init)) == set()
-    assert [n for n in _tree(init).body if not isinstance(n, ast.Expr)] == []
 
 
 def _imports_a_part(source: str) -> bool:

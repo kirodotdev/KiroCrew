@@ -23,16 +23,11 @@ from kiro_crew.crew_log import emit as crew_log_emit
 pytestmark = pytest.mark.asyncio
 
 
-# ------------------------------------------------- the publish ordering contract
+# the publish ordering contract
 #
-# ``_panel_record`` prefers the FILE over the fold, and its docstring states the
-# one thing that makes that selection safe: the publish route writes the file
-# BEFORE it appends the history entry, and returns without appending if that write
-# fails. So every publish is in the file while only the ones whose append landed
-# are in the fold, and the file can never be the staler of the two. The five pins
-# below are that sentence made executable -- the order, the call-level fail-closed
-# branch, its end state on the fold, every refusal branch, and the size of the
-# caller population it holds for.
+# ``_panel_record`` prefers the FILE over the fold. That is safe only because the
+# route writes the file BEFORE the history append and skips the append when the
+# write fails, so the file is never the staler record. The pins below hold that.
 
 
 def _publish_handler_ast():
@@ -57,13 +52,8 @@ def _publish_handler_ast():
 async def test_the_file_is_written_before_the_history_is_appended(vetted, monkeypatch):
     """The file write completes BEFORE the history append begins.
 
-    This is the order ``_panel_record``'s file-wins selection rests on. Reversed,
-    the fold could hold a cycle the file does not, and the drawer would serve a
-    panel older than the one the publish just wrote while reporting success -- a
-    viewer cannot tell a stale dashboard from a current one.
-
-    Both spies delegate to the real callables, so the publish under test really
-    writes and really appends; what is recorded is only WHEN each happened.
+    Reversed, the drawer could serve a panel older than the one just published. Both
+    spies delegate to the real callables and record only WHEN each ran.
     """
     order: list[str] = []
     real_publish = agent_panel.publish
@@ -100,11 +90,8 @@ async def test_the_file_is_written_before_the_history_is_appended(vetted, monkey
 async def test_a_failed_file_write_appends_no_history_row(vetted, monkeypatch):
     """A file write that fails never reaches the history append at all.
 
-    The CALL-level half of the guarantee: the emitter is not invoked. Its
-    end-state half -- that the fold holds no record either -- is measured by
-    ``test_the_fold_never_holds_a_publish_the_file_lacks``, which runs the real
-    emitter and so can observe a fold that a spy would leave empty whatever the
-    route did.
+    The call-level half; ``test_the_fold_never_holds_a_publish_the_file_lacks`` checks
+    the fold's end state with the real emitter.
     """
     appended: list[tuple[Any, ...]] = []
     real_append = crew_log_emit.on_panel_published
@@ -137,21 +124,10 @@ async def test_a_failed_file_write_appends_no_history_row(vetted, monkeypatch):
 async def test_the_fold_never_holds_a_publish_the_file_lacks(vetted, monkeypatch):
     """END STATE: the fold never gets AHEAD of the file.
 
-    The property ``_panel_record``'s file-wins branch is written to be free of, and
-    it is asserted on the two records themselves rather than on a call count, so a
-    writer that reaches the log by any route -- not only through the emitter this
-    file spies on elsewhere -- is still caught.
-
-    A first publish is allowed to land, so both halves compare VALUES. Asserting
-    absence after a single failed publish would prove nothing on either side:
-    ``read`` answers ``None`` for a malformed file as readily as for a missing one,
-    so it cannot see a partial record, and an empty fold is what an empty log looks
-    like anyway.
-
-    The second publish is refused at the WRITE SEAM, so the real ``publish`` runs
-    its lock, its ownership check and its write attempt. Refusing ``publish``
-    itself would exercise none of that -- it is the record's only writer, so the
-    file would be untouched by construction rather than by the code under test.
+    Checked on both records' VALUES after a first publish lands: absence alone proves
+    nothing, since ``read`` gives ``None`` for a malformed file and an empty log folds
+    empty. The second write fails at ``atomic_write`` so the real ``publish`` lock,
+    ownership check and write attempt all run.
     """
     async with _client() as c:
         first = await c.post(
@@ -187,14 +163,8 @@ async def test_the_fold_never_holds_a_publish_the_file_lacks(vetted, monkeypatch
 async def test_every_refused_publish_returns_before_the_history_append():
     """EVERY handler of the publish write cannot fall through to the append.
 
-    Enumerated from the route's own source rather than listed here, because the
-    recurrence is a refusal branch nobody has written yet: a handler added below
-    the existing ones, logging and then falling through, would append a history
-    row for a publish that never reached the file. Asserting over the handlers
-    that ARE there covers the next one by construction.
-
-    A handler ending in ``raise`` satisfies this as squarely as one ending in
-    ``return``: neither reaches the append.
+    Handlers are read from the route's source, so a new handler that logs and falls
+    through is caught. Ending in ``raise`` counts like ``return``.
     """
     ast, handler = _publish_handler_ast()
 
@@ -228,13 +198,8 @@ async def test_every_refused_publish_returns_before_the_history_append():
 async def test_the_history_append_has_exactly_one_call_site():
     """``on_panel_published`` is called from exactly one place in the package.
 
-    The emitter is public and applies no ordering rule of its own, so the write
-    order lives entirely in its caller. One caller is what makes the pins above a
-    statement about the whole package rather than about one route.
-
-    This cannot check a NEW caller's ordering -- it makes one impossible to add
-    silently. A second call site fails here, and extending the order pin to cover
-    it is what clears the failure.
+    The emitter applies no ordering of its own, so one caller makes the pins above hold
+    for the whole package. A second call site fails here until the order pin covers it.
     """
     import ast
 

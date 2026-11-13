@@ -659,7 +659,7 @@ def _scan_source(
         # told the user "Codex: Settings — scanner_failed" while the source itself
         # vanished from the picker, which misdescribes what happened and points
         # them at the wrong thing. An empty category marks it as whole-source.
-        scan.diagnostic("", "source_unreadable", unsupported=True)
+        scan.diagnostic("", "source_unreadable", unsupported=True, failed=True)
         return scan
     _deduplicate_items(scan)
     return scan

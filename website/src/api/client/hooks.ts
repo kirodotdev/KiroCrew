@@ -115,6 +115,7 @@ export function createHooksEndpoints({ post, put, del, j, jfetch: fetch }: Clien
     // Hooks
     hooks: () => fetch('/api/hooks').then(j),
     kiroHooks: () => fetch('/api/kiro-hooks').then(j),
+    rescanKiroHooks: () => post('/api/kiro-hooks/rescan', {}).then(j) as Promise<{ ok: boolean; agent_spec_rewritten?: boolean }>,
     createHook: (body: object) => post('/api/hooks', body).then(j),
     updateHook: (id: string, body: object) => put('/api/hooks/' + id, body).then(j),
     deleteHook: (id: string) => del('/api/hooks/' + id).then(j),

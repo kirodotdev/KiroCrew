@@ -131,11 +131,8 @@ class TestCharacterBudget:
     ) -> None:
         """An oversized lesson is skipped, not treated as the end of the budget.
 
-        Stopping at the first lesson that does not fit would throw away every
-        shorter lesson ranked behind it, wasting the remaining budget. The
-        oversized rule is written second of three so it lands in the MIDDLE of
-        the recency order, which is the only arrangement where skipping and
-        stopping differ.
+        The oversized rule is written second of three so it lands in the MIDDLE of
+        the recency order, the only arrangement where skipping and stopping differ.
         """
         oversized = "Avoid " + "verbosity " * 60
         store.write_lesson(MIGRATION)  # ranked last
@@ -343,17 +340,11 @@ class TestStoredVectorComparability:
     ) -> None:
         """A vector of another dimensionality is incomparable, not a match.
 
-        Rows written under a previous embedding model keep that model's
-        dimensionality. Comparing one against a query from the current model used
-        to score only the leading elements while each norm still used its own
-        full vector, so the shorter row could reach a perfect 1.0 and outrank the
-        row that genuinely matches.
+        Rows written under an older embedding model keep its dimensionality. Scoring
+        only the leading elements would let the shorter row reach a perfect 1.0.
 
-        The blob is rewritten directly because that is the only way the mismatch
-        arises: ``write_lesson`` embeds every row with whatever ``embed_fn`` is
-        bound at the time, and handing it a short vector up front instead trips
-        the dedup comparison — which truncates the same way — so the row is
-        treated as a duplicate and never stored at all.
+        The blob is rewritten directly: a short vector from ``embed_fn`` would trip
+        the dedup comparison, which truncates the same way, and never be stored.
         """
         probe = "unrelated probe phrasing"
         vectors = {

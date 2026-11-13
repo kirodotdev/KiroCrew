@@ -17,8 +17,8 @@ vi.mock('../components/icons/panels', () => {
 import { SidePanelDockHost, SidePanelGlyph } from '../components/SidePanelGlyph'
 
 describe('SidePanelGlyph', () => {
-  beforeEach(() => { localStorage.clear(); mobile.value = false; setSidePanelDock('right') })
-  afterEach(() => { setSidePanelDock('right') })
+  beforeEach(() => { localStorage.clear(); mobile.value = false; act(() => setSidePanelDock('right')) })
+  afterEach(() => { act(() => setSidePanelDock('right')) })
 
   it('draws the right-dock glyph while the panel docks right', () => {
     render(<SidePanelGlyph size={15} />)

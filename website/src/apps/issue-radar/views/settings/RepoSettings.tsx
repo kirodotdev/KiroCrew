@@ -14,9 +14,12 @@ import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
 import CrewProtocolSettings from './CrewProtocolSettings'
+import SettingToggle from './SettingToggle'
 import { asArray } from '../../lib/format'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../../../i18n/t'
+import { fmtNumber } from '../../../../i18n/format'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { findReport } from '../../../../utils/errorReport'
 // Heuristic name patterns used only to *suggest* likely labels (one-click add);
@@ -370,7 +373,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <p className="text-[13px] text-muted mb-4">{i18nT('apps.issueRadar.views.settings.repoSettings.loading_this_repo_s_saved_settings')}</p>
       )}
       <p className="text-[13px] text-muted mb-4">
-        {i18nT('apps.issueRadar.views.settings.repoSettings.local_triage_settings_for_this_repo_they_teach_i')} {repo} {i18nT('apps.issueRadar.views.settings.repoSettings.organises_its_issues_and_are_never_written_back')} {terms.providerName}.
+        {i18nT('apps.issueRadar.views.settings.repoSettings.local_triage_settings_intro', { repo, provider: terms.providerName })}
         {saveMutation.isPending
           ? <span className="ml-2 opacity-70">{i18nT('apps.issueRadar.views.settings.repoSettings.saving')}</span>
           : saveMutation.isSuccess ? <span className="ml-2 opacity-70 inline-flex items-center gap-1">{i18nT('apps.issueRadar.views.settings.repoSettings.saved')} <Check size={12} className="lucide-inline" /></span> : null}
@@ -414,10 +417,18 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           disabled={!settingsReady}
           onClick={() => update({ notify_on_new_issue: !settings.notify_on_new_issue })}
         >
-          {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_a')} <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.is_opened_in')} {owner}/{repo}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.notify_me_when_a_new_issue_is_opened_in"
+            values={{ repo: `${owner}/${repo}` }}
+            components={{ newIssue: <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> }}
+          />
         </SettingToggle>
         <StatLine>
-          {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no_webhook', { provider: terms.providerName })}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.checks_once_a_minute_with_cli"
+            values={{ provider: terms.providerName }}
+            components={{ cli: <code>{terms.cli}</code> }}
+          />
         </StatLine>
         {providerKeyOf(repoRef) === 'github' && (
           <div className="mt-4 pt-3 border-t border-border">
@@ -469,7 +480,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         </div>
         <StatLine>
           {settings.workspace_path
-            ? <>{i18nT('apps.issueRadar.views.settings.repoSettings.investigate_will_run_in')} <code>{settings.workspace_path}</code>.</>
+            ? <Trans i18nKey="apps.issueRadar.views.settings.repoSettings.investigate_runs_in_path" components={{ path: <code>{settings.workspace_path}</code> }} />
             : i18nT('apps.issueRadar.views.settings.repoSettings.leave_empty_to_use_the_default_working_directory')}
         </StatLine>
       </Card>
@@ -512,7 +523,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {issuesQuery.isLoading
             ? i18nT('apps.issueRadar.views.settings.repoSettings.counting_open_issues')
-            : <><strong className="text-text">{triageCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.of')} {openIssues.length} {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_currently_need_triage')}</>}
+            : <Trans
+                i18nKey="apps.issueRadar.views.settings.repoSettings.triage_needed_of_open"
+                values={{ n: fmtNumber(openIssues.length), triage: fmtNumber(triageCount) }}
+                components={{ strong: <strong className="text-text" /> }}
+              />}
         </StatLine>
       </Card>
 
@@ -534,7 +549,12 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {issuesQuery.isLoading
             ? i18nT('apps.issueRadar.views.settings.repoSettings.counting_open_issues')
-            : <><strong className="text-text">{gfiCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_are_marked_first_issue_friendly')}</>}
+            : <Trans
+                i18nKey="apps.issueRadar.views.settings.repoSettings.first_issue_friendly_count"
+                count={gfiCount}
+                values={{ n: fmtNumber(gfiCount) }}
+                components={{ strong: <strong className="text-text" /> }}
+              />}
         </StatLine>
       </Card>
 
@@ -613,7 +633,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
                 href={userUrlFor(repoRef, m.login)}
                 target="_blank"
                 rel="noreferrer"
-                title={`${m.login} — ${roleLabel(m.role)} · open on ${terms.providerName}`}
+                title={i18nT('apps.issueRadar.views.settings.repoSettings.member_chip_title', {
+                  login: m.login,
+                  role: roleLabel(m.role),
+                  provider: terms.providerName,
+                })}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-hover pl-2.5 pr-2 py-1 text-[13px] text-text hover:border-border-strong transition-colors"
               >
                 <span className="truncate max-w-[160px]">{m.login}</span>
@@ -657,14 +681,18 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           <AlertTriangle size={14} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect_repository')}
         </div>
         <p className="text-[12px] text-muted mb-3">
-          {i18nT('apps.issueRadar.views.settings.repoSettings.removes')} {owner}/{repo} {i18nT('apps.issueRadar.views.settings.repoSettings.from_issue_radar_and_deletes_its_local_cache_you')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.repoSettings.data_and')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.auth_are_untouched_you_can_reconnect_anytime')}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.removes_repo_from_issue_radar"
+            values={{ repo: `${owner}/${repo}`, provider: terms.providerName }}
+            components={{ cli: <code>{terms.cli}</code> }}
+          />
         </p>
         {confirmingDelete ? (
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => disconnectMutation.mutate()}
               disabled={disconnectMutation.isPending}
-              className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md bg-danger text-white hover:opacity-90 disabled:opacity-40 cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md bg-danger text-danger-fg hover:opacity-90 disabled:opacity-40 cursor-pointer"
             >
               <Trash2 size={13} /> {disconnectMutation.isPending ? i18nT('apps.issueRadar.views.settings.repoSettings.disconnecting') : i18nT('apps.issueRadar.views.settings.repoSettings.confirm_disconnect')}
             </button>
@@ -708,26 +736,6 @@ function Card({ icon: Icon, title, desc, children }: {
       </div>
       {children}
     </section>
-  )
-}
-
-function SettingToggle({ on, onClick, disabled, children }: {
-  on: boolean; onClick: () => void; disabled?: boolean; children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={onClick}
-      disabled={disabled}
-      className="flex items-center gap-2.5 mb-4 cursor-pointer bg-transparent text-left disabled:opacity-50 disabled:cursor-default"
-    >
-      <span className={`relative w-9 h-5 rounded-full flex-shrink-0 transition-colors ${on ? 'bg-accent' : 'bg-bg-hover border border-border'}`}>
-        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? 'left-[18px]' : 'left-0.5'}`} />
-      </span>
-      <span className="text-[13px] text-text">{children}</span>
-    </button>
   )
 }
 

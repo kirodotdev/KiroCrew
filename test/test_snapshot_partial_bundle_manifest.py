@@ -62,11 +62,8 @@ class TestAPartialRootWithoutAComponentMapIsRefused:
     def test_an_explicit_components_flag_still_lets_it_through(self, home, tmp_path):
         """The refusal is about guessing, not about the bundle being unusable.
 
-        Replace is the destructive direction, so the hatch is shown here on a live home
-        with nothing to lose: the bundle omits `workspace/knowledge` and so does live
-        state, and a tree neither side has cannot be cleared out from under anyone. The
-        case where live DOES hold a tree the bundle omits is refused, and merge -- which
-        clears nothing -- accepts it either way; both are pinned in cycle12.
+        Shown on a live home with nothing to lose: neither side has `workspace/knowledge`,
+        so replace cannot clear it out from under anyone.
         """
         md = home / "workspace" / "memory"
         (md / "preferences.md").write_text("live state")
@@ -273,10 +270,7 @@ class TestTextIOPinsUtf8:
         """``(line, method, has_encoding)`` for every ``.read_text()`` / ``.write_text()``
         call in *source*.
 
-        Checked with the AST, not a regex: the call can span lines and its
-        arguments can contain nested calls with their own parentheses, both of
-        which defeat line-oriented matching. A regex version of this test let a
-        `write_text(payload)` mutant survive.
+        Checked with the AST, not a regex: a call can span lines and nest parentheses.
         """
         import ast
 

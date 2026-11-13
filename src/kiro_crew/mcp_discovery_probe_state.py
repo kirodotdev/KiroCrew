@@ -282,6 +282,7 @@ class _ProbeResult:
     # all of its life showing the vaguer wording.
     auth_challenge: bool = False
     auth_grant_present: bool | None = None
+    auth_crew_held: bool = False
     # The probe's declared-temp refusals (see ``McpServerInfo.temp_refusals``),
     # cached so the panel keeps showing them for the whole TTL.
     temp_refusals: list[dict[str, str]] = field(default_factory=list)
@@ -314,9 +315,10 @@ def _probe_identity(server: McpServerInfo) -> str:
 
     Local and remote are decided by ``McpServerInfo.is_remote`` — the same
     property ``probe_server`` dispatches on. A spec carrying BOTH a url and a
-    command is probed as local, so fingerprinting it as remote would leave an
-    edit to its command invisible to this cache: the original bug, surviving
-    for exactly the shape that looks most like a misconfiguration.
+    real command is probed as local unless its ``type`` is ``http`` or ``sse``,
+    so fingerprinting it as remote would leave an edit to its command invisible
+    to this cache: the original bug, surviving for exactly the shape that looks
+    most like a misconfiguration.
 
     Every input is coerced before hashing. ``_server_from_spec`` passes
     on-disk JSON through unvalidated, so ``env`` can be null, ``args`` can hold
@@ -521,6 +523,7 @@ def _cache_probe(server: McpServerInfo) -> None:
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,
         auth_grant_present=server.auth_grant_present,
+        auth_crew_held=server.auth_crew_held,
         temp_refusals=[dict(r) for r in server.temp_refusals],
         identity=identity,
     )

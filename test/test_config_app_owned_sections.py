@@ -190,9 +190,14 @@ class TestAppOwnedSectionsAreNotUnrecognized:
         (broken / "app.json").write_text(
             json.dumps({"name": "broken", "config_keys": ["broken-key"]})
         )
-        (broken / "installed.json").write_text(
-            json.dumps({"name": "broken", "schemaVersion": "not-an-int"})
-        )
+        # Truly-corrupt JSON: _read_installed returns None (it catches the
+        # JSONDecodeError), so the app is unreadable and its config keys are
+        # dropped, and the scan still publishes the valid app's keys. A
+        # non-integer schemaVersion would NOT exercise this path: it degrades to
+        # 1 like any other malformed field (see
+        # test_non_integer_schema_version_falls_back), leaving the app readable
+        # with its manifest keys kept.
+        (broken / "installed.json").write_text("{ this is not valid json")
         monkeypatch.setattr(app_manager, "apps_dir", lambda: apps_root)
 
         assert app_manager.refresh_app_config_keys() == frozenset({"secretary"})

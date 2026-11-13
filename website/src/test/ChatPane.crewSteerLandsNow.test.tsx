@@ -14,6 +14,7 @@ import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import type { ChatMessage } from '../types'
 import * as transport from '../chat-core/transport/sendTurn'
+import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
 
 // The real pane/composer/serializer/reducers; only network and unrelated rich
 // content are mocked. A deferred receipt lets each test observe the send itself.
@@ -39,7 +40,7 @@ vi.mock('../api/client', () => ({
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
     stopChat: vi.fn(),
     interruptSlot: vi.fn(),
-    resolveApproval: vi.fn().mockResolvedValue({ ok: true }),
+    decideApproval: vi.fn().mockResolvedValue({ ok: true }),
     answerQuestion: vi.fn().mockResolvedValue({ ok: true }),
   },
   SEARCH_MIN_CHARS: 2,
@@ -310,12 +311,13 @@ describe('mate responsive Send', () => {
   it('retains actionable spawn approvals even though routine subagent progress is hidden', async () => {
     const { store } = renderCrewmate({ width: 320 })
     await ready()
-    act(() => { store.dispatch(sseSubagentPending({ slot: SLOT, id: 'worker-fixed', task: 'Review report', approval_id: 'spawn-fixed' })) })
+    const target = { origin: 'coordinator' as const, id: 'spawn-fixed', slot: SLOT, instance: 'inst-spawn-fixed' }
+    act(() => { store.dispatch(sseSubagentPending({ slot: SLOT, id: 'worker-fixed', task: 'Review report', approval_id: 'spawn-fixed', approval_target: target })) })
     const card = await screen.findByTestId('spawn-approval-card')
     expect(card).toBeInTheDocument()
     expect(screen.queryByTestId('subagent-progress-probe')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Approve', exact: true }))
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('spawn-fixed', 'approve'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(target, 'approve'))
   })
 
   it('an ordinary Sessions pane retains its engineering affordances and sends no responsive flag', async () => {
@@ -635,5 +637,17 @@ describe('the composer while a send waits for the turn that answers it', () => {
     expect(screen.getByTestId('crewmate-live-activity')).toBeInTheDocument()
     expect(screen.getByTestId('stop-button-armed')).toBeInTheDocument()
     expect(resumeShown()).toBe(false)
+  })
+})
+
+describe('a browser hand-back note no agent op took', () => {
+  it('is sent as the person\'s next message to this crewmate, and only for its own slot', async () => {
+    renderCrewmate({ running: false })
+    await ready()
+    act(() => { window.dispatchEvent(new CustomEvent(BROWSER_HANDBACK_CHAT_EVENT, { detail: { slotKey: 'other-slot', text: 'not mine' } })) })
+    expect(api.sendChat).not.toHaveBeenCalled()
+    act(() => { window.dispatchEvent(new CustomEvent(BROWSER_HANDBACK_CHAT_EVENT, { detail: { slotKey: SLOT, text: 'Signed in, carry on' } })) })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.sendChat).mock.calls[0][0]).toContain('Signed in, carry on')
   })
 })

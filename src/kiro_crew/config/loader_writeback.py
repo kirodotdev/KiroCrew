@@ -20,7 +20,7 @@ from kiro_crew.config.loader_document import (
     update_config_locked,
     write_config_atomically,
 )
-from kiro_crew.config.loader_locations import config_local_path, read_config_text
+from kiro_crew.config.loader_locations import config_local_path, read_endorsed_config_text
 from kiro_crew.config.loader_snapshots import dispatch_kiro_agent
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.superseded_defaults import record_adoptions
@@ -123,9 +123,8 @@ def _overlay_kiro_agent() -> str | None:
     """
     try:
         local_path = config_local_path()
-        if not local_path.is_file():
-            return None
-        raw = json.loads(read_config_text(local_path))
+        # Read as the load reads it; FileNotFoundError: neither file nor endorsed copy.
+        raw = json.loads(read_endorsed_config_text(local_path))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
     if not isinstance(raw, dict):

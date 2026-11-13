@@ -22,7 +22,9 @@ An assignment (plain or annotated) whose value expression instantiates
 ``asyncio.Lock``, ``asyncio.Event`` or ``asyncio.Queue`` — directly, through a
 module alias (``import asyncio as aio``), through a from-import (``from
 asyncio import Lock``, ``from asyncio.locks import Lock``), through a submodule
-attribute (``asyncio.locks.Lock()``, ``asyncio.queues.Queue()``), or nested
+attribute (``asyncio.locks.Lock()``, ``asyncio.queues.Queue()``, with or
+without a plain ``import asyncio`` beside ``import asyncio.locks``), through a
+submodule alias (``import asyncio.locks as al``; ``al.Lock()``), or nested
 inside a container/conditional (``_L = {"k": asyncio.Lock()}``) — executing at import
 time: module body, a module-level ``if``/``try``/``with``/``match`` block, or
 a class body.
@@ -90,6 +92,12 @@ def _module_scope_names(tree: ast.Module) -> tuple[set[str], set[str]]:
             for alias in node.names:
                 if alias.name == "asyncio":
                     aliases.add(alias.asname or alias.name)
+                elif alias.name.startswith("asyncio."):
+                    # ``import asyncio.locks`` binds ``asyncio`` itself, so
+                    # ``asyncio.locks.Lock()`` must match without a plain
+                    # ``import asyncio`` beside it; ``import asyncio.locks as al``
+                    # binds the submodule, which ``al.Lock()`` reads directly.
+                    aliases.add(alias.asname or "asyncio")
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             if mod == "asyncio" or mod.startswith("asyncio."):
@@ -234,6 +242,16 @@ _PROBES: list[tuple[str, str, int]] = [
     (
         "attribute form of the queues submodule",
         "import asyncio\n_Q = asyncio.queues.Queue()\n",
+        1,
+    ),
+    (
+        "submodule import with no plain import asyncio",
+        "import asyncio.locks\n_L = asyncio.locks.Lock()\n",
+        1,
+    ),
+    (
+        "aliased submodule import",
+        "import asyncio.locks as al\n_L = al.Lock()\n",
         1,
     ),
     ("module alias spelling", "import asyncio as aio\n_L = aio.Lock()\n", 1),

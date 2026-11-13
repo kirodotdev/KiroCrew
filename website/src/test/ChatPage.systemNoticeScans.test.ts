@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { ChatMessage } from '../types'
+import { replyShowsFooter } from '../pages/chat/replyFooter'
 
 /**
  * REGRESSION GUARD — every "last assistant in turn" scan skips system-notice rows.
@@ -12,9 +14,9 @@ import { join } from 'node:path'
  * switching on the notice card (issue #10115). `CompactionCard.tsx` exports
  * `isSystemNoticeRow` as "one predicate shared with the last-real-message
  * scans", and `completedTurns.ts` already follows that convention; these scans
- * must too. Pinned by source scan because the predicates are inline (a
- * `useMemo` body, an IIFE inside a 60-prop JSX element, and a renderer-entry
- * loop) with no seam to call.
+ * must too. Pinned by source scan where the predicate is inline (a `useMemo`
+ * body and a callback) with no seam to call; the footer walk is a function
+ * (`replyShowsFooter`), so it is exercised directly.
  */
 // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
 // so the pins read the page and those owners.
@@ -40,32 +42,21 @@ describe('last-assistant scans skip system-notice rows', () => {
   })
 
   it('showFooter walk passes over notice rows', () => {
-    const i = CHAT_PAGE.indexOf('showFooter={(() => {')
-    expect(i).toBeGreaterThan(-1)
-    const pred = CHAT_PAGE.slice(i, CHAT_PAGE.indexOf('})()}', i))
-    expect(pred).toMatch(/if \(isSystemNoticeRow\(later\)\) continue/)
-    // The skip decides "does a later row end the turn", so it must run BEFORE
-    // the assistant/streaming check that returns false.
-    const skipAt = pred.indexOf('if (isSystemNoticeRow(later)) continue')
-    const denyAt = pred.indexOf("if (later.role === 'assistant' || later.role === 'streaming') return false")
-    expect(skipAt).toBeGreaterThan(-1)
-    expect(denyAt).toBeGreaterThan(-1)
-    expect(skipAt).toBeLessThan(denyAt)
+    // A notice row between the reply and the row that ends its turn must not
+    // read as "another reply follows". Both surfaces draw from this one rule.
+    const reply = { role: 'assistant', content: 'zzq-answer', cls: '' } as ChatMessage
+    const notice = { role: 'assistant', content: 'zzq-summary', cls: '', meta: { kind: 'compaction' } } as ChatMessage
+    const user = { role: 'user', content: 'zzq-next', cls: '' } as ChatMessage
+    expect(replyShowsFooter(reply, [reply, notice, user], 0, true)).toBe(true)
+    expect(replyShowsFooter(reply, [reply, notice], 0, false)).toBe(true)
   })
 
-  it('the app-sdk assistant row walk passes over notice rows', () => {
-    // The SDK row set's `assistant` entry runs the same end-of-turn walk for
-    // every host built on the factory (ChatPane, SideChat, ChatEmbed), and the
-    // dashboard row set does not override it — it needs the same skip.
-    const i = SDK_RENDERERS.indexOf('let nextRelevant = false')
-    expect(i).toBeGreaterThan(-1)
-    const walk = SDK_RENDERERS.slice(i, SDK_RENDERERS.indexOf('if (!nextRelevant)', i))
-    expect(walk).toMatch(/if \(isSystemNoticeRow\(ctx\.messages\[j\]\)\) continue/)
-    const skipAt = walk.indexOf('if (isSystemNoticeRow(ctx.messages[j])) continue')
-    const denyAt = walk.indexOf("if (ctx.messages[j].role === 'assistant' || ctx.messages[j].role === 'streaming')")
-    expect(skipAt).toBeGreaterThan(-1)
-    expect(denyAt).toBeGreaterThan(-1)
-    expect(skipAt).toBeLessThan(denyAt)
+  it('the app-sdk assistant row and ChatPage share the footer walk', () => {
+    // The SDK row set's `assistant` entry runs the end-of-turn walk for every
+    // host built on the factory (ChatPane, SideChat, ChatEmbed), and the
+    // dashboard row set does not override it: it must be the same rule.
+    expect(SDK_RENDERERS).toContain('replyShowsFooter(m, ctx.messages, ctx.index, ctx.running)')
+    expect(CHAT_PAGE).toContain('replyShowsFooter(m, messagesRef.current, i, slotRunning)')
   })
 
   it('the regenerate truncation walk passes over notice rows', () => {

@@ -14,7 +14,7 @@ The configured schedule therefore has to arrive from outside:
 ``agent.recovery_backoff_*`` onto the process ladder once at gateway start (both
 keys are ``restart=True``), and every :func:`~kiro_crew.recovery.ladder.default_ladder`
 consumer reads it from there. Two readers bind their value at IMPORT and so stay
-on the static defaults whatever the config says: ``acp/client._ACP_RESPAWN_BACKOFF_S``
+on the static defaults whatever the config says: ``acp/client_timeouts._ACP_RESPAWN_BACKOFF_S``
 (one permitted respawn delay) and ``taskq/model.recovery_backoff_secs`` (the
 store's re-dispatch delay, deliberately pure).
 

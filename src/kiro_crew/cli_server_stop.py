@@ -33,7 +33,7 @@ from kiro_crew.cli_server_peer import (
     _recorded_gateway_pid,
 )
 from kiro_crew.config.loader import config_dir, read_local_secret
-from kiro_crew.gateway_lock import LockProbeError, lock_holder
+from kiro_crew.gateway_lock import LockHolder, LockProbeError, lock_holder
 from kiro_crew.port_resolution import _basename_stem, _is_kirocrew_process, resolve_client_port
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
@@ -190,7 +190,7 @@ def _verified_loopback_gateway_pids(port: int) -> list[int]:
     return [pid]
 
 
-def _gateway_pid() -> None:
+def _gateway_pid(port: int | None = None) -> None:
     """Print this home's gateway-lock holder as one line of JSON, then exit 0.
 
     Read-only. Resolves the incumbent through :func:`gateway_lock.lock_holder`,
@@ -222,17 +222,31 @@ def _gateway_pid() -> None:
     -- it prints ``{"holder": "indeterminate", "reason": "..."}`` and exits 2:
     waiting has no end, so the caller must NOT spawn and must not wait
     unbounded -- it surfaces the terminal error.
+
+    Given *port* (``--port``), a positively held lock whose holder is
+    unnameable is named from the gateway's own run record for that port
+    instead (:func:`_recorded_gateway_pid`: ``run/gateway-<port>.pid`` whose
+    start token still matches the live pid), as ``source: "run_record"`` --
+    the fallback ``stop`` already takes. No record, or a stale one, still
+    prints ``held``.
     """
     try:
         holder = lock_holder(config_dir())
     except LockProbeError as exc:
         if exc.held:
-            # Positively held, holder unnameable: a live gateway (likely still
-            # draining). Name it as held so the caller waits for release.
-            print(json.dumps({"holder": "held", "reason": str(exc)}))
-            return
-        print(json.dumps({"holder": "indeterminate", "reason": str(exc)}))
-        sys.exit(2)
+            recorded = _recorded_gateway_pid(port) if port is not None else None
+            if recorded is not None:
+                # The same fallback _config_dir_owner takes for `stop`: the
+                # gateway's own fresh run record for this port names the holder.
+                holder = LockHolder(pid=recorded, alive=True, source="run_record")
+            else:
+                # Positively held, holder unnameable: a live gateway (likely still
+                # draining). Name it as held so the caller waits for release.
+                print(json.dumps({"holder": "held", "reason": str(exc)}))
+                return
+        else:
+            print(json.dumps({"holder": "indeterminate", "reason": str(exc)}))
+            sys.exit(2)
     if holder.pid is None or not holder.alive:
         print(json.dumps({"holder": "nobody"}))
         return
@@ -384,6 +398,146 @@ def _refuse_service_alias(operation: str, port: int) -> bool:
     return True
 
 
+def _process_path(pid: int) -> str:
+    """Where *pid* runs from, with ``/`` separators, or ``""`` when unreadable.
+
+    The executable path where the host reports one (Linux, macOS), else the
+    command line (the only source Windows has), without its opening quote.
+    """
+    where = platform_compat.process_executable_path(pid) or platform_compat.process_command_line(
+        pid
+    )
+    return (where or "").replace("\\", "/").lstrip('"')
+
+
+def _config_dir_owner(port: int | None = None) -> tuple[int, bool] | None:
+    """The live ``gateway.lock`` holder as ``(pid, from_desktop_bundle)``, or ``None``.
+
+    Best effort: a free lock and any probe failure both return ``None``.
+    ``from_desktop_bundle`` reads the same ``backend-dist`` path component
+    :func:`platform_compat.is_bundled_interpreter` reads for this process, in
+    :func:`_process_path` of the holder.
+
+    A Windows mandatory lock hides the pid stamp from every other handle, so
+    the probe answers "held, holder unnameable" (``LockProbeError.held``).
+    Given *port*, that one answer names the holder from the gateway's own run
+    record instead (:func:`_recorded_gateway_pid`: ``run/gateway-<port>.pid``
+    whose start token still matches the live pid). No record, a stale one, or
+    no *port* returns ``None``.
+    """
+    try:
+        holder = lock_holder(config_dir())
+    except LockProbeError as exc:
+        if not exc.held or port is None:
+            return None
+        holder = LockHolder(pid=_recorded_gateway_pid(port), alive=True, source="run_record")
+    except OSError:
+        return None
+    if holder.pid is None or not holder.alive:
+        return None
+    segments = _process_path(holder.pid).split("/")
+    return holder.pid, platform_compat.BUNDLED_BACKEND_DIST_DIRNAME in segments[:-1]
+
+
+#: How many ancestors of the gateway are read to find the desktop app. The app
+#: spawns the bundled interpreter directly; the slack covers a launcher shim
+#: inside the bundle.
+_SUPERVISOR_SEARCH_DEPTH = 4
+
+
+def _desktop_supervisor_pid(holder_pid: int) -> int | None:
+    """The live desktop app that spawned the gateway *holder_pid*, or ``None``.
+
+    The gateway runs from ``<app>/<resources>/backend-dist/``; the app's own
+    executable sits elsewhere under ``<app>``. The first ancestor outside the
+    bundle must run from under ``<app>``. A gateway the app left behind (the app
+    quit or crashed) has a reaped, reused or re-homed parent, so it is not
+    supervised and a stop from here stays down. Paths compare case-folded:
+    Windows and macOS paths are case-insensitive, and a false match only
+    refuses. Any unreadable step returns ``None``.
+    """
+    segments = _process_path(holder_pid).split("/")
+    try:
+        bundle_at = segments[:-1].index(platform_compat.BUNDLED_BACKEND_DIST_DIRNAME)
+    except ValueError:
+        return None
+    if bundle_at < 2:
+        return None
+    app_root = "/".join(segments[: bundle_at - 1]).casefold() + "/"
+    bundle_root = "/".join(segments[: bundle_at + 1]).casefold() + "/"
+    pid = holder_pid
+    for _ in range(_SUPERVISOR_SEARCH_DEPTH):
+        pid = platform_compat.get_ppid(pid)
+        if pid <= 1:
+            return None
+        where = _process_path(pid).casefold()
+        if where.startswith(bundle_root):
+            continue
+        return pid if where.startswith(app_root) else None
+    return None
+
+
+def desktop_app_supervisor(port: int, *, explicit_port: bool) -> tuple[int, int] | None:
+    """``(gateway_pid, app_pid)`` when the desktop app supervises this home's gateway.
+
+    The check :func:`_refuse_desktop_supervised` refuses on, without the audit
+    record or the message, so a caller that would run ``kirocrew restart`` can
+    learn beforehand that it will be refused. ``None`` when the gateway is not
+    recognised as the app's, or any probe fails.
+
+    The lock names this home's gateway, but ``--port`` can name another home's
+    gateway on another port. With *explicit_port* the answer is the app only
+    when this home's gateway is a listener on *port*; an empty or failed
+    listener lookup answers ``None``.
+    """
+    found = _config_dir_owner(port)
+    if found is None or not found[1]:
+        return None
+    gateway_pid = found[0]
+    if explicit_port and gateway_pid not in platform_compat.find_listening_pids(port):
+        return None
+    app_pid = _desktop_supervisor_pid(gateway_pid)
+    return None if app_pid is None else (gateway_pid, app_pid)
+
+
+def _refuse_desktop_supervised(operation: str, port: int, *, explicit_port: bool) -> bool:
+    """Refuse *operation* when the desktop app supervises this home's gateway.
+
+    The app restarts a gateway that goes away, so killing it from the CLI is
+    undone (``stop``) or raced (``restart``). Like a systemd/launchd unit, the
+    gateway's manager owns its lifecycle: nothing is signalled, one SEL
+    ``denied`` event is written, and the remedy is printed. Returns ``True``
+    after refusing. A gateway that is not recognised as the app's, including any
+    probe failure, returns ``False`` and keeps the existing path; see
+    :func:`desktop_app_supervisor` for what is recognised.
+    """
+    found = desktop_app_supervisor(port, explicit_port=explicit_port)
+    if found is None:
+        return False
+    gateway_pid, app_pid = found
+    sel().log_api_access(
+        caller="cli",
+        operation=operation,
+        outcome="denied",
+        source="cli",
+        resources=f"pids=[{gateway_pid}] port={port} reason=desktop_app_supervised app_pid={app_pid}",
+    )
+    if operation == "gateway_restart":
+        print(
+            f"❌ The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
+            f"so `kirocrew restart` will not kill it.\n"
+            f"   Restart it from the app (Settings → About → Restart gateway), "
+            f"or quit the app and run `kirocrew restart` again."
+        )
+    else:
+        print(
+            f"❌ The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
+            f"so `kirocrew stop` will not kill it: the app would start it again.\n"
+            f"   Quit the app to stop the gateway."
+        )
+    return True
+
+
 def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None:
     """Stop a running Kiro Crew gateway.
 
@@ -406,7 +560,21 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
         _stop_expected_pid(resolve_client_port(cli_port), expect_pid)
         return
     port = resolve_client_port(cli_port)
-    if cli_port is None and service_controller.stop_service():
+    try:
+        stopped_by_service = cli_port is None and service_controller.stop_service()
+    except service_controller.ServiceStopRefused as exc:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_stop",
+            outcome="denied",
+            source="cli",
+            resources=f"port={port} via=service reason=service_stop_refused",
+        )
+        print("❌ The service manager refused to stop kirocrew. Run it by hand:")
+        for hint in exc.hints:
+            print(f"   {hint}")
+        sys.exit(1)
+    if stopped_by_service:
         sel().log_api_access(
             caller="cli",
             operation="gateway_stop",
@@ -414,6 +582,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             source="cli",
             resources=f"port={port} via=service",
         )
+        _refuse_if_gateway_outlived_service_stop()
         print("✅ Stopped kirocrew service. To remove it: kirocrew service uninstall")
         _stop_mcp_gateway_daemon()
         return
@@ -423,6 +592,12 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
     # an alias), but the fallback below would then SIGTERM the alias target's
     # managed process on the port — exactly what this CLI must not do.
     if cli_port is None and _refuse_service_alias("gateway_stop", port):
+        sys.exit(1)
+
+    # Same rule for the desktop app, which starts its gateway again after a
+    # stop from here. ``--expect-pid`` (above) is the app's own stop path and
+    # is not refused.
+    if _refuse_desktop_supervised("gateway_stop", port, explicit_port=cli_port is not None):
         sys.exit(1)
 
     # Cross-platform port -> listening PID lookup (lsof on POSIX, netstat -ano
@@ -624,9 +799,14 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             source="cli",
             resources=f"pids={denied} port={port}",
         )
-        print(
-            f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — try: sudo kirocrew stop"
+        # Windows has no sudo: taskkill is denied across an elevation
+        # boundary, so the remedy is an elevated terminal.
+        remedy = (
+            "run it again from an Administrator terminal"
+            if platform_compat.IS_WINDOWS
+            else "try: sudo kirocrew stop"
         )
+        print(f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
         sys.exit(1)
     if not sent:
         sel().log_api_access(
@@ -645,6 +825,17 @@ def _manual_stop_command(pid: int) -> str:
     if platform_compat.IS_WINDOWS:
         return f"taskkill /PID {pid} /T"
     return f"kill -TERM {pid}"
+
+
+def _force_stop_command(pids: list[int], *, posix_sep: str = " ") -> str:
+    """The command an operator runs to force-kill *pids* on this platform.
+
+    POSIX keeps each caller's existing ``kill -9`` text, pid separator
+    included, so only the Windows wording differs.
+    """
+    if platform_compat.IS_WINDOWS:
+        return "taskkill " + " ".join(f"/PID {pid}" for pid in pids) + " /T /F"
+    return "kill -9 " + posix_sep.join(str(pid) for pid in pids)
 
 
 def _refuse_if_lock_held(operation: str, port: int) -> None:
@@ -668,6 +859,33 @@ def _refuse_if_lock_held(operation: str, port: int) -> None:
         sys.exit(1)
     if holder.pid is not None and holder.alive:
         _refuse_lock_holder(operation, port, holder.pid)
+
+
+def _refuse_if_gateway_outlived_service_stop() -> None:
+    """Exit 1 when a live process still holds ``gateway.lock`` after the service
+    stop, leaving it and the MCP gateway daemon running.
+
+    The lock, not the unit, keeps a home to one gateway, so a gateway started by
+    hand can hold it while the unit crash-loops in its restart backoff, and the
+    daemon is that gateway's. Checked on systemd, where ``systemctl stop``
+    returns once the unit's processes are gone; ``launchctl bootout`` returns
+    before its job exits, so a holder read then may be the agent's own gateway.
+    An indeterminate probe makes no claim.
+    """
+    if service_controller.current_platform() == service_controller.Platform.SYSTEMD:
+        try:
+            holder = lock_holder(config_dir())
+        except LockProbeError:
+            return
+        if holder.pid is not None and holder.alive:
+            print(
+                f"⚠️  Stopped kirocrew service, but pid {holder.pid} still holds "
+                f"{config_dir() / 'gateway.lock'}: the service stop did not end it, so it "
+                f"and the MCP gateway daemon were left running.\n"
+                f"   To stop it, run `kirocrew stop` again, or: "
+                f"{_manual_stop_command(holder.pid)}"
+            )
+            sys.exit(1)
 
 
 def _refuse_lock_holder(operation: str, port: int, pid: int) -> NoReturn:

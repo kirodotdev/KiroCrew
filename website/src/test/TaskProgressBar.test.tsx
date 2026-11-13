@@ -7,6 +7,7 @@ import TaskProgressBar from '../pages/chat/TaskProgressBar'
 import dashboardReducer, { sseTodoUpdate, sseSlots } from '../store/dashboardSlice'
 import type { ChatSlot, TodoList } from '../types'
 import { api, ApiError } from '../api/client'
+import { i18next } from '../i18n/all'
 
 vi.mock('../api/client', async () => {
   const actual = await vi.importActual<typeof import('../api/client')>('../api/client')
@@ -60,6 +61,13 @@ describe('TaskProgressBar', () => {
   it('shows the server-derived count as "N of M"', () => {
     renderBar([slot('slot-1', todo([['a', true], ['b', false], ['c', false]]))])
     expect(screen.getByTestId('todo-count').textContent).toBe('1 of 3')
+  })
+
+  it('renders the count as one catalog sentence, not "N" + "of" + "M"', async () => {
+    // en-XA brackets every catalog value, so a count glued from fragments reads `1 [of] 3`.
+    await act(async () => { await i18next.changeLanguage('en-XA') })
+    renderBar([slot('slot-1', todo([['a', true], ['b', false], ['c', false]]))])
+    expect(screen.getByTestId('todo-count').textContent).toMatch(/^\[1 [^[\]]* 3[^[\]]*\]$/)
   })
 
   it('shows the first incomplete task as the current task', () => {

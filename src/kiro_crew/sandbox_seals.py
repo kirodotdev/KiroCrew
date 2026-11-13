@@ -171,7 +171,7 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #: MASKED leaves are a different population and refuse through
 #: :func:`_refuse_aliased_masked_leaves`; this set is what the sealing loop refuses.
 #:
-#: These three are not config files and nothing has a reason to link them:
+#: These five are not config files and nothing has a reason to link them:
 #:
 #: * ``crew-panels`` -- created on demand by the GATEWAY and read by nothing else.
 #:   It is bind-MASKED, so a link means the mask attaches to the target while the
@@ -190,11 +190,14 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #:   same link hazard: the mask would attach to the target while the link NAME stays
 #:   writable, and the gateway would then read rules, goals and DM bindings back from
 #:   a directory a sandboxed process filled.
+#: * ``released-sessions`` -- created on demand by the GATEWAY and read by nothing
+#:   else, with the same link hazard: a sandboxed process unlinks it, drops its own
+#:   directory, and forges entries that have the gateway delete the records they name.
 #:
 #: So for these, a link is refused: the disposition must attach to the same name the
 #: reader uses, and following a link is exactly the gap that voids it.
 _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
-    {"crew-panels", "member-records", "panel-dismissals", "panel-templates"}
+    {"crew-panels", "member-records", "panel-dismissals", "panel-templates", "released-sessions"}
 )
 
 

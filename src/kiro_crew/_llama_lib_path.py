@@ -87,6 +87,16 @@ _REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
         "libggml-cpu.0.dylib",
         "libggml-metal.0.dylib",
     ),
+    # The same llama.cpp, rebuilt with -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod
+    # (recipe and sha256s in _vendor/README.md). Loaded instead of
+    # linux_aarch64 only on a host whose every core reports `asimddp`.
+    "linux_aarch64_dotprod": (
+        "libllama.so",
+        "libggml.so.0",
+        "libggml-base.so.0",
+        "libggml-cpu.so.0",
+        "libgomp-d22c30c5.so.1.0.0",
+    ),
     "win_amd64": (
         "llama.dll",
         "ggml.dll",

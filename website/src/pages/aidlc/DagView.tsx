@@ -44,6 +44,15 @@ const STATUS_DOT: Record<string, { color: string; label: ReactNode; text: string
   blocked: { color: 'var(--warn)', get label() { return <><StatusDot color="var(--warn)" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.needs_approval') }, key: 'blocked' },
   gated: { color: 'var(--muted)', get label() { return <><Lock className="lucide-inline" /> {this.text}</> }, get text() { return i18nT('pages.aidlc.dagView.approval_gate') }, key: 'gated' },
 }
+
+/** The word a person reads for a task status, from the legend above, so the
+ *  task detail panel names a status exactly as the graph does. `done` and
+ *  `completed` are other spellings of `passed` (PhasedView's done column); a
+ *  status the legend does not name falls back to its raw value. */
+export function taskStatusText(status: string): string {
+  const legend = status === 'done' || status === 'completed' ? 'passed' : status
+  return STATUS_DOT[legend]?.text ?? status.replace('_', ' ')
+}
 /** Typed nodes tint their card with the stroke token at 8% (`fillOpacity`),
  *  which needs no `*-subtle` variant of the token. Both types share the
  *  neutral `muted`: the icon says which type it is, and a type is not a state,

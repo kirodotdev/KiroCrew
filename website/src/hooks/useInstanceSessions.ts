@@ -89,6 +89,10 @@ interface PeerSlot {
   key: string
   title?: string
   running?: boolean
+  /** The peer stamped this row a Crew Mode root (`crew_mode.stamp_rows` on its gateway). */
+  crew_mode_root?: boolean
+  /** On a peer's crew member: its root's key on that peer. */
+  crew_root?: string
   pending_approval?: boolean
   /** An unanswered question card is waiting on the slot. */
   needs_input?: boolean
@@ -135,6 +139,12 @@ interface PeerSlot {
 export interface InstanceSessionRow {
   key: string
   title?: string
+  /** A Crew Mode root on the peer, kept so the sidebar's Crew Mode filter counts and
+   *  shows it like a local one. Only the literal `true` crosses the machine boundary. */
+  crew_mode_root?: boolean
+  /** The peer's root this row is a crew member of, kept (a string only) so the
+   *  person's lists leave a peer's crew members out as they leave local ones out. */
+  crew_root?: string
   /** The ISO ladder, forwarded raw. Deliberately NO `modified`: `slotActivityTs`
    *  collapses these three for ranking, the date-segment header and the row label
    *  alike, so a derived epoch field here would only be a second definition of the
@@ -421,6 +431,8 @@ export function useInstanceSessions(
         rows.push({
           ...(parent ? { parent } : {}),
           ...(s.lineage_pending === true ? { lineage_pending: true } : {}),
+          ...(s.crew_mode_root === true ? { crew_mode_root: true } : {}),
+          ...(str(s.crew_root) ? { crew_root: s.crew_root } : {}),
           ...(str(s.folder_id) ? { peer_folder_id: s.folder_id } : {}),
           key: s.key,
           title: str(s.title),

@@ -429,6 +429,20 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     if resolved is not None:
         _LIVE_WORKTREE, _LIVE_VERIFIED = resolved, verified
         return _LIVE_WORKTREE
+    found = await _service_live_worktree()
+    if found is None:
+        # A gateway started by hand has no pointer and no service definition, but
+        # the code it executes still names its checkout.
+        running = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _running_checkout
+        )
+        found = None if running is None else str(running)
+    _LIVE_WORKTREE, _LIVE_VERIFIED = found, True
+    return _LIVE_WORKTREE
+
+
+async def _service_live_worktree() -> str | None:
+    """The checkout the launchd agent or the systemd user unit names, or None."""
 
     def _service_manager() -> str | None:
         # ``shutil.which`` stats every PATH entry, so a stalled PATH mount would
@@ -447,13 +461,10 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
         # the agent's ProgramArguments symlink currently points at. Reading the
         # link is authoritative, needs no service query, and reflects a make-live
         # swap immediately.
-        launchd_path = await asyncio.get_running_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _launchd_live_worktree
         )
-        _LIVE_WORKTREE, _LIVE_VERIFIED = launchd_path, True
-        return _LIVE_WORKTREE
     if manager != "systemd":
-        _LIVE_WORKTREE, _LIVE_VERIFIED = None, True
         return None
     # Prefer WorkingDirectory: make-live always writes it alongside ExecStart,
     # and the baseline unit sets it too. ``--value`` prints the bare path with
@@ -498,9 +509,7 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
         except OSError:
             return None
 
-    normalised = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _normalise)
-    _LIVE_WORKTREE, _LIVE_VERIFIED = normalised, True
-    return _LIVE_WORKTREE
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _normalise)
 
 
 # --- gateway service detection + restart ---
@@ -651,6 +660,15 @@ async def _restart_gateway() -> dict:
                         return {"ok": False, "error": runtime._redact(err)}
                     _MAKE_LIVE_COMMITTED = True
                     return {"ok": True, "start_id": start_id}
+                if fg_status == gateway_service.STATUS_DESKTOP_SUPERVISED:
+                    # The CLI refuses this gateway, so its command is no remedy.
+                    return {
+                        "ok": False,
+                        "error": (
+                            "the Kiro Crew desktop app runs this gateway — restart it"
+                            " from the app (Settings → About → Restart gateway)"
+                        ),
+                    }
                 # Foreground eligible but confined/broken — surface the
                 # foreground's own refusal reason plus the manual remedy.
                 return {
@@ -870,10 +888,15 @@ async def _make_live_inner(
     # FOREGROUND_ELIGIBLE codes qualify — a mis-set-up manager keeps its named
     # remedy instead of being bounced behind its back.
     foreground: "gateway_service.ForegroundBackend | None" = None
+    # The desktop app runs the gateway: the CLI refuses to restart it until the
+    # app has quit, so the staged notice must say so.
+    desktop_app = False
     if not can_restart and _foreground_eligible(unit_status):
         fg = _foreground_backend()
-        if fg is not None and await fg.status() == gateway_service.STATUS_OK:
+        fg_status = None if fg is None else await fg.status()
+        if fg_status == gateway_service.STATUS_OK:
             foreground = fg
+        desktop_app = fg_status == gateway_service.STATUS_DESKTOP_SUPERVISED
 
     live = await _live_worktree_path()
     same_as_running = live is not None and await _off(
@@ -1377,7 +1400,7 @@ async def _make_live_inner(
                 "target": str(real),
                 "plan": plan,
                 "manual_restart": _manual_restart_command(),
-                "notice": _staged_notice(real.name, unit_status),
+                "notice": _staged_notice(real.name, unit_status, desktop_app=desktop_app),
             }
         assert svc is not None  # can_restart implies a backend
 

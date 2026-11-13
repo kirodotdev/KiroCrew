@@ -164,9 +164,7 @@ class RunResult:
                 "dropped_fragments": sum(r.dropped_fragments for r in self.ingest_reports),
                 "dropped_gold": sum(len(r.dropped_gold) for r in self.ingest_reports),
                 "null_embeddings": sum(r.null_embeddings for r in self.ingest_reports),
-                "injection_rejected": sum(
-                    r.injection_rejected for r in self.ingest_reports
-                ),
+                "injection_rejected": sum(r.injection_rejected for r in self.ingest_reports),
                 "unparsed_timestamps": sum(r.unparsed_timestamps for r in self.ingest_reports),
                 "max_decay_span_days": max(
                     (r.decay_span_days for r in self.ingest_reports), default=0
@@ -421,7 +419,8 @@ def format_report(outcome: RunResult, *, k_values: Sequence[int] = (1, 5, 8, 10)
         f"embedder `{outcome.embedder}`  ·  backend `{outcome.backend}`  ·  "
         f"granularity `{outcome.ingest['granularity']}`  ·  "
         f"timeline `{outcome.ingest['timeline']}`  ·  mmr `{outcome.retrieval['mmr']}`",
-        f"scored {m.scored_queries} queries" + _excluded_phrase(m)
+        f"scored {m.scored_queries} queries"
+        + _excluded_phrase(m)
         + f"  ·  {outcome.elapsed_s:.1f}s",
         "",
     ]

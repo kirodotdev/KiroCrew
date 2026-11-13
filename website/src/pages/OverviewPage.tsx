@@ -1,11 +1,15 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
+import { Uptime } from '../components/Uptime'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
+import { reportsDollars } from '../api/acpBackend'
+import type { AcpBackendConfig } from '../api/acpBackend'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
@@ -18,10 +22,13 @@ import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
 import { providerUsageQuery } from '../api/providerUsageQuery'
+import { failedWithNoData } from '../api/queryState'
+import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { fmtDuration } from '../i18n/format'
+import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber } from '../i18n/format'
+import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
 // Keep them out of the dashboard shell's initial bundle.
@@ -33,18 +40,28 @@ const MemoryTab = lazy(() => import('./overview/MemoryTab'))
  * grid, and summary cards that drill into the two deep surfaces (memory
  * browser, usage report) via a URL-backed `?view=` param — the same
  * list-detail pattern as the Channels tab. KiroCrew/agent config viewers and
- * the memory graph live on the Developer page; configuration import/export is
+ * the memory graph live in Settings > Developer; configuration import/export is
  * on the Import tab.
  */
 
 const DRILL_VIEWS = ['memory', 'usage', 'wakatime'] as const
 type DrillView = (typeof DRILL_VIEWS)[number]
 
-function fmtNum(n: number | undefined | null): string {
-  if (n == null) return '—'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
+/** A Today-line count: `amount` is the locale's compact number, and `count`, the
+ *  quantity it shows, picks the plural form that agrees with it. */
+function todayCount(n: number | undefined | null): { count: number; amount: string } {
+  return { count: compactPluralCount(n ?? 0), amount: fmtCompact(n ?? Number.NaN) }
+}
+
+/** The Today line: sessions and messages, then tokens and cost when known. */
+function todayLine(sessions: number | undefined, messages: number | undefined, tokens: number | null | undefined, cost: number | null | undefined): string {
+  const parts = [
+    i18nT('pages.overviewPage.today_sessions', todayCount(sessions)),
+    i18nT('pages.overviewPage.today_messages', todayCount(messages)),
+  ]
+  if (tokens != null) parts.push(i18nT('pages.overviewPage.today_tokens', todayCount(tokens)))
+  if (cost != null) parts.push(formatCost(cost))
+  return i18nT('pages.overviewPage.today_line', { summary: parts.join(' · ') })
 }
 
 /** Back link + drill-in content, mirroring the Channels back affordance. */
@@ -70,8 +87,22 @@ function DrillIn({ title, onBack, children, hideTitle = false }: { title: string
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   const provider = useProvider()
   const { data, isError, error } = useQuery(providerUsageQuery(provider))
+  const cfgQuery = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
   const b = data?.billing
   const today = data?.sessions.today
+  // Today's tokens and cost, from the bucket of the gateway's own local day
+  // (the token history's totals cover 30 days, and the browser may sit in
+  // another zone), and only on a harness that bills in dollars: a credit-billed
+  // install's Today line stays sessions and messages.
+  // With no config ever read, the harness is unknown and the Today line drops
+  // its tokens and cost; the notice says so instead of leaving them silently off.
+  const harnessUnread = failedWithNoData(cfgQuery)
+  const todayTokens = reportsDollars(cfgQuery.data) && data?.localDay
+    ? data.tokenDailyHistory?.find(d => d.date === data.localDay)
+    : undefined
   return (
     <Card>
       <CardTitle>
@@ -83,8 +114,11 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
       {provider.capabilities.usageBilling && isError && (
         <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
       )}
+      {provider.capabilities.usageBilling && harnessUnread && (
+        <ErrorNotice message={i18nT('pages.overviewPage.today_harness_unread')} report={reportForError(cfgQuery.error)} askAgent testId="overview-usage-harness-unread" />
+      )}
       {!provider.capabilities.usageBilling ? (
-        <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>
+        <div className="text-[13px] text-muted">{i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })}</div>
       ) : !data ? (
         !isError && <div className="skeleton h-14 rounded" />
       ) : (
@@ -93,9 +127,12 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
             <div data-testid="overview-usage-refreshing" className="skeleton h-4 rounded max-w-[320px]" />
           ) : (
             <div className="text-[13px] text-muted">
-              {i18nT('pages.overviewPage.today')} {fmtNum(today?.sessions)} {i18nT('pages.overviewPage.sessions')} {fmtNum(today?.messages)} {i18nT('pages.overviewPage.messages')}
-              {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} {i18nT('pages.overviewPage.tokens')}</>}
-              {data.costUsd != null && <> · ${data.costUsd.toFixed(2)}</>}
+              {todayLine(
+                today?.sessions,
+                today?.messages,
+                todayTokens && todayTokens.input + todayTokens.output + todayTokens.cacheCreate + todayTokens.cacheRead,
+                todayTokens?.costUsd,
+              )}
             </div>
           )}
           {b?.plan && (
@@ -151,7 +188,7 @@ function WakaTimeSummaryCard({ onOpen }: { onOpen: () => void }) {
         <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.wakatime_not_connected')}</div>
       ) : (
         <div className="text-[13px] text-muted">
-          {i18nT('pages.overviewPage.wakatime_last_7_days')} <span className="text-text font-mono">{fmtHm(total)}</span>
+          <Trans i18nKey="pages.overviewPage.wakatime_last_7_days_total" values={{ time: fmtHm(total) }} components={[<span key="time" className="text-text font-mono" />]} />
         </div>
       )}
     </Card>
@@ -181,15 +218,21 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
       ) : (
         <div className="flex flex-col gap-1 text-[13px] text-muted">
           <span>
-            {i18nT('pages.overviewPage.summarizes_chats_into_memory_after')} {data.history_idle_hours ?? 3}{i18nT('pages.overviewPage.h_idle')}
-            {!data.migrated && <> {i18nT('pages.overviewPage.keeps')} {data.history_max_days ?? 90} {i18nT('pages.overviewPage.days_of_history')}</>}
-            {data.migrated && <> {i18nT('pages.overviewPage.semantic_memory_active')}</>}
+            {data.migrated
+              ? i18nT('pages.overviewPage.memory_summary_semantic', { hours: fmtNumber(data.history_idle_hours ?? 3) })
+              : i18nT('pages.overviewPage.memory_summary_kept', { hours: fmtNumber(data.history_idle_hours ?? 3), count: data.history_max_days ?? 90, days: fmtNumber(data.history_max_days ?? 90) })}
           </span>
-          <Link to="/developer?tab=memory" className="text-accent hover:underline w-fit">{i18nT('pages.overviewPage.memory_developer_link')} <ArrowRight size={12} className="lucide-inline" /></Link>
+          <Link to="/settings/developer/memory" className="text-accent hover:underline w-fit">{i18nT('pages.overviewPage.memory_developer_link')} <ArrowRight size={12} className="lucide-inline" /></Link>
         </div>
       )}
     </Card>
   )
+}
+
+/** The uptime tile. Its own component so the 1 Hz uptime tick re-renders this
+ *  card, not the whole Overview page. */
+function UptimeStatCard(props: { label: string; accent?: boolean; delay?: number }) {
+  return <StatCard {...props} value={useUptime()} />
 }
 
 type StatId = 'uptime' | 'sessions' | 'messages' | 'cronJobs' | 'subagents' | 'lessons'
@@ -212,7 +255,6 @@ export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  const uptime = useUptime()
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
@@ -259,7 +301,9 @@ export default function OverviewPage() {
             {connected && status ? i18nT('pages.overviewPage.all_systems_running') : status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting')}
           </div>
           <div className="text-[12.5px] text-muted mt-0.5">
-            {i18nT('pages.overviewPage.up')} {uptime}{status?.version ? <> {i18nT('pages.overviewPage.v')}{status.version}</> : null}
+            {status?.version
+              ? <Trans i18nKey="pages.overviewPage.uptime_line_version" values={{ version: status.version }} components={{ uptime: <Uptime /> }} />
+              : <Trans i18nKey="pages.overviewPage.uptime_line" components={{ uptime: <Uptime /> }} />}
           </div>
         </div>
       </div>
@@ -267,16 +311,18 @@ export default function OverviewPage() {
       {/* Stat tiles */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         {([
-          { id: 'uptime', value: uptime, accent: true },
+          { id: 'uptime', accent: true },
           { id: 'sessions', value: status?.sessions },
           { id: 'messages', value: status?.messages },
           { id: 'cronJobs', value: status?.cron_jobs },
           { id: 'subagents', value: status?.subagents },
           { id: 'lessons', value: status?.lessons },
-        ] as { id: StatId; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
+        ] as { id: StatId; value?: number | null; accent?: boolean }[]).map((s, i) => (
           // Keyed on the stable id, not the label: a language switch changes the
           // label, which would remount every tile and replay the stagger animation.
-          <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value} accent={s.accent} delay={i * 60} />
+          s.id === 'uptime'
+            ? <UptimeStatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} accent={s.accent} delay={i * 60} />
+            : <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value == null ? s.value : fmtNumber(s.value)} accent={s.accent} delay={i * 60} />
         ))}
         <TunnelStatus delay={6 * 60} />
         {/* Extension slot: downstream-registered status cards (e.g. an edition

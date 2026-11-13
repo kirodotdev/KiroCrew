@@ -32,10 +32,8 @@ logger = logging.getLogger("kiro_crew.artifacts")
 def _is_sweepable_auto_widget(self: ArtifactStore, art: Artifact) -> bool:
     """True when ``art`` is a machine-created widget record nobody has claimed.
 
-    This predicate is the ONLY thing standing between the auto-registration
-    firehose and deleting data a user cares about, so it is deliberately
-    conservative: ANY signal of human or agent investment exempts the record
-    permanently. Sweeping is for untouched throwaway widgets only.
+    This predicate alone keeps the sweep from deleting data a user cares about,
+    so ANY sign of human or agent investment exempts the record permanently.
 
     Exempt when the artifact:
 
@@ -54,14 +52,8 @@ def _is_sweepable_auto_widget(self: ArtifactStore, art: Artifact) -> bool:
 
     The edit test is ``updated_at != created_at``, NOT ``version > 1``:
     :meth:`update` only bumps ``version`` when ``snapshot=True``, so a plain
-    content save (the common agent-iteration path) leaves the version at 1
-    while rewriting the body. Keying on the version would have let the sweep
-    delete freshly-iterated widgets. Metadata-only flips (``set_pinned`` /
-    ``set_folder``) deliberately do NOT touch ``updated_at``, which is why
-    they are checked as separate signals above.
-
-    A widget that is merely *rendered* is not claimed; a widget that was
-    touched in any of the above ways is.
+    content save leaves the version at 1. Metadata-only flips (``set_pinned`` /
+    ``set_folder``) do not touch ``updated_at``, so they are checked separately.
     """
     if not art.auto_registered or art.pinned:
         return False
@@ -73,8 +65,7 @@ def _is_sweepable_auto_widget(self: ArtifactStore, art: Artifact) -> bool:
     if art.created_at and art.updated_at and art.updated_at != art.created_at:
         return False
     # Comments live in a sidecar that add_comment writes without touching
-    # meta.json, so they are invisible to every check above. A stat is enough
-    # — the file only exists once something was written to it.
+    # meta.json; the file exists only once a comment was written.
     if (self._artifact_dir(art.slug) / "comments.json").exists():
         return False
     return True
@@ -83,45 +74,26 @@ def _is_sweepable_auto_widget(self: ArtifactStore, art: Artifact) -> bool:
 def prune_auto_widgets(self: ArtifactStore, *, keep: int = MAX_AUTO_WIDGET_ARTIFACTS) -> int:
     """Delete the oldest unclaimed auto-registered widgets past ``keep``.
 
-    Every chat-emitted ``<mcwidget>`` is registered automatically (see
-    :mod:`kiro_crew.widget_artifacts`), so this sweep is what keeps that from
-    growing without bound. Eligibility is decided by
-    :meth:`_is_sweepable_auto_widget`, which exempts every record showing a
-    sign of investment (starred, filed, published, forked, edited, described,
-    tagged) — read that docstring before widening this.
-
-    Ordering is newest-first, so the oldest untouched widgets go first (every
-    candidate is by definition unedited, so this is effectively creation
-    order). Returns the number deleted. Best-effort per artifact: a delete
-    that fails (already gone, permissions) is logged and skipped rather than
-    aborting the sweep.
-
-    Race note: the candidate snapshot is taken unlocked, so eligibility is
-    re-checked **and the directory removed in a single lock acquisition**. A
-    re-check that released the lock before calling :meth:`delete` would leave
-    the same window it was meant to close — a star landing between the two
-    acquisitions would be overwritten by a delete acting on a stale verdict.
+    Eligibility is :meth:`_is_sweepable_auto_widget`'s; read that docstring
+    before widening this. The oldest untouched widgets go first. Returns the
+    number deleted. Best-effort per artifact: a failed delete is logged and
+    skipped rather than aborting the sweep.
     """
     keep = max(0, int(keep))
     candidates = [art for art in self.list() if self._is_sweepable_auto_widget(art)]
     if len(candidates) <= keep:
         return 0
-    # ``list()`` already sorts on ``(updated_at, slug)``, so the kept/dropped
-    # boundary is stable. Re-sorting here is belt-and-braces: this sweep DELETES,
-    # so it must not inherit an ordering assumption from a caller-supplied list.
+    # Sorted again here, though ``list()`` already sorts: this sweep deletes, so
+    # it must not rely on another function's ordering. Newest-first, so
+    # everything past `keep` is the oldest tail.
     candidates.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
-    # Newest-first, so everything past `keep` is the oldest tail.
     deleted = 0
     for art in candidates[keep:]:
         try:
-            # Re-check eligibility and remove the directory in ONE lock
-            # acquisition. The snapshot above is unlocked, so the user may
-            # have starred this widget (or the agent edited it) in the
-            # interim — but re-checking under the lock and then calling
-            # ``delete()`` (which takes the lock again) would reopen the same
-            # window between the two acquisitions: a pin landing there would
-            # be overwritten by a delete acting on an already-stale verdict.
-            # So the removal is inlined here rather than delegating.
+            # The snapshot above is unlocked, so re-check eligibility and remove
+            # the directory in ONE lock acquisition. Calling ``delete()`` would
+            # take the lock again, and a pin landing between the two would be
+            # overwritten by a delete acting on a stale verdict.
             with self._lock:
                 fresh = self._load_meta(art.slug)
                 if not self._is_sweepable_auto_widget(fresh):
@@ -141,24 +113,16 @@ def prune_auto_widgets(self: ArtifactStore, *, keep: int = MAX_AUTO_WIDGET_ARTIF
 
 
 def migrate_kinds(self: ArtifactStore, *, apply: bool = False) -> _List[dict[str, Any]]:
-    """Corrective one-time migration: reclassify markdown artifacts that
-    were mis-saved as ``widget`` before ``kind`` inference existed.
+    """Reclassify ``widget`` artifacts that are really markdown.
 
-    A ``widget`` artifact is treated as mis-saved markdown when
-    :func:`_markdown_misclassification_reason` returns a reason — its
-    ``source_path`` ends in ``.md`` / ``.markdown`` OR its current content
-    has no HTML tags at all. Matching artifacts have their global ``kind``
-    and any ``widget`` ``version_kinds`` entries flipped to ``markdown`` via
-    a direct ``meta.json`` rewrite (the store reads ``meta.json`` per call,
-    so the change is picked up with no cache invalidation or restart).
+    A ``widget`` is mis-saved markdown when
+    :func:`_markdown_misclassification_reason` returns a reason. Its ``kind``
+    and any ``widget`` ``version_kinds`` entries are flipped to ``markdown`` by a
+    direct ``meta.json`` rewrite, which the store picks up on its next read.
 
-    With ``apply=False`` (default) this is a **dry run**: it returns the
-    list of artifacts that *would* be flipped without writing anything. With
-    ``apply=True`` it performs the rewrites. Idempotent — a second ``apply``
-    run finds nothing because a rewritten candidate's kind is not ``widget``.
-    Returns one ``{slug, name, from_kind, to_kind, reason}`` entry per
-    candidate. The directory listing is snapshotted under the lock; reads
-    and per-artifact rewrites re-acquire it, matching ``list()``'s pattern.
+    With ``apply=False`` (default) this is a dry run that writes nothing. It is
+    idempotent. Returns one ``{slug, name, from_kind, to_kind, reason}`` entry
+    per candidate.
     """
     with self._lock:
         meta_paths = list(self._iter_meta_paths())
@@ -213,23 +177,17 @@ def find_by_artifact_id(
 ) -> Artifact | None:
     """Locate the local artifact linked to a cloud ``artifact_id``.
 
-    Matches either a ``publication`` (my push target) or ``fork_metadata``
-    (forked-from origin) that carries this upstream id. Bridges the cloud
-    id to the local slug — it serves to reconcile the "my cloud artifacts" list
-    against the local store and to keep clone/fork idempotent (don't create
-    a second local copy of an artifact already tracked locally). Returns
-    None when no local artifact tracks this id.
+    Matches a ``publication`` (my push target) or ``fork_metadata``
+    (forked-from origin) carrying this upstream id, which keeps clone/fork from
+    creating a second local copy. Returns None when no local artifact tracks it.
 
-    Provider-native ids are NOT globally unique — providers A and B may both
-    expose id ``123``. When *provider* is given, a candidate matches only if
-    its own recorded provider equals *provider*; a record that predates
-    multi-provider tracking (empty provider) still matches as a legacy
-    fallback so old single-provider forks/publications keep resolving. When
-    *provider* is None the match is id-only (callers that genuinely don't
-    know the provider).
+    Provider-native ids are not globally unique. When *provider* is given, a
+    candidate matches only if its recorded provider equals it; a record with no
+    provider recorded matches only the default provider. When *provider* is
+    None the match is id-only.
 
-    Like ``find_by_source_path``, the scan runs outside the lock — atomic
-    meta.json writes make stale-but-valid snapshots harmless.
+    The scan runs outside the lock: atomic meta.json writes make a stale but
+    valid snapshot harmless.
     """
     if not artifact_id:
         return None
@@ -285,21 +243,15 @@ def artifact_index_key(provider: str, artifact_id: str) -> str:
 def index_by_artifact_id(self: ArtifactStore) -> dict[str, str]:
     """Build a ``{key: local_slug}`` map in a SINGLE store scan.
 
-    The batch counterpart to :meth:`find_by_artifact_id` — annotating a
-    browse page of N rows with per-row ``find_by_artifact_id`` is O(N × store)
-    (a fresh full scan + meta.json parse per row); this pays one scan total.
-    Each local artifact contributes its ``publication.artifact_id`` (my push
-    target) and/or ``fork_metadata.upstream_artifact_id`` (forked-from origin).
+    The batch counterpart to :meth:`find_by_artifact_id`, so annotating a browse
+    page costs one scan instead of one per row. Each artifact contributes its
+    ``publication.artifact_id`` and/or ``fork_metadata.upstream_artifact_id``.
 
-    Keys are **provider-namespaced** via :meth:`artifact_index_key`
-    (``provider\\x00id``) because provider-native ids are not globally
-    unique — keying on the bare id would let a browse against provider B
-    annotate provider A's local copy. A bare-id key is ALSO emitted (legacy
-    fallback) so a lookup for a record that predates provider tracking still
-    resolves. On collision the newest-first ``list()`` order wins.
+    Keys are provider-namespaced via :meth:`artifact_index_key` because
+    provider-native ids are not globally unique. A record with no provider
+    recorded also gets a bare-id key. On collision the first entry scanned wins.
 
-    Scan runs outside the lock like ``list()`` — atomic meta.json writes
-    make a stale-but-valid snapshot harmless.
+    The scan runs outside the lock, like ``list()``.
     """
     index: dict[str, str] = {}
     with self._lock:
@@ -337,13 +289,10 @@ def index_by_artifact_id(self: ArtifactStore) -> dict[str, str]:
 def find_by_source_path(self: ArtifactStore, source_path: str) -> Artifact | None:
     """Locate an existing artifact already saved from this filesystem path.
 
-    Used by the 'Save as artifact' flow to detect re-saves of the same
-    file and offer the caller a chance to bump the existing artifact's
-    version rather than creating a parallel duplicate. Returns None when
-    no artifact has this path recorded.
-
-    Like ``list()``, the heavy filesystem scan happens outside the lock —
-    meta.json atomic writes make stale-but-valid snapshots harmless.
+    Used by the 'Save as artifact' flow so a re-save can bump the existing
+    artifact's version instead of creating a duplicate. Returns None when no
+    artifact has this path recorded. The scan runs outside the lock, like
+    ``list()``.
     """
     if not source_path:
         return None

@@ -33,7 +33,6 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => false,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 vi.mock('../components/sessionEnvironmentHooks', () => ({
   useSlotEnvironmentPlacement: () => ({ remote: null, error: null }),

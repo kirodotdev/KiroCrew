@@ -15,7 +15,7 @@ from kiro_crew import platform_compat
 
 class TestBatchParse(unittest.TestCase):
     def test_mixed_separators_and_dedup(self):
-        text = ("https://code.amazon.com/reviews/CR-1\n"
+        text = ("https://code.example.test/reviews/CR-1\n"
                 "CR-2, CR-2\n"
                 "  https://github.com/o/r/pull/3  \n"
                 "garbage not a link\n"

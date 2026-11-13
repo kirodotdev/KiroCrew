@@ -267,6 +267,28 @@ describe('Tailwind arbitrary-variant clusters are exempt', () => {
   })
 })
 
+describe('Tailwind important-modifier clusters are exempt', () => {
+  it('stays quiet on the server-detail class list', async () => {
+    // Real site: DETAIL_CLASS in apps/issue-radar/views/GraphView.tsx, an
+    // ALL-CAPS module constant whose `!text-…` tokens win over the classes
+    // ErrorNotice sets on the same span. The general class shape forbids `!`.
+    expect(await lint(
+      "export const PROBE = ['block text-left font-mono !text-[10px] leading-snug !text-muted whitespace-pre-wrap break-normal overflow-x-auto']",
+    )).toEqual([])
+    expect(await lint("export const PROBE = ['!text-accent']")).toEqual([])
+  })
+
+  it('still reports copy that closes with an exclamation mark', async () => {
+    // `!` after a word is punctuation; the shape admits it only before a letter.
+    const messages = await lint("export const PROBE = ['Saved!', 'Try again!', 'Done! Reload the page']")
+    expect(messages).toHaveLength(3)
+  })
+
+  it('still reports prose that smuggles an important token', async () => {
+    expect(await lint("export const PROBE = ['save failed !text-muted']")).toHaveLength(1)
+  })
+})
+
 describe('CSS selector lists are exempt', () => {
   it('stays quiet on a list mixing type and attribute selectors', async () => {
     // Real site: `INTERACTIVE_SEL` in lib/dragGaps.ts, handed to

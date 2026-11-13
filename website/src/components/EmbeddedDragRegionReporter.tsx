@@ -16,7 +16,7 @@
 import { useEffect, useRef } from 'react'
 import { useAppSelector } from '../store'
 import { isEmbeddedPane } from '../lib/embedded'
-import { computeHeaderDragGaps } from '../lib/dragGaps'
+import { computeHeaderDragGaps, observeHeaderLayout } from '../lib/dragGaps'
 
 export default function EmbeddedDragRegionReporter() {
   // The host model tells the pane whether its host is an Electron window; only
@@ -80,30 +80,20 @@ export default function EmbeddedDragRegionReporter() {
     scheduleRef.current = schedule
 
     const header = document.querySelector('header.topbar-glass')
-    // Header-scoped observers only — cheap, and they catch every reflow that
-    // moves a control: window/zoom resize, a badge widening a cluster (header
-    // stays the same size, so a header-only ResizeObserver would miss it), a
-    // theme swap, and the pane going visible (0 -> full width fires the RO).
-    const ro = new ResizeObserver(schedule)
-    const mo = new MutationObserver(schedule)
+    // Header-scoped observers only — cheap, and they also catch a theme swap and
+    // the pane going visible (0 -> full width fires the ResizeObserver).
+    let stopObserving: () => void
     if (header) {
-      ro.observe(header)
-      for (const c of Array.from(header.children)) ro.observe(c)
-      mo.observe(header, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['class', 'style'],
-      })
+      stopObserving = observeHeaderLayout(header, schedule)
+    } else {
+      window.addEventListener('resize', schedule)
+      stopObserving = () => window.removeEventListener('resize', schedule)
     }
-    window.addEventListener('resize', schedule)
     schedule()
 
     return () => {
       if (raf) window.cancelAnimationFrame(raf)
-      ro.disconnect()
-      mo.disconnect()
-      window.removeEventListener('resize', schedule)
+      stopObserving()
       scheduleRef.current = () => {}
     }
   }, [hostElectron])

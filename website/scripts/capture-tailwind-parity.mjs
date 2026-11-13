@@ -167,7 +167,7 @@ async function shootSettings(page, base, out, theme) {
 
 async function shootAgents(page, base, out, theme) {
   await page.goto(`${base}/capabilities?tab=crews`, { waitUntil: 'domcontentloaded' })
-  await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
+  await page.locator('#main-content').getByText('Always-on AI agents', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(1200)
   await freezeMotion(page)

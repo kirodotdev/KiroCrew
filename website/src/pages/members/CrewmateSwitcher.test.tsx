@@ -68,15 +68,15 @@ describe('CrewmateSwitcher closed chip', () => {
     // rest; it slides open on hover, focus or while the list is open. The
     // button is named by aria-label, so the fold changes nothing spoken.
     const label = screen.getByTestId('crewmate-switcher-label')
-    expect(label).toHaveTextContent('Mates')
+    expect(label).toHaveTextContent('Bots')
     expect(label.className).toContain('grid-cols-[0fr]')
     expect(label.className).toContain('group-hover:grid-cols-[1fr]')
     expect(label.className).toContain('group-focus-visible:grid-cols-[1fr]')
     expect(label.className).toContain('group-data-[state=open]:grid-cols-[1fr]')
     expect(label.className).toContain('motion-reduce:transition-none')
     expect((label.firstElementChild as HTMLElement).className).toContain('overflow-hidden')
-    expect(chip()).toHaveAccessibleName('Mates')
-    expect(chip()).toHaveAttribute('title', 'Switch mate')
+    expect(chip()).toHaveAccessibleName('Bots')
+    expect(chip()).toHaveAttribute('title', 'Switch bot')
     expect(chip()).toHaveAttribute('aria-expanded', 'false')
   })
 
@@ -148,7 +148,9 @@ describe('CrewmateSwitcher open list', () => {
     setup()
     const list = await open()
     const search = screen.getByTestId('crewmate-switcher-search')
-    expect(search).toHaveAccessibleName('Find a mate')
+    // Same words as the roster column's search over the same roster (#24448).
+    expect(search).toHaveAccessibleName('Search bots…')
+    expect(search).toHaveAttribute('placeholder', 'Search bots…')
 
     fireEvent.change(search, { target: { value: 'radar' } })
     // Matches the display name AND the agent template ("radar-template").
@@ -159,7 +161,7 @@ describe('CrewmateSwitcher open list', () => {
 
     fireEvent.change(search, { target: { value: 'nobody' } })
     expect(within(list).queryAllByRole('option')).toHaveLength(0)
-    expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No mate matches')
+    expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No bot matches')
     // The create door is still offered under an empty result.
     expect(screen.getByTestId('crewmate-switcher-create')).toBeInTheDocument()
   })
@@ -242,6 +244,43 @@ describe('CrewmateSwitcher open list', () => {
   })
 })
 
+// Issue #30935: the folded roster carries the column's star, through the
+// page's own toggle, so starring works without opening the full roster.
+describe('CrewmateSwitcher star', () => {
+  it('draws no star when the page passes no toggle', async () => {
+    setup()
+    const list = await open()
+    expect(within(list).queryByTestId('crewmate-switcher-star-fixer')).toBeNull()
+  })
+
+  it('stars a row through the page toggle, without picking it or closing the list', async () => {
+    const onToggleStar = vi.fn()
+    const { onPick } = setup({ onToggleStar, members: [MEMBERS[1], row('fixer', { starred: true })] })
+    const list = await open()
+    const scribeStar = within(list).getByTestId('crewmate-switcher-star-scribe')
+    expect(scribeStar).toHaveAccessibleName('Star scribe')
+    expect(scribeStar).toHaveAttribute('aria-pressed', 'false')
+    // The star is the row button's sibling, never inside the option.
+    expect(within(list).getAllByRole('option')[0]).not.toContainElement(scribeStar)
+    const fixerStar = within(list).getByTestId('crewmate-switcher-star-fixer')
+    expect(fixerStar).toHaveAccessibleName('Unstar fixer')
+    expect(fixerStar).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(fixerStar)
+    expect(onToggleStar).toHaveBeenCalledTimes(1)
+    expect(onToggleStar.mock.calls[0][0].name).toBe('fixer')
+    expect(onPick).not.toHaveBeenCalled()
+    expect(screen.getByTestId('crewmate-switcher-list')).toBeInTheDocument()
+  })
+
+  it('holds the star while its write is in flight', async () => {
+    setup({ onToggleStar: vi.fn(), starPending: new Set(['fixer']) })
+    const list = await open()
+    // Held with aria-disabled, so a focused star keeps its focus.
+    expect(within(list).getByTestId('crewmate-switcher-star-fixer')).toHaveAttribute('aria-disabled', 'true')
+    expect(within(list).getByTestId('crewmate-switcher-star-oncall')).not.toHaveAttribute('aria-disabled')
+  })
+})
+
 const QUIET: MemberSignals = { running: false, needsYou: false, unread: false, patrolling: false, goal: false }
 /** The page's resolver, as a map by name: anyone not listed is quiet. */
 const signalsBy = (by: Record<string, Partial<MemberSignals>>) => (m: MemberRosterRow): MemberSignals => ({ ...QUIET, ...by[m.name] })
@@ -284,6 +323,20 @@ describe('CrewmateSwitcher live signals', () => {
     expect(within(radar).queryByTestId('crewmate-switcher-row-loop-label')).toBeNull()
   })
 
+  it('the face wrapper is a flex box, so no text line box grows it below the face and pulls it off the text centre', async () => {
+    // jsdom has no layout, so this pins the structure Chromium measured: a
+    // BLOCK wrapper around the inline-flex avatar opened a line box whose
+    // strut descent made the box 38.7px for a 32px face, and the row's
+    // `items-center` then left the face 3.3px above the name + status block.
+    setup({ signals: signalsBy({ scribe: { running: true } }) })
+    const list = await open()
+    for (const option of options(list)) {
+      const face = within(option).getByTestId('crewmate-switcher-row-face')
+      expect(face).toHaveClass('flex')
+      expect(face.firstElementChild).toHaveClass('inline-flex')
+    }
+  })
+
   it('a row parked on you AND unread shows both markers, needs-you first', async () => {
     setup({ signals: signalsBy({ fixer: { needsYou: true, unread: true } }) })
     const list = await open()
@@ -319,7 +372,7 @@ describe('CrewmateSwitcher live signals', () => {
     setup()
     const list = await open()
     expect(within(options(list)[0]).getByTestId('crewmate-switcher-row-presence-dot')).toBeInTheDocument()
-    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAccessibleName('Bots')
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
   })
 
@@ -329,7 +382,7 @@ describe('CrewmateSwitcher live signals', () => {
     )
     expect(screen.getByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
     expect(chip()).toHaveAttribute('data-needs-you', 'true')
-    expect(chip()).toHaveAccessibleName('Mates, Needs your approval or answer')
+    expect(chip()).toHaveAccessibleName('Bots, Needs your approval or answer')
     unmount()
 
     // Only the OPEN crewmate needs you: its thread is on screen, so the chip
@@ -339,7 +392,7 @@ describe('CrewmateSwitcher live signals', () => {
     )
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
     expect(chip()).not.toHaveAttribute('data-needs-you')
-    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAccessibleName('Bots')
   })
 
   it('working and unread elsewhere do not light the chip — only needs-you does', () => {
@@ -347,7 +400,7 @@ describe('CrewmateSwitcher live signals', () => {
       <CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} signals={signalsBy({ oncall: { running: true, unread: true } })} />,
     )
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
-    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAccessibleName('Bots')
   })
 })
 

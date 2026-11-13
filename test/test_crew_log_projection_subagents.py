@@ -1,16 +1,8 @@
 """The ``subagents`` fold -- one test per property it promises.
 
-The fold answers one question from one savepoint read: which children this session
-dispatched, and for each one its outcome, its duration and what it cost. The
-properties worth pinning are the ones a reader would otherwise have to trust:
-
-* a closer lands on its own row, and nowhere else;
-* a closer with NO row is still counted, because crash-repair writes one for a child
-  whose ``spawned`` fell past the retention cap, and dropping it would under-report
-  what the session actually spent;
-* ``totals.spawned`` counts every dispatch, while ``by_id`` holds only the retained
-  ones -- so the two disagree by ``omitted``, on purpose;
-* absent credits are never read as zero, which is the same posture ``usage`` takes.
+A closer with no row is still counted (crash-repair writes one past the retention cap),
+``totals.spawned`` exceeds ``by_id`` by ``omitted`` on purpose, and absent credits are
+never read as zero, as in ``usage``.
 """
 
 from __future__ import annotations
@@ -283,11 +275,8 @@ def test_a_running_child_has_no_duration_either():
 def test_the_state_keeps_no_open_list_for_the_render_to_disagree_with():
     """No ``open`` list, in the state OR the render -- nothing reads one.
 
-    It had writes on every spawn and closer plus a copy, and nothing read it -- state kept in
-    step by hand for no consumer, which is the class this fold already deleted ``scope`` for.
-    The render then carried the same list for the same non-reader: a surface listing the open
-    children filters ``by_id`` for an absent outcome, which is the filter the list was built
-    from, so shipping both is one fact spelled twice.
+    Open children are ``by_id`` rows with no outcome, so a separate list would be the
+    same fact kept twice.
     """
     fold = crew_log._FOLDS["subagents"]
     assert "open" not in fold.start()
@@ -468,12 +457,8 @@ def test_more_closers_than_openers_reads_as_none_running_not_a_negative():
 def test_running_never_reads_below_the_rows_this_fold_still_shows_as_open():
     """A closer whose opener never reached the file must not zero out a visible child.
 
-    ``spawned - closed`` alone can go NEGATIVE without any damaged input on this fold's part:
-    an append dropped once its attempt budget was spent, or a record ``_iter_segments`` skips,
-    leaves a closer whose ``subagent/spawned`` the reader never sees. It bills into the
-    closers having never bumped ``spawned``. Clamping that at 0 then reports no children
-    running above a row drawn wearing the running pill -- the panel's header and its own table
-    contradicting each other, with nothing naming the gap.
+    A dropped or skipped ``subagent/spawned`` leaves a closer that can push
+    ``spawned - closed`` below the rows still drawn as running.
     """
     handle = _log()
     _opened(handle)
@@ -496,11 +481,8 @@ def test_running_never_reads_below_the_rows_this_fold_still_shows_as_open():
 def test_a_repeated_agent_id_is_counted_in_omitted_so_the_identity_holds():
     """``spawned == len(by_id) + omitted`` is advertised as checkable, so it must be.
 
-    A second dispatch naming an id a row already has is counted in ``spawned`` and gets no row
-    of its own -- the same shape as a dispatch past the cap or one with an unusable id. It used
-    to return without touching ``omitted``, which left the identity short by one with nothing
-    on the value saying why, so a reader auditing it would have read the gap as an arithmetic
-    bug in the fold.
+    A repeated id counts in ``spawned`` with no new row, like a dispatch past the cap, so
+    it must count in ``omitted`` too.
     """
     handle = _log()
     _opened(handle)
@@ -517,13 +499,9 @@ def test_a_repeated_agent_id_is_counted_in_omitted_so_the_identity_holds():
 def test_running_is_marked_inexact_when_both_truncations_are_in_play():
     """``running`` is a FLOOR when an omitted dispatch and an orphan closer coexist.
 
-    Rows are never evicted, so once a session passes the cap its still-open children ARE the
-    omitted ones -- ``still_open`` stops covering them and the count falls back on
-    ``spawned - closed``. Every unmatched closer is subtracted there, but the fold cannot tell
-    whether it closed one of those omitted dispatches or a child whose ``subagent/spawned``
-    never reached the file, and only the first should reduce the count. So the number can be
-    short by up to ``closed_unmatched``, and a surface drawing it as exact would state a
-    measurement the record cannot support.
+    Past the cap the count falls back on ``spawned - closed``, and an unmatched closer may
+    belong to an omitted dispatch or a lost opener, so it can be short by
+    ``closed_unmatched``.
     """
     handle = _log()
     _opened(handle)
@@ -582,12 +560,8 @@ def test_an_orphan_closer_alone_leaves_running_exact():
 def test_a_row_retains_only_fields_something_reads():
     """A field kept against a reader that does not exist is state paid for on every copy.
 
-    The panel draws agent, model, task, outcome, ms, credits and -- for a child that did
-    not finish -- reason; the render orders by ``seq_spawned`` and dates the row by
-    ``started_ms``, which is what lets a reader order rows from SEVERAL sessions and
-    bound them by age. ``dismissed`` is what stops the render offering a card the user
-    cleared. Nothing reads the child's inherited scope, the turn that asked or a steer
-    count, so none of those is retained.
+    Kept: the panel's columns, ``seq_spawned`` and ``started_ms`` for ordering across
+    sessions, and ``dismissed``. Scope, asking turn and steer count have no reader.
     """
     handle = _log()
     _opened(handle)
@@ -680,11 +654,8 @@ def test_the_copier_covers_every_container_the_step_reaches():
 def test_an_entry_this_fold_does_not_read_moves_nothing():
     """``affects`` is not the only guard, so the step's own branching has to be total.
 
-    ``affects`` spares this fold the entries it does not read on the KERNEL's path, but
-    ``advance`` and ``fold`` call ``step`` for every entry in the file. A step that
-    reached its closer branch by falling through would bill every ``turn/completed`` in
-    the log as a child that closed -- which is what the savepoint suite caught: 293
-    phantom children, and the session's own turn credits billed as theirs.
+    ``advance`` and ``fold`` call ``step`` for every entry, so a fall-through closer branch
+    would bill every ``turn/completed`` as a closed child.
     """
     fold = crew_log._FOLDS["subagents"]
     state = fold.start()

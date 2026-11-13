@@ -12,6 +12,7 @@ import {
   getOffset,
   getIndexAtOffset,
   getTotalHeight,
+  indexAtWithLiveRows,
   OffsetIndex,
 } from '../hooks/virtualizer/WindowCalculator'
 
@@ -418,5 +419,49 @@ describe('OffsetIndex: sub-linear scaling benchmark', () => {
     // Absolute backstop: nowhere near linear (which would be ~10×). Generous
     // enough (6×) to never flake, tight enough to fail an O(N) regression.
     expect(oiRatio).toBeLessThan(6)
+  })
+})
+
+describe('indexAtWithLiveRows: a DOM offset with mounted rows the tree has not priced', () => {
+  // Ten rows the tree prices at 100px. Rows 4-6 are mounted and the DOM lays
+  // them out at 300px each (a narrow column re-wrapped them while the cache
+  // still holds the wide width), from content offset 400.
+  const tree = new OffsetIndex(10, () => 100)
+  const indexAt = (o: number) => tree.indexAt(o)
+  const offsetOf = (i: number) => tree.offsetOf(i)
+  const rows = [
+    { index: 4, top: 400, bottom: 700 },
+    { index: 5, top: 700, bottom: 1000 },
+    { index: 6, top: 1000, bottom: 1300 },
+  ]
+
+  it('answers inside the mounted rows from their DOM boxes, not the tree', () => {
+    // The tree alone would answer row 9 at 950 and the last row at 1250.
+    expect(tree.indexAt(950)).toBe(9)
+    expect(indexAtWithLiveRows(950, rows, indexAt, offsetOf)).toBe(5)
+    expect(indexAtWithLiveRows(1250, rows, indexAt, offsetOf)).toBe(6)
+    expect(indexAtWithLiveRows(400, rows, indexAt, offsetOf)).toBe(4)
+  })
+
+  it('prices past the mounted rows from the tree, shifted by how far the DOM moved its origin', () => {
+    // Below: row 7 starts at 1300 in the DOM (700 in the tree).
+    expect(indexAtWithLiveRows(1300, rows, indexAt, offsetOf)).toBe(7)
+    expect(indexAtWithLiveRows(1450, rows, indexAt, offsetOf)).toBe(8)
+    // Above: the spacer is the tree's, so nothing shifts.
+    expect(indexAtWithLiveRows(350, rows, indexAt, offsetOf)).toBe(3)
+    expect(indexAtWithLiveRows(0, rows, indexAt, offsetOf)).toBe(0)
+  })
+
+  it('shifts the region above when the DOM spacer is not the tree\'s price', () => {
+    // A spacer 40px taller than the tree says (row 4 at 440, not 400).
+    const shifted = rows.map((r) => ({ ...r, top: r.top + 40, bottom: r.bottom + 40 }))
+    expect(indexAtWithLiveRows(430, shifted, indexAt, offsetOf)).toBe(3)
+    expect(indexAtWithLiveRows(330, shifted, indexAt, offsetOf)).toBe(2)
+  })
+
+  it('is the tree alone with no mounted rows', () => {
+    for (const y of [0, 99, 100, 450, 999]) {
+      expect(indexAtWithLiveRows(y, [], indexAt, offsetOf)).toBe(tree.indexAt(y))
+    }
   })
 })

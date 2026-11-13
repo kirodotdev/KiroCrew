@@ -21,6 +21,10 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+)
 from kiro_crew.dashboard.handlers.steering import (
     STEERING_FILE_MAX_BYTES,
     STEERING_INCLUSION_DEFAULT,
@@ -38,6 +42,7 @@ from kiro_crew.hooks import (
     HOOK_TIMEOUT_MIN,
     ScriptHook,
 )
+from kiro_crew.platform.bootstrap import KAS_CLI_FLOOR_KIRO_NOTICE
 from kiro_crew.validation import REGISTER_HOOK_SCHEMA
 
 REPO = Path(__file__).resolve().parent.parent
@@ -70,11 +75,17 @@ def _section(text: str, heading: str) -> str:
     return rest[: nxt.start()] if nxt else rest
 
 
+def _unwrapped(text: str) -> str:
+    """*text* with every run of whitespace, line breaks included, made one space,
+    so a phrase matches however the paragraph happens to wrap."""
+    return " ".join(text.split())
+
+
 class TestHookEvents:
     """The five lifecycle events, as the page's own table lists them."""
 
     def test_event_table_lists_exactly_the_shipped_events_in_order(self, doc_text: str) -> None:
-        table = _section(doc_text, "### The five events")
+        table = _section(doc_text, "### The six events")
         rows = [ln for ln in table.splitlines() if ln.startswith("|")]
         # Row 0 is the header, row 1 the alignment rule; the rest are events.
         listed = [_backticked(r)[0] for r in rows[2:] if _backticked(r)]
@@ -95,7 +106,7 @@ class TestHookEvents:
         and makes every other non-zero exit there a block. If another event ever
         gains that power the doc's "the only event" sentence is wrong.
         """
-        body = _section(doc_text, "### The five events")
+        body = _section(doc_text, "### The six events")
         assert "`PreToolUse` is the only event whose exit code can decide" in body
         # The carve-out belongs beside the contract: PreToolUse also fires as a
         # notification once kiro-cli has already approved the call, where no exit
@@ -202,3 +213,111 @@ class TestRegisterHook:
             f"the doc requires {set(_backticked(sentence))}; "
             f"{REGISTER_HOOK_SCHEMA.tool_name} requires {required}"
         )
+
+
+class TestKiroCliV2PromptHook:
+    """Where a hook's ``prompt`` is the user's message, and where it is the model's.
+
+    In a dashboard chat and on a channel turn that runs the Hooks page's hooks it
+    is the user's message, never the prompt Kiro Crew builds for the model, though
+    a dashboard turn can put Kiro Crew text before the typed text (queued
+    background context, a sender line, a cancelled turn), and the page promises no
+    size for that text. It is the prompt the backend receives on the other
+    channel turns, where Kiro Crew fires an agent spec's hooks alone, and on
+    kiro-cli's v2 engine, which runs an agent spec's ``userPromptSubmit`` itself.
+    That prompt carries the whole session-start context only on a session's first
+    message, and part of it again on the first message after a compaction. The
+    page says so, and tells the reader how to spot that engine by quoting the
+    gateway's log line, so both halves are pinned to the code they depend on.
+    """
+
+    _CLAIM = "On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt."
+
+    def _paragraph(self, doc_text: str) -> str:
+        body = _section(doc_text, "### kiro-cli hooks that survive an update")
+        assert self._CLAIM in body, (
+            "the kiro-cli hooks section must say that a spec userPromptSubmit hook "
+            "on kiro-cli's v2 engine reads the whole prompt, not the typed message"
+        )
+        start = body.index(self._CLAIM)
+        end = body.find("\n\n", start)
+        return _unwrapped(body[start : end if end != -1 else len(body)])
+
+    def test_the_kiro_cli_section_states_what_the_hook_reads(self, doc_text: str) -> None:
+        para = self._paragraph(doc_text)
+        assert (
+            "A session's first message carries the full session-start context: the agent "
+            "prompt, the critical rules, memory and session context." in para
+        )
+        assert (
+            "The first message after a compaction carries part of it again (the agent "
+            "prompt, the memory index, skills and lessons), and later messages carry Kiro "
+            "Crew's per-turn context instead." in para
+        )
+        assert "the first after a compaction, carries the full" not in para, (
+            "a compaction re-sends only part of the session-start context, never the "
+            "critical rules (context_assembly/turn.post_compaction_parts)"
+        )
+        assert "A room or guest conversation gets less at both points" in para
+        assert "In every case that hook's stdin `prompt` is not the message you typed" in para
+        assert (
+            "A Hooks-tab `UserPromptSubmit` hook never gets the agent prompt, rules or "
+            "memory, wherever it runs. Nor does the agent spec's hook on KAS" in para
+        )
+        assert "never Kiro Crew's context" not in para, (
+            "a dashboard turn can put Kiro Crew text before the typed text "
+            "(take_turn_context, sender_line, the cancelled-turn preamble), so a hook "
+            "Kiro Crew fires is not free of every Kiro Crew word"
+        )
+        assert "`kiro-cli update`" in para
+        assert "in a dashboard chat and on a channel turn that runs the Hooks page's hooks" in para
+        assert "On the other channel turns it reads the prompt the backend receives" in para
+        assert "(#what-a-hook-runs)" in para
+
+    def test_the_quoted_log_line_is_the_one_the_gateway_logs(self, doc_text: str) -> None:
+        """The reader greps the gateway log for this phrase; it must exist there."""
+        quoted = re.search(r'"([^"]+)"', self._paragraph(doc_text))
+        assert quoted, "the paragraph quotes no gateway log line"
+        assert quoted.group(1) in _unwrapped(KAS_CLI_FLOOR_KIRO_NOTICE), (
+            f"the doc quotes {quoted.group(1)!r}, which "
+            "platform.bootstrap.KAS_CLI_FLOOR_KIRO_NOTICE does not contain"
+        )
+
+    def test_kiro_cli_is_still_the_one_running_the_spec_hook(self, doc_text: str) -> None:
+        """The paragraph is true only while Kiro Crew does not fire the spec's
+        observer events on kiro-cli; a change that makes it fire them must
+        rewrite the paragraph."""
+        assert self._CLAIM in doc_text
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS
+
+    def test_the_stdin_prompt_sentence_names_the_exception(self, doc_text: str) -> None:
+        body = _unwrapped(_section(doc_text, "### What a hook runs"))
+        assert (
+            "In a dashboard chat, and on a channel turn that runs the Hooks page's hooks "
+            "(your own conversation, such as a Slack 1:1 DM), `prompt` is your message, not "
+            "the prompt Kiro Crew builds for the model: it has none of the agent prompt, "
+            "rules, memory or session context." in body
+        )
+        assert (
+            "A dashboard turn can still put Kiro Crew text before yours, and that text can "
+            "be long. It can be background context an app queued for the chat, a "
+            "`[from: ...]` line in a shared chat, or the request a Stop cut off and the "
+            "reply so far." in body
+        )
+        assert "short Kiro Crew block" not in body, (
+            "a context entry an app queues (POST /api/chat/slots/{slot}/context) is "
+            "bounded only by that endpoint's own cap, and take_turn_context drains every "
+            "queued entry into turn.message before the UserPromptSubmit fire"
+        )
+        assert "`prompt` is the message you typed" not in body, (
+            "background context, a [from: ...] sender line or a cancelled-turn preamble "
+            "can sit before the typed text (dashboard/chat_turn/prompt_assembly.py)"
+        )
+        assert (
+            "On the other channel turns (a Slack channel or group DM, a room or guest "
+            "conversation, an autonudge or monitor wake) the Hooks page's hooks do not run, "
+            "and an agent spec's own `userPromptSubmit` hook reads the prompt the backend "
+            "receives" in body
+        )
+        assert "And on kiro-cli's older v2 engine kiro-cli runs an agent spec's" in body
+        assert "(#kiro-cli-hooks-that-survive-an-update)" in body

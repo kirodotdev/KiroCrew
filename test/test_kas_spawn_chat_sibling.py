@@ -33,8 +33,9 @@ from kiro_crew.acp import client as client_mod
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.harness import kas as kas_mod
 from kiro_crew.acp.harness.base import SpawnContext
-from kiro_crew.acp.kas_transport import KAS_RELAY_AUTH_FLAG
+from kiro_crew.acp.kas_transport import KAS_RELAY_AUTH_CLIENT, KAS_RELAY_AUTH_FLAG
 from kiro_crew.acp.types import ACP_BACKEND_KAS
+from kiro_crew.kiro_cli import KAS_AUTH_CLIENT_MIN_KIRO_CLI
 
 posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX execute bit; Windows reports every file executable"
@@ -139,6 +140,9 @@ def resolves_launcher(monkeypatch):
         return LAUNCHER
 
     monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", _bin)
+    # The host's own kiro-cli must not decide the argv: pinned at the release
+    # floor, where a Crew-owned spawn names ``--auth-method client``.
+    monkeypatch.setattr(kas_mod, "installed_kiro_cli_version", lambda: KAS_AUTH_CLIENT_MIN_KIRO_CLI)
 
 
 @pytest.fixture
@@ -169,7 +173,7 @@ async def test_crew_owned_spawn_enters_through_the_chat_binary(
     plan = await harness_for(ACP_BACKEND_KAS).resolve_spawn(_ctx(tmp_path))
     assert plan.host_auth is True
     assert plan.argv[0] == CHAT
-    assert KAS_RELAY_AUTH_FLAG not in plan.argv
+    assert plan.argv[-2:] == [KAS_RELAY_AUTH_FLAG, KAS_RELAY_AUTH_CLIENT]
 
 
 @pytest.mark.asyncio

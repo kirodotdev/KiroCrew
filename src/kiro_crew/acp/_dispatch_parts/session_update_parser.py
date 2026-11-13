@@ -18,10 +18,14 @@ from kiro_crew.acp._dispatch_parts.surfaced_text import (
     _redact,
     derive_edit_diff,
     extract_tool_purpose,
+    is_rendered_edit_diff,
     make_unified_diff,
     select_tool_title,
 )
-from kiro_crew.acp._dispatch_parts.tool_call_identity import classify_tool_call, harness_tool_name
+from kiro_crew.acp._dispatch_parts.tool_call_identity import (
+    classify_tool_call,
+    stated_harness_tool_name,
+)
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import (
     _params_chars_for_admission,
     admit_tool_call_cache_entry,
@@ -31,6 +35,7 @@ from kiro_crew.acp._dispatch_parts.tool_result_events import (
     _build_tool_result_event,
     parse_todo_snapshot,
 )
+from kiro_crew.acp.harness_tool_names import qualified_harness_tool_id
 from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -43,6 +48,7 @@ from kiro_crew.acp.types import (
     UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
 )
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.metrics.tool_calls import note_tool_call_started
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS
 
@@ -114,8 +120,15 @@ def _build_tool_call_event(
     tool_kind_cache: dict[str, str] | None = None,
     cache_overflow: set[str] | None = None,
     identity_unreadable_cache: dict[str, bool] | None = None,
+    harness_backend: str = "",
 ) -> AcpEvent:
-    """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
+    """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction).
+
+    *harness_backend* is the backend whose frame this is, "" when the caller does
+    not say. It decides only how the frame's tool name is read
+    (``stated_harness_tool_name``), and on codex the event's own
+    ``harness_tool_id``.
+    """
     title = update.get("title", "unknown")
     _wire_title = title if isinstance(title, str) and title != "unknown" else ""
     kind = update.get("kind", "unknown")
@@ -180,6 +193,7 @@ def _build_tool_call_event(
                     input_str = diff_str
                     found_diff = True
                 break
+    _derived_redacted = False
     # Fallback when no diff content block was present: derive from the edit
     # args themselves (strReplace pair, create/insert content). Gated on the
     # EDIT kind — "content"-shaped args exist on many non-edit tools, and a
@@ -189,11 +203,14 @@ def _build_tool_call_event(
     ):
         diff_str = derive_edit_diff(raw_input)
         if diff_str:
+            # derive_edit_diff redacts each side before diffing, so the comparison
+            # below cannot see a cut it made; the params it came from can.
+            _derived_redacted = _redact(input_str) != input_str
             input_str = diff_str
     input_redacted = False
     if input_str:
         safe_input = _redact(input_str)
-        input_redacted = safe_input != input_str
+        input_redacted = safe_input != input_str or _derived_redacted
         input_str = safe_input
     # The admission runs only for a caller that hands an overflow record: the
     # record is what the refusal is written to, and a harness whose handle
@@ -269,7 +286,11 @@ def _build_tool_call_event(
     # toolCallId is unique only within one of them. Idempotent per scoped id, so
     # the tool_call_update refinements that follow cannot restart the clock.
     note_tool_call_started(
-        tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
+        tool_call_id,
+        kind=kind,
+        mcp_server_name=_mcp_server_name,
+        scope=cache_scope,
+        tool_name=identity.tool_name,
     )
     # Same lifecycle for the trusted tool name so the permission event can
     # reconstruct the canonical mcp__<server>__<tool> for per-tool governance in
@@ -283,8 +304,17 @@ def _build_tool_call_event(
     # sibling of the caches above under the same admission: the handle is None
     # here for a frame the gate refused, the value is bounded at construction
     # (``harness_tool_name``), and the handle releases the row at the terminal.
+    _stated_tool_name = stated_harness_tool_name(harness_backend, update)
     if tool_call_id and harness_tool_name_cache is not None:
-        harness_tool_name_cache[_ck] = harness_tool_name(update)
+        harness_tool_name_cache[_ck] = _stated_tool_name
+    # codex runs most calls without a permission request, so the event that
+    # starts the call names it too, for its PostToolUse spec hooks. The other
+    # backends are named by their permission request alone.
+    _event_tool_id = (
+        qualified_harness_tool_id(ACP_BACKEND_CODEX, _stated_tool_name)
+        if harness_backend == ACP_BACKEND_CODEX
+        else ""
+    )
     # A frame that PRESENTED an identity half the bound refused is recorded as
     # such (a bool, never the half), so the permission request that follows is
     # refused rather than judged under the empty name the caches above hold.
@@ -359,6 +389,7 @@ def _build_tool_call_event(
         mcp_identity_trusted=identity.identity_trusted,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
+        harness_tool_id=_event_tool_id,
     )
 
 
@@ -418,6 +449,7 @@ def _build_tool_refinement_event(
     content_blocks = update.get("content", [])
     _diff_old_text: str | None = None
     _diff_path: str = ""
+    found_diff = False
     if isinstance(content_blocks, list):
         for cb in content_blocks:
             if isinstance(cb, dict) and cb.get("type") == "diff":
@@ -430,11 +462,29 @@ def _build_tool_refinement_event(
                 )
                 if diff_str:
                     input_str = diff_str
+                    found_diff = True
                 break
+    _derived_redacted = False
+    # The same edit-args fallback as the initial tool_call. A refinement may
+    # omit ``kind``: kiro-cli v3 re-sends a replace's arguments on kind-less
+    # updates (one with an empty placeholder diff block) before the permission
+    # request, and the last rendering is what the approval row shows. The diff
+    # the call already shows is then the edit evidence (is_rendered_edit_diff).
+    if not found_diff and (
+        kind == "edit"
+        or (tool_input_cache is not None and is_rendered_edit_diff(tool_input_cache.get(_rk)))
+        or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
+    ):
+        diff_str = derive_edit_diff(raw_input)
+        if diff_str:
+            # derive_edit_diff redacts each side before diffing, so the comparison
+            # below cannot see a cut it made; the params it came from can.
+            _derived_redacted = _redact(input_str) != input_str
+            input_str = diff_str
     input_redacted = False
     if input_str:
         safe_input = _redact(input_str)
-        input_redacted = safe_input != input_str
+        input_redacted = safe_input != input_str or _derived_redacted
         input_str = safe_input
     # Same single admission as the initial tool_call, and for the same callers
     # (an overflow record opts a harness in): a refinement of an id the caches
@@ -535,6 +585,7 @@ def parse_session_update(
     tool_kind_cache: dict[str, str] | None = None,
     cache_overflow: set[str] | None = None,
     identity_unreadable_cache: dict[str, bool] | None = None,
+    harness_backend: str = "",
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -585,6 +636,7 @@ def parse_session_update(
                 tool_kind_cache=tool_kind_cache,
                 cache_overflow=cache_overflow,
                 identity_unreadable_cache=identity_unreadable_cache,
+                harness_backend=harness_backend,
             )
         )
         return events

@@ -430,6 +430,8 @@ class TestManualCompactIsExcluded:
         pattern = re.compile(r"_compact_session\s*\(")
         allowed = {
             Path("src/kiro_crew/session_compaction.py"),
+            # The automatic idle trigger, which commits through the same funnel.
+            Path("src/kiro_crew/session_idle_compaction.py"),
             Path("src/kiro_crew/session_parts/turn_context.py"),
         }
         offenders = []

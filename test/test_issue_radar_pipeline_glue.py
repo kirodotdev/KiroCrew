@@ -1,11 +1,7 @@
 """Pins the glued-plus-torn recovery path in the auto-triage-pipeline fold.
 
-Separate from the main suite because it targets one specific data-loss shape
-found by review: a well-formed record glued to a TORN one on the same line. The
-recovery walk would abandon the whole line the moment any piece failed to
-decode, which threw away the intact leading record along with the broken tail --
-and that combination is exactly what a glued write followed by a mid-append tail
-produces in a log that is being read while it is written.
+A well-formed record glued to a TORN one on the same line, as a log read mid-append can
+show, must keep the intact leading record instead of dropping the whole line.
 """
 
 from __future__ import annotations
@@ -36,11 +32,8 @@ def _event(
     residency tests: whether an item is inside a step is decided by its LAST
     transition, so two events need distinguishable timestamps.
 
-    `repo` is stamped by default because the production writers stamp it on every
-    event, and a SCOPED read admits only events that name the repository asked
-    for -- an unstamped fixture would exercise a trail that does not occur and
-    would report an empty list for reasons unrelated to what these tests assert.
-    Pass `repo=None` to build a deliberately pre-stamp line.
+    `repo` is stamped by default, as production does, because a SCOPED read admits only
+    events naming the repository. Pass `repo=None` for an unstamped line.
     """
     record: dict[str, object] = {"ts": ts, "event": name, "issue": issue}
     if repo is not None:
@@ -196,11 +189,8 @@ def test_every_declared_numeric_column_exists_on_the_session_payload() -> None:
     """The column names the view gates on must match the payload's own keys.
 
     ``populated_columns`` tells the frontend which numeric columns carry data, and
-    the frontend renders only those. If a payload key is ever renamed without
-    updating ``SESSION_NUMERIC_COLUMNS``, the column silently disappears from
-    every table instead of failing anywhere -- a rename would ship as missing data.
-    This makes that drift a test failure at the point the two are supposed to
-    agree.
+    the frontend renders only those, so a key renamed without updating
+    ``SESSION_NUMERIC_COLUMNS`` would silently drop the column from every table.
     """
     payload = fold.SessionRow(slot="s").to_dict()
     missing = [c for c in fold.SESSION_NUMERIC_COLUMNS if c not in payload]

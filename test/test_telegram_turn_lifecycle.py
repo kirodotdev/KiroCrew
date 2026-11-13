@@ -35,13 +35,22 @@ class TestTelegramSessionPidPublish:
     executor offload) are covered in test_messaging_identity.py.
     """
 
-    def test_telegram_turn_delegates_identity_publish(self) -> None:
+    def test_telegram_turn_delegates_identity_publish(self, tmp_path: Any, monkeypatch) -> None:
+        from kiro_crew.messaging.identity import publish_turn_identity
+        from kiro_crew.session_pid_sig import read_session_pid_mapping
+
+        monkeypatch.setattr("kiro_crew.session_pid_sig.config_dir", lambda: tmp_path)
         d, _cli, sess = _dispatcher({7})
         sess._pid = 4242  # SessionManager.get_pid -> kiro-cli host PID
 
-        async def _go() -> None:
-            with patch("kiro_crew.telegram.transport_dispatch.publish_turn_identity") as pub:
-                await d.handle_message(
+        # Wrapping the facade name keeps the real writer running while the
+        # composition contract still sees this seam as rebound on the facade.
+        with patch(
+            "kiro_crew.telegram.transport_dispatch.publish_turn_identity",
+            wraps=publish_turn_identity,
+        ):
+            asyncio.run(
+                d.handle_message(
                     InboundMessage(
                         channel_type="telegram",
                         user_id="7",
@@ -49,9 +58,10 @@ class TestTelegramSessionPidPublish:
                         text="hi",
                     )
                 )
-                pub.assert_awaited_once_with(sess, "telegram:kirocrew:direct:7")
+            )
 
-        asyncio.run(_go())
+        mapping = read_session_pid_mapping(4242, cfg=tmp_path)
+        assert mapping.session_key == "telegram:kirocrew:direct:7"
 
 
 class TestUserSafeFailureReason:
@@ -323,6 +333,34 @@ class TestTurnLifecycleCharacterization:
         ]
         assert k not in d._active_renderers
         assert sess.failures == [] and sess.successes == []
+
+    def test_an_ending_turn_leaves_a_later_turns_renderer_published(self, monkeypatch: Any) -> None:
+        """A second message admitted before the first turn acquired publishes its
+        own renderer under the same key; the first turn's end must leave it."""
+        d, _cli, sess = _dispatcher({7})
+        started = asyncio.Event()
+
+        async def _hang(message: str) -> Any:
+            started.set()
+            # flake-ok: never-set event in a hang stub the test cancels, as in the test above
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+        self._instrument(monkeypatch, d, sess, stream=_hang)
+        k = self._KEY
+        later = SimpleNamespace(note_steer=lambda _text: None)
+
+        async def _go() -> None:
+            task = asyncio.create_task(d.handle_message(_dm("hi")))
+            await await_until(started, what="the stream starting")
+            d._active_renderers[k] = later
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                # flake-ok: await of the cancelled turn task, as in the test above
+                await task
+
+        asyncio.run(_go())
+        assert d._active_renderers.get(k) is later
 
     def test_close_gets_the_failure_reason_the_turn_classified(self, monkeypatch: Any) -> None:
         from kiro_crew.memory_stores import UnknownMemoryStore

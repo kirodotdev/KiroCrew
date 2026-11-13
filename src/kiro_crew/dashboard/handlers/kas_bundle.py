@@ -58,6 +58,14 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
     cfg = KiroCrewConfig.load().agent
     installed = kas_bundle.installed_bundle()
     state = _install_state(app)
+    # The gateway's one installer also runs installs a KAS spawn started; this
+    # app's own task is one of its callers, so either counts as installing.
+    shared = kas_bundle.engine_install_snapshot()
+    own = _installing(state)
+    if own or not shared["running"]:
+        done, total = int(state.get("done") or 0), int(state.get("total") or 0)
+    else:
+        done, total = shared["done"], shared["total"]
     return {
         "enabled": bool(cfg.kas_bundle),
         "pinned_version": KAS_PIN_VERSION,
@@ -71,9 +79,15 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
             if installed is not None
             else None
         ),
-        "installing": _installing(state),
-        "progress": {"done": int(state.get("done") or 0), "total": int(state.get("total") or 0)},
-        "error": str(state.get("error") or ""),
+        "installing": own or shared["running"],
+        "progress": {"done": done, "total": total},
+        # A failed install, this app's own or a spawn's, is reported until the
+        # engine is installed; once it is, no earlier failure is current.
+        "error": (str(state.get("error") or "") or shared["error"]) if installed is None else "",
+        # The route the last KAS spawn took (``acp/kas_route.py``), so the panel
+        # can say when Crew's own engine was chosen because kiro-cli cannot run.
+        # ``None`` before the first KAS spawn in this gateway.
+        "route": kas_bundle.last_kas_route(),
     }
 
 
@@ -112,7 +126,11 @@ def _run_install(state: dict[str, Any]) -> None:
         state["done"] = sum(d for d, _ in totals.values())
         state["total"] = sum(t for _, t in totals.values())
 
-    kas_bundle.install_pinned(KiroCrewConfig.load().agent.kas_bundle_url, on_progress=_on_progress)
+    # Through the gateway's one installer, so a click while a KAS spawn is
+    # installing waits for that install instead of racing it.
+    kas_bundle.install_pinned_engine(
+        KiroCrewConfig.load().agent.kas_bundle_url, caller="dashboard", on_progress=_on_progress
+    )
 
 
 async def _install_task(state: dict[str, Any]) -> None:

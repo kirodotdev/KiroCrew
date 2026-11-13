@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { Trans } from 'react-i18next'
 import { Film, ImageOff, Volume2 } from 'lucide-react'
 import type { Element as HastElement } from 'hast'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { spa } from './elements'
 
@@ -34,7 +35,7 @@ function distinctHosts(remotes: readonly string[]): string[] {
  *  `break-all` span does not, and the label and value now share one
  *  translatable sentence, so the value has to be a single interpolated node. */
 function hostSentence(remotes: readonly string[]) {
-  return distinctHosts(remotes).join(', ')
+  return fmtList(distinctHosts(remotes), { style: 'narrow' })
 }
 
 /** `Site: <host/>` as ONE key. A key that ends in a colon leaves the rest of its
@@ -273,7 +274,7 @@ function collectRemotes(node?: HastElement): string[] {
   return remotes
 }
 
-export function DeferredMedia({ tag, node, children }: { tag: 'video' | 'audio'; node?: HastElement; children?: React.ReactNode }) {
+export function DeferredMedia({ tag, node, children, onError }: { tag: 'video' | 'audio'; node?: HastElement; children?: React.ReactNode; onError?: () => void }) {
   const [approved, setApproved] = useState(false)
   // <video controls>/<audio controls> are focusable in their own right, so the
   // approved element itself receives the focus the button gave up.
@@ -336,7 +337,7 @@ export function DeferredMedia({ tag, node, children }: { tag: 'video' | 'audio';
           media element has no per-element equivalent — its fetch follows the
           document policy. So the redirect residual is narrower for images than
           for media, which the RFC records rather than papers over. */}
-      <El {...spa(tag, node)} ref={approvedMediaRef}>{children}</El>
+      <El {...spa(tag, node)} ref={approvedMediaRef} onError={onError}>{children}</El>
       {/* Provenance outlives the approval here for the same reason it does under
           an approved image: a player with a poster frame carries no visible
           trace of which host served it, and the chip that said so is gone. A

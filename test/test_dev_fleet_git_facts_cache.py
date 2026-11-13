@@ -457,7 +457,7 @@ async def test_cached_passes_do_not_refire_gh_before_the_pr_ttl(monkeypatch):
     monkeypatch.setattr(fleet_state, "_PR_CACHE", {})
     fetches: list[str] = []
 
-    async def fetch(branch):
+    async def fetch(branch, rows=None):
         fetches.append(branch)
         return {"number": 1, "state": "OPEN"}
 

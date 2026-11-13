@@ -1,15 +1,17 @@
 import { useTranslation } from 'react-i18next'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileText, ExternalLink, TerminalSquare, MoreHorizontal, AppWindow } from 'lucide-react'
+import { FileText, ExternalLink, TerminalSquare, MoreHorizontal, AppWindow, FilePen, FolderTree } from 'lucide-react'
 import { useBranding } from '../../hooks/useBranding'
-import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
 import FileBrowserRail, { useTreeState, useTreeQuery } from './FileBrowserRail'
+import SessionFilesList, { useSessionFiles } from './SessionFilesList'
+import { cn } from '../../lib/utils'
 import { searchErrorCause, TREE_FAILURE_KEYS } from '../../lib/searchErrorCause'
 import { reportForError } from '../../utils/errorReport'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
@@ -17,13 +19,30 @@ import { api } from '../../api/client'
 import { canOpenExternalTerminal, detectExternalTerminals, fallbackReason, openInExternalTerminal } from '../../lib/externalTerminal'
 import type { ExternalTerminalFallbackNote } from '../../lib/externalTerminal'
 
+/** Which body the tab shows: the files this chat edited, or the project
+ *  folder's tree. Module-level, not persisted: a remount (tab navigation) keeps
+ *  the choice, a page load starts on Edited, the view that answers "what did
+ *  this chat change". */
+export type FilesView = 'edited' | 'browse'
+let sessionFilesView: FilesView = 'edited'
+
+/** Back to the page-load default, for tests that start each case fresh. */
+export function __resetFilesViewForTests(): void {
+  sessionFilesView = 'edited'
+}
+
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
   return pathBasename(stripTrailingSeparators(p)) || p
 }
 
 /**
- * The pinned Files tab: the file-browser tree at full width under one header.
+ * The pinned Files tab, in two views under one header. EDITED (the default
+ * when the host names the chat's slot) lists the files this chat created or
+ * changed, newest first, from the server's reading of the chat's own
+ * transcript (`SessionFilesList`). BROWSE is the file-browser tree of the
+ * chat's project folder at full width; it reads one folder level per request
+ * and only while it is the view shown, so opening the tab walks nothing.
  * Clicking a
  * file NEVER opens inline here — every open spawns a file tab (the same
  * primitive every other file-open path lands in), so this tab stays the
@@ -37,10 +56,18 @@ function basename(p: string): string {
  * already `cd`'d into it" is offered here instead of requiring the user to know
  * that a side-panel tab kind spawns a shell in the right directory.
  */
-export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext, onOpenTerminal, onOpenFolder, onExternalTerminalFailed, active = true }: {
+export default function FilesHomePanel({ projectDir, slot, title, onFileOpen, onOpenDiff, onAddToContext, onOpenTerminal, onOpenFolder, onExternalTerminalFailed, active = true }: {
   projectDir: string
+  /** The chat's slot key. With it the tab leads with the files this chat
+   *  edited; without it (a host with no chat) only the tree is shown. */
+  slot?: string | null
+  /** The header's name for this view, already localised. Defaults to "Files";
+   *  a host that renames the tab passes the same word so tab and header agree. */
+  title?: string
   /** `opts.line` opens the file at that line — a rail content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
+  /** Open an Edited row's recorded change as a before/after diff tab. */
+  onOpenDiff?: (absPath: string, modified: string, original: string) => void
   /** Right-click "Add to context" on a tree row — forwarded to the composer
    *  host so a file/folder becomes an `@`-mention. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
@@ -62,11 +89,25 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
 }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
-  // Reveal shells out on the gateway host, so it only makes sense when the
-  // browser is on that same machine. On a remote/tunneled session the backend
-  // degrades reveal to a clipboard copy, so hide the affordance to match every
-  // other gated file-location surface (FilePathMenu, ReportProblemModal, …).
+  const [view, _setView] = useState<FilesView>(() => sessionFilesView)
+  const setView = (v: FilesView) => {
+    sessionFilesView = v
+    _setView(v)
+  }
+  const showEdited = !!slot && view === 'edited'
+  // The tree is read only while it is the body on screen.
+  const treeActive = active && !showEdited
+  const editedQ = useSessionFiles(slot, active && !!slot)
+  const editedCount = Array.isArray(editedQ.data?.files) ? editedQ.data.files.length : 0
+  // The browser is on the gateway host. The external-terminal row below keys
+  // on this alone; the reveal button also needs that host to open a file manager.
   const isLocal = useBranding().directLocal
+  // Reveal shells out on the gateway host, so it only makes sense when the
+  // browser is on that same machine and the machine can open a file manager.
+  // Anywhere else the backend can only answer a clipboard copy, so the
+  // affordance is hidden, matching every other gated file-location surface
+  // (FilePathMenu, …).
+  const canReveal = useCanReveal()
   // The platform-aware wording every other file-location surface uses ("Open in
   // Finder" / "Open in File Explorer" / "Show in file manager"), read from the
   // gateway host that `/api/reveal` shells out on — not a static "file manager".
@@ -74,7 +115,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   // A failed reveal (policy-blocked path, no file manager) renders under the
   // header; askAgent on — the Files panel holds no draft.
   const reveal = useRevealFailure(projectDir ?? undefined)
-  const treeState = useTreeState(projectDir, active)
+  const treeState = useTreeState(projectDir, treeActive)
   // Every failed read lands in this panel's own error arm below, whichever of `useTreeState`'s
   // two failure states names it. The `recoverable` split exists for FolderPanel, which names the
   // tree over its one-level listing, and re-reads it on Refresh, only when another read can answer
@@ -83,7 +124,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   // The failed read's own error, for the notice's copy: the verdict above says only that it
   // failed, and a refused or missing root must not read as an outage. Same key as the verdict's
   // query, so this is a second observer on the one request, not a second request.
-  const { error: treeErr } = useTreeQuery(projectDir, active)
+  const { error: treeErr } = useTreeQuery(projectDir, treeActive)
   const treeAvailable = treeState === 'ready'
   // "Open in external terminal": the user's own terminal app, beside the
   // integrated one and never in its place. Offered only in the desktop shell
@@ -147,6 +188,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
     })
   }
   const refresh = () => {
+    if (slot) qc.invalidateQueries({ queryKey: ['session-files', slot] })
     qc.invalidateQueries({ queryKey: ['project-tree', projectDir] })
     qc.invalidateQueries({ queryKey: ['git-status', projectDir] })
   }
@@ -171,12 +213,12 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
-        <span className="text-[12px] font-semibold text-text-strong">{t('pages.chat.filesHome.title')}</span>
+        <span className="text-[12px] font-semibold text-text-strong">{title ?? t('pages.chat.filesHome.title')}</span>
         {projectDir && <span className="text-[11.5px] text-muted truncate" title={projectDir}>{basename(projectDir)}</span>}
         <span className="flex-1" />
         {projectDir && (
           <>
-            {isLocal && (
+            {canReveal && (
               <button onClick={() => { void revealOrOpen(projectDir, 'reveal', reveal) }} className={iconBtn} title={revealLabel} aria-label={revealLabel}>
                 <ExternalLink size={14} />
               </button>
@@ -245,12 +287,50 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
           >{t('pages.chat.filesHome.retry')}</Btn>
         </div>
       )}
+      {slot && (
+        <div className="flex items-center gap-1.5 px-2 h-[36px] shrink-0 border-b border-border">
+          <div role="group" aria-label={t('pages.chat.filesHome.view_label')} className="flex items-center gap-0.5 p-0.5 rounded-md bg-bg-hover/60">
+            {([
+              ['edited', FilePen, t('pages.chat.filesHome.view_edited')],
+              ['browse', FolderTree, t('pages.chat.filesHome.view_browse')],
+            ] as const).map(([v, Icon, label]) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                aria-pressed={view === v}
+                data-testid={`files-view-${v}`}
+                className={cn(
+                  'flex items-center gap-1.5 h-[24px] px-2.5 rounded-[5px] text-[12px] font-medium cursor-pointer border-none transition-colors',
+                  view === v ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'bg-transparent text-muted hover:text-text',
+                )}
+              >
+                <Icon size={13} />
+                {label}
+                {v === 'edited' && editedCount > 0 && (
+                  <span className="text-[10.5px] tabular-nums text-muted">{editedCount}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex-1 min-h-0 flex">
-        {treeAvailable ? (
+        {showEdited ? (
+          <div className="flex-1 min-w-0 flex flex-col">
+            <SessionFilesList
+              slot={slot}
+              projectDir={projectDir}
+              active={active}
+              onFileOpen={(abs, diff) => onFileOpen(abs, diff)}
+              onOpenDiff={onOpenDiff}
+              onBrowse={() => setView('browse')}
+            />
+          </div>
+        ) : treeAvailable ? (
           // No preview pane beside the tree: every open spawns a file tab, so a
           // pane here could only ever hold a "select a file" hint. The tree takes
           // the whole tab instead.
-          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onOpenFolder={onOpenFolder} active={active} fill />
+          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onOpenFolder={onOpenFolder} active={treeActive} fill />
         ) : (
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />

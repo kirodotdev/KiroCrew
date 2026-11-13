@@ -1,8 +1,10 @@
 import React from 'react'
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AppApiProvider, useChatLauncher, activeLocale, fmtNumber, useLanguageGeneration } from '../app-sdk'
-import { Clickable, SettingsInput, SettingsToggle, Modal, ErrorNotice } from '../kirocrew-ui'
+import { AppApiProvider, useChatLauncher, activeLocale, fmtNumber, fmtCurrency, useLanguageGeneration, APP_SDK_LEVEL } from '../app-sdk'
+import { fmtCurrency as hostFmtCurrency } from '../i18n/format'
+import { Clickable, SettingsInput, SettingsToggle, Modal, ErrorNotice, Select, guideCaution } from '../kirocrew-ui'
+import { guideCaution as hostGuideCaution } from '../guide/trustRoot'
 import HostModal from '../components/Modal'
 import HostErrorNotice from '../components/ErrorNotice'
 import { i18next } from '../i18n/all'
@@ -35,6 +37,36 @@ describe('shared app interaction contracts', () => {
     expect(navigate).toHaveBeenLastCalledWith('/chat?new=1')
     act(() => result.current.openChat({ message: 'send' }))
     expect(navigate).toHaveBeenLastCalledWith('/chat')
+  })
+
+  it('opens a new draft session for a session-shaping launch and drops the shape for a target', () => {
+    const { result, navigate } = launcher()
+    const staged = () => (window as Window & { __mc_chat_launch?: Record<string, unknown> }).__mc_chat_launch
+    act(() => result.current.openChat({ agent: 'advisor', memoryMode: 'persistent', sessionFolder: false }))
+    expect(navigate).toHaveBeenLastCalledWith('/chat?new=1')
+    expect(staged()).toMatchObject({ agent: 'advisor', memoryMode: 'persistent', sessionFolder: false })
+    act(() => result.current.openChat({ message: 'x', sessionFolder: false }))
+    expect(navigate).toHaveBeenLastCalledWith('/chat?new=1')
+    // An unknown mode is dropped, so the launch keeps its ordinary send path.
+    act(() => result.current.openChat({ message: 'x', memoryMode: 'forever' as never }))
+    expect(navigate).toHaveBeenLastCalledWith('/chat')
+    expect(staged()).not.toHaveProperty('memoryMode')
+    act(() => result.current.openChat({ slotKey: 's1', memoryMode: 'incognito', sessionFolder: false }))
+    expect(navigate).toHaveBeenLastCalledWith('/chat?sid=s1')
+    expect(staged()).not.toHaveProperty('memoryMode')
+    expect(staged()).not.toHaveProperty('sessionFolder')
+  })
+
+  it('exports the host currency formatter, caution marker and seam level', () => {
+    expect(fmtCurrency).toBe(hostFmtCurrency)
+    expect(guideCaution).toBe(hostGuideCaution)
+    expect(APP_SDK_LEVEL).toBeGreaterThanOrEqual(1)
+  })
+
+  it('renders the narrowed Select over the host dropdown', () => {
+    const change = vi.fn()
+    render(<Select options={['a', 'b']} optionLabels={['Alpha', 'Beta']} value="b" onChange={change} aria-label="Pick" />)
+    expect(screen.getByLabelText('Pick').textContent).toContain('Beta')
   })
 
   it('reuses settings labels and accessible keyboard interactions', () => {

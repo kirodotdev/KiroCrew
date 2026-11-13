@@ -24,8 +24,15 @@ from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard import session_control
-from kiro_crew.dashboard.handlers.work_ledger_caller import _caller_key, _own_ledger
-from kiro_crew.dashboard.handlers.work_ledger_read import worker_holds_open_item
+from kiro_crew.dashboard.handlers.work_ledger_caller import (
+    _caller_key,
+    _code_channel_caller,
+    _own_ledger,
+)
+from kiro_crew.dashboard.handlers.work_ledger_read import (
+    _published_payload,
+    worker_holds_open_item,
+)
 from kiro_crew.dashboard.handlers.work_ledger_recording import (
     _WIDEST_COUNTER,
     _WIDEST_EVENT_TEXT,
@@ -63,7 +70,13 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
 from kiro_crew.validation import WORK_LEDGER_RECORD_SCHEMA, ValidationError, validate_tool_args
 from kiro_crew.work_ledger import WorkLedgerError
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_MAX_DEPTH_MAX
+from kiro_crew.work_vocab import (
+    WORK_CONDUCTOR_FIELDS,
+    WORK_MAX_ARTIFACT_VALUE_CHARS,
+    WORK_MAX_DEPTH_MAX,
+    WORK_MAX_DEPTH_MIN,
+    WORK_MAX_RETIRE_REASON_CHARS,
+)
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 
@@ -110,6 +123,24 @@ def _count_recorded(action: str, item: Any, header: Any) -> None:
         work_metrics.record_dispatch("session")
 
 
+async def _count_crew_mode_run(state: DashboardState, key: str, item: Any) -> None:
+    """A Crew Mode chat's run finished: count how it ended and the steers it took.
+
+    Only for a board a Crew Mode root owns (``metrics.crew_mode.board_is_crew_mode``);
+    the steer count is the item's own ``steer`` events. Never raises.
+    """
+    from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+    if not crew_mode_metrics.board_is_crew_mode(state, key):
+        return
+    try:
+        events = await asyncio.to_thread(work_ledger.read_events, key, item.item_id)
+        steers = sum(1 for event in events if getattr(event, "kind", "") == "steer")
+    except Exception:
+        steers = None
+    crew_mode_metrics.record_run_finished(getattr(item, "state", None), steers)
+
+
 async def _record_conductor_write(
     state: DashboardState,
     key: str,
@@ -119,6 +150,10 @@ async def _record_conductor_write(
     *,
     operation: str,
     before_write: Callable[[], Awaitable[web.Response | None]] | None = None,
+    dispatch: bool = False,
+    attested_caller: str = "",
+    code_channel: bool = False,
+    caller_sk: str = "",
 ) -> web.Response:
     """Probe, commit and record one conductor-owned write on *key*'s board.
 
@@ -127,7 +162,16 @@ async def _record_conductor_write(
     through it. *cleaned* is already validated and redacted. *operation* names
     the write in the audit trail. *before_write*, when given, runs under the
     board lock before the snapshot; a response from it stops the write and is
-    returned as is.
+    returned as is. *dispatch* marks a ``work_dispatch`` create: it never opens a
+    ledger, so it is judged under the board lock like every write on an existing
+    one, and refused ``no_ledger`` when the caller owns none. *attested_caller*
+    is ``conductor_patrol.attested_caller_slot`` for the request, passed on to a
+    bind's default patrol; callers with no request leave it blank.
+
+    *code_channel* is :func:`_code_channel_caller` of the record route's request
+    and *caller_sk* its ``X-Session-Key``: the goal/create bootstrap and the
+    published-fields reply read them. The hand-back keeps the defaults, since its
+    reply is only a status and never reaches a channel.
     """
     # Refused BEFORE the ledger is even bootstrapped: the widest entry this action
     # can produce,
@@ -157,6 +201,8 @@ async def _record_conductor_write(
         title=cleaned.get("title"),
         acceptance=cleaned.get("acceptance"),
         worker_session_key=cleaned.get("worker_session_key"),
+        worker_instance_id=cleaned.get("worker_instance_id"),
+        retired_bindings=(_widest_retired_bindings() if action in ("retire", "destroy") else None),
         decision=probe_decision,
         verdict=cleaned.get("verdict"),
         state="abandoned",
@@ -204,6 +250,10 @@ async def _record_conductor_write(
             "the action's crew-log record does not fit one log line; shorten it",
         )
 
+    # The goal/create bootstrap asks whether the caller is a code channel's worker
+    # from the code-channel store's loaded snapshot; load it off the loop first.
+    await session_control.load_code_channel_lineage()
+
     async def _under_board() -> web.Response:
         # Re-checked under the lock, for the same reason the report route does.
         dirty = await _refuse_if_dirty(key, key, operation)
@@ -219,7 +269,7 @@ async def _record_conductor_write(
         raw_worker = cleaned.get("worker_session_key")
         folded_worker = (
             session_ledger.ledger_key(raw_worker)
-            if isinstance(raw_worker, str) and raw_worker
+            if isinstance(raw_worker, str) and raw_worker and not cleaned.get("worker_instance_id")
             else None
         )
         snapshot = await asyncio.to_thread(
@@ -230,8 +280,25 @@ async def _record_conductor_write(
                 worker_session_key=folded_worker,
             )
         )
-        if action in ("goal", "create"):
-            bootstrapped = await _bootstrap(key)
+        if dispatch:
+            # A code channel's worker never conducts, so it is refused before any
+            # ledger it may hold is let through, as at a goal or create.
+            drefusal = _refuse_code_channel_worker(
+                key, _is_code_channel_worker(state, caller_sk), "dispatch"
+            )
+            if drefusal is not None:
+                return drefusal
+            # Under the lock, so a purge cannot land between this read and the
+            # write; the store's own header check refuses one that lands later.
+            drefusal = await _refuse_dispatch_without_ledger(key)
+            if drefusal is not None:
+                return drefusal
+        elif action in ("goal", "create"):
+            bootstrapped = await _bootstrap(
+                key,
+                code_channel=code_channel,
+                code_channel_worker=_is_code_channel_worker(state, caller_sk),
+            )
             if isinstance(bootstrapped, web.Response):
                 return bootstrapped
         else:
@@ -292,9 +359,17 @@ async def _record_conductor_write(
                 title=getattr(item, "title", None) if "title" in sets else None,
                 acceptance=getattr(item, "acceptance", None) if "acceptance" in sets else None,
                 worker_session_key=(
-                    getattr(item, "worker_session_key", None)
+                    _set_pair_field(action, getattr(item, "worker_session_key", None))
                     if "worker_session_key" in sets
                     else None
+                ),
+                worker_instance_id=(
+                    _set_pair_field(action, getattr(item, "worker_instance_id", None))
+                    if "worker_instance_id" in sets
+                    else None
+                ),
+                retired_bindings=(
+                    getattr(item, "retired_bindings", None) if "retired_bindings" in sets else None
                 ),
                 decision=getattr(item, "decision", None) if "decision" in sets else None,
                 verdict=getattr(item, "verdict", None) if "verdict" in sets else None,
@@ -340,7 +415,11 @@ async def _record_conductor_write(
         # write whose record did not land is undone above, so this point is
         # reached once per write the route reports as successful.
         _count_recorded(action, item, header)
-        crew_store = _crew_store(key) if action == "bind" else ""
+        if action == "close" and item is not None:
+            await _count_crew_mode_run(state, key, item)
+        # A remote bind names a PEER's slot, which no local crew record can resolve.
+        remote = bool(getattr(item, "worker_instance_id", None))
+        crew_store = _crew_store(key) if action == "bind" and not remote else ""
         worker_slot = getattr(item, "worker_session_key", "") or ""
         if item is not None and crew_store and worker_slot:
             # The crew-side record of the fact the entry above recorded: a dispatch
@@ -369,7 +448,9 @@ async def _record_conductor_write(
             # active loop; never raises, never displaces an active loop or a
             # person's stop, and a refusal does not undo the bind
             # (``conductor_patrol`` module docstring).
-            patrol, reason = await conductor_patrol.ensure_patrol(state, key)
+            patrol, reason = await conductor_patrol.ensure_patrol(
+                state, key, attested_caller=attested_caller
+            )
             payload["patrol"] = patrol
             payload["patrol_reason"] = reason
             note = conductor_patrol.patrol_note(state, key, reason)
@@ -382,6 +463,15 @@ async def _record_conductor_write(
         conductor = result.get("conductor")
         if conductor is not None:
             payload["conductor"] = conductor.to_dict()
+        if code_channel:
+            # The reply is the conductor's next words in its code channel: the same
+            # published fields a read returns, never the stored item whole.
+            published = _published_payload(conductor or header, [(item, False)] if item else [])
+            payload.pop("item", None)
+            payload["conductor"] = published["conductor"]
+            if published["items"]:
+                payload["item"] = published["items"][0]
+            payload["published_fields_only"] = True
         return web.json_response(payload)
 
     # Shielding alone detaches this transaction when the handler is cancelled.
@@ -412,6 +502,12 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     if bad is not None:
         return bad
     assert body is not None
+    # ``work_dispatch`` marks its create; the field never reaches the schema, which
+    # is also the ``work_ledger_record`` tool's input schema. The mark can only add
+    # a refusal, so ANY presence of the key counts as one (rfc-work-dispatch.md,
+    # record-route amendment).
+    dispatch = DISPATCH_FIELD in body
+    body = {k: v for k, v in body.items() if k != DISPATCH_FIELD}
     try:
         cleaned = validate_tool_args(_drop_nulls(body), WORK_LEDGER_RECORD_SCHEMA)
     except ValidationError as exc:
@@ -444,8 +540,93 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         if refusal is not None:
             return refusal
 
-    return await _record_conductor_write(
-        state, key, unit, action, cleaned, operation="work_ledger_record"
+    # Read from THIS request before the write: only a bind arms a patrol, and only
+    # an attested member thread's own bind may take one (``conductor_patrol``).
+    attested = (
+        await conductor_patrol.attested_caller_slot(request, state) if action == "bind" else ""
+    )
+    # A dispatch never opens a ledger: only ``kirocrew-work``'s own
+    # ``work_ledger_record`` does, so a session without that server is refused,
+    # whatever its backend.
+    resp = await _record_conductor_write(
+        state,
+        key,
+        unit,
+        action,
+        cleaned,
+        operation="work_ledger_record",
+        code_channel=_code_channel_caller(request),
+        caller_sk=request.headers.get("X-Session-Key", ""),
+        dispatch=dispatch,
+        attested_caller=attested,
+    )
+    if action == "decide" and resp.status == 200:
+        resp = await _forward_remote_decide(state, key, cleaned, resp)
+    return resp
+
+
+async def _forward_remote_decide(
+    state: DashboardState, key: str, cleaned: dict[str, Any], resp: web.Response
+) -> web.Response:
+    """A recorded ``decide`` on a REMOTE item also reaches its peer copy (RFC §2).
+
+    Only with ``work_ledger.remote_dispatch`` on and for an item bound to a crew;
+    every other decide returns *resp* untouched. The PATCH runs after the board
+    lock is released. Its outcome is added to the reply as ``remote_decide``; a
+    failure leaves the local write standing, and the next decide carries the
+    decision again.
+    """
+    import json
+
+    from kiro_crew.dashboard.handlers.work_ledger_read import _remote_dispatch_on
+
+    item_id = str(cleaned.get("item_id") or "")
+    if not await asyncio.to_thread(_remote_dispatch_on):
+        return resp
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    item = await remote_ingest.settled_item(key, item_id)
+    if item is None or not item.worker_instance_id:
+        return resp
+
+    outcome = await remote_ingest.forward_decide(state, key, item_id)
+    _audit(
+        key,
+        "work_ledger_record.remote_decide",
+        "ok" if outcome.get("ok") else "failure",
+        resources=item_id,
+        error=str(outcome.get("code") or ""),
+    )
+    try:
+        payload = json.loads(resp.body) if isinstance(resp.body, bytes | str) else None
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        return resp
+    payload["remote_decide"] = outcome
+    # Reached only for a recorded decide, whose reply is a 200.
+    return web.json_response(payload)
+
+
+#: The body field ``work_dispatch`` marks its step-1 create with.
+DISPATCH_FIELD = "dispatch"
+
+
+async def _refuse_dispatch_without_ledger(key: str) -> web.Response | None:
+    """``no_ledger`` when *key* owns no ledger, else ``None``.
+
+    The one remedy is ``action=goal``: unlike ``_own_ledger``'s text, it does not
+    suggest ``action=create``, which ``work_dispatch`` would send marked again.
+    """
+    record = await asyncio.to_thread(work_ledger.read_conductor, key)
+    if record is not None:
+        return None
+    _audit(key, "work_dispatch", "denied", error=work_ledger.CODE_NO_LEDGER)
+    return _refuse_404(
+        work_ledger.CODE_NO_LEDGER,
+        "work_dispatch never opens a work ledger, and this session owns none. Open "
+        "it with work_ledger_record action=goal, then dispatch again. Nothing was "
+        "created.",
     )
 
 
@@ -670,7 +851,52 @@ async def _refuse_dispatched_worker(
     return None
 
 
-async def _bootstrap(key: str) -> None | web.Response:
+def _is_code_channel_worker(state: DashboardState, sk: str) -> str:
+    """The code-channel session that created *sk*, ``""`` when none.
+
+    ``session_control.code_channel_root`` -- read from persisted facts, so it holds
+    whether or not the worker is bound yet and whether or not its conductor is
+    still open. ``session_control.LINEAGE_UNAVAILABLE`` when the code-channel
+    store could not be read, which no session can be shown not to be.
+    """
+    slot_key = session_control.caller_slot_key(state, sk)
+    slot = state.get_slot(slot_key) if slot_key else None
+    return session_control.code_channel_root(state, slot) if slot is not None else ""
+
+
+def _refuse_code_channel_worker(
+    key: str, code_channel_worker: str, resources: str
+) -> web.Response | None:
+    """``depth_exceeded`` for a code channel's worker (or an unknowable lineage)."""
+    if code_channel_worker == session_control.LINEAGE_UNAVAILABLE:
+        _audit(
+            key,
+            "work_ledger_record",
+            "denied",
+            resources=resources,
+            error="code_channel_lineage_unavailable",
+        )
+        return _refuse_409(
+            work_ledger.CODE_DEPTH_EXCEEDED,
+            "The Slack code-channel store (slack-code-channels.json) could not be read, "
+            "so this session cannot be shown not to be a code-channel worker. Repair "
+            "the file and restart the gateway.",
+        )
+    if code_channel_worker:
+        _audit(
+            key, "work_ledger_record", "denied", resources=resources, error="code_channel_worker"
+        )
+        return _refuse_409(
+            work_ledger.CODE_DEPTH_EXCEEDED,
+            "This session was dispatched from a Slack code channel, and code-channel "
+            "dispatch is one level deep: it may work and report, never conduct.",
+        )
+    return None
+
+
+async def _bootstrap(
+    key: str, *, code_channel: bool = False, code_channel_worker: str = ""
+) -> None | web.Response:
     """Open this session's ledger if it has none, deriving depth from its parent.
 
     A session that is ITSELF bound to an item is a second-level conductor, so its
@@ -680,7 +906,23 @@ async def _bootstrap(key: str) -> None | web.Response:
     is how a grandchild is stopped from conducting — the refusal surfaces as
     ``depth_exceeded`` (409) at the moment the child tries to open a ledger,
     rather than later when it tries to create an item.
+
+    A Slack code channel's conductor (*code_channel*, admitted through the
+    dispatch exemption) opens its ledger at ``WORK_MAX_DEPTH_MIN - 1``, the last
+    conducting level under the LOWEST cap ``work_ledger.max_depth`` allows, so
+    no later lowering of the cap leaves the channel unable to dispatch.
+    ``ensure_conductor`` never rewrites an existing depth, and such a slot could
+    not have opened a ledger before the exemption existed.
+
+    The depth is not what keeps its workers from conducting (a raised cap would
+    admit one more level): their lineage is. A session a code channel's session
+    created (*code_channel_worker*) may not conduct at all, bound or not, at any
+    cap: it is refused ``depth_exceeded`` here, at the first goal or create, and
+    before an existing ledger is let through.
     """
+    worker_refusal = _refuse_code_channel_worker(key, code_channel_worker, "bootstrap")
+    if worker_refusal is not None:
+        return worker_refusal
     # A ledger that already exists keeps working whatever the cap has become since it
     # opened: lowering ``work_ledger.max_depth`` refuses NEW ledgers and new items past
     # the cap (``child_depth`` below, ``create`` in the store), never a ``goal`` update
@@ -688,7 +930,7 @@ async def _bootstrap(key: str) -> None | web.Response:
     # falls through to the normal path and its strict re-read.
     if await asyncio.to_thread(work_ledger.read_conductor, key) is not None:
         return None
-    depth = 0
+    depth = WORK_MAX_DEPTH_MIN - 1 if code_channel else 0
     parent_item: str | None = None
     binding = await asyncio.to_thread(work_ledger.read_binding, key)
     if binding is not None:
@@ -733,12 +975,62 @@ async def _bootstrap(key: str) -> None | web.Response:
     return None
 
 
+def _set_pair_field(action: str, value: Any) -> Any:
+    """A pair field as the entry logs it: a retire that unbound the item logs ``""``,
+    since an absent field reads as "unchanged" to the fold."""
+    if action == "retire":
+        return value or ""
+    return value
+
+
+def _widest_retired_bindings() -> list[dict[str, Any]]:
+    """A full history at every cap, so a retire's fit probe is its widest entry."""
+    entry = {
+        "worker_session_key": "w" * work_ledger.MAX_PEER_SLOT_CHARS,
+        "worker_instance_id": "c" * work_ledger.MAX_INSTANCE_ID_CHARS,
+        "branch": "b" * WORK_MAX_ARTIFACT_VALUE_CHARS,
+        "state": "destroyed",
+        "reason": "r" * WORK_MAX_RETIRE_REASON_CHARS,
+        "retired_at": _WIDEST_STAMP,
+        "destroyed_at": _WIDEST_STAMP,
+    }
+    return [dict(entry) for _ in range(work_ledger.MAX_RETIRED_BINDINGS)]
+
+
 def _ensure(key: str, depth: int, parent_item: str | None) -> work_ledger.ConductorRecord:
     return work_ledger.ensure_conductor(key, depth=depth, parent_item=parent_item)
 
 
 def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
     """Route one validated action to the store call that owns it."""
+    if action == "destroy":
+        # Reached only from the hub's own close of a retired peer slot.
+        return work_ledger.apply_remote_destroy(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
+            worker_instance_id=cleaned.get("worker_instance_id"),
+        )
+    if action == "retire":
+        # Reached only from the hub's own remote ingest (wave 8), never from the
+        # record route: its schema has no ``retire`` action.
+        return work_ledger.apply_remote_retire(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
+            worker_instance_id=cleaned.get("worker_instance_id"),
+            reason=cleaned.get("reason"),
+        )
+    if action == "bind" and cleaned.get("worker_instance_id"):
+        # Reached only from the gateway's own remote create, never from the record
+        # route: its schema has no ``worker_instance_id``. The peer's slot key is
+        # not folded, since no local binding file is written for it.
+        return work_ledger.apply_remote_bind(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
+            worker_instance_id=cleaned.get("worker_instance_id"),
+        )
     if action == "accept":
         return work_ledger.apply_acceptance_update(
             key,
@@ -763,7 +1055,6 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
         goal=cleaned.get("goal"),
         round_number=cleaned.get("round"),
         fails=cleaned.get("fails"),
-        item_cap=cleaned.get("item_cap"),
         concurrency_cap=cleaned.get("concurrency_cap"),
         new_goal=cleaned.get("new_goal"),
     )

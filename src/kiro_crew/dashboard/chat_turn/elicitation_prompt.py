@@ -138,7 +138,7 @@ async def _on_elicitation_request(turn: _ChatTurn, event) -> None:
             request_id,
         )
         _audit_runner_decline(turn, event, "tainted_value")
-        await client.answer_elicitation(event.request_id, ELICITATION_DECLINE, None)
+        await client.answer_elicitation(event.request_id, ELICITATION_DECLINE, None, person=False)
         return
     meta: dict[str, Any] = {
         **payload,
@@ -169,7 +169,9 @@ async def _on_elicitation_request(turn: _ChatTurn, event) -> None:
                 request_id,
             )
             _audit_runner_decline(turn, event, "tainted_url")
-            await client.answer_elicitation(event.request_id, ELICITATION_DECLINE, None)
+            await client.answer_elicitation(
+                event.request_id, ELICITATION_DECLINE, None, person=False
+            )
             return
     # Pre-declined when there is no window to wait in, like a permission row.
     if tool_approval_timeout_secs() <= 0:

@@ -41,6 +41,13 @@
  * A commit that changes nothing has no write to wait for, so it releases its
  * draft at once rather than leaving the field looking edited forever.
  *
+ * ## The wake switches
+ *
+ * Below the fields sit the two repo-wide wake settings, `crew_wake_on_new_work` and
+ * `crew_answer_mentions`. Both are off by default and both decide when every crew in
+ * the repo takes a turn, which is why they live here and not on a crew. A switch
+ * shows the saved value and sends the same one-key patch the fields do.
+ *
  * The section chrome (icon, heading, description, footnote) is supplied by
  * `RepoSettings`, so this renders the FIELDS only and inherits that page's look
  * instead of re-deriving it.
@@ -57,6 +64,11 @@ import {
 } from '../../api'
 import { repoScopeKey } from '../../lib/links'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
+import SettingToggle from './SettingToggle'
+
+/** The on/off wake settings. Each is OFF by default and only a JSON `true` turns it
+ *  on server-side, so a switch reads ON only for a saved `true`. */
+type SwitchField = 'crew_wake_on_new_work' | 'crew_answer_mentions'
 
 /** The free-text fields. Both commit the same way — trim, refuse a blank, send
  *  one key — so they share one renderer and one branch in `commit`. */
@@ -102,6 +114,9 @@ export default function CrewProtocolSettings({
   const [invalid, setInvalid] = useState<Partial<Record<SettingsField, string>>>({})
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+  /** A switch whose write is outstanding. It stays disabled until the server
+   *  answers, so a double click cannot send ON and then OFF before either lands. */
+  const [switching, setSwitching] = useState<Partial<Record<SwitchField, true>>>({})
 
   /** The draft each field currently has a write OUTSTANDING for.
    *
@@ -159,7 +174,7 @@ export default function CrewProtocolSettings({
       // trailer then the label, have the trailer's reply land second, and the
       // label snaps back on screen having been saved correctly. Merging one key
       // keeps every field's newest answer, whatever order the replies arrive in.
-      const field = (Object.keys(patch) as SettingsField[])[0]
+      const field = (Object.keys(patch) as (keyof CrewSettingsPatch)[])[0]
       queryClient.setQueryData(
         ['issue-radar', 'crew-settings', scope],
         (prev: CrewSettingsResponse | undefined) => {
@@ -180,7 +195,43 @@ export default function CrewProtocolSettings({
       forget(patch)
       setError(e instanceof Error ? e.message : String(e))
     },
+    onSettled: (_res, _err, patch) => {
+      const field = (Object.keys(patch) as (keyof CrewSettingsPatch)[])[0]
+      if (field !== 'crew_wake_on_new_work' && field !== 'crew_answer_mentions') return
+      setSwitching((s) => {
+        const next = { ...s }
+        delete next[field]
+        return next
+      })
+    },
   })
+
+  /** Flip one wake switch as a one-key patch. The switch shows the SAVED value and
+   *  moves only when the write lands, so a failed write leaves it where it was. */
+  const flip = (field: SwitchField) => {
+    if (!settings || switching[field]) return
+    const next = settings[field] !== true
+    setSwitching((s) => ({ ...s, [field]: true }))
+    save.mutate(
+      field === 'crew_wake_on_new_work'
+        ? { crew_wake_on_new_work: next }
+        : { crew_answer_mentions: next },
+    )
+  }
+
+  const wakeSwitch = (field: SwitchField, label: string, hint: string, testId: string) => (
+    <div>
+      <SettingToggle
+        on={settings?.[field] === true}
+        disabled={!settings || switching[field] === true}
+        onClick={() => flip(field)}
+        testId={testId}
+      >
+        {label}
+      </SettingToggle>
+      <div className="-mt-2 mb-4 ml-[46px] text-[13px] text-muted">{hint}</div>
+    </div>
+  )
 
   const shown = (field: SettingsField): string => {
     const draft = drafts[field]
@@ -409,6 +460,20 @@ export default function CrewProtocolSettings({
           t('apps.issueRadar.views.crews.desk.trailer_hint'),
           'crew-desk-commit-trailer',
           true,
+        )}
+      </div>
+      <div className="mt-5 pt-4 border-t border-border" data-testid="crew-desk-wakes">
+        {wakeSwitch(
+          'crew_wake_on_new_work',
+          t('apps.issueRadar.views.crews.desk.wake_new_work_label'),
+          t('apps.issueRadar.views.crews.desk.wake_new_work_hint'),
+          'crew-desk-wake-new-work',
+        )}
+        {wakeSwitch(
+          'crew_answer_mentions',
+          t('apps.issueRadar.views.crews.desk.answer_mentions_label'),
+          t('apps.issueRadar.views.crews.desk.answer_mentions_hint'),
+          'crew-desk-answer-mentions',
         )}
       </div>
       {/* Updates in place after a save, so it must announce itself. */}

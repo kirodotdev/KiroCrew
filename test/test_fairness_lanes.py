@@ -965,7 +965,8 @@ def test_spawn_sub_agents_holds_then_returns_children_results() -> None:
     holds = [p for p in seen if p.startswith("/api/spawn/p9/resume")]
     assert len(holds) == 2, "held until the second answer said granted"
     # The children were read before the hold and their results collected after it.
-    assert seen.index("/api/spawn/c1") < seen.index(holds[0])
+    reads = [i for i, p in enumerate(seen) if p.partition("?")[0] == "/api/spawn/c1"]
+    assert reads[0] < seen.index(holds[0]) < reads[-1]
 
 
 @pytest.mark.asyncio
@@ -1065,3 +1066,32 @@ async def test_eviction_frees_one_lane_head_per_call_and_never_a_resume(h) -> No
     )
     assert hz.mgr._admission._evict_for_lanes(1) == 1
     assert [p["_preassigned_id"] for p in hz.mgr._queue] == ["res", "a1", "b1"]
+
+
+@pytest.mark.asyncio
+async def test_lane_snapshot_counts_a_queued_resume_once_as_waiting(h) -> None:
+    """A yielded run asking for its slot back is one run, not a queued spawn too.
+
+    Its resume entry sits in the window while the cap is full, and the run
+    itself is still live with its slot released, so the lane shows it as
+    waiting and nothing as queued.
+    """
+    hz = await h(max_concurrent=1)
+    with patch.object(hz.mgr, "_memory_pressure_hold", return_value=None):
+        s = hz.spawn("S", parent="dash:a")
+        await hz.settle()
+        info = hz.live(s)
+        adm = hz.mgr._admission
+        assert adm.yield_slot(info, WaitRecord.input("call-1", since=0.0)) is True
+        await hz.settle()
+        hz.spawn("R", parent="dash:b")
+        await hz.settle()
+        assert hz.mgr._running_count == 1
+        assert adm.request_resume(info, reason="input answered") is True
+        await hz.settle()
+        assert [p.get("_resume_id") for p in hz.mgr._queue] == [info.id]
+        for snap in (adm.lane_snapshot(), await adm.lane_snapshot_async()):
+            a = snap["lanes"]["dash:a"]
+            assert (a["queued"], a["waiting"], a["running"]) == (0, 1, 0), a
+            b = snap["lanes"]["dash:b"]
+            assert (b["queued"], b["waiting"], b["running"]) == (0, 0, 1), b

@@ -8,10 +8,14 @@ approving every request (which a prompt-injection in the spec could abuse).
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_DENY, ToolHookResult
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.sel import SecurityEventLog
 from kiro_crew.task_planner import decompose
 
 
@@ -54,29 +58,59 @@ def _ctx_with_hook(action: str) -> MagicMock:
     return ctx
 
 
-def test_denied_tool_is_rejected_during_decomposition():
+@pytest.fixture(name="audit_rows")
+def audit_rows_fixture(tmp_path, monkeypatch):
+    """A synchronous SEL under ``tmp_path``; returns a reader of its tool rows.
+
+    The process singleton is swapped through ``monkeypatch``, so the original
+    instance is back in place when the test ends.
+    """
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    log = SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+
+    def _rows():
+        path = tmp_path / "sel" / "security_events.jsonl"
+        if not path.exists():
+            return []
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        return [
+            (e["operation"], e["outcome"], e["request_id"], e["error"], e["metadata"])
+            for e in events
+            if e.get("event_type") == "tool_invocation"
+        ]
+
+    assert log is SecurityEventLog()
+    return _rows
+
+
+_DECOMPOSITION = {"phase": "decomposition"}
+
+
+def test_denied_tool_is_rejected_during_decomposition(audit_rows):
     provider = _provider_requesting_tool()
     sessions = _sessions_with(provider)
     ctx = _ctx_with_hook(TOOL_DENY)
 
     asyncio.run(decompose("spec", sessions, ctx=ctx, task_id="t1"))
 
+    assert audit_rows() == [("execute_bash", "denied", "r1", "hook_deny", _DECOMPOSITION)]
     provider.reject_tool.assert_awaited_once_with("r1")
     provider.approve_tool.assert_not_awaited()
 
 
-def test_allowed_tool_is_approved_during_decomposition():
+def test_allowed_tool_is_approved_during_decomposition(audit_rows):
     provider = _provider_requesting_tool()
     sessions = _sessions_with(provider)
     ctx = _ctx_with_hook(TOOL_ALLOW)
 
     asyncio.run(decompose("spec", sessions, ctx=ctx, task_id="t1"))
 
+    assert audit_rows() == [("execute_bash", "auto_approved", "r1", "", _DECOMPOSITION)]
     provider.approve_tool.assert_awaited_once_with("r1")
     provider.reject_tool.assert_not_awaited()
 
 
-def test_no_ctx_denies_by_default():
+def test_no_ctx_denies_by_default(audit_rows):
     """Without a ContextBuilder there is no hook store to gate the request, so
     deny by default rather than approving (CSE SEC-006, review-bot deny-by-default)."""
     provider = _provider_requesting_tool()
@@ -84,5 +118,6 @@ def test_no_ctx_denies_by_default():
 
     asyncio.run(decompose("spec", sessions, ctx=None, task_id="t1"))
 
+    assert audit_rows() == [("execute_bash", "denied", "r1", "no_hook_store", _DECOMPOSITION)]
     provider.reject_tool.assert_awaited_once_with("r1")
     provider.approve_tool.assert_not_awaited()

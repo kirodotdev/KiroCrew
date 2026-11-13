@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         build_kas_argv,
         installed_kiro_cli_version,
+        kas_auth_client_flag_supported,
         kas_engine_gap,
         kas_relay_help,
         kas_verified_releases,
@@ -65,12 +66,67 @@ def _doctor_kas(issues: list[str]) -> None:
     """
     # Positive backend test (not ``!= ACP_BACKEND_KAS``): an inequality would
     # silently capture every harness added later — see the harness-parity gate.
-    if KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS:
+    # A stored Kiro CLI pick runs on KAS wherever kiro-cli offers v3, so the same
+    # relay and engine rows answer whether it does here. Not on the bundle route,
+    # where the pick stays on kiro-cli.
+    agent = KiroCrewConfig.load().agent
+    if agent.acp_backend == ACP_BACKEND_KAS or (_kiro_cli_selected() and not agent.kas_bundle):
         _report_kas_backend(issues)
 
 
-def _report_kas_bundle(issues: list[str]) -> None:
+def _kiro_cli_selected() -> bool:
+    """Whether ``agent.acp_backend`` is stored as the Kiro CLI pick (``"kiro"``).
+
+    The loaded field already reads KAS for that pick, so the stored value is what
+    tells the engine row to offer the kiro-cli upgrade instead of a harness switch
+    the user has already made. An unreadable document reads as no pick.
+    """
+    try:
+        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
+
+        return acp_backend_stored_as_kiro()
+    except Exception:
+        return False
+
+
+def _kiro_pick_verdict() -> tuple[bool | None, str | None, bool]:
+    """The gateway floor's ``(offers_kas, reason, refused)`` for a stored Kiro CLI pick.
+
+    The gateway promotes the pick only when ``agent_sdk.kas_engine_verdict`` and
+    then ``agent_sdk.kas_engine_start_verdict`` both answer ``True``; every unknown
+    (no trusted kiro-cli, a failed or sandbox-refused spawn, a start that did not
+    finish), every gap and a v3 start kiro-cli refused keep it on v2. The doctor
+    reads those verdicts rather than its own probe, so its rows cannot claim KAS
+    where the floor's probes could not run. *refused* is whether the gap is that
+    refused start rather than help without v3. An exception reads as unknown.
+    """
+    try:
+        from kiro_crew.agent_sdk import kas_engine_start_verdict, kas_engine_verdict
+
+        offers_kas, reason = kas_engine_verdict()
+        if offers_kas is not True:
+            return offers_kas, reason, False
+        starts, refusal = kas_engine_start_verdict()
+        return starts, refusal, starts is False
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the pick on v2
+        return None, None, False
+
+
+def _kas_selectable() -> bool:
+    """Whether KAS is selectable here; the floor moves a Kiro CLI pick onto it only then."""
+    try:
+        from kiro_crew.acp_backends import selectable_backends
+
+        return ACP_BACKEND_KAS in selectable_backends()
+    except Exception:  # noqa: BLE001 - an unreadable registry reads as not selectable
+        return False
+
+
+def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     """The bundle route: Crew's own installed engine, no kiro-cli row at all.
+
+    *automatic* is whether the route was chosen because kiro-cli's relay cannot
+    run here; the missing-engine row then names no ``agent.kas_bundle`` switch.
 
     The route never runs kiro-cli, so a missing kiro-cli is not a problem here,
     and reporting one would send the operator to install a binary nothing will
@@ -78,13 +134,74 @@ def _report_kas_bundle(issues: list[str]) -> None:
     row: it reads the same spec files. Crew is the auth owner unconditionally, so
     the vault row is the only credential row.
     """
-    from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.agent_sdk import backend_install, kas_bundle
 
     installed = kas_bundle.installed_bundle()  # type: ignore[misc]  # checked before kas_bundle
     if installed is None:
-        print(f"  bundle:      ❌ nothing installed under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
-        print("               Fix: kirocrew kas install   (or set agent.kas_bundle false)")
-        issues.append("agent.kas_bundle is on but no KAS engine bundle is installed")
+        # A host the engine cannot run on (glibc below the floor, no build for its
+        # architecture) is refused by every install, so neither the first chat nor
+        # `kirocrew kas install` is a remedy there; the row names the cause the
+        # install would refuse with.
+        try:
+            kas_bundle.require_loadable_host()
+        except kas_bundle.KasHostUnsupported as exc:
+            print(f"  bundle:      ❌ {exc}")
+            issues.append(f"Kiro Crew's KAS engine cannot run on this host: {exc}")
+            return
+        # Not a failure on its own: the gateway installs the pinned engine at the
+        # first chat. Still a ⚠, because an offline host fails then.
+        # Another version on disk is not "nothing installed": name what is there
+        # and what this release needs, which is what a release whose pin moved
+        # leaves behind when its engine refresh did not finish.
+        needed = kas_bundle.pinned_version()  # type: ignore[misc]
+        try:
+            on_disk = kas_bundle.installed_versions()  # type: ignore[misc]
+        except OSError as exc:
+            # An engines directory the doctor cannot list is its own finding: the
+            # first chat's install cannot write there either. The rest of the
+            # report still runs.
+            print(f"  bundle:      ❌ cannot read {kas_bundle.kas_engines_root()}: {exc}")  # type: ignore[misc]
+            print("               Fix: restore read access to it, then: kirocrew kas install")
+            issues.append(f"the KAS engine directory cannot be read: {exc}")
+            _report_kas_bundle_spec_permissions(None, issues)
+            return
+        # On the automatic route, where a fresh install with no kiro-cli starts,
+        # a pin the gateway can download here is a warning, not an issue.
+        downloads = automatic and backend_install._engine_installable_here()
+        if needed in on_disk:
+            # A directory at the pin's name that does not read back as an engine:
+            # an install refuses to overwrite it, so only --force replaces it.
+            print(f"  bundle:      ❌ KAS {needed} is on disk but incomplete")
+            print("               Fix: kirocrew kas install --force")
+            issues.append(f"the KAS engine directory for {needed} is incomplete")
+        elif on_disk:
+            print(
+                f"  bundle:      ⚠  KAS {', '.join(on_disk)} installed, but this release "
+                f"needs KAS {needed}"
+            )
+            if not downloads:
+                issues.append(
+                    f"Kiro Crew's KAS engine {needed} is not installed and the gateway will "
+                    f"not install it on this host; on disk: {', '.join(on_disk)}"
+                    if automatic
+                    else f"agent.kas_bundle is on but the KAS engine this release needs "
+                    f"({needed}) is not installed; on disk: {', '.join(on_disk)}"
+                )
+        else:
+            print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
+            if not downloads:
+                issues.append(
+                    "Kiro Crew's KAS engine is not installed and the gateway will not "
+                    "install it on this host"
+                    if automatic
+                    else "agent.kas_bundle is on but no KAS engine bundle is installed"
+                )
+        if needed not in on_disk:
+            if automatic and not downloads:
+                print("               The gateway will not install it on this host. To try now:")
+            else:
+                print("               The gateway downloads it at the first chat. To do it now:")
+            print("               kirocrew kas install")
         _report_kas_bundle_spec_permissions(None, issues)
         return
     where = " (built into the app)" if installed.bundled else ""
@@ -221,8 +338,14 @@ def _report_kas_backend(issues: list[str]) -> None:
     positive ``== ACP_BACKEND_KAS`` rather than an early-return on inequality.
     """
     print("\nKAS backend")
-    if KiroCrewConfig.load().agent.kas_bundle:
-        _report_kas_bundle(issues)
+    from kiro_crew.agent_sdk import kas_bundle
+
+    route = kas_bundle.kas_route()
+    # The route first, and why: the bundle route can be chosen automatically when
+    # kiro-cli's relay cannot run, and that switch must be visible here.
+    print(f"  route:       {route.name} -- {route.describe()}")
+    if route.bundle:
+        _report_kas_bundle(issues, automatic=route.automatic)
         return
     binary = resolve_kiro_cli()
     if not binary:
@@ -247,7 +370,10 @@ def _report_kas_backend(issues: list[str]) -> None:
         host_auth = False
         identity_line = None
 
-    print(f"  relay:       ✅ {' '.join(build_kas_argv(binary, host_auth=host_auth))}")
+    # The release gate the runtime applies to a Crew-owned spawn's flag.
+    client_flag = host_auth and kas_auth_client_flag_supported(installed_kiro_cli_version())
+    relay_argv = build_kas_argv(binary, host_auth=host_auth, client_flag=client_flag)
+    print(f"  relay:       ✅ {' '.join(relay_argv)}")
     print(
         "  auth owner:  "
         + (
@@ -262,23 +388,77 @@ def _report_kas_backend(issues: list[str]) -> None:
     # probe rejected -- that is exactly the one worth seeing.
     if identity_line:
         print(f"  crew vault:  {identity_line}")
+    if host_auth and not (identity_line or "").endswith("-> usable"):
+        # A stored vault entry is the sign-in even when it cannot be used: the
+        # spawn never falls back to kiro-cli's, so say how to get out of it.
+        print(
+            "               Sign in again with `kirocrew kas login --provider idc ...`, or"
+            " remove it with `kirocrew kas logout` to use kiro-cli's sign-in."
+        )
     # Before the help probe, not after: the row reads ``--version``, which is a
     # different spawn from ``acp --help``, so a failed help probe establishes
     # nothing about it. The early ``return`` below is for the ENGINE rows alone;
     # letting it swallow this row would hide a withheld auto-approve on exactly
-    # the host where kiro-cli is misbehaving.
-    _report_kas_spec_permissions(issues)
-    _report_kas_tool_vocabulary(issues)
-    help_text = _kas_relay_help(binary)
-    if help_text is None:
+    # the host where kiro-cli is misbehaving. Both rows matter only to KAS
+    # sessions, so a Kiro CLI pick the gateway keeps on v2 skips them.
+    pick = _kiro_cli_selected()
+    refused = False
+    if pick:
+        offers_kas, gap, refused = _kiro_pick_verdict()
+        known = offers_kas is not None
+    else:
+        offers_kas = None
+        help_text = _kas_relay_help(binary)
+        known = help_text is not None
+        gap = kas_engine_gap(help_text) if help_text is not None else None
+    if not pick or offers_kas is True:
+        _report_kas_spec_permissions(issues)
+        _report_kas_tool_vocabulary(issues)
+    if not known:
         # The probe itself failed, so nothing is known either way. Advisory: a
-        # diagnostic must not invent a verdict it could not establish.
-        print("  engine:      ⚠️  could not read `acp --help`; engine support unknown")
+        # diagnostic must not invent a verdict it could not establish. A pick's
+        # verdict is also unknown when its help ran and the v3 start did not finish.
+        print(
+            (
+                "  engine:      ⚠️  could not check kiro-cli's v3 engine; engine support"
+                " unknown; your Kiro CLI selection stays on kiro-cli's v2 engine"
+                if pick
+                else "  engine:      ⚠️  could not read `acp --help`; engine support unknown"
+            )
+        )
         return
     # The same reading the gateway's boot floor acts on: a gap is definite.
-    gap = kas_engine_gap(help_text)
-    if gap is None:
+    if gap is None and not pick:
+        # The help lists v3 even where kiro-cli then refuses to run it, which KAS
+        # sessions hit at their start, so one start of the engine tells them apart.
+        # A pick already read the floor's own start verdict above.
+        from kiro_crew.agent_sdk import kas_engine_start_verdict
+
+        _starts, refusal = kas_engine_start_verdict(binary)
+        if refusal:
+            gap, refused = refusal, True
+    if gap is None and pick and not _kas_selectable():
+        # The floor moves a pick onto KAS only while KAS is selectable here.
+        print(
+            f"  engine:      ⚠️  {KAS_RELAY_ENGINE} supported, but KAS is not available here;"
+            " your Kiro CLI selection stays on kiro-cli's v2 engine"
+        )
+    elif gap is None and pick:
+        print(
+            f"  engine:      ✅ {KAS_RELAY_ENGINE} supported; your Kiro CLI selection runs on KAS"
+        )
+    elif gap is None:
         print(f"  engine:      ✅ {KAS_RELAY_ENGINE} supported")
+    elif pick:
+        # A Kiro CLI pick runs on KAS only where kiro-cli offers v3; here the gateway
+        # keeps it on kiro-cli's v2 engine, which kiro-cli is retiring.
+        print(f"  engine:      ❌ {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine")
+        print("               Fix: run `kiro-cli update`, then restart Kiro Crew.")
+        issues.append(
+            f"kiro-cli cannot run its v3 (KAS) engine: {gap}"
+            if refused
+            else f"kiro-cli is too old for its v3 (KAS) engine: {gap}"
+        )
     else:
         print(f"  engine:      ❌ {gap}")
         print("               Fix: update kiro-cli, or switch agent.acp_backend to kiro.")

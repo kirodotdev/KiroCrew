@@ -67,7 +67,13 @@ concurrency:
 jobs:
   guard:
     name: Fork workflow-change guard
-    runs-on: ubuntu-latest
+    # Fork work cannot reach the CodeBuild fleet -- the `workflow_job` webhook
+    # payload carries no fork indicator, so the AWS side cannot admit it -- and
+    # the group is the only other capacity source. It is where the fork review
+    # lanes already run: a GitHub-hosted Ubuntu VM with no fleet credentials,
+    # and no fork code is checked out here on either runner.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     # `checks: write` posts this guard's own check-run. The reads are all GETs:
     # `pull-requests: read` for the open-PR list and the changed-file list,
@@ -207,7 +213,10 @@ jobs:
   # re-runs the guard job above and re-posts the (now failing) check.
   strip-stale-override:
     name: Strip stale workflow-change override
-    runs-on: ubuntu-latest
+    # Same reason as the guard job above: fork-only work the CodeBuild fleet
+    # cannot admit, so the group is the only way off the shared standard pool.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     if: >-
       github.event_name == 'pull_request_target'

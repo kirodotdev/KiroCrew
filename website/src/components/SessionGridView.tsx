@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
+import { X, Plus, Split, Loader2, Circle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import ErrorNotice from './ErrorNotice'
 import { api, ApiError } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
 import ChatPane, { type PaneLeading } from './ChatPane'
-import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
-import { emitSlotFocused } from '../hooks/useWebSocket'
+import { useSessionGrid, type GridLeaf, type SplitDir } from '../hooks/useSessionGrid'
+import { emitSlotFocused, endSplitPaneFocus } from '../hooks/useWebSocket'
 import PaneDim from './PaneDim'
 import { byRecentActivity } from '../utils/slotRecency'
 
@@ -18,8 +18,12 @@ import { errMessage } from '../utils/thunkError'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
+import { crewModeView } from '../lib/crewMode'
+import { isSplitChord } from '../hooks/splitChord'
 type Slot = {
   key: string
+  /** Set on a Crew Mode worker: the root it works for. */
+  crew_root?: string
   title?: string
   running?: boolean
   pending_approval?: boolean
@@ -48,9 +52,11 @@ export default function SessionGridView({
   onClose,
   onCollapse,
   seedSlot,
+  seedDir,
   openSideChat,
   leading,
   onFileOpen,
+  onOpenCrewTab,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -60,6 +66,9 @@ export default function SessionGridView({
    *  a prune is not the user opening that chat (#23564). */
   onCollapse: (slot: string, anchorTs?: string, anchorMid?: string, gesture?: boolean) => void
   seedSlot?: string | null
+  /** Where the fresh picker opens when `seedSlot` has no saved layout to restore:
+   *  beside the session ('right', the default) or below it ('down'). */
+  seedDir?: SplitDir
   /** Bring the host's Side Chat surface on screen for a pane's slot — what the
    *  selection toolbar's Ask needs. The grid owns no Side Chat of its own
    *  (the host's activity panel does), so without it panes offer Quote only. */
@@ -73,6 +82,9 @@ export default function SessionGridView({
    *  with ITS OWN session, not the host's active one — a file opened from a
    *  non-focused pane in split view must bind to that pane's slot (#9921). */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void
+  /** The host's single Crew Mode dispatch-notice reveal, forwarded to each pane
+   *  so a split pane uses the SAME reveal path as the single-chat surface. */
+  onOpenCrewTab?: (slot: string) => void
 }) {
   const grid = useSessionGrid(seedSlot)
 
@@ -83,7 +95,7 @@ export default function SessionGridView({
   useEffect(() => {
     if (!seededRef.current) {
       seededRef.current = true
-      if (grid.isEmpty) grid.seedFromSession(seedSlot ?? null)
+      if (grid.isEmpty) grid.seedFromSession(seedSlot ?? null, seedDir)
       return
     }
     // Collapse rules — the grid only lives while it's a real (multi-cell) split:
@@ -104,7 +116,7 @@ export default function SessionGridView({
   // browser tab (Chrome reserves it), so split-down is the on-pane ⬓ button only.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'd') return
+      if (!isSplitChord(e)) return
       const ids = grid.leaves.map((l) => l.id)
       const target = grid.focusedId && ids.includes(grid.focusedId) ? grid.focusedId : ids[0]
       if (!target) return
@@ -146,6 +158,8 @@ export default function SessionGridView({
     // matching the visibilitychange blur semantics.
     emitSlotFocused(focusedPaneSlot)
   }, [focusedPaneSlot])
+  // Leaving split view hands the reveal's re-announce back to activeSlot.
+  useEffect(() => endSplitPaneFocus, [])
   const forkSourceSlot =
     focusedLeaf?.kind === 'session' && focusedLeaf.slot
       ? focusedLeaf.slot
@@ -170,10 +184,17 @@ export default function SessionGridView({
       const openFileForPane = onFileOpen
         ? (path: string, opts?: { line?: number; endLine?: number }) => onFileOpen(path, { ...opts, slot: paneSlot })
         : undefined
+      // The single-chat composer is not mounted in split view, so the grid
+      // hands the "Start Dictation with a Key" binding to exactly one pane:
+      // the one that last took focus (a click or a focus move into it). A
+      // placeholder holding focus leaves no pane armed, since it has no
+      // composer to dictate into.
+      const focused = grid.focusedId === leaf.id
       return (
         <ChatPane
           slotKey={leaf.slot}
-          focused={grid.focusedId === leaf.id}
+          focused={focused}
+          pushToTalk={focused}
           onFocus={() => grid.setFocused(leaf.id)}
           onRemove={() => grid.closeLeaf(leaf.id)}
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
@@ -182,6 +203,7 @@ export default function SessionGridView({
           openSideChat={openSideChat}
           leading={paneLeading}
           onFileOpen={openFileForPane}
+          onOpenCrewTab={onOpenCrewTab}
         />
       )
     }
@@ -293,7 +315,10 @@ function PlaceholderPane({
     },
   })
 
-  const available = slots
+  // A Crew Mode worker is its conductor's to show, never offered as a pane here
+  // (edge review R2 F4); a pane already showing one is kept (pruneAgainst reads
+  // the full list).
+  const available = crewModeView(slots)
     .filter((s) => !occupied.includes(s.key))
     .filter(
       (s) =>
@@ -384,7 +409,7 @@ function PlaceholderPane({
           title={forkSourceSlot ? i18nT('components.sessionGridView.fork_child_session', { name: forkSourceTitle || forkSourceSlot }) : i18nT('components.sessionGridView.no_session_to_fork_yet')}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
+          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Split size={13} />} {i18nT('components.sessionGridView.fork')}
         </button>
       </div>
 

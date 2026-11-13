@@ -179,6 +179,9 @@ describe('StatCard', () => {
     const card = screen.getByTestId('stat-card')
     expect(card).not.toHaveAttribute('role')
     expect(card).not.toHaveAttribute('tabindex')
+    // A summary card must not look like a target: no pointer, no hover lift.
+    expect(card.className).not.toContain('cursor-pointer')
+    expect(card.className).not.toMatch(/(^|\s)hover:/)
   })
 
   it('becomes a keyboard-operable button when clickable', () => {
@@ -187,6 +190,8 @@ describe('StatCard', () => {
     const card = screen.getByRole('button')
     expect(card).toHaveAttribute('tabindex', '0')
     expect(card.className).toContain('border-accent')
+    expect(card.className).toContain('cursor-pointer')
+    expect(card.className).toContain('hover:shadow-md')
     expect(card.style.animationDelay).toBe('40ms')
     expect(screen.getByTestId('stat-card-value').className).toContain('text-accent')
 

@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:1f0040e27b54c2fbf838fa66356c498cb361f8765e51926cb9832a25e8681aed"
+export const GUIDE_BUILD_DIGEST = "sha256:dee07d29532a0a5493b52a4288a0e75f874035d6caf6b8ca894345b41a7328bc"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -68,22 +68,27 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "composer.send",
   "composer.stop",
   "composer.voice",
-  "connections.mcp-servers-tab",
+  "knowledge.add-source",
+  "knowledge.sources-tab",
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
+  "mcp.servers-view",
   "members.add-menu",
   "members.add-menu.import",
   "members.add-menu.new",
   "members.back",
+  "members.dashboard-tab",
   "members.details",
   "members.edit",
   "members.empty.import",
+  "members.goals-tab",
   "members.new",
   "members.new-advanced",
   "members.permissions",
   "members.profile-tab",
   "members.roster-list",
+  "members.schedule-tab",
   "members.settings",
   "members.switcher",
   "members.switcher.import",
@@ -99,6 +104,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "notifications.page-mark-all-read",
   "overview.memory-details",
   "schedule.add-job",
+  "schedule.batch-actions",
   "schedule.cancel-run",
   "schedule.create-first",
   "schedule.delete",
@@ -132,7 +138,6 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "sessions.row-menu.rename",
   "sessions.show-all-older",
   "shell.connect-phone",
-  "shell.developer",
   "shell.focus-mode",
   "shell.kiro-account",
   "shell.menu-search",
@@ -171,6 +176,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "state",
     "revealer": "composer.expand",
     "state": "composer_collapsed"
+  },
+  "members.panel": {
+    "kind": "state",
+    "revealer": "members.details",
+    "state": "crewmate_panel_closed"
   },
   "members.profile": {
     "kind": "state",
@@ -225,6 +235,10 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "menu",
     "revealer": "members.switcher"
   },
+  "menu:schedule.batch-actions": {
+    "kind": "menu",
+    "revealer": "schedule.batch-actions"
+  },
   "menu:sessions.create-menu": {
     "kind": "menu",
     "revealer": "sessions.create-menu"
@@ -261,9 +275,13 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "open",
     "revealer": "composer.automation"
   },
-  "open:connections.mcp-servers-tab": {
+  "open:knowledge.sources-tab": {
     "kind": "open",
-    "revealer": "connections.mcp-servers-tab"
+    "revealer": "knowledge.sources-tab"
+  },
+  "open:mcp.servers-view": {
+    "kind": "open",
+    "revealer": "mcp.servers-view"
   },
   "shell.nav-rail": {
     "kind": "state",
@@ -1682,18 +1700,41 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
-  "connections.mcp-servers-tab": {
+  "knowledge.add-source": {
     "version": 2,
-    "label_key": "pages.connectionsPage.mcp_servers",
+    "label_key": "pages.knowledge.sourcesList.add_source",
     "placements": [
       {
         "id": "any",
-        "route": "/capabilities?tab=mcp",
+        "route": "/capabilities?tab=knowledge",
         "steps": [
           {
-            "id": "any:connections.mcp-servers-tab",
-            "location": "connections.mcp-servers-tab",
-            "label_key": "pages.connectionsPage.mcp_servers"
+            "id": "any:knowledge.sources-tab",
+            "location": "knowledge.sources-tab",
+            "label_key": "pages.knowledge.index.sources_tab",
+            "scope": "open:knowledge.sources-tab"
+          },
+          {
+            "id": "any:knowledge.add-source",
+            "location": "knowledge.add-source",
+            "label_key": "pages.knowledge.sourcesList.add_source"
+          }
+        ]
+      }
+    ]
+  },
+  "knowledge.sources-tab": {
+    "version": 2,
+    "label_key": "pages.knowledge.index.sources_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=knowledge",
+        "steps": [
+          {
+            "id": "any:knowledge.sources-tab",
+            "location": "knowledge.sources-tab",
+            "label_key": "pages.knowledge.index.sources_tab"
           }
         ]
       }
@@ -1705,13 +1746,13 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/capabilities?tab=mcp",
+        "route": "/capabilities?tab=mcp-servers",
         "steps": [
           {
-            "id": "any:connections.mcp-servers-tab",
-            "location": "connections.mcp-servers-tab",
-            "label_key": "pages.connectionsPage.mcp_servers",
-            "scope": "open:connections.mcp-servers-tab"
+            "id": "any:mcp.servers-view",
+            "location": "mcp.servers-view",
+            "label_key": "pages.mcpPage.view_servers",
+            "scope": "open:mcp.servers-view"
           },
           {
             "id": "any:mcp.add-server",
@@ -1728,18 +1769,35 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/capabilities?tab=mcp",
+        "route": "/capabilities?tab=mcp-servers",
         "steps": [
           {
-            "id": "any:connections.mcp-servers-tab",
-            "location": "connections.mcp-servers-tab",
-            "label_key": "pages.connectionsPage.mcp_servers",
-            "scope": "open:connections.mcp-servers-tab"
+            "id": "any:mcp.servers-view",
+            "location": "mcp.servers-view",
+            "label_key": "pages.mcpPage.view_servers",
+            "scope": "open:mcp.servers-view"
           },
           {
             "id": "any:mcp.probe",
             "location": "mcp.probe",
             "label_key": "pages.overview.mcpTab.probe_mcp_servers"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.servers-view": {
+    "version": 2,
+    "label_key": "pages.mcpPage.view_servers",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.servers-view",
+            "location": "mcp.servers-view",
+            "label_key": "pages.mcpPage.view_servers"
           }
         ]
       }
@@ -1754,12 +1812,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:members.switcher",
             "location": "members.switcher",
@@ -1789,12 +1841,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster",
@@ -1822,12 +1868,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:members.switcher",
             "location": "members.switcher",
@@ -1863,12 +1903,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster",
@@ -1902,12 +1936,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:members.switcher",
             "location": "members.switcher",
@@ -1943,12 +1971,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster",
@@ -1983,12 +2005,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2005,6 +2021,69 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "members.dashboard-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.dashboard_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.details",
+            "location": "members.details",
+            "label_key": "pages.membersPage.panel_toggle",
+            "when": "crewmate_panel_closed",
+            "scope": "members.panel",
+            "requires": [
+              "crewmate_panel_not_docked"
+            ]
+          },
+          {
+            "id": "any:members.dashboard-tab",
+            "location": "members.dashboard-tab",
+            "label_key": "pages.membersPage.dashboard_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.details": {
+    "version": 2,
+    "label_key": "pages.membersPage.panel_toggle",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.details",
+            "location": "members.details",
+            "label_key": "pages.membersPage.panel_toggle",
+            "requires": [
+              "crewmate_panel_not_docked"
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "members.edit": {
     "version": 2,
     "label_key": "pages.membersPage.profile_card",
@@ -2013,12 +2092,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "id": "any",
         "route": "/members",
         "steps": [
-          {
-            "id": "any:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "any:select:crewmate_selected",
             "kind": "select",
@@ -2036,6 +2109,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "members.goals-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_goals_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.goals-tab",
+            "location": "members.goals-tab",
+            "label_key": "pages.membersPage.profile_goals_tab"
+          }
+        ]
+      }
+    ]
+  },
   "members.profile-tab": {
     "version": 2,
     "label_key": "pages.membersPage.profile_tab",
@@ -2044,12 +2149,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "id": "any",
         "route": "/members",
         "steps": [
-          {
-            "id": "any:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "any:select:crewmate_selected",
             "kind": "select",
@@ -2074,6 +2173,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "members.schedule-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.schedules_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.schedule-tab",
+            "location": "members.schedule-tab",
+            "label_key": "pages.membersPage.schedules_tab"
+          }
+        ]
+      }
+    ]
+  },
   "members.settings": {
     "version": 2,
     "label_key": "pages.membersPage.profile_settings",
@@ -2082,12 +2213,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "id": "any",
         "route": "/members",
         "steps": [
-          {
-            "id": "any:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "any:select:crewmate_selected",
             "kind": "select",
@@ -2129,12 +2254,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2160,12 +2279,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
@@ -2199,12 +2312,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2236,12 +2343,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
@@ -2275,12 +2376,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2306,12 +2401,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
@@ -2341,6 +2430,34 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:overview.memory-details",
             "location": "overview.memory-details",
             "label_key": "pages.overviewPage.view_details"
+          }
+        ]
+      }
+    ]
+  },
+  "schedule.batch-actions": {
+    "version": 2,
+    "label_key": "pages.schedulePage.batchActions.actions_for_selected",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/schedule",
+        "steps": [
+          {
+            "id": "any:select:one_job_checked",
+            "kind": "select",
+            "location": "schedule.job-list",
+            "label_key": "pages.schedulePage.jobs_table",
+            "selection": "one_job_checked",
+            "entity": "tickjob",
+            "requires": [
+              "schedule_list_view"
+            ]
+          },
+          {
+            "id": "any:schedule.batch-actions",
+            "location": "schedule.batch-actions",
+            "label_key": "pages.schedulePage.batchActions.actions_for_selected"
           }
         ]
       }
@@ -2390,6 +2507,15 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "label_key": "pages.schedulePage.jobs_table",
             "selection": "one_job_checked",
             "entity": "tickjob",
+            "requires": [
+              "schedule_list_view"
+            ]
+          },
+          {
+            "id": "any:schedule.batch-actions",
+            "location": "schedule.batch-actions",
+            "label_key": "pages.schedulePage.batchActions.actions_for_selected",
+            "scope": "menu:schedule.batch-actions",
             "requires": [
               "schedule_list_view"
             ]
@@ -3195,57 +3321,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "requires": [
               "phone_connect_available"
             ]
-          }
-        ]
-      }
-    ]
-  },
-  "shell.developer": {
-    "version": 2,
-    "label_key": "app.developer",
-    "placements": [
-      {
-        "id": "desktop",
-        "route": null,
-        "viewport": "desktop",
-        "steps": [
-          {
-            "id": "desktop:gate:developer_mode",
-            "kind": "gate",
-            "gate": "developer_mode",
-            "setting_id": "developer.developer-mode"
-          },
-          {
-            "id": "desktop:shell.developer",
-            "location": "shell.developer",
-            "label_key": "app.developer"
-          }
-        ]
-      },
-      {
-        "id": "mobile",
-        "route": null,
-        "viewport": "mobile",
-        "steps": [
-          {
-            "id": "mobile:gate:developer_mode",
-            "kind": "gate",
-            "gate": "developer_mode",
-            "setting_id": "developer.developer-mode"
-          },
-          {
-            "id": "mobile:shell.mobile-menu",
-            "location": "shell.mobile-menu",
-            "label_key": "app.open_menu",
-            "scope": "menu:shell.mobile-menu",
-            "requires": [
-              "not_on_sessions_page"
-            ]
-          },
-          {
-            "id": "mobile:shell.developer",
-            "location": "shell.developer",
-            "label_key": "app.developer"
           }
         ]
       }

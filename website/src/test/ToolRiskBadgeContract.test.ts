@@ -16,18 +16,18 @@
  * this file would be a second contract, free to drift from the one the backend
  * author reads.
  */
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
 import { readToolRiskRecord, TOOL_RISK_TIERS } from '../pages/chat/toolRiskRecord'
+import { readSource } from './readSource'
 
 const SPEC = join(__dirname, '../../../docs/system-specs/modules/decisions.md')
 const SECTION = '## 9. The `tool.risk` annotation on the tool card'
 
 function sectionText(): string {
-  const text = readFileSync(SPEC, 'utf-8')
+  const text = readSource(SPEC)
   const start = text.indexOf(SECTION)
   if (start < 0) throw new Error(`${SECTION} is gone from ${SPEC} — the contract moved or was deleted`)
   return text.slice(start)

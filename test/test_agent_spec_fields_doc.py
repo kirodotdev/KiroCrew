@@ -6,7 +6,8 @@ them, and ``test_context_management_doc.py`` pins one file:
 ``src/kiro_crew/docs/agent-spec-fields.md`` free to say the opposite of the code with
 every symbol and path resolving and the lint green — and the claims most exposed to
 that are its skill-resource ones, because they describe a decision whose inputs are
-not visible in any symbol it names.
+not visible in any symbol it names. § Prompt's account of the ``file://`` forms
+Crew's KAS resolver accepts and kiro-cli's v3 loader refuses is pinned the same way.
 
 This module closes that gap for that file. Where a claim is about what a function
 DOES, it is asserted by calling that function, so a behaviour-preserving rewrite stays
@@ -56,27 +57,32 @@ def test_the_doc_does_not_claim_a_backend_condition_on_skill_injection(doc_text:
 def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
     """The `file://` half IS backend-gated, so the page must keep saying so.
 
-    The whole gate expression is matched as one contiguous block, ending at the
-    ``_load_steering_resources()`` call it guards. ``is_cc`` is read at four sites in
-    that module, so a token match anywhere would keep this green with the steering
-    gate's own condition dropped.
+    The whole gate is matched as one contiguous block, ending at the
+    ``_load_steering_resources(project, ...)`` call it guards, in the one helper session
+    start and post-compaction re-injection share; both callers are pinned to route
+    through it. A token match on ``crew_loads_spec_steering`` anywhere would stay green
+    with the steering gate's own condition dropped.
     """
-    source = (
-        Path(__file__).parent.parent / "src" / "kiro_crew" / "context_assembly" / "session_start.py"
-    ).read_text(encoding="utf-8")
+    owner = Path(__file__).parent.parent / "src" / "kiro_crew" / "context_assembly"
+    source = (owner / "inclusion.py").read_text(encoding="utf-8")
     gate = (
-        "        not essentials\n"
-        "        and not is_custom\n"
-        "        and is_cc\n"
-        "        and ctx._group_included(context_groups, ctx.CONTEXT_GROUP_PROJECT)\n"
-        "    ):\n"
-        "        steering_ctx = ctx._load_steering_resources()\n"
+        "    if essentials or not ctx.acp_driver.crew_loads_spec_steering(provider_type):\n"
+        '        return ""\n'
+        "    if agent and not is_kirocrew_default_agent(agent):\n"
+        '        return ""\n'
+        "    if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):\n"
+        '        return ""\n'
+        "    return ctx._load_steering_resources(\n"
     )
     assert gate in source, (
-        "the steering block's gate no longer reads is_cc together with the default-agent "
-        "and project-group conditions, so the page's 'steering is the backend-gated half' "
-        "is stale"
+        "the steering block's gate no longer reads the backend set together with the "
+        "default-agent and project-group conditions, so the page's 'steering is the "
+        "backend-gated half' is stale"
     )
+    for caller in ("session_start.py", "turn.py"):
+        assert "_inclusion.steering_resources_part(" in (owner / caller).read_text(
+            encoding="utf-8"
+        ), f"{caller} no longer reads steering resources through the shared gate"
     assert "The `file://` steering block does NOT follow that shape." in doc_text
 
 
@@ -131,7 +137,7 @@ def test_native_launch_view_carries_no_skill_resources(doc_text, tmp_path, monke
     monkeypatch.setattr(projection, "kiro_agents_dir", lambda: agents)
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
-        lambda name: {"command": "test-core", "args": []},
+        lambda name, **_kw: {"command": "test-core", "args": []},
     )
     monkeypatch.setattr(
         projection,
@@ -201,12 +207,8 @@ def test_app_skill_mapping_names_the_namespaced_path(
 ) -> None:
     """The page's app-skill rule: one namespaced entry per skill, never the flat link.
 
-    Driven through ``_register_skills`` for every case the page lists: a plain skill
-    gets both links, while a skill named after its app, the reserved ``auto`` and a
-    name a real directory already holds get the namespaced link only. The ``~/`` half
-    is driven through ``expand_skill_uri``, which must expand against the home and
-    ignore ``KIROCREW_HOME``. The mapping half is driven through the loader's
-    ``_scoped_entries``, the selection a session's skill block is built from.
+    A plain skill gets both links; one named after its app, ``auto``, or an existing
+    directory gets only the namespaced one. ``expand_skill_uri`` ignores ``KIROCREW_HOME``.
     """
     import json
 
@@ -399,3 +401,29 @@ def test_app_wildcard_selects_a_flat_row_under_a_linked_loader_root(tmp_path):
         [row], [], [pattern], {pattern: head}, {pattern: canonical}, loader_roots, real_roots
     )
     assert found == [row]
+
+
+def test_prompt_section_states_the_v3_absolute_rule_crew_keeps_looser(doc_text, tmp_path):
+    """§ Prompt names kiro-cli v3's refusal of an absolute prompt and says Crew inlines one.
+
+    kiro-cli's v3 on-disk loader refuses an absolute or ``~`` ``file://`` prompt. Crew's
+    KAS resolver inlines it, because the app bridge writes an app agent's prompt in that
+    form, and the Kiro CLI launch pins the v2 engine, which reads it. The behaviour
+    half is executed, so a resolver that starts refusing the form, or a launch pinned
+    to another engine, fails beside the sentence saying otherwise.
+    """
+    from kiro_crew.acp.kas_agents import resolve_prompt
+    from kiro_crew.kiro_cli import KIRO_ACP_ENGINE
+
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("app prompt", encoding="utf-8")
+    spec = {"prompt": f"file://{prompt}"}
+    assert resolve_prompt(spec, agent_id="a", agents_dir=tmp_path / "agents") == "app prompt"
+
+    section = doc_text.split("### Prompt", 1)[1].split("### Tools and permissions", 1)[0]
+    flat = " ".join(section.split())
+    assert "treat the restriction as unconfirmed" not in flat
+    assert "Absolute file:// URIs are not allowed in agent prompts" in flat
+    assert "`apps/bridges_agents.py`" in flat
+    assert "as on kiro-cli;" not in flat and "as kiro-cli does;" not in flat
+    assert f"`--agent-engine {KIRO_ACP_ENGINE}`" in flat

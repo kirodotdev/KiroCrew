@@ -1,14 +1,7 @@
 """``parent`` on the slots payload -- the edge the chat sidebar nests on.
 
-The sidebar already receives the slots broadcast, so the creator edge rides a frame it
-gets anyway. Two properties decide whether that works, and they pull in opposite
-directions, which is why both are pinned here:
-
-* the SHAPE is byte-identical to the Sessions table's ``parent``, so one moved
-  ``nestsUnder`` serves both views;
-* the KEY SPACE is this payload's own -- bare slot keys here, ``dashboard:`` session
-  keys there -- because ``nestsUnder`` resolves ``parent.key`` against the keys of the
-  payload it was handed, and a session key here would name no row at all.
+The shape matches the Sessions table's ``parent`` so one ``nestsUnder`` serves both,
+but keys are bare slot keys: ``nestsUnder`` resolves against the payload's own keys.
 """
 
 from __future__ import annotations
@@ -158,12 +151,8 @@ def test_the_shape_is_the_same_two_keys_the_memory_payload_uses():
 def test_a_channel_born_conductor_nests_its_worker_on_the_wire(tmp_path, monkeypatch):
     """A conductor whose turns run on a channel session is still a nestable creator.
 
-    ``session_create`` stamps ``_created_by`` with the key the caller authenticated as,
-    so a conductor bound to a channel conversation is cited by that CHANNEL key while
-    its slot row is keyed ``chat-N``. The Sessions table resolves it because its own
-    row key IS the channel key; the slots payload has to reach the same answer through
-    the slot alias, or every worker such a conductor opens renders as an orphan root
-    beside a System page that nests all of them.
+    ``_created_by`` holds the channel key while the slot row is ``chat-N``, so the
+    payload resolves it through the slot alias.
     """
     from chat_test_helpers import _make_state
 
@@ -496,6 +485,176 @@ def test_a_whole_closed_chain_still_leaves_an_orphan_root():
     assert rows[0]["parent"] == {"slot": "chat-mid", "key": None}
 
 
+# ── the closed creator's last-known title ──────────────────────────────────
+
+
+def _titled(key: str, title: str) -> dict:
+    return {"key": key, "title": title}
+
+
+def test_a_closed_creator_is_named_by_the_title_it_had_while_live():
+    """Seen live once, then closed: both the orphan and the re-parented row name it.
+
+    Two DIFFERENT closed creators get two different names, which is the whole point --
+    under the generic label they read the same line.
+    """
+    _unit("s-lead", "chat-lead")
+    _unit("s-mid", "chat-mid", parent="chat-lead")
+    _unit("s-w", "chat-w", parent="chat-mid")
+    _unit("s-solo", "chat-solo")
+    _unit("s-o", "chat-o", parent="chat-solo")
+    _seeded()
+
+    # A frame while every creator is still live remembers their titles.
+    _attach_slot_parents(
+        [
+            _titled("chat-lead", "Lead"),
+            _titled("chat-mid", "Triage conductor"),
+            _titled("chat-w", "Worker"),
+            _titled("chat-solo", "Release conductor"),
+            _titled("chat-o", "Orphan"),
+        ]
+    )
+
+    # Both creators close. The next frame carries no row for either.
+    rows = [_titled("chat-lead", "Lead"), _titled("chat-w", "Worker"), _titled("chat-o", "Orphan")]
+    _attach_slot_parents(rows)
+
+    assert rows[1]["parent"] == {
+        "slot": "chat-mid",
+        "key": "chat-lead",
+        "ancestor": True,
+        "title": "Triage conductor",
+    }
+    assert rows[2]["parent"] == {"slot": "chat-solo", "key": None, "title": "Release conductor"}
+
+
+def test_a_live_creator_never_carries_a_title():
+    """The live creator is named by its own row; a second name could disagree with it."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    rows = [_titled("chat-1", "Conductor"), _titled("chat-2", "Worker")]
+    _attach_slot_parents(rows)
+
+    assert rows[1]["parent"] == {"slot": "chat-1", "key": "chat-1"}
+
+
+def test_a_cycle_on_live_creators_is_not_named_as_closed():
+    """``key: None`` from a cycle is NOT a closed creator: both are live rows."""
+    _unit("s-1", "chat-1", parent="chat-2")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    rows = [_titled("chat-1", "One"), _titled("chat-2", "Two")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] == {"slot": "chat-2", "key": None}
+    assert rows[1]["parent"] == {"slot": "chat-1", "key": None}
+
+
+def test_a_creator_this_process_never_saw_live_keeps_the_generic_answer():
+    """Closed before any frame (e.g. before a restart): no title, the base payload."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    rows = [_titled("chat-2", "Worker")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] == {"slot": "chat-1", "key": None}
+
+
+def test_the_untitled_placeholder_is_never_remembered_or_overwrites_a_name():
+    """A tab with no generated title yet says less than the generic label does."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _unit("s-3", "chat-3")
+    _unit("s-4", "chat-4", parent="chat-3")
+    _seeded()
+
+    _attach_slot_parents([_titled("chat-1", st.NEW_SESSION_TITLE), _titled("chat-2", "W2")])
+    _attach_slot_parents([_titled("chat-3", "Named"), _titled("chat-4", "W4")])
+    # A later placeholder frame for chat-3 must not erase the name it had.
+    _attach_slot_parents([_titled("chat-3", st.NEW_SESSION_TITLE), _titled("chat-4", "W4")])
+
+    rows = [_titled("chat-2", "W2"), _titled("chat-4", "W4")]
+    _attach_slot_parents(rows)
+
+    assert rows[0]["parent"] == {"slot": "chat-1", "key": None}
+    assert rows[1]["parent"] == {"slot": "chat-3", "key": None, "title": "Named"}
+
+
+def test_the_sessions_table_names_the_closed_creator_from_the_same_registry(tmp_path, monkeypatch):
+    """A title the sidebar frame remembered names the creator on the memory payload's
+    join too, under its ``dashboard:`` key space."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    _attach_slot_parents([_titled("chat-1", "Conductor"), _titled("chat-2", "Worker")])
+
+    table = lineage_parents([{"key": "dashboard:chat-2"}], stp.projection().nodes(), None)
+    assert table["dashboard:chat-2"] == {"slot": "chat-1", "key": None, "title": "Conductor"}
+
+
+def test_the_registry_is_bounded_and_forgets_the_oldest(monkeypatch):
+    from kiro_crew.dashboard import creator_titles
+
+    monkeypatch.setattr(creator_titles, "_CAP", 2)
+    creator_titles.remember(["a"], "A", placeholder="-")
+    creator_titles.remember(["b"], "B", placeholder="-")
+    creator_titles.remember(["c"], "C", placeholder="-")
+
+    assert creator_titles.last_known(["a"]) is None
+    assert creator_titles.last_known(["b"]) == "B"
+    assert creator_titles.last_known(["c"]) == "C"
+
+
+def test_a_rename_sent_as_a_patch_is_the_name_a_closed_creator_reads(tmp_path, monkeypatch):
+    """A rename reaches patch-capable tabs as a ``slot_patch``, with no full frame.
+
+    The closed-creator label must read the NEW name, not the one the last full frame
+    recorded -- even with no client connected when the rename happened.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "rename-home"))
+    stp.reset_for_tests()
+    _unit("s-c", "chat-c")
+    _unit("s-w", "chat-w", parent="chat-c")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    creator = state.get_or_create_slot("chat-c")
+    state.get_or_create_slot("chat-w")
+    creator.title, creator._titled = "Old conductor name", True
+    state.serialize_slots()  # a full frame while it is live records the old name
+
+    creator.title = "Renamed conductor"
+    state.push_slot_patch("chat-c", ("title",))
+    state._slots.pop("chat-c")  # it closes before any other full frame
+
+    wire = {p["key"]: p["parent"] for p in state.serialize_slots()}["chat-w"]
+    assert wire["slot"] == "chat-c"
+    assert wire["title"] == "Renamed conductor"
+
+
+def test_a_retained_title_is_bounded_in_length(monkeypatch):
+    """The entry cap bounds the count, this bounds each entry: an unbounded title
+    restored from transcript metadata would otherwise stay pinned after it closes."""
+    from kiro_crew.dashboard import creator_titles
+
+    monkeypatch.setattr(creator_titles, "_MAX_TITLE_CHARS", 10)
+    creator_titles.remember(["long"], "x" * 1_000_000, placeholder="-")
+    creator_titles.remember(["fits"], "ten chars!", placeholder="-")
+
+    kept = creator_titles.last_known(["long"])
+    assert kept is not None and len(kept) == 10 and kept.endswith("…")
+    assert creator_titles.last_known(["fits"]) == "ten chars!"
+
+
 def test_both_surfaces_re_parent_the_same_worker(tmp_path, monkeypatch):
     """One join, so the sidebar and the Sessions table cannot disagree about where a
     worker whose conductor closed belongs."""
@@ -547,13 +706,8 @@ def test_a_lineage_failure_still_ships_every_slot(monkeypatch):
 def test_a_lineage_failure_says_so_once_at_warning(monkeypatch, caplog):
     """The failure is the one outcome the payload cannot express, so it is logged.
 
-    ``parent``, an explicit ``None`` and ``lineage_pending`` are all on the wire, so
-    every other answer this gives is readable from the payload. A swallowed exception
-    is not: the rows it produces are byte-identical to a store that genuinely holds no
-    lineage, which is why the report has to carry the traceback.
-
-    Once per process, because this runs on every slots frame and the likely failures
-    are persistent -- an unlatched warning would be one line per broadcast.
+    A swallowed exception looks like a store with no lineage, so the log carries the
+    traceback. Once per process, since this runs on every slots frame.
     """
     monkeypatch.setattr(st, "_lineage_failure_warned", False)
 
@@ -577,15 +731,8 @@ def test_a_lineage_failure_says_so_once_at_warning(monkeypatch, caplog):
 def test_a_broken_alias_read_degrades_the_nesting_and_says_so(tmp_path, monkeypatch, caplog):
     """A fault resolving the aliases costs the NESTING, and is reported, not swallowed.
 
-    Two things are owed here and they pull against each other. The payload must still
-    paint, because a sidebar with no rows is a worse failure than a sidebar that does not
-    nest -- so the fault cannot propagate out of ``serialize_slots``. And it must not pass
-    silently, because rows with no lineage are byte-identical to a store that genuinely
-    holds none, which is the orphaned lane this argument exists to fix. The WARNING with
-    its traceback is what separates the two, so both are asserted here.
-
-    Resolving the aliases therefore happens INSIDE ``_attach_slot_parents``, where that
-    handler already lives; reading them at the call site put this one fault outside it.
+    The fault must not escape ``serialize_slots`` (rows still paint) and must log a
+    WARNING, so aliases are resolved inside ``_attach_slot_parents``'s handler.
     """
     from chat_test_helpers import _make_state
 
@@ -663,11 +810,8 @@ def test_a_healthy_read_says_nothing(caplog):
 def test_a_failed_seed_is_re_requested_from_the_slots_path(monkeypatch):
     """The sidebar must reach the projection's retry on its own.
 
-    A seed that failed leaves a readable but EMPTY state, so ``seeded_for_current_store``
-    is satisfied and this path would take the healthy branch forever. The only caller
-    that seeds is the System page's sampler, so on a gateway nobody opens that page on
-    the sidebar would stay unnested for the life of the process -- the projection's retry
-    would exist and never be reached.
+    A failed seed still satisfies ``seeded_for_current_store``, and only the System
+    page's sampler seeds otherwise, so this path must request the retry.
     """
     _unit("s-1", "chat-1")
     _unit("s-2", "chat-2", parent="chat-1")
@@ -828,12 +972,8 @@ def test_the_seed_is_requested_once_however_many_frames_arrive(monkeypatch):
 def test_the_frame_after_the_seed_carries_the_edge():
     """Nothing broadcasts when the seed lands, so the NEXT ordinary frame nests.
 
-    That is why the seed starts at boot rather than on a frame: every way of pushing a
-    frame of its own breaks something load-bearing. ``push_slots_update`` and the
-    trailing timer both WRITE the coalescer's clock, and a request inside
-    ``suspend_slots_push`` needs that window open so its own flush broadcasts inline and
-    a broadcast failure reaches its caller; a frame outside the accounting avoids the
-    clock but the create path pins exactly one coalesced frame per change.
+    The seed starts at boot: pushing its own frame would write the coalescer's clock
+    (breaking ``suspend_slots_push``) or add a frame the create path does not allow.
     """
     _unit("s-1", "chat-1")
     _unit("s-2", "chat-2", parent="chat-1")

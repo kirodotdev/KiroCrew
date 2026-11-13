@@ -1,10 +1,7 @@
 """Regression tests for kiro-safe MCP server-key aliasing.
 
-kiro-cli resolves agent ``tools``/``allowedTools`` entries (``@server``) by
-splitting on ``/``, so a server key containing ``/`` (e.g. the npm-scoped
-``npm:@playwright/mcp``) can never be referenced as ``@key`` -- kiro reads the
-trailing path segment as a tool name and exposes none of the server's tools.
-These tests lock the slash-free aliasing + migration that fixes it.
+kiro-cli splits ``@server`` refs on ``/``, so a key like ``npm:@playwright/mcp`` can
+never be referenced; these tests lock the slash-free aliasing and its migration.
 """
 
 from __future__ import annotations
@@ -63,13 +60,8 @@ class TestNormalizeMcpServerKeys:
     def test_rewrites_the_per_tool_spelling_carrying_the_suffix_verbatim(self):
         """``@oldkey/tool`` moves with ``@oldkey``; the suffix is carried verbatim.
 
-        A per-tool ref left on the old key names a server this pass just
-        removed, so the final reconcile reads it as dangling and drops it from
-        BOTH lists -- and a dropped ``tools`` ref is never re-added, while a
-        dropped ``allowedTools`` grant is a lost per-tool approval. The server
-        key itself contains a slash (``npm:@scope/pkg``), so a rewrite that
-        re-derives the suffix by splitting the ref takes the wrong component:
-        only a prefix match that carries the remainder verbatim survives it.
+        A ref left on the old key is dropped as dangling, losing a grant. The key holds a
+        slash (``npm:@scope/pkg``), so only a prefix match carrying the rest verbatim works.
         """
         cfg = {
             "mcpServers": {"npm:@scope/pkg": {"command": "x"}},
@@ -131,13 +123,8 @@ class TestNormalizeMcpServerKeys:
     def test_an_ancestor_key_does_not_steal_a_descendant_keys_ref(self):
         """Overlapping slash keys: the longer key's bare ref is not a per-tool ref.
 
-        With ``a/b`` and ``a/b/c`` both present, ``@a/b/c`` is ambiguous text:
-        the bare ref of server ``a/b/c``, or tool ``c`` on server ``a/b``. An
-        exact server-key match is the stronger evidence, so the longer key must
-        claim it -- processed ancestor-first, ``a/b``'s per-tool rewrite would
-        steal it, stranding ``a-b-c`` in the map with no ref (``tools`` is a
-        closed allowlist, so the server would mount and expose nothing) and
-        leaving a grant under ``a-b``'s namespace instead.
+        ``@a/b/c`` is either server ``a/b/c`` or tool ``c`` on ``a/b``; the exact key match
+        wins, or ``a-b-c`` is left with no ref and exposes nothing.
         """
         cfg = {
             "mcpServers": {
@@ -214,11 +201,8 @@ class TestNormalizeMcpServerKeys:
     def test_slash_free_reserved_key_grant_cannot_transfer_to_colliding_live_server(self):
         """A slash-free unresolved key's stale grant never approves the live occupant.
 
-        ``foo-bar`` is reserved (declared, unresolved this pass) while a present
-        ``foo/bar`` normalizes onto that exact name. The pre-existing
-        ``@foo-bar`` grants belong to the absent server and must be dropped --
-        surviving, they would auto-approve the live server on the one list that
-        never reaches the PreToolUse gate.
+        ``foo/bar`` normalizes onto the reserved ``foo-bar``; its old ``@foo-bar`` grants
+        would auto-approve the live server on a list that skips the PreToolUse gate.
         """
         cfg = {
             "mcpServers": {"foo/bar": {"command": "y"}},
@@ -401,7 +385,7 @@ class TestNormalizeMcpServerKeys:
         assert cfg["tools"] == ["@playwright-mcp"]
 
     def test_converges_preexisting_polluted_siblings(self):
-        # A config already polluted by the pre-fix bug (playwright-mcp plus
+        # A polluted config (playwright-mcp plus
         # equivalent -2/-3 siblings) self-heals: the siblings fold back onto the
         # canonical alias and their @refs are redirected. A genuinely distinct
         # sibling is preserved.

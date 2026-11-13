@@ -19,11 +19,10 @@ from kiro_crew.platform.governance import parse_policy
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in a module that imports this fixture calls monkeypatch.undo()
-def _isolate(tmp_path, monkeypatch):
+def _isolate(tmp_path, _floor_monkeypatch):
     d = tmp_path / "profiles"
     d.mkdir()
-    monkeypatch.setattr(gp, "_PROFILES_DIR", d)
+    _floor_monkeypatch.setattr(gp, "_PROFILES_DIR", d)
     gp.reset_store()
     yield
     gp.reset_store()

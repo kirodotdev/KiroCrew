@@ -1,65 +1,65 @@
 [
- {
-  "path": "telemetry.enabled",
-  "type": "boolean",
-  "label": "Enabled",
-  "help": "Main switch for Kiro Crew metrics telemetry.",
-  "tags": []
- },
- {
-  "path": "telemetry.beacon_enabled",
-  "type": "boolean",
-  "label": "Anonymous Usage Beacon",
-  "help": "Anonymous daily heartbeat.",
-  "tags": []
- },
- {
-  "path": "telemetry.retention_days",
-  "type": "integer",
-  "label": "Retention (days)",
-  "help": "Prune local JSONL metric shards older than this many days.",
-  "tags": []
- },
- {
-  "path": "instances.enabled",
-  "type": "boolean",
-  "label": "Enabled",
-  "help": "Enable multi-instance management.",
-  "tags": []
- },
- {
-  "path": "instances.warm_set_cap",
-  "type": "integer",
-  "label": "Warm Set Cap",
-  "help": "Max number of remote instances kept warm at once.",
-  "tags": []
- },
- {
-  "path": "dashboard.browser_view_port",
-  "type": "integer",
-  "label": "Browser Live-View Port",
-  "help": "Pin the browser live-view server (playwright-cli show) to this loopback port.",
-  "tags": []
- },
- {
-  "path": "dashboard.url",
-  "type": "string",
-  "label": "Dashboard URL",
-  "help": "Public URL for the dashboard (used in Slack links).",
-  "tags": []
- },
- {
-  "path": "session.archive_retention_days",
-  "type": "integer",
-  "label": "Archive Retention (days)",
-  "help": "Days to keep compacted/rotated session archives before auto-cleanup.",
-  "tags": []
- },
- {
-  "path": "skills.extra_paths",
-  "type": "array",
-  "label": "Extra Skill Paths",
-  "help": "Additional directories to scan for skills.",
-  "tags": []
- }
+  {
+    "path": "telemetry.enabled",
+    "type": "boolean",
+    "label": "Enabled",
+    "help": "Main switch for Kiro Crew metrics telemetry.",
+    "tags": []
+  },
+  {
+    "path": "telemetry.beacon_enabled",
+    "type": "boolean",
+    "label": "Anonymous Usage Beacon",
+    "help": "Anonymous daily heartbeat.",
+    "tags": []
+  },
+  {
+    "path": "telemetry.retention_days",
+    "type": "integer",
+    "label": "Retention (days)",
+    "help": "Prune local JSONL metric shards older than this many days.",
+    "tags": []
+  },
+  {
+    "path": "instances.enabled",
+    "type": "boolean",
+    "label": "Enabled",
+    "help": "Enable multi-instance management.",
+    "tags": []
+  },
+  {
+    "path": "instances.warm_set_cap",
+    "type": "integer",
+    "label": "Warm Set Cap",
+    "help": "Max number of remote instances kept warm at once.",
+    "tags": []
+  },
+  {
+    "path": "dashboard.url",
+    "type": "string",
+    "label": "Dashboard URL",
+    "help": "Public URL for the dashboard (used in Slack links).",
+    "tags": []
+  },
+  {
+    "path": "session.archive_retention_days",
+    "type": "integer",
+    "label": "Archive Retention (days)",
+    "help": "Days to keep compacted/rotated session archives before auto-cleanup.",
+    "tags": []
+  },
+  {
+    "path": "skills.extra_paths",
+    "type": "array",
+    "label": "Extra Skill Paths",
+    "help": "Additional directories to scan for skills.",
+    "tags": []
+  },
+  {
+    "path": "dashboard.browser_local_origins",
+    "type": "array",
+    "label": "Local Preview Origins",
+    "help": "Loopback origins the side panel's Preview tab may open.",
+    "tags": []
+  }
 ]

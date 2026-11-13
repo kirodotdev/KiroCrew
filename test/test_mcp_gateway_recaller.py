@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -92,6 +93,10 @@ class _FakeBackend:
     supports_caller_identity = True
     control_plane = False
     quarantined = False
+    # What ``launch.bound_to_owner_port`` reads before each forward: a backend
+    # bound to no owner port, which no announce in these tests replaces.
+    pool_key = SimpleNamespace(server_name="")
+    owner_port = 0
 
     def __init__(self) -> None:
         self.callers: list[Any] = []

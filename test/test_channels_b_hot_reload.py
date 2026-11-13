@@ -1,23 +1,13 @@
 """Teams / iMessage / WhatsApp hot-reload claims that are not shared with any channel.
 
-The questions every channel is asked -- a reloaded roster reaching the live
-transport, a degraded document keeping the previous authorization state, the SEL
-audit by count, the point-of-use thresholds, the end-to-end file write -- are
-parametrized once over the whole channel table in
-``test_channels_a_hot_reload.py``. What is here is what those three channels
-claim on their own:
+Shared questions are parametrized in ``test_channels_a_hot_reload.py``. Here:
 
-* Teams' allow-list has THREE holders -- the transport's frozen roster, the
-  dispatcher's copy and the session-resume owner. Two agreeing and the third
-  stale is exactly the state that lets a removed identity keep listing dashboard
-  sessions, so every apply is checked for agreement across all three;
-* iMessage adopts an EMPTY roster, because an empty roster denies everyone here
-  and that is how an operator shuts inbound off without stopping the channel;
-* WhatsApp's DM policy runs the opposite way from every other channel's
-  wrong-shape rule: an unknown policy STRING is adopted, because ``_dm_policy``
-  denies whatever it cannot name and keeping the previous policy would leave the
-  WIDER one in force. Its group rule set is a third holder, rebuilt only when the
-  coerced rules actually differ so the unprompted-reply cooldown is not churned.
+* Teams' allow-list has THREE holders (transport, dispatcher, session-resume owner);
+  one stale copy lets a removed identity list sessions, so all three must agree;
+* iMessage adopts an EMPTY roster: it denies everyone, so inbound can be shut off;
+* WhatsApp adopts an unknown DM policy STRING, since ``_dm_policy`` denies what it
+  cannot name and keeping the old one would leave the WIDER one; its group rules
+  are rebuilt only on a real change so the unprompted-reply cooldown is kept.
 """
 
 from __future__ import annotations
@@ -47,9 +37,7 @@ from kiro_crew.teams.transport_dispatch import TeamsDispatcher
 from kiro_crew.whatsapp.transport import WhatsAppTransport
 from kiro_crew.whatsapp.transport_dispatch import WhatsAppDispatcher
 
-# ------------------------------------------------------------------
 # Teams: three holders of one roster
-# ------------------------------------------------------------------
 
 
 class TestTeamsAllowList:
@@ -135,9 +123,7 @@ class TestTeamsDispatcherApplier:
         assert d._session_resume.owner_id == "b@x.com"
 
 
-# ------------------------------------------------------------------
 # iMessage: an empty roster is adopted
-# ------------------------------------------------------------------
 
 
 class TestIMessageAllowList:
@@ -154,9 +140,7 @@ class TestIMessageAllowList:
         )
 
 
-# ------------------------------------------------------------------
 # WhatsApp: the DM policy and the group rule set
-# ------------------------------------------------------------------
 
 
 def _no_dispatch_factory():

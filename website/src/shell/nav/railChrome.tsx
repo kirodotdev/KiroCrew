@@ -6,6 +6,9 @@ import type { getThemeBranding } from '../../themeBranding'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
+import { OverlayPortal } from '../../components/overlayRoot'
+import { useNavTip } from './navTip'
+import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
 
 /** Glyph inside the nav-rail header's expand/collapse button — the same
  *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
@@ -13,17 +16,18 @@ import { useGuideRevealScope } from '../../guide/GuideRevealScope'
  *  bot name is unmounted), so a 404 on the avatar asset, a blocked request or
  *  a hung fetch used to leave an invisible control that still toggled the
  *  rail when clicked. A PanelLeft glyph therefore fills the box by default,
- *  the swap to the logo happens only on the img's own `load` event, and
+ *  the swap to the logo happens only on the logo's own `load` event, and
  *  `error` reverts it. `loadedSrc` records WHICH src loaded so a branding or
  *  theme swap falls back until the new asset proves itself. `boxClass` is the
- *  theme-overridable size (`branding.logoClass`, else w-10 collapsed / w-7
- *  expanded) and is applied to BOTH the fallback and the img so the swap never
+ *  theme-overridable size (`branding.logoClass`, else w-9 collapsed / w-7
+ *  expanded) and is applied to BOTH the fallback and the logo so the swap never
  *  moves the button's geometry; the hover tilt and `transition-all` classes
- *  live on the img exactly as before. The img stays mounted (display:none)
- *  while hidden so the browser still fetches it. A sibling rather than a
- *  generalisation of MobileNavGlyph: that component's literal `w-6 h-6` box is
- *  pinned by narrowFirstBaseline.test.ts, while this box is a runtime
- *  expression. */
+ *  live on the logo. The logo stays mounted (display:none) while hidden so
+ *  the browser still fetches it. It renders through PackLoaderImage, so an
+ *  animated pack logo holds its first frame under reduced motion. A sibling
+ *  rather than a generalisation of MobileNavGlyph: that component's literal
+ *  `w-6 h-6` box is pinned by narrowFirstBaseline.test.ts, while this box is a
+ *  runtime expression. */
 export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string; boxClass: string; iconSize: number }) {
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
   const showLogo = !!avatar && loadedSrc === avatar
@@ -35,7 +39,7 @@ export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string
         </span>
       )}
       {!!avatar && (
-        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+        <PackLoaderImage src={avatar} onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
       )}
     </>
   )
@@ -51,12 +55,15 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
 }) {
   // The rail's guide scope (`shell.nav-rail`): open while it shows labels.
   useGuideRevealScope('shell.nav-rail', !effectiveCollapsed)
+  // Collapsed, the logo is the only expand control and carries no text, so it
+  // gets the same instant hover/focus label as the collapsed nav rows (#25743).
+  const { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps } = useNavTip<HTMLButtonElement>(effectiveCollapsed)
   /*
    * mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
    * header and the first nav item, without widening the 2px item gaps.
    */
   return (
-    <div className={`relative flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-center' : ''}`}>
+    <div className="relative flex items-center mb-1.5">
       {/* One persistent click target that toggles the rail. The logo
           never unmounts, so there is no swap across collapse/expand; its
           size (w-7 ↔ w-9) and collapsed nudge (mt-1) both animate over
@@ -87,14 +94,19 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
           brand block makes the row taller. */}
       <button
         type="button"
-        className={`group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left ${effectiveCollapsed ? 'justify-center' : ''}`}
-        onClick={toggleNav}
+        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
+        onClick={() => { dismissTip(); toggleNav() }}
+        {...pointerProps}
+        onMouseEnter={showTip}
+        onMouseLeave={hideTip}
+        onFocus={showTip}
+        onBlur={hideTip}
         title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-expanded={!effectiveCollapsed}
-        {...uiLocation('shell.nav-toggle')}
+        {...uiLocation('shell.nav-toggle', rowRef)}
       >
-        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1' : ''}`}>
+        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1 ml-0.5' : ''}`}>
           <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-9 h-9' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
           <AnimatePresence initial={false}>
             {!effectiveCollapsed && (
@@ -143,6 +155,15 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
             </motion.span>
           )}
         </AnimatePresence>
+        {effectiveCollapsed && tip && <OverlayPortal>
+          <div
+            data-testid="rail-expand-tip"
+            className={`fixed flex items-center px-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
+            style={{ top: tip.top, left: tip.left + tip.width + 4, height: tip.height }}
+          >
+            {i18nT('app.expand_sidebar')}
+          </div>
+        </OverlayPortal>}
       </button>
     </div>
   )

@@ -175,8 +175,40 @@ FORBIDDEN_ATTRS = frozenset(
         # class hierarchy walk: ``dict.mro()[1]`` is ``object``, the root every
         # subclass-enumeration escape starts from
         "mro",
+        # coroutine / generator manual drivers. The script runs inside the
+        # gateway's own event loop, so it cannot ``await`` and then inspect, but
+        # it CAN step a coroutine by hand: ``coro.send(None)`` (or ``.throw(...)``)
+        # drives it to its first ``await`` and HANDS BACK the pending
+        # ``asyncio.Future`` it suspended on — a live handle to the loop's own
+        # machinery that no ``ctx`` surface is meant to expose. ``cr_await`` /
+        # ``gi_yieldfrom`` above are the other spellings of the same reach and are
+        # already blocked; these are the driver half.
+        "send",
+        "throw",
+        # ``Future``/``Task`` -> event loop. Given any pending future (e.g. from a
+        # hand-driven coroutine above), ``fut.get_loop()`` returns the gateway's
+        # real running loop. ``_loop`` is already covered by the private-``_`` rule;
+        # ``get_loop`` is the public accessor and the last step before the loop's
+        # own capabilities become reachable.
+        "get_loop",
+        # event-loop capabilities that run work OUTSIDE the script sandbox. If a
+        # loop handle is ever reached (the two names above are the known path, but
+        # completeness is load-bearing), these spawn processes or run arbitrary
+        # callables in the gateway's identity. Denied by name as defence in depth.
+        "subprocess_shell",
+        "subprocess_exec",
+        "run_in_executor",
     }
 )
+# NOTE: this denylist closes the demonstrated reach (driver -> future -> loop ->
+# process/executor) at two independent points, and no legitimate workflow script
+# references these names (``ctx`` exposes ``send_slack``/``send_message``, never a
+# bare ``send``; agent results are plain data). It is defence in depth, not a
+# complete boundary: a static name list over public APIs can never be proven
+# exhaustive (see the FORBIDDEN_ATTRS comment above). The complete fix is to run
+# the script out-of-process in a sandboxed worker so ``exec`` never runs
+# attacker-authored source inside the gateway at all; that redesign is tracked
+# separately and is out of scope for this hardening change.
 
 
 # ``str.format`` / ``str.format_map`` interpret their template at RUNTIME, so the
@@ -407,9 +439,14 @@ def check_ctx_surface(source: str, available: "frozenset[str] | set[str]") -> li
         ),
         None,
     )
-    if entry is None or not entry.args.args:
+    if entry is None:
         return []
-    ctx_name = entry.args.args[0].arg
+    # ``def workflow(ctx, /)`` keeps the context in ``posonlyargs``, which
+    # ``_check_entrypoint`` already accepts, so the port check reads it there too.
+    entry_params = entry.args.posonlyargs + entry.args.args
+    if not entry_params:
+        return []
+    ctx_name = entry_params[0].arg
     errors: list[str] = []
     seen: set[tuple[str, int]] = set()
 
@@ -461,6 +498,15 @@ class ValidationResult:
     ok: bool
     errors: list[str] = field(default_factory=list)
     meta: dict[str, Any] | None = None
+    # The compile-stage subset of ``errors``. A run refuses them like any error;
+    # a save path keeps saving such a script, as it did before ``validate``
+    # reported them, and returns them as warnings.
+    compile_errors: list[str] = field(default_factory=list)
+
+    @property
+    def save_errors(self) -> list[str]:
+        """The errors a save path refuses: every error but a compile-stage one."""
+        return [error for error in self.errors if error not in self.compile_errors]
 
 
 def _is_dunder(name: str) -> bool:
@@ -786,6 +832,23 @@ def _check_entrypoint(tree: ast.Module, errors: list[str]) -> None:
             args = node.args.posonlyargs + node.args.args
             if not args or args[0].arg != "ctx":
                 errors.append(f"'{ENTRYPOINT}' must take 'ctx' as its first parameter")
+                return
+            # The runner calls ``workflow(ctx)`` and nothing else, so any further
+            # parameter without a default raises TypeError the moment the run
+            # starts, after the script was accepted.
+            positional_defaults = len(node.args.defaults)
+            required = [a.arg for a in args[1 : len(args) - positional_defaults]]
+            required += [
+                a.arg
+                for a, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                if default is None
+            ]
+            if required:
+                names = ", ".join(f"'{name}'" for name in required)
+                errors.append(
+                    f"'{ENTRYPOINT}' is called with 'ctx' only; give {names} a default "
+                    "or remove it"
+                )
             return
         if isinstance(node, ast.FunctionDef) and node.name == ENTRYPOINT:
             errors.append(f"'{ENTRYPOINT}' must be 'async def', not 'def'")
@@ -799,7 +862,15 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
     Returns a ``ValidationResult``; never raises on bad scripts (errors are
     collected). Only raises if ``source`` is not a string.
     """
-    if len(source.encode("utf-8")) > max_bytes:
+    try:
+        size = len(source.encode("utf-8"))
+    except UnicodeEncodeError:
+        # JSON allows a lone "\ud800", and a decoded request body can carry one.
+        # It cannot be encoded, so it can never be stored or run: report it.
+        return ValidationResult(
+            ok=False, errors=["script contains an unpaired surrogate character"]
+        )
+    if size > max_bytes:
         return ValidationResult(ok=False, errors=[f"script exceeds max size of {max_bytes} bytes"])
     try:
         tree = ast.parse(source)
@@ -809,6 +880,7 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
         return ValidationResult(ok=False, errors=[_TOO_DEEP_ERROR])
 
     errors: list[str] = []
+    compile_errors: list[str] = []
     try:
         visitor = _Validator()
         visitor.visit(tree)
@@ -822,9 +894,19 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
         _check_undefined_names(source, errors)
         # Contract errors feed authoring retries before a malformed script can run.
         _check_dsl_contract(tree, source, errors)
+        # ``ast.parse`` only parses. The compiler also refuses ``return``/``await``
+        # outside a function and a ``nonlocal`` with no binding, and the runner
+        # compiles the same way, so such a script could never run. Compiling does
+        # not execute anything. Like the runner's ``compile``, this one inherits
+        # the module's ``from __future__ import annotations``.
+        try:
+            compile(tree, "<workflow>", "exec")
+        except SyntaxError as exc:
+            compile_errors.append(f"syntax error: {exc}")
+            errors.extend(compile_errors)
     except RecursionError:
         # Every walk above recurses with the tree's depth; a script deep enough
         # to exhaust the stack is refused, not surfaced as a server error.
         return ValidationResult(ok=False, errors=[_TOO_DEEP_ERROR])
 
-    return ValidationResult(ok=not errors, errors=errors, meta=meta)
+    return ValidationResult(ok=not errors, errors=errors, meta=meta, compile_errors=compile_errors)

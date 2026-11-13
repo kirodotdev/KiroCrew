@@ -24,6 +24,7 @@
 
 import { recordError, type ErrorReport } from './errorReport'
 import type { InstanceTunnelStatus } from '../api/client'
+import { panePortUrl } from './panePortProbe'
 
 /**
  * Last-reported signature per instance id AND stage, with the report it produced.
@@ -108,8 +109,14 @@ export function reportInstanceFailure(input: {
   stage: InstanceFailureStage
   /** Display string the surface is showing, used when the status carries no error. */
   fallbackMessage: string
+  /**
+   * Set when the browser probed the pane's port after a load timeout and nothing
+   * answered. The backend checks that port on the GATEWAY host, so this is the
+   * only fact that says the browser is on a different machine.
+   */
+  unreachablePanePort?: { host: string; port: number }
 }): ErrorReport | null {
-  const { id, name, transport, status, stage, fallbackMessage } = input
+  const { id, name, transport, status, stage, fallbackMessage, unreachablePanePort } = input
   const diagnosis = status?.diagnosis
   const message = failureMessageOf(status, fallbackMessage)
   const key = dedupKeyOf(id, stage)
@@ -133,6 +140,11 @@ export function reportInstanceFailure(input: {
     `stage: ${stage}`,
     failing ? `diagnosis: ${failing.code} — ${failing.reason}` : '',
     describeProbes(failing?.probes),
+    // Facts for the agent; the explanation (likely different machines, the
+    // `ssh -L` fix, the same-machine alternative) is the translated `message`
+    // the caller passes in.
+    unreachablePanePort ? `pane port: ${panePortUrl(unreachablePanePort.host, unreachablePanePort.port)}` : '',
+    unreachablePanePort ? 'pane port probe: unreachable' : '',
   ]
     .filter(Boolean)
     .join('\n')

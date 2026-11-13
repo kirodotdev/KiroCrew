@@ -10,12 +10,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 from source_providers_helpers import _app
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.mark.asyncio
@@ -62,8 +63,8 @@ async def test_resolve_cancellation_after_dispatch_keeps_cache_invalidated(monke
     release = source.asyncio.Event()
 
     async def stale_fetch():
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        # Held until the test releases it in the finally below; the bound names a hang.
+        await await_until(release, what="the stale fetch's release")
         return {"provider": "github", "stale": True}
 
     stale_task = source.asyncio.create_task(stale_fetch())
@@ -80,8 +81,7 @@ async def test_resolve_cancellation_after_dispatch_keeps_cache_invalidated(monke
         assert stale_task in source._FULL_FETCH_TASKS[url]
     finally:
         release.set()
-        # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-        await stale_task
+        await await_until(stale_task, what="the stale fetch task after release")
         source._CACHE.clear()
         source._FULL_FETCH_INFLIGHT.clear()
         source._FULL_FETCH_TASKS.clear()
@@ -619,21 +619,19 @@ async def test_inflight_status_refresh_cannot_restore_superseded_state(monkeypat
 
     async def fetch(_url: str) -> dict[str, str]:
         started.set()
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        # Held until the test releases it below; the bound names a hang.
+        await await_until(release, what="the status fetch's release")
         return {"state": "draft"}
 
     monkeypatch.setattr(source, "_fetch_check_status", fetch)
     source._check_cache[url] = (time.monotonic(), {"state": "draft"})
     try:
         task = asyncio.create_task(source._refresh_check_status(url))
-        # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-        await started.wait()
+        await await_until(started, what="the status fetch to start")
         # The mutation lands while the refresh is still in flight.
         await source._invalidate_pull_request_cache(url)
         release.set()
-        # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-        await task
+        await await_until(task, what="the in-flight status refresh")
 
         assert url not in source._check_cache
     finally:

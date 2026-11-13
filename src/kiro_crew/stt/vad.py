@@ -117,13 +117,10 @@ class VadUpdate:
     utterance and false afterwards, so a caller can act on the transition
     without tracking previous state itself.
 
-    ``speech`` and ``silent`` are NOT complements, and the difference is the
-    useful part. ``speech`` is the utterance-level state, which stays true across
-    the pauses between clauses, which is what stops a breath from ending a
-    sentence. ``silent`` is the frame-level reading for the end of this chunk, so
-    it goes true during those same pauses. A caller wanting "is the speaker
-    mid-utterance" reads ``speech``; one wanting "is there a gap right now, a good
-    place to cut" reads ``silent``.
+    ``speech`` and ``silent`` are NOT complements. ``speech`` is the utterance-level
+    state and stays true across pauses between clauses ("is the speaker
+    mid-utterance"); ``silent`` is the frame-level reading at the end of this chunk
+    and goes true in those pauses ("is there a gap right now, a good place to cut").
     """
 
     level: float
@@ -274,24 +271,14 @@ class Endpointer:
         would end the utterance mid-sentence.
         """
         if frame_db <= ABSOLUTE_SILENCE_DB:
-            # Digital silence, which is NOT a measurement of the room. A frame of
-            # exact zeros reads about -200 dBFS -- the epsilon in `_frame_db`, not a
-            # level -- and a microphone delivers one routinely: device warm-up, a
-            # muted input, the gap before the first sample lands.
-            #
-            # Seeding the floor from it is the trap. Stored raw it becomes a floor
-            # every later frame clears by the 12 dB margin, so ordinary room tone
-            # reads as speech and the utterance never ends (measured: 1282 of 1500
-            # room-tone frames, ~26 s of a 30 s recording). Clamping to
-            # `ABSOLUTE_SILENCE_DB` instead is better but still wrong, because it
-            # seeds BELOW a real room: -55 dB room tone clears a -70 dB floor, and
-            # the deliberately slow rise then takes ~170 frames to converge.
-            #
-            # So an unset floor stays unset until a frame carries a real level;
-            # `_consume_frame` reads an unset floor as "not speech", which is the
-            # right answer for silence anyway. Once the floor IS set, snapping it
-            # down to the silence bound is correct and is the fast-fall path: the
-            # room genuinely went quiet.
+            # Digital silence (exact zeros, about -200 dBFS from the epsilon in
+            # `_frame_db`) is NOT a measurement of the room; microphones deliver it
+            # on warm-up or when muted. Seeding the floor from it makes room tone
+            # clear the 12 dB margin and the utterance never ends; even a floor
+            # clamped to `ABSOLUTE_SILENCE_DB` sits below a real room (-55 dB tone
+            # clears -70 dB) and the slow rise takes ~170 frames to converge.
+            # So an unset floor stays unset (`_consume_frame` reads that as "not
+            # speech"); a set floor snaps down to the bound, the fast-fall path.
             if self._floor_db is not _FLOOR_UNSET:
                 self._floor_db = ABSOLUTE_SILENCE_DB
             return

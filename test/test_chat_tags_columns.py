@@ -69,6 +69,29 @@ class TestColumns:
             assert (tmp_path / "tag_boards.json").exists()
 
     @pytest.mark.asyncio
+    async def test_a_repeated_tag_id_is_stored_once_and_ensure_finds_the_column(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T"})).json()
+            first = await client.post(
+                "/api/chat/tag-columns",
+                json={"name": "Lane", "tag_ids": [tag["id"], tag["id"]], "ensure": True},
+            )
+            assert first.status == 201
+            col = await first.json()
+            assert col["tag_ids"] == [tag["id"]]
+            again = await client.post(
+                "/api/chat/tag-columns",
+                json={"name": "Lane", "tag_ids": [tag["id"]], "ensure": True},
+            )
+            assert (await again.json())["id"] == col["id"]
+        assert len(state._tag_boards) == 1
+
+    @pytest.mark.asyncio
     async def test_create_column_invalid_mode_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -104,6 +127,34 @@ class TestColumns:
             data = await resp.json()
             assert data["name"] == "New"
             assert data["include_untagged"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelled", ["false", "0", "no", "off", "False"])
+    async def test_a_spelled_false_include_untagged_is_saved_as_false(
+        self, tmp_path, monkeypatch, spelled
+    ):
+        # ``bool("false")`` is True; the folder route already reads these
+        # spellings as False and the column must agree.
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"name": "C", "include_untagged": True}
+                )
+            ).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"include_untagged": spelled}
+            )
+            assert resp.status == 200
+            assert (await resp.json())["include_untagged"] is False
+            created = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"name": "D", "include_untagged": spelled}
+                )
+            ).json()
+            assert created["include_untagged"] is False
 
     @pytest.mark.asyncio
     async def test_update_column_not_found(self, tmp_path, monkeypatch):
@@ -472,6 +523,43 @@ class TestReorderUniqueOrders:
             assert orders[b["id"]] == 1
             # The unmentioned A is pushed past the explicit ordering.
             assert orders[a["id"]] >= 2
+
+
+class TestCreateAfterDeleteAppends:
+    @pytest.mark.asyncio
+    async def test_new_column_after_deletes_lands_last(self, tmp_path, monkeypatch):
+        """A column created after two deletes sorts after every survivor.
+
+        Four columns hold orders 0-3; deleting the first two leaves 2 and 3, so a
+        position counted from the list length (2) would tie the first survivor.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            made = {}
+            for name in ("A", "B", "C", "D"):
+                resp = await client.post("/api/chat/tag-columns", json={"name": name})
+                assert resp.status == 201
+                made[name] = await resp.json()
+            for name in ("A", "B"):
+                resp = await client.delete(f"/api/chat/tag-columns/{made[name]['id']}")
+                assert resp.status == 200
+            resp = await client.post("/api/chat/tag-columns", json={"name": "E"})
+            assert resp.status == 201
+            listed = await (await client.get("/api/chat/tag-columns")).json()
+            assert [c["name"] for c in listed] == ["C", "D", "E"]
+            assert len({c["order"] for c in listed}) == 3
+
+    @pytest.mark.asyncio
+    async def test_first_column_gets_order_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tag-columns", json={"name": "Only"})
+            assert resp.status == 201
+            assert (await resp.json())["order"] == 0
 
 
 class TestDropOnMixedColumn:

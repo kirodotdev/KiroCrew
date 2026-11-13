@@ -53,16 +53,9 @@ def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
 def svc_base_dir(tmp_path_factory: pytest.TempPathFactory):
     """A SESSION-scoped store directory for every service these tests build.
 
-    Not each test's ``tmp_path``. ``_persist_soon`` dispatches its write through
-    ``run_in_executor``, and a thread already inside ``_write_state`` cannot be
-    stopped -- cancelling the awaiting task does not reach it. So a late write can
-    land after a per-test directory is torn down and RECREATE it, a side effect
-    that outlives the test.
-
-    An earlier revision drained those writers at teardown instead. That narrows
-    the window but cannot close it, because the cancel branch leaves the thread
-    running; the review that pressed on it was right. Giving the writes a
-    directory nobody deletes mid-run removes the hazard rather than racing it.
+    Not each test's ``tmp_path``: a ``_persist_soon`` write already in an executor
+    thread cannot be cancelled, and could RECREATE a torn-down per-test directory.
+    Draining at teardown cannot close that window.
     """
     return tmp_path_factory.mktemp("autonudge-manual-fire")
 
@@ -85,13 +78,9 @@ def _loop(**over: Any) -> NudgeLoop:
 async def _run_armed_cycle(svc: AutoNudgeService, loop_id: str) -> None:
     """Await the timer task ``fire_now`` just armed, to completion.
 
-    The suite's established shape (``await svc._timers[loop.id]`` in
-    ``test_autonudge_firing.py``). Captured by REFERENCE before any await, because the
-    gates inside ``_timer`` reach ``update``/``remove``, which pop the entry from
-    ``_timers`` — reading the dict afterwards would raise KeyError on exactly
-    the paths this file is here to test. Draining "until no tasks remain"
-    instead is wrong: ``_persist_soon`` schedules a supervised background write,
-    so that condition is never reached.
+    Captured by REFERENCE before any await: the gates inside ``_timer`` pop the entry
+    from ``_timers``. "Until no tasks remain" never ends, as ``_persist_soon`` keeps
+    a background write.
     """
     task = svc._timers[loop_id]
     await asyncio.gather(task, return_exceptions=True)
@@ -108,11 +97,8 @@ async def test_a_manual_trigger_delivers_the_cycle_through_the_ordinary_fire_pat
 ) -> None:
     """The press runs the SAME delivery the timer runs, and counts as a turn.
 
-    ``cycle_count`` is documented as counting DELIVERED TURNS, and a manual
-    nudge delivers one and spends a model turn exactly as a scheduled one does,
-    so it advances the counter. That falls out of reusing ``_run_fire_cycle``
-    rather than being decided here — there is no manual-vs-scheduled branch to
-    get wrong.
+    ``cycle_count`` counts DELIVERED TURNS, and the press reuses ``_run_fire_cycle``,
+    so a manual nudge advances it like a scheduled one.
     """
     fired: list[NudgeLoop] = []
 
@@ -124,12 +110,8 @@ async def test_a_manual_trigger_delivers_the_cycle_through_the_ordinary_fire_pat
     loop = _loop()
     svc._loops[loop.id] = loop
 
-    # The press must not TOUCH the deadline. An earlier revision wrote
-    # ``next_due_ts = now`` and awaited a durable persist so a restart would
-    # resume overdue; that await was a suspension window, and this module has
-    # several writers to that field which hold no lock, so five successive races
-    # came out of it. The write is gone and the arm is what brings the cycle
-    # forward, so the field must read exactly as the loop left it.
+    # The press must not TOUCH the deadline: a durable write would need an await, and
+    # several unlocked writers race on that field. The arm brings the cycle forward.
     due_at_arm: list[float] = []
     real_arm = svc._arm_timer
 
@@ -192,11 +174,8 @@ async def test_the_next_automatic_nudge_is_a_full_interval_after_the_manual_turn
 async def test_a_manual_trigger_cannot_buy_a_turn_past_the_cycle_cap(svc_base_dir) -> None:
     """The cap gate still runs, because the press arms ``_timer`` not the fire.
 
-    An active loop already at its cap is reachable — the cap is checked on the
-    tick BEFORE the fire, so a store written at ``cycle_count == max_cycles``
-    (or a loop whose last delivery reached it) is live until its next tick. A
-    manual press on it must deactivate, exactly as that tick would, rather than
-    deliver one more turn.
+    A loop at its cap stays active until its next tick checks the cap, so a press on
+    it must deactivate as that tick would.
     """
     fired: list[NudgeLoop] = []
 
@@ -284,11 +263,8 @@ async def test_fire_now_refuses_an_inactive_loop(svc_base_dir) -> None:
 async def test_fire_now_refuses_a_loop_that_is_already_firing(svc_base_dir) -> None:
     """Load-bearing, not defensive: arming would cancel the firing task.
 
-    ``_arm_timer`` cancels the existing timer before it creates a new one, and
-    inside the fire window that task may be parked on ``_persist_locked()``
-    writing the delivered cycle — cancelling it there loses the ``cycle_count``
-    bump. The assertion is therefore that the IN-FLIGHT TASK SURVIVES, not
-    merely that a 409 came back.
+    ``_arm_timer`` cancels the existing timer, which may be mid ``_persist_locked()``
+    writing the ``cycle_count`` bump. So the IN-FLIGHT TASK must survive.
     """
     svc = AutoNudgeService(base_dir=svc_base_dir)
     loop = _loop()
@@ -591,19 +567,10 @@ async def test_route_skips_the_busy_check_for_a_channel_bound_loop(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_every_early_refusal_is_audited_as_denied(monkeypatch, sel_mock: MagicMock) -> None:
-    """No exit from this route is un-audited, including the four early guards.
+    """No exit from this route is un-audited, including the early guards.
 
-    The first revision audited only after ``fire_now`` returned, so a request
-    denied by an earlier guard left no SEL event at all -- a denied permission
-    decision invisible to the audit trail, which is the one thing that trail
-    exists to record. Asserted as a LOOP over every refusing guard rather than
-    one test per guard on purpose: the property is "there is no un-audited way
-    out", and a guard added later that forgets the event should fail an existing
-    test rather than wait for someone to remember to write a new one.
-
-    ``sel_mock`` is reset between cases so each assertion is about its own
-    request; a cumulative call count would pass even if one case emitted two
-    events and another emitted none.
+    One loop over every refusing guard, so a new guard that forgets the event fails
+    here. ``sel_mock`` is reset per case so each count is about its own request.
     """
     disabled = object()  # sentinel: the 503 arm never touches the service
 
@@ -687,17 +654,9 @@ async def test_a_press_that_cannot_be_audited_does_not_fire(
 ) -> None:
     """AUDIT-OR-DENY: no record, no turn. The load-bearing half of the gate.
 
-    A delivered cycle spends a model turn with nobody watching, so "which press
-    started this turn, and when" is the only evidence it happened. The default
-    SEL path merely ENQUEUES, and on the event loop an enqueue failure drops the
-    event with a warning -- so auditing before the fire is not enough on its own.
-    ``critical=True`` is what makes it a gate rather than a hope, and this test
-    fails if the pre-fire write is ever downgraded to best-effort.
-
-    Modelled as an ASYMMETRIC sink, exactly as the repository's other
-    audit-or-deny tests do: the queued (non-critical) refusal writes succeed and
-    only the critical one raises. A stub that failed every write would pass even
-    against a route that never asked for durability.
+    The default SEL path only enqueues and can drop the event, so the pre-fire write
+    must be ``critical=True``. The sink is ASYMMETRIC (only critical writes raise): a
+    stub failing every write would pass against a route that never asked for durability.
     """
     loop = NudgeLoop(id="lp-1", slot_key="chat-1-111", message="check", idle_secs=300)
     svc = _FakeSvc([loop])
@@ -723,12 +682,9 @@ async def test_the_pre_fire_audit_is_critical_and_lands_before_the_fire(
 ) -> None:
     """Ordering AND durability, asserted together rather than assumed.
 
-    Two separate ways this could be wrong, so both are pinned: a critical write
-    placed AFTER ``fire_now`` would satisfy "is critical" while still arming the
-    timer first, and a correctly-placed write that is not critical would satisfy
-    "is first" while dropping the record on a full disk. The ``order`` list
-    interleaves the audit calls with the fire, so the assertion reads the real
-    sequence instead of trusting the source layout.
+    The ``order`` list interleaves the audit calls with the fire, so it reads the real
+    sequence: a critical write after the fire, or a first write that is not critical,
+    both fail.
     """
     loop = NudgeLoop(id="lp-1", slot_key="chat-1-111", message="check", idle_secs=300)
     order: list[str] = []
@@ -756,21 +712,10 @@ async def test_the_pre_fire_audit_is_critical_and_lands_before_the_fire(
 
 @pytest.mark.asyncio
 async def test_fire_now_never_suspends_which_is_what_makes_it_race_free(svc_base_dir) -> None:
-    """THE invariant. Five race classes were closed by deleting the await, not by
-    guarding it, so this asserts the absence directly.
+    """``fire_now`` never suspends, so no race can reach it between guard and arm.
 
-    A coroutine with no ``await`` inside completes on its FIRST ``send`` -- it
-    raises ``StopIteration`` carrying the return value rather than yielding a
-    future to the loop. So this is a mechanical check that no suspension point
-    exists between reading the loop and arming it, which is precisely why a
-    concurrent ``remove``, a cancelled caller, a countdown entering ``_firing``,
-    a quiet-tick reschedule and a half-committed deadline are all impossible
-    here rather than merely handled.
-
-    Written against the raw coroutine on purpose: ``await svc.fire_now(...)``
-    would pass whether or not it suspends, so it cannot distinguish the two.
-    Anyone reintroducing an ``await`` in this method fails this test with a
-    message that says what it costs.
+    A coroutine with no ``await`` raises ``StopIteration`` on its FIRST ``send``.
+    Driven raw because ``await svc.fire_now(...)`` passes whether or not it suspends.
     """
     svc, loop = _svc_with_loop(svc_base_dir)
     coro = svc.fire_now(loop.id)

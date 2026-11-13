@@ -11,6 +11,7 @@ Tools:
     learn_add       — save a learned correction
     learn_list      — list one window of lessons, with the total
     learn_remove    — remove lessons by substring
+    learn_update    — change one lesson's always/on_topic tier
     task_run        — start the autonomous task runner
 """
 
@@ -42,9 +43,11 @@ from kiro_crew.config.loader import (  # noqa: F401
     read_local_secret,
     resolve_agent_bindings,
 )
+from kiro_crew.config.sections_defaults import (  # noqa: F401
+    DEFAULT_SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW,
+)
 from kiro_crew.context_management import summarize_result
 from kiro_crew.dashboard.origin import dashboard_socket_path  # noqa: F401
-from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW  # noqa: F401
 from kiro_crew.history import (  # noqa: F401
     ConversationLog,
     is_incognito_transcript,
@@ -83,6 +86,7 @@ from kiro_crew.mcp_core_parts.gateway import (
 )
 from kiro_crew.mcp_core_parts.governance import _deny_channel_agent_dispatch
 from kiro_crew.mcp_core_parts.identity import _resolve_session_key
+from kiro_crew.mcp_core_tool_list import SERVER, _list_tool_names, _list_tools  # noqa: F401
 from kiro_crew.mcp_shared import (  # noqa: F401
     DeferredTool,
     call_tool_with_logging,
@@ -93,8 +97,8 @@ from kiro_crew.mcp_shared import (  # noqa: F401
     run_mcp_stdio_loop,
     spawned_without_gateway_identity,
 )
-from kiro_crew.mcp_tool_titles import with_titles
-from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
+from kiro_crew.mcp_tool_titles import with_titles  # noqa: F401
+from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch  # noqa: F401
 from kiro_crew.members import record_activity  # noqa: F401
 from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F401
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key  # noqa: F401
@@ -162,30 +166,6 @@ WAIT_STALENESS_PING_SECS = 60.0
 # lower. 32 KiB (~8k tokens) covers essentially every real SKILL.md while
 # keeping one fetch from dominating the window.
 _SKILL_FETCH_MAX_CHARS = 32 * 1024
-
-
-def _list_tools() -> list[dict[str, Any]]:
-    """Tool descriptors served for ``tools/list``.
-
-    Declared per domain under :mod:`kiro_crew.mcp_tools`; this stays the
-    entry point kiro-cli and in-process discovery both read.
-    """
-    return with_titles(CORE_MCP_SERVER, build_tool_list())
-
-
-def _list_tool_names() -> list[str]:
-    """Tool NAMES only, without assembling descriptions.
-
-    The names-only read path ``mcp_discovery._managed_tools_in_process`` prefers
-    when it keeps only names. It returns exactly the names ``_list_tools`` would,
-    in the same order, but ``build_tool_names`` takes the ``names_only`` path so
-    the two descriptions that reach for a live value (the sub-agent cap and
-    agents-directory scan in ``mcp_tools.spawn``, the config reads in
-    ``mcp_tools.control``) are never performed. ``with_titles`` is intentionally
-    not applied: it only decorates descriptions, which a names-only caller
-    discards.
-    """
-    return build_tool_names()
 
 
 # ── Knowledge-search store/embedder cache ──
@@ -708,6 +688,12 @@ def _artifact_reemit_hint(slug: str, name: str, kind: str = "widget") -> str:
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Validate tool arguments against schema. Returns cleaned args."""
     schema = MCP_CORE_SCHEMAS.get(name)
+    if schema is None:
+        # A tool an installed app declares is validated against its declared schema,
+        # through the same field engine; a core name never resolves to an app's.
+        from kiro_crew.mcp_tools import app_tools
+
+        schema = app_tools.tool_schema(name)
     if schema:
         # Repair an int that an upstream deferred-schema runtime re-typed from a
         # numeric-looking string ("42" -> 42) back to its string form on a
@@ -914,22 +900,6 @@ def _format_anchor(anchor: dict) -> str:
     return f' [on: "{head}" [TRUNCATED: {omitted} chars omitted' f'{offset_info}] "{tail}"]'
 
 
-# ── Issue Radar crew ledger helpers ──
-#
-# Two allowlisted app routes, both FULL paths in
-# ``dashboard.server._MIXED_INTERNAL_API_PATHS`` (see the comment there for why
-# the ``/api/apps/issue-radar`` prefix must never be admitted).
-#
-# That listing is necessary but not sufficient: it is matched
-# ``path == p or path.startswith(p + "/")`` and carries no method, so the
-# ``/crew`` entry also reaches ``/crew/pause`` and
-# ``PUT``/``DELETE /crew``. The app closes that itself —
-# ``crew_routes._AGENT_REACHABLE`` refuses an internal-secret caller on every
-# crew route except the exact two below.
-_CREW_READ_PATH = "/api/apps/issue-radar/crew"
-_CREW_WORK_PATH = "/api/apps/issue-radar/crew/work"
-
-
 def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     """Run one tool call and return its text result.
 
@@ -948,7 +918,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     under global YOLO or channel trust the request is approved with no human in
     the loop -- so the boundary has to hold at MCP dispatch too.
     """
-    chan_err = _deny_channel_agent_dispatch(name, args)
+    chan_err = _deny_channel_agent_dispatch(name)
     if chan_err:
         return chan_err
     # Second fence behind the unmount, for a caller that reaches the server
@@ -977,7 +947,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
 #: sandbox never confines. It answers from ``_MANAGED_SERVERS_CALLER_AWARE`` in
 #: ``mcp_discovery`` instead, and ``test/test_mcp_managed_caller_identity.py``
 #: keeps the two from drifting by comparing them in the test process.
-ADVERTISE_CALLER_IDENTITY = True
+ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 
 def run_mcp_core_server() -> None:
@@ -988,24 +958,19 @@ def run_mcp_core_server() -> None:
     from kiro_crew.mcp_tools.sessions import gateway_cjk_words
 
     register_cjk_segmenter(gateway_cjk_words)
+    # Before the first request (a no-op when the server already answered its first
+    # two before importing this module): see ``mcp_core_tool_list._redeem_pickup``.
+    if SERVER.before_first_request is not None:
+        SERVER.before_first_request()
     run_mcp_stdio_loop(
-        "kirocrew-core",
-        "1.0.0",
+        SERVER.name,
+        SERVER.version,
         _list_tools,
         # Deferrable: a waiting tool hands the loop a DeferredTool instead of
         # holding the worker (see mcp_shared.DeferredTool).
         _call_tool_deferrable,
-        # Pooled-operation opt-in: kirocrew-core consumes the per-call
-        # ``kirocrew.caller`` identity (see _resolve_session_key*), so it is
-        # safe to share one backend across sessions. All four managed servers
-        # advertise, and what advertising buys is the injected block, not
-        # co-tenancy: a backend that does NOT advertise is
-        # pooled all the same (nothing declines to pool one; see
-        # ``rewriter.UNPOOLABLE_SERVERS``) and simply never receives an identity.
-        advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
-        # The only server that parks DeferredTools, so the only one whose
-        # gateway needs the in-flight report (see run_mcp_stdio_loop).
-        reports_inflight=True,
+        # What the server advertises, and why, is on its declaration.
+        **SERVER.loop_options(),
     )
 
 
@@ -1020,7 +985,6 @@ _OWNERS = (
     "kiro_crew.mcp_core_parts.governance",
     "kiro_crew.mcp_core_parts.crew",
     "kiro_crew.mcp_core_parts.history",
-    "kiro_crew.mcp_core_parts.radar_crew",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1061,7 +1025,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_core_parts.history import (  # noqa: F401
         _HISTORY_SNIPPET_ROLES,
-        _SEARCH_HISTORY_SCAN,
         _SNIPPET_MAX_LEN,
         _SNIPPET_RADIUS,
         _caller_workspace,
@@ -1070,6 +1033,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _history_is_incognito,
         _parse_iso_date_epoch,
         _redact_history_output,
+        _search_history_scan,
         _snippet_contents,
         _ws_bucket,
     )
@@ -1081,12 +1045,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _session_key_from_token,
         require_strict_session_key,
         strict_identity_diagnosis,
-    )
-    from kiro_crew.mcp_core_parts.radar_crew import (  # noqa: F401
-        _CREW_MAX_EVENTS,
-        _crew_identity,
-        _crew_ledger_view,
-        _crew_machine_markers,
-        _crew_public_text,
-        _redact_json_strings,
     )

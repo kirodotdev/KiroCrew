@@ -158,7 +158,20 @@ class MemberSessionRunner(SessionAgentRunner):
             )
 
     async def _bounded_assignment(self, prompt, **kwargs):
-        task = asyncio.create_task(self._assignment(prompt, **kwargs))
+        # Shared Crew fair admission: an unattended assignment is charged to Crew
+        # automation; a refusal raises (``TurnRefused``) and the run reports it.
+        from kiro_crew.shared_crew.admission import OperationKind
+        from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
+
+        task = asyncio.create_task(
+            run_admitted_or_raise(
+                self._assignment(prompt, **kwargs),
+                session_key=f"auto-improvement:{self.role}",
+                text=prompt,
+                automation=True,
+                operation=OperationKind.BACKGROUND,
+            )
+        )
         try:
             while not task.done():
                 remaining = kwargs["timeout_s"] - (time.monotonic() - kwargs["t0"])
@@ -204,6 +217,10 @@ class MemberSessionRunner(SessionAgentRunner):
                 agent=execution.template_id,
                 crew_agent=name,
                 cwd=kwargs["cwd"],
+                # The app the gate judges this member's calls under
+                # (agent_runner_gate), so the session's own governance reads,
+                # its KAS projection among them, judge under the same app.
+                owning_app=store.APP_NAME,
             )
             full_prompt, hook = await _io(
                 self._runtime.context_builder.build_message,

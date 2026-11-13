@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 import aiohttp
 
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
 
 if TYPE_CHECKING:
@@ -107,6 +108,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": True,
                         "text": "✅ Acknowledged",

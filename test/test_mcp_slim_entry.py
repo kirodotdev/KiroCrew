@@ -171,7 +171,7 @@ def test_valid_port_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list]:
     """Isolate every side effect of ``slim_server`` and record the steps it ran."""
-    seen: dict[str, list] = {"boot": [], "log": [], "lock": []}
+    seen: dict[str, list] = {"boot": [], "log": [], "lock": [], "relay": [], "answer": []}
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -188,6 +188,12 @@ def startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list]:
     monkeypatch.setattr(mcp_entry, "_setup_logging", lambda d: seen["log"].append(Path(d)))
     monkeypatch.setattr(kc_platform, "boot_platform", lambda cfg: seen["boot"].append(cfg))
     monkeypatch.setattr(mcp_entry, "_stderr_is", lambda _p: False)
+    # The two steps that talk to a client: one dials the gateway this process's
+    # environment names and both read this process's stdin and keep its stdout.
+    monkeypatch.setattr(mcp_entry, "_relay_before_boot", lambda c: seen["relay"].append(c))
+    monkeypatch.setattr(
+        mcp_entry, "_answer_before_handlers", lambda c, relayed=None: seen["answer"].append(c)
+    )
     return seen
 
 
@@ -198,6 +204,7 @@ def test_slim_server_runs_the_cli_steps_and_returns_the_entry(startup: dict) -> 
     assert server is mcp_guide.run_mcp_server
     assert startup["lock"] == [True] and len(startup["boot"]) == 1
     assert startup["log"] and startup["log"][0].is_dir()
+    assert startup["relay"] == ["mcp-guide"] and startup["answer"] == ["mcp-guide"]
     assert "KIROCREW_SANDBOX_ACTIVE" not in os.environ
     assert "KIROCREW_SANDBOX_LEVEL" not in os.environ
     assert os.environ["OPENBLAS_NUM_THREADS"] == "1" and os.environ["OMP_NUM_THREADS"] == "1"
@@ -239,6 +246,30 @@ def test_detached_stderr_falls_back_before_logging(
     monkeypatch.setattr(mcp_entry, "_stderr_is", lambda _p: True)
     assert mcp_entry.slim_server(["mcp-core"]) is None
     assert startup["log"] == [] and startup["boot"] == []
+
+
+def test_a_refused_root_run_falls_back_before_the_data_home_is_touched(
+    startup: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew import config as kc_config
+    from kiro_crew import data_home_owner
+
+    seen: list[tuple] = []
+
+    def refuse(home, command, argv):
+        seen.append((command, argv))
+        return "refused"
+
+    def touched():
+        raise AssertionError("the data home was touched before the refusal")
+
+    monkeypatch.setattr(data_home_owner, "root_run_refusal", refuse)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR")
+    monkeypatch.setattr(project_dir, "detect_project_dir", lambda saved: touched())
+    monkeypatch.setattr(kc_config, "ensure_data_home", touched)
+    assert mcp_entry.slim_server(["mcp-core"]) is None
+    assert seen == [("mcp-core", ["mcp-core"])]
+    assert startup["lock"] == [] and startup["log"] == [] and startup["relay"] == []
 
 
 def test_run_if_slim_calls_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,6 +368,9 @@ def _spy_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
         return lambda *a, **k: steps.append(name) or result
 
     monkeypatch.setattr(platform_compat, "ensure_utf8_console", rec("utf8"))
+    from kiro_crew import data_home_owner
+
+    monkeypatch.setattr(data_home_owner, "root_run_refusal", rec("root_refusal", ""))
     monkeypatch.setattr(cli, "_detect_project_dir", rec("project_dir", str(tmp_path / "p")))
     monkeypatch.setattr(project_dir, "detect_project_dir", rec("project_dir", str(tmp_path / "p")))
     monkeypatch.setattr(tree_liveness, "hold_running_tree_lock", rec("tree_lock"))
@@ -354,6 +388,11 @@ def _spy_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
     monkeypatch.setattr(kc_platform, "boot_platform", rec("boot"))
     monkeypatch.setattr(mcp_guide, "run_mcp_server", rec("server"))
     monkeypatch.setattr(mcp_entry, "_stderr_is", lambda _p: False)
+    # The two steps that talk to a client are the slim path's alone and are not
+    # start-up steps: one dials the gateway this process's environment names and
+    # both read this process's stdin and keep its stdout.
+    monkeypatch.setattr(mcp_entry, "_relay_before_boot", lambda _command: None)
+    monkeypatch.setattr(mcp_entry, "_answer_before_handlers", lambda _command, relayed=None: None)
     return steps
 
 
@@ -453,7 +492,9 @@ def test_full_cli_keeps_registry_scan_off_the_gateway_readiness_path() -> None:
     guard = cli_src.index('\n    if args.command != "gateway":\n')
     prime = cli_src.index("\n        prime_extension_config_keys()\n")
     first_load = cli_src.index("\n    _setup_cli_logging(args.command, args.verbose)\n")
-    gateway_loop = cli_src.index("\n            asyncio.run(_gateway(**gw_kwargs))\n")
+    gateway_loop = cli_src.index(
+        "\n            asyncio.run(_gateway(**gw_kwargs), loop_factory=gateway_loop_factory())\n"
+    )
     assert guard < prime < first_load < gateway_loop
 
 
@@ -536,3 +577,49 @@ def test_mcp_guide_answers_initialize_without_the_gateway_stack(tmp_path: Path) 
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=30)
+
+
+def _deny_stat_under(monkeypatch: pytest.MonkeyPatch, denied: Path) -> None:
+    """Make ``stat`` under *denied* fail with EPERM, as a sandbox-masked mount does."""
+    import errno
+
+    real_stat = os.stat
+
+    def _stat(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(path).startswith(str(denied)):
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+
+def test_project_dir_walk_skips_an_ancestor_that_answers_eperm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CWD that resolves under a masked mount must not crash MCP start-up:
+    the denied ancestor counts as "no checkout here" and detection moves on to
+    the saved file."""
+    masked = tmp_path / "masked"
+    cwd = masked / "home" / "lg"
+    cwd.mkdir(parents=True)
+    checkout = tmp_path / "checkout"
+    for marker in project_dir.PROJECT_MARKERS:
+        (checkout / marker).mkdir(parents=True)
+    saved = tmp_path / "project_dir"
+    saved.write_text(str(checkout), encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    _deny_stat_under(monkeypatch, masked.resolve())
+    assert project_dir.detect_project_dir(lambda: saved) == str(checkout)
+    assert project_dir.detect_project_dir(lambda: tmp_path / "missing") is None
+
+
+def test_project_dir_saved_file_that_answers_eperm_counts_as_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    _deny_stat_under(monkeypatch, denied.resolve())
+    assert project_dir.detect_project_dir(lambda: denied.resolve() / "project_dir") is None

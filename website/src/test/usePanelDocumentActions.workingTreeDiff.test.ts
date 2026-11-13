@@ -49,7 +49,7 @@ describe('openWorkingTreeDiff (#9695)', () => {
     expect(path).toBe('/tmp/a.ts')
     expect(body).toBe('working tree body')
     expect(slot).toBe('slot')
-    expect(opts).toMatchObject({ binary: false, partial: false })
+    expect(opts).toMatchObject({ binary: false, partial: false, placeholder: false })
     expect(onOpened).toHaveBeenCalled()
   })
 
@@ -59,6 +59,7 @@ describe('openWorkingTreeDiff (#9695)', () => {
     const { openWorkingTreeDiff, showActionError } = render({ openWorkingTreeDiff: openWorkingTreeDiffSpy })
     await act(async () => { await openWorkingTreeDiff('/tmp/gone.ts') })
     expect(openWorkingTreeDiffSpy).toHaveBeenCalledTimes(1)
+    expect(openWorkingTreeDiffSpy.mock.calls[0][3]).toMatchObject({ placeholder: true })
     // A 404 still opens a tab (a placeholder body), and does NOT raise an error.
     expect(showActionError).not.toHaveBeenCalled()
   })

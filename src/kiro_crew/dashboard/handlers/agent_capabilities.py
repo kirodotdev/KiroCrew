@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import cast
 
@@ -9,6 +10,7 @@ from aiohttp import web
 
 from kiro_crew.agent_capabilities import CapabilityError, CapabilityService
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
 from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._shared import (
     enumerate_skill_catalog,
@@ -18,6 +20,13 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.state import DashboardState
 
 _SERVICE = web.AppKey("member_capability_service", CapabilityService)
+
+# How long the GET waits for its read. The Bot editor's Abilities pane spins
+# until this route answers, and the read stats, resolves and opens files that
+# can block in the kernel for as long as a hung mount does. The dashboard's own
+# deadline on the same read (``ABILITIES_READ_TIMEOUT_MS``) is longer, so the
+# coded 503 below is what the pane normally shows.
+_GET_TIMEOUT_SECS = 20.0
 
 
 def _catalog(project: str) -> dict[str, str]:
@@ -60,10 +69,15 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
     if service is None:
         service = CapabilityService(_catalog, _connections)
         request.app[_SERVICE] = service
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     try:
         if request.method == "GET":
-            result = await drained_to_thread(service.get, name)
+            # Not ``drained_to_thread``: a GET mutates nothing, so a read still
+            # blocked at the deadline is left to its thread instead of holding
+            # the request open until the mount answers.
+            result = await asyncio.wait_for(asyncio.to_thread(service.get, name), _GET_TIMEOUT_SECS)
         else:
             try:
                 body = await request.json()
@@ -127,6 +141,7 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
         return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
     except (OSError, ValueError):
         # Source/sidecar/parser errors may quote secret-bearing bytes or paths.
+        # A GET past its deadline answers here too: TimeoutError is an OSError.
         return web.json_response(
             {"error": "capabilities_unavailable", "code": "capabilities_unavailable"}, status=503
         )
@@ -142,7 +157,9 @@ async def api_member_capabilities_detach(request: web.Request) -> web.Response:
     if service is None:
         service = CapabilityService(_catalog, _connections)
         request.app[_SERVICE] = service
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     try:
         try:
             body = await request.json()

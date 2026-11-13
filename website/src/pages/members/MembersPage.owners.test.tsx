@@ -19,9 +19,12 @@
  *
  * The order pin guards the split itself: the owners are stretches of the hook
  * sequence the page had as one file, not a design to keep. A later change that
- * regroups state by responsibility (the Schedules guard state declared in
- * `useMembersPageSidePanel`, say) reorders registrations on purpose, reviews that
- * as the behaviour change it is, and edits `ORDER` below to match.
+ * regroups state by responsibility reorders registrations on purpose, reviews that
+ * as the behaviour change it is, and edits `ORDER` below to match. Moving the
+ * Schedules guard state (`schedAtStake`, `schedReleased`, `schedulesMountedRef`)
+ * out of `useMembersPageSidePanel` into `useMembersPageSchedules` (#20512) moved
+ * one `useState` and two `useRef`s, none of which registers an effect, and kept
+ * every owner call where it was, so `ORDER` did not change.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -117,6 +120,7 @@ describe('MembersPage owners', () => {
       'useMembersPageRosterView(',
       'useMembersPageThread(',
       'useMembersPageSidePanel(',
+      'useMembersPageTrackpadSwipe(',
       'useMembersPageSchedules(',
       'useRegisterNavigationLeaveGuard(',
       'usePublishNavigationStake(',
@@ -136,6 +140,25 @@ describe('MembersPage owners', () => {
     for (let i = 1; i < at.length; i++) {
       expect(at[i], `${ORDER[i]} after ${ORDER[i - 1]}`).toBeGreaterThan(at[i - 1])
     }
+  })
+
+  it('keep the Schedules exit-guard state in the Schedules owner (#20512)', () => {
+    const GUARD_STATE = ['schedAtStake', 'setSchedAtStake', 'schedReleased', 'schedulesMountedRef']
+    const sidePanelSrc = read(join(DIR, 'MembersPageSidePanel.tsx'))
+    for (const name of GUARD_STATE) {
+      // Whole word: `schedAtStakeRef` is the Profile owner's guard ref, which the panel reads.
+      expect(new RegExp(`\\b${name}\\b`).test(sidePanelSrc), `MembersPageSidePanel.tsx mentions ${name}`).toBe(false)
+    }
+    const profileSrc = read(join(DIR, 'MembersPageProfile.tsx'))
+    const start = profileSrc.indexOf('export function useMembersPageSchedules(')
+    expect(start).toBeGreaterThan(-1)
+    const end = profileSrc.indexOf('\nexport ', start + 1)
+    const body = profileSrc.slice(start, end)
+    expect(body).toContain('const [schedAtStake, setSchedAtStake] = useState(false)')
+    expect(body).toContain('const schedReleased = useRef(false)')
+    expect(body).toContain('const schedulesMountedRef = useRef(false)')
+    // The Schedules owner no longer reads the side panel at all.
+    expect(body).not.toMatch(/\bsidePanel\b/)
   })
 
   it('each owner hook is called once, by the facade', () => {

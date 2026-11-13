@@ -12,6 +12,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+import { i18next } from '../i18n/all'
 import { SessionBreakdownTree, nodeSegments } from '../pages/SessionBreakdownTree'
 import { type ContextTrace } from '../pages/ContextBreakdownPanel'
 import type { SubagentActivity } from '../types'
@@ -116,6 +117,29 @@ describe('SessionBreakdownTree', () => {
     expect(screen.getByText(/opus-review/i)).toBeTruthy()
   })
 
+  it('labels each turn in the reader\'s language, not with a bare English "t1"', async () => {
+    await i18next.changeLanguage('ja')
+    try {
+      renderTree({
+        m: sub({ id: 'm', agent: 'opus-review', childSession: 'subagent:multi', startedAt: 1 }),
+      })
+      fireEvent.click(await screen.findByRole('button', { name: /opus-review/i }))
+      // Spoken: the whole word for each turn. Shown: the short mark, no "t".
+      expect(await screen.findByText('1 ターン目')).toBeTruthy()
+      expect(screen.getByText('2 ターン目')).toBeTruthy()
+      expect(screen.queryByText('t1')).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
+  it('speaks the occupancy figure, not only a pointer tooltip', async () => {
+    // peak_context_used 12000 of a 200000 window is 6%. The gauge itself is
+    // decorative; its figure must still reach a keyboard or screen reader user.
+    renderTree({ a: sub() })
+    expect(await screen.findByRole('button', { name: /gpt-review.*6% of window/i })).toBeTruthy()
+  })
+
   it('toggles a node closed again on a second activation', async () => {
     renderTree({
       m: sub({ id: 'm', agent: 'opus-review', childSession: 'subagent:multi', startedAt: 1 }),
@@ -133,6 +157,28 @@ describe('SessionBreakdownTree', () => {
     })
     expect(screen.getByText(/stalled/i)).toBeTruthy()
     expect(screen.getByText(/7 tools/i)).toBeTruthy()
+  })
+
+  it('says "1 tool", not "1 tools", for a single tool call', () => {
+    renderTree({
+      a: sub({ id: 'a', agent: 'one-shot', status: 'running', toolCount: 1, childSession: 'subagent:a', startedAt: 1 }),
+    })
+    expect(screen.getByText('1 tool')).toBeTruthy()
+  })
+
+  // The plural form is chosen from the raw number. Handing i18next the
+  // formatted text instead ("1 001" in Russian) parses as NaN and always lands
+  // on the generic form, so 1,001 would read as a few-form, not the one-form.
+  it('picks the plural form from the number, not its formatted text', async () => {
+    await i18next.changeLanguage('ru')
+    try {
+      renderTree({
+        a: sub({ id: 'a', agent: 'busy', status: 'running', toolCount: 1001, childSession: 'subagent:a', startedAt: 1 }),
+      })
+      expect(screen.getByText(/^1\s001 инструмент$/u)).toBeTruthy()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('falls back to a generic sub-agent label when the node has no agent name', () => {

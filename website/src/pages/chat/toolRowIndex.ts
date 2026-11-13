@@ -1,5 +1,6 @@
 import { createSelector } from '@reduxjs/toolkit'
 import type { ChatMessage, ToolActivity } from '../../types'
+import { isDurableRow } from '../../store/chatSlice'
 
 /**
  * Per-slot index over a transcript's messages + tool log, built ONCE per
@@ -37,6 +38,10 @@ export interface ToolRowIndex {
   toolMsgsById: Map<string, ChatMessage[]>
   /** The transcript's newest tool-role message (owns the wait countdown). */
   lastToolMsg: ChatMessage | undefined
+  /** Tool rows with nothing after them but tool rows, cards and client-only
+   *  rows: the tail the server's `_tool_rows_settled` walks. A call above any
+   *  other row (text, a new turn) has returned or belongs to an earlier turn. */
+  trailingToolRows: Set<ChatMessage>
 }
 
 /** Build-count probe: lets tests assert the index is built once per
@@ -68,7 +73,13 @@ function buildToolRowIndex(messages: ChatMessage[], toolLog: ToolActivity[]): To
       else toolMsgsById.set(id, [m])
     }
   }
-  return { logById, idBearingLogDesc, lastPermById, pendingPermIds, toolMsgsById, lastToolMsg }
+  const trailingToolRows = new Set<ChatMessage>()
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'tool') trailingToolRows.add(m)
+    else if (m.role !== 'card' && isDurableRow(m)) break
+  }
+  return { logById, idBearingLogDesc, lastPermById, pendingPermIds, toolMsgsById, lastToolMsg, trailingToolRows }
 }
 
 /** Memoized on the two array identities (weakMapMemoize — see module doc). */

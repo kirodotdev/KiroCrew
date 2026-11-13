@@ -47,11 +47,14 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard import responsive_chat
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     STEER_RETRACTABLE_META,
     STEER_STATE_RETRACTED,
     STEER_STATE_WRITTEN,
     attachment_meta,
+    banner_meta,
     find_written_steer_row,
+    knowledge_meta,
     queue_for_next_turn,
     quote_meta,
 )
@@ -376,20 +379,40 @@ def withdraw_stale_offers(state: "DashboardState", slot: "_ChatSlot") -> None:
 
 def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) -> None:
     """Take *record*'s steer out of the turn and do what the person asked with it."""
+    from kiro_crew.dashboard.chat_handlers import crew_steer_discarded, crew_steer_requeued
+
     held = dict(slot._steer_attachment_meta.get(record.message) or {})
+    # Read before `_forget` drops it: a queued take-back keeps the owner mark the
+    # steer carried, as the turn-end requeue does, and never more than the user mark.
+    owner_origin = record.directive_user_origin and bool(
+        slot._steer_owner_origin.get(record.message, False)
+    )
+    # Same read for the composer mark: a take-back to the queue is still the
+    # session's own human's send, so it keeps passing the sub-agent hold.
+    composer_send = record.message in slot._steer_act_now
     _forget(slot, record.message)
     _mark_retracted(state, slot, record)
+    if record.action != RETRACT_QUEUE:
+        # Never reached the turn: a person's steer into a crew member is not recorded.
+        crew_steer_discarded(slot, record.message)
     if record.action == RETRACT_QUEUE:
         # The queue admission is the audience that held when the person asked,
         # before the clear could suspend and let that audience change.
-        queue_for_next_turn(
+        qid = queue_for_next_turn(
             state,
             slot,
             record.message,
             directive_user_origin=record.directive_user_origin,
+            directive_owner_origin=owner_origin,
+            composer_send=composer_send,
             attachments=attachment_meta(held),
             quote=quote_meta(held).get("quote"),
+            banner=banner_meta(held).get(CHAT_BANNER_META_KEY, ""),
+            knowledge=knowledge_meta(held),
             admission=record.admission,
+        )
+        crew_steer_requeued(
+            slot, record.message, next((e for e in slot._queue if e.get("id") == qid), None)
         )
     logger.info("steer taken back for slot %s (%s)", slot.key, record.action)
 
@@ -404,6 +427,7 @@ def _forget(slot: "_ChatSlot", message: str) -> None:
         slot._steer_send_ids,
         slot._steer_user_origin,
         slot._steer_channel_origin,
+        slot._steer_owner_origin,
         slot._steer_admissions,
         slot._steer_attachment_meta,
         slot._steer_decision_strips,

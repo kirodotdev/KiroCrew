@@ -155,20 +155,12 @@ async function main() {
     await page.route(/127\.0\.0\.1:78\d\d/, route =>
       route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>pane</title>' }),
     )
-    await stubDashboardApi(page, { theme: 'dark', slots: SLOTS, extra })
-    // Registered AFTER the stub, and this ordering is load-bearing: the stub's own
-    // init script opens with `localStorage.clear()` to keep screenshots
-    // deterministic, so anything seeded earlier — an earlier `addInitScript`, or
-    // `storageState` — is wiped before the bundle reads it. Init scripts run in
-    // registration order, so writing here lands after that clear. The pin store
-    // reads storage once at module import, which is why the value has to be in
-    // place before the first evaluation rather than set afterwards.
-    await page.addInitScript(
-      ([key, value]) => {
-        localStorage.setItem(key, value)
-      },
-      [PINNED_KEY, JSON.stringify(pinIds)],
-    )
+    await stubDashboardApi(page, {
+      theme: 'dark', slots: SLOTS, extra,
+      // The pin store reads storage once at module import, so the pins must be
+      // in place before the first evaluation rather than set afterwards.
+      localStorageEntries: { [PINNED_KEY]: JSON.stringify(pinIds) },
+    })
     await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
 
     // The switcher only mounts once the instances poll resolves.

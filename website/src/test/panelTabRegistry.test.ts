@@ -33,6 +33,10 @@ describe('resolvePanelTabs', () => {
 
   it('skips a DISABLED app (enable is the user opt-in)', () => {
     expect(resolvePanelTabs([app('pippin', [tab()], { enabled: false })])).toEqual([])
+    // A built-in skipped at boot has no routes behind its tab body either.
+    expect(
+      resolvePanelTabs([app('pippin', [tab()], { unavailable: { reason: 'PermissionError: denied' } })]),
+    ).toEqual([])
   })
 
   it('orders tabs by app name, not response order, for a stable strip', () => {

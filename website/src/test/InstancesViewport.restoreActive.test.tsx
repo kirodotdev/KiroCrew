@@ -9,6 +9,7 @@ import { act, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
 import { setActiveId, setWarm } from '../store/instancesSlice'
+import { useCrewDeepLink } from '../lib/crewDeepLink'
 
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 
@@ -174,6 +175,56 @@ describe('InstancesViewport keeps the active crew across a reload (#22680)', () 
 
     await waitFor(() => expect(sessionStorage.getItem(KEY)).toBeNull())
     expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('a crew link that arrives before the first poll wins over the restore', async () => {
+    sessionStorage.setItem(KEY, 'cd-2')
+    const answers: Array<() => void> = []
+    vi.mocked(api.listInstances).mockImplementation(() => new Promise(res => {
+      answers.push(() => res({ instances: [crew('cd-1'), crew('cd-2')], warm_set_cap: 5 }))
+    }))
+    const store = reloadedStore()
+    let open!: (path: string) => boolean
+    function Hub() {
+      open = useCrewDeepLink()
+      return <InstancesViewport />
+    }
+    renderWithProviders(<Hub />, { store })
+    await waitFor(() => expect(answers).toHaveLength(1))
+    act(() => { open('/chat?crew=cd-1&crewSid=chat-1') })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    // The viewport's first poll answers before the link's own read. A connect
+    // (auto-warm's, or the restore's) runs only after the first-poll effects,
+    // the restore's decision included.
+    await act(async () => { answers[0]() })
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalled())
+    await act(async () => { answers[1]() })
+
+    await waitFor(() => expect(store.getState().instances.activeId).toBe('cd-1'))
+    expect(store.getState().instances.pendingPaneSlot?.key).toBe('chat-1')
+    await waitFor(() => expect(sessionStorage.getItem(KEY)).toBe('cd-1'))
+  })
+
+  it('a malformed crew link before the first poll keeps Local, so its error stays in view', async () => {
+    sessionStorage.setItem(KEY, 'cd-2')
+    let answer!: () => void
+    vi.mocked(api.listInstances).mockImplementation(() => new Promise(res => {
+      answer = () => res({ instances: [crew('cd-1'), crew('cd-2')], warm_set_cap: 5 })
+    }))
+    const store = reloadedStore()
+    let open!: (path: string) => boolean
+    function Hub() {
+      open = useCrewDeepLink()
+      return <InstancesViewport />
+    }
+    renderWithProviders(<Hub />, { store })
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    act(() => { open('/chat?crewError=1') })
+    await act(async () => { answer() })
+    await act(async () => { await Promise.resolve() })
+
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(sessionStorage.getItem(KEY)).toBeNull()
   })
 
   it('a new window (empty storage) opens on Local', async () => {

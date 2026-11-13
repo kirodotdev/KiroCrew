@@ -50,7 +50,7 @@ def flag_on(monkeypatch):
 @pytest.fixture
 def flag_off(monkeypatch):
     # The gate is a KILL-SWITCH (default ON), so "off" must be set explicitly.
-    # Unsetting the var now means ENABLED -- see test_default_unset_is_on.
+    # Unsetting the var means ENABLED.
     monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
 
 

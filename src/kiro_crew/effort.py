@@ -2,7 +2,7 @@
 
 Both kiro-cli and claude-agent-acp expose a per-session "effort" (a.k.a.
 thinking depth) knob, but only on reasoning-capable models — Claude
-Fable/Opus/Sonnet and the recent GPT-5.x models.  This module is the single
+Fable/Opus/Sonnet, Claude Haiku 5.5 and later, and the recent GPT-5.x models.  This module is the single
 source of truth for the valid levels and the model-capability check so the
 CLI, dashboard handlers, providers, and config loader all agree.
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Sequence
 
 from kiro_crew import model_registry
@@ -49,12 +50,41 @@ def is_valid_effort(level: object) -> bool:
     return isinstance(level, str) and level in EFFORT_LEVELS
 
 
+# The first Haiku release that accepts an effort level. kiro-cli 2.31.1 answers
+# ``/effort`` on ``claude-haiku-5.5`` with "Effort set to <level>" for all five
+# levels and advertises ``effortLevels`` for it in ``_kiro.dev/metadata``, while
+# ``claude-haiku-4.5`` still gets "Effort configuration is currently not
+# available". A Haiku id with no readable version stays refused.
+HAIKU_EFFORT_MIN_VERSION: tuple[int, int] = (5, 5)
+
+# ``haiku-5.5``, ``haiku-5-5`` (Bedrock), ``haiku-6``. One or two digits per
+# part, so a Bedrock date suffix (``claude-3-5-haiku-20241022``) is never read
+# as a version.
+_HAIKU_VERSION_RE = re.compile(r"haiku[-_.]?(\d{1,2})(?:[-_.](\d{1,2}))?(?!\d)")
+
+
+def haiku_supports_effort(model: str) -> bool:
+    """True when the Haiku id *model* is version 5.5 or later.
+
+    Reads the version that follows ``haiku`` in either naming convention
+    (``claude-haiku-5.5``, ``global.anthropic.claude-haiku-5-5``); a missing
+    minor counts as ``0``. An id whose version cannot be read answers False, so
+    an unknown Haiku keeps the slider hidden.
+    """
+    match = _HAIKU_VERSION_RE.search(model.lower())
+    if match is None:
+        return False
+    version = (int(match.group(1)), int(match.group(2) or 0))
+    return version >= HAIKU_EFFORT_MIN_VERSION
+
+
 def model_supports_effort(model: str | None) -> bool:
     """True when *model* accepts a reasoning-effort level.
 
-    Effort is available on Claude Fable/Opus/Sonnet and the GPT-5.x models
-    (verified against kiro-cli 2.12/2.13 over ACP).  Haiku, Nova, and the other
-    third-party models (deepseek, minimax, glm, qwen) do not support it;
+    Effort is available on Claude Fable/Opus/Sonnet, Claude Haiku 5.5 and later,
+    and the GPT-5.x models (verified against kiro-cli over ACP).  Haiku before
+    5.5, Nova, and the other third-party models (deepseek, minimax, glm, qwen)
+    do not support it;
     ``"auto"``/``None`` cannot either (kiro-cli errors "Effort configuration is
     currently not available on auto" until a concrete model is selected).
 
@@ -73,17 +103,17 @@ def model_supports_effort(model: str | None) -> bool:
     if not model:
         return False
     m = model.lower()
-    # Haiku NEVER supports effort — a hard rule that must win even over the
-    # registry. On the acp path a kiro Haiku id (``claude-haiku-4.5``) has its
-    # own canonical entry (``haiku-4.5``) with no ``supports_effort`` flag; on
+    # Haiku is decided by its version alone, a hard rule that must win even over
+    # the registry. On the acp path a kiro Haiku id (``claude-haiku-4.5``) has
+    # its own canonical entry (``haiku-4.5``) with no ``supports_effort`` flag; on
     # the claude_code path it is an ALIAS of Sonnet-4.6 (the cheapest valid fold,
-    # which IS effort-capable) — but that fold happens at the translation
-    # boundary (config.loader factory), so the value reaching here is the Sonnet
-    # provider id (no "haiku" substring) and stays capable. Only the raw kiro
-    # spelling — which the kiro/acp path passes untranslated — is gated here, so
-    # a kiro Haiku agent can never wrongly report effort-capable.
+    # which IS effort-capable), so asking the registry would hand an old Haiku
+    # Sonnet's flag. That fold happens at the translation boundary
+    # (config.loader factory), so the value reaching here on that path is the
+    # Sonnet provider id (no "haiku" substring) and stays capable. Only the raw
+    # kiro spelling, which the kiro/acp path passes untranslated, is gated here.
     if "haiku" in m:
-        return False
+        return haiku_supports_effort(m)
     try:
         declared = model_registry.supports_effort(model)
         if declared is not None:

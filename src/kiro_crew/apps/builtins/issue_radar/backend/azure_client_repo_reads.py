@@ -415,6 +415,24 @@ def get_current_login(*, host: str = "", timeout: float = AZ_TIMEOUT_SEC) -> str
         return None
 
 
+def get_current_login_uncached(
+    *, owner: str = "", host: str = "", timeout: float = AZ_TIMEOUT_SEC
+) -> str | None:
+    """:func:`get_current_login`, read past the process-lifetime identity cache (and
+    refreshing it), for a caller that must see a login switched while the gateway runs:
+    the crew's human-answer sweep, where a stale login would attribute the crew's own
+    label removal to someone else.
+
+    *owner* (``{organization}/{project}``) names the organization to ask, so a repo
+    connected by URL works without a CLI default organization; without it the CLI
+    default is used, as :func:`get_current_login` does."""
+    try:
+        org = _split_owner(owner)[0] if owner else _default_organization(host=host, timeout=timeout)
+        return _current_identity(org, host=host, timeout=timeout, fresh=True).get("login")
+    except ProviderCliError:
+        return None
+
+
 def _default_organization(*, host: str, timeout: float) -> str:
     """The organization ``az devops`` is configured to default to.
 

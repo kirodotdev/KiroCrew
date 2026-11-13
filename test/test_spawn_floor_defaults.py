@@ -639,10 +639,10 @@ async def test_a_non_durable_row_whose_dispatch_raises_goes_back_to_the_window(
     real_policy = subagent_mod.parent_spawn_policy
     failing: list[bool] = []
 
-    def _policy(parent_session_key):
+    def _policy(parent_session_key, accepted_dirs=()):
         if failing and failing.pop():
             raise RuntimeError("can't start new thread")
-        return real_policy(parent_session_key)
+        return real_policy(parent_session_key, accepted_dirs)
 
     monkeypatch.setattr(subagent_mod, "parent_spawn_policy", _policy)
     host, mgr, started, store, info = await _undurable_low_memory_wait(monkeypatch, tmp_path, mode)

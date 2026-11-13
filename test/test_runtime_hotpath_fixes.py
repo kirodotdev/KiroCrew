@@ -34,10 +34,15 @@ async def test_a_fire_that_matches_no_hook_does_not_rewrite_hooks_json(tmp_path)
             "command": "true",
         }
     )
-    with patch.object(store, "_persist_current") as persist:
-        await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="read_file")
-        await store.fire(HOOK_EVENT_POST_TOOL_USE, tool_name="bash")  # no hook for this event
-    persist.assert_not_called()
+    hooks_file = tmp_path / "hooks.json"
+    before = hooks_file.read_bytes()
+    # An old stamp: any rewrite of the file moves its mtime to now.
+    old_ns = 1_000_000_000 * 1_000_000_000
+    os.utime(hooks_file, ns=(old_ns, old_ns))
+    await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="read_file")
+    await store.fire(HOOK_EVENT_POST_TOOL_USE, tool_name="bash")  # no hook for this event
+    assert hooks_file.stat().st_mtime_ns == old_ns
+    assert hooks_file.read_bytes() == before
 
 
 @pytest.mark.asyncio

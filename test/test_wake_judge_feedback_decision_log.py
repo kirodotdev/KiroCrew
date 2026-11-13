@@ -489,10 +489,12 @@ class TestDecisionLogGrace:
             assert releases[0].is_set() is False
             assert not returned[0].is_set(), "a call asking for no receipt held the append"
             releases[0].set()
-            # Let the handed-off worker retire before the loop closes.
-            # flake-ok: pre-existing 20 ms pause so the handed-off worker retires, as the comment above says; moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pause after the release, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+            # Let the handed-off worker retire before the loop closes: wait for its own
+            # signal that the append returned, not for a fixed pause.
+            await async_wait_until(
+                lambda: returned[0].is_set(),
+                describe=lambda: "the handed-off append worker never returned after release",
+            )
 
             receipt: dict = {}
             # Driven as a task so the worker can be freed WHILE this call is inside the

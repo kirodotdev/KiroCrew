@@ -90,27 +90,14 @@ def _strip_bot_mention(cmd: str, bot_username: str) -> str:
     """Strip a trailing ``@BotUsername`` from a command token -- but ONLY when
     it names *this* bot.
 
-    Telegram's own clients (mobile/desktop) append ``@BotUsername`` to a slash
-    command in any chat with more than one participant/bot -- e.g.
-    ``/new@KiroCrewBot`` instead of bare ``/new``. This is standard,
-    documented Bot API client behavior triggered by registering a command
-    menu (``set_my_commands``, called at gateway startup), not something this
-    codebase's UI controls. Every alias set in this module is defined without
-    the suffix, so without any stripping every command silently fell through
-    to being sent to the LLM as ordinary chat text in exactly the multi-user
-    surface (a Telegram forum-topic supergroup) this integration exists to
-    support.
+    Telegram clients append ``@BotUsername`` to slash commands in multi-member
+    chats once a command menu is registered (``/new@KiroCrewBot``), and the alias
+    sets carry no suffix, so unstripped commands would reach the LLM as chat.
 
-    Telegram delivers a command addressed to another bot in the same group to
-    every bot present in it (Bot API convention: a bot ignores what is not
-    addressed to it). Stripping any mention unconditionally would let a
-    command meant for a DIFFERENT bot -- e.g. ``/yolo@OtherBot on`` -- match
-    this bot's own alias set and execute here instead of being ignored. The
-    mention is stripped only when it case-insensitively matches
-    *bot_username*; any other mention (or no *bot_username*, e.g. before
-    ``getMe`` has resolved at startup) is left attached, so the token fails
-    every alias match and falls through as an ordinary, unrecognized message
-    rather than being guessed at.
+    A command for ANOTHER bot is delivered to every bot in the group, so
+    stripping unconditionally would run ``/yolo@OtherBot on`` here. Only a
+    case-insensitive match on *bot_username* is stripped; any other mention, or
+    no username yet (before ``getMe``), stays attached and fails every alias.
     """
     m = _BOT_MENTION_RE.search(cmd)
     if not m or not bot_username or m.group(1).lower() != bot_username.lower():

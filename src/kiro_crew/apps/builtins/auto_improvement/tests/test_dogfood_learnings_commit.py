@@ -196,9 +196,23 @@ class TestQueuedDiffTransport:
 
         def _run(argv, **kwargs):
             captured.update(kwargs)
-            assert argv == ["git", "-C", str(tmp_path), "apply", "--index", "-"]
+            # The apply carries the same exec-vector pins as every host-side call.
+            assert argv == [
+                "git",
+                "-C",
+                str(tmp_path),
+                *commit_mod._GIT_SAFE_CONFIG,
+                "-c",
+                "hook.planted.enabled=false",
+                "apply",
+                "--index",
+                "-",
+            ]
             return subprocess.CompletedProcess(argv, 0, b"", b"")
 
+        monkeypatch.setattr(
+            commit_mod, "hook_off_args", lambda _c: ["-c", "hook.planted.enabled=false"]
+        )
         monkeypatch.setattr(commit_mod.subprocess, "run", _run)
         out = commit_mod.materialize_queued_diff(
             clone=tmp_path,

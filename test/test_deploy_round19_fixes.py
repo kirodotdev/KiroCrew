@@ -89,11 +89,12 @@ def _load_attach_backend():
     return mod
 
 
-def test_f3_origin_domain_valid_execute_api():
+def test_f3_origin_domain_valid_execute_api(capsys):
     """Valid execute-api domain passes validation."""
     mod = _load_attach_backend()
-    # Should not raise
-    mod._validate_origin_domain("abc123def4.execute-api.us-west-2.amazonaws.com", "us-west-2")
+    domain = "abc123def4.execute-api.us-west-2.amazonaws.com"
+    assert mod._validate_origin_domain(domain, "us-west-2") is None
+    assert capsys.readouterr().err == ""
 
 
 def test_f3_origin_domain_rejects_attacker():

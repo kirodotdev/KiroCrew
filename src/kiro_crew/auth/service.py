@@ -104,6 +104,35 @@ class InvalidRegionError(Exception):
     """
 
 
+class InvalidStartUrlError(Exception):
+    """A caller-supplied Identity Center start URL is not one SSO-OIDC can take."""
+
+
+def _canonical_start_url(raw: str) -> str:
+    """The start URL in the canonical form the cloud login target also stores.
+
+    Adds a missing ``https://`` and a missing ``/start`` (SSO-OIDC refuses
+    ``https://<org>.awsapps.com`` with "Invalid start url provided"), and drops
+    the ``#/...`` fragment the portal's own address bar shows: a fragment never
+    leaves the browser, so it names the same portal. ``""`` for blank input.
+    """
+    value = (raw or "").strip().split("#", 1)[0]
+    if not value:
+        return ""
+    # Imported here: kiro_crew.cloud pulls in the sandbox and deploy modules,
+    # which the auth service has no other use for.
+    from kiro_crew.cloud.login_target import LoginTargetError, normalize_start_url
+
+    try:
+        return normalize_start_url(value)
+    except LoginTargetError as exc:
+        reason = str(exc)
+        raise InvalidStartUrlError(
+            f"{reason[:1].upper()}{reason[1:]}. Use your company's AWS access portal "
+            "URL, which looks like https://your-company.awsapps.com/start."
+        ) from exc
+
+
 # AWS region names: two-letter partition, one or more dash-joined words, numeric
 # suffix (us-east-1, us-gov-west-1, ap-southeast-3). Anchored and character-tight
 # so no URL metacharacter ('/', '@', ':', '.') can survive into the hostname.
@@ -144,6 +173,18 @@ class _PendingOidcLogin:
     start_url: str = ""
     # Same budget as _PendingLogin.transport_failures, for the SSO-OIDC poll.
     transport_failures: int = 0
+
+
+def _idc_lookup_context(pending: _PendingOidcLogin) -> str:
+    """The start URL, region and control planes behind one IdC profile lookup, for logs.
+
+    All three are configuration, not credentials; the token never appears here.
+    """
+    hosts = ", ".join(control_plane.control_plane_urls(pending.region))
+    return (
+        f"start URL {pending.start_url or '(none)'}, region {pending.region}, "
+        f"control planes asked: {hosts}"
+    )
 
 
 # How long the loopback listener waits for the portal to redirect back. Long enough
@@ -322,7 +363,9 @@ class KasLoginService:
         from; it is removed once this login's credential has landed (see
         ``_persist_and_finish``). Raises ValueError for an unrecognized provider or
         an unknown ``replaces`` slot, MissingStartUrlError for an IdC begin without
-        a start URL, and DeviceAuthError / BuilderIdAuthError when the auth service
+        a start URL, InvalidStartUrlError for one that cannot be made canonical
+        (StartUrlRejectedError, a BuilderIdAuthError, when SSO-OIDC refuses it),
+        and DeviceAuthError / BuilderIdAuthError when the auth service
         rejects the authorization request, and SignedOutDuringLoginError when a
         sign-out landed between this call's start and its registration.
         """
@@ -349,7 +392,7 @@ class KasLoginService:
                 signout_gen=signout_gen,
             )
         if normalized == "idc":
-            cleaned = (start_url or "").strip()
+            cleaned = _canonical_start_url(start_url)
             if not cleaned:
                 raise MissingStartUrlError("idc login requires the company start URL")
             return await self._begin_oidc(
@@ -387,12 +430,32 @@ class KasLoginService:
         epoch: int,
         signout_gen: str = "",
     ) -> dict[str, Any]:
-        """Register a fresh SSO-OIDC client and start its device authorization."""
+        """Start an SSO-OIDC device authorization for the ``identity`` slot.
+
+        The client registration the slot's stored sign-in carries is reused while
+        it is in date (:func:`builder_id.stored_client`), as kiro-cli does. A new
+        client is registered otherwise, and also when StartDeviceAuthorization
+        answers the stored one with any error but a start-URL refusal, so a
+        registration AWS refuses can never stop the user signing in again.
+        """
         session = await self._http()
-        client = await builder_id.register_client(region, session=session)
-        auth = await builder_id.start_device_authorization(
-            client, region=region, start_url=start_url, session=session
-        )
+        stored = await asyncio.to_thread(self._store.load, identity)
+        client = builder_id.stored_client(stored, region)
+        auth = None
+        if client is not None:
+            try:
+                auth = await builder_id.start_device_authorization(
+                    client, region=region, start_url=start_url, session=session
+                )
+            except builder_id.StartUrlRejectedError:
+                raise
+            except builder_id.BuilderIdAuthError as err:
+                logger.info("stored SSO-OIDC client refused, registering a new one: %s", err)
+        if client is None or auth is None:
+            client = await builder_id.register_client(region, session=session)
+            auth = await builder_id.start_device_authorization(
+                client, region=region, start_url=start_url, session=session
+            )
         return await self._register_pending(
             _PendingOidcLogin(
                 client=client,
@@ -608,18 +671,32 @@ class KasLoginService:
             # This leg deliberately gets no transport budget: the device code is
             # already redeemed, so a later poll cannot re-obtain the token, and
             # answering "pending" would only loop the dashboard until expiry.
+            # The code tells the two apart, so the card can say "no Kiro profile"
+            # only when the lookup answered and the list was empty.
             try:
-                profiles = await control_plane.list_available_profiles(
+                listing = await control_plane.list_available_profiles(
                     token.access_token, region=pending.region, session=session
                 )
             except control_plane.ControlPlaneError as err:
-                logger.warning("could not resolve IdC profile ARN: %s", err)
+                logger.warning(
+                    "could not resolve IdC profile ARN (%s): %s", _idc_lookup_context(pending), err
+                )
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "profile_lookup_failed"}
+            profiles = listing.profiles
             if not profiles:
-                logger.warning("IdC login has no available Kiro profiles")
+                # Everything needed to tell a wrong host or region from a real
+                # provisioning gap. None of it is a credential.
+                logger.warning(
+                    "IdC login has no available Kiro profiles "
+                    "(IdC region %s, control plane %s, %d page(s) read, start URL %s)",
+                    pending.region,
+                    listing.url,
+                    listing.pages,
+                    pending.start_url,
+                )
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "no_kiro_profile"}
             if len(profiles) > 1:
                 # Multi-profile selection UX is a documented follow-up; until then
                 # the first profile wins, and the choice is visible in the log.
@@ -710,6 +787,14 @@ class KasLoginService:
                 nonlocal saved, failed
                 if begun_gen is not None and self._store.signout_generation() != begun_gen:
                     return
+                # A new sign-in is an account change to the fingerprint even when
+                # every claim matches (two same-kind accounts, one profileArn), so
+                # the marker moves FIRST: a marker that cannot be written raises
+                # before the credential is saved, and the login reports
+                # token_store_failed rather than signing in a new account the
+                # fingerprint cannot see. A save that then fails leaves only a
+                # moved marker, which reads as an account change -- the safe side.
+                self._store.bump_signin_generation()
                 self._store.save(token)
                 saved = True
                 if not replaces:

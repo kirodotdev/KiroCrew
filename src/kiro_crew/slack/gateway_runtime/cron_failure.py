@@ -1,10 +1,12 @@
 """Tell the user a cron run failed, once per distinct failure.
 
-The one spelling of the duplicate check, the Slack-safe fence, the two delivery legs
-and the dedup advance, and their two callers: the command, script and denial alert,
-and the single-agent turn's failure path, which also charges the run.
+The one spelling of the alert threshold, the duplicate check, the Slack-safe fence,
+the two delivery legs and the dedup advance, and their two callers: the command,
+script and denial alert, and the single-agent turn's failure path, which also
+charges the run. Also the notice for a run the cron service's stop cut short, which
+takes the same two legs but is not a failure.
 
-Orchestrator fields read: ``_owner_id``, ``dashboard_state``, ``slack``.
+Orchestrator fields read: ``dashboard_state``, ``slack``.
 Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
         GatewayOrchestrator,
         _charge_failure,
         _result_hash,
+        _streak_after_charge,
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
         append_fallback_story,
@@ -39,6 +42,47 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         sel,
     )
+
+
+def _failure_alert_due(
+    job: CronJob, streak: int, *, denied: bool = False, auth_expiry: bool = False
+) -> bool:
+    """Whether this failure leaves the dashboard bell for the channel or DM.
+
+    *streak* counts consecutive failed runs including this one, floored at 1: a
+    run the counter does not charge is still one failure the user would hear
+    about on the default threshold. Below the job's ``alert_after_failures``
+    only the bell rings and the dedup anchor stays, so the failure that reaches
+    the threshold alerts even with an identical reason. A policy denial never
+    clears on retry, and the run that reaches the auto-pause limit is the last
+    one, so both alert whatever the threshold. A one-shot never runs again: a
+    ``delete_after_run`` job is paused after a failed run
+    (``auto_pause_failed_one_shot``) and a retained ``at`` job is parked
+    (``run_parks_one_shot``), so it alerts too. A silent job reaches nobody
+    either way and keeps its own path. An *auth_expiry* failure never pauses the
+    job (``record_failure``), so the run at the pause limit is not its last one
+    and only ``alert_after_failures`` decides.
+    """
+    if denied or job.silent or job.delete_after_run or job.schedule.kind == "at":
+        return True
+    streak = max(streak, 1)
+    pause_limit = job.auto_pause_limit()
+    if not auth_expiry and pause_limit is not None and streak >= pause_limit:
+        return True
+    return streak >= job.alert_after_limit()
+
+
+def _log_held_alert(job: CronJob) -> None:
+    """Audit a failure that reached only the bell, like a suppressed duplicate."""
+    try:
+        sel().log_tool_invocation(
+            session_key=f"cron:{job.id}",
+            tool_name="cron_failure_alert_held",
+            outcome="held",
+            downstream_service="none",
+        )
+    except Exception:
+        logger.debug("SEL logging failed in cron failure hold path", exc_info=True)
 
 
 def _failure_alert_is_duplicate(self: GatewayOrchestrator, job: CronJob, failure_hash: str) -> bool:
@@ -99,8 +143,10 @@ async def _deliver_failure_alert(
     strings: Slack's markup is not another transport's dialect, so a shared
     string would show ``&lt;`` and stray backticks to a channel reader.
 
-    Never raises. Both callers are inside an ``except`` whose exception is the
-    real story, and one of them re-raises it.
+    Never raises. Both failure callers are inside an ``except`` whose exception
+    is the real story, and one of them re-raises it. The third caller, the
+    interrupted-run notice, runs as a task the cron service's ``stop()`` waits
+    on.
     """
     channel_delivered = False
     slack_delivered = False
@@ -119,8 +165,9 @@ async def _deliver_failure_alert(
     if self.slack and not silent and not channel_delivered:
         try:
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            dm_user = self._cron_dm_user(job)
+            if not channel and dm_user:
+                channel = await self._open_dm_with_retry(dm_user, job.name)
             if channel:
                 await self.slack.post_message(channel, mrkdwn)
                 slack_delivered = True
@@ -216,6 +263,31 @@ async def _alert_cron_failure(
         # Denials and failures hash apart so a policy denial does not read
         # as a dup of a same-worded crash (and vice versa).
         fh = _result_hash(f"{'denied' if denied else 'failed'}:{text}")
+        # Every call site counted the run already, so the streak is the counter.
+        streak = job.consecutive_failures
+        if not _failure_alert_due(job, streak, denied=denied):
+            limit = job.alert_after_limit()
+            logger.info(
+                "Cron '%s': failure %d of %d held below alert_after_failures",
+                job.name,
+                streak,
+                limit,
+            )
+            try:
+                if self.dashboard_state:
+                    self.dashboard_state.notify(
+                        "cron",
+                        f"Cron: {label} (failure {streak} of {limit})",
+                        f"{mark} {headline} (alert held until failure {limit}):\n{text}",
+                        meta={"job_id": job.id, "failure_hash": fh},
+                    )
+            except Exception:
+                logger.debug(
+                    "Dashboard notify failed in cron run-failure hold path",
+                    exc_info=True,
+                )
+            _log_held_alert(job)
+            return
         if self._failure_alert_is_duplicate(job, fh):
             logger.info(
                 "Cron '%s': duplicate failure alert suppressed (%s)",
@@ -298,6 +370,61 @@ async def _alert_cron_failure(
         logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
 
 
+async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detail: str) -> None:
+    """Tell the user a gateway stop or restart cut *job*'s run short.
+
+    The cron service's interrupt notice (``CronService.set_interrupt_alert``):
+    ``stop()`` cancels the run, the run is filed ``cancelled`` with *detail* (its
+    interruption note), and nothing retries it, so a daily job skips that day. A
+    cron-expression run keeps the previous run's ``last_run_ts``, so a gateway back
+    within the minute that run was due finds the slot due again, and the note says so.
+    The bell note comes first and is awaited until it is on disk, because the
+    gateway exits right after; then the job's channel or Slack destination, by the
+    failure alert's one-surface rule.
+
+    Not a failure: nothing is counted and the failure dedup anchor does not move.
+    ``job.silent`` gates every surface, as for a failure. Never raises.
+    """
+    try:
+        if job.silent:
+            return
+        label = redact(job.name)
+        label, _ = redact_exfiltration_urls(label)
+        label, _ = redact_credentials(label)
+        text = f"{detail}."
+        if job.schedule.kind != "at" and not job.enabled:
+            # A paused job can still be run by hand; the scheduler skips it,
+            # so no next scheduled time is coming.
+            text += " The job is paused, so it does not run again until you resume it in Schedule."
+        elif job.schedule.kind != "at":
+            text += " The job runs again at its next scheduled time"
+            if job.schedule.kind == "cron":
+                text += ", or at once if Kiro Crew is back within the minute this run was due"
+            text += "."
+        try:
+            if self.dashboard_state:
+                self.dashboard_state.notify(
+                    "cron", f"Cron: {label}", f"⏹ {text}", meta={"job_id": job.id}
+                )
+                # notify() installs the append's future before it returns.
+                persisted = self.dashboard_state.last_notification_persist
+                if persisted is not None:
+                    await persisted
+        except Exception:
+            logger.debug("Dashboard notify failed in cron interrupted-run path", exc_info=True)
+        host = socket.gethostname().split(".")[0]
+        msg = (
+            f"⏰ *Cron: {self._slack_safe_fenced(label)}* ⏹ "
+            f"_Interrupted on {escape_mrkdwn(host)}_\n{escape_mrkdwn(text)}"
+        )
+        msg, _ = redact_exfiltration_urls(msg)
+        msg, _ = redact_credentials(msg)
+        plain = f"⏰ Cron: {label} ⏹ Interrupted on {host}\n{text}"
+        await self._deliver_failure_alert(job, mrkdwn=msg, plain=plain, actor_key=f"cron:{job.id}")
+    except Exception:
+        logger.warning("Cron '%s': interrupted-run notice failed", job.name, exc_info=True)
+
+
 async def _cron_single_failure(
     self: GatewayOrchestrator,
     job: CronJob,
@@ -306,11 +433,16 @@ async def _cron_single_failure(
     _gate_counted: bool,
     _job_owns_failure: bool,
     _hand_over_streak: bool,
+    *,
+    _auth_expiry: bool = False,
 ) -> None:
     """Alert a failed single-agent cron run, or suppress a duplicate, and charge it.
 
     Called from the turn's failure handler, which re-raises *exc* afterwards.
     Every await precedes the charge, so a cancellation mid-alert counts nothing.
+    ``_auth_expiry`` (see ``_cron_auth_expiry``) is passed on to the charge, so
+    the failure counts like any other but never auto-pauses the job, and to the
+    alert threshold, which then reads ``alert_after_failures`` alone.
     """
     # ── Failure dedup: suppress repeated identical crash notifications ──
     # A chain-exhaustion failure carries the fallback story on the
@@ -352,6 +484,38 @@ async def _cron_single_failure(
     # selects the "still failing" wording on an alert that DOES go out
     # because the reminder window has expired.
     is_dup = fh == job.last_failure_hash
+    # The alert is composed before the charge lands, so it reads the count the
+    # charge will leave: an exempted run must not claim a failure the counter
+    # driving auto-pause never reached, and a hand-over run must not hide that
+    # it is about to pause the job.
+    _charges = _job_owns_failure and not _gate_counted
+    streak = _streak_after_charge(job, _charges, _hand_over_streak)
+    if not _failure_alert_due(job, streak, auth_expiry=_auth_expiry):
+        # A held alert is still a failed run: charge it, as the dup branch does.
+        if _charges:
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
+        limit = job.alert_after_limit()
+        logger.info(
+            "Cron '%s': failure %d of %d held below alert_after_failures",
+            job.name,
+            streak,
+            limit,
+        )
+        try:
+            if self.dashboard_state:
+                title = f"Cron: {job.name} (failure {streak} of {limit})"
+                title, _ = redact_exfiltration_urls(title)
+                title, _ = redact_credentials(title)
+                self.dashboard_state.notify(
+                    "cron",
+                    title,
+                    f"❌ Job failed (alert held until failure {limit}):\n{exc_detail}",
+                    meta={"job_id": job.id, "failure_hash": fh},
+                )
+        except Exception:
+            logger.debug("Dashboard notify failed in cron failure hold path", exc_info=True)
+        _log_held_alert(job)
+        return
     if self._failure_alert_is_duplicate(job, fh):
         # record_failure() is the counter's sole owner: a suppressed
         # duplicate is still a failed run, so it must count toward
@@ -361,7 +525,7 @@ async def _cron_single_failure(
         # on five distinct failures, or the failure belonged to a
         # shared runtime rather than to this job.
         if not _gate_counted and _job_owns_failure:
-            _charge_failure(job, _hand_over_streak)
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         if job.auto_paused:
             logger.warning(
                 "Cron '%s' auto-paused after %d consecutive failures",
@@ -440,17 +604,10 @@ async def _cron_single_failure(
     # made the DM the only failure surface that still withheld what
     # the caller already knows.
     safe_reason = self._slack_safe_fenced(exc_detail)
-    # +1 only when the charge below will actually land. This run's
-    # failure is recorded after the awaited Slack attempt, so the
-    # display count has to add it explicitly -- but it is gated on
-    # _job_owns_failure, and an exempted run that still claimed
-    # "N+1 consecutive failures" would report a number the counter
-    # driving auto-pause never reached.
-    _display_bump = 1 if (_job_owns_failure and not _gate_counted) else 0
     if is_dup:
         fail_msg = (
             f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
-            f" ({job.consecutive_failures + _display_bump} consecutive failures)"
+            f" ({streak} consecutive failures)"
             f" — check logs._\n```{safe_reason}```"
         )
     else:
@@ -473,7 +630,7 @@ async def _cron_single_failure(
     if is_dup:
         channel_fail_msg = (
             f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
-            f" ({job.consecutive_failures + _display_bump} consecutive failures)"
+            f" ({streak} consecutive failures)"
             f" — check logs.\n{exc_detail}"
         )
     else:
@@ -514,7 +671,7 @@ async def _cron_single_failure(
     # verdict already counted THIS run, or when the failure belonged
     # to a runtime this job was sharing rather than to the job.
     if not _gate_counted and _job_owns_failure:
-        _charge_failure(job, _hand_over_streak)
+        _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
     if job.auto_paused:
         logger.warning(
             "Cron '%s' auto-paused after %d consecutive failures",

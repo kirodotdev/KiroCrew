@@ -130,14 +130,23 @@ def _make_memory(prefs: str, projects: str) -> MagicMock:
     return memory
 
 
+def _real_memory(tmp_path, prefs: str, projects: str):
+    from kiro_crew.memory import MemoryStore
+
+    memory = MemoryStore(workspace=tmp_path, index_db=tmp_path / "memory_index.db")
+    memory.init()
+    memory.write_preferences(prefs)
+    memory.write_projects(projects)
+    return memory
+
+
 class TestConsolidatePlaceholderGuard:
     @pytest.mark.asyncio
-    async def test_placeholder_update_is_discarded(self):
-        """The literal 'unchanged' must never reach write_preferences/projects."""
-        memory = _make_memory(
-            "# User Preferences\n\n- real content\n",
-            "# Active Projects\n\n## Real project\n",
-        )
+    async def test_placeholder_update_is_discarded(self, tmp_path):
+        """The literal 'unchanged' must never replace the preferences/projects files."""
+        old_prefs = "# User Preferences\n\n- real content\n"
+        old_projects = "# Active Projects\n\n## Real project\n"
+        memory = _real_memory(tmp_path, old_prefs, old_projects)
         c = _make_consolidator(memory)
         with patch.object(c, "_call_llm", new_callable=AsyncMock) as llm:
             llm.return_value = {
@@ -146,15 +155,14 @@ class TestConsolidatePlaceholderGuard:
             }
             await c._consolidate("k", include_history=False)
 
-        memory.write_preferences.assert_not_called()
-        memory.write_projects.assert_not_called()
+        assert memory.read_preferences() == old_prefs
+        assert memory.read_projects() == old_projects
 
     @pytest.mark.asyncio
-    async def test_valid_update_is_written(self):
+    async def test_valid_update_is_written(self, tmp_path):
         """The gate must not block a genuine full-file update."""
-        memory = _make_memory(
-            "# User Preferences\n\n- old\n",
-            "# Active Projects\n\n## Old\n",
+        memory = _real_memory(
+            tmp_path, "# User Preferences\n\n- old\n", "# Active Projects\n\n## Old\n"
         )
         c = _make_consolidator(memory)
         new_prefs = "# User Preferences\n\n- old\n- new fact\n"
@@ -166,39 +174,36 @@ class TestConsolidatePlaceholderGuard:
             }
             await c._consolidate("k", include_history=False)
 
-        memory.write_preferences.assert_called_once_with(
-            new_prefs, expected_baseline="# User Preferences\n\n- old\n"
-        )
-        memory.write_projects.assert_called_once_with(
-            new_projects, expected_baseline="# Active Projects\n\n## Old\n"
-        )
+        assert memory.read_preferences() == new_prefs
+        assert memory.read_projects() == new_projects
 
     @pytest.mark.asyncio
-    async def test_shrunk_but_valid_update_is_written(self):
+    async def test_shrunk_but_valid_update_is_written(self, tmp_path):
         """No size floor: a consolidation that halves a bloated file is legit."""
         bloated = "# Active Projects\n\n" + "\n".join(
             f"## Stale project {i}\n- detail\n" for i in range(40)
         )
-        memory = _make_memory("# User Preferences\n", bloated)
+        memory = _real_memory(tmp_path, "# User Preferences\n", bloated)
         c = _make_consolidator(memory)
         trimmed = "# Active Projects\n\n## Only live project\n"
         with patch.object(c, "_call_llm", new_callable=AsyncMock) as llm:
             llm.return_value = {"projects_update": trimmed}
             await c._consolidate("k", include_history=False)
 
-        memory.write_projects.assert_called_once_with(trimmed, expected_baseline=bloated)
+        assert memory.read_projects() == trimmed
+        assert memory.read_preferences() == "# User Preferences\n"
 
     @pytest.mark.asyncio
-    async def test_omitted_update_keys_write_nothing(self):
+    async def test_omitted_update_keys_write_nothing(self, tmp_path):
         """Omitting the key is the sanctioned no-change path — nothing written."""
-        memory = _make_memory("# User Preferences\n", "# Active Projects\n")
+        memory = _real_memory(tmp_path, "# User Preferences\n", "# Active Projects\n")
         c = _make_consolidator(memory)
         with patch.object(c, "_call_llm", new_callable=AsyncMock) as llm:
             llm.return_value = {"history_entry": "something happened"}
             await c._consolidate("k", include_history=False)
 
-        memory.write_preferences.assert_not_called()
-        memory.write_projects.assert_not_called()
+        assert memory.read_preferences() == "# User Preferences\n"
+        assert memory.read_projects() == "# Active Projects\n"
 
     @pytest.mark.asyncio
     async def test_prompt_sanctions_omitting_and_forbids_placeholders(self):

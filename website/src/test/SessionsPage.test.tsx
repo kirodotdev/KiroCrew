@@ -180,13 +180,14 @@ describe('SessionsPage', () => {
     expect(screen.getByTestId('sessions-row-s1')).toBeInTheDocument()
   })
 
-  it('renders the page header title and marks the active chip with aria-pressed', async () => {
+  it('renders the page header title and marks the active chip as the checked radio', async () => {
     renderPage([slot('s1', 'A session', NOW - 60_000)], ['s1'])
     expect(await screen.findByTestId('page-title')).toHaveTextContent('All sessions')
     const unreadChip = screen.getByTestId('sessions-chip-unread')
-    expect(unreadChip).toHaveAttribute('aria-pressed', 'false')
+    expect(unreadChip).toHaveAttribute('role', 'radio')
+    expect(unreadChip).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(unreadChip)
-    expect(unreadChip).toHaveAttribute('aria-pressed', 'true')
+    expect(unreadChip).toHaveAttribute('aria-checked', 'true')
   })
 
   it('Unread chip filters to unread sessions and toggles back to All', async () => {

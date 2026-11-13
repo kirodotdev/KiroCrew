@@ -107,7 +107,10 @@ const renderChatPage = () => {
   apiMocks.renameSlot = vi.fn().mockResolvedValue({})
   const store = createTestStore({
     dashboard: {
-      status: { platform: 'darwin' }, connected: false,
+      // Connected, because the subject here is which SESSION the editor belongs
+      // to, and rename is gated on a live gateway: an offline fixture could
+      // not open the editor at all, so every case below would pass vacuously.
+      status: { platform: 'darwin' }, connected: true,
       slots, slotsLoaded: true, approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0,
       unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -179,7 +182,7 @@ describe('ChatPage – header rename is pinned to the session it opened on', () 
     renderChatPage()
     const input = await openRename()
     act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
-    act(() => { fireEvent.blur(input) })
+    await act(async () => { fireEvent.blur(input) })
     expect(apiMocks.renameSlot).toHaveBeenCalledWith('chat-a', 'Renamed alpha')
   })
 

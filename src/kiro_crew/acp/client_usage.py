@@ -8,11 +8,14 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_between_turn_credits``, ``_claude_compaction_pending``,
-``_codex_compaction_pending``, ``_compaction_failed_at``, ``_mcp_notifications``,
-``last_compaction_transient``.
+``_claude_native_compaction_id``, ``_codex_compaction_pending``, ``_compaction_failed_at``,
+``_mcp_notifications``, ``last_compaction_transient``.
 
-Instance fields read: ``_model``, ``_resolved_model_id``, ``last_prompt_stats``,
-``memory_mode``.
+Instance fields read: ``_model``, ``_native_compaction_states``, ``_resolved_model_id``,
+``last_prompt_stats``, ``memory_mode``.
+
+The stale compaction-status state is read and resolved through
+:mod:`kiro_crew.acp.stale_compaction`, which owns those fields.
 """
 
 from __future__ import annotations
@@ -22,8 +25,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import (
+    NATIVE_COMPACTION_CANCELLED,
+    liveness_key,
     parse_claude_compaction_notice,
     parse_codex_compaction_update,
+    parse_native_compaction_update,
     parse_prompt_token_usage,
     parse_refusal,
     parse_usage_cost,
@@ -31,6 +37,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
 )
 from kiro_crew.acp.client_timeouts import _POST_COMPACTION_METADATA_GRACE_SECS, _READ_TIMEOUT
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import (
     AcpError,
     compaction_failure_detail,
@@ -106,6 +113,11 @@ def _track_prompt_usage(self: AcpClient, result: Any) -> None:
     """
     tokens = parse_prompt_token_usage(result)
     if tokens is not None:
+        if self._is_copilot:
+            # Copilot CLI counts its cache reads and writes inside ``inputTokens``;
+            # every other count kept here is disjoint, so take them back out.
+            inp, out, cache_read, cache_write = tokens
+            tokens = (max(inp - cache_read - cache_write, 0), out, cache_read, cache_write)
         self.last_prompt_stats.apply_prompt_token_usage(*tokens)
 
 
@@ -170,9 +182,14 @@ def _track_metadata(self: AcpClient, msg: JsonRpcMessage, *, between_turns: bool
         self.last_prompt_stats.note_metadata_frame(pct_f, metering)
 
 
-def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
+def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> bool:
     """Log a ``_kiro.dev/compaction/status`` notification and, on
     completion, drop the now-stale context-usage counts.
+
+    Returns True, having changed nothing, when the status is the late one of
+    an idle compaction Crew stopped waiting for
+    (``stale_compaction.is_stale_compaction_status``); the caller then drops
+    the frame instead of reading it as its own turn's compaction.
 
     This is the single chokepoint every compaction-status arrival routes
     through (all prompt dispatch loops and ``wait_for_compaction``), so the
@@ -183,6 +200,8 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     """
     params = msg.params or {}
     status = params.get("status", "")
+    if consume_stale_compaction_status(self, msg):
+        return True
     logger.info("Compaction status: %s", status)
     # On failure, kiro-cli's notification carries no dedicated error/reason
     # field today (only `status.type` + an optional `summary`, which is
@@ -202,6 +221,8 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     elif s_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+        self._forget_sent_images()
+    return False
 
 
 def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
@@ -241,9 +262,16 @@ def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
         return None
     logger.info("Compaction status (claude): %s", status_type)
     self._claude_compaction_pending = status_type == "started"
+    if status_type == "started":
+        # An automatic compaction announced by this notice sends no terminal,
+        # and only a turn that ends naturally settles it. Forget the pictures now,
+        # so one that is then cut off or never settled costs one more copy of a
+        # picture, never a lost one.
+        self._forget_sent_images()
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+        self._forget_sent_images()
     elif status_type == "failed":
         logger.warning("Compaction failed (claude): %s", detail or "no reason reported")
         # Arm the bounded post-failure wait, exactly as the kiro-cli path
@@ -261,38 +289,42 @@ def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
 
 
 def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
-    """Reclassify a codex-acp context-compaction frame as an event.
+    """Translate native lifecycle updates and legacy Codex tool markers.
 
-    The codex-side twin of ``_handle_compaction_status`` and
-    ``_claude_compaction_event``: it applies the same state mutation (drop the
-    stale context counts on a terminal) and returns the
-    ``EVENT_COMPACTION_STATUS`` every consumer already understands -- the
-    dashboard notice and context-meter reset, the messaging drivers, and
-    ``wait_for_compaction``. ``None`` means the frame is an ordinary
-    ``tool_call`` and must be handled as one.
+    Native terminal-only frames are accepted; IDs suppress repeats and
+    late starts after a terminal. Legacy marker pairs
+    still require a live start before resetting the context meter.
+
+    Either way it applies the same state mutation as ``_handle_compaction_status``
+    and ``_claude_compaction_event`` (drop the stale context counts on a
+    ``completed``) and returns the ``EVENT_COMPACTION_STATUS`` every consumer
+    already understands -- the dashboard notice and context-meter reset, the
+    messaging drivers, and ``wait_for_compaction``. ``None`` means the frame is
+    not a compaction status: an ordinary ``tool_call``, a repeat, or a native
+    ``cancelled``, which closes the lifecycle without a verdict.
 
     Gated on ``ACP_BACKENDS_INLINE_COMPACTION``, the set of harnesses whose
-    compaction lands INSIDE the prompt turn -- so a harness that earns that
+    compaction lands INSIDE the prompt turn, so a harness that earns that
     membership inherits the translation by joining the set. The FRAME decides:
-    ``_meta.contextCompaction`` is codex-acp's own marker, and the unmarked 2.2.2
-    shape is read only for ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``. claude (a
-    member) sends neither, so the parser declines its frames.
+    a native ``compaction_update``, codex-acp's own ``_meta.contextCompaction``
+    marker, or the unmarked 2.2.2 shape, which is read only for
+    ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``. Anything else is declined.
 
-    Reached on this class through the dormant codex seam -- a live codex
-    session is served by ``AcpRuntime``, whose ``AcpSessionHandle`` carries the
-    same method. Both implementations answer, rather than one, because a
-    capability the two transports disagree about is a capability that works on
-    whichever one a reader did not test (harness-parity H6).
+    Reached on this class through the dormant codex seam and the claude path -- a
+    live codex session is served by ``AcpRuntime``, whose ``AcpSessionHandle``
+    carries the same method. Both implementations answer, rather than one,
+    because a capability the two transports disagree about is a capability that
+    works on whichever one a reader did not test (harness-parity H6).
 
     Callers MUST still forward the frame. This is a SIDE EFFECT, never a
-    substitute: the frame is also a real tool call in the transcript, and a
-    layer that swallowed it would drop a row the user watched appear.
+    substitute: a legacy marker frame is also a real tool call in the transcript,
+    and a layer that swallowed it would drop a row the user watched appear.
 
-    There is no ``failed`` arm because codex-acp sends no such status -- see
-    ``parse_codex_compaction_update``. A compaction that errors leaves the
-    ``session/prompt`` request unanswered, which the prompt loop's own
-    deadline owns; this method neither invents a terminal nor arms the
-    post-failure budget on a guess.
+    Only a native frame can report ``failed``: codex-acp's legacy marker has no
+    such status (see ``parse_codex_compaction_update``), so a legacy compaction
+    that errors leaves the ``session/prompt`` request unanswered, which the
+    prompt loop's own deadline owns; nothing here arms the post-failure budget
+    on a guess.
     """
     if self.backend not in ACP_BACKENDS_INLINE_COMPACTION:
         return None
@@ -300,72 +332,69 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     update = params.get("update")
     if not isinstance(update, dict):
         return None
-    status_type = parse_codex_compaction_update(
-        update,
-        self._codex_compaction_pending,
-        allow_unmarked=self.backend in ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
-    )
+    native = update.get("sessionUpdate") == "compaction_update"
+    if native:
+        status_type = parse_native_compaction_update(update, self._native_compaction_states)
+    else:
+        status_type = parse_codex_compaction_update(
+            update,
+            self._codex_compaction_pending,
+            allow_unmarked=self.backend in ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
+        )
     if status_type is None:
         return None
-    if status_type != "started" and not self._codex_compaction_pending:
+    if not native and status_type != "started" and not self._codex_compaction_pending:
         return None
-    logger.info("Compaction status (codex): %s", status_type)
-    # The start's call id, so an unmarked (2.2.2) terminal can be matched to it.
-    call_id = update.get("toolCallId")
-    if status_type != "started":
-        self._codex_compaction_pending = False
-    elif isinstance(call_id, str) and call_id:
-        self._codex_compaction_pending = call_id
+    if native and self._is_claude:
+        self._claude_compaction_pending = status_type == "started"
+        self._claude_native_compaction_id = (
+            liveness_key(update["compactionId"]) if self._claude_compaction_pending else None
+        )
+    elif native or status_type != "started":
+        self._codex_compaction_pending = status_type == "started"
     else:
-        self._codex_compaction_pending = True
+        # The start's call id, so an unmarked (2.2.2) terminal can be matched to it.
+        call_id = update.get("toolCallId")
+        self._codex_compaction_pending = call_id if isinstance(call_id, str) and call_id else True
+    if status_type == NATIVE_COMPACTION_CANCELLED:
+        # A stopped compaction gives no verdict: no count reset, no failure
+        # streak, and no synthesized failure at turn end -- the same silence
+        # ``_settle_claude_compaction`` keeps when a Stop ends the turn.
+        logger.info("Compaction status (native): cancelled, no verdict")
+        return None
+    logger.info("Compaction status (%s): %s", self.backend, status_type)
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
-    # No title: the adapter ships no summary with either frame, and an empty
-    # string is what every consumer already renders for "compacted, no
-    # summary offered".
-    return AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title="")
+        self._forget_sent_images()
+    elif status_type == "failed":
+        # Arm the bounded post-failure wait, as every other failure producer
+        # does: the backend may never answer the prompt this compaction was
+        # for. A native frame carries its reason in the update itself.
+        self._compaction_failed_at = time.monotonic()
+        self.last_compaction_transient = compaction_failure_is_transient(update)
+    title = compaction_failure_detail(update) if status_type == "failed" else ""
+    return AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=title)
 
 
 def _settle_codex_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     """Close out a codex compaction whose terminal never arrived, or None.
 
-    Called at the turn's terminal. ``None`` -- the ordinary case -- means no
-    codex compaction was in flight, or one was and it already reported.
+    Called at the turn's terminal; ``None`` means nothing was pending.
 
-    The verdict is ``failed``, and that is the opposite of what the claude
-    twin synthesizes. The two harnesses differ in what a MISSING terminal
-    means. claude-agent-acp sends its ``Compacting completed.`` text only for
-    a MANUAL ``/compact``; an automatic mid-turn compaction takes a different
-    path and emits no text at all, so for claude a turn that ends naturally
-    after a ``started`` is evidence the compaction finished. codex-acp sends
-    its terminal for BOTH -- the capture shows the marked
-    ``tool_call_update`` on a manual ``/compact`` and on a native
-    ``model_auto_compact_token_limit`` compaction alike -- so here a missing
-    terminal is evidence the compaction did NOT finish. Reporting
-    ``completed`` would reset the context meter against a window nobody
-    summarized.
+    The verdict is ``failed``, the opposite of the claude twin. claude-agent-acp
+    sends ``Compacting completed.`` only for a manual ``/compact``, so a missing
+    terminal there implies success. codex-acp sends its marked
+    ``tool_call_update`` for both manual and ``model_auto_compact_token_limit``
+    compactions, so here a missing terminal means it did NOT finish, whatever
+    the *reason* (a cancelled turn did not compact either).
 
-    One arm for every *reason*, unlike its claude twin, and for the same
-    reason the verdict differs: this is not an inference from how the turn
-    ended, it is the absence of a frame codex always sends on success. A turn
-    cancelled mid-compaction did not compact either.
-
-    Three things it deliberately does NOT do:
-
-    * reset the context counts -- nothing was summarized, so the pre-compaction
-      numbers are still the true ones;
-    * arm the post-failure budget (``_compaction_failed_at``) -- that budget
-      exists to bound a wait for a turn that may never end, and this runs AT
-      the end of the turn, so arming it would charge the NEXT turn's idle
-      clock for this one's failure;
-    * claim the failure is retryable. ``last_compaction_transient`` is set
-      False because an inferred failure carries no reason to classify, and
-      False is the value that does not promise a user a retry will help.
-
-    The title is text this module authors, not text a backend echoed, so it
-    needs no redaction -- and it is there so the surfaces that render a
-    failure reason stop collapsing this case to "unknown error".
+    It deliberately does NOT reset the context counts (nothing was summarized),
+    does NOT arm ``_compaction_failed_at`` (that would charge the NEXT turn's
+    idle clock), and sets ``last_compaction_transient`` False (an inferred
+    failure has no reason to classify, so no retry is promised). The title is
+    authored here, so it needs no redaction; it keeps the failure from showing
+    as "unknown error".
     """
     if not self._codex_compaction_pending:
         return None
@@ -392,6 +421,8 @@ def _settle_claude_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     case instead and emits only a ``usage_update``.  So the turn ends with a
     dangling ``started``.  Called at the turn's terminal, this closes it out
     so consumers leave their compacting state and the context meter resets.
+    A native start without a terminal keeps this same fallback; settling its
+    ID also prevents a delayed native terminal from resetting counts again.
 
     Reporting ``completed`` is a statement about what the backend did, not a
     guess — but ONLY for *reason* ``end_turn``.  The turn having reached its
@@ -408,6 +439,13 @@ def _settle_claude_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     if not self._claude_compaction_pending:
         return None
     self._claude_compaction_pending = False
+    native_id = getattr(self, "_claude_native_compaction_id", None)
+    if native_id is not None:
+        self._native_compaction_states._record_key(
+            native_id,
+            "completed" if reason == STOP_REASON_END_TURN else NATIVE_COMPACTION_CANCELLED,
+        )
+        self._claude_native_compaction_id = None
     if reason != STOP_REASON_END_TURN:
         logger.info(
             "Compaction status (claude): pending compaction abandoned, turn ended %r",
@@ -417,6 +455,7 @@ def _settle_claude_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     logger.info("Compaction status (claude): completed (synthesized at turn end)")
     self._compaction_failed_at = None
     self.last_prompt_stats.reset_after_compaction()
+    self._forget_sent_images()
     # ``synthesized`` marks this terminal as manufactured at the turn's end
     # rather than observed mid-turn. It arrives AFTER every text chunk of the
     # turn, so a consumer that treats a compaction terminal as a segment
@@ -442,7 +481,8 @@ async def wait_for_compaction(self: AcpClient, timeout: float = COMPACT_WAIT_TIM
         if msg is None:
             continue
         if msg.is_method(METHOD_COMPACTION_STATUS):
-            self._handle_compaction_status(msg)
+            if self._handle_compaction_status(msg):
+                continue
             params = msg.params or {}
             status = params.get("status", {})
             s_type = status.get("type", "") if isinstance(status, dict) else str(status)
@@ -467,6 +507,8 @@ async def wait_for_compaction(self: AcpClient, timeout: float = COMPACT_WAIT_TIM
             # Don't drop — buffer for later processing
             if msg.method and not msg.id:
                 self._mcp_notifications.append(msg)
+                # Unread by any turn, as in ``_wait_for_response``.
+                self._forget_sent_images()
     return {"type": "timeout"}
 
 
@@ -504,3 +546,5 @@ async def _drain_post_compaction_metadata(
             continue
         if msg.method and not msg.id:
             self._mcp_notifications.append(msg)
+            # Unread by any turn, as in ``_wait_for_response``.
+            self._forget_sent_images()

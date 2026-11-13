@@ -85,6 +85,25 @@ class TestReadingSounds:
         store = _store(tmp_path)
         assert store.pack_sound("cue-pack", "working") == (raw, mime)
 
+    @pytest.mark.parametrize(
+        ("head", "expected"),
+        [
+            (b"\xff\xfb\x90\x00", ".mp3"),  # MPEG-1 Layer III
+            (b"\xff\xf3\x90\x00", ".mp3"),  # MPEG-2 Layer III
+            (b"\xff\xe3\x90\x00", ".mp3"),  # MPEG-2.5 Layer III
+            (b"\xff\xfd\x90\x00", ".mp3"),  # MPEG-1 Layer II
+            (b"\xff\xf1\x50\x80", ""),  # AAC ADTS, MPEG-4
+            (b"\xff\xf9\x50\x80", ""),  # AAC ADTS, MPEG-2
+        ],
+        ids=["mpeg1-l3", "mpeg2-l3", "mpeg25-l3", "mpeg1-l2", "adts-mpeg4", "adts-mpeg2"],
+    )
+    def test_a_bare_frame_is_mp3_only_when_its_layer_is_set(self, head, expected):
+        """Layer bits 00 are reserved in MPEG audio and are what AAC ADTS carries.
+
+        AAC is not one of the three containers, so its frame sync is not an mp3.
+        """
+        assert snd.sniff_audio(head + b"\x00" * 8) == expected
+
     def test_the_type_comes_from_the_bytes_not_the_filename(self, tmp_path):
         """A manifest is hand-editable, so a name is not evidence.
 

@@ -11,6 +11,7 @@ otherwise. (Global YOLO / safety-override is deliberately NOT honored here.)
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,7 @@ from kiro_crew import task_executor
 from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, HookManager, ToolHookResult
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.sel import SecurityEventLog
 from kiro_crew.task_models import Project, Task
 
 
@@ -70,8 +72,38 @@ def _run_and_task():
     return run, task
 
 
+@pytest.fixture(name="audit_rows")
+def audit_rows_fixture(tmp_path, monkeypatch):
+    """A synchronous SEL under ``tmp_path``; returns a reader of its tool rows.
+
+    The process singleton is swapped through ``monkeypatch``, so the original
+    instance is back in place when the test ends.
+    """
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    log = SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+
+    def _rows():
+        path = tmp_path / "sel" / "security_events.jsonl"
+        if not path.exists():
+            return []
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        return [
+            (
+                e["operation"],
+                e["outcome"],
+                e["request_id"],
+                (e.get("metadata") or {}).get("reason"),
+            )
+            for e in events
+            if e.get("event_type") == "tool_invocation"
+        ]
+
+    assert log is SecurityEventLog()
+    return _rows
+
+
 @pytest.mark.asyncio
-async def test_hook_auto_approve_bypasses_interactive_prompt(tmp_path):
+async def test_hook_auto_approve_bypasses_interactive_prompt(tmp_path, audit_rows):
     """TOOL_AUTO_APPROVE (config auto_approve_tools) → no interactive prompt."""
     prompt = AsyncMock(return_value=True)
     provider = _provider_one_tool_then_done()
@@ -85,12 +117,13 @@ async def test_hook_auto_approve_bypasses_interactive_prompt(tmp_path):
             on_tool_approval=prompt, auto_test=False, test_cmd=None,
             work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
         )
+    assert audit_rows() == [("read", "approved", "req-1", "hook_auto_approve")]
     prompt.assert_not_called()
     provider.approve_tool.assert_awaited_once_with("req-1")
 
 
 @pytest.mark.asyncio
-async def test_headless_no_authorization_rejects(tmp_path):
+async def test_headless_no_authorization_rejects(tmp_path, audit_rows):
     """No handler + no explicit hook auto-approve → deny-by-default (reject)."""
     provider = _provider_one_tool_then_done()
     sessions = _mock_sessions(provider)
@@ -103,12 +136,13 @@ async def test_headless_no_authorization_rejects(tmp_path):
             on_tool_approval=None, auto_test=False, test_cmd=None,
             work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
         )
+    assert audit_rows() == [("read", "rejected", "req-1", "headless_no_authorization")]
     provider.reject_tool.assert_awaited_once_with("req-1")
     provider.approve_tool.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_headless_hook_auto_approve_still_approves(tmp_path):
+async def test_headless_hook_auto_approve_still_approves(tmp_path, audit_rows):
     """No handler but tool is on the user's auto_approve_tools allowlist
     (TOOL_AUTO_APPROVE) → approve. Explicit trust works headless."""
     provider = _provider_one_tool_then_done()
@@ -122,12 +156,13 @@ async def test_headless_hook_auto_approve_still_approves(tmp_path):
             on_tool_approval=None, auto_test=False, test_cmd=None,
             work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
         )
+    assert audit_rows() == [("read", "approved", "req-1", "hook_auto_approve")]
     provider.approve_tool.assert_awaited_once_with("req-1")
     provider.reject_tool.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_interactive_prompt_fires_when_handler_present(tmp_path):
+async def test_interactive_prompt_fires_when_handler_present(tmp_path, audit_rows):
     """Handler present + no auto lever (TOOL_ALLOW) → interactive prompt fires."""
     prompt = AsyncMock(return_value=True)
     provider = _provider_one_tool_then_done()
@@ -141,5 +176,6 @@ async def test_interactive_prompt_fires_when_handler_present(tmp_path):
             on_tool_approval=prompt, auto_test=False, test_cmd=None,
             work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
         )
+    assert audit_rows() == [("read", "approved", "req-1", "interactive_approved")]
     prompt.assert_awaited_once()
     provider.approve_tool.assert_awaited_once_with("req-1")

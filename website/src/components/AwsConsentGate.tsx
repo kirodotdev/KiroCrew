@@ -35,6 +35,8 @@ export default function AwsConsentGate({
   onConsentChange,
   compact = false,
   askAgent = false,
+  target,
+  targetPending = false,
 }: {
   service: string
   /** Invalidate caller-owned queries whose content depends on this grant. */
@@ -60,11 +62,32 @@ export default function AwsConsentGate({
    * navigation would destroy one. A host with nothing to lose opts in.
    */
   askAgent?: boolean
+  /**
+   * Explicit (profile, region) to confirm — bedrock-kb only, where the target
+   * lives in the add-source form until the source is saved. The backend probes
+   * this target fresh and 409s on any echo mismatch, and a grant only ever
+   * authorizes calls whose (profile, region) match it exactly.
+   */
+  target?: { profile: string; region: string }
+  /**
+   * Keep a targeted compact card mounted but inert while its host is editing
+   * the target. The pending row uses no target data and offers no confirmation,
+   * so it cannot name or approve the previously committed profile.
+   */
+  targetPending?: boolean
 }) {
   const qc = useQueryClient()
   const consentQ = useQuery<AwsConsentStatus>({
-    queryKey: ['awsConsent', service],
-    queryFn: () => api.awsConsent(service),
+    // The plain key stays exactly ['awsConsent', service] — hosts seed and
+    // invalidate it by that shape. Only a targeted (bedrock-kb) mount keys
+    // the target in, so per-target probes do not share cache entries.
+    queryKey: target
+      ? ['awsConsent', service, target.profile, target.region]
+      : ['awsConsent', service],
+    // Two-arg call only when a target exists: every non-bedrock mount keeps
+    // the plain single-arg shape (pinned by the gate's own tests).
+    queryFn: () => (target ? api.awsConsent(service, target) : api.awsConsent(service)),
+    enabled: !targetPending,
   })
 
   const invalidate = () => {
@@ -76,12 +99,16 @@ export default function AwsConsentGate({
     // Send the values this render DISPLAYED, not whatever the server reads at
     // POST time: the backend 409s on a mismatch, so a confirmation cannot land
     // on an account the operator never saw.
-    mutationFn: () =>
-      api.grantAwsConsent(service, {
+    mutationFn: () => {
+      const shown = {
         profile: consentQ.data?.profile ?? '',
         region: consentQ.data?.region ?? '',
         account: consentQ.data?.account ?? '',
-      }),
+      }
+      return target
+        ? api.grantAwsConsent(service, shown, target)
+        : api.grantAwsConsent(service, shown)
+    },
     onSettled: invalidate,
   })
   const revokeMut = useMutation({
@@ -95,6 +122,44 @@ export default function AwsConsentGate({
   // of squeezing the service name to nothing.
   const rowClass = 'flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5 text-[13px]'
   const rowTextClass = 'min-w-0 flex-1 basis-[12rem]'
+  // bedrock-kb says what one confirmation bills in the row itself; the other
+  // services keep the generic notice.
+  const billingShort = service === 'bedrock-kb'
+    ? i18nT('components.awsConsentGate.bedrock_kb_billing_short')
+    : i18nT('components.awsConsentGate.billing_notice_short')
+
+  // A targeted card stays in place while its host edits the target. It shows
+  // no data from the previously committed profile and has no action, so a
+  // pointer cannot confirm credentials that the field no longer names.
+  if (targetPending) {
+    // The service label names the service, not the target, so the pending row
+    // keeps the title the reader just saw on this card.
+    const cachedLabel = qc
+      .getQueriesData<AwsConsentStatus>({ queryKey: ['awsConsent', service] })
+      .map(([, data]) => data?.serviceLabel)
+      .find(Boolean)
+    return (
+      <div
+        className={rowClass}
+        data-testid={'aws-consent-' + service}
+        aria-disabled="true"
+      >
+        <Receipt className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
+        <div className={rowTextClass}>
+          <div className="truncate font-medium text-text-strong" data-testid={'aws-consent-' + service + '-title'}>
+            {cachedLabel || i18nT('components.awsConsentGate.confirm_title')}
+          </div>
+          <div className="mt-0.5 text-[12px] text-muted">
+            {billingShort}
+          </div>
+          <div className="mt-0.5 text-[12px] text-muted" data-testid={'aws-consent-' + service + '-pending-hint'}>
+            {i18nT('components.awsConsentGate.pending_profile_hint')}
+          </div>
+        </div>
+        <Badge variant="muted">{i18nT('components.awsConsentGate.badge_not_enabled')}</Badge>
+      </div>
+    )
+  }
 
   // A status read that failed used to render NOTHING — indistinguishable from a
   // gate that has nothing to ask, on the surface that decides whether a paid
@@ -177,7 +242,10 @@ export default function AwsConsentGate({
         <div className={rowTextClass}>
           <div className="truncate font-medium text-text-strong">{c.serviceLabel}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
-            <span className="font-mono" data-testid="aws-consent-account">{accountText}</span>
+            <span>
+              {i18nT('components.awsConsentGate.aws_account')}{' '}
+              <span className="font-mono" data-testid="aws-consent-account">{accountText}</span>
+            </span>
             {sep}
             <span className="min-w-0 truncate font-mono" data-testid="aws-consent-source">{c.credentialSource}</span>
             {c.grant?.granted_at && (
@@ -232,14 +300,31 @@ export default function AwsConsentGate({
         <div className={rowTextClass}>
           <div className="truncate font-medium text-text-strong">{c.serviceLabel}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] text-muted">
-            <span>{i18nT('components.awsConsentGate.billing_notice_short')}</span>
+            <span data-testid="aws-consent-billing-short">{billingShort}</span>
             {sep}
-            <span className="font-mono" data-testid="aws-consent-account">{accountText}</span>
+            <span>
+              {i18nT('components.awsConsentGate.aws_account')}{' '}
+              <span className="font-mono" data-testid="aws-consent-account">{accountText}</span>
+            </span>
             {sep}
             <span>{region}</span>
             {sep}
             <span className="min-w-0 truncate font-mono" data-testid="aws-consent-source">{c.credentialSource}</span>
           </div>
+          {/* The row above says what is billed; the price list is the
+              follow-up detail. */}
+          {service === 'bedrock-kb' && (
+            <div className="mt-0.5 text-[12px] text-muted" data-testid="aws-consent-billing-detail">
+              <a
+                href="https://aws.amazon.com/bedrock/pricing/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+              >
+                {i18nT('components.awsConsentGate.aws_pricing_link')}
+              </a>
+            </div>
+          )}
           {c.revokedOnAccountChange && (
             <div className="mt-0.5 text-[12px] text-warn" data-testid="aws-consent-account-changed">
               {i18nT('components.awsConsentGate.account_changed')}

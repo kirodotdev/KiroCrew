@@ -1,5 +1,5 @@
 import { i18nT } from '../i18n/t'
-import { downloadBlob, downloadUrl } from './download'
+import { downloadBlob, downloadUrl, isAndroidWebView } from './download'
 import { pathBasename } from './pathBasename'
 
 /** Largest download held in page memory: the gateway's own in-memory cap for
@@ -89,7 +89,9 @@ export async function downloadFileToDisk(
   try {
     const res = await fetch(url, { signal: controller.signal })
     const length = Number(res.headers?.get('content-length') ?? 0)
-    if (res.ok && length > IN_MEMORY_DOWNLOAD_MAX_BYTES) {
+    // An Android in-app browser drops a blob: download, so there the browser
+    // downloads this same attachment URL itself, whatever the size.
+    if (res.ok && (length > IN_MEMORY_DOWNLOAD_MAX_BYTES || isAndroidWebView())) {
       controller.abort()
       downloadUrl(url, downloadFileName(filePath))
       return
@@ -114,6 +116,21 @@ export async function downloadFileToDisk(
  *  buffer of a file no longer on disk to `downloadBlob` under the same name. */
 export function downloadFileName(filePath: string): string {
   return pathBasename(filePath) || 'download'
+}
+
+/** The name a download of a PARTIAL buffer lands under: `.partial` sits BEFORE
+ *  the extension (`release-checklist.partial.md`), not after it
+ *  (`release-checklist.md.partial`), so the OS still reads the file by its real
+ *  type instead of an unknown `.partial` one. A name with no extension to
+ *  preserve -- `Makefile`, a dotfile like `.env`, a trailing-dot name -- just
+ *  takes the suffix appended, since there is no `stem.ext` to split. */
+export function partialDownloadName(filePath: string): string {
+  const name = downloadFileName(filePath)
+  // The LAST dot that is not the name's first character (a leading dot is a
+  // dotfile marker, not an extension separator) and is not trailing.
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return name + '.partial'
+  return name.slice(0, dot) + '.partial' + name.slice(dot)
 }
 
 /** Build the /api/file-stream URL — Range-capable audio/video serving.

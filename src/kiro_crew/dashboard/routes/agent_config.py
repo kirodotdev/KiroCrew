@@ -16,6 +16,8 @@ from kiro_crew.dashboard.handlers.acp_backend_status import (
     api_acp_backend_recheck,
     api_acp_backend_status,
 )
+from kiro_crew.dashboard.handlers.agent_spec_pins import api_agent_spec_pin_write
+from kiro_crew.dashboard.handlers.gateway_footprint import api_mcp_gateway_footprint
 from kiro_crew.dashboard.handlers.mcp_custom import (
     api_mcp_custom_add,
     api_mcp_custom_get,
@@ -35,6 +37,8 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/agent/config", handlers.api_agent_config)
     app.router.add_get("/api/config/default-agent", handlers.api_default_agent)
     app.router.add_put("/api/config/default-agent", handlers.api_default_agent)
+    # Which spec file a contested agent name runs (agent.spec_pins); owner-only.
+    app.router.add_put("/api/agent-spec-pins/{agent}", api_agent_spec_pin_write)
     app.router.add_get("/api/config/schema", handlers.api_config_schema)
     # Per-backend selectability + whether THIS machine has the harness installed.
     # Beside the schema route because the dashboard's backend switch reads both:
@@ -74,6 +78,7 @@ def register(app: web.Application) -> None:
     # MCP servers
     app.router.add_get("/api/mcp", handlers.api_mcp_servers)
     app.router.add_get("/api/mcp/scopes", handlers.api_mcp_global_scopes)
+    app.router.add_get("/api/mcp/unreadable", handlers.api_mcp_unreadable_files)
     app.router.add_get("/api/mcp/active", handlers.api_mcp_active)
     # Multi-provider MCP discovery (official registry + optional edition capability provider)
     app.router.add_get("/api/mcp/discover", api_mcp_discover)
@@ -102,6 +107,12 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/connections/test", handlers.api_connections_test)
     app.router.add_post("/api/connections/cancel", handlers.api_connections_cancel)
     app.router.add_post("/api/connections/disconnect", handlers.api_connections_disconnect)
+    # GET only (no HEAD): token auth lets just GET through; ``state`` is the gate.
+    app.router.add_get(
+        "/api/connections/oauth/callback",
+        handlers.api_connections_oauth_callback,
+        allow_head=False,
+    )
     app.router.add_get("/api/connections/oauth-clients", handlers.api_connections_oauth_clients)
     app.router.add_put(
         "/api/connections/oauth-clients/{slug}", handlers.api_connections_oauth_client_put
@@ -116,8 +127,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/mcp-gateway/status", handlers.api_mcp_gateway_status)
     app.router.add_post("/api/mcp-gateway/enable", handlers.api_mcp_gateway_enable)
     app.router.add_get("/api/mcp-gateway/metrics", handlers.api_mcp_gateway_metrics)
+    app.router.add_get("/api/mcp-gateway/footprint", api_mcp_gateway_footprint)
     app.router.add_get("/api/mcp-gateway/servers", handlers.api_mcp_gateway_servers)
     app.router.add_get("/api/mcp-gateway/servers/launch", handlers.api_mcp_gateway_server_launch)
+    app.router.add_post("/api/mcp-gateway/servers/launch", handlers.api_mcp_gateway_server_launches)
     app.router.add_post("/api/mcp-gateway/servers/stub", handlers.api_mcp_gateway_set_stub)
     app.router.add_post("/api/mcp-gateway/resolve-refresh", handlers.api_mcp_resolve_refresh)
     # AIM integration

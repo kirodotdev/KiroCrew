@@ -17,6 +17,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     YOLO_PHRASING_PLAIN,
     compact_unsupported_backend,
     compact_unsupported_reply,
@@ -460,7 +461,9 @@ async def _handle_compact(
     # Atomically take the turn semaphore, or refuse. Distinguish "busy" (a
     # turn is streaming) from "no session yet" for the user-facing note.
     if not await self.sessions.try_acquire(target_key):
-        if self.sessions.has_session(target_key):
+        if self.sessions.is_retiring(target_key):
+            await self._reply(chat_id, COMPACT_ACCOUNT_CHANGED_TEXT, thread=thread)
+        elif self.sessions.has_session(target_key):
             await self._reply(
                 chat_id,
                 "⏳ Still working on your last message — try /compact once it finishes.",
@@ -524,9 +527,9 @@ async def _handle_compact(
                 logger.debug("Telegram: discard after compact failure failed", exc_info=True)
 
         final = result_text or "✅ Context compacted."
-        if status_id:
-            await self.client.edit_message(chat_id, status_id, final)
-        else:
+        # The status line is only a placeholder: when it cannot be edited (deleted
+        # during the wait, or the edit failed) the result goes out as a new message.
+        if not (status_id and await self.client.edit_message(chat_id, status_id, final)):
             await self._reply(chat_id, final, thread=thread)
     finally:
         # Always release the semaphore we took. No-op if the except path

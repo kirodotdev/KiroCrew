@@ -51,9 +51,7 @@ def _write_config(payload: dict) -> None:
     loader_mod._invalidate_config_cache()
 
 
-# ---------------------------------------------------------------------------
 # The two roots (items 2 and 3)
-# ---------------------------------------------------------------------------
 
 
 class TestDefaultStoreRootsAreUnmoved:
@@ -102,13 +100,9 @@ class TestNamedStoreRoots:
     def test_the_two_roots_are_not_the_same_path(self) -> None:
         """The sharpest hazard: the markdown root is NOT the data home.
 
-        A bare ``!=`` between the two answers proves nothing — a directory
-        differs from a file inside it under any nesting, so conflating the
-        markdown root with the data home (``config_dir()`` instead of
-        ``config_dir()/"workspace"``) keeps every inequality true. Pin each
-        answer against the home instead: the markdown root is one level BELOW
-        it, the vector file sits directly IN it, and the markdown root is
-        therefore not the vector file's parent.
+        A bare ``!=`` holds even when the markdown root is wrongly ``config_dir()``, so
+        each answer is pinned against the home: markdown root one level below, vector
+        file directly in it.
         """
         _write_config({"memory_stores": {"work": {}}})
         home = config_dir()
@@ -129,9 +123,7 @@ class TestNamedStoreRoots:
         assert vec_work.name == MEMORY_DB_FILE
 
 
-# ---------------------------------------------------------------------------
 # The two-step degrade (item 4)
-# ---------------------------------------------------------------------------
 
 
 class TestUndeclaredNameFailsClosed:
@@ -271,11 +263,8 @@ class TestMalformedAndDeclaredIsUndeclaredForResolution:
 class TestUnusableLegacyBindingIsTheOneMovableBinding:
     """``unusable_legacy_binding`` names the binding the immutability rules protect nothing on.
 
-    A member bound to a name the shape rule refuses is dead on every surface: each
-    turn raises at ``require_member_memory_store``, and so did the two repairs,
-    because both validated the binding they were about to replace. The predicate
-    answers the name's own defect for exactly that shape and ``None`` for every
-    binding that still guards something.
+    A name the shape rule refuses raises at ``require_member_memory_store`` on every turn
+    and repair. The predicate answers that defect, and ``None`` for any other binding.
     """
 
     @staticmethod
@@ -345,9 +334,7 @@ class TestUnusableLegacyBindingIsTheOneMovableBinding:
         assert unusable_legacy_binding(cfg, "crew") == "not lowercase"
 
 
-# ---------------------------------------------------------------------------
 # workspace_dir_for's fall-through (item 6)
-# ---------------------------------------------------------------------------
 
 
 class TestWorkspaceFallThrough:
@@ -369,12 +356,9 @@ class TestWorkspaceFallThrough:
     ) -> None:
         """An unrecognized name stays inside the data home, whatever the default declares.
 
-        This answer becomes a filesystem search root, and one caller takes the name
-        straight from a request (``dashboard/handlers/files.py``'s ``?workspace=``)
-        without the ``is_sensitive_path`` check its ``?project=`` sibling applies. So
-        the fall-through must land on the BASE workspace directory rather than hop to
-        ``default_workspace`` — a hop would let any unrecognized name reach whatever
-        absolute directory that workspace declares.
+        ``dashboard/handlers/files.py`` takes ``?workspace=`` from the request with no
+        ``is_sensitive_path`` check, so the fall-through lands on the base workspace,
+        not on ``default_workspace``'s absolute directory.
         """
         # Absolute and outside the data home, from the fixture rather than a literal:
         # a POSIX-rooted string is not absolute on Windows, so a hardcoded one would
@@ -482,19 +466,14 @@ class TestWorkspaceFallThrough:
         assert workspace_dir_for("anything") == config_dir() / "workspace"
 
 
-# ---------------------------------------------------------------------------
 # One index per store (item 7)
-# ---------------------------------------------------------------------------
 
 
 class TestIndexIsPerStore:
     """The DEFAULT store's index does not move; a NAMED store's is its own.
 
-    The default index stays in the data-home root because that root-relative
-    spelling is baked into every off-store consumer — the snapshot ``memory``
-    component's ``files`` tuple, ``portability``'s export/import zip and
-    ``scripts/sync-to-remote.sh``. Relocating it beside the markdown tree drops
-    it from every backup silently.
+    The snapshot ``memory`` ``files`` tuple, ``portability``'s zip and
+    ``scripts/sync-to-remote.sh`` expect the default index at the root.
     """
 
     def test_the_default_stores_index_is_in_the_data_home_root(self) -> None:
@@ -535,16 +514,11 @@ class TestIndexIsPerStore:
         assert store._index_db == memory_stores_root() / "work" / INDEX_DB_FILE
 
     def test_the_two_default_construction_forms_still_disagree(self) -> None:
-        """A pre-existing quirk, pinned rather than silently reintroduced.
+        """A known quirk, pinned so changing it is deliberate.
 
-        A bare ``MemoryStore()`` and ``MemoryStore(workspace=workspace_dir())``
-        share one ``_workspace`` and one markdown tree yet name two different
-        index files, and both forms are live (``cli_knowledge.py`` takes the first,
-        ``context.py`` the second). Neither answer is wrong — ``rebuild_index``
-        reads no index state, so the cost is a duplicated rebuild — but only the
-        root copy is in the snapshot. Closing it means giving every caller a
-        store name, which belongs to the step that wires stores in; this test
-        exists so that step is a deliberate change and not a surprise.
+        ``MemoryStore()`` (``cli_knowledge.py``) and
+        ``MemoryStore(workspace=workspace_dir())`` (``context.py``) share a markdown tree
+        but name two index files; only the root copy is in the snapshot.
         """
         implicit = MemoryStore()
         explicit = MemoryStore(workspace=workspace_dir())
@@ -578,12 +552,8 @@ class TestIndexIsPerStore:
 class TestARealStoreSurvivesSnapshotAndRestore:
     """END-TO-END, driving a real ``MemoryStore`` rather than a synthetic index.
 
-    Every other snapshot/memory test writes ``memory_index.db`` at the root by
-    hand, so all of them pass whichever path ``MemoryStore`` actually picks —
-    they assert the staging and install of a file the test itself created. That
-    makes the whole existing suite blind to the index moving, which is why this
-    one lets the store choose its own path and then asks the RESTORED home a
-    search question that only an installed index can answer.
+    Other snapshot tests write ``memory_index.db`` by hand, so they miss the index
+    moving. Here the store picks its path and the restored home must answer a search.
     """
 
     def test_search_answers_the_restored_content(self, tmp_path, monkeypatch) -> None:
@@ -627,9 +597,7 @@ class TestARealStoreSurvivesSnapshotAndRestore:
         assert MemoryStore().search("canary"), "the restored home cannot answer a memory search"
 
 
-# ---------------------------------------------------------------------------
 # Directory permissions (item 8)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not _IS_POSIX, reason="mode bits are POSIX; Windows uses a DACL")
@@ -664,9 +632,7 @@ class TestOwnerOnlyDirectories:
         assert not memory_stores_root().exists()
 
 
-# ---------------------------------------------------------------------------
 # The fence (item 9)
-# ---------------------------------------------------------------------------
 
 
 class TestNamedStoresAreFenced:
@@ -736,21 +702,12 @@ class TestNamedStoresAreFenced:
     ) -> None:
         """A store path in COMMAND TEXT is not what fences a store, on purpose.
 
-        ``is_sensitive_bash_command`` documents that it does not match paths at all:
-        a text matcher over ``cat <fenced path>`` adds nothing on top of the controls
-        that cannot be talked around, and it denied ordinary read-only commands
-        whenever a fenced spelling appeared as DATA -- a grep pattern, a commit
-        message, a note. A keystone read through the shell is permitted there by
-        design.
+        ``is_sensitive_bash_command`` matches no paths: a text matcher denied ordinary
+        commands whenever a fenced path appeared as data (a grep pattern, a message).
 
-        Asserted rather than deleted so the boundary is recorded where someone
-        looking for it will find it. What actually fences a store is two things, both
-        covered above and below: :func:`is_sensitive_path` /
-        :func:`is_sensitive_write_path` refuse every RESOLVED path the agent's file
-        tools open, and the OS sandbox confines the agent's process tree. If this test
-        starts failing because a path matcher came back, that is a decision to make
-        deliberately -- with the false-denial class in mind -- not a regression to fix
-        by making this assertion pass.
+        The fence is :func:`is_sensitive_path` / :func:`is_sensitive_write_path` on
+        resolved paths plus the OS sandbox. Adding a path matcher back is a deliberate
+        decision, not a fix for this assertion.
         """
         cmd = cmd_template.format(store=self._store_path())
         assert security.is_sensitive_bash_command(cmd) is None

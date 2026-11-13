@@ -109,14 +109,12 @@ describe('newSessionWithToken', () => {
     }
   })
 
-  it('reports a failed create and seeds nothing', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+  it('reports a failed create on the shell notice and seeds nothing', async () => {
     createSlotOutcome.fail = true
     const { result, store } = harness(null)
     act(() => result.current.newSessionWithToken('@zzq/prompt'))
 
-    await waitFor(() => expect(consoleError).toHaveBeenCalled())
-    expect(consoleError.mock.calls[0][0]).toContain('[palette]')
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice).toEqual({ title: "Couldn't create a new chat.", message: 'zzq create failed', error: true }))
     expect(store.getState().chat.pendingInput).toBeNull()
     expect(navigateSpy).not.toHaveBeenCalled()
   })

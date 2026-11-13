@@ -60,8 +60,12 @@ class _Recorder:
         fork_run_path=None,
         fork_run_attempt=1,
         pr_meta=(False, REPO, "feature-branch"),
+        job_urls=(),
+        named_runs=None,
     ):
         self.rerun_calls: list[str] = []
+        self._job_urls = None if job_urls is None else list(job_urls)
+        self._named_runs = named_runs or {}
         self._owed = owed
         self._same_repo_runs = same_repo_runs or []
         self._fork_rows = fork_rows or []
@@ -80,6 +84,14 @@ class _Recorder:
 
     def _gh_json(self, args):
         joined = " ".join(args)
+        rid = joined.rsplit("/actions/runs/", 1)[-1]
+        if rid.isdigit() and int(rid) in self._named_runs:
+            return self._named_runs[int(rid)]
+        if "/check-runs?" in joined and "check_name=" not in joined:
+            # Every page of the head's check-runs, as their `details_url`s.
+            if self._job_urls is None:
+                return None
+            return [{"check_runs": [{"details_url": url} for url in self._job_urls]}]
         if "/actions/runs?" in joined:
             return {"workflow_runs": self._same_repo_runs}
         if "/check-runs?" in joined:
@@ -416,3 +428,118 @@ def test_the_lane_table_matches_the_override_handler() -> None:
     # required lanes (Opus/GPT/Security Scope) fail CLOSED on a withheld verdict
     # and are recovered by their own finalize, never by this path.
     assert set(MOD.LANES) == set(expected)
+
+
+# ── An empty head_sha listing is read through the head's check-runs ─────────
+
+
+def _job_url(run_id: int) -> str:
+    return f"https://github.com/{REPO}/actions/runs/{run_id}/job/{run_id + 1}"
+
+
+_NAMED_FAST_GATE = {**FAST_GATE_RUN, "event": "pull_request", "head_sha": HEAD}
+_FORK_UX_ROWS = [
+    {
+        "id": 10,
+        "external_id": FORK_EXTERNAL_ID,
+        "output": {"text": "<!-- ai-review-fork-lane run=55501 -->"},
+    }
+]
+
+
+def test_an_empty_listing_binds_the_fast_gate_run_the_check_runs_name(monkeypatch):
+    rec = _Recorder(
+        monkeypatch,
+        owed=["UX"],
+        fork_rows=_FORK_UX_ROWS,
+        pr_meta=FORK_META,
+        fork_run_path=".github/workflows/fork-ux-review.yml",
+        job_urls=[_job_url(900), f"https://github.com/{REPO}/runs/77"],
+        named_runs={900: _NAMED_FAST_GATE},
+    )
+    assert MOD.republish(REPO, "7", HEAD) == 1
+    assert rec.rerun_calls == ["55501"]
+
+
+def test_an_empty_listing_finds_the_same_repo_lane_run_the_check_runs_name(monkeypatch):
+    run = {
+        "id": 200,
+        "event": "pull_request",
+        "head_sha": HEAD,
+        "path": ".github/workflows/design-review.yml",
+        "head_repository": {"full_name": REPO},
+        "head_branch": "feature-branch",
+    }
+    rec = _Recorder(monkeypatch, owed=["DESIGN"], job_urls=[_job_url(200)], named_runs={200: run})
+    assert MOD.republish(REPO, "7", HEAD) == 1
+    assert rec.rerun_calls == ["200"]
+
+
+@pytest.mark.parametrize(
+    ("job_urls", "named_runs", "head_runs"),
+    [
+        # No Actions job on the head names a run: still no run.
+        ([f"https://github.com/{REPO}/runs/77"], {}, []),
+        # The named run ran for another head or event: not borrowed.
+        ([_job_url(900)], {900: {**_NAMED_FAST_GATE, "head_sha": "0" * 40}}, []),
+        ([_job_url(900)], {900: {**_NAMED_FAST_GATE, "event": "push"}}, []),
+        # The named run cannot be fetched: unknown, never a guess.
+        ([_job_url(900)], {}, None),
+        # The check-runs cannot be read at all.
+        (None, {}, None),
+    ],
+)
+def test_an_empty_listing_with_no_readable_named_run_locates_nothing(
+    monkeypatch, capsys, job_urls, named_runs, head_runs
+):
+    rec = _Recorder(
+        monkeypatch,
+        owed=["UX"],
+        fork_rows=_FORK_UX_ROWS,
+        pr_meta=FORK_META,
+        job_urls=job_urls,
+        named_runs=named_runs,
+    )
+    assert MOD._head_runs(REPO, HEAD) == head_runs
+    assert MOD.republish(REPO, "7", HEAD) == 0
+    assert rec.rerun_calls == []
+    assert "could not be located" in capsys.readouterr().out
+
+
+def test_a_non_empty_listing_reads_no_check_runs(monkeypatch):
+    rec = _Recorder(
+        monkeypatch,
+        owed=["UX"],
+        fork_rows=_FORK_UX_ROWS,
+        same_repo_runs=[FAST_GATE_RUN],
+        pr_meta=FORK_META,
+        fork_run_path=".github/workflows/fork-ux-review.yml",
+        job_urls=None,  # a check-runs read would answer "unreadable"
+    )
+    assert MOD.republish(REPO, "7", HEAD) == 1
+    assert rec.rerun_calls == ["55501"]
+
+
+def test_run_ids_are_read_from_actions_job_links_only(monkeypatch):
+    urls = [
+        _job_url(5),
+        _job_url(5),
+        f"https://github.com/{REPO}/actions/runs/6/job/1",
+        f"https://github.com/{REPO}/runs/99",
+        "https://github.com/other/repo/actions/runs/7/job/1",
+        f"https://github.com/{REPO}/actions/runs/8x/job/1",
+        None,
+    ]
+    pages = [{"check_runs": [{"details_url": u} for u in urls[:3]]}]
+    pages.append({"check_runs": [{"details_url": u} for u in urls[3:]]})
+    monkeypatch.setattr(MOD, "_gh_json", lambda args: pages)
+    assert MOD._run_ids_from_check_runs(REPO, HEAD) == [5, 6]
+
+
+def test_run_ids_are_read_from_every_check_run_not_only_the_latest(monkeypatch):
+    # The default filter=latest keeps one row per name, so a sibling pull
+    # request's newer job on a shared head would hide this one's.
+    seen: list[str] = []
+    monkeypatch.setattr(MOD, "_gh_json", lambda args: seen.append(" ".join(args)) or [])
+    MOD._run_ids_from_check_runs(REPO, HEAD)
+    assert len(seen) == 1 and "filter=all" in seen[0], seen

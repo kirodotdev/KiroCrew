@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { reembedPct, reembedBusy, reembedBar, embedModelErrorMessage } from '../pages/overview/EmbeddingModelCard'
+import { i18nT } from '../i18n/t'
 
 // The indicator has to distinguish three states that all look like "not done":
 // loading the model (no denominator yet), running (n/total), and failed. A bar
@@ -54,6 +55,37 @@ describe('embedModelErrorMessage', () => {
     const msg = embedModelErrorMessage({ code: 'model_path_not_found', error: 'raw english prose' })
     expect(msg).not.toBe('raw english prose')
     expect(msg.length).toBeGreaterThan(0)
+  })
+
+  // Each code POST /api/memory/embedding-model can answer with, beyond the path
+  // codes: from the owner gate, the request-path probe pool, the memory startup
+  // check and the vector-store acquisition. Unmapped, each fell back to the
+  // route's English `error` prose.
+  const refusal = (code: string, error: string) => Object.assign(new Error(error), {
+    name: 'ApiError',
+    status: 503,
+    body: JSON.stringify({ ok: false, error, code }),
+  })
+
+  it.each([
+    ['owner_only', 'pages.overview.embedModel.err_owner_only'],
+    ['path_probe_busy', 'pages.overview.embedModel.err_probe_busy'],
+    ['vector_store_unavailable', 'pages.overview.embedModel.err_vector_store_unavailable'],
+  ] as const)('localizes %s instead of showing the English prose', (code, key) => {
+    const msg = embedModelErrorMessage(refusal(code, 'raw english prose'))
+    expect(msg).toBe(i18nT(key))
+    expect(msg).not.toBe('raw english prose')
+  })
+
+  // `store_unavailable` stands for memory still starting, a failed recovery or
+  // a stopped startup. Only the server's sentence names which one and its
+  // remedy (often a gateway restart), so the localized frame carries it.
+  it('localizes store_unavailable and keeps the server cause and remedy in it', () => {
+    const cause = 'Memory recovery failed: disk full Inspect or cancel the pending restore, then restart the gateway.'
+    const msg = embedModelErrorMessage(refusal('store_unavailable', cause))
+    expect(msg).toBe(i18nT('pages.overview.embedModel.err_memory_unavailable', { error: cause }))
+    expect(msg).not.toBe(cause)
+    expect(msg).toContain(cause)
   })
 
   it('falls back to prose for an unknown code, so nothing is swallowed', () => {

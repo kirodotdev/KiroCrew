@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from chat_test_helpers import _make_state
 
 from kiro_crew.apps.manifest import AppManifest
@@ -47,8 +48,11 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"sessions-named-key")
+    mark_apps_live(monkeypatch)
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    # The app tokens here stand for owner-enabled apps (the sealed marker).
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
     monkeypatch.setattr(revocation_gen, "_gen", 0)
     monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", _MANIFESTS.get)
@@ -80,13 +84,8 @@ def _transcript(state, key: str, title: str, app_name: str = "") -> None:
 async def _seed(state, *transcripts: tuple) -> None:
     """Seed transcripts off the event loop.
 
-    ``_transcript`` ends in ``ConversationLog.update_metadata``, a synchronous
-    tmp-file-plus-rename whose Windows sharing-violation retry
-    (``atomic_write.replace_with_retry``) is a single attempt on the loop
-    thread. Seeding from an ``async def`` test on the loop therefore loses to
-    any handle a scanner holds on ``sessions/<key>.jsonl`` for a few
-    milliseconds (``[WinError 5]``). Running the writes on a worker thread,
-    which has no loop of its own, keeps the retry.
+    ``atomic_write.replace_with_retry`` makes one attempt on the loop thread, so a
+    Windows scanner handle fails it (``[WinError 5]``); a worker thread keeps the retry.
     """
 
     def _write() -> None:

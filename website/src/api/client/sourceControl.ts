@@ -4,7 +4,7 @@
  * review and submission, the issue source, and repository contributors.
  */
 
-import type { PullRequestSource, PullRequestCheck, PullRequestStatusBatch, IssueSource, AppContributor } from '../../types'
+import type { PullRequestSource, PullRequestCheck, PullRequestStatusBatch, IssueSource, IssueSearchRequest, IssueSearchResponse, AppContributor } from '../../types'
 import type { ClientTransport } from './transport'
 
 export function createSourceControlEndpoints({ post, j }: ClientTransport) {
@@ -12,6 +12,8 @@ export function createSourceControlEndpoints({ post, j }: ClientTransport) {
     pullRequestSource: (url: string, refresh = false) => post('/api/source/pull-request', { url, refresh }).then(j) as Promise<PullRequestSource>,
     pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
     pullRequestStatuses: (urls: string[]) => post('/api/source/pull-request/status', { urls }).then(j) as Promise<PullRequestStatusBatch>,
+    /** Re-read every sidebar chip's status now; owner-only. Results arrive over the websocket. */
+    refreshPullRequestStatuses: () => post('/api/source/pull-request/status/refresh', {}).then(j) as Promise<{ refreshing: string[] }>,
     resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
     unresolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/unresolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
     /** Reply into an existing review thread. Owner-only on the gateway. */
@@ -26,6 +28,8 @@ export function createSourceControlEndpoints({ post, j }: ClientTransport) {
     // Issue sources. `refresh` bypasses the server's cached payload; the panel
     // never polls, so a refresh is always an explicit user action.
     fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
+    /** One page of issues from any issue provider; `cursor` is the previous page's `nextCursor`. */
+    fetchIssues: (query: IssueSearchRequest) => post('/api/source/issues', query).then(j) as Promise<IssueSearchResponse>,
     /** Top contributors to an app's source repo (GitHub only). Owner-gated. */
     appContributors: (url: string, refresh = false) => post('/api/source/contributors', { url, refresh }).then(j) as Promise<{ contributors: AppContributor[] }>,
   }

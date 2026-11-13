@@ -19,10 +19,12 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from kiro_crew import project_scan
 from kiro_crew.project_scan import (
     MAX_DECLARATION_BYTES,
     Candidate,
@@ -572,6 +574,69 @@ class TestParserStackExhaustion:
         tree = scan(tmp_path)
 
         assert any("Cargo.toml" in w for w in tree.warnings)
+
+    # The two tests above pass whether the nesting cap refuses the file or the
+    # parser recurses to the interpreter's ceiling and the RecursionError is
+    # caught: both end in a warning. Only the cap keeps stack headroom, and
+    # without it a garbage-collector finalizer that runs in those last frames
+    # overflows too and pytest reports it as an unraisable exception on whatever
+    # test is running. So these pin that over-cap nesting never reaches a
+    # recursive parser at all.
+
+    @pytest.mark.parametrize(
+        ("name", "text", "parser_attr"),
+        [
+            ("Cargo.toml", "members = " + "[" * 100_000 + "]" * 100_000, "_toml"),
+            ("package.json", "[" * 100_000 + "]" * 100_000, "json"),
+            ("pnpm-workspace.yaml", "packages: " + "[" * 100_000 + "]" * 100_000, None),
+        ],
+        ids=["cargo", "npm", "pnpm"],
+    )
+    def test_over_cap_nesting_is_refused_before_the_parser_runs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+        text: str,
+        parser_attr: str | None,
+    ) -> None:
+        calls: list[int] = []
+
+        def _spy_parse(text: str) -> Any:
+            calls.append(len(text))
+            raise AssertionError("the recursive parser must not see over-cap nesting")
+
+        if parser_attr is None:
+            monkeypatch.setattr(project_scan, "_load_no_alias_yaml", _spy_parse)
+        else:
+            monkeypatch.setattr(project_scan, parser_attr, SimpleNamespace(loads=_spy_parse))
+        target = _write(tmp_path / name, text)
+
+        with pytest.raises(DeclarationError, match="nesting too deep"):
+            declared_patterns(str(target), str(tmp_path))
+
+        assert calls == []
+
+    def test_the_cap_sits_at_the_documented_depth(self) -> None:
+        cap = project_scan._MAX_DECLARATION_NESTING
+
+        assert not project_scan._nesting_too_deep("[" * cap + "]" * cap)
+        assert project_scan._nesting_too_deep("[" * (cap + 1) + "]" * (cap + 1))
+
+    def test_brackets_inside_strings_do_not_count_toward_the_cap(self) -> None:
+        brackets = "[" * 1_000
+        text = f"[workspace]\nmembers = [\"crates/{brackets}\", '{brackets}']\n"
+
+        assert not project_scan._nesting_too_deep(text)
+        assert _cargo_members_for(text) == [f"crates/{brackets}", brackets]
+        # An escaped quote does not end the string, so its brackets stay ignored.
+        assert not project_scan._nesting_too_deep(f'["esc\\"{brackets}"]')
+
+
+def _cargo_members_for(text: str) -> list[str]:
+    """Parse ``text`` as a Cargo.toml through the scan's own parser table."""
+
+    return project_scan.DECLARATION_PARSERS["Cargo.toml"](text)
 
 
 class TestSensitiveReadGate:

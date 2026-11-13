@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import TaskDetailPanel from '../pages/aidlc/TaskDetailPanel'
+import { i18next } from '../i18n/all'
 import type { TaskDetail } from '../types'
 
 const task = (overrides: Partial<TaskDetail> = {}): TaskDetail => ({
@@ -20,7 +21,8 @@ describe('TaskDetailPanel', () => {
     render(<TaskDetailPanel task={task()} allTasks={allTasks} onClose={() => {}} />)
     expect(screen.getByText(/Blocked/)).toBeInTheDocument()
     expect(screen.getByText(/Build/)).toBeInTheDocument()
-    expect(screen.getByText(/in progress/)).toBeInTheDocument()
+    // The blocking task's status reads as the DAG legend's word, not the raw value.
+    expect(screen.getByText('Running')).toBeInTheDocument()
   })
 
   it('shows dependency list when not blocked', () => {
@@ -64,12 +66,13 @@ describe('TaskDetailPanel', () => {
     expect(screen.getByText(/Save/)).toBeInTheDocument()
   })
 
-  it('calls onSave with updated values', () => {
+  it('calls onSave with updated values', async () => {
     const onSave = vi.fn()
     render(<TaskDetailPanel task={task()} allTasks={allTasks} onClose={() => {}} editable onSave={onSave} />)
     fireEvent.change(screen.getByDisplayValue('Deploy'), { target: { value: 'Deploy v2' } })
     fireEvent.click(screen.getByText(/Save/))
     expect(onSave).toHaveBeenCalledWith(3, expect.objectContaining({ title: 'Deploy v2' }))
+    await waitFor(() => expect(screen.queryByText(/Save/)).not.toBeInTheDocument())
   })
 
   it('restores from pendingEdits on mount', () => {
@@ -92,8 +95,8 @@ describe('TaskDetailPanel', () => {
     const onSave = vi.fn().mockRejectedValue(new Error('fail'))
     render(<TaskDetailPanel task={task()} allTasks={allTasks} onClose={() => {}} editable onSave={onSave} />)
     fireEvent.change(screen.getByDisplayValue('Deploy'), { target: { value: 'Deploy v2' } })
-    fireEvent.click(screen.getByText(/Save/))
-    await vi.waitFor(() => expect(screen.getByText(/Save failed/)).toBeInTheDocument())
+    await act(async () => { fireEvent.click(screen.getByText(/Save/)) })
+    await waitFor(() => expect(screen.getByText(/Save failed/)).toBeInTheDocument())
     expect(screen.getByText(/Save/, { selector: 'button' })).toBeInTheDocument()
   })
 
@@ -104,7 +107,24 @@ describe('TaskDetailPanel', () => {
     fireEvent.change(screen.getByDisplayValue('Deploy'), { target: { value: 'Deploy v2' } })
     fireEvent.click(screen.getByText(/Save/))
     expect(screen.getByDisplayValue('Deploy v2')).toBeDisabled()
-    resolve!()
-    await vi.waitFor(() => expect(screen.getByDisplayValue('Deploy v2')).not.toBeDisabled())
+    await act(async () => { resolve!() })
+    await waitFor(() => expect(screen.queryByText(/Save/)).not.toBeInTheDocument())
+    expect(screen.getByDisplayValue('Deploy v2')).not.toBeDisabled()
+  })
+
+  it('names each status in the reader\'s language, not with the raw backend value', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      const { unmount } = render(<TaskDetailPanel task={task({ status: 'failed', error: 'timeout' })} allTasks={[]} onClose={() => {}} />)
+      expect(screen.getByText('失敗')).toBeInTheDocument()
+      expect(screen.queryByText('failed')).not.toBeInTheDocument()
+      unmount()
+      // The blocked banner names each blocking task's status the same way.
+      render(<TaskDetailPanel task={task()} allTasks={allTasks} onClose={() => {}} />)
+      expect(screen.getByText('実行中')).toBeInTheDocument()
+      expect(screen.queryByText(/in progress/)).not.toBeInTheDocument()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 })

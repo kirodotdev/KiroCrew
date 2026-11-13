@@ -54,7 +54,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   getTerminalShell: () => undefined,
   getTerminalFenceShells: () => ({}),
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 /* The thread pane renders a REAL Run-in-terminal button, so the request carries
  * whatever scope the page provides around its chat. */

@@ -31,6 +31,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { fmtList } from '../i18n/format'
 // `Image` is ALIASED deliberately: `cropToSquareDataUri` calls `new Image()`
 // for the decode, and a bare import of the icon binds that identifier at
 // module scope — the constructor would then build a React component and every
@@ -479,10 +480,10 @@ export default function CrewAvatarBuilder({
   )
   const [pickError, setPickError] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  /* The states the retired-cue notice names, in the record's own order. A
-     plain comma list rather than a localised conjunction: "A, B" needs no
-     per-language joining rule, where "A and B" would. */
-  const retiredCueLabel = (retiredCue?.states ?? []).map(state => t(STATE_LABEL_KEYS[state])).join(', ')
+  /* The states the retired-cue notice names, in the record's own order,
+     joined the way the active language joins a list (zh-CN uses "、", not
+     an English comma). */
+  const retiredCueLabel = fmtList((retiredCue?.states ?? []).map(state => t(STATE_LABEL_KEYS[state])))
   const fileInput = useRef<HTMLInputElement>(null)
   /** Monotonic pick generation: only the LATEST pick (of this dialog
    *  opening) may land its decode result, so a slow decode of pick A cannot

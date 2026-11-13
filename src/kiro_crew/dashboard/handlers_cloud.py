@@ -8,7 +8,8 @@ Like the instances control plane, every route is **owner-only, never reachable
 via Slack**, and emits a SEL audit event. Provisioning is a deliberate
 **human/installer action** (the owner clicking Launch is the consent), which is
 exactly the caller ``cloud.aws.assert_human_action`` permits — the gateway
-process carries no ``KIROCREW_SESSION_KEY``, so the destructive verbs
+process carries none of the agent markers ``cloud.aws._in_agent_session``
+reads, so the destructive verbs
 (stop/start/destroy) are allowed here but blocked from any agent subprocess.
 
 POSIX-only: the deploy engine shells to ``bash``/``aws``; Windows returns 400.
@@ -23,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import json
 import logging
 import sys
 import threading
@@ -48,7 +50,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.defaults import RecipientMoved
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
-from kiro_crew.sandbox import SandboxCeilingUnsealable
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
@@ -389,6 +391,61 @@ async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
 
 
+def _sandbox_unavailable_response(
+    op: str, exc: SandboxUnavailableError, what: str, *, request_id: str = ""
+) -> web.Response:
+    """The typed 503 for an ``aws`` call the sandbox refused to start.
+
+    Every cloud call runs the CLI through ``cloud.aws.run_aws``, which wraps it
+    with ``wrap_argv``. On a host with no sandbox backend and
+    ``allow_unsandboxed_exec`` unset that raises ``SandboxUnavailableError``
+    before any AWS request is made. The refusal stands, but uncaught it reaches
+    the browser as aiohttp's bare "500 Internal Server Error" page, and the setup
+    tab would blame credentials nobody read.
+    Same shape as deploy-web's profile discovery answer for the same
+    condition (``deploy/handlers.py``): a ``code`` the dashboard keys on, plus
+    the probe ``detail`` and ``remedy`` the exception carries.
+
+    The sentence follows ``exc.kind``: only ``no_backend`` means this host has no
+    sandbox. ``transient`` clears on a retry, and ``foreign_sandbox`` means an
+    outer sandbox confines the gateway while the host's own sandbox is fine.
+    """
+    logger.warning(
+        "cloud %s: aws call refused by the sandbox (kind=%s, detail=%s); returning 503",
+        op,
+        exc.kind,
+        exc.detail,
+    )
+    _audit(op, "failure", request_id=request_id, error=f"sandbox_unavailable: {exc.detail}")
+    not_sent = "nothing was sent to AWS and your credentials were not checked."
+    if exc.kind == "transient":
+        reason = (
+            "the sandbox for the aws command hit a temporary limit, so "
+            f"{not_sent} Try again in a moment."
+        )
+    elif exc.kind == "foreign_sandbox":
+        reason = (
+            "another sandbox already confines this gateway, so it cannot start its "
+            f"own sandbox for the aws command and {not_sent} Start the gateway "
+            "outside that sandbox."
+        )
+    else:
+        reason = (
+            f"this computer has no sandbox for the aws command, so {not_sent} "
+            "Run `kirocrew doctor` in a terminal for the fix."
+        )
+    return web.json_response(
+        {
+            "error": f"{what} could not run: {reason}",
+            "code": "sandbox_unavailable",
+            "kind": exc.kind,
+            "detail": exc.detail,
+            "remedy": exc.remedy,
+        },
+        status=503,
+    )
+
+
 # ── read endpoints ───────────────────────────────────────────────────────
 
 
@@ -399,7 +456,10 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
         return denied
     profile = request.query.get("profile", "")
     region = request.query.get("region", "")
-    reach = await _in_executor(iam.reachability_check, profile, region)
+    try:
+        reach = await _in_executor(iam.reachability_check, profile, region)
+    except SandboxUnavailableError as exc:
+        return _sandbox_unavailable_response("preflight", exc, "The AWS check")
     plugin = await _in_executor(ssm.session_manager_plugin_installed)
     # Installed but refused by the provenance check is not "not installed": the
     # install command would reinstall the same refused file. The row then shows the
@@ -446,7 +506,30 @@ async def api_cloud_iam_policy(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     _audit("iam_policy", "success")
-    return web.json_response({"policy": iam.policy_json()})
+    body: dict = {"policy": iam.policy_json()}
+    # The edition's host-policy addendum, a second policy to apply beside the
+    # first; absent when the edition adds none. An invalid descriptor is
+    # reported rather than raised, the same refusal a launch would give.
+    # ``host_policies_notice`` is the status line the setup tab shows beside its
+    # copy button, so a dashboard user learns the second policy exists;
+    # ``host_policies_error`` is shown as an error when it cannot be built.
+    try:
+        addendum = iam.host_policy_document()
+    except AWSError as exc:
+        body["host_policies_error"] = str(exc)
+    else:
+        if addendum is not None:
+            body["host_policies"] = json.dumps(addendum, indent=2)
+            body["host_policies_notice"] = _HOST_POLICIES_NOTICE
+    return web.json_response(body)
+
+
+#: Shown beside the copied main policy when the edition attaches host policies.
+_HOST_POLICIES_NOTICE = (
+    "This build also attaches host policies to each instance role, so apply a "
+    "second policy beside this one: run `kirocrew cloud iam-policy --host-policies` "
+    "and attach its output too."
+)
 
 
 async def api_cloud_identity(request: web.Request) -> web.Response:
@@ -652,6 +735,8 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
     except AWSError as e:
         _audit("launch_task", "failure", request_id=job.id, error=str(e))
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+    except SandboxUnavailableError as exc:
+        return _sandbox_unavailable_response("launch_task", exc, "The AWS call", request_id=job.id)
     _audit("launch_task", "success", request_id=job.id)
     return web.json_response(
         {
@@ -780,7 +865,24 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     # itself awaits: two POSTs arriving together would otherwise both pass it.
     async with _launch_lock(state):
         store = await _astore(state)
-        existing = await _in_executor(store.list)
+        # One read of each job file answers both checks: two scans would let a
+        # worker's save() land between them, so a running job could be missed by both.
+        existing, unreadable = await _in_executor(store.snapshot)
+        if unreadable:
+            # A record the list skips may be a launch still running: refuse, as
+            # a launch already running is refused, rather than risk a second one.
+            _audit("launch_create", "denied", request_id=unreadable[0], error="unreadable job")
+            return web.json_response(
+                {
+                    "error": (
+                        "a crew setup record cannot be read, so a setup may still be "
+                        "running; remove the launch job file "
+                        f"{unreadable[0]}.json before starting another"
+                    ),
+                    "code": "launch_record_unreadable",
+                },
+                status=409,
+            )
         active = next((j for j in existing if not j.terminal), None)
         if active is not None:
             _audit("launch_create", "denied", request_id=active.id, error="already running")
@@ -1192,7 +1294,22 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
-        existing = await _in_executor(store.list)
+        existing, unreadable = await _in_executor(store.snapshot)
+        if unreadable:
+            # A job file the list skips may be a launch or sign-in still running on
+            # this instance; refuse, as launch create does, rather than race it.
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="unreadable job")
+            return web.json_response(
+                {
+                    "error": (
+                        "a crew setup record cannot be read, so a setup or sign-in may "
+                        "still be running; remove the launch job file "
+                        f"{unreadable[0]}.json before trying again"
+                    ),
+                    "code": "launch_record_unreadable",
+                },
+                status=409,
+            )
         # Only a job that can reach THIS instance can race this sign-in: one already
         # on it, or a launch whose instance is unknown until `provision` returns. A
         # sign-in on another crew, or a launch already on its own instance, runs on.
@@ -1300,7 +1417,7 @@ def _start_teardown_watch(
     ).start()
 
 
-def _lane_of(store: "lj.LaunchJobStore", tag: str) -> str:
+def _lane_of(jobs: "list[lj.LaunchJob]", tag: str) -> str:
     """Which provisioner created the crew carrying *tag*.
 
     From the launch job, which is server-owned state: the tag in the URL is the
@@ -1312,7 +1429,7 @@ def _lane_of(store: "lj.LaunchJobStore", tag: str) -> str:
     has always had rather than being refused.
     """
     return next(
-        (j.provider_id for j in store.list() if j.tag == tag and j.provider_id),
+        (j.provider_id for j in jobs if j.tag == tag and j.provider_id),
         BUILTIN_PROVISIONER_ID,
     )
 
@@ -1331,15 +1448,34 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     store = _store(state)  # constructing it touches no disk
     sync_teardown = bool(getattr(state, "cloud_launch_sync", False))
 
-    # Which lane created this crew decides what these verbs can even mean. Read off
-    # the loop because `list()` reads the job files.
+    # A job file `list()` skips may be the record of THIS crew, and the lane and the
+    # destroy fallback's instance id both come from it. Reading it as absent would
+    # run the built-in EC2 path against a crew another lane created, so refuse, as
+    # launch create does, until the file is removed. The lane and the instance-id
+    # fallback below read the same snapshot, so no save() lands between the checks.
+    jobs, unreadable = await _in_executor(store.snapshot)
+    if unreadable:
+        _audit(op, "denied", request_id=tag, error="unreadable job")
+        return web.json_response(
+            {
+                "error": (
+                    "a crew setup record cannot be read, so which lane runs this crew "
+                    "is unknown; remove the launch job file "
+                    f"{unreadable[0]}.json before trying again"
+                ),
+                "code": "launch_record_unreadable",
+            },
+            status=409,
+        )
+
+    # Which lane created this crew decides what these verbs can even mean.
     #
     # Without this the three verbs all ran the built-in EC2 lane's CloudFormation
     # path, which looks for a stack named after the tag that only THAT lane creates.
     # A crew from any other lane has no such stack, so the operator was told their
     # credentials could not describe a stack that was never meant to exist -- a
     # report that reads as a broken profile rather than a verb that does not apply.
-    lane = await _in_executor(lambda: _lane_of(store, tag))
+    lane = _lane_of(jobs, tag)
     if lane != BUILTIN_PROVISIONER_ID and op in ("stop", "start"):
         # These two are the EC2 lane's reversible pair: stop parks an instance and
         # keeps its disk, start brings the same disk back. A lane whose engine offers
@@ -1379,9 +1515,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             # The registry row still has to go, exactly as the built-in path's watcher
             # does it, and the id comes from the job rather than the caller for the
             # reason the comment below gives.
-            registered = next(
-                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
-            )
+            registered = next((j.instance_id for j in jobs if j.tag == tag and j.instance_id), "")
             if ok and registered:
                 connect_mod.unregister_instance(registered)
             return {"ok": ok, "cleanup": "done" if ok else "skipped", "provisioner_id": lane}
@@ -1411,7 +1545,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
             # never be cleared from this panel. The launch job that created this tag
             # persists its instance id: still server-owned state, never caller input.
-            iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
+            iid = next((j.instance_id for j in jobs if j.tag == tag and j.instance_id), "")
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)
@@ -1456,6 +1590,8 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     except AWSError as e:
         _audit(op, "failure", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+    except SandboxUnavailableError as exc:
+        return _sandbox_unavailable_response(op, exc, "The AWS call", request_id=tag)
     _audit(op, "success", request_id=tag)
     return web.json_response(result)
 

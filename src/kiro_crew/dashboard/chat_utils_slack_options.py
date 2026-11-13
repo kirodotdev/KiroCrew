@@ -24,6 +24,7 @@ from kiro_crew.slack.outbound import (
     encode_options_token,
     expire_options,
     mark_options_terminal,
+    options_answer_settled,
     options_edit_lock,
 )
 
@@ -395,11 +396,31 @@ async def options_control_is_stale(
         return False
 
 
+def _forget_slack_options_message(state: DashboardState | None, channel: str, ts: str) -> None:
+    """Drop the record of the control posted as *ts* in *channel*, whoever filed it.
+
+    A message is the control's real identity, and it does not depend on which
+    session the record sits under. Resolving that session from the clicked
+    message's thread misses whenever the card is not in its conversation's
+    thread: a card posted top-level carries no ``thread_ts``, so the thread a
+    click falls back to is the card's own ts, which no session owns -- and the
+    record left behind is struck through by the next turn, over the answer.
+    """
+    store = getattr(state, "_slack_options_by_key", None) if state is not None else None
+    if not isinstance(store, dict) or not channel or not ts:
+        return
+    for key, records in list(store.items()):
+        kept = tuple(p for p in records if not (p.channel == channel and p.ts == ts))
+        if len(kept) != len(records):
+            set_options_records(state, key, kept)
+
+
 def forget_slack_options_for_thread(
     state: DashboardState | None,
     thread_ts: str,
     ts: str | None = None,
     keys: tuple[str, ...] | None = None,
+    channel: str | None = None,
 ) -> None:
     """Drop the recorded control for the conversation living in *thread_ts*.
 
@@ -416,9 +437,15 @@ def forget_slack_options_for_thread(
     between reading ownership and clearing it — a relink during that window would
     otherwise leave the previous owner's record behind. Omitting *keys* resolves
     now, which is right only for a caller that has not awaited.
+
+    Pass *channel* with *ts* and the control posted as that message is also
+    dropped under every OTHER key it may be filed under: a top-level card's
+    thread names no session at all, so the keys alone cannot reach its record.
     """
     for key in keys if keys is not None else slack_options_session_keys(state, thread_ts):
         forget_slack_options(state, key, ts)
+    if channel and ts:
+        _forget_slack_options_message(state, channel, ts)
 
 
 async def expire_slack_options(
@@ -486,6 +513,14 @@ async def expire_slack_options(
         # that check trustworthy; the check is what makes the lock useful.
         async with options_edit_lock(posted.channel, posted.ts):
             if posted not in options_records(state, session_key):
+                continue
+            if options_answer_settled(posted.channel, posted.ts):
+                # Answered, and the answer is on screen in place of the buttons:
+                # there is no control left to spend. Striking the choices through
+                # now would erase the "chose" line the user's click rendered, so
+                # drop the record without editing -- whichever key it was filed
+                # under, the click's own forget may not have reached it.
+                settled.append(posted)
                 continue
             if await expire_options(slack, posted):
                 # Retire the control for clicks too, not just for our records. A

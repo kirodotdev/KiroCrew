@@ -210,11 +210,8 @@ async def test_first_turn_context_overflow_retries_once_on_a_dedicated_runtime()
 async def test_dedicated_first_attempt_context_overflow_is_terminal():
     """A first spawn whose own dedicated process overflowed before any activity.
 
-    Eligibility is shared-first-attempt only: after a dedicated first attempt
-    no transition is evidenced that would be expected to make a replacement's
-    envelope fit, so another teardown and spawn cycle is not justified. The
-    overflow is terminal without scheduling recovery and without consuming the
-    one-shot.
+    Only a shared first attempt retries: a replacement dedicated process would not fit any
+    better. Terminal, with no recovery and the one-shot unspent.
     """
     sessions = _mock_sessions(lambda _msg: None)
     mgr = _manager(sessions)
@@ -499,11 +496,8 @@ async def test_context_overflow_recovery_flush_failure_is_terminal_before_replac
 async def test_context_overflow_recovery_without_a_rejected_sid_fails_closed():
     """No rejected SID: recovery stops before any capacity wait or allocation.
 
-    The identity capture after session acquisition is best-effort, while the
-    allocation may already have persisted a resumable mapping. With no SID to
-    compare, recovery cannot tell a mapped rejected attempt from a successor,
-    so it must neither touch the mapping nor allocate a replacement that could
-    ``session/load`` it.
+    The allocation may already have persisted a resumable mapping, and with no SID recovery
+    cannot tell it from a successor's, so a replacement could ``session/load`` the rejected one.
     """
     on_done = AsyncMock()
     sessions = _mock_sessions(lambda _msg: None)

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -24,6 +26,7 @@ from kiro_crew.atomic_write import read_json_or
 from kiro_crew.config.paths import data_home
 from kiro_crew.on_loop_db import OnLoopDBGuard
 from kiro_crew.owner_only_files import (
+    SQLITE_SIDECAR_SUFFIXES,
     ensure_directory,
     mkdirs_owner_only,
     prepare_owner_only_sqlite,
@@ -47,11 +50,174 @@ def research_dir() -> Path:
     return RESEARCH_DIR if RESEARCH_DIR is not None else data_home() / "workspace" / "research"
 
 
+DB_FILENAME = "campaigns.db"
+
+
+def _app_root() -> Path:
+    """The app's record directory, ``<data home>/apps/auto-research``."""
+    return data_home() / "apps" / "auto-research"
+
+
+def data_db_path() -> Path:
+    """Where the campaigns DB lives: ``campaigns.db`` in the app's ``data/`` directory.
+
+    An update, an adoption onto the app's own repository and a default uninstall
+    keep an app's ``data/`` and replace the rest of its directory, so a file
+    beside ``app.json`` is deleted with the old tree.
+    """
+    return _app_root() / "data" / DB_FILENAME
+
+
+def legacy_db_path() -> Path:
+    """The campaigns DB kept beside ``app.json``, outside ``data/``: read until copied."""
+    return _app_root() / DB_FILENAME
+
+
 def db_path() -> Path:
-    """Campaigns sqlite DB path, resolved against the live data home."""
-    return (
-        DB_PATH if DB_PATH is not None else data_home() / "apps" / "auto-research" / "campaigns.db"
-    )
+    """Campaigns sqlite DB path, resolved against the live data home.
+
+    :func:`data_db_path` once it exists. Until then a database still at
+    :func:`legacy_db_path` (a file, or a link an operator placed there) is the
+    one in use, so the rows written before :func:`migrate_legacy_db` copies it
+    are never hidden; with neither, a new database is created in ``data/``.
+    """
+    if DB_PATH is not None:
+        return DB_PATH
+    target = data_db_path()
+    if target.exists():
+        return target
+    legacy = legacy_db_path()
+    return legacy if os.path.lexists(legacy) else target
+
+
+# One copy attempt per data-home DB per process, made before this process opens
+# any connection to it (the gateway's startup hook, else the first ``_get_db``).
+# A key is recorded only once its attempt has finished, so a caller that arrives
+# while another thread copies waits on the lock instead of opening the old file
+# and writing a row the published copy would not hold. A later retry could
+# snapshot the old file while a connection opened after the failed attempt still
+# writes to it, and lose that write; the next start retries.
+_MIGRATION_LOCK = threading.Lock()
+_MIGRATION_ATTEMPTED: set[str] = set()
+
+
+def migrate_legacy_db() -> bool:
+    """Move a campaigns DB kept beside ``app.json`` into ``data/``, once. Blocking.
+
+    Runs only when ``data/`` has no database yet and :func:`legacy_db_path` is a
+    regular file. A link there is an operator's redirection and stays in use
+    where it points. The copy goes through SQLite's online backup, so rows still
+    in the old ``-wal`` file come along; it is written owner-only under a private
+    staging name, checked with ``PRAGMA quick_check`` and published with a hard
+    link, which never replaces a database that appeared meanwhile. Once the copy
+    is published the old file and its sidecars are removed, so a campaign deleted
+    afterwards is not still readable in a stale second copy. A failed copy, one
+    that found the old file locked for ``_COPY_LOCK_WAIT_SECS`` included, leaves
+    nothing at the new name and the old file untouched, so :func:`db_path` keeps
+    answering the old file, and is retried at the next start. Never raises;
+    returns whether a copy was published.
+    """
+    if DB_PATH is not None:
+        return False
+    target = data_db_path()
+    key = str(target)
+    if key in _MIGRATION_ATTEMPTED:
+        return False
+    with _MIGRATION_LOCK:
+        if key in _MIGRATION_ATTEMPTED:
+            return False
+        try:
+            return _migrate_once(legacy_db_path(), target)
+        finally:
+            _MIGRATION_ATTEMPTED.add(key)
+
+
+def _migrate_once(legacy: Path, target: Path) -> bool:
+    try:
+        if target.exists() or legacy.is_symlink() or not legacy.is_file():
+            return False
+        _copy_database(legacy, target)
+    except Exception:  # noqa: BLE001 - the old file stays in use; retried next start
+        logger.warning(
+            "Research Lab: could not copy the campaigns database into the app data "
+            "directory; it stays at %s",
+            legacy,
+            exc_info=True,
+        )
+        return False
+    logger.info("Research Lab: copied the campaigns database into the app data directory")
+    _remove_database_files(legacy)
+    return True
+
+
+def _remove_database_files(path: Path) -> None:
+    """Remove the copied-from database and its sidecars; a failure only logs.
+
+    :func:`db_path` answers the published copy from here on, so a file left
+    behind is never read again.
+    """
+    for leftover in (path, *(Path(f"{path}{s}") for s in SQLITE_SIDECAR_SUFFIXES)):
+        try:
+            leftover.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning(
+                "Research Lab: could not remove %s after copying it", leftover, exc_info=True
+            )
+
+
+# How long the copy waits for a lock someone else holds on the old file (an
+# operator's sqlite3 shell in exclusive mode, say). The gateway's start awaits the
+# copy, so past this the copy gives up, the old file stays in use and the next
+# start tries again.
+_COPY_LOCK_WAIT_SECS = 5.0
+
+
+def _copy_database(source: Path, target: Path) -> None:
+    """Back *source* up into a staging file beside *target*, then publish it there.
+
+    Raises ``TimeoutError`` when the old file stays locked past
+    ``_COPY_LOCK_WAIT_SECS``: the source connection has no busy timeout, so each
+    backup step that finds it locked returns at once, and the progress callback
+    ends the backup once the wait is spent.
+    """
+    mkdirs_owner_only(target.parent)
+    staging = target.with_name(f".{target.name}.{secrets.token_hex(8)}.migrating")
+    prepare_owner_only_sqlite(staging)
+    deadline = time.monotonic() + _COPY_LOCK_WAIT_SECS
+
+    def _give_up_once_late(status: int, _remaining: int, _total: int) -> None:
+        if status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
+            raise TimeoutError(f"{source} stayed locked for {_COPY_LOCK_WAIT_SECS:g}s")
+
+    try:
+        src = sqlite3.connect(str(source), timeout=0)
+        try:
+            dst = sqlite3.connect(str(staging), timeout=30.0)
+            try:
+                src.backup(dst, progress=_give_up_once_late, sleep=0.1)
+                verdict = dst.execute("PRAGMA quick_check").fetchone()[0]
+                if verdict != "ok":
+                    raise sqlite3.DatabaseError(f"copied database failed quick_check: {verdict}")
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        try:
+            os.link(staging, target)
+        except OSError as exc:
+            # A volume without hard links: a rename, under the lock, onto a name
+            # just checked to be free. A name that is taken is never replaced.
+            if isinstance(exc, FileExistsError) or os.path.lexists(target):
+                raise
+            os.replace(staging, target)
+    finally:
+        for leftover in (staging, *(Path(f"{staging}{s}") for s in SQLITE_SIDECAR_SUFFIXES)):
+            try:
+                leftover.unlink()
+            except FileNotFoundError:
+                pass
 
 
 # Serializes the one-time WAL switch + schema init per DB file (see
@@ -117,6 +283,7 @@ _ON_LOOP_DB_GUARD = OnLoopDBGuard(
 
 def _get_db() -> sqlite3.Connection:
     _ON_LOOP_DB_GUARD.check()
+    migrate_legacy_db()
     dbp = db_path()
     mkdirs_owner_only(dbp.parent)
     prepare_owner_only_sqlite(dbp)  # campaigns hold research findings: 0600 from creation

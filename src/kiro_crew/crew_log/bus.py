@@ -84,15 +84,18 @@ class FoldAdvanced(NamedTuple):
     that turn the value published at ``base_revision`` into this one -- or
     ``"snapshot_needed"`` when no such ops exist (first publish in this process, a new
     board generation, a dropped base), with ``base_revision`` 0 and ``delta`` naming the
-    reason. ``value`` is STILL carried on every event during the migration, so a
-    subscriber that ignores the three fields behaves exactly as before.
+    reason. A ``delta`` or ``snapshot_needed`` event carries NO whole value:
+    ``value`` is ``None``, and a subscriber applies the delta on the value it holds
+    (:func:`kiro_crew.crew_log.fold_delta.value_after`) or reads the fold through the
+    projection read path. ``kind=value`` events (every other fold, and every baseline)
+    always carry the whole value.
     """
 
     scope: str
     key: str
     fold: str
     revision: int
-    value: Mapping[str, Any]
+    value: "Mapping[str, Any] | None"
     seq: int
     kind: str = "value"
     base_revision: int = 0

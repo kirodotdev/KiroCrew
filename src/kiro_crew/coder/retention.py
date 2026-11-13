@@ -1,7 +1,10 @@
-"""What happens to a session's Coder workspace when the session is archived.
+"""What happens to a session's remote workspace when the session is archived.
 
 Archive stops it and stamps ``deletion_due_at``; a reopen clears the stamp, and
 :func:`sweep_due` deletes due workspaces once proven. Nothing raises into close.
+Sprites and boxd sessions keep one VM each (``session_environments/persistent_vm.py``);
+their archive, sweep and shutdown (``session_environments/retention.py``) run
+from here, under the same per-session lifecycle lock and generation.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from weakref import WeakValueDictionary
 from kiro_crew.coder.client import CoderClientError
 from kiro_crew.coder.registry import DELETING, WorkspaceBinding, WorkspaceRegistryCorrupt
 from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
+from kiro_crew.session_environments import retention as vm_retention
+from kiro_crew.session_environments.retention import _section
 
 logger = logging.getLogger(__name__)
 
@@ -73,17 +78,12 @@ async def _environments() -> Optional[Any]:
     """The live Coder environments, or None when Coder is not configured or the
     developer flag is off (no Coder command then runs for any binding)."""
     from kiro_crew.coder.session_launch import CoderSessionEnvironments
-    from kiro_crew.config import live
-    from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import data_home
     from kiro_crew.session_environment import session_environments_enabled
 
     if not session_environments_enabled():
         return None
-    config = live.snapshot()
-    if config is None:
-        config = await asyncio.to_thread(KiroCrewConfig.load)
-    section = config.session_environments
+    section = await _section()
     if not getattr(section, "coder_url", ""):
         return None
     return CoderSessionEnvironments(section, await asyncio.to_thread(data_home))
@@ -202,45 +202,134 @@ async def _archive(
 ) -> None:
     try:
         environments = await _environments()
-        if environments is None:
-            return
+        persistent = await vm_retention._persistent_environments()
         for key, lifecycle, generation in requests:
             async with lifecycle.lock:
                 if generation != lifecycle.generation:
                     continue
-                survives = await _binding_survives_stop(environments, key)
+                survives = (
+                    True
+                    if environments is None
+                    else await _binding_survives_stop(environments, key)
+                )
                 await warn_unsaved_work((key,), notify, survives_stop=survives)
                 # A resume requested during the remote probe supersedes this close.
-                if generation == lifecycle.generation:
-                    await _archive_session(environments, key)
+                if generation != lifecycle.generation:
+                    continue
+                if environments is not None:
+                    try:
+                        await _archive_session(environments, key)
+                    except Exception:  # noqa: BLE001 -- the other providers still run
+                        logger.warning(
+                            "Archived session workspace: could not schedule its release",
+                            exc_info=True,
+                        )
+                await vm_retention.archive_vms(persistent, key)
     except Exception:  # noqa: BLE001 -- never surfaces into a close that already succeeded
         logger.warning("Archived session workspace: could not schedule its release", exc_info=True)
 
 
+#: Bound on the reopen a history resume awaits before it publishes the tab.
+REOPEN_SECS = 30.0
+
+
+async def keep_reopened(session_keys: Iterable[str]) -> Optional[str]:
+    """Awaited by a history resume BEFORE it publishes the tab: the reopened
+    session keeps its remote workspace even when no message starts it (Files
+    edits run on it as it is). None when every pending deletion was cancelled
+    (or none was pending); else why one still stands, for a retryable refusal.
+    Supersedes an archive queued before it; creates and wakes nothing."""
+    from kiro_crew.session_environment import session_environments_enabled
+
+    keys = tuple(dict.fromkeys(k for k in session_keys if k))
+    if not keys or not session_environments_enabled():
+        return None
+    return await _keep(_claim(keys))
+
+
+def _claim(keys: tuple[str, ...]) -> tuple[tuple[str, SessionLifecycle], ...]:
+    """Supersede every archive queued for ``keys`` before this call (synchronous)."""
+    requests = tuple((key, session_lifecycle(key)) for key in keys)
+    for _key, lifecycle in requests:
+        lifecycle.generation += 1
+    return requests
+
+
+async def _keep(requests: tuple[tuple[str, SessionLifecycle], ...]) -> Optional[str]:
+    try:
+        return await asyncio.wait_for(_reopen(requests), REOPEN_SECS)
+    except asyncio.TimeoutError:
+        logger.warning("Reopened session workspace: cancelling its deletion timed out")
+        return "its remote workspace's deletion could not be cancelled in time; try again"
+
+
+def schedule_reopened(session_keys: Iterable[str]) -> None:
+    """Fire-and-forget :func:`keep_reopened`, for a caller with nothing to refuse."""
+    from kiro_crew.session_environment import session_environments_enabled
+
+    keys = tuple(dict.fromkeys(k for k in session_keys if k))
+    if not keys or not session_environments_enabled():
+        return
+    try:
+        task = asyncio.ensure_future(_keep_quietly(_claim(keys)))
+    except RuntimeError:
+        return  # no running loop (a synchronous caller in a test)
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
+
+
+async def _keep_quietly(requests: tuple[tuple[str, SessionLifecycle], ...]) -> None:
+    reason = await _keep(requests)
+    if reason is not None:
+        logger.info("Reopened session workspace: %s", reason)
+
+
+async def _reopen(requests: tuple[tuple[str, SessionLifecycle], ...]) -> Optional[str]:
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    try:
+        environments = await _environments()
+        persistent = await vm_retention._persistent_environments()
+    except Exception:  # noqa: BLE001 -- no registry readable: nothing is known pending
+        logger.warning("Reopened session workspace: could not read its registries", exc_info=True)
+        return None
+    failure: Optional[str] = None
+    for key, lifecycle in requests:
+        async with lifecycle.lock:
+            if environments is not None:
+                try:
+                    await asyncio.to_thread(resume_check, environments.registry, key)
+                except SessionEnvironmentUnavailable as exc:
+                    # Mid-delete: the next start says so and gets a fresh one.
+                    logger.info("Reopened session workspace: %s", exc)
+            # Every key's VMs are kept, even after an earlier key failed.
+            reason = await vm_retention.reopen_vms(persistent, key)
+            failure = failure or reason
+    return failure
+
+
 #: Ceiling on the shutdown stop. It runs beside the graceful shutdown and must end
 #: inside it, so the hard exit's cleanup and audit flush still run before the
-#: service manager's SIGKILL; the guest's own timeouts stop what it misses.
+#: service manager's SIGKILL; the guest's own timeouts stop what it misses (a
+#: sprite goes cold, a boxd machine hibernates).
 SHUTDOWN_STOP_SECS = GRACEFUL_SHUTDOWN_SECS * 0.8
 
 
 async def stop_on_shutdown_enabled() -> bool:
     """``session_environments.stop_on_shutdown`` (default True); True when unreadable."""
-    from kiro_crew.config import live
-    from kiro_crew.config.loader import KiroCrewConfig
-
     try:
-        config = live.snapshot()
-        if config is None:
-            config = await asyncio.to_thread(KiroCrewConfig.load)
-        return bool(getattr(config.session_environments, "stop_on_shutdown", True))
+        return bool(getattr(await _section(), "stop_on_shutdown", True))
     except Exception:  # noqa: BLE001 -- an unreadable config keeps the safe default
         return True
 
 
 async def stop_for_shutdown() -> dict[str, int]:
     """Stop every owned remote environment, stamping nothing so a reopen resumes;
-    stop-destroys-files ones count as ``skipped``. Never raises."""
-    counts = {"coder": 0, "skipped": 0}
+    stop-destroys-files ones count as ``skipped`` and a boxd machine is hibernated.
+    A sprite needs no call: it idles by itself, with no compute charge and its
+    filesystem kept (https://docs.sprites.dev, "Automatic Idle Behavior"). Never
+    raises."""
+    counts = {"coder": 0, "boxd": 0, "skipped": 0}
 
     async def coder() -> None:
         environments = await _environments()
@@ -268,17 +357,23 @@ async def stop_for_shutdown() -> dict[str, int]:
             except CoderClientError as exc:
                 logger.info("Shutdown: Coder workspace stop failed (%s); auto-stop applies", exc)
 
-    try:
-        await coder()
-    except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
-        logger.warning("Shutdown: could not stop Coder session environments", exc_info=True)
+    async def boxd() -> None:
+        await vm_retention.hibernate_boxd_for_shutdown(counts)
+
+    async def guarded(name: str, step: Callable[[], Any]) -> None:
+        try:
+            await step()
+        except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
+            logger.warning("Shutdown: could not stop %s session environments", name, exc_info=True)
+
+    await asyncio.gather(guarded("Coder", coder), guarded("boxd", boxd))
     if counts["skipped"]:
         logger.info(
             "Shutdown: left %d session environment(s) running: stopping their compute "
             "would destroy their files",
             counts["skipped"],
         )
-    if counts["coder"]:
+    if counts["coder"] or counts["boxd"]:
         logger.info("Shutdown: stopped session environments %s", counts)
     return counts
 
@@ -363,11 +458,13 @@ async def sweep_due(environments: Any, *, now: Optional[datetime] = None) -> int
 
 
 async def sweep_once() -> int:
-    """One sweep on the live config (0 without Coder); no Coder command unless a row is due."""
+    """One sweep on the live config: Sprites and boxd VMs, then Coder (0 without
+    it); registry-only unless a row is due, so an idle gateway makes no remote call."""
+    deleted = await vm_retention._sweep_persistent()
     environments = await _environments()
     if environments is None:
-        return 0
-    return await sweep_due(environments)
+        return deleted
+    return deleted + await sweep_due(environments)
 
 
 async def run_sweeper(

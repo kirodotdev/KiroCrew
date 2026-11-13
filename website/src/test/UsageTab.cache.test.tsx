@@ -44,7 +44,7 @@ function report(plan = 'Cached plan', refreshing = false): NormalizedUsage {
     billing: { plan, unit: 'credits', used: 10, limit: 100, percentUsed: 10 },
     sessions: {
       total: 3, today: period, thisWeek: period, thisMonth: period,
-      avgMsgsPerSession: 4, refusedTranscripts: 0, dailyHistory: [],
+      avgMsgsPerSession: 4, refusedTranscripts: 0, unreadableSessionDirs: 0, dailyHistory: [],
     },
   }
 }
@@ -213,4 +213,34 @@ it('shares one report when moving from Overview into Usage', async () => {
   expect(screen.getByText('Cached plan')).toBeInTheDocument()
   await tick()
   expect(fetchUsage).toHaveBeenCalledTimes(1)
+})
+
+describe('Usage tab token card', () => {
+  it('formats token counts compactly and the API time as an elapsed span on a dollar-billed harness', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'claude' } })
+    fetchUsage.mockResolvedValue({
+      ...report(),
+      tokens: { input: 1_500, output: 2_400_000, cacheCreation: 0, cacheRead: 0, total: 2_401_500 },
+      totalDurationMs: 125_000,
+    })
+    mount(UsageTab)
+    await tick()
+    expect(screen.getByText('1.5K')).toBeInTheDocument()
+    // Output and total both read 2.4M.
+    expect(screen.getAllByText('2.4M')).toHaveLength(2)
+    expect(screen.getByText('2m 5s')).toBeInTheDocument()
+  })
+
+  it('stays hidden on a credit-billed harness, whose page is unchanged (#35249)', async () => {
+    fetchUsage.mockResolvedValue({
+      ...report(),
+      tokens: { input: 1_500, output: 2_400_000, cacheCreation: 0, cacheRead: 0, total: 2_401_500 },
+    })
+    mount(UsageTab)
+    await tick()
+    expect(screen.getByText('Session Activity (30 days)')).toBeInTheDocument()
+    expect(screen.queryByText('Token Usage')).toBeNull()
+    expect(screen.queryByText('1.5K')).toBeNull()
+  })
 })

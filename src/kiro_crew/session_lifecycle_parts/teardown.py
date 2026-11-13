@@ -16,6 +16,7 @@ Instance fields read: ``_deps``, ``_owner``, ``state``.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ from kiro_crew.metrics.sessions import (
     END_REASON_UNCLAIMED,
     record_session_ended,
 )
+from kiro_crew.runtime_ownership import RUNTIME_TENANCY, is_shared_chat_runtime
 from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue, allocation_identity
 
 if TYPE_CHECKING:
@@ -51,6 +53,42 @@ _SID_RETENTION_UNKNOWN = "<unreadable session map>"
 
 
 _ANY_SESSION = object()
+
+
+def _pid_is_still_held(
+    pid: int,
+    *,
+    holders: Callable[[int], int] | None = None,
+    log_label: str = "Reset",
+) -> bool:
+    """Whether anyone still holds the live process at *pid* after a shutdown.
+
+    Asked of the ownership registry, the one the kill gate consults, rather than
+    of the session table: a joiner takes its lease during ``provider.start`` and
+    enters the table only once that returns, so the table can show no survivor
+    for a process somebody holds. A LEASE is a chat session resident on the
+    process, a TENANCY is a subagent mid-turn on it; both are parties the gate
+    refuses a kill for. The session being reset needs no excluding: its own
+    shutdown already released what it held. A dead runtime's holdings are not
+    counted, so a crashed process is still reaped and its children swept.
+
+    Asked only for a session on a SHARED chat runtime; every other reset keeps
+    its force-kill and child sweep unchanged.
+    """
+    from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+    if holders is None:
+
+        def holders(p: int) -> int:
+            return RUNTIME_OWNERSHIP.leases_on_pid(p) + RUNTIME_TENANCY.claims_on_pid(p)
+
+    try:
+        return bool(holders(pid))
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "%s: holders of PID %s unreadable", log_label, pid, exc_info=True
+        )
+        return False
 
 
 def _turn_in_flight(session: Any, *, refuse_only_on_active_turn: bool = False) -> bool:
@@ -92,6 +130,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: _TeardownScope | None = None,
 ) -> bool:
     """Kill a live session while preserving the exact reset semantics.
@@ -132,6 +171,15 @@ async def reset(
     is why the default stays the recycle. Nothing structural catches an omission,
     because a keyword is invisible to the AST ratchet, which is exactly why
     ``test_the_conversation_ending_reset_callers_say_so`` pins the callers BY PATH.
+
+    ``stop_shared_children=True`` is the hard Stop's recycle (``stop_turn``). The
+    conversation survives, but the provider shutdown below kills the process this
+    parent's session-sharing runs live on, which would record each as a runtime
+    death. The flag stops exactly those runs first, as a user stop named after the
+    hard Stop, between the pop and the shutdown: after the pop so a holder of the
+    popped permit is already recorded as orphaned, and before the shutdown so each
+    run ends through its own teardown. Runs on a dedicated process keep running.
+    Ignored with ``ends_conversation``, which stops every run of the parent.
 
     ``refuse_only_on_active_turn`` narrows ``skip_if_busy`` to a DECLARED turn, which a
     caller acting on an explicit user request needs: a channel member holds its lease for
@@ -191,6 +239,13 @@ async def reset(
         # name the successor's runs. A recycle takes no snapshot at all -- its children
         # keep running and deliver into the resumed conversation.
         teardown_children = self._snapshot_parent_children(key) if ends_conversation else ()
+        # Same lock hold, for the same reason: named before any await lets a
+        # successor's runs register under this key.
+        shared_children = (
+            self._select_shared_children(key)
+            if stop_shared_children and not ends_conversation and session is not None
+            else ()
+        )
         owner._advance_session_generation(key)
         owner._compact_cooldown_until.pop(key, None)
         # ``clear_conversation`` means the conversation is being THROWN AWAY,
@@ -229,8 +284,7 @@ async def reset(
             # Order matters: the holder is recorded BEFORE its waiters are
             # woken, so the successor a woken waiter creates is already
             # shielded from the holder's late release.
-            self._orphan_turn_holder(key, session)
-            self._wake_turn_waiters(session)
+            self.retire_turn_permit(key, session)
             # Same event-loop tick as the pop, for the reason the clear_sid
             # call below documents: the awaits further down let a racing cold
             # start register a SUCCESSOR under this key, and recording the
@@ -266,6 +320,8 @@ async def reset(
         # wakes its waiter without yielding, so control reaches this line before
         # any of them runs, and this clear cannot erase a successor's pointer.
         owner._session_map.clear_sid(key)
+    if shared_children:
+        await self._stop_shared_children(key, shared_children)
     shutdown_error: BaseException | None = None
     if session:
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -318,7 +374,34 @@ async def reset(
             shutdown_error = exc
         platform_compat = self._deps.get_platform_compat()
         if pid:
-            if platform_compat.pid_exists(pid):
+            # A shared chat runtime (``chat_runtime_sharing`` preview) outlives
+            # one session's shutdown by design: its co-tenants hold it and the
+            # last to leave kills it. So a pid still held by anyone else is left
+            # alone, and so are its children.
+            shared_with_others = is_shared_chat_runtime(session.provider) and _pid_is_still_held(
+                pid, log_label=f"Reset {key}"
+            )
+            if shared_with_others:
+                logger.info(
+                    "Reset %s: PID %d still serves other live sessions; leaving it and "
+                    "its children alone",
+                    key,
+                    pid,
+                )
+                if platform_compat.pid_exists(pid):
+                    # Record the kill this reset owed, so when a subagent TENANCY
+                    # is the last holder its release hands the process back for
+                    # teardown instead of leaving it resident.
+                    try:
+                        RUNTIME_TENANCY.refuse_for_tenants(pid)
+                    except Exception:
+                        logger.debug(
+                            "Reset %s: recording the tenancy reap debt for PID %d failed",
+                            key,
+                            pid,
+                            exc_info=True,
+                        )
+            elif platform_compat.pid_exists(pid):
                 logger.warning("Reset %s: PID %d survived shutdown, force-killing", key, pid)
                 try:
                     await platform_compat.kill_process_tree_async(
@@ -330,7 +413,7 @@ async def reset(
                         await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                     except (ProcessLookupError, OSError):
                         pass
-            if child_pids:
+            if child_pids and not shared_with_others:
                 try:
                     sweep_loop = asyncio.get_running_loop()
                     await sweep_loop.run_in_executor(
@@ -444,9 +527,13 @@ async def remove(self: SessionLifecycleService, key: str) -> None:
         self._origin_links.pop(key, None)
         self.state.stop_requests.pop(key, None)
         self._discard_replay_gap(key)
-        self.state.orphaned_holders.pop(key, None)
+        # ``orphaned_holders`` is deliberately kept: a holder an earlier reset
+        # recorded still owes its late release, and dropping the record would
+        # let that release unlock the next session registered under the key.
         self._release_turn_ceiling(key, requested_key)
         if session is not None:
+            # Before the await below, in the same lock hold as the pop: see reset.
+            self.retire_turn_permit(key, session)
             # Same tick as the pop: see reset for why recording after the
             # teardown awaits would consume a successor's start.
             await record_session_ended(key, end_reason=END_REASON_REMOVED)
@@ -548,7 +635,8 @@ async def remove_if_unclaimed(self: SessionLifecycleService, key: str) -> bool:
             self._origin_links.pop(key, None)
             self.state.stop_requests.pop(key, None)
             self._discard_replay_gap(key)
-            self.state.orphaned_holders.pop(key, None)
+            # ``orphaned_holders`` is kept, as in ``remove``. The popped permit is
+            # idle (checked above), so there is no holder to record or waiter to wake.
             self._release_turn_ceiling(key, requested_key)
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
@@ -621,8 +709,11 @@ async def destroy(
         owner._compact_pending_verdict.pop(key, None)
         self.state.stop_requests.pop(key, None)
         self._discard_replay_gap(key)
-        self.state.orphaned_holders.pop(key, None)
+        # ``orphaned_holders`` is kept, as in ``remove``.
         self._release_turn_ceiling(key, requested_key)
+        if session is not None:
+            # Same lock hold as the pop, before any await: see reset.
+            self.retire_turn_permit(key, session)
         # Ordinary permanent destroy starts a new conversation on reuse and
         # therefore clears the old threshold. History deletion can race a
         # same-key transcript claim in another process, so its explicit
@@ -750,12 +841,18 @@ async def discard_conversation(
     replay: bool = True,
     skip_if_busy: bool = False,
     refuse_only_on_active_turn: bool = False,
+    refuse_if: Callable[[], bool] | None = None,
+    teardown_reason: str = "",
 ) -> bool:
     """Drop only the native conversation while preserving channel linkage.
 
     Returns whether a session was actually torn down. False means
     ``skip_if_busy`` made it a no-op; nothing was changed, including the
     replay flag and the session map.
+
+    ``teardown_reason`` is appended to the verb the stopped sub-agents' records
+    name ("parent conversation ended (discard_conversation: <reason>)"), so a
+    caller that tried to keep them first can say why it could not.
 
     ``skip_if_busy`` refuses the teardown when the session has a turn in
     flight, and is enforced HERE, atomically with the pop, for the same
@@ -769,6 +866,18 @@ async def discard_conversation(
     invisible to ``has_active_turn`` and is exactly the case a caller-side
     pre-check cannot close.
 
+    ``refuse_if`` extends that same contract to busy-ness this layer cannot
+    see. ``skip_if_busy`` reads the session; a caller whose own idea of busy
+    lives elsewhere — a dashboard slot holding an admission reservation that
+    has not yet reached a semaphore — has nothing here to read it from, and a
+    pre-call check of its own leaves the window above: acquiring
+    ``owner._lock`` can wait arbitrarily long, because another key's teardown
+    holds it across ``record_session_ended``. So the predicate is evaluated
+    HERE, in the same lock hold as the busy check and the pop, and a true
+    answer refuses exactly as ``skip_if_busy`` does, changing nothing. It
+    must be synchronous: an await inside the lock hold would reopen the very
+    window it closes.
+
     The sid clear runs in the SAME event-loop tick as the pop, with no await
     between them, so a cold start racing this teardown cannot have mapped a
     replacement sid for the key by the time it runs — the clear can never
@@ -780,6 +889,8 @@ async def discard_conversation(
     requested_key = key
     key = owner._fold_key(key)
     async with owner._lock:
+        if refuse_if is not None and refuse_if():
+            return False
         current = owner._sessions.get(key)
         if skip_if_busy and _turn_in_flight(
             current, refuse_only_on_active_turn=refuse_only_on_active_turn
@@ -802,6 +913,8 @@ async def discard_conversation(
         else:
             self._suppress_replay.add(key)
         if session is not None:
+            # Before the await below, in the same lock hold as the pop: see reset.
+            self.retire_turn_permit(key, session)
             # Same lock hold as the pop, exactly like the clear_sid below.
             await record_session_ended(key, end_reason=END_REASON_DISCARDED)
     # The registry lock, not an absence of suspension points, is what keeps a
@@ -826,10 +939,89 @@ async def discard_conversation(
     finally:
         # See ``destroy``: in the finally because a shutdown that raises must not
         # carry the exception past the cancel, and cancel before release.
-        await self._cancel_parent_children(key, teardown_children, verb="discard_conversation")
+        await self._cancel_parent_children(
+            key, teardown_children, verb="discard_conversation", reason=teardown_reason
+        )
         await owner.release_subagent_runtime(key)
         self._deps.logger.info(
             "Discarded native conversation (sid cleared, map entry kept): %s",
             key,
         )
     return True
+
+
+#: :func:`swap_conversation` answers.
+SWAP_SWAPPED = "swapped"
+SWAP_BUSY = "busy"
+SWAP_UNAVAILABLE = "unavailable"
+
+
+async def swap_conversation(self: SessionLifecycleService, key: str) -> str:
+    """Start a fresh native conversation for *key* on the process it already runs.
+
+    The in-place sibling of :func:`discard_conversation` for a caller that replaces
+    the conversation under the SAME key (the dashboard rewind behind Edit & Resend).
+    The session stays registered and its process stays up, so the sub-agent runs
+    that share that process keep running, and every run of the key keeps reporting
+    to the key, which is now the fresh conversation. Nothing is cancelled.
+
+    Answers ``SWAP_SWAPPED``; ``SWAP_BUSY`` when a turn holds the session, changing
+    nothing (``discard_conversation(skip_if_busy=True)``'s refusal); or
+    ``SWAP_UNAVAILABLE`` when no live session can swap
+    (``LLMProvider.swaps_conversation_in_place``: another backend, a remote
+    workspace) or the provider's ``new_conversation`` raised, as it does for a dead
+    process. That call
+    opens the fresh session BEFORE it closes the old one, so a raise leaves the old
+    conversation in place, and the caller then takes ``discard_conversation``.
+
+    The session's semaphore is held across the swap, so no turn can prompt the
+    handle being replaced. The bookkeeping a discard and the successor's cold start
+    would have done is done here: the session generation advances, the per-key
+    compaction and turn-ceiling state is forgotten, replay is not suppressed, the
+    first turn is armed FRESH (so it replays this slot's history like a cold start
+    would), and the mapped sid moves to the fresh session, the old one stashed as
+    ``discarded_sid``.
+    """
+    owner = self._owner
+    requested_key = key
+    key = owner._fold_key(key)
+    async with owner._lock:
+        session = owner._sessions.get(key)
+        if session is None or not getattr(session.provider, "swaps_conversation_in_place", False):
+            return SWAP_UNAVAILABLE
+        if _turn_in_flight(session):
+            return SWAP_BUSY
+        # Free (``_turn_in_flight`` read it unlocked), so this returns without
+        # suspending, in the same lock hold as the check.
+        await session.semaphore.acquire()
+    try:
+        # A session the account check flagged runs as the old account: it must not
+        # gain a fresh conversation, and the discard's cold start replaces it.
+        if session.retire_on_identity_change:
+            return SWAP_UNAVAILABLE
+        try:
+            await session.provider.new_conversation()
+        except Exception:
+            self._deps.logger.warning(
+                "Could not start a fresh conversation on %s's live process", key, exc_info=True
+            )
+            return SWAP_UNAVAILABLE
+        new_sid = getattr(session.provider, "session_id", "") or ""
+        async with owner._lock:
+            still_live = owner._sessions.get(key) is session
+            if still_live:
+                owner._advance_session_generation(key)
+                owner._compact_cooldown_until.pop(key, None)
+                owner._compact_pending_verdict.pop(key, None)
+                self._release_turn_ceiling(key, requested_key)
+                self._suppress_replay.discard(key)
+                session.first_turn = self._deps.constants().first_turn_fresh
+        # Outside the lock, as ``discard_conversation``'s clear is: the map persists.
+        # Re-pointed only where a sid was mapped, as the cold start would map it.
+        if still_live and owner._session_map.clear_sid(key) and new_sid:
+            # ``provider=""`` keeps the entry's recorded provider: the process is the same.
+            owner._session_map.set(key, new_sid, provider="")
+    finally:
+        session.semaphore.release()
+    self._deps.logger.info("Swapped native conversation on the live process: %s", key)
+    return SWAP_SWAPPED

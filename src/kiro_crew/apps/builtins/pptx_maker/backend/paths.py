@@ -39,8 +39,10 @@ APP_NAME = "pptx-maker"
 
 # Per-segment allow-list. Deliberately excludes "/", "\" and "." runs, so no
 # traversal or separator can survive it — this is the primary path guard and the
-# resolve()-containment check below is the backstop.
-SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# resolve()-containment check below is the backstop. It ends at ``\Z``, not ``$``,
+# which also matches before a trailing newline that would then reach a path.
+# ``test/test_regex_anchor_contract.py`` holds this package to that rule.
+SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 # Environment override, for development and tests only. Production resolves the
 # deck root from the engine's own config so this app and the engine can never
@@ -182,7 +184,11 @@ def _contained(candidate: Path, root: Path) -> Path | None:
         root_resolved = root.resolve()
     except OSError:
         return None
-    if resolved != root_resolved and root_resolved not in resolved.parents:
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    plain = platform_compat.strip_extended_length_prefix(resolved)
+    plain_root = platform_compat.strip_extended_length_prefix(root_resolved)
+    if plain != plain_root and plain_root not in plain.parents:
         return None
     if is_sensitive_path(str(resolved)):
         return None

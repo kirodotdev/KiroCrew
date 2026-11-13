@@ -12,7 +12,7 @@ import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 
@@ -109,6 +109,9 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setenv("PATH", "")
+    # The brew line is the POSIX arm; pin the platform so the Windows CI job
+    # (which now gets the winget arm) still exercises this assertion.
+    monkeypatch.setattr(source.sys, "platform", "linux")
     monkeypatch.setattr(
         github_runner,
         "PROVIDER_EXECUTABLE_CANDIDATES",
@@ -128,6 +131,41 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     assert "sudo cp" not in message
     assert "KIROCREW_GH_BIN" in message
     assert "{executable}" not in message
+
+
+def test_provider_executable_not_found_gives_winget_guidance_on_windows(monkeypatch) -> None:
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_GLAB_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(source.sys, "platform", "win32")
+    monkeypatch.setattr(
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
+        {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
+    )
+    monkeypatch.setattr(github_runner, "_wellknown_windows_dirs", lambda _executable: ())
+
+    for exe, winget in (("gh", "GitHub.cli"), ("glab", "GLab.GLab")):
+        with pytest.raises(source.SourceProviderError) as excinfo:
+            source._resolve_provider_executable(exe)
+        message = str(excinfo.value)
+        assert f"winget install --id {winget}" in message
+        assert f"{exe} auth login" in message
+        # None of the POSIX-only commands a Windows shell can't run.
+        for posix in ("brew install", "sudo ", "$(command -v", "/usr/local/libexec"):
+            assert posix not in message
+
+
+def test_provider_executable_strict_winget_guidance_on_windows(monkeypatch) -> None:
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
+    monkeypatch.setattr(source.sys, "platform", "win32")
+
+    message = source._provider_setup_message("gh", "KIROCREW_GH_BIN", "")
+    assert "winget install --id GitHub.cli --scope machine" in message
+    assert "Program Files" in message
+    assert "sudo" not in message
 
 
 @pytest.mark.asyncio
@@ -333,6 +371,79 @@ def test_provider_executable_windows_still_refuses_an_unverifiable_sid(
 
     with pytest.raises(ValueError, match="SID is unverifiable"):
         github_runner.validate_provider_executable(str(executable))
+
+
+def _windows_arm_refusing(monkeypatch, refused: pathlib.Path) -> list[pathlib.Path]:
+    """Run the Windows ACL arm with a stub ACL answer that refuses *refused*."""
+    asked: list[pathlib.Path] = []
+
+    def fake_windows_check(path, *, label, me_sid, strict):
+        asked.append(pathlib.Path(path))
+        if pathlib.Path(path) == refused:
+            raise ValueError(f"{label} can be written by a non-trusted account")
+
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner.sys, "platform", "win32")
+    monkeypatch.setattr(github_runner.platform_compat, "current_user_sid", lambda: "S-1-5-21-7")
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "check_provider_path_component_windows", fake_windows_check)
+    return asked
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks stand in for junctions")
+def test_provider_executable_windows_asks_the_middle_link_hop_directory(
+    monkeypatch, tmp_path
+) -> None:
+    """``bin/gh.exe -> ../mid/gh.exe -> real/gh.exe`` reads ``mid``,
+    which neither the original's nor the resolved path's parents name, so a
+    ``mid`` another account can write must be asked and refused."""
+    base = tmp_path.resolve()
+    for name in ("bin", "mid", "real"):
+        (base / name).mkdir()
+    real = base / "real" / "gh.exe"
+    real.write_text("rem\n")
+    real.chmod(0o755)
+    (base / "mid" / "gh.exe").symlink_to(real)
+    (base / "bin" / "gh.exe").symlink_to(pathlib.Path("..") / "mid" / "gh.exe")
+    asked = _windows_arm_refusing(monkeypatch, base / "mid")
+
+    with pytest.raises(ValueError, match="non-trusted account"):
+        github_runner.validate_provider_executable(str(base / "bin" / "gh.exe"))
+    assert base / "mid" in asked
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks stand in for junctions")
+def test_provider_executable_windows_single_hop_adds_no_directory(monkeypatch, tmp_path) -> None:
+    """A plain one-link install reads only the two chains main already asks."""
+    base = tmp_path.resolve()
+    (base / "bin").mkdir()
+    (base / "real").mkdir()
+    real = base / "real" / "gh.exe"
+    real.write_text("rem\n")
+    real.chmod(0o755)
+    (base / "bin" / "gh.exe").symlink_to(real)
+
+    assert github_runner.windows_link_hop_dirs(base / "bin" / "gh.exe") == []
+    asked = _windows_arm_refusing(monkeypatch, base / "unrelated")
+    assert github_runner.validate_provider_executable(str(base / "bin" / "gh.exe")) == str(real)
+    assert set(asked) == {real, *real.parents, *(base / "bin" / "gh.exe").parents}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks stand in for junctions")
+def test_provider_directory_windows_asks_the_middle_link_hop_directory(
+    monkeypatch, tmp_path
+) -> None:
+    """The fallback-directory validator walks the same hops."""
+    base = tmp_path.resolve()
+    (base / "mid").mkdir()
+    real = base / "real-bin"
+    real.mkdir()
+    (base / "mid" / "bin").symlink_to(real, target_is_directory=True)
+    (base / "bin").symlink_to(base / "mid" / "bin", target_is_directory=True)
+    _windows_arm_refusing(monkeypatch, base / "mid")
+
+    with pytest.raises(ValueError, match="non-trusted account"):
+        github_runner.validate_provider_directory(str(base / "bin"))
 
 
 def test_provider_executable_rejects_binary_owned_by_another_user(monkeypatch, tmp_path) -> None:

@@ -32,6 +32,7 @@ const REFUSAL_COPY: Record<string, () => string> = {
   transfer_invalid_gzip: () => i18nT('components.importSessionItem.refusal_damaged_file'),
   transfer_invalid_json: () => i18nT('components.importSessionItem.refusal_not_a_session'),
   transfer_body_not_object: () => i18nT('components.importSessionItem.refusal_not_a_session'),
+  transfer_unsupported_format: () => i18nT('components.importSessionItem.refusal_zip_archive'),
   transfer_bundle_too_large: () => i18nT('components.importSessionItem.refusal_too_large'),
   transfer_body_unreadable: () => i18nT('components.importSessionItem.refusal_upload_failed'),
   transfer_expansion_busy: () => i18nT('components.importSessionItem.refusal_busy'),

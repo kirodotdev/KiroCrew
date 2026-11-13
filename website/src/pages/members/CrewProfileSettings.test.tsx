@@ -16,7 +16,7 @@ import { createTestStore } from '../../test/helpers'
  *   - each pick writes the crew record AND the live DM slot, so the open thread
  *     follows at once; the picker page stays open, check mark moved;
  *   - "Inherited" goes over the wire as '' (the record's inherit spelling);
- *   - the lock stays a switch in the group, with its help as the group's caption.
+ *   - the group has no dashboard lock switch.
  * The card is stood in for by a fake push with two hosts (depth 0: the group,
  * depth 1: the picker); the pages are portalled into them, so the test reads
  * them like the card would show them. */
@@ -27,14 +27,17 @@ const mockApi = vi.hoisted(() => ({
   chatSlotModel: vi.fn(),
   chatSlotReasoningEffort: vi.fn(),
   agentResolvedModel: vi.fn(),
+  harnessModels: vi.fn(),
   memberDashboard: vi.fn(),
-  memberDashboardLock: vi.fn(),
   kirocrewConfig: vi.fn(),
 }))
 vi.mock('../../api/client', () => ({ api: mockApi }))
 const modelsState = vi.hoisted(() => ({ isDegraded: false }))
 vi.mock('../../hooks/useAvailableModels', () => ({
-  useAvailableModelsQuery: () => ({ data: [{ name: 'auto' }, { name: 'claude-opus-5' }, { name: 'claude-haiku-4' }], isDegraded: modelsState.isDegraded, error: null }),
+  useAvailableModelsQuery: () => {
+    const data = [{ name: 'auto' }, { name: 'claude-opus-5' }, { name: 'claude-haiku-4' }]
+    return { data, isDegraded: modelsState.isDegraded, error: null }
+  },
 }))
 
 import CrewProfileSettings from './CrewProfileSettings'
@@ -42,7 +45,6 @@ import { ProfilePagePushContext, type ProfilePagePush } from './CrewProfilePanel
 import { isTrustRootTarget } from '../../guide/findTargetPolicy'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
-import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
 
 let lastQc: QueryClient
 let hosts: [HTMLDivElement, HTMLDivElement]
@@ -95,14 +97,14 @@ const checked = (key: string) => within(page(key)).getByRole('radio', { checked:
 beforeEach(() => {
   vi.clearAllMocks()
   modelsState.isDegraded = false
-  mockApi.memberDashboard.mockResolvedValue({ structure_locked: false })
-  mockApi.memberDashboardLock.mockResolvedValue({ ok: true, structure_locked: true })
+  mockApi.memberDashboard.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
   mockApi.chatMode.mockResolvedValue({ ok: true })
   mockApi.chatSlotModel.mockResolvedValue({ ok: true })
   mockApi.chatSlotReasoningEffort.mockResolvedValue({ ok: true })
   mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
   mockApi.kirocrewConfig.mockResolvedValue({ dashboard: {} })
+  mockApi.harnessModels.mockResolvedValue([{ model_name: 'auto' }, { model_name: 'sonnet-cc' }])
 })
 afterEach(() => { cleanup(); hosts?.forEach((h) => h.remove()) })
 
@@ -237,8 +239,8 @@ describe('CrewProfileSettings permission', () => {
   it('says under each option what that mode lets the mate do', () => {
     setup(member())
     const p = open('approval_mode')
-    expect(p).toHaveTextContent('oncall asks you before each tool, in every chat with it.')
-    expect(p).toHaveTextContent('oncall runs read-only commands on its own and asks for the rest, in every chat with it.')
+    expect(p).toHaveTextContent('oncall looks things up on its own, like reading files, searching the web or running read-only commands, and asks for the rest, in every chat with it.')
+    expect(p).toHaveTextContent('oncall also searches its memory, past chats, skills and knowledge library on its own and asks for the rest, in every chat with it.')
     expect(p).toHaveTextContent('oncall runs tools without asking you first, in every chat with it.')
     // Normal is the row above, so no description tells the person to go pick it.
     expect(p).not.toHaveTextContent('Pick Normal')
@@ -314,7 +316,7 @@ describe('CrewProfileSettings permission', () => {
 
   it('saves nothing while the thread is still being confirmed', async () => {
     setup(member(), null, true)
-    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this mate is open.')
+    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this bot is open.')
     const p = open('approval_mode')
     expect(p).toHaveAttribute('aria-busy', 'true')
     expect(within(p).getByRole('radio', { name: /Normal/ })).toHaveAttribute('aria-disabled', 'true')
@@ -348,6 +350,18 @@ describe('CrewProfileSettings permission', () => {
 })
 
 describe('CrewProfileSettings model and effort', () => {
+  it.each([
+    ['model', 'claude-opus-5'],
+    ['reasoning_effort', 'High'],
+  ])('touches no thread when saving %s fails', async (key, label) => {
+    mockApi.updateKirocrewAgent.mockRejectedValueOnce(new Error('record save failed'))
+    setup(member({ model: 'claude-haiku-4', reasoning_effort: 'low' }))
+    pick(key, label)
+    await waitFor(() => expect(within(page(key)).getByTestId('crew-profile-settings-error')).toHaveTextContent('record save failed'))
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+  })
+
   it('pins a model on the record and the thread', async () => {
     setup(member())
     pick('model', 'claude-opus-5')
@@ -390,6 +404,18 @@ describe('CrewProfileSettings model and effort', () => {
     setup(member({ model: 'claude-opus-5' }))
     const p = open('reasoning_effort')
     await waitFor(() => expect(within(p).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Medium'))
+  })
+
+  it.each(['claude', 'goose', 'pi'])('names and judges an Inherited model by what the %s route resolves (#25821)', async (harness) => {
+    // `model` is the configured backend's answer; the crewmate's sessions run `harness_model`.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-haiku-4', harness_model: 'claude-opus-5', harness, acp_backend: '',
+    })
+    setup(member())
+    await waitFor(() => expect(within(group()).getByTestId('crew-profile-setting-reasoning_effort')).toBeInTheDocument())
+    const inherit = within(open('model')).getByRole('radio', { name: /Inherited/ })
+    expect(inherit).toHaveTextContent('Using claude-opus-5')
+    expect(inherit).not.toHaveTextContent('claude-haiku-4')
   })
 
   it('shows a failed resolve instead of silently hiding effort', async () => {
@@ -525,79 +551,16 @@ describe('CrewProfileSettings worker model and effort', () => {
   })
 })
 
-/* The person's lock on the mate's dynamic dashboard lives HERE, on the
- * mate's card, as one labelled switch in the group with a line of help as
- * the group's caption. The Dashboard tab only shows a badge
- * (CrewDynamicDashboard.test.tsx pins that it has no control). */
-describe('CrewProfileSettings dashboard lock', () => {
-  const SWITCH = 'Lock dashboard layout'
-
-  it('offers the switch and reads lock state', async () => {
+/* The card has no dashboard lock switch and does not read the dashboard: a crewmate
+ * changes its page only through its own tools, and rollback undoes a change. */
+describe('CrewProfileSettings without a dashboard lock', () => {
+  it('offers no lock switch and does not read the dashboard', async () => {
     setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
-    expect(screen.getByTestId('crew-profile-dashboard-lock')).toHaveTextContent(SWITCH)
-    expect(group()).toHaveTextContent(
-      "While locked, oncall can't replace its dashboard with a different layout or restore an older one.",
-    )
-  })
-
-  it('reads the lock off the dashboard body, so it shows what the gateway holds', async () => {
-    mockApi.memberDashboard.mockResolvedValue({ structure_locked: true })
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
-    expect(mockApi.memberDashboard).toHaveBeenCalledWith('oncall', 'oncall')
-  })
-
-  it('is held until the read answers: a switch that moves first shows a state nothing holds', async () => {
-    let answer: (v: { structure_locked: boolean }) => void = () => {}
-    mockApi.memberDashboard.mockReturnValue(new Promise((r) => { answer = r }))
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    expect(sw).toHaveAttribute('aria-disabled', 'true')
-    fireEvent.click(sw)
-    expect(mockApi.memberDashboardLock).not.toHaveBeenCalled()
-    answer({ structure_locked: false })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-  })
-
-  it('flips the lock through the owner route, then re-reads every dashboard query for the mate', async () => {
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    const spy = vi.spyOn(lastQc, 'invalidateQueries')
-    fireEvent.click(sw)
-    await waitFor(() => expect(mockApi.memberDashboardLock).toHaveBeenCalledWith('oncall', 'oncall', true))
-    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, 'oncall'] }))
-    // The tab's frame reads under the same prefix, so it is refreshed by that one call.
-    expect(spy.mock.calls.some(([arg]) => (arg as { queryKey: string[] }).queryKey[0] === MEMBER_DASHBOARD_QUERY_PREFIX)).toBe(true)
-  })
-
-  it('says which change failed and what stayed the same', async () => {
-    mockApi.memberDashboard.mockResolvedValue({ structure_locked: true })
-    mockApi.memberDashboardLock.mockRejectedValue(new Error('403'))
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    fireEvent.click(sw)
-    await waitFor(() => expect(mockApi.memberDashboardLock).toHaveBeenCalledWith('oncall', 'oncall', false))
-    expect(await screen.findByTestId('crew-profile-dashboard-lock-error')).toHaveTextContent(
-      "Couldn't unlock the dashboard. It's still locked. Try again.",
-    )
-  })
-
-  it('hides the switch and shows error + hint when the lock cannot be read', async () => {
-    mockApi.memberDashboard.mockRejectedValue(new Error('500'))
-    setup(member())
-    expect(await screen.findByTestId('crew-profile-dashboard-lock-error')).toHaveTextContent(
-      "Couldn't read whether the dashboard is locked.",
-    )
-    // Switch is hidden when the state is unknown (showing a dim off switch
-    // for an unknown state would look identical to "unlocked" and mislead),
-    // but the caption is still shown so the row is not context-free.
-    expect(screen.queryByRole('switch', { name: SWITCH })).toBeNull()
-    expect(group()).toHaveTextContent("can't replace")
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(screen.queryByRole('switch', { name: 'Lock dashboard layout' })).toBeNull()
+    expect(screen.queryByTestId('crew-profile-dashboard-lock')).toBeNull()
+    expect(group()).not.toHaveTextContent("can't replace its dashboard")
+    expect(mockApi.memberDashboard).not.toHaveBeenCalled()
   })
 })
 
@@ -671,5 +634,324 @@ describe('CrewProfileSettings Dynamic capabilities preview', () => {
     setup(member({ dynamic_capabilities: true }))
     await screen.findByTestId('crew-profile-dynamic-capabilities')
     expect(sw().getAttribute('aria-checked')).toBe('true')
+  })
+})
+
+/* The crewmate's own harness (`agents.<name>.acp_backend`), graduated out of preview.
+ * Its stored value and the harnesses on offer come from the owner-only readout
+ * (the server's `crewmate_harnesses` list), never the roster row and never a list
+ * of the dashboard's own; the model list follows the picked harness. */
+describe('CrewProfileSettings harness', () => {
+  const readout = (over: Record<string, unknown> = {}) => mockApi.agentResolvedModel.mockResolvedValue({
+    model: 'claude-opus-5', acp_backend: '', harness: 'kas', inherited_harness: 'kas',
+    harnesses: ['claude', 'codex', 'kas'], worker_harnesses: ['claude', 'kas'],
+    ...over,
+  })
+
+  it('reads Inherited and names what that runs on, with no preview switch', async () => {
+    readout()
+    setup(member())
+    // The row itself says what it controls, and Inherited names what runs.
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Inherited \(Kiro Agent\)$/))
+    expect(within(group()).getByTestId('crew-profile-setting-acp_backend')).toHaveTextContent('The AI coding tool oncall runs on')
+    const options = open('acp_backend')
+    // Inherited follows the crew default, so it never reads as the same choice
+    // as the harness it resolves to today.
+    expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Follows the crew default (now Kiro Agent).')
+    // A harness the worker cannot start on says so before it is picked.
+    expect(within(options).getByRole('radio', { name: /OpenAI Codex/ })).toHaveTextContent('workers cannot start')
+    // No conditional caption: each option says its own result instead.
+    expect(options).not.toHaveTextContent('else sets them back to Inherited')
+  })
+
+  it.each([
+    ['a live thread', 'member-oncall'],
+    ['no thread', null],
+  ])('saves a harness pick on the record alone, with %s', async (_label, slotKey) => {
+    // The server reloads the live thread onto the new harness and clears its
+    // own model and effort picks, so the card posts nothing to the thread.
+    readout({ acp_backend: 'kas' })
+    setup(member({ model: 'claude-opus-5', reasoning_effort: 'high', worker_model: 'claude-haiku-4' }), slotKey)
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    pick('acp_backend', /Claude Code/)
+    const saved = await screen.findByTestId('crew-profile-settings-saved')
+    expect(saved).toHaveTextContent("Saved. oncall's next message starts on this harness.")
+    // A success is a status line, not an alert.
+    expect(saved).toHaveAttribute('role', 'status')
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: 'claude', model: '', worker_model: '' })
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('crew-profile-settings-error')).toBeNull()
+    expect(rowValue('model')).toHaveTextContent('Inherited')
+    expect(rowValue('worker_model')).toHaveTextContent('Same as oncall')
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0]).toMatchObject({ model: '', reasoning_effort: 'high', worker_model: '' })
+  })
+
+  it('shows a refused harness change and puts the stored harness back', async () => {
+    readout({ acp_backend: 'kas' })
+    const message = 'oncall is in the middle of a reply. Wait for it to finish, or stop it, then change the agent harness.'
+    mockApi.updateKirocrewAgent.mockRejectedValueOnce(
+      new ApiError(409, message, JSON.stringify({ error: message, code: 'crewmate_harness_busy' })),
+    )
+    setup(member({ model: 'claude-opus-5' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    pick('acp_backend', /Claude Code/)
+    await waitFor(() => expect(within(page('acp_backend')).getByTestId('crew-profile-settings-error')).toHaveTextContent(message))
+    expect(checked('acp_backend')).toHaveTextContent('Kiro Agent')
+    expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent')
+    expect(rowValue('model')).toHaveTextContent('claude-opus-5')
+    expect(screen.queryByTestId('crew-profile-settings-saved')).toBeNull()
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+  })
+
+  it('names what Inherited runs on while a harness is pinned', async () => {
+    readout({ acp_backend: 'claude', harness: 'claude', inherited_harness: 'kas' })
+    setup(member())
+    // A pinned harness reads by its own name alone, never as Inherited.
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Claude Code$/))
+    const options = open('acp_backend')
+    expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Follows the crew default (now Kiro Agent).')
+  })
+
+  it.each([
+    ['settings', 'Set in Settings → Agent Harness.'],
+    ['legacy', 'Set by agent.member_acp_backend in config.json.'],
+    ['fallback', "Settings → Agent Harness is Claude Code, which bots can't run on, so this is Kiro Agent."],
+    ['worker_spec', "This bot's workers use settings Claude Code can't carry, so this is Kiro Agent."],
+  ])('says where Inherited comes from (%s)', async (source, text) => {
+    readout({ inherited_source: source, settings_harness: 'claude' })
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Inherited \(Kiro Agent\)$/))
+    const options = open('acp_backend')
+    expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent(
+      `Follows the crew default (now Kiro Agent). ${text}`,
+    )
+  })
+
+  it('lists KAS models for a pin that runs on KAS', async () => {
+    readout({ acp_backend: 'pi', harness: 'kas', kas_pin_harnesses: ['pi', 'goose'] })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kas'))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('pi')
+  })
+
+  it('lists the floor models when policy sends the pin to the floor', async () => {
+    readout({ acp_backend: 'pi', harness: 'kiro', kas_pin_harnesses: ['pi'], kas_pin_landing: 'kiro' })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kiro'))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('kas')
+  })
+
+  it('lists the pinned harness models, not the install list', async () => {
+    readout({ acp_backend: 'claude', harness: 'claude' })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('claude'))
+    const options = open('model')
+    await within(options).findByRole('radio', { name: 'sonnet-cc' })
+    expect(within(options).queryByRole('radio', { name: 'claude-haiku-4' })).toBeNull()
+  })
+
+  it('says so when the pinned harness cannot start, naming it', async () => {
+    readout({ acp_backend: 'codex', harness: '', harness_error: 'crewmate_harness_unavailable: oncall cannot start' })
+    setup(member())
+    const notice = await screen.findByTestId('crew-profile-settings-harness-error')
+    // The harness is named, never its raw id.
+    expect(notice).toHaveTextContent('oncall is set to run on OpenAI Codex')
+    expect(notice).not.toHaveTextContent('codex,')
+    expect(rowValue('acp_backend')).toHaveTextContent('OpenAI Codex')
+    // The way out sits beside the notice: it opens the harness picker.
+    fireEvent.click(screen.getByTestId('crew-profile-settings-harness-fix'))
+    expect(page('acp_backend')).toBeInTheDocument()
+    // The pinned option agrees with the notice: it can't start here, and never
+    // says it can chat (codex is not a worker harness either).
+    const pinned = within(page('acp_backend')).getByRole('radio', { name: /OpenAI Codex/ })
+    expect(pinned).toHaveTextContent("Can't start here.")
+    expect(pinned).not.toHaveTextContent('can chat')
+  })
+
+  it('offers exactly the server list, plus Inherited', async () => {
+    readout()
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Inherited'))
+    const names = within(open('acp_backend')).getAllByRole('radio').map((r) => r.getAttribute('aria-label') || r.textContent || '')
+    expect(names).toHaveLength(4)
+    expect(names.join('|')).toMatch(/Inherited/)
+    // Kiro CLI is not on the server's list, so it is not offered.
+    expect(within(page('acp_backend')).queryByRole('radio', { name: /Kiro CLI/ })).toBeNull()
+  })
+
+  it('clears the pin with Inherited', async () => {
+    readout({ acp_backend: 'claude', harness: 'claude' })
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Claude Code$/))
+    pick('acp_backend', /Inherited/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: '' }))
+  })
+
+  it('names the known worker limits beside each harness', async () => {
+    readout()
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Inherited'))
+    const options = open('acp_backend')
+    // Workers run on Claude Code: no line, only real limits are named.
+    expect(within(options).getByRole('radio', { name: /Claude Code/ })).not.toHaveTextContent('workers cannot start')
+    expect(within(options).getByRole('radio', { name: /OpenAI Codex/ })).toHaveTextContent('workers cannot start')
+    const kas = within(options).getByRole('radio', { name: /^Kiro Agent/ })
+    expect(kas).not.toHaveTextContent('workers cannot start')
+  })
+
+  it('lists only harnesses a Bot can run on, and names a stored one outside them', async () => {
+    // A hand-edited Kiro CLI pin: crewmates are not offered it.
+    readout({ acp_backend: 'kiro', harness: 'kiro' })
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro CLI (unavailable)'))
+    expect(screen.getByTestId('crew-profile-settings-harness-error')).toHaveTextContent("oncall is set to Kiro CLI, which bots can't run on here.")
+    const options = open('acp_backend')
+    expect(within(options).queryByRole('radio', { name: /Kiro CLI/ })).toBeNull()
+    expect(within(options).getAllByRole('radio').map((r) => r.getAttribute('aria-checked'))).not.toContain('true')
+  })
+
+  it('keeps a model pin the new harness serves, and resets one it does not', async () => {
+    readout({ acp_backend: 'kas', harness: 'kas' })
+    // Each harness serves its own list: the pick reads the TARGET's.
+    mockApi.harnessModels.mockImplementation(async (h: string) => (h === 'claude'
+      ? [{ model_name: 'auto' }, { model_name: 'sonnet-cc' }]
+      : [{ model_name: 'auto' }, { model_name: 'sonnet-cc' }, { model_name: 'claude-opus-5' }]))
+    setup(member({ model: 'sonnet-cc', worker_model: 'claude-opus-5' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    const options = open('acp_backend')
+    fireEvent.click(within(options).getByRole('radio', { name: /Claude Code/ }))
+    // sonnet-cc is served on Claude Code, so it stays; claude-opus-5 is not, so it goes to the default.
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: 'claude', worker_model: '' }))
+    expect(mockApi.harnessModels).toHaveBeenCalledWith('claude')
+  })
+
+  it('resets both model pins when the harness goes back to Inherited', async () => {
+    // The server judges an unpinned Bot's models on its own route; Inherited is
+    // the one value it always takes, so the card does not guess.
+    readout({ acp_backend: 'claude', harness: 'claude', inherited_harness: 'kas' })
+    setup(member({ model: 'sonnet-cc', worker_model: 'claude-haiku-4' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Claude Code$/))
+    pick('acp_backend', /Inherited/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: '', model: '', worker_model: '' }))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('')
+  })
+
+  it('keeps both model pins when the new harness list is still cold', async () => {
+    // A cold catalog answers `auto` alone: unknown, not proof the pins are gone.
+    readout({ acp_backend: '', harness: 'kas' })
+    mockApi.harnessModels.mockResolvedValue([{ model_name: 'auto' }])
+    setup(member({ model: 'claude-opus-5', worker_model: 'claude-haiku-4' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Inherited'))
+    pick('acp_backend', /Claude Code/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: 'claude' }))
+  })
+
+  it('says under each harness what a pick does to the model pins', async () => {
+    readout({ acp_backend: 'kas', harness: 'kas' })
+    mockApi.harnessModels.mockImplementation(async (h: string) => (h === 'claude'
+      ? [{ model_name: 'auto' }, { model_name: 'sonnet-cc' }]
+      : h === 'codex' ? [{ model_name: 'auto' }]
+        : [{ model_name: 'auto' }, { model_name: 'sonnet-cc' }, { model_name: 'claude-opus-5' }]))
+    setup(member({ model: 'sonnet-cc', worker_model: 'claude-opus-5' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    const options = open('acp_backend')
+    const claude = within(options).getByRole('radio', { name: /Claude Code/ })
+    await waitFor(() => expect(claude).toHaveTextContent('Keeps sonnet-cc.'))
+    expect(claude).toHaveTextContent('Worker model goes back to Same as oncall.')
+    // Inherited always resets both pins.
+    expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Model goes back to Inherited.')
+    // A cold list (auto only) says nothing about the pins; the current harness neither.
+    expect(within(options).getByRole('radio', { name: /OpenAI Codex/ })).not.toHaveTextContent('Keeps')
+    expect(within(options).getByRole('radio', { name: /^Kiro Agent/ })).not.toHaveTextContent('Keeps')
+  })
+
+  it('names a harness whose own model list failed on the picker page', async () => {
+    readout({ acp_backend: 'kas', harness: 'kas' })
+    mockApi.harnessModels.mockImplementation(async (h: string) => {
+      if (h === 'codex') throw new Error('models down')
+      return [{ model_name: 'auto' }, { model_name: 'sonnet-cc' }]
+    })
+    setup(member({ model: 'sonnet-cc' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    open('acp_backend')
+    expect(await screen.findByTestId('crew-profile-settings-option-models-error')).toHaveTextContent("Couldn't read the model list for OpenAI Codex")
+  })
+
+  it('keeps a model pin whose case differs from the served id, as the server does', async () => {
+    readout({ acp_backend: 'kas', harness: 'kas' })
+    mockApi.harnessModels.mockImplementation(async (h: string) => (h === 'claude'
+      ? [{ model_name: 'auto' }, { model_name: 'claude-opus-5' }, { model_name: 'claude-haiku-4' }]
+      : [{ model_name: 'auto' }, { model_name: 'claude-opus-5' }]))
+    setup(member({ model: 'CLAUDE-OPUS-5', worker_model: ' Claude-Haiku-4 ' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    const options = open('acp_backend')
+    await waitFor(() => expect(within(options).getByRole('radio', { name: /Claude Code/ })).toHaveTextContent('Keeps CLAUDE-OPUS-5.'))
+    fireEvent.click(within(options).getByRole('radio', { name: /Claude Code/ }))
+    // Both pins are served on Claude Code up to case: nothing is reset.
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: 'claude' }))
+  })
+
+  it('changes nothing when the new harness model list cannot be read', async () => {
+    readout({ acp_backend: 'kas', harness: 'kas' })
+    mockApi.harnessModels.mockImplementation(async (h: string) => {
+      if (h === 'claude') throw new Error('models down')
+      return [{ model_name: 'auto' }, { model_name: 'sonnet-cc' }]
+    })
+    setup(member({ model: 'sonnet-cc' }))
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro Agent'))
+    fireEvent.click(within(open('acp_backend')).getByRole('radio', { name: /Claude Code/ }))
+    await screen.findByTestId('crew-profile-settings-error')
+    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
+  })
+
+  it('lets a keyboard reach the choices when the stored pin is not one of them', async () => {
+    readout({ acp_backend: 'kiro', harness: 'kiro' })
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro CLI (unavailable)'))
+    const radios = within(open('acp_backend')).getAllByRole('radio')
+    expect(radios.filter((r) => r.getAttribute('tabindex') === '0')).toHaveLength(1)
+    expect(radios[0]).toHaveAttribute('tabindex', '0')
+  })
+})
+
+/* The per-crewmate switch for one-click Dashboard card replies. A preview, OFF by
+ * default: an older gateway sends no field, and a crewmate that never opted in has
+ * none, both of which read as off. The gateway enforces it; this only writes the
+ * crewmate's record. */
+describe('CrewProfileSettings dashboard card send', () => {
+  const SWITCH = 'Send replies in one click'
+
+  it('is off when the roster row says nothing, and off when it says false', async () => {
+    setup(member())
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('is on only when the record says true', async () => {
+    setup(member({ dashboard_card_send: true }))
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("a reply button on oncall's Dashboard tab")
+  })
+
+  it('writes the crewmate record and updates the roster row', async () => {
+    mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dashboard_card_send: true }))
+    await waitFor(() => {
+      const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+      expect(rows?.[0].dashboard_card_send).toBe(true)
+    })
+  })
+
+  it('says the setting did not change when the write fails, and leaves the row alone', async () => {
+    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('500'))
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    expect(await screen.findByTestId('crew-profile-dashboard-card-send-error')).toHaveTextContent(
+      "Couldn't turn on one-click send. It's still off.",
+    )
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].dashboard_card_send).toBeUndefined()
   })
 })

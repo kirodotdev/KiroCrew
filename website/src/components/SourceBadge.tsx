@@ -3,7 +3,7 @@ const sourceColorMap: Record<string, string> = {
   kirocrew: 'bg-bg-elevated text-muted border border-border',
   project: 'text-ok',
 }
-const defaultColor = 'bg-muted/10 text-muted'
+const defaultColor = 'bg-bg-hover text-muted'
 
 export function SourceBadge({ source, children, className }: {
   source?: string

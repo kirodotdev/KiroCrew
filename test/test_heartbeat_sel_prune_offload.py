@@ -24,9 +24,12 @@ import threading
 from unittest.mock import MagicMock
 
 import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 import kiro_crew.heartbeat as hb_mod
 from kiro_crew.heartbeat import HeartbeatService
+from kiro_crew.metrics.recorder import MetricsRecorder
 
 _PRUNE_COUNTER = "kirocrew.sel.prune_failed.count"
 
@@ -50,9 +53,7 @@ def _service(
     svc._processing = True
     svc._tick = 0  # 0 % _PRUNE_TICKS == 0 -> prune branch runs
 
-    monkeypatch.setattr(
-        hb_mod.KiroCrewConfig, "load", classmethod(lambda cls: MagicMock())
-    )
+    monkeypatch.setattr(hb_mod.KiroCrewConfig, "load", classmethod(lambda cls: MagicMock()))
     ran_on: list[str] = []
 
     def _prune() -> None:
@@ -74,9 +75,7 @@ class TestSelPrunePool:
     on purpose rather than drifting."""
 
     @pytest.mark.asyncio
-    async def test_prune_runs_off_the_event_loop(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         svc, _, ran_on = _service(monkeypatch)
         loop_thread = threading.current_thread().name
 
@@ -120,15 +119,24 @@ class TestSelPruneFailureIsLoud:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         svc, _, _ran = _service(monkeypatch, prune_error=OSError("no space left on device"))
-        recorder = MagicMock()
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader])
+        recorder = MetricsRecorder(provider.get_meter("test"))
         monkeypatch.setattr(hb_mod, "get_recorder", lambda: recorder)
 
         await svc._beat()
 
-        # Core metric names must live under the kirocrew.* namespace -- an
-        # off-namespace name is rejected inside counter(), which swallows the
-        # error, so the counter would never fire and nothing would say so.
-        recorder.counter.assert_called_once_with(_PRUNE_COUNTER)
+        # A real recorder, so an off-namespace name (rejected and swallowed
+        # inside counter()) exports no point and fails here.
+        data = reader.get_metrics_data()
+        provider.shutdown()
+        points = {
+            metric.name: [p.value for p in metric.data.data_points]
+            for rm in (data.resource_metrics if data is not None else [])
+            for sm in rm.scope_metrics
+            for metric in sm.metrics
+        }
+        assert points == {_PRUNE_COUNTER: [1]}
 
     @pytest.mark.asyncio
     async def test_failure_does_not_stop_the_heartbeat(

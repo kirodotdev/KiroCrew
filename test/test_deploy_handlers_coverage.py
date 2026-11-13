@@ -68,8 +68,8 @@ class _NonRestrictedState:
     _slots: dict = {}
 
 
-class _FakeReq:
-    """Request double with a non-restricted app state installed."""
+class _FakeReq(dict):
+    """Request double (a mapping, like ``web.Request``) with a non-restricted state."""
 
     def __init__(self, body=None, *, match_info=None, query=None, headers=None, json_exc=None):
         self._body = {} if body is None else body

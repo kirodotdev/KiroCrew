@@ -114,6 +114,27 @@ def _webex(cwd: str, scratch: str) -> Send:
     return send
 
 
+def _wecom(cwd: str, scratch: str) -> Send:
+    from kiro_crew.wecom.renderer import WeComRenderer
+    from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+
+    r = WeComRenderer(
+        MagicMock(),
+        "rq1",
+        "https://r",
+        WECOM_CAPABILITIES,
+        chat_id="u1",
+        send_document=AsyncMock(),
+    )
+    r.authorize_upload_root(cwd, scratch_root=scratch)
+
+    async def send(text: str) -> int:
+        _, files = await r._extract_uploads(text)
+        return len(files)
+
+    return send
+
+
 def _teams(cwd: str, scratch: str) -> Send:
     from kiro_crew.teams.renderer import TeamsRenderer
     from kiro_crew.teams.transport import TEAMS_CAPABILITIES
@@ -127,6 +148,20 @@ def _teams(cwd: str, scratch: str) -> Send:
         upload_root=cwd,
     )
     r.authorize_scratch_root(scratch)
+
+    async def send(text: str) -> int:
+        _, files = await r._extract_uploads(text)
+        return len(files)
+
+    return send
+
+
+def _feishu(cwd: str, scratch: str) -> Send:
+    from kiro_crew.feishu.renderer import FeishuRenderer
+    from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+
+    r = FeishuRenderer(MagicMock(), "om_1", FEISHU_CAPABILITIES, uploads_allowed=True)
+    r.authorize_upload_root(cwd, scratch_root=scratch)
 
     async def send(text: str) -> int:
         _, files = await r._extract_uploads(text)
@@ -175,8 +210,10 @@ CHANNELS: dict[str, Callable[[str, str], Send]] = {
     "discord": _discord,
     "telegram": _telegram,
     "webex": _webex,
+    "wecom": _wecom,
     "teams": _teams,
     "whatsapp": _whatsapp,
+    "feishu": _feishu,
 }
 
 channel = pytest.mark.parametrize("make", list(CHANNELS.values()), ids=list(CHANNELS))

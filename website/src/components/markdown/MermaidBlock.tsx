@@ -1,7 +1,7 @@
 import { memo, useEffect, useId, useRef, useState } from 'react'
 import { Check, Copy, Download, FileCode, Loader2, Maximize2, MoreHorizontal } from 'lucide-react'
 import { mermaidFontCss } from '../mermaidFontCss'
-import { downloadBlob } from '../../utils/download'
+import { saveBlob } from '../../utils/download'
 import { copyCode } from '../../utils/clipboard'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../ui/dropdown-menu'
@@ -9,6 +9,7 @@ import ErrorNotice from '../ErrorNotice'
 import DiagramLightbox from '../DiagramLightbox'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { i18nT } from '../../i18n/t'
+import { MERMAID_DOMPURIFY_CONFIG } from './mermaidSanitize'
 
 function isDarkTheme(): boolean {
   return (document.documentElement.getAttribute('data-theme') || '').includes('dark')
@@ -56,6 +57,7 @@ function initMermaid(mermaid: MermaidApi): void {
       tertiaryColor: '#f5f5f5',
     },
     securityLevel: 'strict',
+    dompurifyConfig: MERMAID_DOMPURIFY_CONFIG,
     fontFamily: 'inherit',
     // Throw on parse errors instead of injecting mermaid's error diagram into
     // a temp <div id="dmermaid-*"> on document.body. That temp node is leaked
@@ -132,7 +134,7 @@ export const MermaidBlock = memo(function MermaidBlock({ code }: { code: string 
         if (!image) throw new Error('canvas encoder returned null')
         blob = image
       }
-      downloadBlob(blob, `${basename}.${format}`)
+      await saveBlob(blob, `${basename}.${format}`)
       setDownloadFailed(false)
     } catch {
       setDownloadFailed(true)

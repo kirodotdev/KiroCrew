@@ -55,9 +55,11 @@ from intent. Ask what is already saved before describing a new workflow — an
 existing one that fits skips the authoring step entirely.
 
 In dashboard chat, `/workflow` lists the saved workflows, and `/workflow <name> [input]`
-runs one by its name (the slug the list shows), passing the rest of the line as
+runs one by the name the list shows, passing the rest of the line as
 its input. The run starts at once and its result appears in the chat when it
-finishes.
+finishes. Typing `/workflow ` in the chat box also opens a menu of the saved
+workflows; picking one fills in `/workflow <name> ` for you to add the input
+and send.
 
 ## What comes back
 

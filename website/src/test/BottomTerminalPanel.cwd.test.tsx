@@ -13,7 +13,7 @@
  *    omits it when no session is selected, so the backend default applies.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import { TerminalTabsView } from '../components/BottomTerminalPanel'
@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 afterEach(() => {
-  __resetBottomTerminal()
+  act(() => { __resetBottomTerminal() })
 })
 
 /** Store whose active slot is `key` and whose dashboard slot list carries the

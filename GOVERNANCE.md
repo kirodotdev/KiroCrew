@@ -14,9 +14,9 @@ This document covers who makes decisions in Kiro Crew, how those decisions get m
 
 Decisions happen in public, on the issue or pull request they belong to, with the reasoning written down. That applies to accepting a change and to declining one, because a contributor who gets a no deserves to know why.
 
-Architectural changes get written up first as an RFC, so the design can be argued over before anyone writes the code, and so the reasoning survives after the thread scrolls away. An RFC is its own pull request adding a document to [docs/request-for-change/](docs/request-for-change/). Once it lands, the pull requests that implement it reference it by number, which leaves a trail from the finished code back to the argument that produced it.
+Large changes get written up first as an RFC, so the design can be argued over before anyone writes the code, and so the reasoning survives after the thread scrolls away. An RFC is its own pull request adding a document to [docs/request-for-change/](docs/request-for-change/). Once it lands, the pull requests that implement it reference it by number, which leaves a trail from the finished code back to the argument that produced it.
 
-That applies to changes to a public interface, changes other parts of the project would have to build around, and anything that would be expensive to reverse. Everything else skips it. A bug fix should never wait on a design document, and an RFC does not have to be long to count. If you are unsure which side of the line your change falls on, open an issue and ask.
+What counts as large is listed once, in [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-workflow). Everything else skips it and updates any design doc it makes stale in the same pull request. A bug fix should never wait on a design document, and an RFC does not have to be long to count. If you are unsure which side of the line your change falls on, open an issue and ask.
 
 Maintainers aim for agreement, and in practice most decisions are made by whichever maintainer is reviewing. Where maintainers disagree and talking it through does not resolve it, a majority of maintainers decides. There are no scheduled meetings and no formal votes to call.
 

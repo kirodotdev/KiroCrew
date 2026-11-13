@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+from datetime import datetime, timezone
 
 import pytest
 import security_helpers
@@ -136,41 +138,277 @@ class TestSELEmittersRedactBeforeTruncate:
         assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
 
 
+def _write_rows(path, rows) -> None:
+    """Write *rows* as one transcript file, one JSON object per line."""
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _shell_row(command: str) -> dict:
+    """A tool row in the transcript shape: the command rides ``meta.input`` as JSON."""
+    return {
+        "role": "tool",
+        "content": "Run",
+        "meta": {"kind": "execute", "input": json.dumps({"command": command})},
+    }
+
+
 class TestScanHistory:
-    """Tests for scan_history()."""
+    """Tests for scan_history() over session transcripts."""
 
     def test_detects_suspicious_command_in_history(self, tmp_path) -> None:
-        history_file = tmp_path / "session1.jsonl"
-        entries = [
-            json.dumps({"role": "assistant", "content": "rm -rf /"}),
-            json.dumps({"role": "assistant", "content": "echo hello"}),
-        ]
-        history_file.write_text("\n".join(entries))
-        findings = scan_history(tmp_path)
-        assert len(findings) == 1
+        _write_rows(
+            tmp_path / "session1.jsonl",
+            [
+                {"role": "assistant", "content": "rm -rf /"},
+                {"role": "assistant", "content": "echo hello"},
+            ],
+        )
+        findings, scanned = scan_history(tmp_path)
+        assert len(findings) == 1 and scanned == 2
         assert "rm -rf /" in findings[0]["snippet"]
 
+    def test_detects_command_in_a_tool_row(self, tmp_path) -> None:
+        """A shell tool row carries its command in ``meta.input``, not ``content``."""
+        _write_rows(
+            tmp_path / "dashboard_chat-1-1.jsonl",
+            [{"_type": "metadata", "title": "t"}, _shell_row("chmod 777 /srv/app")],
+        )
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 1
+        assert [f["snippet"] for f in findings] == ["chmod 777 /srv/app"]
+        assert findings[0]["file"] == "dashboard_chat-1-1.jsonl"
+
+    def test_detects_a_command_inside_a_use_aws_tool_row(self, tmp_path) -> None:
+        """A structured ``use_aws`` payload is audited the way the gate reads it."""
+        params = {
+            "service_name": "ssm",
+            "operation_name": "send-command",
+            "parameters": {"parameters": {"commands": ["chmod 777 /srv/app"]}},
+        }
+        row = {"role": "tool", "content": "Run", "meta": {"input": json.dumps(params)}}
+        _write_rows(tmp_path / "aws.jsonl", [row])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 1
+        assert [f["file"] for f in findings] == ["aws.jsonl"]
+
+    def test_reads_the_newest_rows_of_a_long_transcript(self, tmp_path) -> None:
+        """The flagged row is the LAST of 150, so a head read of 100 misses it."""
+        rows = [_shell_row("echo ok") for _ in range(149)] + [_shell_row("rm -rf ~")]
+        _write_rows(tmp_path / "s.jsonl", rows)
+        findings, scanned = scan_history(tmp_path, last_n=100)
+        assert scanned == 100
+        assert [f["snippet"] for f in findings] == ["rm -rf ~"]
+
+    def test_budget_spans_files_newest_first(self, tmp_path) -> None:
+        old, new = tmp_path / "old.jsonl", tmp_path / "new.jsonl"
+        _write_rows(old, [_shell_row("rm -rf /"), _shell_row("echo old")])
+        _write_rows(new, [_shell_row("echo new")])
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(new, (2_000_000, 2_000_000))
+        assert scan_history(tmp_path, last_n=2) == ([], 2)
+        findings, scanned = scan_history(tmp_path, last_n=3)
+        assert scanned == 3 and [f["file"] for f in findings] == ["old.jsonl"]
+
+    def test_newest_rows_are_chosen_by_timestamp_across_files(self, tmp_path) -> None:
+        """A busy transcript cannot spend the whole budget when another holds newer rows."""
+        base = 1_800_000_000
+        busy, other = tmp_path / "busy.jsonl", tmp_path / "other.jsonl"
+
+        def _at(command: str, epoch: float) -> dict:
+            stamp = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+            return {**_shell_row(command), "ts": stamp}
+
+        # Rows at base+0..9 in the busy file, one flagged row at base+7.5 in the other.
+        _write_rows(busy, [_at("echo busy", base + i) for i in range(10)])
+        _write_rows(other, [_at("rm -rf /", base + 7.5)])
+        # The busy file was written last, so a newest-file-first walk reads it first.
+        os.utime(other, (base + 7.5, base + 7.5))
+        os.utime(busy, (base + 9, base + 9))
+        findings, scanned = scan_history(tmp_path, last_n=5)
+        assert scanned == 5
+        assert [f["file"] for f in findings] == ["other.jsonl"]
+
+    def test_naive_legacy_timestamps_are_read_as_local_time(self, tmp_path) -> None:
+        """Rows with an offset-free ``ts`` keep their own time, not their file's mtime."""
+        base = 1_800_000_000
+        busy, other = tmp_path / "busy.jsonl", tmp_path / "other.jsonl"
+
+        def _naive(command: str, epoch: float) -> dict:
+            return {**_shell_row(command), "ts": datetime.fromtimestamp(epoch).isoformat()}
+
+        _write_rows(busy, [_naive("echo busy", base + i) for i in range(10)])
+        _write_rows(other, [_naive("rm -rf /", base + 7.5)])
+        os.utime(other, (base + 7.5, base + 7.5))
+        os.utime(busy, (base + 9, base + 9))
+        findings, scanned = scan_history(tmp_path, last_n=5)
+        assert scanned == 5
+        assert [f["file"] for f in findings] == ["other.jsonl"]
+
+    def test_a_row_stamped_after_its_file_mtime_is_still_read(self, tmp_path) -> None:
+        """A file's mtime is not an upper bound on its rows' ``ts``, so it is never skipped."""
+        base = 1_800_000_000
+        busy, ahead = tmp_path / "busy.jsonl", tmp_path / "ahead.jsonl"
+
+        def _at(command: str, epoch: float) -> dict:
+            stamp = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+            return {**_shell_row(command), "ts": stamp}
+
+        _write_rows(busy, [_at("echo busy", base + i) for i in range(10)])
+        # Stamped ahead of the clock (base+50), but its file mtime is older (base+1).
+        _write_rows(ahead, [_at("rm -rf /", base + 50)])
+        os.utime(ahead, (base + 1, base + 1))
+        os.utime(busy, (base + 9, base + 9))
+        findings, scanned = scan_history(tmp_path, last_n=5)
+        assert scanned == 5
+        assert [f["file"] for f in findings] == ["ahead.jsonl"]
+
+    @pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00", "9999-12-31T23:59:59"])
+    def test_a_boundary_year_stamp_does_not_stop_the_scan(self, tmp_path, stamp) -> None:
+        """A ``ts`` that parses but cannot convert falls back to the file mtime."""
+        _write_rows(tmp_path / "s.jsonl", [{**_shell_row("rm -rf /"), "ts": stamp}])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 1
+        assert [f["snippet"] for f in findings] == ["rm -rf /"]
+
+    def test_a_cut_off_shell_input_is_audited_as_text(self, tmp_path) -> None:
+        """A shell input stored truncated is not JSON, but its text is still audited."""
+        cut = json.dumps({"command": "chmod 777 /srv/app # " + "x" * 50})[:60] + "… [truncated]"
+        shell = {"role": "tool", "content": "Run", "meta": {"kind": "execute", "input": cut}}
+        edit = {"role": "tool", "content": "Edit", "meta": {"kind": "edit", "input": "-rm -rf /"}}
+        _write_rows(tmp_path / "s.jsonl", [shell, edit])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 2
+        assert len(findings) == 1 and "chmod 777 /srv/app" in findings[0]["snippet"]
+
+    def test_a_row_past_the_json_parser_limits_is_reported_not_raised(self, tmp_path) -> None:
+        """A 5,000-digit integer trips the parser's limit; that file is reported, not fatal."""
+        _write_rows(tmp_path / "ok.jsonl", [_shell_row("rm -rf /")])
+        row = {"role": "tool", "content": "Run", "meta": {"input": '{"n": ' + "9" * 5000 + "}"}}
+        _write_rows(tmp_path / "huge.jsonl", [row])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 1
+        assert sorted(f["file"] for f in findings) == ["huge.jsonl", "ok.jsonl"]
+        assert "not audited" in next(f for f in findings if f["file"] == "huge.jsonl")["warning"]
+
+    def test_unreadable_transcript_is_a_finding(self, tmp_path) -> None:
+        """A transcript the scan cannot open is reported, not skipped as clean."""
+        _write_rows(tmp_path / "ok.jsonl", [_shell_row("echo ok")])
+        (tmp_path / "broken.jsonl").mkdir()
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 1
+        assert [f["file"] for f in findings] == ["broken.jsonl"]
+        assert "not audited" in findings[0]["warning"]
+
     def test_ignores_user_messages(self, tmp_path) -> None:
-        history_file = tmp_path / "session1.jsonl"
-        entries = [
-            json.dumps({"role": "user", "content": "rm -rf /"}),
-        ]
-        history_file.write_text("\n".join(entries))
-        findings = scan_history(tmp_path)
-        assert len(findings) == 0
+        _write_rows(tmp_path / "session1.jsonl", [{"role": "user", "content": "rm -rf /"}])
+        assert scan_history(tmp_path) == ([], 1)
 
     def test_empty_dir(self, tmp_path) -> None:
-        assert scan_history(tmp_path) == []
+        assert scan_history(tmp_path) == ([], 0)
 
     def test_nonexistent_dir(self, tmp_path) -> None:
-        assert scan_history(tmp_path / "nope") == []
+        assert scan_history(tmp_path / "nope") == ([], 0)
 
     def test_respects_last_n(self, tmp_path) -> None:
-        history_file = tmp_path / "session1.jsonl"
-        entries = [json.dumps({"role": "assistant", "content": "rm -rf /"}) for _ in range(200)]
-        history_file.write_text("\n".join(entries))
-        findings = scan_history(tmp_path, last_n=5)
-        assert len(findings) == 5
+        _write_rows(
+            tmp_path / "session1.jsonl", [{"role": "assistant", "content": "rm -rf /"}] * 200
+        )
+        findings, scanned = scan_history(tmp_path, last_n=5)
+        assert len(findings) == 5 and scanned == 5
+
+    def test_one_tool_call_over_several_rows_is_one_finding(self, tmp_path) -> None:
+        """The dispatch and approval rows of one call share a ``tool_call_id``."""
+
+        def call_row(call_id: str, command: str | None) -> dict:
+            row = _shell_row(command) if command else {"role": "tool", "content": "Run"}
+            row.setdefault("meta", {})["tool_call_id"] = call_id
+            return row
+
+        rows = [call_row("c1", None), call_row("c1", "rm -rf /"), call_row("c1", "rm -rf /")]
+        rows += [call_row("c2", "echo ok")]
+        _write_rows(tmp_path / "s.jsonl", rows)
+        findings, scanned = scan_history(tmp_path, last_n=2)
+        assert scanned == 2, "the folded call took more than one slot"
+        assert [f["snippet"] for f in findings] == ["rm -rf /"]
+
+    def test_a_call_approved_after_newer_rows_is_still_recent(self, tmp_path) -> None:
+        """A call's later row moves it to the tail with that row's time."""
+
+        def row(call_id: str, command: str, ts: str) -> dict:
+            out = _shell_row(command)
+            out["meta"]["tool_call_id"] = call_id
+            out["ts"] = ts
+            return out
+
+        # The call waits for approval while ANOTHER transcript gains newer rows.
+        dispatch = row("c1", "git clean -fdx", "2026-01-01T00:00:00+00:00")
+        approved = row("c1", "git clean -fdx", "2026-01-01T00:09:00+00:00")
+        newer = [row(f"n{i}", "echo ok", f"2026-01-01T00:0{i + 1}:00+00:00") for i in range(3)]
+        _write_rows(tmp_path / "waiting.jsonl", [dispatch, approved])
+        _write_rows(tmp_path / "busy.jsonl", newer)
+        findings, scanned = scan_history(tmp_path, last_n=2)
+        assert scanned == 2
+        assert [f["snippet"] for f in findings] == [
+            "git clean -fdx"
+        ], "the approved call kept its first-seen time and fell out of the newest rows"
+
+    def test_a_non_shell_tool_kind_is_not_audited_as_a_command(self, tmp_path) -> None:
+        """A ``read`` row's input is not a command; an ``other`` row still is."""
+        read = _shell_row("chmod 777 /srv/app")
+        read["meta"]["kind"] = "read"
+        other = _shell_row("chmod 777 /srv/app")
+        other["meta"]["kind"] = "other"
+        _write_rows(tmp_path / "read.jsonl", [read])
+        _write_rows(tmp_path / "other.jsonl", [other])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 2
+        assert [f["file"] for f in findings] == ["other.jsonl"]
+
+    def test_a_transcript_removed_mid_scan_is_skipped_not_reported(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A file deleted between the listing and the read is gone, not unreadable."""
+        from kiro_crew.security import memory_audit
+
+        _write_rows(tmp_path / "gone.jsonl", [_shell_row("rm -rf /")])
+        _write_rows(tmp_path / "kept.jsonl", [_shell_row("echo ok")])
+        real = memory_audit._transcript_tail_rows
+
+        def vanish(path, max_rows, mtime):
+            if path.name == "gone.jsonl":
+                raise FileNotFoundError(path)
+            return real(path, max_rows, mtime)
+
+        monkeypatch.setattr(memory_audit, "_transcript_tail_rows", vanish)
+        assert scan_history(tmp_path) == ([], 1)
+
+    def test_a_tool_kind_of_the_wrong_type_does_not_stop_the_scan(self, tmp_path) -> None:
+        """A ``kind`` that is not text is read as unknown, never raised."""
+        odd = {"role": "tool", "content": "Run", "meta": {"kind": [], "input": "{}"}}
+        _write_rows(tmp_path / "odd.jsonl", [odd])
+        _write_rows(tmp_path / "next.jsonl", [_shell_row("chmod 777 /srv/app")])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 2
+        assert [f["file"] for f in findings] == ["next.jsonl"]
+
+    def test_a_cut_off_use_aws_input_is_audited_as_text(self, tmp_path) -> None:
+        """A stored ``other``-kind input cut off mid-JSON still carries its command."""
+        cut = json.dumps({"parameters": {"commands": ["chmod 777 /srv/app"]}, "pad": "x" * 50})
+        row = {"role": "tool", "content": "Run", "meta": {"kind": "other", "input": cut[:-10]}}
+        _write_rows(tmp_path / "aws.jsonl", [row])
+        findings, scanned = scan_history(tmp_path)
+        assert scanned == 1
+        assert [f["file"] for f in findings] == ["aws.jsonl"]
+
+    def test_the_kept_tail_holds_bounded_text_only(self, tmp_path) -> None:
+        """A huge flagged row is kept as its 200-character snippet, not in full."""
+        from kiro_crew.security import memory_audit
+
+        huge = "chmod 777 /srv/app " + "x" * 100_000
+        _write_rows(tmp_path / "s.jsonl", [_shell_row(huge)])
+        rows = memory_audit._transcript_tail_rows(tmp_path / "s.jsonl", 100, 0.0)
+        assert len(rows) == 1 and rows[0][1]
+        assert all(len(str(part)) <= 200 for part in rows[0][1:])
 
 
 class TestStreamRedactor:

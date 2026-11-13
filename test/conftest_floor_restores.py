@@ -283,10 +283,13 @@ def _no_leaked_telemetry_exporter():
     leaked = _live_exporter_threads() - before
     if not leaked:
         return
-    provider = sys.modules.get("kiro_crew.metrics.provider")
-    if provider is not None:
-        with contextlib.suppress(Exception):
-            provider.reset_for_testing()
+    # The span processor's thread ("OtelBatchSpanRecordProcessor") matches the
+    # same marker; its provider is reset the same way.
+    for name in ("kiro_crew.metrics.provider", "kiro_crew.tracing.provider"):
+        provider = sys.modules.get(name)
+        if provider is not None:
+            with contextlib.suppress(Exception):
+                provider.reset_for_testing()
     for thread in leaked:
         _stop_leaked_exporter(thread)
     raise AssertionError(
@@ -526,6 +529,26 @@ def _restore_hooks_integration_globals():
         # started life with both slots empty.
         before = (None, None)
     hi._lifecycle_dispatcher, hi._route_registry = before
+
+
+# ── the relay client's published dashboard ingress goes back after every test ──
+
+
+@pytest.fixture(autouse=True)
+def _restore_relay_gateway_ingress():
+    """Put ``relay_client.provider._gateway_ingress`` back.
+
+    ``_start_aea_tunnel`` publishes the dashboard app's relay ingress there, and a
+    gateway sets it once at boot, so every test that builds the real dashboard app
+    would otherwise hand the next test its app's ingress. Reached through
+    ``sys.modules`` for the same reason as the hooks floor above.
+    """
+    provider = sys.modules.get("kiro_crew.relay_client.provider")
+    before = getattr(provider, "_gateway_ingress", None) if provider is not None else None
+    yield
+    provider = sys.modules.get("kiro_crew.relay_client.provider")
+    if provider is not None:
+        provider._gateway_ingress = before
 
 
 # ── logger levels go back after every test ──────────────────────────

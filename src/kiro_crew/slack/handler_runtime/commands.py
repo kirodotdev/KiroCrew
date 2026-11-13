@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
         _BANG_TO_SLASH,
+        COMPACT_ACCOUNT_CHANGED_TEXT,
         SESSIONS_INCLUDE_ENDED_ARGS,
         STOP_DECLINED_COMPACTING_TEXT,
         ConversationLog,
@@ -27,12 +28,12 @@ if TYPE_CHECKING:
         SlackClientOps,
         SubagentManager,
         TaskRunner,
-        _add_phase_reaction,
         _dashboard_state,
         _discover_project_agents,
         _get_default_agent,
         _hydrate_thread_overrides,
         _hydrated_sessions,
+        _is_bang_command,
         _is_slack_restricted,
         _list_all_agent_names,
         _mark_titled,
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
         run_config_write,
         safety_override,
         sel,
+        slack_title_text,
         spawn_command_reply,
         task_command_reply,
         yolo_policy_permits,
@@ -226,8 +228,10 @@ async def _bang_yolo(
     elif len(parts) >= 2 and parts[1].lower() == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep
         # that filesystem I/O off the event loop.
-        result = await asyncio.to_thread(safety_override().renew, "slack")
-        if result.renewed:
+        # ``gateway --approval yolo``'s grant is the dashboard's only: not Slack's to renew.
+        so = safety_override()
+        result = None if so.is_cli_launch is True else await asyncio.to_thread(so.renew, "slack")
+        if result is not None and result.renewed:
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.yolo_mode",
@@ -466,7 +470,6 @@ async def _bang_voice(
             "`!voice speed <80%>` `!voice pitch <+10%>`",
             reply_ts,
         )
-    await _add_phase_reaction(slack, channel, msg_ts, "done")
     return ""
 
 
@@ -511,7 +514,6 @@ async def _bang_agent(
         )
         await sessions.remove(session_key)
         await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
         return ""
     resolved = await asyncio.to_thread(
         _resolve_agent_name, agent_name, _thread_projects.get(session_key)
@@ -537,7 +539,6 @@ async def _bang_agent(
     )
     await sessions.remove(session_key)
     await slack.post_message(channel, f"🔄 Switched to agent: *{resolved}*", reply_ts)
-    await _add_phase_reaction(slack, channel, msg_ts, "done")
     return ""
 
 
@@ -627,9 +628,25 @@ async def _bang_link_to_dashboard(
             channel, "Use this command inside a thread to import it.", reply_ts
         )
         return ""
+    from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
     from kiro_crew.slack.interactions import _import_thread_to_slot
+    from kiro_crew.slack.interactions_options import ChannelAgentMismatchError, import_refusal
 
-    slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    try:
+        slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    except (ChannelAgentMismatchError, AnchorHandoffRefused) as exc:
+        notice, reason = import_refusal(exc)
+        sel().log_tool_invocation(
+            session_key="",
+            agent="kirocrew",
+            source="slack",
+            tool_name="link_to_dashboard",
+            tool_kind="command",
+            outcome="denied",
+            metadata={"user_id": user_id, "channel": channel, "reason": reason},
+        )
+        await slack.post_message(channel, notice, reply_ts)
+        return ""
     if not slot:
         sel().log_tool_invocation(
             session_key="",
@@ -741,7 +758,6 @@ async def _bang_thread_agent(
             "🔄 Thread agent reset." if held else thread_override_slots.unheld_reset_text("agent"),
             reply_ts,
         )
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
         return ""
     resolved = await asyncio.to_thread(
         _resolve_agent_name, agent_name, _thread_projects.get(session_key)
@@ -810,7 +826,6 @@ async def _bang_thread_agent(
     )
     await sessions.remove(session_key)
     await slack.post_message(channel, f"🔄 Thread agent: *{resolved}*", reply_ts)
-    await _add_phase_reaction(slack, channel, msg_ts, "done")
     return ""
 
 
@@ -891,7 +906,7 @@ async def _bang_project(
             reply_ts,
         )
         return ""
-    resolved = os.path.realpath(os.path.expanduser(raw_path))
+    resolved = await asyncio.to_thread(os.path.realpath, os.path.expanduser(raw_path))
     # Checked first, so no record below ever carries an over-limit path: the maps keep
     # a value only within their per-value limit (a Windows long path can pass it).
     too_long = thread_override_slots.setter_refusal("project", resolved)
@@ -919,7 +934,7 @@ async def _bang_project(
             channel, "Cannot use sensitive path as project directory.", reply_ts
         )
         return ""
-    if not os.path.isdir(resolved):
+    if not await asyncio.to_thread(os.path.isdir, resolved):
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
@@ -1073,7 +1088,11 @@ async def _bang_channel(
                 )
                 return ""
             agent_name = resolved
-        await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        try:
+            await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        except ValueError as e:
+            await slack.post_message(channel, f"❌ {e}", reply_ts)
+            return ""
         _reload_orch_cfg()
         sel().log_api_access(
             caller=user_id,
@@ -1095,7 +1114,11 @@ async def _bang_channel(
         )
         return ""
 
-    await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    try:
+        await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    except ValueError as e:
+        await slack.post_message(channel, f"❌ {e}", reply_ts)
+        return ""
     _reload_orch_cfg()
     sel().log_api_access(
         caller=user_id,
@@ -1123,6 +1146,8 @@ async def _bang_title(
     parts = cmd_text.split()
     title_text = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
     if title_text:
+        # Typed in Slack, so mrkdwn: read as plain text first, then cut.
+        title_text = slack_title_text(title_text)
         title_text, _ = redact_exfiltration_urls(title_text)
         title_text, _ = redact_credentials(title_text)
         await slack.set_thread_title(channel, session_key, title_text[:80])
@@ -1141,7 +1166,7 @@ async def _bang_title(
             source="slack",
             resources=f"{channel}:{session_key}",
         )
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
+        await slack.post_message(channel, f"🏷️ Thread title set: *{title_text[:80]}*", reply_ts)
     else:
         await slack.post_message(
             channel, "Usage: `!title <text>` — set a title for this thread.", reply_ts
@@ -1168,7 +1193,9 @@ async def _handle_compact_command(
     # session; try_acquire() serializes against the in-flight turn and the
     # finally always releases.
     if not await sessions.try_acquire(session_key):
-        if sessions.has_session(session_key):
+        if sessions.is_retiring(session_key):
+            await slack.post_message(channel, COMPACT_ACCOUNT_CHANGED_TEXT, reply_ts)
+        elif sessions.has_session(session_key):
             await slack.post_message(
                 channel,
                 "⏳ Still working on your last message — try `!compact` once it finishes.",
@@ -1279,7 +1306,6 @@ async def _handle_compact_command(
             )
             try:
                 await slack.remove_reaction(channel, msg_ts, "recycle")
-                await _add_phase_reaction(slack, channel, msg_ts, "done")
             except Exception:
                 pass
             return
@@ -1308,7 +1334,6 @@ async def _handle_compact_command(
             logger.debug("Failed to log compact outcome for %s", session_key, exc_info=True)
         try:
             await slack.remove_reaction(channel, msg_ts, "recycle")
-            await _add_phase_reaction(slack, channel, msg_ts, "done")
         except Exception:
             pass
     finally:
@@ -1408,8 +1433,9 @@ async def _route_bang_command(
     *cmd_text* is the message with any leading bot mention and privacy modifier
     already stripped. Returns ``True`` when the message was a command the caller must
     not hand to the model -- run, denied, or answered -- and ``False`` when it falls
-    through to the rest of ``_dispatch_before_turn`` (no ``!`` prefix, or a command the
-    dispatcher did not claim).
+    through to the rest of the caller's pre-turn steps, ``_dispatch_before_turn`` on the
+    native path or ``handle_message_transport`` on the transport path (no ``!`` prefix,
+    or a command the dispatcher did not claim).
     """
     if cmd_text.strip().lower() == "!compact":
         if is_owner(user_id) or is_allowed_user(user_id):
@@ -1467,7 +1493,7 @@ async def _route_bang_command(
         return True
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
-    if cmd_text.startswith("!"):
+    if _is_bang_command(cmd_text):
         # !dashboard and !stop are available to any allowed user
         _cmd_word = cmd_text.split()[0]
         if _cmd_word in ("!dashboard", "!stop", "!title"):

@@ -117,12 +117,8 @@ class TestNotifyInjectionFailed:
     async def test_a_teardown_cancelled_member_arms_no_digest_flush(self) -> None:
         """The hold-expiry sweep must not arm a flush for a wave whose parent ended.
 
-        A wave member parks its siblings' announces on its own digest. When the hold
-        ages out the reaper forces a partial flush -- and that flush is a SYNTHETIC
-        record with a fresh id, so the delivery gate keyed on run ids can never
-        recognise it. It would reach ``_on_done`` on its own and rebuild the retired
-        parent's conversation minutes after the teardown. The member is therefore
-        skipped at the source, in the expiry scan.
+        The forced partial flush is a synthetic record with a fresh id, so the delivery gate
+        keyed on run ids cannot catch it; the member is skipped in the expiry scan instead.
         """
         import kiro_crew.subagent as _facade
 
@@ -146,12 +142,9 @@ class TestNotifyInjectionFailed:
     async def test_a_suppressed_report_drops_its_own_digest_hold(self) -> None:
         """Skipping the delivery also releases what the run was holding.
 
-        Leaving ``_digest_held_at`` set would let the next expiry sweep arm the flush
-        this run's own suppression exists to prevent, and leaving
-        ``_digest_settle_deliveries``
-        on the record would leave its held siblings with an ungated delivery. The
-        siblings are marked, not tombstoned: their results never reached a parent, so
-        orphan reconciliation must still be able to find them.
+        ``_digest_held_at`` would let the next sweep arm the flush, and
+        ``_digest_settle_deliveries`` would leave held siblings ungated. Siblings are marked,
+        not tombstoned, so orphan reconciliation can still find them.
         """
         mgr = _manager(on_done=AsyncMock())
         info = _info(parent_session_key="dash:1")
@@ -178,14 +171,10 @@ class TestNotifyInjectionFailed:
         mgr._on_done.assert_not_awaited()
 
     def test_the_teardown_gate_forgets_by_age_and_never_by_count(self) -> None:
-        """Eviction is AGE, because a capacity rule can drop a live gate.
+        """Eviction is by age, because a capacity rule can drop a live gate.
 
-        One parent with more queued children than any capacity would evict its own
-        earliest ids while their reports were still being spawned, and those reports then
-        walk through the gate and rebuild the conversation the teardown took down. An age
-        rule cannot: the TTL exceeds every window in which a marked run has an announce
-        left. A read must not extend an entry's life either, or the TTL stops describing
-        what is retained.
+        A parent with many queued children would evict its own earliest ids mid-spawn. The
+        TTL exceeds every window with an announce left, and a read must not extend it.
         """
         from kiro_crew.subagent import _AgingIdSet
 
@@ -210,11 +199,8 @@ class TestNotifyInjectionFailed:
     async def test_a_suppressed_report_discards_its_own_gate_entry(self) -> None:
         """The gate keeps an id until that run's delivery is suppressed, not for a span.
 
-        Age is only the backstop. Once the report has been dropped, ``_on_done`` was never
-        called, so none of the gateway's injection paths can fire for this run either --
-        the entry has done its job. Leaving it to expire instead made the gate depend on a
-        TTL in the ordinary case, and an approval-parked run (deliberately not cancelled,
-        because the approval is a person's to answer) can outlive any short one.
+        Age is only the backstop: an approval-parked run (not cancelled, since the approval
+        is a person's to answer) can outlive a short TTL.
         """
         mgr = _manager(on_done=AsyncMock())
         info = _info(parent_session_key="dash:1")
@@ -240,21 +226,12 @@ class TestNotifyInjectionFailed:
     async def test_a_rejected_spawn_approval_after_teardown_does_not_recreate_the_conversation(
         self,
     ) -> None:
-        """The REJECTION path announces too, and it never reached ``_report_terminal``.
+        """The rejection path announces too, and it never reached ``_report_terminal``.
 
-        A spawn parked on its approval is marked by the teardown and deliberately not
-        cancelled, because the approval is a person's to answer. When that person then
-        DECLINES, the spawn gate takes its own terminal exit: it claims the finalize and
-        calls ``_safe_announce`` directly, without passing through the terminal report
-        where the delivery gate lives. So the one representation the teardown is certain
-        to have marked walked straight into ``_on_done``, which resolves the parent key
-        through the session registry and CREATES a session when none is live -- rebuilding
-        the conversation the teardown had just taken down and seeding it with the refusal
-        of a spawn that key never asked for.
-
-        Driven through the real gate rather than a hand-built record: ``spawn`` registers,
-        the approval callback parks, ``snapshot_teardown_children`` arms the mark exactly
-        as ``session_lifecycle`` does, and only then is the prompt answered ``False``.
+        A declined approval calls ``_safe_announce`` directly, bypassing the delivery gate,
+        and ``_on_done`` would create a session for the torn-down parent key. Driven through
+        the real gate: ``snapshot_teardown_children`` arms the mark as ``session_lifecycle``
+        does before the prompt is answered ``False``.
         """
         approval_gate = asyncio.Event()
 
@@ -410,13 +387,9 @@ class TestInjectionNoticeOutcome:
 class TestInjectionNoticeDoesNotContradictItsReason:
     """A completed run's outcome line must not name a mechanism.
 
-    ``notify_injection_failed`` prints ``reason`` one line above the outcome
-    line, and most of its callers pass something that is not a timeout:
-    ``slack/gateway.py`` sends "provider dead after prompt-busy retries",
-    "ACP process died", a raw ``str(exception)`` from a failed injection turn,
-    and the last injection-failure reason after the attempt cap. A completed
-    branch that asserts "delivery timed out" contradicts every one of them, in
-    a message whose reader is the LLM deciding what to do next.
+    ``notify_injection_failed`` prints ``reason`` just above it, and most callers in
+    ``slack/gateway.py`` pass non-timeout reasons, so "delivery timed out" would
+    contradict them to the LLM reading the notice.
     """
 
     #: The reasons the four non-timeout call sites actually pass, verbatim.
@@ -799,63 +772,78 @@ class TestRecordLostSubmission:
 
 
 class TestSweepStuckWaves:
+    """A reconciled wave counts one more member as submitted; a skipped one is left
+    exactly as it was."""
+
     def test_complete_wave_skipped(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [2, 2]
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=1e9)
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [2, 2]
+            assert "w1" not in mgr._batch_progress_ts
             # Control: the same wave one submission short is reconciled.
             mgr._batch_submitted["w1"] = [1, 2]
             mgr._sweep_stuck_waves(now=1e9)
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
+        assert "w1" in mgr._batch_progress_ts
 
     def test_within_grace_window_skipped(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [1, 2]
         mgr._batch_progress_ts["w1"] = 1000.0
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=1001.0)
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [1, 2]
             # Control: once the grace window has passed, the wave is reconciled.
             mgr._sweep_stuck_waves(now=1000.0 + sa._WAVE_STUCK_SECS)
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
 
     def test_live_member_defers_reconciliation(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [1, 2]
         mgr._batch_progress_ts["w1"] = 0.0
         mgr._agents["a"] = _info("a", batch_id="w1")
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [1, 2]
             # Control: once the member ends, the wave is reconciled.
             mgr._agents["a"].done = True
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
 
     def test_queued_member_defers_reconciliation(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [1, 2]
         mgr._batch_progress_ts["w1"] = 0.0
         mgr._queue = [{"batch_id": "w1"}]
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [1, 2]
             # Control: with the queue drained, the wave is reconciled.
             mgr._queue = []
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
 
-    def test_wedged_wave_reconciled_once(self) -> None:
-        mgr = _manager()
-        mgr._batch_submitted["w1"] = [1, 2]
+    @pytest.mark.asyncio
+    async def test_wedged_wave_reconciled_once(self) -> None:
+        announced: list[SubagentInfo] = []
+
+        async def _on_done(info: SubagentInfo) -> None:
+            announced.append(info)
+
+        mgr = _manager(on_done=_on_done)
+        mgr._batch_submitted["w1"] = [1, 3]
         mgr._batch_progress_ts["w1"] = 0.0
         mgr._agents["a"] = _info("a", batch_id="w1", done=True, parent_session_key="dash:1")
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        assert rec.call_count == 1
-        assert rec.call_args.kwargs["parent_session_key"] == "dash:1"
+        await asyncio.wait_for(asyncio.gather(*mgr._tasks.values()), _ANNOUNCE_WAIT_SECS)
+        # One sweep reconciles one lost member, even with two still missing.
+        assert mgr._batch_submitted["w1"] == [2, 3]
+        assert [i.parent_session_key for i in announced] == ["dash:1"]
+        assert announced[0].batch_id == "w1"
+        assert "submission never arrived" in announced[0].error
 
 
 def _sweep_digest_holds(mgr: SubagentManager, form: str, *, now: float) -> None:
@@ -867,6 +855,34 @@ def _sweep_digest_holds(mgr: SubagentManager, form: str, *, now: float) -> None:
         asyncio.run(mgr._sweep_digest_holds_async(now))
 
 
+def _flushes_announced(
+    mgr: SubagentManager, form: str = "sync", *, now: float
+) -> list[SubagentInfo]:
+    """Run the digest-hold sweep in *form* on a loop and return the flush-only
+    records it announced.
+
+    A manager that has a completion consumer gets a recording one in its place; a
+    manager without one keeps none, so the sweep sees the same gate it would."""
+    announced: list[SubagentInfo] = []
+
+    async def _on_done(info: SubagentInfo) -> None:
+        announced.append(info)
+
+    if mgr._on_done is not None:
+        mgr._on_done = _on_done
+
+    async def _drive() -> None:
+        if form == "sync":
+            mgr._sweep_digest_holds(now=now)
+        else:
+            await mgr._sweep_digest_holds_async(now)
+        await asyncio.wait_for(asyncio.gather(*mgr._tasks.values()), _ANNOUNCE_WAIT_SECS)
+
+    with patch.object(sa, "sel"):
+        asyncio.run(_drive())
+    return [i for i in announced if i._digest_flush_only]
+
+
 class TestSweepDigestHolds:
     def test_no_completion_consumer_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
@@ -875,13 +891,11 @@ class TestSweepDigestHolds:
         held._digest_held_at = 1.0
         mgr._agents["a"] = held
         mgr._batch_submitted["w1"] = [1, 2]
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1e9)
-            flush.assert_not_called()
-            # Control: the same expired hold is flushed once a consumer exists.
-            mgr._on_done = AsyncMock()
-            mgr._sweep_digest_holds(now=1e9)
-        assert flush.call_count == 1
+        assert _flushes_announced(mgr, now=1e9) == []
+        # Control: the same expired hold is flushed once a consumer exists.
+        mgr._on_done = AsyncMock()
+        flushes = _flushes_announced(mgr, now=1e9)
+        assert [(f.batch_id, f.parent_session_key) for f in flushes] == [("w1", "dash:1")]
 
     @pytest.mark.parametrize("form", ["sync", "async"])
     def test_closing_wave_not_forced(self, monkeypatch: pytest.MonkeyPatch, form: str) -> None:
@@ -920,11 +934,8 @@ class TestSweepDigestHolds:
         mgr._agents["a"] = held
         mgr._batch_submitted["w1"] = [1, 1]  # no pending members
         # No arm: the member's report ended without reaching the consumer.
-        with patch.object(mgr, "force_digest_flush") as flush:
-            _sweep_digest_holds(mgr, form, now=1e6)
-        assert flush.call_count == 1
-        assert flush.call_args[0][0] == "w1"
-        assert flush.call_args[0][1] == "dash:1"
+        flushes = _flushes_announced(mgr, form, now=1e6)
+        assert [(f.batch_id, f.parent_session_key) for f in flushes] == [("w1", "dash:1")]
 
     def test_expired_hold_forces_partial_flush(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
@@ -935,26 +946,23 @@ class TestSweepDigestHolds:
         newer._digest_held_at = 500.0
         mgr._agents.update({"a": held, "b": newer})
         mgr._batch_submitted["w1"] = [1, 2]  # still pending
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1000.0)
-        assert flush.call_count == 1
-        assert flush.call_args[0][0] == "w1"
-        assert flush.call_args[0][1] == "dash:1"
-        assert flush.call_args[0][3] == pytest.approx(900.0)  # oldest hold wins
+        flushes = _flushes_announced(mgr, now=1000.0)
+        assert [(f.batch_id, f.parent_session_key, f.batch_total) for f in flushes] == [
+            ("w1", "dash:1", 2)
+        ]
+        # The oldest hold's age (1000 - 100) names the flush, not the newer one's.
+        assert "results held 900s" in flushes[0].task
 
     def test_unheld_members_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
         mgr = _manager(on_done=AsyncMock())
         mgr._agents["a"] = _info("a", batch_id="w1")
         mgr._agents["b"] = _info("b")
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1e9)
-            flush.assert_not_called()
-            # Control: once the wave member holds a result, the sweep flushes it.
-            mgr._agents["a"]._digest_held_at = 1.0
-            mgr._sweep_digest_holds(now=1e9)
-        assert flush.call_count == 1
-        assert flush.call_args[0][0] == "w1"
+        assert _flushes_announced(mgr, now=1e9) == []
+        # Control: once the wave member holds a result, the sweep flushes it.
+        mgr._agents["a"]._digest_held_at = 1.0
+        flushes = _flushes_announced(mgr, now=1e9)
+        assert [f.batch_id for f in flushes] == ["w1"]
 
 
 class TestForceDigestFlush:
@@ -1327,15 +1335,11 @@ class TestReportsInFlightStrandBackstops:
 
 
 class TestEveryDoneFlipArmsTheHold:
-    """A done-but-unreported hold protects wave close only if EVERY terminal
-    ``info.done = True`` flip arms it in the same synchronous block. Hand-placed
-    arms are fragile — one missed flip (the common success path) reopens the
-    double-finalize race. This source-scan fails on a bare ``.done = True`` that
-    is not followed by an ``arm_report_in_flight`` call, so a new flip site
-    cannot silently bypass the hold. The one documented exception is the
-    cancelled-recovery limbo arm, which takes no finalize claim and whose
-    ``not info.done`` guard proves no report ever runs — it carries an explicit
-    ``report-free`` marker on an adjacent line."""
+    """Every terminal ``info.done = True`` flip arms the report hold in the same block.
+
+    One missed flip reopens the double-finalize race, so this source scan fails on a bare
+    flip not followed by ``arm_report_in_flight``. The cancelled-recovery limbo arm is
+    exempt (no finalize claim) and carries a ``report-free`` marker."""
 
     def test_no_terminal_done_flip_is_left_unarmed(self) -> None:
         import re
@@ -1369,15 +1373,11 @@ class TestEveryDoneFlipArmsTheHold:
         )
 
     def test_every_deferred_safe_announce_is_armed_first(self) -> None:
-        """A record flipped ``done=True`` elsewhere and then announced through a
-        DEFERRED ``ensure_future(_safe_announce(info))`` is in the same
-        done-but-unreported window as a flip-site: the arm inside
-        ``_safe_announce`` runs only on the task's first step, one event-loop
-        turn later, so a sibling completing in that turn closes the wave early.
-        Every such scheduling must be preceded by a synchronous
-        ``arm_report_in_flight(info)`` in the same block. The one exception is a
-        NON-batch rejection (``_drain_queue``'s path), which carries no
-        ``batch_id`` and so holds nothing — marked ``non-batch`` nearby."""
+        """Every deferred ``ensure_future(_safe_announce(info))`` is armed first.
+
+        The arm inside ``_safe_announce`` runs one loop turn later, when a sibling could
+        close the wave, so a synchronous ``arm_report_in_flight(info)`` must precede it. A
+        non-batch rejection (``_drain_queue``) holds nothing and is marked ``non-batch``."""
         import re
 
         root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "subagent_manager"

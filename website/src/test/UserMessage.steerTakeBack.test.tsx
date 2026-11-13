@@ -49,6 +49,12 @@ describe('taking back a steer the running turn has not read', () => {
     expect(screen.getByTestId('content').textContent).toBe('use the blue fleet')
   })
 
+  it('says on the Queue instead button when a queued message is sent', () => {
+    renderSteer(pending, { onSteerAction: vi.fn() })
+
+    expect(screen.getByTestId('steer-queue-instead').getAttribute('title')).toBe('Send it when the agent finishes')
+  })
+
   it('labels the Edit menu item with where the text goes', () => {
     renderSteer(pending, { onSteerAction: vi.fn() })
 
@@ -85,15 +91,15 @@ describe('taking back a steer the running turn has not read', () => {
     renderSteer(pending, { onSteerAction: vi.fn(), steerActionPending: 'edit', steerActionRefusal: { refusal: 'busy', action: 'edit' } })
 
     expect(screen.queryByTestId('steer-take-back')).toBeNull()
-    expect(screen.getByRole('status').textContent).toContain('Taking it back')
+    expect(screen.getByRole('status').textContent).toContain('Moving it back to your message box…')
     expect(screen.queryByRole('alert'), 'an earlier refusal is not shown over a new attempt').toBeNull()
   })
 
   it.each([
-    ['unsend', "Couldn't confirm it was unsent. This updates when the agent reaches it."],
-    ['edit', "Couldn't confirm it moved back to your message box. This updates when the agent reaches it."],
-    ['queue', "Couldn't confirm it moved to the queue. This updates when the agent reaches it."],
-  ] as const)('shows an unconfirmed %s request failure under the progress line until the take-back settles', (action, text) => {
+    ['unsend', 'Unsending…', "Couldn't confirm it was unsent. This updates when the agent reaches it."],
+    ['edit', 'Moving it back to your message box…', "Couldn't confirm it moved back to your message box. This updates when the agent reaches it."],
+    ['queue', 'Moving it to the queue to send when the agent finishes…', "Couldn't confirm it moved to the queue. This updates when the agent reaches it."],
+  ] as const)('shows an unconfirmed %s request failure under the progress line until the take-back settles', (action, inFlight, text) => {
     const onSteerAction = vi.fn()
     const view = renderSteer(pending, {
       onSteerAction,
@@ -101,7 +107,7 @@ describe('taking back a steer the running turn has not read', () => {
       steerActionRequestFailed: true,
     })
 
-    expect(screen.getByRole('status').textContent).toContain('Taking it back')
+    expect(screen.getByRole('status').textContent).toContain(inFlight)
     expect(screen.getByRole('alert').textContent).toBe(text)
 
     view.rerender(
@@ -117,12 +123,19 @@ describe('taking back a steer the running turn has not read', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('marks the taking-back line with the Undo icon, not the Steering target', () => {
-    renderSteer(pending, { onSteerAction: vi.fn(), steerActionPending: 'queue' })
+  it.each([
+    ['unsend', 'Unsending…', 'lucide-undo-2'],
+    ['edit', 'Moving it back to your message box…', 'lucide-pencil'],
+    ['queue', 'Moving it to the queue to send when the agent finishes…', 'lucide-arrow-up-from-line'],
+  ] as const)('names the picked %s action and its icon on the in-flight line, not the Steering target', (action, text, icon) => {
+    renderSteer(pending, { onSteerAction: vi.fn(), steerActionPending: action })
 
     const line = screen.getByRole('status')
+    expect(line.textContent?.trim()).toBe(text)
     expect(line.querySelector('svg.lucide-target')).toBeNull()
-    expect(line.querySelector('svg[class*="lucide-undo"]')).not.toBeNull()
+    const icons = line.querySelectorAll('svg')
+    expect(icons).toHaveLength(1)
+    expect(icons[0].classList.contains(icon)).toBe(true)
   })
 
   it.each([
@@ -148,7 +161,7 @@ describe('taking back a steer the running turn has not read', () => {
   it.each([
     ['unsend', 'You unsent this message'],
     ['edit', 'You moved this message back to your message box'],
-    ['queue', 'You moved this message to the queue'],
+    ['queue', 'You moved this message to the queue. It sends when the agent finishes.'],
   ])('keeps a %s take-back as a note without the bubble', (action, note) => {
     renderSteer({ steer: true, steerState: 'retracted', steerRetractAction: action, mid: 'm-1' })
 
@@ -174,7 +187,7 @@ describe('taking back a steer the running turn has not read', () => {
       expect(row?.getAttribute('data-steer-settle')).toBe('animated')
       expect(screen.getByTestId('steer-retract-collapse').textContent).toBe('use the blue fleet')
       expect(screen.getByTestId('steer-retract-collapse').getAttribute('aria-hidden')).toBe('true')
-      expect(screen.getByTestId('steer-retracted').textContent).toBe('You moved this message to the queue')
+      expect(screen.getByTestId('steer-retracted').textContent).toBe('You moved this message to the queue. It sends when the agent finishes.')
     })
 
     it('draws a row read back already retracted as the note, with no collapse', () => {

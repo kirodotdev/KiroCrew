@@ -136,7 +136,7 @@ describe('SideChat Enter key', () => {
     // A real browser fires compositionend when Escape cancels the candidate;
     // the guard then holds Enter for a further 50ms (the commit-Enter window)
     // before a genuinely separate Enter may submit again.
-    fireEvent.compositionEnd(box)
+    await act(async () => { fireEvent.compositionEnd(box) })
     await new Promise(r => setTimeout(r, 60))
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))

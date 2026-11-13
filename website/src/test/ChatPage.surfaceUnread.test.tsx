@@ -16,7 +16,7 @@
  * swaps `surfaceUnreadSlots` back for `unreadSlots` in ChatPage fails a test.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -145,24 +145,28 @@ const renderChatPage = (slots: Array<{ key: string; mode: string }>, unread: str
 }
 
 describe('ChatPage – ChatSidebar unreadSlots wiring', () => {
-  it('keeps a legacy Autopilot slot in the chat surface, unread included', () => {
+  it('keeps a legacy Autopilot slot in the chat surface, unread included', async () => {
     // A slot still persisted under the retired 'orchestrator' mode renders as an
     // ordinary chat, so it and its unread key stay in the sidebar.
     sidebarHistory.length = 0
-    renderChatPage(
-      [{ key: 'chat-1', mode: '' }, { key: 'legacy-1', mode: 'orchestrator' }],
-      ['chat-1', 'legacy-1'],
-    )
+    await act(async () => {
+      renderChatPage(
+        [{ key: 'chat-1', mode: '' }, { key: 'legacy-1', mode: 'orchestrator' }],
+        ['chat-1', 'legacy-1'],
+      )
+    })
     expect(sidebarHistory[0]?.slotsCount).toBe(2)
     expect(sidebarHistory[0]?.unreadSlots).toEqual(['chat-1', 'legacy-1'])
   })
 
-  it('drops the unread key of a slot on another surface', () => {
+  it('drops the unread key of a slot on another surface', async () => {
     sidebarHistory.length = 0
-    renderChatPage(
-      [{ key: 'chat-1', mode: '' }, { key: 'dash-1', mode: 'dashboard' }],
-      ['chat-1', 'dash-1'],
-    )
+    await act(async () => {
+      renderChatPage(
+        [{ key: 'chat-1', mode: '' }, { key: 'dash-1', mode: 'dashboard' }],
+        ['chat-1', 'dash-1'],
+      )
+    })
     expect(sidebarHistory[0]?.slotsCount).toBe(1)
     expect(sidebarHistory[0]?.unreadSlots).toEqual(['chat-1'])
   })

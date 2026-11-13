@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { sseDisconnected } from '../store/dashboardSlice'
 import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
 
 // The composer's own drag floor.
@@ -71,7 +72,9 @@ describe('ChatInput', () => {
     })
 
     it('shows offline placeholder when connected=false', () => {
-      renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      const { store } = renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      // An outage, not the page's first socket still opening (#34947).
+      act(() => { store.dispatch(sseDisconnected()) })
       expect(screen.getByPlaceholderText(/Gateway offline/)).toBeInTheDocument()
     })
 
@@ -375,6 +378,16 @@ describe('ChatInput', () => {
       Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
       fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
       expect(onChange).toHaveBeenCalledWith('hel\nlo')
+    })
+
+    it('leaves a read-only (disabled) composer untouched on Ctrl+Enter', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="hello" disabled onChange={onChange} sendOnEnter="enter-ctrl-newline" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      Object.defineProperty(ta, 'selectionStart', { value: 3, writable: true })
+      Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
+      fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+      expect(onChange).not.toHaveBeenCalled()
     })
   })
 
@@ -1050,7 +1063,7 @@ describe('ChatInput', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
-    it('moves caret to start after ArrowUp recall so repeated ↑ re-engages history', () => {
+    it('moves caret to the end after ArrowUp recall, and the next ↑ keeps walking older', () => {
       const rafCbs: FrameRequestCallback[] = []
       const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { rafCbs.push(cb); return 0 })
       try {
@@ -1060,12 +1073,97 @@ describe('ChatInput', () => {
         fireEvent.keyDown(ta, { key: 'ArrowUp' })
         // Commit the recalled value before the deferred caret-move runs (real browser ordering).
         rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
-        rafCbs.forEach(cb => cb(0))
-        expect(ta.selectionStart).toBe(0)
-        expect(ta.selectionEnd).toBe(0)
+        rafCbs.splice(0).forEach(cb => cb(0))
+        expect(ta.selectionStart).toBe('third'.length)
+        expect(ta.selectionEnd).toBe('third'.length)
+        // No Home press needed: ↑ from the end of a one-line recall steps older.
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        expect(onChange).toHaveBeenLastCalledWith('second')
+        rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="second" />)
+        rafCbs.splice(0).forEach(cb => cb(0))
+        expect(ta.selectionStart).toBe('second'.length)
+        // ↓ from the same caret steps straight back to the newer prompt.
+        fireEvent.keyDown(ta, { key: 'ArrowDown' })
+        expect(onChange).toHaveBeenLastCalledWith('third')
       } finally {
         rafSpy.mockRestore()
       }
+    })
+
+    it('walks a multi-line recall by line: ↑ steps older only from its first line, ↓ newer only from its last', () => {
+      const onChange = vi.fn()
+      const multiLine = [{ text: 'first' }, { text: 'line1\nline2\nline3' }, { text: 'third' }]
+      const recalled = 'line1\nline2\nline3'
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value="" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value="third" />)
+      ta.setSelectionRange('third'.length, 'third'.length)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith(recalled)
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value={recalled} />)
+      onChange.mockClear()
+      // Last and middle lines: ↑ is caret movement, not a history step.
+      ta.setSelectionRange(recalled.length, recalled.length)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      ta.setSelectionRange(8, 8)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).not.toHaveBeenCalled()
+      // First and middle lines: ↓ is caret movement too.
+      ta.setSelectionRange(3, 3)
+      fireEvent.keyDown(ta, { key: 'ArrowDown' })
+      ta.setSelectionRange(8, 8)
+      fireEvent.keyDown(ta, { key: 'ArrowDown' })
+      expect(onChange).not.toHaveBeenCalled()
+      // Anywhere on the last line, ↓ steps newer.
+      ta.setSelectionRange(14, 14)
+      fireEvent.keyDown(ta, { key: 'ArrowDown' })
+      expect(onChange).toHaveBeenLastCalledWith('third')
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value="third" />)
+      ta.setSelectionRange('third'.length, 'third'.length)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value={recalled} />)
+      // Anywhere on the first line, ↑ steps older.
+      ta.setSelectionRange(3, 3)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith('first')
+    })
+
+    it('keeps the caret in place when ↑ on the oldest multi-line prompt has nowhere older to go', () => {
+      const rafCbs: FrameRequestCallback[] = []
+      const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { rafCbs.push(cb); return 0 })
+      try {
+        const onChange = vi.fn()
+        const oldest = 'line1\nline2'
+        const history = [{ text: oldest }, { text: 'newest' }]
+        const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={history} value="" />)
+        const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={history} value="newest" />)
+        ta.setSelectionRange(0, 0)
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+        expect(onChange).toHaveBeenLastCalledWith(oldest)
+        rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={history} value={oldest} />)
+        rafCbs.splice(0).forEach(cb => cb(0))
+        onChange.mockClear()
+        ta.setSelectionRange(3, 3)
+        expect(fireEvent.keyDown(ta, { key: 'ArrowUp' })).toBe(false)
+        rafCbs.splice(0).forEach(cb => cb(0))
+        expect(onChange).not.toHaveBeenCalled()
+        expect(ta.selectionStart).toBe(3)
+        expect(ta.selectionEnd).toBe(3)
+      } finally {
+        rafSpy.mockRestore()
+      }
+    })
+
+    it('ArrowUp on the first line of the user\'s own draft moves the caret, not the draft', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="my draft" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      ta.setSelectionRange('my draft'.length, 'my draft'.length)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).not.toHaveBeenCalled()
     })
   })
 
@@ -1333,8 +1431,12 @@ describe('ChatInput', () => {
       // onOptimizeResult tagged with slot A so ChatPage can route it into A's
       // draft.
       let resolveFetch: ((value: Response) => void) | null = null
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
-        new Promise<Response>(res => { resolveFetch = res })
+      // Only the optimize request is held: the switch also makes the `/` menu
+      // read slot B's command list, which must not take the optimize's place.
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(url =>
+        String(url).includes('/api/optimizer/optimize')
+          ? new Promise<Response>(res => { resolveFetch = res })
+          : Promise.resolve(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
       )
       // execCommand is the in-place write path; it must never fire for the
       // cross-session case (that would write into the on-screen session).
@@ -1371,8 +1473,10 @@ describe('ChatInput', () => {
       // the on-screen textarea, and must hand the ORIGINAL prompt back to the
       // originating session so the user's text isn't lost.
       let rejectFetch: ((reason?: Error) => void) | null = null
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
-        new Promise<Response>((_res, rej) => { rejectFetch = rej })
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(url =>
+        String(url).includes('/api/optimizer/optimize')
+          ? new Promise<Response>((_res, rej) => { rejectFetch = rej })
+          : Promise.resolve(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
       )
       const execSpy = vi.spyOn(document, 'execCommand').mockReturnValue(true)
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { })

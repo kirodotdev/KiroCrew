@@ -26,14 +26,23 @@ The table is the cold engine's: ``_mints`` and ``_mints_lock`` are bound from
 :mod:`kiro_crew.connections.mint` at import exactly as the facade binds them, so both read one
 table object. Disposing a row's holdings goes through the facade's ``_dispose_mint`` binding
 (:func:`_warm_facade`), which is the seam the warm engine's own callers and tests address.
+
+REFUSAL: an adopted row owns no client, so a code exchange its server refused is read off the
+shared session that minted it (:func:`fail_refused_sign_ins`), the warm half of the cold
+watcher's ``mint._sign_in_refused``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from types import ModuleType
 
 from kiro_crew.connections.mint import MintState, _mints, _mints_lock, _new_mint_token
+from kiro_crew.mcp_grant import grant_observed
+
+logger = logging.getLogger("kiro_crew.connections.warm")
 
 
 def _warm_facade() -> ModuleType:
@@ -192,10 +201,57 @@ async def _release_shared_claims(claims: dict[str, str]) -> None:
 
     Keyed on the row token, so a claim already superseded by a newer one at the same slug
     is left alone rather than dropped out from under the activation now filling it.
+
+    The whole release runs under a shield: the rows leave the table in one loop with no
+    await, then their holdings are released outside the lock. This runs as the rollback of
+    a cancelled ``warm_mint_all``, and a second cancel can reach it there (a dropped
+    request, then gateway shutdown): an await between two pops would leave the later rows
+    ``minting`` with no caller holding their tokens, which nothing withdraws and which
+    keeps the shared process from ever retiring.
     """
+
+    async def _release() -> None:
+        released: list[MintState] = []
+        async with _mints_lock:
+            for slug, token in claims.items():
+                entry = _mints.get(slug)
+                if entry is not None and entry.get("token") == token and entry.get("shared"):
+                    released.append(entry)
+                    del _mints[slug]
+        # Outside the table lock, where the mint engine's own rule wants a dispose.
+        await _dispose_displaced_rows(released)
+
+    # Shielded whole, the lock wait included: a cancel that lands while the lock is
+    # contended must not skip the removals either.
+    await asyncio.shield(_release())
+
+
+async def fail_refused_sign_ins() -> list[str]:
+    """Fail every adopted row whose session reports its server failed after the URL went out."""
     async with _mints_lock:
-        for slug, token in claims.items():
+        adopted = {
+            slug: (str(entry.get("token") or ""), int(entry.get("activation") or 0))
+            for slug, entry in _mints.items()
+            if _mint_is_adopted(entry)
+        }
+    candidates: dict[str, str] = {}
+    for activation in {activation for _token, activation in adopted.values()}:
+        for provider in await _warm_facade()._warm_mint.failed_providers(activation):
+            token, row_activation = adopted.get(provider["slug"], ("", 0))
+            # A grant still wins: the server can fail its own start after a good exchange,
+            # and the row's watcher reports that grant on its next poll.
+            if row_activation == activation and not await grant_observed(provider["mcp_url"]):
+                candidates[provider["slug"]] = token
+    refused: list[str] = []
+    async with _mints_lock:
+        for slug, token in candidates.items():
             entry = _mints.get(slug)
-            if entry is not None and entry.get("token") == token and entry.get("shared"):
-                await _warm_facade()._dispose_mint(entry)
-                _mints.pop(slug, None)
+            if entry is None or entry.get("token") != token or not _mint_is_adopted(entry):
+                continue
+            entry["state"] = "failed"
+            entry["reason"] = "mint_sign_in_rejected"
+            await _warm_facade()._dispose_mint(entry)
+            refused.append(slug)
+    if refused:
+        logger.info("Failed %d shared sign-in(s) the server refused", len(refused))
+    return refused

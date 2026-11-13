@@ -64,7 +64,7 @@ _KNOWN_SEAMS = frozenset(
         "_fetch_history_stats",
         "_post",
         "fd_real_path",
-        "sensitive_path_refusal",
+        "canonical_path_refusal",
         "is_sensitive_bash_command",
         "resolve_script_path",
         "get_local_tz",

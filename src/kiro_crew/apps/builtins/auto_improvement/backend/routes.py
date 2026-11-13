@@ -28,7 +28,7 @@ from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.security import redact
 
-from ..profiles.github_repo.pr_recipe import GitHubPRRecipe
+from ..profiles import build_pr_recipe, target_provider
 from ..spine.push_policy import normalize_branch
 from . import (
     clone_setup,
@@ -333,7 +333,7 @@ async def _handle_put_config(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
-    """Validate a GitHub URL, clone it push-disabled, and record it as the target.
+    """Validate a GitHub URL, clone it push-disabled, and record its repository as the target.
 
     This is the ONLY path that may set ``clone``/``target_url`` in config —
     ``PUT /config`` deliberately cannot, because these decide which repository
@@ -366,9 +366,17 @@ async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
     # visible instead of scope-dependent.
     def _persist(result: dict) -> dict[str, Any]:
         current = store.read_json(store.config_path(), {}) or {}
-        retargeted = str(current.get("target_url") or "") != url
+        target_url = result["target_url"]
+        # Compare the repository, not the URL text: an older config holds the URL as
+        # pasted (a `.git` or `/tree/main` tail), which is still the same repository.
+        # GitHub owner and repo names are case-insensitive.
+        previous = str(current.get("target_display") or "")
+        if previous:
+            retargeted = previous.lower() != str(result["display"]).lower()
+        else:
+            retargeted = str(current.get("target_url") or "") != target_url
         current["clone"] = result["clone"]
-        current["target_url"] = url
+        current["target_url"] = target_url
         # The real remote lives HERE, not in the clone's git config: the clone has both
         # urls neutralized so agent-run Bash inside it cannot discover a push target.
         # Only the trusted publishers read this key. NOT in `_CONFIG_WRITABLE` — like
@@ -881,8 +889,14 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
                 ),
             }
 
-        recipe = GitHubPRRecipe(
-            user=str(config.get("githubUser") or ""),
+        # Provider-selected: a GitLab target drafts an MR via `glab`, a GitHub one a
+        # PR via `gh`. The factory owns which user config key each recipe reads.
+        provider = target_provider(config)
+        recipe = build_pr_recipe(
+            provider,
+            # GitLab attribution comes from the authenticated glab token, so only the
+            # GitHub recipe reads a user config key.
+            user=str(config.get("githubUser") or "") if provider == "github" else "",
             clone_path=Path(clone),
             pr_queue_dir=queue,
             base_ref=str(config.get("branch") or "origin/main"),
@@ -1527,9 +1541,7 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
         # sandbox-launcher failure, not a config/state conflict — a distinct
         # `code` so a UI branching on it does not render the misleading
         # push-isolation guidance. The message is the actionable part.
-        return web.json_response(
-            {"code": "sandbox_launcher_failed", "error": str(exc)}, status=409
-        )
+        return web.json_response({"code": "sandbox_launcher_failed", "error": str(exc)}, status=409)
     except (RuntimeError, ValueError, PermissionError) as exc:
         # Already running / no repository configured / push not disabled — all three are
         # "the request conflicts with current state", all three are user-fixable, and the

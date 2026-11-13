@@ -316,7 +316,7 @@ def load_claimed(fingerprint: str) -> frozenset[EmittedAlias]:
     """
     try:
         raw = record_path().read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return frozenset()
     try:
         data = json.loads(raw)

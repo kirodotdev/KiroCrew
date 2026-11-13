@@ -16,14 +16,8 @@ class TestSlotDetailPaginationUnflushedTail:
     async def test_transient_window_row_does_not_duplicate_the_tail(self, tmp_path, monkeypatch):
         """A transient row in the window must not re-append rows already on disk.
 
-        A save drops transient roles, so the disk read holds only persisted rows
-        while the window holds both. Sizing the un-flushed tail by subtracting the
-        two lengths therefore counts each transient row as one missing message and
-        reaches that many rows too far back — rows the disk read already returned.
-
-        Here everything persisted is on disk, so the correct tail is empty. The
-        window carries one ``done`` row, which ``_prepare_messages`` drops from the
-        response, so a duplicated row is directly visible in the content sequence.
+        A save drops transient roles, so subtracting disk length from window length
+        counts each transient row as missing. Everything is on disk, so the tail is empty.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -84,13 +78,8 @@ class TestSlotDetailPaginationUnflushedTail:
     ):
         """A disk row absent from the window must not consume an owed turn.
 
-        This is the OVER-count direction. A writer other than this slot's own save
-        appends to the same transcript, so the chained disk read grows without any
-        window row having been flushed. Sizing the boundary as
-        ``len(all_msgs) - _disk_older_count`` therefore counts that foreign row as
-        one more persisted window row, walks one row too far, and drops the
-        genuinely un-flushed turn from a response the client uses as a replacement.
-        Under-count fails safe with an empty tail; over-count loses a message.
+        A foreign writer grows the transcript, so ``len(all_msgs) - _disk_older_count``
+        over-counts and drops the owed turn. Over-count loses a message; under-count is safe.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -163,15 +152,8 @@ class TestSlotDetailPaginationUnflushedTail:
     ):
         """The same over-count, on a session whose disk rows carry no message ids.
 
-        The id match cannot help here: a session persisted before ids existed has
-        none on disk, so the boundary falls back to counting. Sizing it as
-        ``len(all_msgs) - _disk_older_count`` measures the whole file rather than
-        this slot's own persisted rows, so a row appended by any other writer is
-        counted as one more flushed window row and the owed turn is dropped.
-
-        ``_disk_window_len`` is how many window rows are on disk, which is the
-        quantity the subtraction was approximating, and a foreign append does not
-        move it.
+        Without ids the boundary falls back to counting. ``_disk_window_len`` counts
+        this slot's rows on disk, and a foreign append does not move it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -205,13 +187,8 @@ class TestSlotDetailPaginationUnflushedTail:
     def test_id_less_boundary_matches_a_row_redacted_on_load(self):
         """A restored row keeps its ``ts`` verbatim but not always its content.
 
-        Restore redacts non-user content before it enters the window while the disk
-        row stays raw, so matching on content alone ends the run at that row and
-        re-appends everything from there — rows the disk read already returned.
-
-        The pair is taken from the REAL redactor rather than written by hand: an
-        invented pair passes for the wrong reason, because a stamp match would carry
-        it even when the transform would not.
+        Restore redacts non-user content while the disk row stays raw. The pair comes
+        from the real redactor: an invented pair could pass on the stamp match alone.
         """
         from types import SimpleNamespace
 
@@ -247,16 +224,9 @@ class TestSlotDetailPaginationUnflushedTail:
     def test_shared_stamp_foreign_row_does_not_swallow_an_unflushed_row(self):
         """A foreign row sharing a ``ts`` must not be accepted as the window's own.
 
-        On a coarse clock two writers flooring off the same previous row both emit
-        ``previous + 1µs`` (``history_schema.monotonic_transcript_ts``), so a foreign disk row and an
-        un-flushed window row of the SAME role can carry an identical stamp while
-        holding different messages. Accepting a stamp match on its own then treats
-        the foreign row as the window row, the boundary advances past the un-flushed
-        one, and the bounded response omits it — from a payload the client uses to
-        REPLACE its transcript, so the message is simply gone from view.
-
-        Content is the discriminator: these two rows differ by more than the load
-        redaction, so nothing may match them.
+        On a coarse clock two writers both emit ``previous + 1µs``
+        (``history_schema.monotonic_transcript_ts``), so same-role rows can share a stamp.
+        Content is the discriminator: these rows differ by more than load redaction.
         """
         from types import SimpleNamespace
 
@@ -289,13 +259,8 @@ class TestSlotDetailPaginationUnflushedTail:
     ):
         """A caller may repeat ``meta.mid``, and a set membership test over-reaches.
 
-        ``meta`` on an inbound message is caller-supplied and an id is minted only
-        when one is *absent*, so a client can post the same id twice. The first row
-        reaches disk; the second is still only in the window. Testing membership
-        against a *set* of disk ids matches both window rows, so the boundary walks
-        past the row that was never persisted and the bounded read omits it — the
-        silent-loss direction. One disk row is enough to reproduce it; two disk rows
-        sharing an id are not required.
+        An id is minted only when absent, so a client can post one id twice. With the
+        first row on disk, a *set* of disk ids matches both window rows and hides the second.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -336,15 +301,8 @@ class TestSlotDetailPaginationUnflushedTail:
     def test_frozen_prefix_id_does_not_fund_a_window_match(self):
         """An id occurrence in the frozen prefix must not count as a flushed window row.
 
-        ``all_msgs[:_disk_older_count]`` is the frozen prefix — on-disk rows OLDER
-        than the window, so none of them is in ``slot.messages``. Counting ids over
-        the whole disk read lets such an occurrence fund a consumption for a window
-        row that was never flushed, and the boundary then walks past it. Only the
-        on-disk window region, ``all_msgs[_disk_older_count:]``, may fund a match.
-
-        Reachable because a caller-supplied ``mid`` is preserved rather than re-minted
-        (``state_parts/slot_transcript.py`` ``append``), which is what lets a redelivered row carry
-        an id whose original has since been paged into the prefix.
+        Only ``all_msgs[_disk_older_count:]`` may fund a match. Reachable because a
+        caller-supplied ``mid`` is kept (``state_parts/slot_transcript.py`` ``append``).
         """
         from types import SimpleNamespace
 
@@ -380,21 +338,9 @@ class TestSlotDetailPaginationUnflushedTail:
     ):
         """A disk window holding BOTH id-carrying and id-less rows must not duplicate.
 
-        The dual-write injectors stamp both copies of an injection with one id, so
-        a NEW injection does not produce this state — but transcripts written
-        before the append path accepted an id hold exactly it, as does any caller
-        that passes no id: earlier saved rows WITH ids plus a durable row WITHOUT
-        one. The id-less ``append_if_absent`` call below is that legacy writer
-        shape, and it must keep working unmigrated.
-
-        Selecting id matching because SOME row carries an id then applies it to a row
-        that structurally cannot match, so the injection is treated as un-flushed and
-        appended a second time. Id matching is only sound when EVERY row in the disk
-        window carries one; a mixed window belongs on the ordered path, which matches
-        the fields both writers do record.
-
-        Driven through the real writers rather than a hand-built mixed window, so it
-        cannot encode a row shape neither writer emits.
+        Any caller that passes no id to ``append_if_absent`` leaves saved rows with ids
+        next to a durable row without one. Id matching is sound only when EVERY disk window
+        row has an id; a mixed window takes the ordered path. Uses the real writers.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -446,15 +392,8 @@ class TestSlotDetailPaginationUnflushedTail:
     ):
         """Both copies of an injection carry ONE id, so the identity walk matches.
 
-        The dual-write shape: the window copy is appended through ``slot.append``,
-        which mints ``meta.mid`` and returns the row; the durable copy passes that
-        same id to ``append_if_absent``. The on-disk window region then holds ONLY
-        id-carrying rows, so the bounded read reconciles by identity rather than a
-        body heuristic, and the injection appears exactly once.
-
-        Guarded on the all-id premise: if the durable copy ever stops carrying the
-        id, the fixture degrades to the mixed shape and the guard names that,
-        instead of the count assertion passing by way of the ordered fallback.
+        The guard checks the region is all-id; otherwise the count assertion could pass
+        through the ordered fallback.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -504,13 +443,8 @@ class TestSlotDetailPaginationUnflushedTail:
     ):
         """Hydration must keep the disk rows' ids, or an all-id region doubles.
 
-        With durable injection copies id-carrying, a cron transcript's window
-        region can be ALL-id — the condition that selects the identity walk.
-        ``hydrate_slot_from_history`` re-appends those rows into a fresh slot;
-        if it dropped their ``meta``, every hydrated row would be re-minted a
-        fresh id, no window id would match the disk, and the walk would mark
-        the WHOLE history owed — a bounded read then serves every row twice
-        until the next flush rewrites the file.
+        If ``hydrate_slot_from_history`` dropped ``meta``, every row would get a fresh id
+        and the identity walk would mark the whole history owed.
         """
         from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
 
@@ -554,15 +488,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_owed_row_merges_at_its_window_position_not_after_the_disk_slice(self):
         """A persisted row LATER in window order must not be rendered before an owed one.
 
-        ``_flush_segment`` pulls a ``stop_event`` out of the trailing chunk run and
-        re-appends it AFTER the finalized assistant row (chat_runner.py:2686-2687).
-        So a stop that reached disk during streaming sits, in window order, behind a
-        reply that is still owed. Concatenating the owed rows after the whole disk
-        slice therefore renders the pair inverted -- the stop card above the prose it
-        terminated.
-
-        Window order is authoritative and every row in this arm carries an id, so the
-        position is derivable without the body matching the other arm needs.
+        ``_flush_segment`` re-appends a ``stop_event`` AFTER the finalized assistant row,
+        so a persisted stop can follow an owed reply. Window order is authoritative.
         """
         from types import SimpleNamespace
 
@@ -595,12 +522,7 @@ class TestUnflushedTailOrderingAndSnapshot:
         )
 
     def test_tail_with_no_inversion_still_appends_after_the_disk_slice(self):
-        """Negative control: with no inversion the result must be the old concatenation.
-
-        Fails for the intended reason if the merge reorders rows it should leave alone
-        -- every owed row here already follows every persisted one in window order, so
-        the answer must be exactly ``all_msgs + owed``.
-        """
+        """Negative control: with no inversion the result is ``all_msgs + owed``."""
         from types import SimpleNamespace
 
         from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
@@ -623,17 +545,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     ):
         """The window snapshot must be taken before the offload, not inside the thread.
 
-        ``_flush_segment`` assigns ``slot.messages = head`` and only THEN appends the
-        finalized assistant row, so between those two statements the window is a
-        transient chunk-free head missing that row. It is a plain ``def`` that is never
-        handed to ``to_thread``, so the event loop cannot interleave with it -- but the
-        threaded tail scan can land exactly there and snapshot the hole, and
-        ``_disk_older_count`` is untouched by that mutation so the bounded re-read
-        cannot detect it.
-
-        Simulated deterministically: the mutation is applied at the moment the worker
-        is entered. A snapshot captured on the loop predates it and keeps the row; one
-        taken inside the worker sees the hole and drops the row from the response.
+        ``_flush_segment`` sets ``slot.messages = head`` before appending the finalized
+        row; a threaded scan can see that hole. The test removes the row on worker entry.
         """
         import kiro_crew.dashboard.chat_handlers as ch
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -710,13 +623,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_live_streamed_row_before_a_persisted_row_is_not_dropped(self):
         """An owed transient row must survive the suffix boundary in the id-less arm.
 
-        The matcher skipped a transient row WITHOUT advancing ``start``; a later
-        persisted match then set ``start = i + 1``, moving the boundary PAST the skipped
-        row, and ``window[start:]`` excluded it. So a live streamed chunk sitting before
-        a persisted ``stop_event`` was dropped from the bounded response entirely.
-
-        A disk read omits transient roles, so such a row can never be matched and is
-        always owed -- which is precisely the rule the id-based arm already applies.
+        A later match sets ``start = i + 1`` past a skipped transient row. A disk read omits
+        transient roles, so such a row is always owed, as in the id arm.
         """
         from types import SimpleNamespace
 
@@ -750,10 +658,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_trailing_transient_row_is_emitted_exactly_once(self):
         """Negative control for the merge: an owed transient must not be emitted twice.
 
-        Rows left in ``pending`` sit at or after ``start`` and are therefore already
-        carried by ``window[start:]``. Emitting them again as well would re-append a
-        live row -- the duplication class this change exists to avoid. Fails for the
-        intended reason if the merge and the suffix both claim the same row.
+        Rows left in ``pending`` are already carried by ``window[start:]``, so the merge
+        and the suffix must not both emit them.
         """
         from types import SimpleNamespace
 
@@ -776,12 +682,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_unowed_and_answered_rows_stay_excluded_from_the_idless_tail(self):
         """Negative control: only genuinely owed transients may be merged.
 
-        ``done``/``queued`` are ``_UNOWED_WINDOW_ROLES`` and an answered ``permission``
-        has already been dispositioned, so neither is owed. Merging transients
-        unconditionally would re-append them, which is the same defect in the opposite
-        direction from the drop above. A still-pending permission IS owed, so it is
-        included -- that arm of the assertion is what stops the fix from over-narrowing
-        into a second drop.
+        ``done``/``queued`` (``_UNOWED_WINDOW_ROLES``) and an answered ``permission`` are not
+        owed. A still-pending permission IS owed, which guards against over-narrowing.
         """
         import json
         from types import SimpleNamespace
@@ -825,19 +727,9 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_unmatched_row_does_not_strand_the_persisted_rows_behind_it(self):
         """An owed row must not make the id-less arm re-emit later persisted rows.
 
-        The arm forward-scans the disk slice for each window row. When a row was NOT
-        found the loop would ``break`` outright, which left ``start`` pointing AT that
-        row -- so ``window[start:]`` carried it AND every later window row, including
-        rows the disk slice already holds. Those came back a second time, and out of
-        order, which is the duplication this function exists to remove.
-
-        The reachable shape is a ``stop_event`` flushed before reply finalization:
-        ``_flush_segment`` re-appends the stop AFTER the finalized assistant row, so the
-        window reads ``[... unflushed reply, flushed stop]``. The reply misses, and on
-        the old code the persisted stop was emitted twice.
-
-        The sibling id-carrying arm already holds an unmatched row and keeps walking, so
-        this mirrors that rule rather than inventing a second one.
+        An unmatched row is held and the scan keeps walking, as in the id arm; stopping
+        there would re-emit every later persisted row. Reachable because ``_flush_segment``
+        re-appends a flushed stop AFTER the unflushed reply.
         """
         from types import SimpleNamespace
 
@@ -878,11 +770,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_unmatched_row_is_still_emitted_and_not_dropped(self):
         """Negative control: holding the unmatched row must not silently drop it.
 
-        The fix stops an unmatched row from stranding the rows behind it. The opposite
-        failure is just as silent -- discarding that row instead of retaining it would
-        also stop the duplicate, and would pass a test that only counted the persisted
-        row. So assert the owed row itself survives, in both the with-a-later-match and
-        no-later-match shapes.
+        Discarding the row would also stop the duplicate, so assert it survives, with and
+        without a later match.
         """
         from types import SimpleNamespace
 
@@ -914,22 +803,11 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_trailing_unowed_and_answered_rows_are_excluded_from_the_idless_tail(self):
         """An unowed row in the LAST window position must not reach the tail.
 
-        ``start`` only advances on a match, and an unowed row takes the transient branch
-        and ``continue``s -- skipping ``start = i + 1``. So when such a row TRAILS the last
-        match, a raw ``window[start:]`` re-admits it and undoes the exclusion the loop's own
-        guard performed. The sibling id-carrying arm has no such hole because it applies
-        both exclusions at the top of its loop.
+        ``start`` advances only on a match, so a raw ``window[start:]`` re-admits a trailing
+        unowed row. A page holding only that ``done`` would render empty.
 
-        Two symptoms share that cause. A trailing ``done`` reaches the bounded response and
-        ``_prepare_messages`` drops it while rendering, so a page whose only row is that
-        ``done`` renders EMPTY and replaces the transcript. A trailing answered
-        ``permission`` is instead re-ordered after every persisted row.
-
-        The sibling test above puts the extra row in the MIDDLE, where the later match
-        advances ``start`` PAST it -- so the exclusion it observes comes from ``start``
-        overshooting, not from any filter, and it cannot see this defect. The whole body
-        list is asserted rather than mere membership, because membership alone cannot see a
-        mis-ordering.
+        The sibling test puts the row in the middle, where ``start`` overshoots it anyway.
+        The whole body list is asserted because membership cannot see a mis-ordering.
         """
         import json
         from types import SimpleNamespace
@@ -971,12 +849,8 @@ class TestUnflushedTailOrderingAndSnapshot:
     def test_trailing_owed_rows_survive_the_idless_tail_filter(self):
         """Negative control: the tail filter must not over-narrow into a second drop.
 
-        ``_UNOWED_WINDOW_ROLES`` is ``{done, queued}`` -- ``chunk`` and ``streaming`` are
-        subtracted out, and a still-PENDING ``permission`` has not been dispositioned. All
-        three are genuinely owed: a disk read carries no transient row, so they can never be
-        matched, and dropping them loses a live streamed answer or an approval the user has
-        yet to answer. That is the opposite defect from the leak, and it is the one an
-        over-eager filter actually produces.
+        ``_UNOWED_WINDOW_ROLES`` is ``{done, queued}``. A ``chunk`` and a still-pending
+        ``permission`` are owed: no disk row can match them.
         """
         import json
         from types import SimpleNamespace

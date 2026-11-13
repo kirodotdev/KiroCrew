@@ -648,6 +648,28 @@ def test_has_user_queued_followup_excludes_system_injections():
     assert _has_user_queued_followup(SimpleNamespace(_queue=[cron, user, recovery])) is True
 
 
+# 4q. A restored card the user has not sent waits for them and no drain runs it,
+#     so it must not switch off auto-retry, continuation or replay on its slot.
+#     Once the user chooses to run it, it counts like any other user entry.
+def test_has_user_queued_followup_ignores_unsent_restored_cards():
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.chat_runner import _has_user_queued_followup
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+
+    restored = {"id": "r1", "content": "old", "kind": "", "payload": "", RESTORED_QUEUE_KEY: True}
+    chosen = {**restored, "id": "r2", RESTORED_SEND_CHOSEN_KEY: True}
+    live = {"id": "u", "content": "new", "kind": "", "payload": ""}
+
+    assert _has_user_queued_followup(SimpleNamespace(_queue=[restored])) is False
+    assert _has_user_queued_followup(SimpleNamespace(_queue=[restored, restored])) is False
+    assert _has_user_queued_followup(SimpleNamespace(_queue=[chosen])) is True
+    assert _has_user_queued_followup(SimpleNamespace(_queue=[restored, live])) is True
+
+
 # 5. Cancellation, refusal, approval-wait, and explicit blocker responses are unchanged.
 def test_cancelled_refusal_blocker_do_not_trigger():
     # cancelled turn

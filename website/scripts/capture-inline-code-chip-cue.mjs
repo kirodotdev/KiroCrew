@@ -25,9 +25,10 @@
  *     above, off the message. Every bubble stays inside the viewport.
  *  6. On the default theme, a session chip paints in the accent like the path
  *     chips (the copy chip beside it is neutral), and its Ctrl+click copy
- *     confirms in its title only once the write lands, without switching.
- *  7. With the clipboard refusing, the title-cued chips — session, path,
- *     broken image — each open the SAME bubble-borne failure notice the copy
+ *     confirms in its bubble and the status region only once the write lands,
+ *     without switching and without adding anything to the chip.
+ *  7. With the clipboard refusing, the session chip and the title-cued chips —
+ *     path, broken image — each open the SAME bubble-borne failure notice the copy
  *     chip uses, at the pressed chip, one bubble at a time, and nothing
  *     enters the sentence around them. All share the copy chip's opener and
  *     name only the object that failed, never a gesture (#14294): "Couldn’t
@@ -546,24 +547,32 @@ async function main() {
   assert(`session: chip declares "navigate" and paints in the accent (${sessionRest.action}, ${sessionRest.color})`,
     sessionRest.action === 'navigate' && sessionRest.color === 'rgb(176, 127, 255)')
   assert(`session: chip is named for its click (${sessionRest.name})`, sessionRest.name === `Switch to session ${OTHER_SLOT}`)
-  assert('session: title advertises Ctrl/Cmd+click to copy', /Ctrl\/Cmd\+click to copy/.test(sessionRest.title ?? ''))
+  assert(`session: no native title, the bubble is its tooltip (${sessionRest.title})`, sessionRest.title === null)
+  await sessionChip.hover()
+  await h.page.waitForTimeout(300)
+  const sessionHint = await h.page.locator('[role="tooltip"]').textContent().catch(() => null)
+  assert(`session: the bubble advertises Ctrl/Cmd+click to copy (${sessionHint})`, /Ctrl\/Cmd\+click to copy/.test(sessionHint ?? ''))
   assert(`session: the accent differs from the prose colour a copy chip wears (${sessionRest.color} vs ${sessionRest.prose})`,
     sessionRest.color !== sessionRest.prose)
   await sessionChip.click({ modifiers: ['Control'] })
   await h.page.waitForTimeout(250)
-  const sessionCopied = await sessionChip.evaluate(el => ({ title: el.getAttribute('title'), svgs: el.querySelectorAll('svg').length }))
+  const sessionCopied = await sessionChip.evaluate(el => ({ svgs: el.querySelectorAll('svg').length }))
   const sessionClip = await h.page.evaluate(() => navigator.clipboard.readText()).catch(() => null)
+  const sessionTip = await h.page.locator('[role="tooltip"]').textContent().catch(() => null)
   assert(`session: Ctrl+click copies the key (${JSON.stringify(sessionClip)})`, sessionClip === OTHER_SLOT)
-  assert(`session: the title confirms once the write lands (${sessionCopied.title})`, sessionCopied.title === 'Copied!')
-  assert(`session: the check icon appears (${sessionRest.svgs} -> ${sessionCopied.svgs})`, sessionCopied.svgs === sessionRest.svgs + 1)
+  assert(`session: the bubble confirms once the write lands (${sessionTip})`, sessionTip === 'Copied!')
+  assert('session: the status region announces it',
+    (await h.page.locator('[role="status"]').filter({ hasText: 'Copied!' }).count()) === 1)
+  assert(`session: nothing is added to the chip (${sessionRest.svgs} -> ${sessionCopied.svgs})`, sessionCopied.svgs === sessionRest.svgs)
   assert('session: Ctrl+click did not switch sessions',
     (await h.page.locator('textarea[data-composer-input]').count()) === 1 && (await sessionChip.count()) === 1)
   await shotAround(thirdMsg(), 'session-chip-copied', 16)
   await h.page.waitForTimeout(1600)
-  assert('session: the confirmation clears after 1.5s', (await sessionChip.getAttribute('title')) !== 'Copied!')
+  assert('session: the confirmation clears after 1.5s',
+    ((await h.page.locator('[role="tooltip"]').textContent().catch(() => null)) ?? '') !== 'Copied!')
 
-  // --- The ONE failure surface on the title-cued chips: session, path, broken
-  // image. Both clipboard layers refuse, as above. Each refusal opens the same
+  // --- The ONE failure surface on the session chip and the title-cued chips
+  // (path, broken image). Both clipboard layers refuse, as above. Each refusal opens the same
   // bubble-borne failure notice the copy chip uses, at the pressed chip,
   // and nothing enters the sentence around it. ---
   await h.page.evaluate(() => {

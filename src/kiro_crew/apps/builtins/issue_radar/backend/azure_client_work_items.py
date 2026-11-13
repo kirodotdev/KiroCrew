@@ -205,7 +205,7 @@ def _closing_state_name(
     raise ProviderCliError(f"the {work_item_type} type defines no completed state")
 
 
-def _current_identity(org: str, *, host: str, timeout: float) -> dict:
+def _current_identity(org: str, *, host: str, timeout: float, fresh: bool = False) -> dict:
     """``{"id": guid, "login": str}`` for the authenticated ``az`` session.
 
     Azure serves identity from a different area than everything else here, and
@@ -214,9 +214,10 @@ def _current_identity(org: str, *, host: str, timeout: float) -> dict:
     tried in order. Both are reads; the first that yields a GUID wins. A failure
     to resolve is raised rather than swallowed by the callers that NEED the GUID
     (a review vote and arming auto-complete are both addressed by reviewer id),
-    while :func:`get_current_login` swallows it.
+    while :func:`get_current_login` swallows it. *fresh* re-reads past the cache (and
+    refreshes it), for a caller that must see a login switched mid-run.
     """
-    cached = _identity_cache.get(org)
+    cached = None if fresh else _identity_cache.get(org)
     if cached:
         return cached
     candidates = (

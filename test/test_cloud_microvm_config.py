@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
+import yaml
+from yaml_helpers import load_with
 
 from kiro_crew.cloud.config import CloudConfig
 from kiro_crew.cloud.microvm.api import MAX_LIFETIME_SECONDS
@@ -439,6 +442,21 @@ class TestActivationRoleIsRequired:
         assert config.activation_role_arn != config.execution_role_arn
 
 
+class _CfnLoader(yaml.SafeLoader):
+    """SafeLoader that reads a CloudFormation short-form intrinsic as ``(tag, value)``."""
+
+
+def _intrinsic(loader: yaml.SafeLoader, tag: str, node: yaml.Node) -> tuple[str, Any]:
+    if isinstance(node, yaml.ScalarNode):
+        return (tag, loader.construct_scalar(node))
+    if isinstance(node, yaml.SequenceNode):
+        return (tag, loader.construct_sequence(node, deep=True))
+    return (tag, loader.construct_mapping(node, deep=True))
+
+
+_CfnLoader.add_multi_constructor("!", _intrinsic)
+
+
 class TestTheBaseTemplate:
     """Two properties of the base stack that CloudFormation Lint cannot judge.
 
@@ -488,6 +506,16 @@ class TestTheBaseTemplate:
         assert block, f"{name} is not in the template"
         return block.group(1)
 
+    def test_the_recipe_bucket_refuses_plain_http(self):
+        """The recipe zip carries the crew bundle, so a request without TLS is
+        denied on the bucket itself, whatever endpoint a client was given."""
+        body = self._resource("RecipeBucketPolicy")
+        assert "Bucket: !Ref RecipeBucket" in body
+        assert "Effect: Deny" in body
+        assert 'aws:SecureTransport: "false"' in body
+        assert "!GetAtt RecipeBucket.Arn" in body
+        assert '!Sub "${RecipeBucket.Arn}/*"' in body
+
     def test_the_build_role_can_write_the_build_logs(self):
         """A build role that cannot write its log group does not build without
         logs; it does not build at all.
@@ -508,6 +536,24 @@ class TestTheBaseTemplate:
         body = self._resource("ImageBuildRole")
         assert "log-group:/aws/lambda-microvms/*" in body
         assert 'Resource: "*"' not in body
+
+    @pytest.mark.parametrize("role", ["ImageBuildRole", "ExecutionRole"])
+    def test_the_lambda_trust_is_bound_to_this_account(self, role):
+        """Without these, the Lambda service acting for another account could be
+        asked to assume the role."""
+        template = load_with(_CfnLoader, self._template())
+        trust = template["Resources"][role]["Properties"]["AssumeRolePolicyDocument"]
+        (statement,) = trust["Statement"]
+        assert statement["Principal"] == {"Service": "lambda.amazonaws.com"}
+        assert statement.get("Condition") == {
+            "StringEquals": {"aws:SourceAccount": ("Ref", "AWS::AccountId")},
+            "ArnLike": {
+                "aws:SourceArn": (
+                    "Sub",
+                    "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:*",
+                )
+            },
+        }
 
     @pytest.mark.parametrize("role", ["HybridActivationRole", "ExecutionRole"])
     def test_both_guest_roles_may_decrypt_the_lane_key(self, role):

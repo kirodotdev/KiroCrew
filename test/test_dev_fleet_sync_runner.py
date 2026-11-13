@@ -200,15 +200,10 @@ class TestRunSteps:
         assert "::step::1::Merge" in out
 
     def test_run_step_pins_pythonioencoding_on_the_child(self, tmp_path):
-        """EXECUTED coverage for the per-step ``PYTHONIOENCODING`` pin.
+        """A Python child encodes stdout as UTF-8 whatever the locale codepage.
 
-        The pre-refactor inline script assigned ``PYTHONIOENCODING`` on every
-        step's env so a Python child (pip, the build-and-stage child) encodes
-        its stdout as UTF-8 regardless of the process locale codepage. The pin
-        moved into :func:`sync_runner.run_step`; this test proves it reaches a
-        REAL child's environment -- and overrides a divergent inherited value,
-        because the reader's decoding is fixed so a passthrough would be the
-        defect.
+        The pin must override a divergent inherited value: the reader's decoding
+        is fixed, so a passthrough would be the defect.
         """
         import sys
 
@@ -230,19 +225,12 @@ class TestRunSteps:
         assert probe.read_text() == "utf-8:replace"
 
     def test_a_failed_step_reports_its_stderr_tail_not_its_last_stdout_line(self, tmp_path, capfd):
-        """The ordering the marker exists for, reproduced end to end.
-
-        A child block-buffers stdout to a pipe and writes stderr unbuffered, so a
-        step that fails AFTER printing progress to stdout leaves that progress as
-        the last line of the merged stream (``Updating <old>..<new>`` from a
-        refused ``git merge --ff-only``). The stream's final line is therefore not
-        evidence of what failed. The ``::steperr::`` markers must carry the stderr
-        lines, in order, regardless of where stdout landed.
+        """A refused ``git merge --ff-only`` can leave stdout progress as the last
+        merged line, so the ``::steperr::`` markers must carry the stderr lines.
         """
         import sys
 
-        # Deliberately shaped like the real refusal: diagnosis on stderr, a
-        # progress line on stdout written LAST so no buffering assumption is
+        # Progress on stdout is written LAST, so no buffering assumption is
         # needed to make it the final line of the merged stream.
         script = (
             "import sys;"
@@ -267,10 +255,8 @@ class TestRunSteps:
         )
 
         assert rc == 1
-        # `capfd`, not `capsys`: the step's stdout is INHERITED (it writes to the
-        # real descriptor, exactly as it does into the runner's pipe in
-        # production), so only fd-level capture sees both streams the way the
-        # dashboard does.
+        # `capfd`, not `capsys`: the step's stdout is INHERITED (the real
+        # descriptor), so only fd-level capture sees both streams.
         lines = capfd.readouterr().out.splitlines()
         markers = [ln for ln in lines if ln.startswith("::steperr::")]
         assert markers == [
@@ -278,22 +264,16 @@ class TestRunSteps:
             "::steperr::0::\tconfig-baseline.json",
             "::steperr::0::Aborting",
         ]
-        # The stderr lines still reach the log in their own right -- the markers
-        # label the tail, they do not replace the transcript.
+        # The markers label the tail; they do not replace the transcript.
         assert "Aborting" in lines
-        # The stdout progress line stays in the log too. It is simply not the only
-        # line the failure can be named from.
         assert "Updating 2f9ed9724..bf09e50e5" in lines
 
     def test_a_newline_free_blob_is_read_in_bounded_pieces(self, tmp_path, capfd):
         """A step's stderr is worktree-controlled, so it can carry no newline.
 
-        Iterating the handle would allocate the whole blob inside the runner --
-        the shape ``test_jsonl_util.py::TestNoUnboundedHandleIteration`` refuses.
-        Reading with a cap keeps every allocation fixed: a blob longer than the
-        cap arrives as cap-sized pieces, each forwarded, so splitting is the only
-        effect, and no single remembered tail line exceeds the notice's own
-        ceiling.
+        Iterating the handle would allocate the whole blob (the shape
+        ``test_jsonl_util.py::TestNoUnboundedHandleIteration`` refuses); a capped
+        read forwards it as cap-sized pieces instead.
         """
         import sys
 
@@ -322,30 +302,22 @@ class TestRunSteps:
         lines = out.splitlines()
         markers = [ln for ln in lines if ln.startswith("::steperr::")]
         forwarded = [ln for ln in lines if not ln.startswith("::")]
-        # Nothing is dropped: every 'x' still reached the log. Counted on the
-        # FORWARDED lines only -- the tail markers re-emit truncated pieces of the
-        # same blob, so counting them too would double-count what they quote.
+        # Counted on FORWARDED lines only: the tail markers re-emit truncated
+        # pieces of the same blob and would double-count.
         assert sum(ln.count("x") for ln in forwarded) == blob
-        # The blob is split, so no forwarded line carries the whole thing.
         assert max(len(ln) for ln in forwarded) <= sync_runner._STEPERR_READ_CAP
         assert markers, "a failed step must still report a tail"
-        # A remembered tail line is a banner line, not a log line -- and a trimmed
-        # one carries the "..." marker, which is 3 characters past the cap.
+        # A trimmed tail line carries the "..." marker, 3 characters past the cap.
         for m in markers:
             assert len(m) <= len("::steperr::0::") + sync_runner._STEPERR_LINE_CHARS + 3
-        # The real diagnostic is the last stderr line and survives the blob.
         assert markers[-1] == "::steperr::0::Aborting"
 
     def test_a_multibyte_blob_stays_under_the_gateway_byte_limit(self, tmp_path, capfd):
         """The cap counts characters; the gateway's reader counts bytes.
 
-        An ASCII test cannot see the gap: one ASCII character is one byte, so a
-        character cap chosen as a round number looks safe and is not. A non-ASCII
-        checkout path or a localized git message is ordinary, and at 4 UTF-8 bytes
-        per character a character-capped piece can encode to several times the
-        gateway's ``StreamReader`` limit -- where ``readline()`` raises and the
-        handler reaps the whole tree. So the bound asserted here is the ENCODED
-        length of what the pump forwards.
+        At 4 UTF-8 bytes per character a character-capped piece can exceed the
+        gateway's ``StreamReader`` limit, where ``readline()`` raises and the
+        handler reaps the whole tree. So the bound is on ENCODED length.
         """
         import sys
 
@@ -373,14 +345,12 @@ class TestRunSteps:
         assert rc == 1
         lines = capfd.readouterr().out.splitlines()
         forwarded = [ln for ln in lines if not ln.startswith("::")]
-        # THE assertion: every forwarded line, newline included, fits the byte
-        # ceiling the gateway's reader imposes.
+        # Newline included in the byte count.
         worst = max(len(ln.encode("utf-8")) + 1 for ln in forwarded)
         assert worst <= sync_runner._GATEWAY_LINE_BYTES, (
             f"a forwarded line encodes to {worst} bytes, past the "
             f"{sync_runner._GATEWAY_LINE_BYTES}-byte gateway limit"
         )
-        # Still lossless, and the real diagnostic after the blob still lands.
         assert sum(ln.count("\U0001f600") for ln in forwarded) == blob_chars
         markers = [ln for ln in lines if ln.startswith("::steperr::")]
         assert markers[-1] == "::steperr::0::Aborting"
@@ -388,19 +358,13 @@ class TestRunSteps:
     def test_concurrent_stdout_cannot_splice_a_relayed_line(self, tmp_path, capfd):
         """This runner is the SOLE writer to its stdout pipe, so no line splices.
 
-        Capping our own writes bounds nothing while the step also owns the
-        descriptor: a newline-free stdout blob can prepend to a terminated relay
-        line, and the merged inter-newline run the gateway reads exceeds its
-        ceiling however tightly each writer capped itself -- which reaps the
-        process tree. Both streams are piped and every write goes through `emit`
-        under one lock, so the assertion here is on the SHAPE of the merged
-        output: every line the gateway would read is whole and under the ceiling,
-        with the two streams hammering the pipe at once.
+        If the step shared the descriptor, a newline-free stdout blob could prepend
+        to a relay line and exceed the gateway's ceiling, which reaps the process
+        tree. Every write goes through `emit` under one lock.
         """
         import sys
 
-        # Interleave deliberately: alternating newline-free stdout blobs and
-        # terminated stderr lines, which is the splice the finding described.
+        # Alternating newline-free stdout blobs and terminated stderr lines.
         script = (
             "import sys\n"
             "for i in range(40):\n"
@@ -425,24 +389,16 @@ class TestRunSteps:
 
         assert rc == 1
         lines = capfd.readouterr().out.splitlines()
-        # THE invariant: no line the gateway reads exceeds its byte ceiling.
         worst = max(len(ln.encode("utf-8")) + 1 for ln in lines)
         assert worst <= sync_runner._GATEWAY_LINE_BYTES, f"a line encodes to {worst} bytes"
-        # And no line mixes the two streams -- a spliced line would carry both.
         mixed = [ln for ln in lines if "O" in ln and "E" in ln]
         assert not mixed, f"{len(mixed)} line(s) spliced two streams together"
-        # Nothing was dropped from either stream.
         assert sum(ln.count("O") for ln in lines) == 40 * 3000
         markers = [ln for ln in lines if ln.startswith("::steperr::")]
         assert markers[-1] == "::steperr::0::Aborting"
 
     def test_a_trimmed_tail_line_says_it_was_trimmed(self, tmp_path, capfd):
-        """A cut diagnosis must not read as the whole sentence.
-
-        The tail is rendered in a one-line notice, so trimming is right; trimming
-        SILENTLY is the same class of harm as naming a progress line -- the reader
-        believes something the output does not support.
-        """
+        """A cut diagnosis must not read as the whole sentence."""
         import sys
 
         long_line = "D" * (sync_runner._STEPERR_LINE_CHARS + 200)
@@ -467,7 +423,6 @@ class TestRunSteps:
         text = markers[0].split("::", 3)[3]
         assert text.endswith("..."), "a trimmed tail line must be marked as trimmed"
         assert len(text) == sync_runner._STEPERR_LINE_CHARS + 3
-        # The untrimmed line still reached the log in its own right.
         assert long_line in capfd.readouterr().out or True
 
     def test_steperr_tail_is_bounded_and_keeps_the_LAST_lines(self, tmp_path, capsys):
@@ -597,15 +552,9 @@ class TestGone:
     def test_a_linked_tree_is_unlinked_and_its_target_survives(self, tmp_path):
         """A junction is the Windows spelling of the shared-store layout.
 
-        ``os.path.islink`` reports False for one, so it fell through to
-        ``rmtree``, which refuses a junction exactly as it refuses a symlink --
-        the refusal is swallowed by ``ignore_errors``, ``gone`` reports False,
-        and the transaction that reads it stops with a backup it can never
-        clear. Every later Pull + Build then sees both paths and refuses as
-        ambiguous.
-
-        ``make_dir_link`` gives a junction on Windows and a symlink elsewhere, so
-        the POSIX run is a no-regression check on the branch that already worked.
+        ``os.path.islink`` is False for one, and ``rmtree`` refuses it silently
+        under ``ignore_errors``, leaving a backup no later Pull + Build can clear.
+        ``make_dir_link`` gives a junction on Windows and a symlink elsewhere.
         """
         store = tmp_path / "store"
         _tree(store, "store")

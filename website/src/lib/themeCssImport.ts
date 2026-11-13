@@ -57,6 +57,10 @@ export interface RefusedDeclaration {
 /** Mirrors `_THEME_NAME_MAX_LEN` in `dashboard/theme_validate.py`. */
 const THEME_NAME_MAX_LEN = 60
 
+/** Mirrors `_THEME_EMOJI_MAX_LEN` in `dashboard/theme_validate.py`. Both count
+ * code points, so the editor shows exactly the emoji the server keeps. */
+const THEME_EMOJI_MAX_LEN = 4
+
 /** Longest refused value `refusedLabel` shows before cutting it short. */
 const REFUSED_VALUE_MAX_LEN = 40
 
@@ -107,7 +111,7 @@ export function parseThemeCss(input: string): ThemeCssImport {
   const name = /\/\*\s*name\s*:\s*([^\n]*?)\s*\*\//i.exec(body)?.[1]?.trim()
   if (name) out.name = name.slice(0, THEME_NAME_MAX_LEN)
   const emoji = /\/\*\s*emoji\s*:\s*([^\n]*?)\s*\*\//i.exec(body)?.[1]?.trim()
-  if (emoji) out.emoji = [...emoji].slice(0, 8).join('')
+  if (emoji) out.emoji = [...emoji].slice(0, THEME_EMOJI_MAX_LEN).join('')
   const css = body.replace(/\/\*[\s\S]*?(\*\/|$)/g, ' ')
   const context: string[] = []
   const unknown = new Set<string>()

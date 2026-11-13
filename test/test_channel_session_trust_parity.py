@@ -1,37 +1,21 @@
 """One session-trust grant, five channels.
 
-Webex, WeCom, iLink (weixin) and iMessage all render no approve/deny widget, so
-each runs the shared pipeline with ``decider=None``. Under the default
-INTERACTIVE approval mode that is deny-by-default with nothing able to say
-otherwise: every tool call is rejected and the agent can only talk. Each
-therefore also passes ``ChannelTurn.auto_approve_session``, reading the SAME
-process-global ``safety_override`` grant the dashboard toggle and Slack's
-``/kirocrew yolo`` drive -- so an operator who arms it anywhere gets tool use on
-these channels too, and it still expires.
+Webex, WeCom, iLink (weixin) and iMessage render no approve/deny widget, so they run
+with ``decider=None``, which denies every tool by default. Each passes
+``ChannelTurn.auto_approve_session``, reading the same process-global
+``safety_override`` grant the dashboard toggle and Slack's ``/kirocrew yolo`` arm.
 
-Teams is enrolled too even though it DOES have a widget (:data:`_WIDGET_CHANNELS`).
-It passes the SAME predicate as the four -- it keeps no grant of its own, so its
-card button and its ``/yolo`` both arm this one shared grant -- and its card only
-changes what happens with NO grant: a prompt is posted and awaited instead of an
-immediate refusal. Enrolling it is the point: nothing else drives a real permission
-request through Teams' ``handle_message``, so both ``decider=`` and
-``auto_approve_session=`` could be deleted from its ``ChannelTurn`` with every
-Teams test still green.
+Teams has a widget (:data:`_WIDGET_CHANNELS`) but shares the same grant; it is
+enrolled because nothing else drives a real permission request through its
+``handle_message``.
 
-One parameterized suite rather than five near-copies, because the property is
-identical in all five and a per-channel copy is how one of them silently loses
-the wiring. Every case drives that channel's real ``handle_message`` through the
-real ``drive_turn`` and the real ``TurnDriver``, so what is pinned is the whole
-path rather than the presence of a keyword:
+Each case drives the real ``handle_message``, ``drive_turn`` and ``TurnDriver``:
 
-* with no grant the tool is still rejected -- immediately on the four buttonless
-  channels, and after the card's deadline passes on Teams -- and a widget is
-  offered ONLY where a press can resolve one,
+* with no grant the tool is rejected, and a widget is offered only where a press
+  can resolve one,
 * with the grant armed the same tool is approved with no widget and no decider,
-* the predicate is re-read per tool rather than snapshotted when the turn was
-  built, and
-* a hard PreToolUse deny still wins, because the security gate runs AHEAD of
-  this rung.
+* the predicate is re-read per tool, not snapshotted when the turn was built, and
+* a hard PreToolUse deny still wins, because the security gate runs ahead of this rung.
 """
 
 from __future__ import annotations
@@ -115,7 +99,10 @@ class _Provider:
         self.approved: list[Any] = []
         self.rejected: list[Any] = []
 
-    async def stream(self, message: str) -> Any:
+    async def stream(self, message: str, *, prompt_gate: Any = None) -> Any:
+        # iMessage hands its roster re-check in as ``prompt_gate``, as the real provider takes it.
+        if prompt_gate is not None:
+            prompt_gate()
         yield AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq1", options=[{"id": "approve"}])
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
 
@@ -374,6 +361,7 @@ def _build_weixin(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
 def _build_imessage(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
     from kiro_crew.imessage import transport_dispatch as mod
     from kiro_crew.imessage.client import IMessageInbound
+    from kiro_crew.imessage.transport import IMessageTransport
 
     d = mod.IMessageDispatcher(
         sessions=sessions,
@@ -384,6 +372,8 @@ def _build_imessage(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
         approval_mode="interactive",
     )
     d.client = _Client()
+    # The turn rechecks the live handle roster as the provider starts.
+    d.transport = IMessageTransport(d.client, allowed_handles=["+15550100"])
     inbound = IMessageInbound(handle="+15550100", text="hi", chat_guid="iMessage;-;+15550100")
     return mod, "IMessageRenderer", d, inbound
 
@@ -484,11 +474,8 @@ def test_an_armed_grant_reaches_the_driver_and_approves(
 ) -> None:
     """The wiring, end to end.
 
-    ``ChannelTurn.auto_approve_session`` has to carry the predicate all the way
-    into ``TurnDriver`` for the grant to mean anything, so the same tool the case
-    above rejected is approved here -- with no widget and no decider wait. A
-    channel that omits the keyword fails exactly this half, which is the state
-    all four were in.
+    ``ChannelTurn.auto_approve_session`` must reach ``TurnDriver``, so the tool rejected
+    above is approved here with no widget; a channel that omits the keyword fails this.
     """
     safety_override().activate("test")
     assert safety_override().is_active() is True, "precondition: the grant is armed"
@@ -536,11 +523,9 @@ def test_a_pretooluse_deny_still_wins_over_an_armed_grant(
 ) -> None:
     """The grant is a rung BELOW the security gate, never a way past it.
 
-    ``TurnDriver`` runs the ``tool_gate`` -- the sensitive-path keystone, the
-    governance ceiling and the deny-list, built off ``ctx_builder.hooks`` -- and
-    honours its hard deny BEFORE it consults ``auto_approve_session``. That
-    ordering is what makes enrolling a buttonless channel safe, so it is pinned
-    per channel here rather than left to the driver's own suite.
+    ``TurnDriver`` honours the ``tool_gate`` hard deny (sensitive paths, governance
+    ceiling, deny-list) before ``auto_approve_session``; that order makes enrolling a
+    buttonless channel safe, so it is pinned per channel.
     """
     safety_override().activate("test")
     provider, _renderer = _run_turn(channel, monkeypatch, hooks=_DenyHooks())

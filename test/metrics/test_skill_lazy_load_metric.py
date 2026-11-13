@@ -53,7 +53,7 @@ def test_load_skill_hit_emits_metric(skill_dir: Path):
     assert len(rec.counters) == 1
     cname, cattrs = rec.counters[0]
     assert cname == "kirocrew.skill.lazy_load.count"
-    assert cattrs == {"hit": True}
+    assert cattrs == {"hit": True, "skill": "custom"}
 
 
 def test_load_skill_miss_emits_metric(skill_dir: Path):
@@ -71,7 +71,7 @@ def test_load_skill_miss_emits_metric(skill_dir: Path):
 
     assert len(rec.counters) == 1
     _, cattrs = rec.counters[0]
-    assert cattrs == {"hit": False}
+    assert cattrs == {"hit": False, "skill": "custom"}
 
 
 def test_load_skill_invalid_name_no_metric(skill_dir: Path):

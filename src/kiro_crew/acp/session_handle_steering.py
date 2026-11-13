@@ -12,8 +12,8 @@ Instance fields written: ``_abandoned_steering``, ``_steering_answers``,
 ``_steering_cancel_tasks``, ``_steering_settled``, ``_steers_accepted``,
 ``_steers_proven``, ``_turn_steering_denied``.
 
-Instance fields read: ``_awaiting_permission``, ``_cancelled``, ``_prompt_starts``,
-``_prompt_written``, ``_runtime``, ``_session_id``, ``_turn_done``.
+Instance fields read: ``_awaiting_permission``, ``_batch_window``, ``_cancelled``,
+``_prompt_starts``, ``_prompt_written``, ``_runtime``, ``_session_id``, ``_turn_done``.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead
 from kiro_crew.acp.types import (
     ACP_BACKENDS_STEER_RETRACT,
@@ -37,6 +38,7 @@ from kiro_crew.acp.types import (
     STEERING_INJECTED,
     STEERING_STARTED_NEW_TURN,
     STOP_REASON_END_TURN,
+    steering_advertised,
     steering_outcome,
     wrap_user_message,
 )
@@ -75,12 +77,18 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
     if not text or not self._session_id:
         return False
     if self._runtime.acp_backend in ACP_BACKENDS_STEERING_REQUEST:
+        if not steering_advertised(self.initialize_result):
+            # The process's handshake did not advertise ``_session/steering``
+            # (``_meta.steering.supported: true``): nothing is sent, and the
+            # caller queues the text as the next turn.
+            return False
         return await self._steer_via_steering_request(text)
     wrapped = wrap_user_message(text)
     await self._runtime.send_request(
         "_session/steer",
         {"sessionId": self._session_id, "message": wrapped},
     )
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # Stamped HERE, at the innermost write, because this is the one point
     # every steer funnels through: the dashboard steers the inner client
     # directly while the IM transports steer the provider wrapper, and both
@@ -225,6 +233,7 @@ async def _steer_via_steering_request(self: AcpSessionHandle, text: str) -> bool
                     break
         self._steering_settled.pop(entry[0][0], None)
 
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     try:
         answer = await self._runtime.send_request_for_answer(
             METHOD_SESSION_STEERING,

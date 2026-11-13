@@ -17,7 +17,7 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog, session_tree
+from kiro_crew.crew_log import CrewLog, CrewLogError, session_tree
 from kiro_crew.crew_log import store as crew_store
 from kiro_crew.crew_log.session_tree import (
     CHAIN_END_CAP,
@@ -1205,16 +1205,9 @@ def test_a_previous_at_the_bound_is_kept() -> None:
 def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
     """The reader's shape guard, driven where it is reachable.
 
-    The write-time schema REFUSES a non-object ``previous`` (``handle.append``
-    raises), so this shape cannot be produced through the emitter. The guard is
-    still the reader's job and still exactly the guard ``parent`` already has one
-    field above: ``opened_record`` is handed JSON parsed off disk, which a damaged
-    or hand-edited segment can hold, and the alternative to guarding is a
-    ``TypeError`` out of a scan that is supposed to degrade to "no lineage known".
-
-    A bad shape costs the EDGE and not the record: a mistyped key says nothing
-    about the header identity or the slot, which the rest of the entry still
-    carries.
+    The schema refuses a non-object ``previous`` at write time, but ``opened_record``
+    reads JSON off disk, which a damaged segment can hold; unguarded, the scan would
+    raise ``TypeError``. A bad shape costs the edge, not the record.
     """
     handle = _log("sid-odd", "chat-1")
     _opened(handle, "chat-1")
@@ -1224,7 +1217,7 @@ def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
 
     from kiro_crew.crew_log.schema import Entry
 
-    with pytest.raises(Exception):
+    with pytest.raises(CrewLogError):
         # The premise of this test: the emitter cannot write it.
         _opened(_log("sid-refused", "chat-1"), "chat-1", previous="sid-old")
 
@@ -1246,14 +1239,11 @@ def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
 
 
 def test_a_previous_object_with_an_empty_sid_refuses_the_whole_record() -> None:
-    """An empty citation is refused exactly as an oversized one is, and for the same
-    reason: it is not a value the emitter can write.
+    """An empty citation is refused like an oversized one: the emitter cannot write it.
 
-    ``emit_session.py`` gates the write on the id's own truthiness, so ``{"sid": ""}`` never
-    reaches a log the gateway wrote. An entry carrying one is therefore not the
-    emitter's, and nothing on it is believed -- which is also precisely how the
-    ``parent.slot`` field one line above treats an empty slot, so the two citations
-    do not drift into two different ideas of a bad value.
+    ``emit_session.py`` writes only a truthy id, so an entry with ``{"sid": ""}`` is not
+    the emitter's and nothing on it is believed, matching how ``parent.slot`` treats an
+    empty slot.
     """
     handle = _log("sid-empty", "chat-1")
     # The write schema permits the shape, so the reader is the layer that refuses it.

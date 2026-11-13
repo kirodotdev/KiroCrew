@@ -122,6 +122,13 @@ export default function CrewCompanionPage() {
     await loadReminders()
   }, [loadReminders, clearNotice])
 
+  /** Rejects on a failed write, so the schedule editor stays open. */
+  const rescheduleReminder = useCallback(async (id: string, fireAt: string, everyMinutes: number | null) => {
+    await apiPost(`${writeBase()}/reschedule`, { id, fireAt, everyMinutes })
+    clearNotice()
+    await loadReminders()
+  }, [loadReminders, clearNotice])
+
   const removeReminder = useCallback((id: string) => {
     // Optimistic removal — the row should go now, not on the next poll.
     setRem((r) => (r ? { ...r, reminders: r.reminders.filter((x) => x.id !== id) } : r))
@@ -288,6 +295,7 @@ export default function CrewCompanionPage() {
             onSkip={skipReminder}
             onRemove={removeReminder}
             onEdit={editReminder}
+            onReschedule={rescheduleReminder}
           />
 
           <MemoriesSection mem={mem} offline={memOffline} />

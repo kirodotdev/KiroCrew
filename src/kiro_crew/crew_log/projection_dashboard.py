@@ -12,6 +12,11 @@ from typing import Any, Final
 
 from kiro_crew.crew_log.entry_types import (
     CUSTOM_ENTRY_TYPE,
+    CUSTOM_ERROR_LIMIT,
+    CUSTOM_FAILED_ENTRY_TYPE,
+    CUSTOM_FAILURE_LIMIT,
+    CUSTOM_MAX_AGE_MAX_S,
+    CUSTOM_MAX_AGE_MIN_S,
     CUSTOM_RECORD_BYTES,
     CUSTOM_RECORD_DEPTH,
     CUSTOM_TYPE_LIMIT,
@@ -570,10 +575,67 @@ def _custom_start() -> dict[str, Any]:
     fold keys by field: a script that polls one thing writes that one, and another
     script bound to the same crewmate must not have to restate it.
     """
-    return {"latest": {}, "types_omitted": 0, "wrote": 0}
+    return {
+        "latest": {},
+        "types_omitted": 0,
+        "wrote": 0,
+        "failures": {},
+        "failed": 0,
+        "failures_omitted": 0,
+    }
+
+
+def custom_max_age_ok(value: Any) -> bool:
+    """Whether *value* is a ``max_age_s`` a record may declare: a whole number of
+    seconds inside the declared range. ``bool`` is refused though it is an ``int``.
+    Shared with the record route so the door and the fold agree."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and CUSTOM_MAX_AGE_MIN_S <= value <= CUSTOM_MAX_AGE_MAX_S
+    )
+
+
+def _custom_failed_step(state: dict[str, Any], entry: Entry) -> None:
+    """A bound cron's failed run: mark that writer's records and remember the failure.
+
+    The rows it marks are the ones the writer wrote BEFORE this entry, which in a log
+    folded in order is every row it holds now. A later record from the same writer
+    replaces its row whole, so the mark clears exactly when the writer next succeeds.
+    """
+    data = entry.data
+    writer = _panel_text(data.get("writer"), CUSTOM_WRITER_LIMIT)
+    if not writer:
+        # A failure attributed to nobody marks nothing, for the reason a record with
+        # no writer is skipped.
+        return
+    error = _panel_text(data.get("error"), CUSTOM_ERROR_LIMIT)
+    at = _panel_iso(entry.time)
+    failures: dict[str, Any] = state.setdefault("failures", {})
+    if writer not in failures and len(failures) >= CUSTOM_FAILURE_LIMIT:
+        oldest = min(failures, key=lambda key: _as_int(failures[key].get("order")))
+        del failures[oldest]
+        state["failures_omitted"] = _as_int(state.get("failures_omitted")) + 1
+    # Ranked on a SLOT-WIDE counter, never ``entry.seq``: a slot folds every unit it
+    # ran under, and each unit's seq starts again, so seq would rank a failure from
+    # the live session below one from a retired session.
+    state["failed"] = _as_int(state.get("failed")) + 1
+    failures[writer] = {
+        "at": at,
+        "error": error,
+        "order": state["failed"],
+        "member": _panel_text(data.get("member"), CUSTOM_WRITER_LIMIT),
+    }
+    for row in state["latest"].values():
+        if row.get("writer") == writer:
+            row["failed_at"] = at
+            row["last_error"] = error
 
 
 def _custom_step(state: dict[str, Any], entry: Entry) -> None:
+    if entry.type == CUSTOM_FAILED_ENTRY_TYPE:
+        _custom_failed_step(state, entry)
+        return
     if entry.type != CUSTOM_ENTRY_TYPE:
         return
     data = entry.data
@@ -601,7 +663,7 @@ def _custom_step(state: dict[str, Any], entry: Entry) -> None:
         del latest[oldest]
         state["types_omitted"] = _as_int(state.get("types_omitted")) + 1
     state["wrote"] = _as_int(state.get("wrote")) + 1
-    latest[name] = {
+    row: dict[str, Any] = {
         "data": dict(record),
         "at": _panel_iso(entry.time),
         "seq": int(entry.seq),
@@ -610,6 +672,18 @@ def _custom_step(state: dict[str, Any], entry: Entry) -> None:
         "crew_key": _panel_text(data.get("crew_key"), PANEL_CREW_KEY_LIMIT),
         "order": state["wrote"],
     }
+    max_age = data.get("max_age_s")
+    if isinstance(max_age, int) and custom_max_age_ok(max_age):
+        # From the ENTRY's time, which the log stamped, plus the script's promise: the
+        # script says how long a record stays current and the gateway says when it was
+        # written, so no body can claim a record is fresh. A value out of range on a
+        # line off disk is dropped and the record kept, since the record itself passed.
+        row["max_age_s"] = max_age
+        row["stale_after"] = _panel_iso(int(entry.time) + max_age * 1000)
+    latest[name] = row
+    # The writer landed a record, so it is not failing any more: its failure leaves
+    # ``failures`` by the same rule that drops ``failed_at`` from its row.
+    state.get("failures", {}).pop(writer, None)
 
 
 def _custom_render(state: dict[str, Any]) -> dict[str, Any]:
@@ -619,14 +693,27 @@ def _custom_render(state: dict[str, Any]) -> dict[str, Any]:
     records over the slot's whole life, which tells a reader "a script is writing and
     this type is still empty" from "nothing has ever written here". ``types_omitted``
     is the bound speaking: how many types aged out of ``latest``.
+
+    A row carries ``stale_after`` when its script declared ``max_age_s``, and
+    ``failed_at`` / ``last_error`` when its writer's run failed after writing it.
+    ``failures`` lists each writer's latest failed run, newest first, so a writer that
+    has NEVER landed a record is still visible; ``failures_omitted`` counts writers
+    evicted past :data:`CUSTOM_FAILURE_LIMIT`.
     """
     latest: dict[str, Any] = state["latest"]
+    failures: dict[str, Any] = state.get("failures") or {}
+    failed = [
+        {"writer": writer, "at": row.get("at", ""), "error": row.get("error", "")}
+        for writer, row in sorted(failures.items(), key=lambda item: -_as_int(item[1].get("order")))
+    ]
     return {
         "latest": {
             name: {key: row[key] for key in row if key != "order"} for name, row in latest.items()
         },
         "types_omitted": _as_int(state.get("types_omitted")),
         "wrote": _as_int(state.get("wrote")),
+        "failures": failed,
+        "failures_omitted": _as_int(state.get("failures_omitted")),
     }
 
 

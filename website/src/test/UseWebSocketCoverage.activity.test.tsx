@@ -477,13 +477,13 @@ describe('useWebSocket frame router', () => {
     expect(chat().automations).toEqual({})
   })
 
-  it('shows update progress and clears it on the done step', () => {
+  it('shows update progress and keeps the done step for the update flow', () => {
     const { ws } = mount()
     act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'download', detail: '40%' } }) })
     expect(dash().updateProgress).toEqual({ step: 'download', detail: '40%' })
 
     act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'done', detail: '' } }) })
-    expect(dash().updateProgress).toBeNull()
+    expect(dash().updateProgress).toEqual({ step: 'done', detail: '' })
   })
 
   it('bumps the refresh trigger for a session restart and a refine frame', () => {
@@ -517,9 +517,9 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('re-broadcasts tool_call so the Browser panel can open on a browse', () => {
-    // ChatPage listens for this to auto-open the panel when a shell call turns out
-    // to be `playwright-cli`. Without the re-broadcast the listener is live code
+  it('re-broadcasts tool_call as a window event for page-level listeners', () => {
+    // Page-level listeners react to tool calls as they stream (the transcript's
+    // activity cues). Without the re-broadcast the listener is live code
     // that can never fire, which is exactly how the previous frame-based trigger
     // broke when its producer was removed.
     const { ws } = mount()
@@ -532,12 +532,12 @@ describe('useWebSocket frame router', () => {
           type: 'tool_call',
           data: {
             slot: ACTIVE, tool: 'execute_bash', kind: 'tool', purpose: 'open a page',
-            input_preview: 'playwright-cli open https://example.com', is_shell: true,
+            input_preview: 'curl -sS https://example.com', is_shell: true,
           },
         })
       })
       expect(seen).toHaveLength(1)
-      expect((seen[0] as { input_preview: string }).input_preview).toContain('playwright-cli')
+      expect((seen[0] as { input_preview: string }).input_preview).toContain('curl')
     } finally {
       window.removeEventListener('kirocrew-tool-call', onTool)
     }
@@ -601,7 +601,7 @@ describe('useWebSocket frame router', () => {
       const { ws } = mount()
       act(() => {
         ws.simulateMessage({ type: 'notification', data: { kind: 'info', title: 'Boom', ts: '1' } })
-        ws.simulateMessage({ type: 'approval', data: { id: 'ap-boom', slot: ACTIVE, tool: 'execute_bash', ts: 2 } })
+        ws.simulateMessage({ type: 'approval', data: { id: 'ap-boom', instance: 'inst-ap-boom', slot: ACTIVE, tool: 'execute_bash', ts: 2 } })
         ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } })
       })
       // Each arm swallowed the listener failure and completed its real work.
@@ -639,5 +639,16 @@ describe('useWebSocket frame router', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("a peer's steer echo keeps its gateway-set sender (meta.relay), and drops a malformed one", () => {
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'peer steer', ts: '30', steerState: 'consumed', meta: { relay: { senderKey: 'chat-1', via: 'session_send' } } } })
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'bad relay', ts: '31', meta: { relay: { via: 'session_send' } } } })
+    })
+    const steers = chat().messages.filter(m => m.meta?.steer === true)
+    expect(steers[0]?.meta?.relay).toEqual({ senderKey: 'chat-1', via: 'session_send' })
+    expect(steers[1]?.meta?.relay).toBeUndefined()
   })
 })

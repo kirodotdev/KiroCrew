@@ -18,6 +18,7 @@ function stubElectron() {
   const created = [];
   const ipcHandlers = {};
   const appHandlers = {};
+  const updaterHandlers = {};
   const openedExternal = [];
   const revealed = [];
 
@@ -81,10 +82,12 @@ function stubElectron() {
     created,
     ipcHandlers,
     appHandlers,
+    updaterHandlers,
     openedExternal,
     revealed,
     electron: {
       app: { on: (name, fn) => { appHandlers[name] = fn; } },
+      autoUpdater: { on: (name, fn) => { updaterHandlers[name] = fn; } },
       BrowserWindow: FakeWindow,
       ipcMain: { on: (channel, fn) => { ipcHandlers[channel] = fn; } },
       screen: {
@@ -255,6 +258,20 @@ test("during app quit the close is allowed through (real teardown)", () => {
   appHandlers["before-quit"]?.(); // app is quitting now
   const e = win.emitClose();
   assert.strictEqual(e.defaultPrevented, false, "quit must not intercept the close");
+});
+
+test("an update install's close is allowed through before before-quit fires (#29449)", () => {
+  // Electron's quitAndInstall closes every window first and emits before-quit
+  // only after the last one closed, so a panel that hid here would hold the
+  // install back.
+  const { mod, appHandlers, updaterHandlers } = loadModule();
+  const win = mod.openPanelWindow(BASE);
+  win.webContents.emit("did-finish-load");
+  assert.strictEqual(typeof updaterHandlers["before-quit-for-update"], "function");
+  updaterHandlers["before-quit-for-update"]();
+  assert.strictEqual(typeof appHandlers["before-quit"], "function", "before-quit has not fired yet in this sequence");
+  const e = win.emitClose();
+  assert.strictEqual(e.defaultPrevented, false, "the installer's close must not hide the panel");
 });
 
 test("reconcile HIDES the panel on disable and RESTORES it on re-enable", () => {

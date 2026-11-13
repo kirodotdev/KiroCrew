@@ -2,17 +2,405 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.12.2] - 2026-11-11
+
+A second hot patch for 0.12.0, on top of 0.12.1: Kiro Crew no longer restarts a running gateway to install an update, chats keep their approvals, queued messages and streams straight under failures, and the KAS engine reads more of a kiro-cli agent spec. Slack, Teams, Telegram and Discord keep each turn's reply in the right place, and security, Windows, cloud crew and accessibility fixes land with them. The Decisions model card gains a SageMaker endpoint option.
+
+### Updates
+
+Kiro Crew never restarts a running gateway to install an update. A new version downloads in the background, clicking Update only marks it for the next start, and the desktop app installs it when you quit. An install that was interrupted finishes at the next app start before the gateway starts, and the agent cannot write the record that arms an update.
+
+### Notable fixes
+
+**Chat and sessions.** An old approval answer no longer approves a later tool, approval cards stay answerable when a stop fails, and a streaming turn keeps running when its send fails late. A closed tab stays closed when its late save lands, a requeued message runs on its own row instead of a duplicate, a resume joins the agent already starting, and the reply that streamed before a compaction is kept. The agent greeting shows early, mermaid label images no longer load on render, and clicking a linked image opens only the viewer.
+
+**KAS engine.** A kiro-cli agent's `allowedCommands` patterns (`\d`, `\s`, `\w`, `{n,m}` and Rust style expressions) and read `allowedPaths` are honoured at Crew's gate, shell allowlist grants survive a policy that pins built-in rules, and `trustedAgents` allows apply after every deny. An `mcp.json` `tools` allowlist and `useLegacyMcpJson` are read, a project agent file can switch a user-level MCP server off, a model pin the KAS model list does not offer is refused, a host with a too-old glibc is refused before the install begins, and a broken engine copy that kiro-cli left behind is moved aside once. Steering files that may be auto-included are sent by path instead of the whole tree, a runtime start no longer waits on an empty tree scan, spec hook context is sent again after a compaction, and Crew's MCP servers connect before the agent's own.
+
+**Claude and other harnesses.** A start that dies at once reports the real exit status, a failed kiro sign-in is reported as unfinished with a one click retry, and a kiro-cli engine the host cannot run is reported as such. A Kiro CLI that rejects `--auth-method` is told once to update, its out of date card lifts when config leaves the KAS relay, and KAS users reach the Kiro sign-in from the account popup, where a bare refusal names the start URL before the region. A Claude session that asks for auto approval keeps Crew's tools beside a foreign settings file, `cli.json` is kept whole when the gateway cannot read it, and Codex Crew servers carry the gateway instance environment.
+
+**MCP servers.** A user MCP server whose name contains a colon stays in the default agent spec, a Windows launcher is probed once whatever its spelling, a copied gateway entry drops its provenance records, and a dead pooled backend is named. The launch approval and settings cards of the MCP gateway behave, a KAS MCP sign-in is saved where KAS chats read it, a remote server's sign-in settings always reach the engine, and KAS says when it cannot sign in to a server with its own client. A KAS MCP server's launch reference is shared across sessions, and a conductor is told which of its worker's MCP servers failed.
+
+**Bots, crews and the work ledger.** The Bot editor, agent picker and roster get four fixes, a Bot whose memory database was deleted reopens, and a `.kirobot` file that starts with a byte-order mark imports. A new chat never suggests a Bot's home folder, a Bot chat outside its own thread is told to do the work itself, and the custom agents tab lists spec files it used to hide while reserving their names. A folder agent named like a Bot is asked about instead of rewritten, the crew log writes its savepoints when a unit grew during the pass, and the work ledger says when an undo removed a write.
+
+**Schedules.** Credential failures no longer count toward a job's automatic pause, stateless runs stay out of the session search window, and a run cut off by a restart is reported as such. A deeply nested `crons.json` value no longer blocks every save, and a scheduled approval mode of auto is refused when it comes from an app token. A `HEARTBEAT.md` saved with a byte-order mark is read like any other, and a paused job's cut run no longer promises a next run.
+
+**Security.** Several file, link and permission checks are tightened on Windows and in the dashboard, including junctions, middle link folders, fixed tool lookups, file search scope, a file read check and a channel member check. The dashboard no longer trusts `localhost:3000` just because a data home is set, `boot.allow_terminal` refuses the dashboard terminal, and credentials are masked in long capability messages. Outlook's own links pass the link guard, an `oauth_endpoints.json` entry can clear a client id that was held back, and a shell call's recovered command is judged under the policy commands.
+
+**Channels.** Slack keeps a review draft when posting or approving it fails, and an approval click stays on the chat that asked. Teams and Telegram keep a later turn's reply when an earlier turn ends, Discord starts a fresh session when its resume host stays unreachable and opens no new connection after closing, and a quoted directive line is dropped from channel replies. Slack formatted messages are legible in the bell, a linked Slack thread's turns run with the Slack runtime, and a channel's challenge prompt is no longer echoed into its thread.
+
+**Cloud, pods and remote crews.** A cloud launch into an account without a host policy is refused, a denied launch names the action and points to the IAM policy, and end of input at a yes/no prompt counts as no. The cursor menu picks items past nine by number, only resumable found stacks are offered and never preselected, and list, status and destroy agree about a removed crew. A silent SSM crew or an origin refusal is explained instead of reported as a bad credential, remote crews forward every pane port, the SSH tunnel is marked unsupported on a Windows gateway, and a pod reports a systemctl or journalctl timeout and refuses a name with a trailing newline.
+
+**Gateway, update checks and desktop app.** An update check lets its fetch finish and cleans up after a cancel, refuses an offer from a channel you left, and words each refusal clearly. A stable release now reaches the insider index and image, one failing cleanup step no longer skips the rest when the gateway stops, a refused systemd stop is reported instead of success, and dashboard sign-in writes and status reads no longer block the gateway. The desktop app bounds and rotates its gateway launch log, keeps its supervision steady, kills a hung renderer under Rosetta, and retries Windows installs through a brief file hold, and setup no longer asks for node on the bundled KAS route.
+
+**Memory, knowledge and skills.** A knowledge folder keeps a file its scan could not see, the embedding rate limit lets one waiter through per token, and a Bedrock knowledge base counts each id once toward its cap. Office-held files open in the viewer and memory locks are kept. A transcript row with no role no longer stops context from reading on, and crystallize is told the candidate layout.
+
+**Monitoring and workflows.** A GitHub pull request with over 100 passing checks counts as review ready, a rate limit stays retryable, and a GitLab merge request is reported as conflicting behind another blocker. Only the newest Azure DevOps status per check counts. A cancelled step fails in workflows and in task runner parallel groups, and saved task plans are refused while the task runner is off.
+
+**Dashboard, keyboard and languages.** Delete, knowledge, Capabilities, Memory and issue radar buttons keep keyboard focus while they work, and the account Refresh button fits its label. The dictation preview keeps its line breaks, the `/connections` redirect keeps its query, and an SVG artifact keeps its stylesheet off the page around it. The crew board's failed attempts count is pluralized, desktop file links with a drive letter open, a link preview falls back when a title is blank, and creating a worktree names git's reason when it refuses.
+
+**Decisions model.** The Decisions model card offers a SageMaker endpoint option with an endpoint name and region, and hosted options the organization's ceiling refuses are hidden. A refused configured endpoint reads as No model, and turning on consent for a refused host is refused.
+
+## [0.12.1] - 2026-11-09
+
+A hot patch for 0.12.0: the KAS engine and the Claude backend follow your
+agent specs, hooks and MCP servers the way kiro-cli does, chats pick up after
+a planned restart and queued messages wait their turn, and schedules run in
+the right workspace with a bounded history. A broad set of security, Windows,
+desktop and accessibility fixes lands with them.
+
+### Notable fixes
+
+**Chat and sessions.** Chats that a planned restart cut off resume, a queued
+message waits while its card's editor is open and is checked again right
+before it runs, and a session's own messages are never held behind its
+sub-agents. A turn the backend refused for model capacity ends with a notice
+instead of offering Resume, a streaming reply stays live on slow devices, and
+unsent text in a split view or a Bot chat survives a page reload. If a
+dashboard module fails to load, the page reloads instead of staying blank, and
+a cleared chat no longer resumes in a folder you removed. A prompt whose reply
+was too large to read ends its turn instead of leaving the session waiting.
+
+**KAS engine.** KAS reads a kiro-cli agent spec the way kiro-cli does: tool
+aliases, `allowedTools` globs, allowed shell commands and paths, and a grant
+beside `deniedCommands` or `deniedPaths` keep their meaning, and spec hooks
+get kiro-cli's field names, cover every call they name and run on scheduled
+turns too. MCP servers take their settings from your kiro-cli `mcp.json` and
+see the gateway's Kerberos ticket cache and ssh agent, and an unattended run
+waits for a slow server to start. KAS answers `/context`, `/knowledge`,
+`/code` and `/hooks`, the session start notice names a refused permissions
+block or an unreadable `mcp.json`, and the engine install trusts your system's
+certificate store and refuses a host whose glibc is too old before it begins.
+
+**Claude and other harnesses.** On the Claude backend a session loads
+workspace steering and the project's `AGENTS.md` and gets them back after a
+compaction, a spec's `toolsSettings` allowlists are enforced, a Bot worker
+starts with only the MCP servers it was granted, and an overloaded error is
+retried. `/clear` is answered locally, Claude's own commands appear in the `/`
+menu, auto memory stays off in incognito and temporary chats, and `kirocrew
+doctor` warns about an outdated `claude-agent-acp`. A pi session now carries
+the MCP servers its agent spec declares.
+
+**MCP servers and connections.** The MCP tab lists servers an agent rebuild
+dropped, a server added through Add Custom can be removed again, and `${HOME}`
+and `${USER}` in a server's settings resolve on Windows. A refused connection
+sign-in is reported at once instead of after 10 minutes, the Connections badge
+sees sign-ins KAS holds, and a grant that just failed its check no longer
+shows as connected. An unreadable global `mcp.json` is reported as unreadable
+rather than corrupt, and sign-in callbacks that carry extra provider
+parameters are accepted.
+
+**Bots, crews and sub-agents.** A Bot shows as working while its worker
+sessions run, closing a conductor closes the workers it manages, a conductor
+wakes only when a worker's status changes, and a Bot worker keeps its own MCP
+servers and the ones its `agent.env` resolves. Nested sub-agent runs show in
+the root chat's sub-agents panel and inherit its trust, and a running
+sub-agent stops auto-approving once that trust is revoked. Read aloud and
+auto-speak work in crewmate chats, the task runner keeps an active run
+resumable across a graceful restart, and the work ledger patrol stays armed
+after every item closes.
+
+**Schedules.** A scheduled run's tab opens in its agent's workspace, so its
+sessions are no longer refused, a job keeps its wall-clock time across a
+daylight saving change, and previews leave out the dates a job skips. Each job
+keeps only its 20 newest run transcripts, scheduled commands get the same
+`PATH` as agent sessions, and a run whose agent was renamed or uninstalled is
+marked failed. `kirocrew snapshot --keep` run from a schedule now prunes older
+snapshots.
+
+**Security.** This release tightens several access checks, covering dashboard
+sign-in, session ownership, channel senders, destructive and self-management
+commands, sandbox file guards and Windows file access. Started off a terminal,
+for example by a service manager, the gateway no longer writes its dashboard
+sign-in link to the log (run `kirocrew token` for one), the desktop app's live
+log no longer records the dashboard token, and proxied app requests no longer
+carry it. KAS keeps PowerShell process control out of auto-approve, a
+`deniedPaths` entry ending in `*` also covers the folders below it, and a
+Claude session's switched-off tool on an MCP server whose name contains a dot
+is denied. An unreadable sign-out or token refresh record now fails closed
+instead of being saved over.
+
+**Approvals and the sandbox.** Each approval mode says what it runs without
+asking, Reads mode no longer asks to approve kiro-cli's own file reads, a tool
+a hook blocked shows as blocked rather than done, and a malformed message rule
+in `config.json` no longer breaks every chat turn. `max_memory_mb` no longer
+stops Node and GraalVM tools from starting in scheduled runs (the new opt-in
+`max_address_space_mb` sets that limit), and the sandbox cleans up after a
+dead launcher so the runtime folder no longer runs out of inodes.
+
+**Gateway, install and doctor.** `kirocrew restart` refuses to run against a
+stopped installed service, a busy port names its holder and suggests `--port`,
+the crash dump of a gateway that died without a clean exit is kept, and the
+service `PATH` puts nvm's Node ahead of `/usr/bin`. The installer stops when
+the KAS engine download is interrupted, a data home that cannot be written is
+refused with one line and one another account owns is explained, and the
+browser harness installs with its own pip where the gateway has none.
+`kirocrew doctor` fails when the selected backend is missing kiro-cli or a
+Claude component, warns instead of failing on a KAS engine the first chat will
+download, and no longer fails on a missing optional voice extra or ffmpeg.
+Kiro backend users are no longer told to run `aws sso login` when access is
+refused.
+
+**Memory, knowledge and artifacts.** One unreadable line in the lessons file
+no longer breaks every lesson, deleting a memory entry asks first, and memory
+sources are indexed again after the search index repairs itself. A knowledge
+folder keeps syncing until its scan ends even when one file fails, an upload
+over the size limit is refused before it is sent, a source says why it waits
+in pending, and a failed confirm, rename or Sync shows an error. An SVG
+artifact keeps its own styles without restyling the dashboard, and a failed
+artifact move no longer leaves new folders behind.
+
+**Channels.** Slack sends a sentence's last word before the tool card, keeps
+one answer row when a linked stream rotates, and says why it is not connected
+when startup turned it off. Teams posts the answer below an approval card and
+keeps a replayed message as text, Telegram keeps each sender's message in
+their own turn, and WhatsApp counts a quote on a voice note, sticker or video
+note and says why an image could not be sent. Messages queued on a channel are
+answered once a turn elsewhere ends, channel tokens are verified through the
+channel's proxy, and kiro-cli's steer acknowledgement stays out of replies and
+titles.
+
+**Remote crews and pods.** A remote crew offers one ssh line that forwards
+every pane port, keeps retrying a dropped tunnel for up to an hour, and waits
+for its running work before it restarts. A pod boots when kiro-cli keeps its
+engine in its data folder, `kirocrew pod down` waits for the whole stop, and
+Windows pod tasks run at normal priority.
+
+**Windows and the desktop app.** On Windows the gateway and spec hooks start
+with no console window, a timed-out process ends with its whole tree, an
+agent's processes end with its runtime, and crash dumps are found in
+Crashpad's reports folder. A pending desktop update shows its release notes,
+the top bar stays draggable when docked on macOS and over a scrolled chat on
+Windows, and Escape ends a video's fullscreen. The Linux package installs on
+distributions that renamed `libasound2` to `libasound2t64`.
+
+**Dashboard, keyboard and languages.** Buttons across the dashboard keep
+keyboard focus while their request runs, toggles and disclosure rows tell a
+screen reader whether they are on or open, and hover-only row controls appear
+when the keyboard reaches them. More of the dashboard is translated, counts
+are pluralized and lists are joined the way each language does, and a sentence
+around inline code or bold text stays whole. The `@` picker finds files in
+your project's specs and steering folders, the chat composer stays above the
+iPad keyboard, a proxy's 502 or 503 page shows as a temporary outage, and the
+chat's path chip and Copy link do what they say.
+
+**Built-in apps.** App pages load through the dashboard, so they work behind a
+reverse proxy that asks you to sign in, an app update keeps your edits to its
+agents and brings its schedules into the running scheduler, and a registry
+update to an older version is refused. A pptx-maker engine whose lock file was
+rewritten repairs itself.
+
+## [0.12.0] - 2026-11-05
+
+Bots (the new name for Mates) are now on for everyone, the agent can drive a browser you watch and take over live, and two more coding agents join the harness list. Connections, chat, the sidebar, schedules and apps pick up many small controls. Ultra Mode, Explore, Session Environments, Shared Crew and Remote dispatch arrive as previews you can switch on.
+
+### Bots for everyone
+
+- **Bots without a preview switch**: Mates are now called Bots in every screen, prompt and language, the Bots row in the left rail, the `/members` page and the Bot rows in the command bar are always shown, and starred Bots gather in a Bots group in the rail that you can drag to reorder.
+- **A desk of its own**: each Bot keeps the chats and folders it opens in one sidebar folder named after it, and works in its own git worktree per repository, so two Bots on one repo no longer commit each other's edits.
+- **Take a Bot with you**: the Bot profile card's "Export as file" writes a `.kirobot` file with an editable lessons draft, and Bots > Import from file reads it back (older `.crewjam` and `.crewmate` files still import).
+
+### Bots that keep track of their work
+
+- **A ledger for handed-out work**: a Bot that sends work to workers records each item in a work ledger, and its own chat gets an automatic patrol that watches it.
+- **Approvals in one place**: a Bot's chat shows the approvals and questions from the sessions it started, and its roster row gets a badge.
+- **A catch-up that checks**: when you return after about half an hour away, the card a Bot posts reads the live state of up to five pull requests its open questions name and lists them as pills.
+
+### A browser you can watch and take over
+
+- **Live view**: when the agent uses the browser, the chat shows the page live in the transcript, and you can take it over at any time.
+- **Sign in without the agent seeing**: a sign-in sheet types a secret into the page for you, and nothing typed is saved.
+- **Settings**: Settings > Browser controls which browser is used, the live view and its quality, and recording, and the old browser tool is gone, while browser setup no longer fails on some Python installs.
+
+### More coding agents
+
+- **Strands**: Settings > Agent Harness lists Strands once the Strands CLI is installed, its setup card stores the model provider keys in Settings > Secrets, and changing the model or effort in the picker relaunches it on the same session.
+- **GitHub Copilot CLI**: pick it under Settings > Agent Harness (a session on any Copilot CLI release other than 1.0.100 is refused with the install command), and every harness's model picker now shows that backend's own model names.
+- **KAS on its own**: choosing KAS uses your Kiro Crew sign-in, falls back to the account from `kiro-cli login`, and runs Kiro Crew's own engine when kiro-cli is missing, while `/agent`, `/context`, `/help`, `/mcp`, `/model`, `/tools` and `/usage` answer locally on the default KAS backend.
+
+### Connections and sign-ins
+
+- **Google Workspace**: the Connections page adds Gmail, Google Drive, Calendar, Sheets, Docs and Slides entries that use your own Google OAuth app.
+- **Sign-ins that stay**: on the default KAS backend, remote MCP sign-ins such as Atlassian, Notion and Figma are kept across sessions, and `agent.kas_persist_mcp_sign_in` turns that off.
+- **Start from a popular list**: the Add Skill and Add Server dialogs open on a Popular list before you type a search.
+
+### Knowledge from your own AWS account
+
+- **Bedrock Knowledge Bases**: under Capabilities > Knowledge > Sources, "Add Knowledge Base" registers an existing Amazon Bedrock Knowledge Base that is queried live and merged into knowledge search (each search is billed by AWS, only the gateway owner can add one, and it needs the optional `bedrock` extra).
+
+### Settings and themes
+
+- **Developer settings for everyone**: Developer Mode is gone, so Settings > Developer always shows Feature Previews, Logs, System, Telemetry, Storage, Memory, Config, Debug tools and Archive, and Feature Previews switches are saved on the gateway, so they follow you to every browser and the desktop app, and MCP Management now sits below the MCP Servers list on the Connections page.
+- **Themes and thresholds**: "👁 Color-blind safe" and "💜 Amethyst OLED" are under Settings > Display > Theme, and Settings > Chat > Advanced > Auto-compact threshold gains a Custom option for any percent from 5 to 90.
+- **Shorter Settings rows**: each row keeps one short line about its effect in view and moves the longer explanation behind its info tip, and a section's introduction now sits in a tip beside its heading.
+
+### Chat you can handle more ways
+
+- **Take back a steer**: a steer the running turn has not read yet can be unsent, edited in the message box or queued from its row's menu, on the Kiro CLI harness.
+- **Copy what you need**: code blocks gain "Wrap lines", quotes gain "Copy quote", right-clicking an image offers "Copy image", and Settings > Chat > Transcript adds an opt-in "Copy on select".
+- **Attach and read more**: iPhone HEIC photos attach from the composer and are converted to JPEG, a box you drag over an image in the file viewer can carry a comment, and "Jump to the bottom when you send" in Settings > Chat can be turned off.
+
+### Chat that reads and drives better
+
+- **Easier to read replies**: rendered markdown spaces paragraphs, lists and sections more clearly and tables lose the grey header fill, all following the chat font size setting.
+- **Keys and slash helpers**: Cmd+O (Ctrl+O on Windows and Linux) pops the current session out to its own window, Tab fills the message box with the first follow-up option, typing `/workflow ` opens a menu of your saved workflows, Up-arrow recalls a prompt whose send never reached the transcript, and the dock terminal can search its scrollback and go fullscreen with Cmd+F on macOS and Ctrl+Shift+F on Linux and Windows.
+- **Session messages as cards**: a message one session sends to another shows as a card naming the sender, with a link to open that session, and the sender's chat shows a "Sent to @name" card once the message is delivered.
+
+### A sidebar that sorts itself
+
+- **Session menu**: every session row's menu adds "Copy session ID" and "Reference in chat", and once you have a folder, "Move to folder" ends with "New folder" to create and move in one step.
+- **Group and filter**: the sidebar Filter menu adds "Group by kind" and a "Not in progress" row, and "Clean up sessions" adds 14 and 30 day windows.
+- **Color and tabs**: a session's color now tints its chat header, the Categorical palette under Settings > Display > Sidebar gives twelve fixed hues, and session tabs drag to reorder.
+
+### Pick up where you left off
+
+- **Resume them all**: while sessions are interrupted by a restart or sleep, the sidebar search dock shows "N interrupted sessions" with a "Resume N sessions" button.
+- **Pin a folder**: a folder's header menu adds Pin folder, which keeps its sessions (subfolders included) listed under the status chips, tag chips and folder checkboxes.
+- **Start again from the first message**: the session header menu's Initial prompt submenu shows and copies the first message, or drafts a new session from it on the same agent, project and folder.
+
+### Files and paths
+
+- **Upload to the Files panel**: drag files onto the panel or use Upload files to add new files to the folder it shows, within the usual extension and size limits.
+- **Show hidden files**: a toggle in the Files rail header lists dot-files such as `.env`, even when git ignores them, and remembers your choice in that browser.
+- **Relative paths work**: paths in diffs, tool calls and replies open against the chat's project directory.
+
+### Notifications that reach you
+
+- **Push when closed**: Settings > Notifications > Push notifications > "Notify me even when Kiro Crew is closed" delivers to an installed PWA, including iOS after Add to Home Screen.
+- **Your own sounds**: Settings > Notifications > Custom sounds takes a short MP3, WAV or OGG file for any category.
+- **Missed approvals**: an approval that expires unanswered leaves a bell note naming the tool, a chat that stops on an error you must act on leaves a "Chat errors" bell entry linking to it, and on phones the live banner swipes away.
+
+### Slack and other channels
+
+- **Slack code channels**: with `slack.code_channels` on (it is off by default, and needs your workspace's Slack code channels feature, an updated app manifest and a reinstall), mentioning Kiro Crew in a thread with multi-step work opens a code channel backed by a dashboard session that you can stop with its button or `!stop`.
+- **Feishu commands**: Feishu gains `/stop` (alias `/cancel`) and `/help`, like the other channels.
+- **Discord choices**: pressing a long choice answers with its full text instead of the cut label.
+
+### Hooks and what agents can do
+
+- **Your hook files on KAS**: the hook files in your Kiro hooks folder now run on KAS turns as they do on the Kiro CLI engine, a pre-tool hook that exits with 2 blocks the tool, and script hooks saved on the Hooks page also run on messaging channel turns and in 1:1 Slack DMs with the bot.
+- **Reveal a removed credential**: when redaction removes a credential from a reply, the owner can Show, Copy or Hide it in the reply, and every reveal is audited.
+- **Refuse guessed writes**: setting `hooks.batch_write_guard` refuses a write sent in the same parallel batch as a read, because its arguments would be guesses, and it is off by default.
+
+### Schedules and apps
+
+- **Quieter failures**: the job dialog's "Send the failure message after N failures in a row" (and `kirocrew cron add --alert-after N`) rings only the bell for earlier failures, and a run the security gate partly refused shows "Partial" (creating a job over the REST API now keeps the limits you send).
+- **More ways to say when**: one-shot times for `kirocrew cron add --at` accept days and weeks ("in 2 days", "in 1 week"), a cron job with no zone follows the default time zone setting, which is the computer's current zone shown as "Local" in the job form (or "Local (zone not detected, runs in UTC)"), and `kirocrew cron add --project-path <dir>` runs the job's agent session in that directory so the repo's steering files load.
+- **Apps in their own window**: an app page's "Pop out app to its own window" control opens it separately, right-clicking an app row in the sidebar opens Details or Unpin with an update badge, and Apps > Library lists enabled apps first.
+
+### Apps that reach into chat
+
+- **Rows in the + menu**: an installed app can add up to two rows to the composer's + menu that open a popover and hand text back into the empty composer.
+- **A row on one message**: an installed app that declares a message action adds a row to a finished chat message's More menu, and the owner approves which messages it may receive.
+- **Selected text**: an installed, approved app can add items to the button on the toolbar that appears when you select chat text.
+
+### Desktop and command line
+
+- **Desktop app**: Settings > Display > View > Desktop app turns off "Keep running in the background after closing the window", and `kirocrew://chat?sid=<key>` or `kirocrew open` opens a session in the desktop app.
+- **Phone sign-in**: the session-expired banner can scan the sign-in QR with the phone camera in the page, and Connect your phone shows a QR for any external address.
+- **Update an app from a folder**: `kirocrew app update <name> --source <dir>` updates an installed app from another directory and remembers it as the app's source, and the command now prints how many agents and skills it re-registered.
+
+### Updates and scripts
+
+- **Safer updates**: if the dashboard build fails, an update stops before restarting and tells you why, every update path installs the KAS engine the release pins, `kirocrew doctor` names the installed and needed engine versions, and a second gateway started while the first is still booting no longer shuts it down.
+- **Scripts can trust exit codes**: `kirocrew knowledge stats` and `dedup`, `kirocrew app`, `agent` and `workspace` with a missing or unknown sub-action, and `cron update` with nothing to write now exit non-zero.
+- **Platform touches**: the Linux AppImage adds its own launcher entry and icons the first time it starts, a Windows desktop build with managed updates shows a "Kiro Crew update ready" notice at shutdown, and the installers say so when a host cannot run the built-in KAS engine instead of telling you to retry.
+
+### Lighter and faster
+
+The dashboard stays responsive while many sessions stream, the gateway no longer stalls on file reads, and boot is faster. The first message in a new chat starts sooner, the Skills page, the model picker and the session documents list load faster, and tabs stop re-reading the Older Sessions list at the end of every turn. Memory use drops by about 110 MiB from the entity graph and more from a capped transcript cache, and Linux arm64 embeddings run about five times faster.
+
+### Previews you can turn on in Settings > Developer > Feature Previews (Preview)
+
+- **Ultra Mode**: the "Ultra Mode" chip on a new chat, or on an ongoing plain chat, runs it on a conductor that hands each task to its own worker chat, and the side panel's Board tab shows the crew by what needs you, stalled or running, with a catch-up message when you come back.
+- **Explore**: the "Explore" pill in the top bar opens one panel that lists features you have tried and not yet tried and is the only place feature videos show, and a new chat shows a "Try today" card; once the preview is on, turn both off with the Explore row in Settings > Display.
+- **Agent harness per Bot**: a Bot's profile gains an "Agent harness" row, so one Bot can run on Claude Code while the rest stay on KAS.
+
+### More previews you can turn on (Preview)
+
+- **Session Environments**: Settings > Session Environments connects Coder, Fly.io Sprites or boxd workspaces, with an environment chip in the composer and a remote Files panel, Git panel and terminal; the gateway also needs `KIROCREW_DEV_MODE` set.
+- **Shared Crew**: the Shared Crew card (owner only, applied after a gateway restart) turns on People, where a two-step card shares this machine over Tailscale and copies an invite message, and teammates appear from your Tailscale peers.
+- **Remote dispatch**: the Remote dispatch switch lets an Ultra Mode chat run tasks on machines connected under Remote Crew, and a task whose machine stays unreachable for 30 minutes is released and shown as due for redispatch, which you start with a new message.
+
+### Notable fixes
+
+**Chat and sessions.** A message sent while nothing is running is queued instead of leaving the chat stuck on thinking, a reply keeps its footer however the turn ends, regenerate that ends empty keeps the previous reply, a message sent while a session is still starting joins that start, and sessions with only sub-agents running stay under the In progress filter. On the default KAS backend, a hung MCP tool call is judged by its own server's activity instead of the engine's background work, turns are recorded with the model they ran on (an Auto turn is named in the reply footer), the wait countdown and its End button now show, and a restored chat keeps MCP servers whose `env` uses a `${NAME}` reference. Page shortcuts no longer act behind the open command bar, a session with no title yet is named "Untitled session", the @-mention file picker no longer shows the previous project's files after you switch chats, a failed workflow counts as blocked in the Command Center for 24 hours and then shows as stopped, and continuing a sub-agent that was started without a project directory works.
+
+**Bots and channels.** Bots you created are listed even with an empty chat, and a Bot stays silent when it has nothing to say. Slack replies post only the final answer, Slack Socket Mode works behind a SOCKS proxy, the Atlassian connection's Jira and Confluence tools work again, and a sub-agent's finished report is no longer sent twice to a channel conversation whose first attempt timed out. A Bot bound to a shared agent spec starts on Kiro CLI even when the spec lists a tool your policy denies, and a Bot whose template allows an MCP server that is also in your own MCP config starts workers again instead of refusing every one.
+
+**Schedules, memory and desktop.** A cron's wall-clock time holds across a daylight saving change, and a memory backup folder with an extra file no longer deletes real backups. Memory search finds markdown you edited directly on disk, an update you put off is never installed behind your back, fewer ordinary commands are wrongly denied, and an agent adding a schedule into a folder that does not exist yet creates the folder instead of failing. The job form's schedule fields and the Vector Memory card's text boxes now have labels, a selected weekday is announced as pressed, screen readers hear whether cron run history rows, review comment collapse buttons and Knowledge file groups are open, and one corrupt line in a job's run history no longer breaks the history pages.
+
+**Your files stay put.** A settings or data file that cannot be read is kept aside instead of being overwritten with defaults, including the notifications, tips, folders, pins, tags, global MCP list and meeting task files. Files saved with a leading byte order mark by some Windows editors load again, and `kirocrew setup` leaves a global MCP list that is not valid UTF-8 untouched instead of stopping with an error.
+
+**Windows and Linux.** On Windows the gateway no longer freezes on slow process starts, Claude Code starts reliably, and files saved while another program holds them are retried. On Linux the background service finds Node versions installed by mise, and the installer raises a distro Node below the supported floor.
+
+**Sign-in and tools.** A Builder ID sign-in made in Kiro Crew works for model calls and shows its email and type in the account panel, and a hook naming one MCP tool asks only for that tool. `kirocrew doctor` stops asking for Node on the bundled KAS route and accepts a standalone kiro-cli 3.0.0 install, a mistake in the security policy file prints one clear line with a doctor hint instead of a traceback, the Task Runner page runs one action per run at a time, and skills that a second package also ships are found again. A stdio MCP server whose command or environment value uses `${HOME}` now starts instead of timing out, and with Kiro CLI 3.0.0 a usage-limit error shows the provider's own sentence and a temporarily unavailable model is retried again.
+
+**Apps.** In an app's embedded chat, a message the app's page posts to the chat shows at once instead of after the next refresh, and the message box keeps keyboard focus after you send.
+
+**Security.** This release includes several security hardening fixes, covering deny rules that could be overridden for a whole session, governance for cron and unattended runs, Salesforce sign-in endpoints, redaction rules, command allow-list parsing and app registry cloning.
+
+## [0.11.1] - 2026-10-31
+
+A hot patch for 0.11.0: memory stays fast and intact under load, the KAS
+engine follows your agent specs the way kiro-cli does, and a set of security,
+chat and desktop fixes lands.
+
+### Notable fixes
+
+**Memory.** Reading memory no longer waits behind a write, a busy memory pool
+ends a turn with a retryable error instead of leaving it waiting, and the
+first replies after a restart start sooner. The memory database keeps its
+write log when another process closes it, so recent memories are no longer
+lost, and the startup prefetch can no longer let the memory index be
+corrupted.
+
+**KAS engine.** KAS auto-approves the built-in tools a spec grants once Crew's
+own checks pass, honors a spec's allowed shell commands at the gate and
+refuses the rest when the spec denies by default, refuses a file write outside
+a deny-by-default spec's allowed paths, and mounts web search under the name
+the engine expects. Agent spec hooks block a tool only on exit code 2, as on
+kiro-cli, an MCP server gets its boolean env flags but never its secrets, and
+a relative prompt file may use `..` as on kiro-cli. A resumed KAS session
+replays its history when no turns come back.
+
+**Chat and settings.** File changes from kiro-cli v3 write tools show in the
+transcript again, each background tool approval gets its own id so one answer
+no longer settles another, and kiro-cli's read-only file searches are approved
+after the safety checks. A workflow run that stored an infinite or not-a-number
+value opens again, Settings refuses a save that `config.local.json` would
+override, and a schedule's time label keeps its wall-clock hour across a
+daylight saving change. Background work such as the live crew log, knowledge
+ingest and sub-agent events now runs to the end instead of stopping without a
+word.
+
+**Security.** The shell reader finds a `-c` script placed after options and
+redirections, and every agent process counts as an agent in the cloud guard
+for human-only actions. A deny rule that wrongly refused commands such as
+`find -type f` and `od -tx1` as a curl upload is removed. The local decision
+models install a `filelock` with its published advisory fixed.
+
+**Desktop and CLI.** The one-line and `install.sh` installers download Crew's
+built-in KAS engine by default (`--no-kas` skips it), `kirocrew restart` says
+when another gateway still serves the port, and `kirocrew stop` and `kirocrew
+restart` refuse a gateway the desktop app supervises. Quitting the desktop app
+while it starts no longer leaves a gateway running behind it, and Windows
+recovery retries a failed network check before it gives up. A new terminal
+stays above the iPhone keyboard, a working icon in the Crew stack blinks and
+sits flush, and a host-wide out-of-memory kill is no longer blamed on a single
+sandbox limit.
+
 ## [0.11.0] - 2026-10-24
 
-Mates become teammates with a setup of their own: each one gets its own
-configuration, a conductor that works with you and a worker that does the
-hands-on part, and "crewmate" now reads "Mate" wherever you see it. New installs
+Mates (a working name, final name TBD) become teammates with a setup of their
+own: each one gets its own configuration, a conductor that works with you and a
+worker that does the hands-on part, and "crewmate" now reads "Mate" wherever you
+see it. New installs
 start on the KAS engine, which no longer needs kiro-cli, and chat gains Escape
 to stop, a manual sidebar order and forks from the message menu. The Schedule
 form sets time and failure limits per job, long chats stream lighter, and a long
 list of security and platform fixes lands.
 
-### Mates with a conductor and a worker of their own
+### Mates with a conductor and a worker of their own (name TBD)
 
 - **Mate 2.0**: every mate owns an agent file under `~/.kiro/mates/agents/`,
   talks to you through a conductor chat that keeps its notes, and hands hands-on
@@ -176,12 +564,13 @@ stream is redacted as one piece, and certifi is updated for an advisory.
 
 ## [0.10.0] - 2026-10-15
 
-Crewmates start to plan with you: Mate greets a new user, goals carry milestones
-and check-ins, and a crewmate proposes changes you confirm as cards. Dashboards
+Crewmates (a working name, final name TBD) start to plan with you: Mate greets
+a new user, goals carry milestones and check-ins, and a crewmate proposes
+changes you confirm as cards. Dashboards
 leave preview for everyone and a crewmate can write its own page, while chat,
 the sidebar and every backend get faster ways to move, steer and recover.
 
-### Crewmates that plan with you (Preview)
+### Crewmates that plan with you (Preview, name TBD)
 
 - **Meet Mate**: with Settings → Developer → Feature Previews → Crewmates on,
   your first visit to the Crewmates page opens Mate, a first crewmate that
@@ -355,7 +744,8 @@ start on a truncated signing key, and webapp previews run without `unsafe-eval`.
 
 ## [0.9.0] - 2026-10-09
 
-Crewmates become colleagues you can check on at a glance. Opening one greets you
+Crewmates (a working name, final name TBD) become colleagues you can check on
+at a glance. Opening one greets you
 with where its work stands, a profile card holds its permission, model and
 schedules, and in preview each crewmate gets a dashboard page read from its own
 record. The composer warns before a prompt outgrows the model, the sidebar hides
@@ -363,7 +753,7 @@ and tidies what you do not need, remote crews open as live windows onto the
 other machine, and the Usage tab estimates Kiro tokens and the day your credits
 run out.
 
-### Crewmates you can read at a glance
+### Crewmates you can read at a glance (name TBD)
 
 - **A crewmate greets you on open**: opening a crewmate on the Crewmates page
   shows a card with its goal, what is finished, running or waiting on you and
@@ -378,7 +768,7 @@ run out.
   action brings the column back, and the roster lists only crewmates you
   created, chatted with, starred or set as the default.
 
-### A dashboard for every crewmate (Preview)
+### A dashboard for every crewmate (Preview, name TBD)
 
 - **Twelve pages to choose from**: with Settings → Developer → Feature Previews
   → Dynamic Dashboard on, a crewmate's side panel opens a Dashboard tab that
@@ -531,7 +921,8 @@ locally.
 
 **Updates and agents.** The dashboard's Update and `kirocrew update` no longer
 fail with "could not fetch latest-cli.json" when they download a new version. A
-crewmate whose template uses a name the KAS engine reserves, such as `default`,
+crewmate (a working name, final name TBD) whose template uses a name the KAS
+engine reserves, such as `default`,
 now runs on KAS instead of being refused, and a tool that waits no longer holds
 up the other tools of its session.
 
@@ -640,7 +1031,7 @@ one bar.
   day's credits used and its share of the plan allowance, and the balance is read
   automatically with no setting to flip.
 
-### Agent templates, and crewmates with names
+### Agent templates, and crewmates with names (name TBD)
 
 - **An Agent templates tab under Agent Capabilities**: see every installed
   template grouped by origin, create, duplicate, edit or delete your own, start a
@@ -684,7 +1075,7 @@ one bar.
   conversation takes its crew log with it, the storage screen counts the log with
   the session, and `KIROCREW_CREW_LOG=0` switches the whole thing off.
 
-### Crewmates grow into teams (Preview)
+### Crewmates grow into teams (Preview, name TBD)
 
 - **Group crewmates into teams**: with the Crew Members preview on under
   Settings → Developer → Feature Previews, the roster's plus menu gains New team,
@@ -917,8 +1308,8 @@ this build does not ship, and a server disabled in the shared agent
 configuration stays listed as disabled instead of vanishing. One unreadable
 lesson no longer stops every chat and scheduled job from starting, the bad row is
 skipped and the log names it; reinstalling a skill keeps the copy you had when the
-new one fails to write; a crewmate can be named with spaces, periods or letters
-outside ASCII; a crewmate whose Kiro CLI settings turn off inherited defaults no
+new one fails to write; a crewmate (working name, TBD) can be named with spaces,
+periods or letters outside ASCII; a crewmate whose Kiro CLI settings turn off inherited defaults no
 longer receives your global steering anyway; and a model pin is judged against the
 backend the crewmate actually runs on. An OpenCode session on a machine whose own
 configuration carries a per-tool rule starts, a pi release too old for the adapter

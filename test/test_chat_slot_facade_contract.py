@@ -44,7 +44,10 @@ _TO_DICT_KEYS = (
     "row_identity",
     "artifact",
     "messages",
+    # The greeting the welcome page draws while the chat has no row.
+    "welcome_message",
     "running",
+    "admission_queued",
     "wake_starting",
     # Turn identity beside `running`: the slot's monotonic turn counter and the
     # gateway process generation it is comparable within. The dashboard uses the
@@ -53,6 +56,8 @@ _TO_DICT_KEYS = (
     "turn_gen",
     "compacting",
     "preparing",
+    "preparing_text",
+    "preparing_lang",
     "stop_declined",
     "queue_depth",
     "stopping",
@@ -63,9 +68,13 @@ _TO_DICT_KEYS = (
     "waiting_for_input",
     "needs_input",
     "interrupted",
+    "interrupted_stale",
     "stop_state",
     "wait_state",
     "created",
+    # This slot object's id, new on every build under a key: a failed close's
+    # restore keeps it, a reopen elsewhere does not.
+    "incarnation",
     "last_ts",
     "last_turn_ts",
     "last_message",
@@ -98,10 +107,14 @@ _TO_DICT_KEYS = (
     "memory_mode",
     "forked_from",
     "linked_session_key",
+    # The transcript's session key, derived by ``slot_history_key``; the
+    # reopen-closed-session shortcut resumes by it.
+    "history_key",
     "app",
     "origin",
     "created_by",
     "lineage_minted",
+    "attribution",
 )
 
 

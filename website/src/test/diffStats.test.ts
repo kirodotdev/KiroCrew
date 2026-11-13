@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest'
 // react-markdown, katex and highlight.js into this fork — measured 144.65s, of
 // which 51ms was the tests.
 import { createTwoFilesPatch } from 'diff'
-import { countLines, countDiffStats, changedLineSpan, splitPatchSections, plainPatchHunks } from '../utils/diffLineCounts'
+import { countLines, countDiffStats, changedLineSpan, splitPatchSections, plainPatchHunks, startsFileHeader } from '../utils/diffLineCounts'
 
 describe('countLines (diff stats)', () => {
   it('returns zeros for identical content', () => {
@@ -416,6 +416,23 @@ rename to "new name.ts"`
     // A 100% rename and a mode-only change are changes to a file that is still there.
     expect(kinds('diff --git a/x.ts b/y.ts\nsimilarity index 100%\nrename from x.ts\nrename to y.ts')).toEqual([{ kind: 'modified', binary: false }])
     expect(kinds('diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755')).toEqual([{ kind: 'modified', binary: false }])
+  })
+})
+
+/** The one file-boundary rule both readers call: `walkPatch` for the chat rows,
+ *  `normalizePatchHunks` for Pierre's bodies. */
+describe('startsFileHeader (where a header pair begins a file)', () => {
+  it('reads a pair outside a hunk body as a header, and inside one only when a `@@` right below announces it', () => {
+    const lines = ['--- a/x.md', '+++ b/x.md', '@@ -1,2 +1,2 @@', '--- foo', '+++ bar', ' end', '--- a/y.md', '+++ b/y.md', '@@ -1 +1 @@']
+    expect(startsFileHeader(lines, 0, false)).toBe(true)
+    // A deleted `-- foo` over an added `++ bar` inside a body is content.
+    expect(startsFileHeader(lines, 3, true)).toBe(false)
+    expect(startsFileHeader(lines, 3, false)).toBe(true)
+    expect(startsFileHeader(lines, 6, true)).toBe(true)
+    // Never at a `+++` line, a lone `---`, or before the first line.
+    expect(startsFileHeader(lines, 1, false)).toBe(false)
+    expect(startsFileHeader(['--- a/q.sql', ' x'], 0, false)).toBe(false)
+    expect(startsFileHeader(lines, -1, false)).toBe(false)
   })
 })
 

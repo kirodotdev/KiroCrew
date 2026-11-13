@@ -204,6 +204,104 @@ describe('the user row', () => {
   })
 })
 
+describe('a chosen steer the running turn did not take', () => {
+  // A steer the turn ended before reading runs as its own turn. "interrupt this
+  // turn" on that row reads as a decision about the NEW turn, which nobody made.
+  const STEER_RECEIPT = { ...WIRE, choice: 'steer' }
+  const SAID_STEER = 'Jev chose: interrupt this turn'
+  const SAID_SHORT = 'Jev chose to interrupt'
+  const SAID_FULL = 'Jev chose to interrupt, but this runs as its own message'
+  const SAID_QUEUE = 'Jev chose: run after this turn'
+  const renderRow = (meta: Record<string, unknown>) =>
+    render(
+      <UserMessage
+        content="and bump the version"
+        meta={meta}
+        renderContent={(content) => <span>{content}</span>}
+      />,
+    )
+  const line = () => screen.getByTestId('steer-decision-line')
+
+  it('says only who chose on a requeued steer row, without repeating its lifecycle line', () => {
+    const { container } = renderRow({ decisions_strip: STEER_RECEIPT, steer: true, steerState: 'requeued' })
+    expect(line().textContent).toContain(SAID_SHORT)
+    expect(line().textContent).not.toContain('its own message')
+    // An intent, not an outcome: a requeued steer may have been read before
+    // its RPC died, so the receipt makes no claim about whether it applied.
+    expect(line().textContent).not.toContain('not applied')
+    // The requeued line says it once for the row.
+    expect(container.textContent?.match(/its own message/g)).toHaveLength(1)
+    expect(line().textContent).not.toContain(SAID_STEER)
+    expect(line().getAttribute('data-choice')).toBe('steer')
+    expect(line().getAttribute('data-ran-as-own-turn')).toBe('true')
+  })
+
+  it('wraps the own-message sentence so a narrow pane keeps its last clause', () => {
+    renderRow({ decisions_strip: STEER_RECEIPT, steer: true, steerState: 'requeued' })
+    const choice = screen.getByTestId('steer-decision-choice')
+    expect(choice.className).not.toContain('truncate')
+    expect(choice.className).toContain('break-words')
+    expect(line().className).toContain('flex-wrap')
+  })
+
+  it('still truncates the plain steer sentence', () => {
+    renderRow({ decisions_strip: STEER_RECEIPT, steer: true, steerState: 'consumed' })
+    expect(screen.getByTestId('steer-decision-choice').className).toContain('truncate')
+  })
+
+  it('says only who chose on a superseded steer row, which keeps the requeued lifecycle line', () => {
+    // The transcript hides a superseded row; a surface that still draws it shows
+    // the requeued line, so the receipt does not repeat its outcome.
+    const { container } = renderRow({ decisions_strip: STEER_RECEIPT, steer: true, steerState: 'superseded' })
+    expect(line().textContent).toContain(SAID_SHORT)
+    expect(line().textContent).not.toContain('its own message')
+    expect(container.textContent?.match(/its own message/g)).toHaveLength(1)
+    expect(line().getAttribute('data-ran-as-own-turn')).toBe('true')
+  })
+
+  it('says so on a plain user row that carries the receipt', () => {
+    // The row the drain writes for a requeued steer, and the queued row of a steer
+    // that was unavailable: neither has `meta.steer`, so no turn took either.
+    renderRow({ decisions_strip: STEER_RECEIPT })
+    expect(line().textContent).toContain(SAID_FULL)
+    expect(line().getAttribute('data-choice')).toBe('steer')
+    expect(line().getAttribute('data-ran-as-own-turn')).toBe('true')
+  })
+
+  it('keeps "interrupt this turn" on a steer the turn has or may still take', () => {
+    for (const meta of [
+      { steer: true, steerState: 'written' },
+      { steer: true, steerState: 'consumed' },
+      { steer: true },
+    ]) {
+      renderRow({ decisions_strip: STEER_RECEIPT, ...meta })
+      expect(line().textContent).toContain(SAID_STEER)
+      expect(line().hasAttribute('data-ran-as-own-turn')).toBe(false)
+      cleanup()
+    }
+  })
+
+  it('leaves a queue receipt as it is on every row', () => {
+    for (const meta of [
+      {},
+      { steer: true, steerState: 'requeued' },
+      { steer: true, steerState: 'consumed' },
+    ]) {
+      renderRow({ decisions_strip: WIRE, ...meta })
+      expect(line().textContent).toContain(SAID_QUEUE)
+      expect(line().getAttribute('data-choice')).toBe('queue')
+      expect(line().hasAttribute('data-ran-as-own-turn')).toBe(false)
+      cleanup()
+    }
+  })
+
+  it('ignores the flag for a queue choice on the line itself', () => {
+    render(<SteerDecisionLine record={readSteerRecord(WIRE)!} ownMessage="full" />)
+    expect(line().textContent).toContain(SAID_QUEUE)
+    expect(line().hasAttribute('data-ran-as-own-turn')).toBe(false)
+  })
+})
+
 describe('the split send button’s third mode', () => {
   it('offers Auto only when the host says the seam is available', () => {
     const { rerender } = render(

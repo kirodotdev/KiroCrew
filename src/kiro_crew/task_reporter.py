@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
 import time
 from collections import Counter
@@ -137,6 +138,7 @@ def save_progress(run: Project) -> None:
                 TaskStatus.REVIEWING: "🔍",
                 TaskStatus.PENDING: "⬜",
                 TaskStatus.SKIPPED: "⏭️",
+                TaskStatus.CANCELLED: "🚫",
             }[task.status]
             line = f"- {icon} **Task {task.index}:** {task.title}"
             if task.attempts > 1:
@@ -148,9 +150,29 @@ def save_progress(run: Project) -> None:
         if run.error:
             lines.append(f"\n## Error\n{run.error}\n")
 
-        progress_path.write_text("\n".join(lines), encoding="utf-8")
+        _rewrite_in_place(progress_path, "\n".join(lines))
     except Exception:
         logger.debug("Failed to save progress", exc_info=True)
+
+
+def _rewrite_in_place(path: Path, text: str) -> None:
+    """Rewrite *path* in place, claiming the room it grows into first.
+
+    In place, the file keeps its owner, group, mode and ACL, which a replacement
+    renamed over it would take from the directory instead. The extra room is
+    claimed with blank lines a reader skips, so on a local filesystem that
+    overwrites in place a full disk fails before any byte of the previous
+    checkpoint changes.
+    """
+    # The newline translation ``Path.write_text`` applies, so the bytes match it.
+    data = text.replace("\n", os.linesep).encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
+    with open(fd, "wb") as fh:
+        fh.write(b"\n" * (len(data) - fh.seek(0, os.SEEK_END)))
+        fh.flush()
+        fh.seek(0)
+        fh.write(data)
+        fh.truncate()
 
 
 # ── Checkpoint Resume ──
@@ -241,6 +263,7 @@ def build_status(
                 ),
                 "original_input": run.original_input[:2000],
                 "source": run.source,
+                "agent": run.agent,
                 "task_details": [
                     {
                         "index": t.index,

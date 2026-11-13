@@ -35,11 +35,8 @@ class TestPortAllocator:
     def test_preferred_port_is_returned_when_free(self):
         """A free, in-range ``preferred`` is handed back unchanged.
 
-        This is the origin-stability contract for a crew's embedded pane: the
-        loopback port is the browser origin of that pane, so returning the same
-        recorded port across reconnects keeps its origin-keyed localStorage
-        settings alive. ``preferred`` well above ``base`` must win over the
-        first-free port.
+        The port is the pane's browser origin, so keeping it keeps localStorage
+        settings; ``preferred`` above ``base`` wins over the first-free port.
         """
         from kiro_crew.instances.port_allocator import PortAllocator
 
@@ -61,12 +58,8 @@ class TestPortAllocator:
     def test_preferred_port_falls_back_when_excluded_or_out_of_range(self, monkeypatch):
         """A ``preferred`` that is excluded, below base, or occupied yields.
 
-        The preference is honoured, never enforced: a port another instance now
-        holds (``exclude``) or one outside the allocator's range must not be
-        handed back — allocation falls through to first-free instead.
-
-        Uses a fixed base (41000) with a monkeypatched probe so this test is
-        not sensitive to OS ephemeral port assignments near 65535.
+        The preference is honoured, never enforced. A fixed base (41000) with a
+        patched probe keeps this off OS ephemeral ports near 65535.
         """
         import kiro_crew.instances.port_allocator as pa_mod
         from kiro_crew.instances.port_allocator import PortAllocator
@@ -85,17 +78,11 @@ class TestPortAllocator:
     def test_is_port_free_detects_live_listener_even_with_reuseaddr(self):
         """A genuinely LISTENing port is still reported in-use.
 
-        Regression guard for the disconnect->reconnect fix: on POSIX
-        `_is_port_free` sets SO_REUSEADDR (so a just-freed port lingering in
-        TIME_WAIT is not a false positive, matching ssh's own `-L` listener
-        bind). This must NOT relax detection of a real, live listener — a true
-        two-instance port collision still has to be caught. SO_REUSEADDR
-        exempts TIME_WAIT only, never an active LISTEN, so the probe must still
-        fail to bind against a LISTENing socket that itself set SO_REUSEADDR.
+        On POSIX `_is_port_free` sets SO_REUSEADDR so TIME_WAIT is not a false
+        positive; that exempts TIME_WAIT only, never an active LISTEN.
 
-        On Windows the same occupier is the port-squat shape: two SO_REUSEADDR
-        sockets can both listen there, so the probe uses SO_EXCLUSIVEADDRUSE
-        and this test runs unchanged on the Windows matrix as the live proof.
+        On Windows two SO_REUSEADDR sockets can both listen, so the probe uses
+        SO_EXCLUSIVEADDRUSE and this test is the live proof on that matrix.
         """
         from kiro_crew.instances.port_allocator import _is_port_free
 
@@ -291,11 +278,8 @@ class TestPortAllocator:
     def test_is_port_free_propagates_when_the_probe_cannot_run(self, monkeypatch, creation_errno):
         """A probe that could not RUN answers neither "free" nor "in use".
 
-        Reading it as free would hand out a port a listener on the unprobed
-        family may hold; reading it as in use would send the allocator through
-        every candidate and fail with a port-exhaustion message naming the wrong
-        cause. So it propagates, which is also what the pre-dual-stack code did
-        (a creation error was never caught).
+        "Free" could hand out a port held on the unprobed family; "in use" would end
+        in a port-exhaustion error naming the wrong cause. So it propagates.
         """
         import kiro_crew.instances.port_allocator as pa
 

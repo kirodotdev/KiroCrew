@@ -354,7 +354,6 @@ class TestDashboardConfigMergeQueued:
 
     @pytest.mark.asyncio
     async def test_put_rejects_unknown_fields(self, tmp_path, monkeypatch):
-        """PUT with unknown fields returns 400."""
         monkeypatch.setattr(
             "kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json"
         )

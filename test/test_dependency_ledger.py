@@ -63,7 +63,11 @@ class TestLedgerCRUD:
         assert get_entry("capability/mcp/x") is None
 
     def test_uninstall_nonexistent_noop(self):
+        record_install("capability/mcp/x", "app-a", "capability.mcp")
         record_uninstall("capability/mcp/nonexistent", "app-a")  # should not raise
+        # The ledger is left exactly as it was.
+        assert get_entry("capability/mcp/nonexistent") is None
+        assert [k for k, _ in list_by_app("app-a")] == ["capability/mcp/x"]
 
     def test_get_nonexistent(self):
         assert get_entry("capability/mcp/nonexistent") is None

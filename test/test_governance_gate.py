@@ -48,7 +48,7 @@ def _reset_ctx():
 
 
 def _write(d, name, body):
-    (d / f"{name}.json").write_text(json.dumps(body))
+    (d / f"{name}.json").write_text(json.dumps(body), encoding="utf-8")
 
 
 def test_profile_denies_mcp_tool_kiro_would_grant(profiles_dir, monkeypatch):

@@ -59,19 +59,18 @@ def _same(a: str, b: str) -> bool:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture, moved verbatim; no test in the modules that import it calls monkeypatch.undo()
-def _pin_module_state(monkeypatch):
+def _pin_module_state(_floor_monkeypatch):
     """Neutralise the module's cached globals so tests never share state."""
-    monkeypatch.setattr(repository, "_UPSTREAM_REMOTE", "origin")
-    monkeypatch.setattr(fleet_state, "_HTML_BASE", None)
-    monkeypatch.setattr(fleet_state, "_PR_CACHE", {})
-    monkeypatch.setattr(repository, "_FALLBACK_REPOS", [])
-    monkeypatch.setattr(worktree_ops, "_WT_LOCKS", {})
-    monkeypatch.setattr(fleet_state, "_PROVISION_INFLIGHT", {})
-    monkeypatch.setattr(runtime, "_RUNS", {})
-    monkeypatch.setattr(runtime, "_BUILD_PATH_CACHE", "/usr/bin")
-    monkeypatch.setattr(runtime, "_warm_build_path", AsyncMock())
-    monkeypatch.setattr(worktree_ops, "_pod_env", lambda: {})
+    _floor_monkeypatch.setattr(repository, "_UPSTREAM_REMOTE", "origin")
+    _floor_monkeypatch.setattr(fleet_state, "_HTML_BASE", None)
+    _floor_monkeypatch.setattr(fleet_state, "_PR_CACHE", {})
+    _floor_monkeypatch.setattr(repository, "_FALLBACK_REPOS", [])
+    _floor_monkeypatch.setattr(worktree_ops, "_WT_LOCKS", {})
+    _floor_monkeypatch.setattr(fleet_state, "_PROVISION_INFLIGHT", {})
+    _floor_monkeypatch.setattr(runtime, "_RUNS", {})
+    _floor_monkeypatch.setattr(runtime, "_BUILD_PATH_CACHE", "/usr/bin")
+    _floor_monkeypatch.setattr(runtime, "_warm_build_path", AsyncMock())
+    _floor_monkeypatch.setattr(worktree_ops, "_pod_env", lambda: {})
     # Shutdown admission state: each test starts with a clean (non-shutdown) process.
-    monkeypatch.setattr(runtime, "_SHUTDOWN_IN_PROGRESS", False)
-    monkeypatch.setattr(runtime, "_SHUTDOWN_ADMISSION_LOCK", asyncio.Lock())
+    _floor_monkeypatch.setattr(runtime, "_SHUTDOWN_IN_PROGRESS", False)
+    _floor_monkeypatch.setattr(runtime, "_SHUTDOWN_ADMISSION_LOCK", asyncio.Lock())

@@ -39,8 +39,10 @@ describe('contributed panel tab body', () => {
     // normal-flow sibling; anchored to the top edge so it does not blanket the body.
     expect(src).toContain('absolute left-0 right-0 top-0 z-10')
     // Every failure is reported: a "does the reader have one stored" gate was a second
-    // silence, because a first load has no contributed tab stored yet.
-    expect(src).toMatch(/const \{ isError, error \} = useInstalledApps\(\)\n  if \(!isError\) return null/)
+    // silence, because a first load has no contributed tab stored yet. The one
+    // exception is a permission refusal (a relay teammate is refused the app list,
+    // #32031), which is the answer rather than a failure.
+    expect(src).toMatch(/const \{ isError, error \} = useInstalledApps\(\)\n(?: *\/\/.*\n)* {2}if \(!isError \|\| isPermissionRefusal\(error\)\) return null/)
     // The notice must NOT sit inside the per-tab body any more.
     const bodyStart = src.indexOf('function AppPanelTabBody(')
     const bodyEnd = src.indexOf('function AppPanelTabsErrorNotice(')
@@ -65,7 +67,7 @@ describe('AppHost session key plumbing', () => {
     // Three hops, and dropping any one of them fails open silently.
     expect(host).toMatch(/function AppHostInner\(\{[^}]*sessionKey[^}]*\}: AppHostProps\)/)
     expect(host).toMatch(/function AppHost\(\{[^}]*sessionKey[^}]*\}: AppHostProps\)/)
-    expect(host).toContain('<AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} />')
+    expect(host).toContain('<AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} onFailure={onFailure} />')
     expect(host).toContain('sessionKey={sessionKey}')
   })
 })

@@ -14,7 +14,9 @@ Each of those ten suites imports the four autouse fixtures, so they apply to eve
 test in it (their docstrings' "this module" and "here" mean the importing suite).
 They are what keeps a service test off the host running it: ``SUDO_USER`` cleared,
 the system scope's overrides file and both scopes' unit files pointed under
-``tmp_path``, and ``restart()``'s settle window walked on a fake clock.
+``tmp_path``, and ``restart()``'s settle window walked on a fake clock. The suites
+that run the real ``install()`` also import ``_booted_with_systemd``, which answers
+its first question, whether systemd booted this host, from ``tmp_path`` too.
 
 ``durable_dir`` is declared with an explicit ``name=`` so importing it does not
 collide with the test parameter of the same name (flake8 F811). ``_fake_systemctl``
@@ -33,8 +35,7 @@ from kiro_crew.service.common import SERVICE_NAME
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _clear_sudo_user(monkeypatch):
+def _clear_sudo_user(_floor_monkeypatch):
     """Keep ``User=`` resolution deterministic across hosts.
 
     ``_current_user()`` prefers ``SUDO_USER`` (so ``sudo … service install``
@@ -43,12 +44,11 @@ def _clear_sudo_user(monkeypatch):
     for every test in this module; tests that exercise the SUDO_USER path set it
     explicitly themselves.
     """
-    monkeypatch.delenv("SUDO_USER", raising=False)
+    _floor_monkeypatch.delenv("SUDO_USER", raising=False)
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _no_host_env_file(monkeypatch, tmp_path):
+def _no_host_env_file(_floor_monkeypatch, tmp_path):
     """Keep the system scope's overrides file off the host's ``/etc``.
 
     Uninstall reads ``ENV_FILE_PATH`` directly to decide whether it still holds
@@ -60,8 +60,8 @@ def _no_host_env_file(monkeypatch, tmp_path):
     from kiro_crew.service import linux as svc_linux
 
     env_dir = tmp_path / "absent-etc-kirocrew"
-    monkeypatch.setattr(svc_linux, "ENV_DIR", env_dir)
-    monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_dir / "kirocrew.env")
+    _floor_monkeypatch.setattr(svc_linux, "ENV_DIR", env_dir)
+    _floor_monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_dir / "kirocrew.env")
 
 
 @pytest.fixture(autouse=True)
@@ -112,6 +112,23 @@ def _no_host_unit_files(_floor_monkeypatch, tmp_path, tmp_path_factory):
         _refuse_real_unit_dirs(name)
 
 
+@pytest.fixture(autouse=True)
+def _booted_with_systemd(_floor_monkeypatch, tmp_path):
+    """Make every ``install()`` here run on a host that systemd booted.
+
+    ``install()`` first refuses a host without ``/run/systemd/system``
+    (``sd_booted(3)``'s test), so on a macOS or Windows runner, or a container
+    whose PID 1 is not systemd, every install test would stop at that refusal
+    and check nothing else. Point the marker at a directory that exists; a test
+    of the refusal re-points it at an absent path with its own ``monkeypatch``.
+    """
+    from kiro_crew.service import linux as svc_linux
+
+    booted = tmp_path / "run-systemd-system"
+    booted.mkdir()
+    _floor_monkeypatch.setattr(svc_linux, "_SYSTEMD_BOOTED_DIR", booted)
+
+
 class _FakeClock:
     """``time`` stand-in for ``linux.restart()``'s settle window.
 
@@ -134,14 +151,13 @@ class _FakeClock:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _restart_settle_without_waiting(monkeypatch):
+def _restart_settle_without_waiting(_floor_monkeypatch):
     """Every ``restart()`` here confirms the unit through a fake clock: the
     window (``_RESTART_SETTLE_SECS``) is still walked, poll by poll, but takes
     no wall time. Tests reach the clock as ``svc_linux.time``."""
     from kiro_crew.service import linux as svc_linux
 
-    monkeypatch.setattr(svc_linux, "time", _FakeClock(), raising=False)
+    _floor_monkeypatch.setattr(svc_linux, "time", _FakeClock(), raising=False)
 
 
 _UNIT = f"{SERVICE_NAME}.service"

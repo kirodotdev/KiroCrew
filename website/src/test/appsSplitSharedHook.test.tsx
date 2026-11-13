@@ -13,6 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter } from 'react-router-dom'
 
 const useAppsDataSpy = vi.hoisted(() => vi.fn(() => ({
@@ -35,9 +37,11 @@ import LibraryPage from '../pages/apps/LibraryPage'
 function renderPage(ui: React.ReactElement, path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

@@ -1,17 +1,9 @@
 """The third-party execution denial must be machine-identifiable.
 
-The frontend renders an actionable affordance ("open Security settings") for
-exactly one failure: the execution gate refusing to run non-builtin app code.
-It has to key that off a stable ``code``, because the accompanying ``error``
-prose is English, unlocalizable, and free to be reworded at any time -- string
-matching it would break silently on a copy edit.
-
-Two denial sites reach the dashboard and BOTH are pinned here, because they
-fail through different shapes: the registry install returns a payload dict, and
-``enable_app`` returns an ``AppResult`` whose ``to_dict`` is what the HTTP layer
-serializes. That second one is the regression this file exists for --
-``AppResult.error_code`` was set by callers but never serialized, so every
-structured code was silently dropped on the way out.
+The frontend's "open Security settings" affordance keys off a stable ``code``, since the
+``error`` prose can be reworded. Both denial sites are pinned: the registry install's
+payload dict, and ``enable_app``'s ``AppResult.to_dict``, which must serialize
+``error_code``.
 """
 
 from __future__ import annotations
@@ -157,11 +149,8 @@ class TestRegistryInstallDenialCarriesCode:
 def test_denial_code_matches_the_open_command_route():
     """One code for one condition, across every path that reports it.
 
-    ``routes_enable.py`` already shipped this code on the ``openCommand`` denial; the
-    install and enable paths joining it is what lets the frontend handle the
-    condition once instead of per-endpoint. If someone renames the code in one
-    place, this fails rather than leaving the affordance silently dead on the
-    other paths.
+    ``routes_enable.py`` uses the same code on the ``openCommand`` denial, so a rename in
+    one place fails here instead of silently killing the affordance elsewhere.
     """
     src = (_REPO_ROOT / "src/kiro_crew/apps/routes_enable.py").read_text(encoding="utf-8")
     assert f'"code": "{DENIAL_CODE}"' in src

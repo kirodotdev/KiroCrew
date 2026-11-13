@@ -1,16 +1,8 @@
 """Pin each managed server's advertised caller-identity to what discovery reads.
 
-The shareability assessment has to answer "can one backend serve two sessions"
-for Kiro Crew's own MCP servers WITHOUT spawning them: on a host where the probe
-cannot run there is no ``initialize`` response to read the capability from. So
-:func:`managed_server_is_session_bound` reads a module constant instead.
-
-That makes the constant a SECOND copy of a fact whose original is the argument
-passed to ``run_mcp_stdio_loop`` — and the two disagreeing is silent in both
-directions. A constant that says True while the server never advertises would put
-an unshareable server in the shareable set; the reverse would keep disqualifying a
-server built for pooling, which is the bug this pairing was introduced to fix. So
-the ratchet drives the real serve entry point and reads back what it was handed.
+:func:`managed_server_is_session_bound` answers without spawning the server, so it reads
+a constant that copies the argument passed to ``run_mcp_stdio_loop``. A mismatch is
+silent either way, so the ratchet drives the real serve entry point and reads it back.
 """
 
 from __future__ import annotations
@@ -83,12 +75,8 @@ def test_the_constant_matches_what_the_server_advertises(name: str, monkeypatch)
 def test_session_bound_follows_advertising_modulo_the_withheld_set(name: str, monkeypatch) -> None:
     """Session-bound is the inverse of advertising, EXCEPT the documented set.
 
-    Advertising is necessary for the shareable classification but not
-    sufficient: ``_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD`` names servers
-    whose pooled attribution is correct for every caller the gateway can name
-    but whose UNNAMED co-tenants are not provably separated on every gateway
-    generation, so they are kept session-bound deliberately. Every other server
-    must follow the inverse rule exactly.
+    ``_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD`` servers advertise but stay session-bound,
+    because their UNNAMED co-tenants are not provably separated on every gateway.
     """
     module_name = _MANAGED_SERVER_TOOL_MODULES[name]
     advertised = _advertised_by_serve_entry(module_name, _SERVE_ENTRY[name], monkeypatch)
@@ -120,13 +108,9 @@ def test_the_withheld_set_is_a_real_exception_not_a_stale_one(monkeypatch) -> No
 def test_a_negotiating_server_keeps_what_earns_its_place() -> None:
     """A caller-aware entry resting on the nonce must keep all three of its parts.
 
-    ``kirocrew-computer`` is not shareable because its attribution is right for the
-    callers the gateway CAN name. It is shareable because the callers it cannot
-    name are separated by the per-connection nonce, and because a daemon that mints
-    none is refused before any pooling happens. Any one of the three going missing
-    restores the namespace collapse this classification would then be promising
-    against, and none of the checks above can see it: they read the advertising bit
-    only, which stays true throughout.
+    ``kirocrew-computer`` is shareable only because the per-connection nonce separates
+    unnamed callers and a daemon minting none is refused. The checks above read only the
+    advertising bit, so they cannot see a missing part.
     """
     assert "kirocrew-computer" in mcp_discovery._MANAGED_SERVERS_CALLER_AWARE
     # 1. the backend separates the callers the gateway cannot name by the nonce
@@ -148,31 +132,18 @@ def test_a_negotiating_server_keeps_what_earns_its_place() -> None:
 def test_the_concrete_verdicts_are_spelled_out() -> None:
     """The concrete answers the dashboard renders, spelled out.
 
-    Kept alongside the derived checks above because those pass just as happily if
-    every managed server flipped at once. ``kirocrew-core``, ``kirocrew-cron``,
-    ``kirocrew-dashboard`` and ``kirocrew-work`` consume the injected caller block
-    and refuse or safely namespace an unidentified caller, so none is
-    session-bound — ``kirocrew-work`` refuses outright, since a work-ledger tool
-    with no verifiable session has no ledger and no binding to reach.
-    ``kirocrew-computer`` reaches the same verdict by the other route: it
-    separates the callers the gateway cannot name by the per-connection nonce,
-    and because this classification is what ``seed.py`` turns into a config
-    write, that separation is negotiated on the handshake rather than assumed —
-    a daemon that does not attest ``tenant_nonce`` cannot serve it pooled at all
-    (``test_a_negotiating_server_keeps_what_earns_its_place`` below).
+    The derived checks above would pass if every server flipped at once. These servers
+    refuse or namespace an unidentified caller; ``kirocrew-computer`` instead relies on
+    the negotiated ``tenant_nonce`` (see ``test_a_negotiating_server_keeps_what_earns_its_place``).
     """
     assert managed_server_is_session_bound("kirocrew-core") is False
     assert managed_server_is_session_bound("kirocrew-cron") is False
     assert managed_server_is_session_bound("kirocrew-computer") is False
     assert managed_server_is_session_bound("kirocrew-dashboard") is False
     assert managed_server_is_session_bound("kirocrew-work") is False
-    # ``kirocrew-debug`` consumes the block and is not session-bound, and here that
-    # is load-bearing rather than incidental: its four host-wide reads are gated in
-    # the route on the caller being the OWNER at a dashboard tab, and the route can
-    # only make that judgement about a session the gateway named. A session-bound
-    # classification would leave a pooled backend resolving an empty identity, which
-    # fails closed -- every wide read refused -- so the wiring and the security model
-    # have to agree on this value.
+    # ``kirocrew-debug`` gates its host-wide reads on the caller being the OWNER, which needs
+    # a session the gateway named; session-bound would resolve an empty identity and
+    # refuse every wide read.
     assert managed_server_is_session_bound("kirocrew-debug") is False
 
 
@@ -182,15 +153,9 @@ def test_a_third_party_server_is_not_claimed_either_way() -> None:
 
 
 def test_a_managed_server_missing_from_the_aware_set_reads_as_session_bound() -> None:
-    """The conservative default, which is now a SET-membership question.
+    """A managed server left out of ``_MANAGED_SERVERS_CALLER_AWARE`` reads as session-bound.
 
-    With the classification read from a name set rather than each module's
-    constant, the way a managed server gets misjudged is the set forgetting it: a
-    fifth server added to ``_MANAGED_SERVER_SUBCOMMANDS`` but not to
-    ``_MANAGED_SERVERS_CALLER_AWARE``. That direction must read as session-bound,
-    never as shareable, so an omission costs a conservative verdict rather than
-    co-tenancy. (The opposite direction -- the set claiming a server that does not
-    advertise -- is what the two ratchets above catch.)
+    An omission then costs a conservative verdict, not co-tenancy.
     """
     assert mcp_discovery._MANAGED_SERVERS_CALLER_AWARE <= set(_MANAGED_SERVER_TOOL_MODULES)
     for name in _MANAGED_SERVER_TOOL_MODULES:
@@ -201,12 +166,8 @@ def test_a_managed_server_missing_from_the_aware_set_reads_as_session_bound() ->
 def test_the_classification_reads_no_module_at_import_time(monkeypatch) -> None:
     """It must not import a managed server's module to answer.
 
-    This is consulted once per row on every MCP-servers request. Importing there
-    executes package code the gateway does not otherwise run, and the package
-    directory is writable by the same uid the agent runs as -- so an editable
-    checkout would make every render an execution point. The sibling in-process
-    tool read accepts that only on the fallback path where a sandboxed spawn was
-    impossible anyway.
+    It runs per row on every MCP-servers request, and the package directory is writable by
+    the agent's uid, so an import would make every render an execution point.
     """
     calls: list[str] = []
 

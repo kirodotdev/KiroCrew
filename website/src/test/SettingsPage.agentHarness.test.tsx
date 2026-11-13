@@ -158,9 +158,9 @@ describe('Settings > Agent Harness', () => {
     await waitFor(() => expect(loc()).toBe('/settings/agent'))
   })
 
-  it('is no longer a Developer page tab', async () => {
+  it('is not a page of Settings > Developer', async () => {
     renderAt('/developer')
-    expect(await screen.findByTestId('logs-tab')).toBeInTheDocument()
+    await waitFor(() => expect(loc()).toBe('/settings/developer'))
     expect(screen.queryByText('Agent Backend')).toBeNull()
     expect(screen.queryByTestId('agent-backend-tab')).toBeNull()
   })

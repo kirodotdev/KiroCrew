@@ -53,6 +53,7 @@ from ..common.objects import (
     UploadCancelled,
     UploadCut,
     UploadDeadlineExceeded,
+    caller_account,
     classify_permanent,
     is_absent,
     is_precondition_failed,
@@ -138,9 +139,28 @@ class S3ObjectStore:
     every test runnable, with no AWS present.
     """
 
-    def __init__(self, bucket: str, *, client=None) -> None:
+    def __init__(self, bucket: str, *, client=None, expected_owner: str | None = None) -> None:
         self._bucket = bucket
         self._client = client
+        self._expected_owner = expected_owner
+
+    def _owner(self) -> str:
+        """The task's own account, resolved once and sent as ``ExpectedBucketOwner``.
+
+        Called inside each request's ``try``, so an STS failure is classified like
+        the S3 failure it stands in for.
+        """
+        if self._expected_owner is None:
+            from botocore.config import Config
+
+            self._expected_owner = caller_account(
+                Config(
+                    connect_timeout=BACKUP_REQUEST_TIMEOUT_SECS,
+                    read_timeout=BACKUP_REQUEST_TIMEOUT_SECS,
+                    retries={"total_max_attempts": BACKUP_MAX_ATTEMPTS, "mode": "standard"},
+                )
+            )
+        return self._expected_owner
 
     def _ensure_client(self):
         if self._client is None:
@@ -254,6 +274,7 @@ class S3ObjectStore:
                 Key=key,
                 Body=reader,
                 ContentLength=size,
+                ExpectedBucketOwner=self._owner(),
                 **extra,
             )
         except UploadCut:
@@ -342,7 +363,9 @@ class S3ObjectStore:
         deadline; the final cycle passes the deadline and no stop.
         """
         try:
-            resp = self._ensure_client().get_object(Bucket=self._bucket, Key=key)
+            resp = self._ensure_client().get_object(
+                Bucket=self._bucket, Key=key, ExpectedBucketOwner=self._owner()
+            )
         except Exception as exc:  # noqa: BLE001 - classified, never swallowed
             if is_absent(exc):
                 raise ObjectAbsent(key) from exc

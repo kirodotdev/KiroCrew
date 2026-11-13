@@ -1,19 +1,26 @@
 /*
  * Body motion for a WORKING icon-tier avatar (see CrewAvatar's icon branch).
  *
- * The tile is the root element's background. One still image of the silhouette
- * sits inside four nested wrappers, and the wrappers move it: fit (a static
- * shrink that makes headroom), sway, bob and squash. The numbers come from
- * `iconMotionVars()` in lib/avatarPoses.ts, as custom properties on the root, so
- * the tempo and amplitude stay the ghost tier's own.
+ * The tile is the root element's background and never moves. Two still images,
+ * the silhouette and its eyes, sit inside four nested wrappers, and the wrappers
+ * move them together: fit (a static shrink that makes headroom), sway, bob and
+ * squash. The eye image also blinks and glances inside that chain, as the
+ * ghost's eyes do. The numbers come from `iconMotionVars()` and `poseEyeVars()`
+ * in lib/avatarPoses.ts, so the tempo and amplitude stay the ghost tier's own.
  *
- * Only transforms move, on elements outside the image. The browser rasters the
- * picture once and moves that raster, so the eyes and the body cannot be painted
- * at different moments — the tearing an SVG-internal animation showed on iOS.
+ * Only transforms move, on elements outside the images. The browser rasters
+ * each picture once and moves that raster, so no frame repaints part of a
+ * picture — the tearing an SVG-internal animation showed on iOS.
+ */
+/*
+ * `display: block`, like the still icon's `<img>` (Tailwind's preflight makes
+ * every img a block). An inline-block sits on its parent's text baseline, so a
+ * wrapper around it grows to the line height: in the header crew stack the
+ * face's `ring-2` then drew a tall dark band around a raised face.
  */
 .crew-icon-motion {
   position: relative;
-  display: inline-block;
+  display: block;
   overflow: hidden;
 }
 
@@ -22,6 +29,22 @@
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* The eye layer stacks on the body inside the squash wrapper, so every body
+ * transform carries both; only its own blink and glance move it further. */
+.crew-icon-motion .crew-icon-eyes {
+  position: absolute;
+  inset: 0;
+}
+
+.crew-icon-look {
+  animation: crew-icon-look 4.4s ease-in-out infinite;
+}
+
+.crew-icon-blink {
+  animation: crew-icon-blink 2.6s infinite;
+  transform-origin: calc(var(--crew-icon-eye-x) * 1%) calc(var(--crew-icon-eye-y) * 1%);
 }
 
 .crew-icon-fit {
@@ -39,6 +62,7 @@
 }
 
 .crew-icon-sq {
+  position: relative;
   animation: crew-icon-sq var(--crew-icon-secs) ease-in-out infinite;
   transform-origin: calc(var(--crew-icon-sq-origin-x) * 1%) calc(var(--crew-icon-sq-origin-y) * 1%);
 }
@@ -70,6 +94,37 @@
   }
   50% {
     transform: scale(var(--crew-icon-squash-x), var(--crew-icon-squash-y));
+  }
+}
+
+/* The ghost's `kg-look` and `kg-blink` timings, on the eye layer. */
+@keyframes crew-icon-look {
+  0%,
+  26%,
+  100% {
+    transform: translateX(0);
+  }
+  34%,
+  50% {
+    transform: translateX(calc(var(--crew-icon-look-right) * 1%));
+  }
+  60%,
+  84% {
+    transform: translateX(calc(var(--crew-icon-look-left) * 1%));
+  }
+}
+
+@keyframes crew-icon-blink {
+  0%,
+  80%,
+  88%,
+  96%,
+  100% {
+    transform: scaleY(1);
+  }
+  84%,
+  92% {
+    transform: scaleY(0.06);
   }
 }
 

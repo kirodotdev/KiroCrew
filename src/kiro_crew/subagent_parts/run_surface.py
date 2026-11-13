@@ -111,6 +111,15 @@ def published_queued_depths(self: SubagentManager) -> dict[str, int]:
     return self._published_depths.snapshot()
 
 
+def published_queued_labels(self: SubagentManager) -> dict[str, dict[str, object]]:
+    """The wait label those same frames carried, per parent (labelled only).
+
+    Oldest publish first, so a reader folding several parents onto one tab
+    ends on the newest, as the frame stream did. Copies.
+    """
+    return self._published_depths.labels()
+
+
 def has_in_memory_pending_work_for(
     self: SubagentManager, parent_session_key: str, *, exclude_id: str = ""
 ) -> bool:
@@ -186,6 +195,12 @@ async def _cap_unclaimed_result(self: SubagentManager, info: SubagentInfo) -> No
 
 def _record_reap_ending(self: SubagentManager, info: SubagentInfo, unfinished: str) -> None:
     self._run_events._record_reap_ending_impl(info, unfinished)
+
+
+def _leave_for_next_start(
+    self: SubagentManager, info: SubagentInfo, *, stop_reason: str | None = None
+) -> bool:
+    return self._run_events._leave_for_next_start_impl(info, stop_reason=stop_reason)
 
 
 async def _run_inner(self: SubagentManager, info: SubagentInfo, session_key: str) -> None:

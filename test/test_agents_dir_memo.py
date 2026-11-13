@@ -5,8 +5,8 @@
 enough to pin a read answer to: entry metadata, plus a digest of the bytes of
 any entry too young for its metadata to be trusted. It answers ``None`` whenever
 freshness cannot be proven (a symlinked spec, a young entry it cannot hash, a
-bulk write past the digest budget, a platform whose ``ctime`` is creation
-time). :class:`kiro_crew.agent_discovery.AgentsDirMemo` holds the store and hit
+bulk write past the digest budget). Where ``ctime`` is creation time (Windows)
+every entry is pinned on its bytes. :class:`kiro_crew.agent_discovery.AgentsDirMemo` holds the store and hit
 rules once, so the tool-policy read and the KAS projection cannot drift apart.
 
 The KAS tests pin the second caller: a KAS session start resolves its agent by
@@ -91,7 +91,7 @@ def test_the_revision_sees_content_and_permission_changes(tmp_path: Path) -> Non
 
 _NO_INODE_ON_WINDOWS = pytest.mark.skipif(
     os.name == "nt",
-    reason="the revision is off on Windows, and DirEntry.stat carries no inode there",
+    reason="Windows pins every entry on its bytes, so the age rules these pin do not apply",
 )
 
 
@@ -562,3 +562,173 @@ def test_kas_direct_filename_fallback_is_not_memoized(
     assert kas_agents.load_agent_spec(tmp_path, AGENT)["description"] == "stem fallback"
     assert reads == []
     assert strict_reads == [direct, direct]
+
+
+# --- every entry pinned on its bytes (Windows) ---------------------------------
+
+
+def _pin_every_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rule Windows runs under, where ``st_ctime_ns`` is creation time."""
+    monkeypatch.setattr(agent_discovery, "_PIN_EVERY_ENTRY_ON_BYTES", True)
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_WINDOW_NS", 2_000_000_000)
+
+
+def test_with_every_entry_pinned_an_old_directory_still_has_a_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_every_entry(monkeypatch)
+    spec = tmp_path / f"{AGENT}.json"
+    _write_spec(spec, {"name": AGENT})
+    _bump_mtime(spec, -3600)
+
+    revision = agent_discovery.agents_dir_revision(tmp_path)
+    assert revision is not None, "the memo is still off where ctime cannot be trusted"
+    assert len(revision[0][0][8]) == 32, "an old entry was pinned on metadata alone"
+    assert agent_discovery.agents_dir_revision(tmp_path) == revision
+
+
+def test_with_every_entry_pinned_a_same_size_rewrite_with_its_mtime_restored_is_seen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where ctime is creation time, an old entry rewritten in place with its
+    size and mtime kept moves no metadata the revision trusts; its bytes did
+    move, so the memo must serve the new answer."""
+    _pin_every_entry(monkeypatch)
+    spec = tmp_path / f"{AGENT}.json"
+    _write_spec(spec, {"name": AGENT, "tools": ["aaaa"]})
+    _bump_mtime(spec, -3600)
+    old = spec.stat()
+    memo: agent_discovery.AgentsDirMemo[list[str]] = agent_discovery.AgentsDirMemo()
+
+    def compute() -> list[str]:
+        return json.loads(spec.read_text(encoding="utf-8"))["tools"]
+
+    before = agent_discovery.agents_dir_revision(tmp_path)
+    assert memo.get(tmp_path, AGENT, compute) == ["aaaa"]
+    _write_spec(spec, {"name": AGENT, "tools": ["bbbb"]})
+    os.utime(spec, ns=(old.st_atime_ns, old.st_mtime_ns))
+    after = agent_discovery.agents_dir_revision(tmp_path)
+
+    assert before is not None and after is not None
+    # Size and mtime are as they were; the digest is what moved. (POSIX moves
+    # the ctime as well, which Windows does not.)
+    assert (after[0][0][1], after[0][0][3]) == (before[0][0][1], before[0][0][3])
+    assert after[0][0][8] != before[0][0][8]
+    assert memo.get(tmp_path, AGENT, compute) == ["bbbb"], "the memo served replaced bytes"
+
+
+def test_with_every_entry_pinned_add_remove_and_rename_move_the_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_every_entry(monkeypatch)
+    _write_spec(tmp_path / f"{AGENT}.json", {"name": AGENT})
+    seen = [agent_discovery.agents_dir_revision(tmp_path)]
+
+    _write_spec(tmp_path / "added.json", {"name": "added"})
+    seen.append(agent_discovery.agents_dir_revision(tmp_path))
+    (tmp_path / "added.json").rename(tmp_path / "renamed.json")
+    seen.append(agent_discovery.agents_dir_revision(tmp_path))
+    (tmp_path / "renamed.json").unlink()
+    seen.append(agent_discovery.agents_dir_revision(tmp_path))
+
+    assert all(revision is not None for revision in seen)
+    assert len(set(seen[:3])) == 3
+    assert seen[3][0] == seen[0][0], "removing the file did not restore the listing"
+
+
+def test_with_every_entry_pinned_a_directory_past_the_byte_budget_has_no_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_every_entry(monkeypatch)
+    for name in ("a", "b", "c"):
+        _write_spec(tmp_path / f"{name}.json", {"name": name})
+    assert agent_discovery.agents_dir_revision(tmp_path) is not None
+    # No cap on how many entries: the count budget is the age rule's alone.
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_MAX_DIGESTS", 1)
+    assert agent_discovery.agents_dir_revision(tmp_path) is not None
+
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES", 20)
+    assert agent_discovery.agents_dir_revision(tmp_path) is None
+
+
+# --- prefill ------------------------------------------------------------------
+
+
+def test_a_prefill_answers_every_other_key_from_one_walk(tmp_path: Path) -> None:
+    _write_spec(tmp_path / "a.json", {"name": "a"})
+    memo: agent_discovery.AgentsDirMemo[str] = agent_discovery.AgentsDirMemo()
+    walks: list[str] = []
+    computes: list[str] = []
+
+    def prefill() -> dict[str, str]:
+        walks.append("walk")
+        return {"a": "A", "b": "B"}
+
+    def compute_for(key: str):  # type: ignore[no-untyped-def]
+        return lambda: computes.append(key) or key.upper()
+
+    assert memo.get(tmp_path, "a", compute_for("a"), prefill=prefill) == "A"
+    assert memo.get(tmp_path, "b", compute_for("b"), prefill=prefill) == "B"
+    assert memo.get(tmp_path, "c", compute_for("c"), prefill=prefill) == "C"
+    assert memo.get(tmp_path, "c", compute_for("c"), prefill=prefill) == "C"
+    assert walks == ["walk"], "the prefill ran more than once under one revision"
+    assert computes == ["c"], "a key the prefill did not answer was not stored after its read"
+
+    _write_spec(tmp_path / "new.json", {"name": "new"})
+    assert memo.get(tmp_path, "b", compute_for("b"), prefill=prefill) == "B"
+    assert walks == ["walk", "walk"], "a new revision did not walk again"
+
+
+def test_a_prefill_read_across_an_edit_stores_nothing(tmp_path: Path) -> None:
+    spec = tmp_path / "a.json"
+    _write_spec(spec, {"name": "a"})
+    memo: agent_discovery.AgentsDirMemo[str] = agent_discovery.AgentsDirMemo()
+
+    def editing_prefill() -> dict[str, str]:
+        _write_spec(spec, {"name": "a", "description": "edited"})
+        _bump_mtime(spec, 5)
+        return {"a": "stale", "b": "stale"}
+
+    assert memo.get(tmp_path, "a", lambda: "fresh", prefill=editing_prefill) == "fresh"
+    assert "b" not in memo._answers.get(str(tmp_path), (b"", {}, False))[1]
+
+
+def test_a_prefill_stores_no_alias_and_survives_its_own_os_error(tmp_path: Path) -> None:
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+
+    alias = f"{NATIVE_SKILL_ALIAS_PREFIX}0123456789abcdef01234567"
+    _write_spec(tmp_path / "a.json", {"name": "a"})
+    memo: agent_discovery.AgentsDirMemo[str] = agent_discovery.AgentsDirMemo()
+
+    def failing_prefill() -> dict[str, str]:
+        raise OSError("walk failed")
+
+    assert memo.get(tmp_path, "a", lambda: "computed", prefill=failing_prefill) == "computed"
+
+    other: agent_discovery.AgentsDirMemo[str] = agent_discovery.AgentsDirMemo()
+    assert other.get(tmp_path, "a", lambda: "x", prefill=lambda: {"a": "A", alias: "Z"}) == "A"
+    assert set(other._answers[str(tmp_path)][1]) == {"a"}
+
+
+def test_a_prefill_past_the_key_cap_keeps_the_asked_key_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More names than the cap: the asked-for answer is kept, the set stays
+    under the cap, and a name left out is read on its own and then kept."""
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_MEMO_MAX_KEYS", 3)
+    _write_spec(tmp_path / "a.json", {"name": "a"})
+    memo: agent_discovery.AgentsDirMemo[str] = agent_discovery.AgentsDirMemo()
+    answers = {"a": "A", "b": "B", "c": "C", "d": "D"}
+    walks = 0
+
+    def prefill() -> dict[str, str]:
+        nonlocal walks
+        walks += 1
+        return answers
+
+    assert memo.get(tmp_path, "d", lambda: "x", prefill=prefill) == "D"
+    assert memo._answers[str(tmp_path)][1] == {"d": "D", "a": "A"}
+    assert memo.get(tmp_path, "d", lambda: "x", prefill=prefill) == "D"
+    assert memo.get(tmp_path, "c", lambda: "computed", prefill=prefill) == "computed"
+    assert memo.get(tmp_path, "c", lambda: "again", prefill=prefill) == "computed"
+    assert walks == 1

@@ -10,12 +10,15 @@ text or command is still refused, repeated rotations and a second agent
 declaring the same launch never fill the per-server launch cap, a rebind neither
 restores an approval revoked nor overwrites one made during the pass, and a pass
 that keeps an agent's overlay because its spec cannot be read keeps that
-agent's approved pair.
+agent's approved pair. Other agents filling one server's launch cap first
+neither refuse that server's rebind nor stop another server's rebinds from
+retiring their old expansions.
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 from mcp_launch_approval_helpers import (
@@ -34,19 +37,22 @@ from kiro_crew.mcp_gateway import rewriter
 ENFORCE_LAUNCH_APPROVAL = True
 
 
-def _approve_as_the_toggle_does(tmp_path: Path, mod, store: Path) -> None:
-    """Resolve what ``srv`` runs now and approve exactly that, as the MCP page does."""
+def _approve_as_the_toggle_does(
+    tmp_path: Path, mod, store: Path, names: tuple[str, ...] = ("srv",)
+) -> None:
+    """Resolve what *names* run now and approve exactly that, as the MCP page does."""
     probe = mod.LaunchApprovals(probe=True)
-    _rewrite(tmp_path, frozenset({"srv"}), probe)
-    launches = list(probe.captured_launches.get("SRV", {}).values())
-    assert launches, "the probe pass resolved no launch for srv"
-    mod.approve({"srv": launches}, path=store)
+    _rewrite(tmp_path, frozenset(names), probe)
+    for name in names:
+        launches = list(probe.captured_launches.get(mod.target_stem(name), {}).values())
+        assert launches, f"the probe pass resolved no launch for {name}"
+        mod.approve({name: launches}, path=store)
 
 
-def _rewrite_and_persist(tmp_path: Path, mod, store: Path):
+def _rewrite_and_persist(tmp_path: Path, mod, store: Path, names: tuple[str, ...] = ("srv",)):
     """One gateway-start pass against the stored approvals, persisted after."""
     approvals = mod.load_approvals(store)
-    target_env = _rewrite(tmp_path, frozenset({"srv"}), approvals)
+    target_env = _rewrite(tmp_path, frozenset(names), approvals)
     mod.save_pass(approvals, path=store)
     return approvals, target_env
 
@@ -255,6 +261,7 @@ def test_two_declarations_of_one_launch_never_reach_the_launch_cap(tmp_path, mon
         json.dumps(
             {
                 "name": "b",
+                "tools": ["*"],
                 "mcpServers": {
                     "srv": {
                         "command": _APPROVED_CMD,
@@ -281,6 +288,7 @@ def _second_agent_declaring_the_same_launch(tmp_path: Path) -> None:
         json.dumps(
             {
                 "name": "b",
+                "tools": ["*"],
                 "mcpServers": {
                     "srv": {
                         "command": _APPROVED_CMD,
@@ -339,3 +347,110 @@ def test_a_rebind_keeps_the_pair_of_an_agent_whose_source_could_not_be_read(tmp_
     assert (
         live_incomplete is True
     ), "LaunchApprovals exposes no live_incomplete set by a pass that kept an overlay"
+
+
+def _crew_agents(tmp_path: Path, agents: dict[str, dict]) -> None:
+    """Agents named to sort after every ``aim-NN`` one, as ``kiro-crew`` does."""
+    source = tmp_path / "agents"
+    source.mkdir(parents=True, exist_ok=True)
+    for name, servers in agents.items():
+        (source / f"{name}.json").write_text(
+            json.dumps({"name": name, "tools": ["*"], "mcpServers": servers})
+        )
+
+
+def _crowd_before(tmp_path: Path, server: str, count: int) -> None:
+    """*count* agents, read first, each declaring *server* with a launch of its own.
+
+    The shape of AIM specs that each pass their own ``--skill-paths``.
+    """
+    for index in range(count):
+        name = f"aim-{index:02d}"
+        entry = {"command": _APPROVED_CMD, "args": ["--skill-paths", f"/skills/{index}"]}
+        (tmp_path / "agents" / f"{name}.json").write_text(
+            json.dumps({"name": name, "tools": ["*"], "mcpServers": {server: entry}})
+        )
+
+
+def _wrapped(tmp_path: Path, agent: str, server: str) -> bool:
+    overlay = tmp_path / "home" / "mcp-gateway" / "agents" / f"{agent}.json"
+    entry = json.loads(overlay.read_text())["mcpServers"][server]
+    return bool(entry.get(rewriter._WRAPPER_MARKER))
+
+
+_PLACEHOLDER_ENTRY = {
+    "command": _APPROVED_CMD,
+    "args": ["-V"],
+    "env": {"TOKEN": "${KC_TEST_TOKEN}"},
+}
+
+
+def test_a_rebind_is_admitted_after_other_agents_fill_the_launch_cap(tmp_path, monkeypatch):
+    """A changed expansion of the approved launch is the approved launch, cap or not.
+
+    Agents read first fill the per-server cap with launches of their own. The
+    rebind is still wrapped and replaces its old expansion, and a second agent's
+    unchanged approved pair under the same command, also past the cap, is kept
+    as live rather than retired as unseen.
+    """
+    mod = _approval_module()
+    assert mod is not None
+    store = tmp_path / "approvals.json"
+    cap = getattr(mod, "_MAX_SERVER_LAUNCHES")
+    monkeypatch.setenv("KC_TEST_TOKEN", "v0")
+    static_entry = {"command": _APPROVED_CMD, "args": ["-V"], "env": {"LEVEL": "debug"}}
+    _crew_agents(
+        tmp_path, {"kiro-crew": {"srv": _PLACEHOLDER_ENTRY}, "other": {"srv": static_entry}}
+    )
+    _approve_as_the_toggle_does(tmp_path, mod, store)
+    _crowd_before(tmp_path, "srv", cap + 1)
+    command_hash = rewriter.hash_command(_APPROVED_CMD, ["-V"])
+    static_pair = mod.launch_pair(command_hash, mod.env_fingerprint({"LEVEL": "debug"}))
+
+    for i in range(1, 3):
+        monkeypatch.setenv("KC_TEST_TOKEN", f"v{i}")
+        approvals, target_env = _rewrite_and_persist(tmp_path, mod, store)
+
+        assert approvals.refused == {"SRV": mod.REFUSED_TOO_MANY}
+        assert _wrapped(tmp_path, "kiro-crew", "srv"), f"rebind refused after {i} changes"
+        assert _wrapped(tmp_path, "other", "srv")
+        assert not _wrapped(tmp_path, "aim-00", "srv")
+        running = {target_env[key] for key in _targets_running(target_env, _APPROVED_CMD)}
+        assert [shlex.split(spec) for spec in running] == [[_APPROVED_CMD, "-V"]]
+        rotated = mod.launch_pair(command_hash, mod.env_fingerprint({"TOKEN": f"v{i}"}))
+        assert mod.load_approvals(store).approved_pairs["SRV"] == {rotated, static_pair}
+
+
+def test_a_cap_filled_on_one_server_keeps_another_servers_rebinds_retiring(tmp_path, monkeypatch):
+    """The launch cap one server reaches is that server's alone.
+
+    ``big`` has more launches before its approved one than the cap retains,
+    while ``tok``'s ``${VAR}`` keeps changing. ``big``'s approved launch is
+    wrapped, and each ``tok`` rebind still replaces the old expansion rather
+    than piling expansions up until ``tok``'s own cap refuses it.
+    """
+    mod = _approval_module()
+    assert mod is not None
+    store = tmp_path / "approvals.json"
+    cap = getattr(mod, "_MAX_SERVER_LAUNCHES")
+    names = ("big", "tok")
+    monkeypatch.setenv("KC_TEST_TOKEN", "v0")
+    big_entry = {"command": _APPROVED_CMD, "args": []}
+    _crew_agents(tmp_path, {"kiro-crew": {"big": big_entry, "tok": _PLACEHOLDER_ENTRY}})
+    _approve_as_the_toggle_does(tmp_path, mod, store, names)
+    _crowd_before(tmp_path, "big", cap + 1)
+    big_hash = rewriter.hash_command(_APPROVED_CMD, [])
+    tok_hash = rewriter.hash_command(_APPROVED_CMD, ["-V"])
+
+    for i in range(1, 4):
+        monkeypatch.setenv("KC_TEST_TOKEN", f"v{i}")
+        approvals, _target_env = _rewrite_and_persist(tmp_path, mod, store, names)
+
+        assert approvals.refused == {"BIG": mod.REFUSED_TOO_MANY}
+        assert _wrapped(tmp_path, "kiro-crew", "big")
+        assert _wrapped(tmp_path, "kiro-crew", "tok")
+        stored = mod.load_approvals(store)
+        assert stored.admits_launch("BIG", big_hash, mod.env_fingerprint({}))
+        # Keeping a pair per change would reach the cap after that many changes.
+        rotated = mod.launch_pair(tok_hash, mod.env_fingerprint({"TOKEN": f"v{i}"}))
+        assert stored.approved_pairs["TOK"] == {rotated}, f"old expansions kept after {i} changes"

@@ -12,11 +12,16 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_capability_projection_gaps``,
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
-``_copilot_mcp_config_path``,
+``_claude_settings_written``, ``_claude_worker_builtin_tools``,
+``_confirmed_capability_session``, ``_consult_future``, ``_copilot_mcp_config_path``,
+``_crew_bridge_snapshots``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
-``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_ref_spec``,
+``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
+``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
+``_mimocode_config_mcp_servers``, ``_mimocode_denies_in_force``,
+``_mimocode_denies_unenforced``, ``_mimocode_disabled_servers``, ``_mimocode_governed_stop``,
+``_mimocode_native_mounts``,
 ``_oauth_emitted_servers``,
 ``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
 ``_opencode_native_mounts``, ``_pending_oauth_requests``,
@@ -26,7 +31,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
 ``_session_key``, ``_session_mcp_cache``, ``_session_mcp_snapshot``,
 ``_session_mcp_unhonoured``, ``_spawn_start_token``, ``_spawn_work_dir``,
-``_spec_denied_tools``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
+``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
+``_spec_write_cwd``, ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``,
 ``_stdin_stalled``, ``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
@@ -44,22 +50,25 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, process_identity
 from kiro_crew.acp import runtime_process_tree, seed_provenance
 from kiro_crew.acp._dispatch import BackgroundLaunchRecord
 from kiro_crew.acp.client_spawn_env import KIRO_CLI_BIN
 from kiro_crew.acp.client_timeouts import (
     _CANCEL_GRACE_SECS,
+    _EOF_EXIT_GRACE_SECS,
     _SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS,
 )
 from kiro_crew.acp.liveness import LivenessOracle, _consume_future_exception
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_process_tree import ChildRecord
+from kiro_crew.acp.stale_compaction import clear_stale_compaction_state
 from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
     AcpError,
     AcpSandboxInitFailed,
-    is_delegate_launch_failure_output,
+    delegate_launch_failed,
+    delegate_launch_failure_message,
     is_sandbox_init_failure_output,
     registration_throttle_line,
     sandbox_init_failure,
@@ -86,44 +95,22 @@ logger = logging.getLogger("kiro_crew.acp.client")
 _T = TypeVar("_T")
 
 
-# High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
-# drops instead of forwarding as per-line WARNINGs.  The driving case is the
-# claude-agent-acp "Unexpected case: {...thinking_tokens...}" line.  Mechanism
-# (confirmed by reading the vendored adapter, dist/acp-agent.js): the backend
-# emits a `system` message with subtype `thinking_tokens`, but the adapter's
-# `switch (message.subtype)` enumerates ~18 known subtypes (init, status,
-# compact_boundary, memory_recall, api_retry, ...) and routes anything else to
-# `default: unreachable(message)`, which does `logger.error("Unexpected case:
-# " + JSON.stringify(message))` to stderr — one line per token delta.  Measured
-# at ~10 lines/sec during active thinking (one line per 2-4 thinking tokens; the
-# payload is only estimated_tokens/_delta/uuid/session_id — no response content,
-# so dropping them loses nothing).
+# High-frequency, content-free adapter stderr lines that _drain_stderr() drops
+# instead of forwarding as per-line WARNINGs. The driving case is
+# claude-agent-acp's "Unexpected case: {...thinking_tokens...}": the adapter's
+# `switch (message.subtype)` (dist/acp-agent.js) does not list the backend's
+# `thinking_tokens` system subtype, so its `default: unreachable(message)` logs
+# one line per token delta, about 10 lines/sec while thinking. The payload is
+# only estimated_tokens/_delta/uuid/session_id, so dropping it loses nothing.
+# The real fix is upstream (add the case or bump the vendored adapter).
 #
-# This is a forward-compat gap in the adapter, NOT new behavior in a specific
-# backend build: the `thinking_tokens` event is present in both 2.1.165.357
-# and 2.1.168.358 (verified by string-matching both bundled `claude` binaries —
-# identical occurrences), so it predates the .168 update that drew attention to
-# it.  Exactly when it began appearing in our logs is unconfirmed.  The cleaner
-# long-term fix is upstream (add a `thinking_tokens` case to the adapter / bump
-# the vendored version); this filter is the version-agnostic stopgap that also
-# absorbs the next unenumerated subtype's flood.
+# Dropped rather than downgraded because gateway.log rotates at 2MB x 3
+# (cli_logging.py), so a burst would push real diagnostics out, and each
+# forwarded line costs a synchronous file write plus two redaction passes on the
+# gateway event loop. This reduces log volume; it is not a fix for any stall.
 #
-# Why drop rather than just downgrade the level:
-#   1. Log hygiene — gateway.log uses a RotatingFileHandler(maxBytes=2MB,
-#      backupCount=3) (see cli_logging.py), so a sustained burst rolls genuine
-#      diagnostics out of the retained 8MB window.
-#   2. Event-loop load — the file handler is a plain *synchronous* handler and
-#      _drain_stderr runs as a task on the gateway event loop, so each forwarded
-#      line costs a synchronous file write + two regex redaction passes on the
-#      same loop that streams responses.  Per-session the cost is small; it
-#      compounds across concurrent thinking sessions.
-# (This is a log-volume / event-loop-load reduction, NOT a fix for any
-# turn-stall or "agent not responding" symptom — no such causal link was
-# established.)
-#
-# Match on a stable substring (not the full JSON) so the filter survives field
-# changes, and keep the tuple NARROW so a genuine error line is never silently
-# swallowed.
+# Match a stable substring, not the full JSON, and keep the tuple NARROW so a
+# genuine error line is never swallowed.
 _SUPPRESSED_STDERR_MARKERS = ("thinking_tokens",)
 
 
@@ -371,14 +358,21 @@ async def _snapshot_process_tree(self: AcpClient) -> None:
 
     Merges with any early snapshot taken in _spawn().  MCP servers
     (the internal MCP server, node) may not exist until after _initialize_session().
+
+    A no-op where the walk cannot see a descendant
+    (``runtime_process_tree.walk_observes_descendants``): there is nothing to
+    record.
     """
+    if not runtime_process_tree.walk_observes_descendants():
+        return
     _loop = asyncio.get_running_loop()
     descendants = await _loop.run_in_executor(
         subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
     )
-    if not descendants:
-        # Retry once — children may not have forked yet
-        await asyncio.sleep(0.5)
+    # Retry once: children may not have forked yet.
+    if not descendants and await runtime_process_tree.wait_for_descendants(
+        runtime_process_tree.EMPTY_WALK_RETRY_DELAY
+    ):
         descendants = await _loop.run_in_executor(
             subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
         )
@@ -480,7 +474,7 @@ async def refresh_process_tree(self: AcpClient) -> None:
     )
 
 
-async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
+async def _kill_process(self: AcpClient, *, force: bool = False, exit_grace: float = 0.0) -> None:
     """Kill the subprocess and wait for it to exit.
 
     Uses process groups (killpg) for clean tree kill, then sweeps
@@ -488,6 +482,12 @@ async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
 
     Args:
         force: If True, kill immediately (used during shutdown).
+        exit_grace: Seconds to wait, once the pipes are closed, for the child
+            to exit on its own before it is killed. Closing stdin is how an ACP
+            client ends a session, and the agent tidies up on it (kiro-cli
+            removes its session lock); a SIGKILL sent at once skips that. Zero,
+            the default, kills without waiting: for a child that stopped
+            reading stdin, and for one that must not run a moment longer.
     """
     if self._process and platform_compat.IS_WINDOWS:
         self._windows_tree_cleanup_failed = True
@@ -499,6 +499,13 @@ async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
     pid = self._pid
     if pid is None:  # narrow for mypy — set at _spawn time under the process guard
         return
+    # Read while the leader is alive: the only group id a signal may use once
+    # the leader has exited, when its number is free for another process.
+    group = (
+        process_identity.isolated_group_of(pid, getattr(self, "_start_time", None))
+        if exit_grace > 0
+        else None
+    )
     # Close pipes first to unblock any pending reads/writes
     for pipe in (self._process.stdin, self._process.stdout, self._process.stderr):
         if pipe:
@@ -527,7 +534,47 @@ async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
             )
         )
 
-    if not force:
+    cancelled = False
+    if exit_grace > 0:
+
+        async def _finish_exited() -> None:
+            # The child exited on its own, so its pid is not ours to signal.
+            # What it left behind is still killed: the group first, while a
+            # recorded child in it can vouch that the group is this client's
+            # (which also reaches a member no tree walk saw), then each
+            # recorded child that sits in another group. A group that nothing
+            # vouches for is not signalled; the helper logs that itself.
+            await process_identity._finish_gone_leader(
+                process_identity.ProcessHandle(
+                    pid=pid,
+                    start_id=getattr(self, "_start_time", None),
+                    pgid=group,
+                    child_pids=merged,
+                ),
+                who="ACP stop",
+                key=f"PID {pid}",
+            )
+            await _loop.run_in_executor(
+                subprocess_executor(), runtime_process_tree._kill_escaped_children, merged
+            )
+
+        try:
+            await asyncio.wait_for(self._process.wait(), timeout=exit_grace)
+        except asyncio.TimeoutError:
+            pass  # still running: killed below, the same way as without a wait
+        except asyncio.CancelledError:
+            # A shutdown is when a cancel arrives, and nothing of the child
+            # may outlive it. The stop is finished below without waiting and
+            # with the children recorded before the wait: one whose parent
+            # exited since is in no later walk. The cancel goes on after it.
+            cancelled = True
+        if self._process.returncode is not None:
+            await _finish_exited()
+            if cancelled:
+                raise asyncio.CancelledError
+            return
+
+    if not force and not cancelled:
         try:
             # POSIX: killpg(getpgid) tears down the whole group (setsid at
             # spawn). Windows: taskkill /T /F walks the child tree instead
@@ -568,6 +615,8 @@ async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
         await asyncio.wait_for(self._process.wait(), timeout=1.0)
     except asyncio.TimeoutError:
         logger.warning("PID %s did not exit after force kill", pid)
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _reset_state(self: AcpClient) -> None:
@@ -672,6 +721,14 @@ def _reset_state(self: AcpClient) -> None:
     # lets installing or toggling a server take effect on the next session, so
     # a replacement process must not inherit this one's snapshot.
     self._session_mcp_cache = None
+    # The Connection bridges that array projected end with this process: their
+    # proxy entries and launch snapshots go now. A respawn projects fresh ones.
+    bridged = getattr(self, "_crew_bridge_snapshots", None)
+    self._crew_bridge_snapshots = []
+    if bridged:
+        from kiro_crew.acp import kas_env_launch
+
+        kas_env_launch.discard_batch([], bridged)
     self._session_mcp_snapshot = None
     self._session_agent_spec = None
     self._member_stub_allowlist = None
@@ -683,13 +740,24 @@ def _reset_state(self: AcpClient) -> None:
     # Same per-spawn freshness rule as the array above: an edited spec must be
     # what the next session's guard judges, not this one's.
     self._mcp_ref_spec = None
+    self._mcp_json_names = ()
     self._spec_denied_tools = frozenset()
+    self._spec_shell_allowlist = None
+    self._spec_write_allowlist = None
+    self._spec_write_cwd = ""
     self._spec_zero_tools = False
+    self._claude_worker_builtin_tools = None
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
     self._opencode_denies_in_force = None
     self._opencode_denies_unenforced = frozenset()
     self._opencode_native_mounts = frozenset()
+    self._mimocode_denies_in_force = None
+    self._mimocode_denies_unenforced = frozenset()
+    self._mimocode_native_mounts = frozenset()
+    self._mimocode_disabled_servers = frozenset()
+    self._mimocode_config_mcp_servers = ()
+    self._mimocode_governed_stop = None
     # Save PID state before clearing it. A root is confirmed exited only
     # when its own Process reports a reaped return code; a missing or
     # unreadable PID is not enough to reclaim its working directory.
@@ -708,6 +776,9 @@ def _reset_state(self: AcpClient) -> None:
     # replacement process, so release it with the oracle it sampled into.
     self._retire_liveness_state()
     self._session_id = None
+    # The next session is opened (or reloaded) on a new process, and which
+    # pictures its conversation carries is not known here.
+    self._forget_sent_images()
     # The launches this record holds died with the process whose harness
     # started them (a backgrounded command or Workflow runs in that
     # process's own tree). Carrying it across a respawn would grant the
@@ -722,6 +793,8 @@ def _reset_state(self: AcpClient) -> None:
     # harness transcript (restore_cost_session keeps the baseline). Zeroing
     # here re-billed the whole lifetime on the first turn after every resume.
     self._buffer.clear()
+    # The replacement process cannot send an abandoned compaction's terminal.
+    clear_stale_compaction_state(self)
     self._stderr_lines.clear()
     # A fresh process opens a fresh registration window: cleared WITH the
     # ring, so the latch and the evidence it gates always describe the same
@@ -748,8 +821,12 @@ def _reset_state(self: AcpClient) -> None:
     # A retired session's report must not be read as the next one's. This
     # view exists to be evidence, and stale evidence is worse than none:
     # the replacement process re-initializes its servers from scratch and
-    # will report again.
+    # will report again. Its reader follows the new one.
+    # ``getattr``: a client built without ``__init__`` (tests) has none to retire.
+    retired = getattr(self, "_mcp_report", None)
     self._mcp_report = McpSessionReport()
+    if retired is not None:
+        retired.hand_over(self._mcp_report)
     #: Index into ``_mcp_notifications`` below which frames belong to a PRIOR
     #: session attempt and must not reach the report. See
     #: ``_begin_session_report``.
@@ -897,7 +974,7 @@ async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed |
     """The delegate-launch error for this child's stderr, or ``None``.
 
     The ``AcpClient`` side of the classification ``AcpRuntime`` latches per
-    stderr line: the same shared :func:`is_delegate_launch_failure_output`
+    stderr line: the same shared :func:`delegate_launch_failure_message`
     signature, read off the ring buffer the way :meth:`_sandbox_init_failure`
     reads it, so the two transports cannot disagree about what a
     ``kiro-cli-chat`` launch failure is. ``None`` when nothing was retained (a
@@ -908,9 +985,10 @@ async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed |
     await self._settle_stderr()
     if not self._stderr_lines:
         return None
-    if not is_delegate_launch_failure_output("\n".join(self._stderr_lines)):
+    message = delegate_launch_failure_message("\n".join(self._stderr_lines))
+    if message is None:
         return None
-    return AcpDelegateLaunchFailed()
+    return await delegate_launch_failed(message)
 
 
 async def _registration_throttle_line(self: AcpClient) -> str | None:
@@ -987,8 +1065,20 @@ async def shutdown(self: AcpClient) -> None:
     # Running it after a failed kill is safe by construction: `_reset_state`
     # untracks only PIDs it confirms dead and deliberately RETAINS tracking
     # for survivors so the orphan sweep still reaps them.
+    #
+    # For kiro-cli the kill waits first. The child has just read EOF on stdin,
+    # which is the ordinary end of an ACP session, and kiro-cli removes its
+    # session lock on it: it is given `_EOF_EXIT_GRACE_SECS` to exit, and one
+    # still running then is killed. Every other backend is killed at once,
+    # with the plain `force=True` call: the claude idle reader wraps
+    # `_kill_process` in a function that takes only that keyword, and a gateway
+    # stop closes these sessions in batches inside one time budget, where a
+    # wait per session could leave the later ones unclosed.
     try:
-        await self._kill_process(force=True)
+        if self._is_kiro:
+            await self._kill_process(force=True, exit_grace=_EOF_EXIT_GRACE_SECS)
+        else:
+            await self._kill_process(force=True)
     finally:
         await self._discard_bound_workspace()
         # `finally` for the same reason the kill above has one: `_reset_state`

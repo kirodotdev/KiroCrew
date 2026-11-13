@@ -1520,3 +1520,133 @@ async def test_a_reentry_that_raises_after_registering_keeps_the_live_run(
         assert mgr._running_count == 1 and mgr._startup_reservations == 0
     finally:
         await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("teardown_lands", ["after_claim", "after_start_write"])
+async def test_a_parent_end_teardown_of_a_claimed_row_ends_it_unstarted(
+    quiet, monkeypatch: pytest.MonkeyPatch, teardown_lands: str
+) -> None:
+    """A parent-end teardown that finds a row CLAIMED and not started leaves it
+    to its claimer, and that claimer then ends it instead of starting it.
+
+    * ``after_claim``: the teardown runs once the claim has landed and before
+      the start write, so the claimer reads the mark before writing.
+    * ``after_start_write``: the teardown runs once the start write has moved
+      the row to ``starting`` and before the claimer resumes to register.
+
+    Either way no run registers, the reservation goes back, and the row ends
+    ``cancelled``, so no later pump pass can start it into a conversation that
+    has ended."""
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    gated_fn = (
+        mgr._admission.taskq_claim
+        if teardown_lands == "after_claim"
+        else mgr._admission.taskq_claim_start
+    )
+    landed, resume = asyncio.Event(), asyncio.Event()
+
+    async def _gated(fn, /, *args, **kwargs):
+        if fn == gated_fn:
+            result = await real_run(fn, *args, **kwargs)
+            landed.set()
+            await await_until(resume, what="the test releasing the gated write")
+            return result
+        return await real_run(fn, *args, **kwargs)
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(landed)
+            assert agent_id not in mgr._agents
+            await await_until(
+                asyncio.create_task(
+                    mgr.cancel_for_teardown(
+                        [agent_id], parent_session_key=_STOP_PARENT, verb="close"
+                    )
+                ),
+                what="the teardown, which must not wait on the gated claimer",
+            )
+            assert store.state_of(agent_id) != model.CANCELLED, "the teardown left it"
+            resume.set()
+            await await_until(dispatch)
+        await settle_store_writes(store, rounds=4)
+
+        assert agent_id not in mgr._tasks, "a torn-down claimed row never starts"
+        live = mgr._agents.get(agent_id)
+        assert live is None or live.done
+        assert mgr._running_count == 0 and mgr._startup_reservations == 0
+        assert store.state_of(agent_id) == model.CANCELLED
+    finally:
+        resume.set()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_parent_end_cancel_outage_retains_the_claim_and_the_retry_ends_it(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the claimer's parent-end cancel cannot reach the store, the claim is
+    retained rather than dropped. Dropped, the ``starting`` row would be
+    recovered and started by the next boot reconcile, which never saw the
+    teardown mark. The retained-claim retry reads the mark again and ends the
+    row ``cancelled`` without starting it."""
+    mgr, params = await _popped_row(monkeypatch)
+    store: TaskStore = mgr._taskq
+    agent_id = params["_preassigned_id"]
+    real_run = store.run
+    taskq_start = mgr._admission.taskq_claim_start
+    started, resume = asyncio.Event(), asyncio.Event()
+    outages = 0
+
+    async def _gated(fn, /, *args, **kwargs):
+        nonlocal outages
+        if fn == store.cancel and kwargs.get("reason") == "parent_end" and not outages:
+            outages += 1
+            raise TaskStoreUnavailable("store down under the parent-end cancel")
+        result = await real_run(fn, *args, **kwargs)
+        if fn == taskq_start and not started.is_set():
+            started.set()
+            await await_until(resume, what="the test releasing the gated write")
+        return result
+
+    try:
+        with (
+            patch.object(store, "run", side_effect=_gated),
+            patch.object(SubagentManager, "_run", new=_park_run),
+        ):
+            dispatch = asyncio.create_task(mgr._admission._dispatch_async_impl(params))
+            await await_until(started)
+            await await_until(
+                asyncio.create_task(
+                    mgr.cancel_for_teardown(
+                        [agent_id], parent_session_key=_STOP_PARENT, verb="close"
+                    )
+                ),
+                what="the teardown, which must not wait on the gated claimer",
+            )
+            resume.set()
+            await await_until(dispatch)
+            assert outages == 1
+            assert store.state_of(agent_id) == model.STARTING
+            assert agent_id in mgr._retained_claims
+            assert agent_id not in mgr._tasks
+
+            await _finished(mgr._drain_queue_pass(), "the retained claim retry")
+        await settle_store_writes(store, rounds=4)
+
+        assert agent_id not in mgr._tasks, "a torn-down claimed row never starts"
+        assert agent_id not in mgr._retained_claims
+        assert mgr._running_count == 0 and mgr._startup_reservations == 0
+        assert store.state_of(agent_id) == model.CANCELLED
+    finally:
+        resume.set()
+        await _finished(mgr.cancel_all(), "the manager cleanup")

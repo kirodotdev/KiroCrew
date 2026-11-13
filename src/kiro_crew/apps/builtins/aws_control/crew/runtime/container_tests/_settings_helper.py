@@ -1,9 +1,7 @@
 """A single-arg ``Settings`` factory shared by the runtime tests.
 
-This lived in ``test_backup_restore`` until the backup subsystem was extracted from the PR;
-the tests that borrowed it (backend env, secret retry, transport failure, review findings)
-are runtime tests, not backup ones, so the factory moved here rather than leaving with the
-deleted module. It is a plain helper, not a test module, so pytest does not collect it.
+Its users (backend env, secret retry, transport failure) are runtime tests. It is a
+plain helper, not a test module, so pytest does not collect it.
 """
 
 from __future__ import annotations

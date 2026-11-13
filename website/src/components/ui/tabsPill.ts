@@ -25,7 +25,7 @@
  * render scanner groups an element's direct children into maximal INLINE runs, and
  * anything whose computed `display` starts with `inline` is swallowed into its
  * parent's run as one lump of text. An `inline-flex` rail therefore reads as
- * several catalog keys glued into a single unit ("Servers" + "Sharing assessment"),
+ * several catalog keys glued into a single unit ("Per-server sharing" + "Sharing assessment"),
  * which is the `fragment/multi-unit` finding. Block-level display makes the parent
  * flush at the rail, so each tab is graded on its own.
  *

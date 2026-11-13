@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         _SlackTurn,
         _thread_agents,
         await_replay_gap,
+        closed_dashboard_owner_refused,
         current_context,
         expire_slack_options,
         get_dashboard_state,
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
         logger,
         maybe_apply_privacy_modifiers,
         maybe_route_linked_thread,
+        privacy_mode,
         redact_credentials,
         redact_exfiltration_urls,
         save_conversation_turn_off_loop,
@@ -60,6 +62,26 @@ if TYPE_CHECKING:
         sessions_include_ended,
         slack_cfg,
     )
+
+
+def _message_command_text(text: str) -> str:
+    """Expose the native command after an optional leading Slack bot mention."""
+    return re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+
+
+def _is_bang_command(cmd_text: str) -> bool:
+    """Whether the native command router claims this normalized command text."""
+    return cmd_text.startswith("!")
+
+
+def _is_control_message(text: str) -> bool:
+    """Classify controls without applying modifiers or changing sender authorization."""
+    cmd_text = _message_command_text(text)
+    for mode in (privacy_mode.MODE_TEMPORARY, privacy_mode.MODE_INCOGNITO):
+        cmd_text, had_mode = privacy_mode.strip_token(cmd_text, mode)
+        if had_mode and not cmd_text:
+            return True
+    return _is_bang_command(cmd_text)
 
 
 async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
@@ -70,6 +92,9 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     ``status`` and ``sessions`` keywords, the ``!temporary`` / ``!incognito`` modifiers,
     the ``!`` commands, the ``spawn`` / ``run`` / ``cron`` keywords, and then, below
     every one of those, the first expiry of the thread's live OPTIONS control.
+
+    A turn with ``interpret_commands`` off (an OPTIONS answer) skips the keywords, the
+    modifiers and the ``!`` commands: its model-authored label goes to the agent.
     """
     slack = turn.slack
     sessions = turn.sessions
@@ -88,6 +113,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     route_pinned = turn.route_pinned
     reply_ts = turn.reply_ts
     session_key = turn.session_key
+    interpret_commands = turn.interpret_commands
 
     # Resolve agent early so ALL persist paths (hook auto-reply, command
     # intercepts, review-mode drafts, main LLM path) can forward it.
@@ -97,11 +123,39 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # Resolved from the NAME captured when the answer was accepted, not from the
     # thread's current owner: the name survives a link change, a live slot object
     # would not tell us whether it is still the right destination. A pinned name
-    # that does not resolve falls through to normal handling rather than
-    # inventing a target.
+    # that does not resolve is never given an invented target: with an asker it
+    # is judged by that asker below, without one it is refused.
     _target_slot = None
     if route_pinned and target_slot_name and _dashboard_state:
         _target_slot = getattr(_dashboard_state, "_slots", {}).get(target_slot_name)
+
+    # Pinned to a named session (a code channel's action answer) that closed
+    # between the click and now, with no asker to judge it by: it is refused,
+    # never run as a plain thread turn in a session without the channel's
+    # project or history. An OPTIONS answer carries its asker (checked below).
+    if route_pinned and target_slot_name and _target_slot is None and not turn.asker_key:
+        try:
+            await slack.post_ephemeral(
+                channel,
+                user_id,
+                "The session that click belongs to was closed, so it did nothing. "
+                "Reopen it from your dashboard and click again.",
+            )
+        except Exception:
+            logger.debug("pinned answer: closed-session notice not posted", exc_info=True)
+        return False
+
+    # A pinned OPTIONS answer whose asker has no live slot (a closed dashboard
+    # tab) is delivered to the asker's session: check that session's agent.
+    if (
+        route_pinned
+        and _target_slot is None
+        and turn.asker_key
+        and await closed_dashboard_owner_refused(
+            text, session_key, user_id, channel, slack, reply_ts, owner=turn.asker_key
+        )
+    ):
+        return False
 
     if await maybe_route_linked_thread(
         text,
@@ -112,6 +166,11 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        user_meta=turn.user_meta,
+        # A pinned answer is delivered to its slot rather than run natively, so
+        # an action button's payload must ride along (unpinned keeps today's path).
+        turn_context=turn.action_context if route_pinned else None,
+        interpret_commands=interpret_commands,
     ):
         return False
 
@@ -146,7 +205,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
             return False
 
     # ── Status keyword: reply with stats summary ──
-    if text.strip().lower() == "status":
+    if interpret_commands and text.strip().lower() == "status":
         # Identity status via the active PlatformContext (Default == OSS no-op
         # stub returning ""; an enterprise companion returns the real SSO line).
         sso_line = await current_context().identity.status_line(prefix=" · sso")
@@ -154,7 +213,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         return False
 
     # ── Sessions keyword: list recent sessions ──
-    if _is_sessions_keyword(text):
+    if interpret_commands and _is_sessions_keyword(text):
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -191,19 +250,20 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # Strip leading bot mention from app_mention events so the ! prefix is exposed.
     # DM:       "!agent foo"                    → "!agent foo"       (no-op)
     # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
-    _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+    _cmd_text = _message_command_text(text)
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
-    text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
-        text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
-    )
-    if _only_modifier:
-        return False
+    if interpret_commands:
+        text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
+            text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
+        )
+        if _only_modifier:
+            return False
 
     # ── !compact and the owner / allowed-user ``!`` commands ──
     # The routing lives in handler_runtime/commands.py (``_route_bang_command``); a
     # message it answers (run, denied, or replied to) never reaches the model.
-    if await _route_bang_command(
+    if interpret_commands and await _route_bang_command(
         _cmd_text,
         slack,
         sessions,
@@ -222,7 +282,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # ``!temporary``/``!incognito`` modifier rewrites can't turn a modified
     # message into a bare ``sessions`` match. The transport path (which has no
     # modifier machinery) handles all four via the same helper.
-    if await maybe_handle_keyword_command(
+    if interpret_commands and await maybe_handle_keyword_command(
         text,
         slack,
         sessions,

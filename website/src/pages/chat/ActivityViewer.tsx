@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
+import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, CircleMinus, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
-import { isTerminalApprovalRefusal } from '../../api/apiError'
+import { isBenignSupersededRetry, isTerminalApprovalRefusal, noPendingApprovalError } from '../../api/apiError'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { toApiDecision } from '../../utils/approvalDecision'
+import { approvalGoneKey } from '../../types/approvalTarget'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -18,22 +20,39 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
+import { useSecondClock } from '../../hooks/useSecondClock'
 import { markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, isSpawnApprovalGone, isSpawnApprovalRetired, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
-import ErrorBoundary from '../../components/ErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
 import { slotRowByKey } from '../../store/slotIndex'
 
 // The crew log is a drill-in: six fold sections, their own i18n copy and the table
 // that draws each one, on a tab most sessions never open. Fetched on first open
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
-// for its templates tab and `DeveloperPage` for the memory graph.
-const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
+// for its templates tab and `DeveloperPanel` for the memory graph. A chunk that
+// fails to load (a stale chunk after a deploy) shows its notice in the tab, with
+// Try Again, and the rest of the dashboard stays up.
+const CrewLogTab = lazyRetry(() => import('./CrewLogPanel'), {
+  layout: 'page',
+  title: () => i18nT('pages.chat.crewLog.tab_load_failed'),
+  scope: 'crew-log',
+})
+// Remote-environment sessions only. A chunk that fails to load shows its notice
+// in the Git tab, with Try Again.
+// No hand-off: the chat composer and open files may hold unsaved drafts.
+const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
+  layout: 'page',
+  title: () => i18nT('sessionEnvironments.remoteGit.panelLoadFailed'),
+  scope: 'remote-git',
+  askAgent: false,
+})
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
@@ -169,6 +188,25 @@ function SubagentToolCalls({ a, isRunning }: { a: SubagentActivity; isRunning: b
   )
 }
 
+/**
+ * The card header's elapsed figure. Its own component so the live 1 Hz clock
+ * repaints this text, not the whole card and its streamed body.
+ *
+ * A running card whose start time was only ASSUMED has no elapsed figure to
+ * show: the agent may have been running long before the frame that minted its
+ * entry, so a number here would be wrong rather than merely imprecise. A
+ * `subagent_done` or snapshot frame supplies real timing and this resolves.
+ * Whole seconds, matching the progress-bar row, so one run reads the same
+ * figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
+ */
+function CardElapsed({ running, startedAt, assumed, finalSecs }: { running: boolean; startedAt: number; assumed?: boolean; finalSecs?: number }) {
+  const live = running && !assumed
+  const liveSecs = useSecondClock(now => Math.max(0, Math.floor((now - startedAt) / 1000)), live)
+  if (running && assumed) return <>--</>
+  const secs = running ? liveSecs : Math.round(finalSecs || 0)
+  return <>{fmtElapsed(secs * 1000, { wholeSeconds: true })}</>
+}
+
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -190,14 +228,16 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const dispatch = useAppDispatch()
   // Outcome of the last approve / reject / cancel round-trip that FAILED. The
   // Redux flags only roll back the busy state, which left a refused decision
-  // indistinguishable from one that never happened.
-  const [actionError, setActionError] = useState<string | null>(null)
-  // WHICH approval is gone, not merely that one was: the id scopes the
-  // withdrawal, so a later live approval here is never suppressed by it.
-  // Kept beside the store marker because this card renders the `a` its PROPS
-  // carry: a host whose `subagents` prop is not the live store slice (or lags
-  // it by a render) would otherwise re-offer the buttons the press just proved
-  // dead. The store marker covers every other surface.
+  // indistinguishable from one that never happened. `gone` marks the refusal
+  // that found the approval gone: status, not an error.
+  const [actionError, setActionError] = useState<{ message: string; gone: boolean } | null>(null)
+  // WHICH approval is gone, not merely that one was: keyed by the request's
+  // target (`approvalGoneKey`), so a later live request here, even one that
+  // reuses the recurring id, is never suppressed by it. Kept beside the store
+  // marker because this card renders the `a` its PROPS carry: a host whose
+  // `subagents` prop is not the live store slice (or lags it by a render)
+  // would otherwise re-offer the buttons the press just proved dead. The store
+  // marker covers every other surface.
   const [goneFor, setGoneFor] = useState<string | null>(null)
   // A failed read of the spawn inventory while this card's liveness is open.
   // Reported, not swallowed: the composer and Reload stay blocked until it
@@ -223,8 +263,19 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     e.stopPropagation()
     if (!a.approval_id) return
     setActionError(null)
+    // Bound to the request the spawn was raised for (types/approvalTarget).
+    const target = a.approval_target
+    if (!target) {
+      // Nothing live to decide, so nothing is sent: the same gone verdict a
+      // refused press records, settled by the spawn inventory.
+      setGoneFor(approvalGoneKey(a.approval_id, null))
+      setActionError({ gone: true, message: i18nT('components.approvalCard.approval_no_longer_pending') })
+      dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id, target: null }))
+      checkLiveness(a.approval_id)
+      return
+    }
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
-    api.resolveApproval(a.approval_id, action).then(() => {
+    api.decideApproval(target, action).then(() => {
       // See the matching note in ChatInput's resolveOneSpawn: the backend's
       // `approval_resolved` frame carries no slot, so the WS handler that would
       // terminate the card is skipped. An approved spawn converges on its own
@@ -236,20 +287,20 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     }).catch((e: unknown) => {
       dispatch(markSubagentApproving({ id: a.id, approving: false }))
       const gone = isTerminalApprovalRefusal(e)
-      setGoneFor(gone ? a.approval_id ?? null : null)
+      setGoneFor(gone ? approvalGoneKey(a.approval_id, target) : null)
       // The composer banner resolves this same id from the store.
       if (gone && a.approval_id) {
-        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
+        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id, target }))
         checkLiveness(a.approval_id)
       }
       const reason = e instanceof Error ? e.message : ''
-      setActionError(gone
+      setActionError({ gone, message: gone
         ? i18nT('components.approvalCard.approval_no_longer_pending')
         : reason
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
-          : i18nT('components.approvalCard.decision_failed'))
+          : i18nT('components.approvalCard.decision_failed') })
     })
-  }, [a.approval_id, a.id, slot, dispatch, checkLiveness])
+  }, [a.approval_id, a.approval_target, a.id, slot, dispatch, checkLiveness])
 
   // A refusal found through the composer banner lands here via the store, so
   // this card withdraws the same approval. The refused request reports itself
@@ -258,7 +309,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // here is superseded by that verdict, and its retry advice is now false.
   const retired = isSpawnApprovalRetired(a)
   const storeGone = isSpawnApprovalGone(a) || retired
-  const shownError = storeGone && goneFor !== a.approval_id ? null : actionError
+  const shownError = storeGone && goneFor !== approvalGoneKey(a.approval_id, a.approval_target) ? null : actionError
   // SubagentProgressBar owns the periodic re-read of a gone approval's
   // liveness, but it is unmounted while this tab is open. This card keeps that
   // retry going on the same cadence until the inventory settles the card.
@@ -270,16 +321,6 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     return () => clearInterval(t)
   }, [livenessOpen, a.approval_id, checkLiveness])
   const shownLivenessError = livenessOpen ? livenessError : null
-
-  // Live elapsed timer for running subagents
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    if (!isRunning) return
-    const tick = () => setElapsed(Math.floor((Date.now() - a.startedAt) / 1000))
-    tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [isRunning, a.startedAt])
 
   useEffect(() => {
     const el = bodyRef.current
@@ -297,17 +338,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     setActionError(null)
     // The card converges through the spawn/done stream on success; a refused
     // delete leaves it running, so say so instead of letting the press vanish.
-    api.spawnDelete(a.id).catch(() => setActionError(i18nT('pages.chat.activityViewer.cancel_failed')))
+    api.spawnDelete(a.id).catch(() => setActionError({ gone: false, message: i18nT('pages.chat.activityViewer.cancel_failed') }))
   }, [a.id])
 
-  const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
-  // A running card whose start time was only ASSUMED has no elapsed figure to
-  // show: the agent may have been running long before the frame that minted its
-  // entry, so a number here would be wrong rather than merely imprecise. A
-  // `subagent_done` or snapshot frame supplies real timing and this resolves.
-  // Whole seconds, matching the progress-bar row, so one run reads the same
-  // figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
-  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed(displayElapsed * 1000, { wholeSeconds: true })
   // What the header calls this agent. An entry recovered from an incremental
   // frame has no agent name, and showing nothing left two such cards reading as
   // the same "Running Tool" with no way to tell them apart -- the same complaint
@@ -402,10 +435,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           if (!resolvedKnown && !liveDowngrade && normalizeModelKey(display) !== 'auto') return null
           return (
             <code
-              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
+              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[10rem] inline-flex items-center align-middle${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted bg-bg-hover'}`}
               data-testid="subagent-model"
               // The downgrade meaning rides on the amber colour + the AlertCircle
-              // glyph (aria-hidden), and the chip's [direction:rtl] truncation can
+              // glyph (aria-hidden), and the id's [direction:rtl] truncation can
               // reorder how a screen reader voices the id — so mirror the tooltip
               // text into an aria-label. Otherwise AT users hear only the bare
               // (possibly truncated) model id with no requested-vs-served context,
@@ -422,15 +455,23 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
                   ? i18nT('pages.chat.activityViewer.model_label', { model: a.model })
                   : i18nT('pages.chat.activityViewer.model_effective', { model: display })}
             >
-              {liveDowngrade && <AlertCircle size={10} aria-hidden className="inline-block mr-0.5 align-middle" />}
-              {display}
+              {liveDowngrade && <AlertCircle size={10} aria-hidden className="shrink-0 mr-0.5" />}
+              {/* Left-truncate the id only: long ids share a prefix
+                  (claude-opus-…, us.anthropic.claude-…), so clipping the END hides
+                  the one part that says WHICH model. The span is rtl so its
+                  ellipsis falls on the left, and the id sits in an ltr <bdi> so its
+                  glyphs keep their order. Not `unicode-bidi: plaintext`: that
+                  re-derives the direction from the (LTR) id and puts the ellipsis
+                  back on the right. The rtl box is the span, not the chip, so the
+                  glyph stays put. */}
+              <span className="min-w-0 truncate [direction:rtl] text-left"><bdi dir="ltr">{display}</bdi></span>
             </code>
           )
         })()}
         {!isPending && !retired && <span
           data-testid="subagent-run-stats"
           className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums"
-        >{shownElapsed}</span>}
+        ><CardElapsed running={isRunning} startedAt={a.startedAt} assumed={a.startedAtAssumed} finalSecs={a.elapsed} /></span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
@@ -454,7 +495,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {/* Approval buttons for pending */}
-      {isPending && !a.approving && goneFor !== a.approval_id && !storeGone && (
+      {isPending && !a.approving && goneFor !== approvalGoneKey(a.approval_id, a.approval_target) && !storeGone && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
@@ -465,7 +506,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           Cancel on a running card. */}
       {shownError && (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={shownError} askAgent />
+          {shownError.gone
+            ? <StatusNotice tone="info" message={shownError.message} />
+            : <ErrorNotice variant="inline" message={shownError.message} askAgent />}
         </div>
       )}
       {shownLivenessError && (
@@ -515,19 +558,23 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   const isResolved = resolved || !!localDecision
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
-  // WHICH approval is gone, not merely that one was: the id scopes the
-  // withdrawal, so a later live approval here is never suppressed by it.
+  // WHICH approval is gone, not merely that one was: keyed by the request's
+  // target (`approvalGoneKey`), so a later live request here, even one that
+  // reuses the recurring id, is never suppressed by it.
   const [goneFor, setGoneFor] = useState<string | null>(null)
   const onAction = useCallback(async (action: string) => {
     setActing(true)
     setActionError(null)
     setLocalDecision(action)
     try {
-      await api.resolveApproval(entry.approval_id!, toApiDecision(action))
+      // Bound to the request the entry was raised for (types/approvalTarget);
+      // an entry that names none has nothing live to decide.
+      if (!entry.approval_target) throw noPendingApprovalError()
+      await api.decideApproval(entry.approval_target, toApiDecision(action))
     } catch (e: unknown) {
       setLocalDecision(null); setActing(false)
       const gone = isTerminalApprovalRefusal(e)
-      setGoneFor(gone ? entry.approval_id ?? null : null)
+      setGoneFor(gone ? approvalGoneKey(entry.approval_id, entry.approval_target) : null)
       const reason = e instanceof Error ? e.message : ''
       setActionError(gone
         ? i18nT('components.approvalCard.approval_no_longer_pending')
@@ -535,10 +582,10 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
           : i18nT('components.approvalCard.decision_failed'))
     }
-  }, [entry.approval_id])
+  }, [entry.approval_id, entry.approval_target])
 
   // This card mounts only for non-chat approvals (see the `isSpawnApproval`
-  // filter at the render site), which resolve through `api.resolveApproval` —
+  // filter at the render site), which resolve through a coordinator `api.decideApproval` —
   // an endpoint with no trust verb, so the only decisions this card can carry
   // out are a one-shot approve or reject. Offering trust tiers here (or
   // labelling a decision "Trusted") would overstate the grant: the next
@@ -551,27 +598,34 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   // It was the last in-tree instance of the shape #5400/#5434/#5486 each shipped
   // (#8193): a render gate is one edit away from being widened, and the mapping
   // is what decides whether a widened gate grants or denies.
+  const gone = goneFor === approvalGoneKey(entry.approval_id, entry.approval_target)
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approved')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.rejected')}</> }
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
   return (
-    <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
+    <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : gone ? 'border-border bg-card' : 'border-warn/40 bg-warn/5'}`}>
       <div className="flex items-center gap-2 px-3 py-2">
-        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-ok" /> : <Lock size={15} className="text-muted" />}</span>
-        <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || i18nT('pages.chat.activityViewer.resolved')) : i18nT('pages.chat.activityViewer.approval_needed')}</span>
+        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-ok" /> : gone ? <CircleMinus size={15} className="text-muted" /> : <Lock size={15} className="text-muted" />}</span>
+        {/* A press refused as gone leaves nothing needed: the header reads
+            "No longer pending" under a neutral icon, as the Subagents card
+            does, and the refusal sentence below says why. */}
+        <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || i18nT('pages.chat.activityViewer.resolved')) : gone ? i18nT('pages.chat.activityViewer.no_longer_pending') : i18nT('pages.chat.activityViewer.approval_needed')}</span>
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
-      {!isResolved && !acting && goneFor !== entry.approval_id && (
+      {!isResolved && !acting && !gone && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
         </div>
       )}
       {acting && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
-      {/* Approval card in the activity panel: no draft → hand-off on. */}
+      {/* Approval card in the activity panel: no draft → hand-off on. A
+          refused decide renders here; a gone one as status. */}
       {actionError && (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={actionError} askAgent />
+          {gone
+            ? <StatusNotice tone="info" message={actionError} />
+            : <ErrorNotice variant="inline" message={actionError} askAgent />}
         </div>
       )}
     </div>
@@ -1054,11 +1108,14 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onPutPinInComposer, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
+  /** Set when the session runs on a remote environment: the Git view then
+   *  shows the guest's checkout instead of the gateway's local one. */
+  remoteEnvironmentName?: string
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void
   navLinks?: ExtractedLink[]; navResolving?: boolean
-  sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onAddToChat?: (text: string) => void
+  sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onDismissSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** Issue links mentioned in this session, plus the Issues tab's own selection. */
   issues?: PullRequestLink[]; selectedIssueUrl?: string; onSelectIssue?: (url: string) => void; onReconcileIssue?: (url: string) => void
   /** Pinned messages for this session (Pins tab). Passed down rather than
@@ -1068,6 +1125,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => void
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string
@@ -1141,7 +1199,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     setBatchError(null)
     Promise.allSettled(failedRetryableIds.map(id => api.spawnRetry(id)))
       .then(results => {
-        const rejected = results.filter(r => r.status === 'rejected').length
+        // A `409 retry_superseded` means the run already has a successor, so it
+        // is not a failure to report; an all-benign batch shows no notice.
+        const rejected = results.filter(r => r.status === 'rejected' && !isBenignSupersededRetry(r.reason)).length
         if (rejected > 0) setBatchError(i18nT('pages.chat.activityViewer.retry_failed_error', { count: rejected }))
       })
       .finally(() => setRetryingFailed(false))
@@ -1171,7 +1231,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     queryKey: ['workflow-runs'],
     queryFn: () => api.workflowRuns().then(d => (Array.isArray(d?.runs) ? (d.runs as WfRunRow[]) : [])),
     enabled: open,
-    refetchInterval: 2500,
+    // Fast only on the Workflows view or while this chat has a running run;
+    // a slow heal tick otherwise, and no tick at all on a hidden tab.
+    refetchInterval: query => workflowRunsPollInterval(view ?? tab, query.state.data, slot),
+    refetchIntervalInBackground: false,
   })
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
   const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length
@@ -1254,11 +1317,17 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
               selectedUrl={selectedSourceUrl || ''}
               onSelect={onSelectSource || (() => {})}
               onReconcile={onReconcileSource}
+              onDismiss={onDismissSource}
               onAddToChat={onAddToChat || (() => {})}
             />
           ) : (
             <div className="text-muted text-[13px] pt-8 px-6 text-center">
               {i18nT('pages.chat.activityViewer.no_pull_requests_yet')}
+              {/* Says what the tab holds, so a first-time reader who expected
+                  edited files under "Changes" learns where those live. */}
+              <div className="mt-1 text-[12px] leading-snug">
+                {i18nT('pages.chat.activityViewer.changes_empty_hint')}
+              </div>
             </div>
           )}
         </div>
@@ -1267,7 +1336,12 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Git: every repository this chat works in, the project's first */}
       {effectiveTab === ('git' as string) && (
         <div className="flex-1 min-h-0 overflow-hidden">
-          <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} />
+          {remoteEnvironmentName && slot ? (
+            // A remote session's working tree is in its guest workspace.
+            <RemoteGitPanel slot={slot} name={remoteEnvironmentName} loading={<ContentSkeleton rows={6} />} />
+          ) : (
+            <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} />
+          )}
         </div>
       )}
 
@@ -1425,16 +1499,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           beside Logs and Context for the same reason they sit together: all
           three answer "what actually happened in THIS session", this one from
           the record the gateway wrote rather than from live client state. */}
-      {/* ErrorBoundary around the lazy chunk, matching CapabilitiesPage: a stale chunk
-          request after a deploy rejects, and without a local boundary that rejection
-          would replace the whole dashboard with the app-shell error screen. */}
-      {effectiveTab === 'crewlog' && (
-        <ErrorBoundary>
-          <Suspense fallback={<ContentSkeleton rows={6} />}>
-            <CrewLogTab key={slot} slot={slot} />
-          </Suspense>
-        </ErrorBoundary>
-      )}
+      {effectiveTab === 'crewlog' && <CrewLogTab key={slot} slot={slot} loading={<ContentSkeleton rows={6} />} />}
 
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}
@@ -1453,6 +1518,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             slotTitle={slotTitle}
             mode={chatMode}
             onJumpToMessage={onJumpToPin ?? (() => {})}
+            onPutInComposer={onPutPinInComposer}
             onUnpin={onUnpin ?? (() => {})}
           />
         </div>

@@ -354,6 +354,20 @@ def named_cron_caller(monkeypatch):
     return key
 
 
+@pytest.fixture
+def command_crons_run_here(monkeypatch):
+    """Let a test create a ``command`` cron on every host, native Windows included.
+
+    Native Windows refuses a new command cron at each create door
+    (``mcp_cron._command_cron_platform_refusal``). A test that creates one to check
+    something else -- field forwarding, store errors, a later mutation -- states
+    here that it is not about that refusal, so it runs the same on every shard.
+    """
+    import kiro_crew.mcp_cron as mcp_cron
+
+    monkeypatch.setattr(mcp_cron, "_command_cron_platform_refusal", lambda: None)
+
+
 #: Comfortably clear of the memory floor ``SubagentManager.spawn`` admits on at
 #: defaults (``agent.spawn_min_memory_gb``, 2 GB after a start of up to 1 GB,
 #: plus the starts still warming). A HEALTHY host, not an infinite one: the
@@ -487,3 +501,26 @@ def ample_host_resources(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(resource_status, "probe", _ample)
+
+
+@pytest.fixture
+def rss_runtimes_read_under_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every runtime one the RSS watchdog has already read under its ceiling.
+
+    The watchdog takes a runtime's footprint from its first two readings and holds
+    one whose footprint is over the ceiling. A test that hands the tick a single
+    over-ceiling reading and expects a recycle is therefore about a session that
+    GREW past the ceiling. This records that history for whichever pid the tick
+    judges and then runs the real rule; the footprint rule's own tests do not
+    request it.
+    """
+    from kiro_crew import session_cleanup
+    from kiro_crew.session_rss_rebound import RssFootprint
+
+    judge = session_cleanup.judge_rss_reading
+
+    def _judge_grown(state, key, pid, *args, **kwargs):
+        state.rss_footprints.setdefault(pid, RssFootprint(seen_at=0.0, settled=True))
+        return judge(state, key, pid, *args, **kwargs)
+
+    monkeypatch.setattr(session_cleanup, "judge_rss_reading", _judge_grown)

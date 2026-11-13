@@ -51,6 +51,11 @@ def _session_memory_store(state: DashboardState, session_key: str) -> str:
     return store_of_session(state.conversation_log, session_key)
 
 
+def lesson_store_owner_only(store: str) -> bool:
+    """Whether browser reads of *store* require the dashboard owner."""
+    return bool(store)
+
+
 async def resolve_lesson_memory_store(
     request: web.Request, state: DashboardState, operation: str
 ) -> tuple[str, web.Response | None]:
@@ -91,7 +96,7 @@ async def resolve_lesson_memory_store(
             },
             status=503,
         )
-    if store and request.get("internal_auth") is not True:
+    if lesson_store_owner_only(store) and request.get("internal_auth") is not True:
         denial = await require_owner_dashboard_request(request, operation)
         if denial is not None:
             return "", denial
@@ -168,7 +173,7 @@ async def resolve_requested_memory_store(
         return "", denial
 
     requested = request.query[MEMORY_STORE_PARAM].strip() or DEFAULT_MEMORY_STORE
-    if requested not in declared_store_names():
+    if requested not in await asyncio.to_thread(declared_store_names):
         return "", web.json_response(
             {
                 "error": f"no memory store named {requested!r} is declared",
@@ -349,7 +354,7 @@ async def _admin_store(
         raw = body[MEMORY_STORE_PARAM]
         # ``""`` is never a declared name, so a non-string lands on the 404 below.
         requested = (raw.strip() or DEFAULT_MEMORY_STORE) if isinstance(raw, str) else ""
-        if requested not in declared_store_names():
+        if requested not in await asyncio.to_thread(declared_store_names):
             return "", web.json_response(
                 {
                     "error": f"no memory store named {requested!r} is declared",

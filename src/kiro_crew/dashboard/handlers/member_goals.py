@@ -8,10 +8,13 @@ Two halves, split the way :mod:`handlers.member_self` is:
 
   - ``GET /api/members/{slug}/goals?member=`` -- the record.
   - ``PUT /api/members/{slug}/goals/long-term`` -- ``{member, long_term,
-    goal_id?, expected?}``: add a goal, or replace (an empty text: remove) the
-    goal ``goal_id``. Also the route a ``crewmate.goal`` change card applies and
-    undoes through (``change_card_catalog.HOOKED_ROUTES``); ``expected`` makes it
-    a compare-and-set so a card never overwrites a newer edit.
+    goal_id?, expected?, heartbeat_offer?}``: add a goal, or replace (an empty
+    text: remove) the goal ``goal_id``. Also the route a ``crewmate.goal`` change
+    card applies and undoes through (``change_card_catalog.HOOKED_ROUTES``);
+    ``expected`` makes it a compare-and-set so a card never overwrites a newer
+    edit, and ``heartbeat_offer`` (``accepted`` / ``declined``) stores the
+    card's Heartbeat checkbox answer with the goal. The Heartbeat itself still
+    turns on only through the schedules route below, as the card's next step.
   - ``DELETE /api/members/{slug}/goals/items/{goal_id}`` and
     ``POST .../{goal_id}/restore`` -- remove one goal, and its one Undo.
   - ``PUT /api/members/{slug}/goals/key-results`` -- ``{member, items, expected?}``:
@@ -43,6 +46,7 @@ Two halves, split the way :mod:`handlers.member_self` is:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import weakref
 from typing import Any
@@ -104,7 +108,7 @@ def _goal_refusal(exc: member_goals.GoalError) -> web.Response:
 
 
 def _unreadable() -> web.Response:
-    return _deny(500, "goals_unreadable", "this mate's goal record cannot be read")
+    return _deny(500, "goals_unreadable", "this Bot's goal record cannot be read")
 
 
 async def _scheduled_cadences(request: web.Request, slug: str) -> set[str]:
@@ -154,9 +158,9 @@ async def _owner_member(
         if member not in cfg.agents or members_mod.member_slug(member, cfg) != slug:
             raise members_mod.MemberSlugError(str(member))
     except members_mod.MemberSlugError:
-        return _deny(404, "member_not_found", "no crew member for this slug")
+        return _deny(404, "member_not_found", "no Bot for this slug")
     if write and _member_names_for_slug(cfg, slug) != [member]:
-        return _deny(409, "goals_slug_ambiguous", "several crewmates share this name")
+        return _deny(409, "goals_slug_ambiguous", "several Bots share this name")
     return slug, str(member), cfg
 
 
@@ -235,9 +239,13 @@ async def api_member_goals_long_term(request: web.Request) -> web.Response:
         return _deny(400, "invalid_expected", "expected must be the goal text shown")
     goal_id = body.get("goal_id")
     if goal_id is not None and not member_goals.is_goal_id(goal_id):
-        return _deny(400, "invalid_goal_id", "goal_id must be one of the mate's goal ids")
+        return _deny(400, "invalid_goal_id", "goal_id must be one of the Bot's goal ids")
     if goal_id is None and expected not in (None, ""):
         return _deny(400, "invalid_expected", "a new goal replaces nothing; name a goal_id")
+    # The goal card's Heartbeat checkbox, answered: stored with the goal.
+    heartbeat_offer = body.get("heartbeat_offer")
+    if heartbeat_offer is not None and heartbeat_offer not in member_goals.HEARTBEAT_OFFER_ANSWERS:
+        return _deny(400, "invalid_heartbeat_offer", "heartbeat_offer is accepted or declined")
 
     from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_RAW_RESTORE
 
@@ -254,6 +262,7 @@ async def api_member_goals_long_term(request: web.Request) -> web.Response:
             goal_id=goal_id,
             expected=expected,
             restore_from=restore_from,
+            heartbeat_offer=heartbeat_offer,
         )
         saved.append({"slug": slug, "member": member, **result})
         return result["record"]
@@ -480,10 +489,22 @@ async def api_member_goals_schedules(request: web.Request) -> web.Response:
     if isinstance(who, web.Response):
         return who
     slug, member, cfg = who
+    from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_RAW_RESTORE
+
+    # Armed only on a goal card's Undo steps: its Heartbeat-off step is done when
+    # the user already turned the Heartbeat off, and the goal Undo goes on.
+    held_is_done = isinstance(request.get(REQ_CARD_RAW_RESTORE), dict)
     async with _schedule_lock(slug):
         try:
             rec = await asyncio.to_thread(
-                member_goals.set_schedules, slug, member, changes, expected=expected
+                functools.partial(
+                    member_goals.set_schedules,
+                    slug,
+                    member,
+                    changes,
+                    expected=expected,
+                    held_is_done=held_is_done,
+                )
             )
         except member_goals.GoalError as exc:
             return _goal_refusal(exc)
@@ -529,8 +550,8 @@ async def _agent_member(
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, operation, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, has goals")
+        _audit(sk, operation, "denied", "not a Bot thread")
+        return _deny(403, "not_a_crewmate", "only a Bot, in its own chat, has goals")
     member = who[0]
 
     def _resolve() -> str | None:
@@ -549,7 +570,7 @@ async def _agent_member(
         slug = None
     if slug is None:
         _audit(sk, operation, "denied", "thread binding mismatch")
-        return _deny(403, "not_a_crewmate", "this chat is not the crewmate's own thread")
+        return _deny(403, "not_a_crewmate", "this chat is not the Bot's own thread")
     return sk, slug, member
 
 

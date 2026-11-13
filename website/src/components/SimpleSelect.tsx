@@ -66,11 +66,25 @@ export interface SimpleSelectProps {
    *  an entry undefined for a row with nothing to say. `source` picks the colour,
    *  `label` is the already-translated text.
    *
+   *  `note` is plain text rendered between the VALUE and the badge, for a caller
+   *  that needs a word of its own on a badged row: this branch renders the bare
+   *  value rather than `optionLabels`, so a label-borne word reached the native
+   *  list and the typeahead only, never the open list where the choice is made.
+   *  An entry with a `note` and no `label` renders the note alone, with no pill.
+   *
    *  Radix path only. On touch the row IS a native `<option>`, which holds text
-   *  and nothing else, so the same fact is appended as `name — label` there. The
+   *  and nothing else, so the same facts are appended as `name — label` there. The
    *  divergence is deliberate: each path gets the best form it can render. */
-  optionBadges?: ({ label: string; source: string; hint?: string } | undefined)[]
+  optionBadges?: ({ label?: string; source?: string; hint?: string; note?: string } | undefined)[]
   disabled?: boolean
+  /** Opt-in: the control is writing its own change right now. It stays focusable
+   *  and in the tab order (not native `disabled`, which drops a keyboard user to
+   *  the page), renders `aria-disabled` + `aria-busy` with the disabled look, and
+   *  ignores picks while the write runs. Default (unset) keeps today's behaviour
+   *  exactly, so no other caller changes. Distinct from `disabled`, which is
+   *  "not this control's doing" (another control is busy, or it is not ready) and
+   *  stays natively disabled; `busy` wins when both are set. */
+  busy?: boolean
   style?: React.CSSProperties
   /** Forwarded to the trigger so a caption's `<label htmlFor>` can name it
    *  (SettingsField pairs this with its label association). Optional: the
@@ -101,8 +115,16 @@ export interface SimpleSelectProps {
   'data-ui-location'?: string
 }
 
-const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
+const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, busy, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
   const isTouch = useIsTouchDevice()
+  // While busy the control refuses picks but stays focusable, so native
+  // `disabled` is dropped; the refusal is carried by the `aria-*` attributes and
+  // a guard on the change handler. The disabled LOOK and pointer-inertness are
+  // owned by the primitive (its own `busy` prop), not restyled here, and the DOM
+  // tree is identical whether or not busy is set so flipping busy never unmounts
+  // the control and drops its focus. A non-busy `disabled` stays native.
+  const nativeDisabled = disabled && !busy
+  const busyAttrs = busy ? { 'aria-disabled': true, 'aria-busy': true } : {}
   // Spread, not a `data-ui-location={...}` attribute: the find_ui generator
   // reads every such attribute as a render site and needs a literal id there.
   const marker = forwardUiLocation(uiLocationId, forwardedRef)
@@ -114,11 +136,11 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
   const selectable = (v: string) => options.includes(v) || (v === '' && emptySelectable)
   const label = (opt: string, i: number) => {
     if (opt === '') return clearLabel ?? optionLabels?.[i] ?? '—'
-    if (optionLabels?.[i] !== undefined) return optionLabels[i]
+    const base = optionLabels?.[i] ?? opt
     // A badge cannot render as text, so spell the same fact out for the paths
     // that only take a string: the native list and the collapsed trigger.
     const badge = optionBadges?.[i]
-    return badge ? `${opt} — ${badge.label}` : opt
+    return badge?.label ? `${base} — ${badge.label}` : base
   }
   const selectedIcon = optionIcons?.[options.indexOf(value)]
 
@@ -135,14 +157,17 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
         aria-describedby={ariaDescribedBy}
         title={title}
         {...marker}
-        disabled={disabled}
+        {...busyAttrs}
+        disabled={nativeDisabled}
         // `style` lands on the WRAPPER on both paths. It is layout intent (a flex
         // basis, a min-width), and on this path the `<select>` is `w-full` inside
         // the wrapper — a flex rule placed on it is simply inert.
         wrapperStyle={selectedIcon ? { flex: '1 1 0', minWidth: 0 } : style}
         className={className}
+        busy={busy}
         value={toRadix(value)}
         onChange={e => {
+          if (busy) return
           const v = e.target.value
           if (v === ACTION_SENTINEL) { action?.onSelect(); return }
           onChange(fromRadix(v))
@@ -177,12 +202,13 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
       <Select
         value={selectable(value) ? toRadix(value) : ''}
         onValueChange={v => {
+          if (busy) return
           if (v === ACTION_SENTINEL) { action?.onSelect(); return }
           onChange(fromRadix(v))
         }}
-        disabled={disabled}
+        disabled={nativeDisabled}
       >
-        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} {...marker} className={className}>
+        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} {...marker} {...busyAttrs} busy={busy} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls
@@ -207,14 +233,28 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
             return (
               <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
                 {badge ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    {opt}
+                  // `min-w-0 max-w-full` so the row can SHRINK inside a panel the
+                  // viewport clamped below the caller's floor: the note truncates and
+                  // the value and badge stay whole, rather than the row keeping its
+                  // natural width and pushing the badge out of an overflow-hidden panel.
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+                    <span className="shrink-0">{badge.note !== undefined ? opt : (optionLabels?.[i] ?? opt)}</span>
+                    {/* aria-hidden for the same reason the badge is: the option's
+                        accessible name stays the bare wire value, and the native
+                        path carries this word through `optionLabels` instead. */}
+                    {badge.note !== undefined && (
+                      <span aria-hidden="true" className="min-w-0 truncate text-[12px] text-text/80">
+                        {badge.note}
+                      </span>
+                    )}
                     {/* aria-hidden: the option's accessible name must stay the bare
                         template name — the badge text otherwise joins it and breaks
                         exact-name lookups (locators, SR "select kirocrew"). */}
-                    <span aria-hidden="true" className="contents">
-                      <SourceBadge source={badge.source} tone="neutral" title={badge.hint}>{badge.label}</SourceBadge>
-                    </span>
+                    {badge.label !== undefined && (
+                      <span aria-hidden="true" className="contents">
+                        <SourceBadge source={badge.source ?? ''} tone="neutral" title={badge.hint}>{badge.label}</SourceBadge>
+                      </span>
+                    )}
                   </span>
                 ) : icon ? (
                   <span className="flex min-w-0 items-center gap-2">

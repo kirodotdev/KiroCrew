@@ -5,9 +5,11 @@ import { api } from '../api/client'
 import { Badge, Btn, Skeleton } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { isRunPartlyBlocked } from '../utils/cronPartlyBlocked'
+import { usePagerFocus } from '../hooks/usePagerFocus'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
+import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtNumber, fmtUnit } from '../i18n/format'
 interface HistoryEntry {
   job_id: string
   job_name: string
@@ -17,6 +19,7 @@ interface HistoryEntry {
   status: 'success' | 'failure' | 'timeout' | 'cancelled'
   trigger: string
   summary?: string
+  error?: string
 }
 
 const PAGE_SIZE = 20
@@ -34,6 +37,7 @@ const fmtTime = (ts: number) => fmtDateTimeNumeric(ts)
 export default function ExecutionsView({ selectedJobId }: { selectedJobId?: string }) {
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const pager = usePagerFocus()
   const { data: jobsData, isError: jobsFailed } = useQuery({
     queryKey: ['cron-jobs'],
     queryFn: () => api.crons().then(r => r.jobs || []),
@@ -103,15 +107,28 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
               return (<Fragment key={e.run_id}>
                 <tr className={`hover:bg-bg-hover transition-colors cursor-pointer ${isDeleted ? 'opacity-50' : ''}`} onClick={() => toggleExpand(e)}>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
-                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
+                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : isRunPartlyBlocked(e) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${e.error}`}>{i18nT('pages.schedulePage.partial')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
                   </td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm">{e.job_name}{isDeleted && <span className="ml-1.5 text-muted text-[11px]">{i18nT('components.executionsView.deleted')}</span>}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm">
+                    {/* The row stays clickable for the mouse; this button is the
+                        keyboard and screen-reader way to open the run's trace. */}
+                    <button
+                      type="button"
+                      aria-expanded={isExpanded}
+                      aria-controls={traceRowId(e.run_id)}
+                      onClick={ev => { ev.stopPropagation(); toggleExpand(e) }}
+                      className="text-left rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                    >
+                      {e.job_name}
+                    </button>
+                    {isDeleted && <span className="ml-1.5 text-muted text-[11px]">{i18nT('components.executionsView.deleted')}</span>}
+                  </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtTime(e.started_at)}</td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{e.status === 'timeout' ? '…' : fmtDuration(e.duration_ms)}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtDuration(e.duration_ms)}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm"><span className="px-1.5 py-[1px] rounded text-[11px] bg-bg-elevated border border-border">{e.trigger}</span></td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted truncate max-w-[300px]">
                     <span className="flex items-center gap-1">
-                      <ChevronRight size={12} className={`shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                      <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                       {e.summary || '—'}
                     </span>
                   </td>
@@ -123,14 +140,19 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
         </table>
       </div>
       <div className="flex items-center justify-between mt-3 px-1">
-        <span className="text-[12px] text-muted">{i18nT('components.executionsView.page')} {page + 1}</span>
+        <span className="text-[12px] text-muted">{i18nT('components.executionsView.page_n', { page: fmtNumber(page + 1) })}</span>
         <div className="flex gap-2">
-          <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>{i18nT('components.executionsView.prev')}</Btn>
-          <Btn onClick={() => setPage(p => p + 1)} disabled={!hasMore}>{i18nT('components.executionsView.next')}</Btn>
+          <Btn ref={pager.prevRef} onClick={() => { setPage(p => p - 1); pager.pressedPrev() }} disabled={page === 0}>{i18nT('components.executionsView.prev')}</Btn>
+          <Btn ref={pager.nextRef} onClick={() => { setPage(p => p + 1); pager.pressedNext() }} disabled={!hasMore}>{i18nT('components.executionsView.next')}</Btn>
         </div>
       </div>
     </div>
   )
+}
+
+/** The id of a run's trace sub-row, so the row's toggle can point at it. */
+function traceRowId(runId: string): string {
+  return `executions-trace-${runId}`
 }
 
 function TraceRow({ entry }: { entry: HistoryEntry }) {
@@ -143,7 +165,7 @@ function TraceRow({ entry }: { entry: HistoryEntry }) {
   })
 
   return (
-    <tr>
+    <tr id={traceRowId(entry.run_id)}>
       <td colSpan={6} className="px-4 py-3 border-b border-border bg-bg-elevated">
         {isLoading ? <Skeleton className="h-4 w-48 rounded" /> : isError ? (
           // Read failure of a historical run; the row holds no draft, so the hand-off is on.

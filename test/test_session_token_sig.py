@@ -1,15 +1,8 @@
 """Tests for :mod:`kiro_crew.session_token_sig` — the signed token -> key mapping.
 
-The mapping file lives in ``config_dir()``, which is same-uid agent-writable, so
-the strict identity path must not trust it bare. These tests lock in the contract:
-publication writes ONE MAC-bearing file, verification accepts only a pair that
-matches the token PRESENTED (not the filename), and every tamper/degradation path
-fails closed to ``""``.
-
-The domain-separation test is the one that is easy to under-value: both this
-protocol and ``session_pid_sig`` sign a ``"<identifier>:<session_key>"`` message
-under a subkey of the same trust root, so without distinct labels a pid sidecar
-for pid ``N`` would verify as a token sidecar for a token spelled ``N``.
+``config_dir()`` is agent-writable, so verification accepts only a MAC matching the
+token presented and every tamper path fails closed to ``""``. ``session_pid_sig``
+signs the same message shape under the same root; only the domain label separates them.
 """
 
 from __future__ import annotations
@@ -43,19 +36,9 @@ def _path_for(cfg, token: str):
 def cfg(tmp_path):
     """Isolated mapping dir with a valid SEL trust-root key.
 
-    Four patches, and each one is needed because the module deliberately SHARES
-    two helpers with :mod:`kiro_crew.session_pid_sig` rather than copying them:
-
-    * ``session_token_sig.config_dir`` — where this protocol's files go;
-    * ``session_pid_sig.sel_hmac_key_path`` — read by the SHARED
-      ``_load_hmac_key``, so patching only this module's copy would leave the
-      loader resolving the real trust root;
-    * ``session_token_sig.sel_hmac_key_path`` — read by this module's own
-      trust-root-absent warning;
-    * ``session_pid_sig._sel_hmac_key_bytes`` -> ``None`` so the tests exercise
-      the FILE path in isolation; the in-memory recovery fallback depends on a
-      live ``SecurityEventLog`` singleton that other tests in the same process
-      may or may not have initialized.
+    ``_load_hmac_key`` is shared with :mod:`kiro_crew.session_pid_sig`, so both modules'
+    ``sel_hmac_key_path`` are patched. ``_sel_hmac_key_bytes`` -> ``None`` keeps the file
+    path isolated from a ``SecurityEventLog`` singleton other tests may have set up.
     """
     key_path = tmp_path / "sel_hmac.key"
     key_path.write_bytes(b"\x01" * 32)
@@ -269,11 +252,8 @@ class TestDomainSeparation:
     def test_pid_sidecar_mac_never_verifies_as_a_token_sidecar(self, cfg):
         """A pid sidecar's MAC, re-presented as a token record, must be refused.
 
-        Both protocols sign ``"<identifier>:<session_key>"`` under a subkey of the
-        SAME root, so the ONLY thing standing between them is the domain label.
-        This drives that: a pid mapping is published for pid ``P``, its MAC is
-        lifted into a token record for a token spelled ``P``, and verification
-        must refuse.
+        Both sign ``"<identifier>:<session_key>"`` under the same root; only the
+        domain label separates them.
         """
         pid_as_token = "4242"
         with (
@@ -294,9 +274,7 @@ class TestDomainSeparation:
     def test_subkey_is_the_documented_derivation(self, cfg):
         """Pin the derivation itself, so a label change is a deliberate rotation.
 
-        Without this a refactor could swap the domain label for the pid module's
-        and every other test here would still pass — they only ever compare this
-        module against itself.
+        The other tests compare this module only against itself.
         """
         root = b"\x01" * 32
         assert (
@@ -309,9 +287,7 @@ class TestRekey:
     def test_republication_always_leaves_a_consistent_pair(self, cfg):
         """Publish twice for ONE token: the reader never sees a mixed record.
 
-        This is what one file buys. With the MAC and the body in separate files a
-        reader could observe the new MAC against the old body mid-rekey and refuse
-        a live session; here every observable state is a whole record.
+        MAC and body share one file, so no reader sees a new MAC against an old body.
         """
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
         first = _path_for(cfg, TOKEN).read_text(encoding="utf-8")
@@ -328,9 +304,8 @@ class TestRekey:
     def test_two_sessions_hold_independent_mappings(self, cfg):
         """The spawn_run topology: two sessions, one runtime, one pid.
 
-        Every pid-keyed channel answers with the runtime's owner for both. The
-        token mapping is what tells them apart, and nothing about publishing one
-        may disturb the other.
+        Only the token mapping tells them apart, so publishing one must not disturb
+        the other.
         """
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
         session_token_sig.publish_session_token(OTHER_TOKEN, OTHER_KEY)
@@ -343,11 +318,8 @@ class TestRekey:
 def _refuse_only(target: Path, error: OSError):
     """A patch side effect that fails for *target* alone and passes everything else.
 
-    Blanket-patching ``Path.unlink`` would also break the trust-root read inside
-    :func:`publish_session_token`, and a publication that stopped there would take
-    the missing-key branch instead of the write branch -- the test would pass
-    without ever reaching the code it is about. ``autospec=True`` keeps ``self``,
-    which is what makes the narrowing possible.
+    A blanket patch would also break the trust-root read and take the missing-key
+    branch instead. ``autospec=True`` keeps ``self``, which makes the narrowing possible.
     """
 
     def _side_effect(self, *args, **kwargs):
@@ -361,17 +333,12 @@ def _refuse_only(target: Path, error: OSError):
 class TestFailedPublicationInvalidates:
     """A publication that does not succeed must not leave the last one standing.
 
-    The distinction that makes this security-class rather than a lost update:
-    :func:`publish_session_token` runs on every ``rekey()``, so the record a failed
-    write could not replace names the session the process served BEFORE the claim.
-    Left in place it is not stale data a reader can shrug off -- it is a valid MAC
-    over a WRONG session, and the strict resolver reads the mapping above the env
-    var precisely because the env var is the one that goes stale. So the safe state
-    after a failure is absent, never previous.
+    It runs on every ``rekey()``, so a surviving record is a valid MAC over the
+    previous session. The safe state after a failure is absent, never previous.
     """
 
     def test_failed_rekey_write_does_not_leave_the_previous_session_standing(self, cfg):
-        """The reported case: ENOSPC mid-rekey must not preserve the old identity."""
+        """ENOSPC mid-rekey must not preserve the old identity."""
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
         assert session_token_sig.verify_session_token(TOKEN) == SESSION_KEY
 
@@ -380,9 +347,7 @@ class TestFailedPublicationInvalidates:
         ):
             session_token_sig.publish_session_token(TOKEN, OTHER_KEY)
 
-        # Not OTHER_KEY -- the write failed, so that mapping was never published.
-        # The point is that it is not SESSION_KEY either: a rekeyed caller must not
-        # authenticate as the session this process served a moment ago.
+        # Neither key: OTHER_KEY was never written, and SESSION_KEY must not survive.
         assert session_token_sig.verify_session_token(TOKEN) == ""
         assert not _path_for(cfg, TOKEN).exists()
 
@@ -402,11 +367,8 @@ class TestFailedPublicationInvalidates:
     def test_a_refused_unlink_warns_and_still_returns(self, cfg, caplog):
         """The honest residual: unfixable on disk, so it is made loud instead.
 
-        A refused unlink leaves a verifiable record for the previous session.
-        Nothing in this module can undo that safely -- any in-place write to a path
-        an agent may control is its own attack surface -- so what is owed is that
-        it stops being silent (the caller's own line is debug-level) and that
-        publication still never raises into a turn.
+        An in-place overwrite of an agent-controlled path is its own attack surface,
+        so the module only warns, and publication still never raises into a turn.
         """
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
         path = _path_for(cfg, TOKEN)

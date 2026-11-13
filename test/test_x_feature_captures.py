@@ -24,7 +24,7 @@ _spec.loader.exec_module(gate)
 # The ceiling only moves down. Raising it is the change this test exists to stop.
 X_CAPTURE_CEILING = 4
 KIRO_KAS_PAIR_CEILING = 0
-X_REGISTRATION_PENDING_CEILING = 13
+X_REGISTRATION_PENDING_CEILING = 6
 
 
 def test_tree_passes() -> None:
@@ -180,6 +180,24 @@ def test_a_kas_capture_relabeled_kiro_fails(tmp_path) -> None:
     assert "holds no kiro-cli initialize" in gaps[("ACP_BACKENDS_STEER", "kiro")]
 
 
+def test_another_adapters_capture_in_copilot_fails(tmp_path) -> None:
+    """The copilot compact capture, renamed to another adapter, cited for copilot."""
+    import shutil
+
+    name = "ACP_BACKENDS_COMPACT"
+    assert "acp_frames/copilot/compact-live.jsonl" in gate.set_comments()[name]
+    src = os.path.join(gate.REPO_ROOT, gate._FIXTURES, "copilot", "compact-live")
+    dst = tmp_path / gate._FIXTURES / "copilot"
+    dst.mkdir(parents=True)
+    with open(src + ".jsonl", encoding="utf-8") as fh:
+        text = fh.read()
+    assert '"Copilot"' in text
+    (dst / "compact-live.jsonl").write_text(text.replace('"Copilot"', '"OpenCode"'))
+    shutil.copy(src + ".expected.json", dst / "compact-live.expected.json")
+    gaps = gate.check_x_captures(gate.live_sets(), gate.set_comments(), root=str(tmp_path))
+    assert "is a capture of 'OpenCode', not ['Copilot']" in gaps[(name, "copilot")]
+
+
 def test_every_cited_kiro_and_kas_capture_carries_its_own_handshake() -> None:
     comments = gate.set_comments()
     cited = {
@@ -327,6 +345,34 @@ def test_the_worker_kit_capture_shows_the_crewmate_prompt_and_limit_applied() ->
     assert tags == ["read"]  # the crewmate file excluded ``shell`` from the base
 
 
+def test_codex_worker_kit_is_proven_by_its_own_capture() -> None:
+    """The codex worker capture is cited, passes, and is off the allowlist."""
+    name, rel = "ACP_BACKENDS_MATE_WORKER_KIT", "codex/worker-kit-live.jsonl"
+    comments = gate.set_comments()
+    assert (name, "codex") not in gate.X_CAPTURE_ALLOWLIST
+    assert f"acp_frames/{rel}" in comments[name]
+    assert (name, "codex") not in gate.check_x_captures(gate.live_sets(), comments)
+    assert (name, "codex") in gate.check_x_captures(
+        gate.live_sets(), {**comments, name: comments[name].replace(rel, "codex/absent.jsonl")}
+    )
+
+
+def test_the_codex_worker_capture_shows_the_crewmates_server_and_prompt_applied() -> None:
+    """The crewmate's server, called once and answered, and the reply its prompt asked for."""
+    rel = "codex/worker-kit-live.jsonl"
+    (call,) = _updates(rel, "tool_call")
+    assert call["rawInput"] == {"server": "pixel-probe", "tool": "probe_codeword", "arguments": {}}
+    assert len(_methods(rel, "session/request_permission")) == 1
+    done = _updates(rel, "tool_call_update")[-1]
+    assert done["rawOutput"]["result"]["content"][0]["text"] == "kumquat-17"
+    reply = [
+        u["content"]["text"] for u in _updates(rel, "agent_message_chunk") if u.get("messageId")
+    ]
+    assert reply == ["kumquat-17"]
+    (title,) = [u["title"] for u in _updates(rel, "session_info_update") if u.get("title")]
+    assert title.startswith("[AGENT SYSTEM PROMPT] You are the worker.")
+
+
 def test_every_live_kas_capture_names_the_engine_version() -> None:
     """KAS is versioned apart from kiro-cli; a live capture records the engine's own."""
     import re
@@ -410,3 +456,115 @@ def test_opencode_second_prompt_joins_the_running_turn() -> None:
         for u in _updates("opencode/concurrent-prompt-steer-live.jsonl", "agent_message_chunk")
     )
     assert reply.strip() == "first-done pineapple"
+
+
+def _responses(rel: str) -> dict[int, dict]:
+    """Every id-matched response frame in a capture, keyed by request id."""
+    return {f["id"]: f for f in _frames(rel)[1:] if "id" in f and "method" not in f}
+
+
+def test_session_eviction_captures_show_the_id_dying_on_teardown() -> None:
+    """Each member: a live request answered, the teardown answered, the SAME id 'not found'."""
+    for rel, live_id, teardown_id, gone_id in (
+        ("kiro/session-evict-live.jsonl", 3, 4, 5),
+        ("kas/session-evict-live.jsonl", 3, 4, 5),
+        ("codex/session-evict-live.jsonl", 3, 4, 5),
+    ):
+        r = _responses(rel)
+        assert "error" not in r[live_id], f"{rel}: the session was not live before teardown"
+        assert "error" not in r[teardown_id], f"{rel}: the teardown verb was refused"
+        gone = r[gone_id]
+        assert "error" in gone, f"{rel}: the id still answered after teardown"
+        text = json.dumps(gone["error"])
+        assert "not found" in text.lower(), f"{rel}: {text}"
+
+
+def test_client_meta_settings_capture_shows_tool_origin_from_the_client() -> None:
+    """KAS read settings.toolSearch.neverDefer: the probe tool_call is toolOrigin client."""
+    rel = "kas/client-meta-settings-live.jsonl"
+    (call,) = _updates(rel, "tool_call")
+    assert (call.get("_meta") or {}).get("kiro", {}).get("toolOrigin") == "client"
+    assert call["title"] == "@probe/probe_codeword"
+    reply = "".join(u["content"]["text"] for u in _updates(rel, "agent_message_chunk"))
+    assert reply.strip() == "tangerine-42"
+
+
+def test_host_auth_callback_capture_shows_the_engine_asking_for_a_token() -> None:
+    """KAS spawned without --auth-method cli sends _kiro/auth/getAccessToken, no secret in it."""
+    rel = "kas/host-auth-callback-live.jsonl"
+    asks = _methods(rel, "_kiro/auth/getAccessToken")
+    assert len(asks) == 1, rel
+    assert asks[0].get("params") in ({}, None), "the token request must carry no secret"
+    assert "id" in asks[0], "it is a request the client answers, so it carries an id"
+
+
+def test_spec_servers_off_wire_captures_run_the_spec_server_off_an_empty_array() -> None:
+    """kiro --agent off disk and KAS via customAgents: the probe tool ran and returned the codeword."""
+    for rel in (
+        "kiro/spec-servers-off-wire-live.jsonl",
+        "kas/client-meta-settings-live.jsonl",
+    ):
+        (call,) = _updates(rel, "tool_call")
+        assert "probe_codeword" in json.dumps(call), rel
+        reply = "".join(u["content"]["text"] for u in _updates(rel, "agent_message_chunk"))
+        assert reply.strip() == "tangerine-42", rel
+
+
+def _info(rel: str, kind: str) -> list[dict]:
+    """The ``_meta.kiro`` blob of every KAS ``session_info_update`` of *kind*."""
+    out = []
+    for u in _updates(rel, "session_info_update"):
+        kiro = (u.get("_meta") or {}).get("kiro") or {}
+        if kiro.get("kind") == kind:
+            out.append(kiro)
+    return out
+
+
+def test_open_external_url_capture_shows_the_consent_url_request() -> None:
+    """After a resetServer sign-in, KAS asks the client to open the server's consent URL."""
+    rel = "kas/open-external-url-live.jsonl"
+    (ask,) = _methods(rel, "_kiro/openExternalUrl")
+    assert "id" in ask, "it is a request the client answers, so it carries an id"
+    assert set(ask["params"]) == {"url"}
+    url = ask["params"]["url"]
+    assert "/authorize?" in url and "response_type=code" in url
+    assert "code_challenge_method=S256" in url and "redirect_uri=" in url
+
+
+def test_auto_compaction_capture_shows_the_engine_summarizing_on_its_own() -> None:
+    """One prompt, no compact request: KAS sends started then completed, then ends the turn."""
+    rel = "kas/auto-compaction-live.jsonl"
+    frames = _frames(rel)[1:]
+    assert not any(str(f.get("method", "")).startswith("_kiro/session/compact") for f in frames)
+    kinds = [
+        ((f["params"]["update"].get("_meta") or {}).get("kiro") or {}).get("kind")
+        for f in frames
+        if (f.get("params") or {}).get("update", {}).get("sessionUpdate") == "session_info_update"
+    ]
+    started = kinds.index("summarization_started")
+    assert kinds[started + 1] == "summarization_completed"
+    (done,) = _info(rel, "summarization_completed")
+    assert done["summarization"]["status"] == "success"
+    assert frames[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_report_usage_captures_each_carry_the_turn_bill() -> None:
+    """kiro and KAS bill in credits; claude, opencode and goose in prompt-result tokens."""
+    rel = "kiro/compaction-live.jsonl"
+    metered = [
+        e
+        for f in _methods(rel, "_kiro.dev/metadata")
+        for e in (f["params"].get("meteringUsage") or [])
+    ]
+    assert metered and all(e["unit"] == "credit" and e["value"] > 0 for e in metered)
+    (done,) = _info("kas/turn-usage-live.jsonl", "turn_completion")
+    (entry,) = done["promptTurnSummaries"]
+    assert entry["unit"] == "credit" and entry["usage"] > 0
+    for rel in (
+        "claude/session.jsonl",
+        "opencode/session-live.jsonl",
+        "goose/turn-live.jsonl",
+    ):
+        results = [r.get("result") or {} for r in _responses(rel).values()]
+        ends = [r for r in results if "stopReason" in r]
+        assert ends and all(e["usage"]["outputTokens"] > 0 for e in ends), rel

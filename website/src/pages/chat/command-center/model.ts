@@ -7,6 +7,7 @@ import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
+import { crewApprovalDecidableHere, crewRootOf } from '../../../lib/crewMode'
 
 export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'needs_input' | 'stopped'
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
@@ -70,6 +71,13 @@ export interface AttentionItem {
   approval?: PendingApproval
   approvalMode?: ApprovalModeKey
   native?: boolean
+  /** A Crew Mode worker's approval, decided only on this conductor's approval
+   *  card (`crewApprovalDecidableHere`): the item is info with a link to that
+   *  card, and draws no Approve or Reject. */
+  crewCard?: string
+  /** On a conductor's own rollup item (All Dashboards): how many of its workers
+   *  wait on a tool decision. */
+  crewCount?: number
 }
 /** The command an approval asks about, as the transcript would title it. Empty
  * when the inventory carried no tool input to title. */
@@ -93,10 +101,32 @@ export interface CommandCenterSources {
   root: string | null
   slots: ChatSlot[]
   subagents: Record<string, Record<string, SubagentActivity>>
-  workflows: { run_id: string; name?: string; session_key?: string; status?: string; error?: string | null; last_log?: string }[]
+  workflows: { run_id: string; name?: string; session_key?: string; status?: string; error?: string | null; last_log?: string; ended_at?: string | null }[]
   questions: PendingQuestion[]
   approvals: PendingApproval[]
   work?: { items: WorkItem[]; omitted?: number }
+  /** Fleet scope: `{conductor: n}` for each Crew Mode root with n workers waiting
+   *  on a tool approval, counted over the FULL slot set before workers are left
+   *  out (edge review R3 Z2). The conductor then reads as needing input. */
+  crewWaiting?: Record<string, number>
+}
+
+/** Whether a session that `key` opened is mid-turn right now: a Crew Mode
+ *  worker (`crew_root`) or any session it created (`created_by`). A loop whose
+ *  dispatched workers are running is still moving, so its own idle reply's
+ *  `[OPTIONS:]` line is not a pause that waits on the person. */
+export function openedSessionRunning(slots: readonly ChatSlot[], key: string): boolean {
+  return slots.some(s => s.key !== key && !!s.running && (s.created_by === key || crewRootOf(s) === key))
+}
+
+/** `{root: n}` for each Crew Mode root with n workers whose tool approval waits. */
+export function crewWaitingApprovals(slots: readonly ChatSlot[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const s of slots) {
+    const root = crewRootOf(s)
+    if (root && s.pending_approval) out[root] = (out[root] ?? 0) + 1
+  }
+  return out
 }
 
 /** Session keys from the workflow/ledger APIs are scope-qualified; slot keys aren't. */
@@ -146,6 +176,16 @@ export function canCarryCard(slot: ChatSlot | undefined | null): boolean {
   return !isPrivateMemoryMode(slot?.memory_mode) && slot?.executor !== 'remote' && !slot?.parent
 }
 
+/** Whether `slot` owns a dashboard PACKAGE, the side panel's Overview: a ROOT
+ *  session, one no other session dispatched (`created_by`) or adopted (the
+ *  session-tree `parent`). The gateway's `is_root_session` (`card_lifecycle.py`)
+ *  reads the same two fields and refuses the read with `not_root_session`
+ *  otherwise, so this only keeps a caller from offering a page it would be
+ *  refused. An unknown slot answers false: there is nothing to offer yet. */
+export function isRootSession(slot: ChatSlot | undefined | null): boolean {
+  return !!slot && !slot.created_by && !slot.parent
+}
+
 export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] {
   if (root === null) return slots
   if (!slots.some(s => s.key === root)) return []
@@ -163,7 +203,29 @@ export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] 
   return slots.filter(s => keys.has(s.key))
 }
 
-export function buildCommandCenter(source: CommandCenterSources) {
+/** How long a failed workflow counts as blocked. Runs are kept on disk, so
+ *  without a window a failure from weeks ago would hold the tile forever; past
+ *  it the run rests as stopped, and the run history still lists it. */
+export const FAILED_WORKFLOW_BLOCKED_MS = 24 * 60 * 60 * 1000
+
+function failedWorkflowState(endedAt: string | null | undefined, now: number): RunState {
+  const ended = endedAt ? Date.parse(endedAt) : NaN
+  // An unknown end time (an older gateway) keeps today's behaviour: blocked.
+  return Number.isFinite(ended) && now - ended > FAILED_WORKFLOW_BLOCKED_MS ? 'stopped' : 'blocked'
+}
+
+/** The choices an idle session's newest reply offers, or none when it is not
+ *  waiting on them: the session is running or interrupted, or a queued prompt
+ *  may already be the answer. A label starting with `/` is dropped, since sent
+ *  bare it would be parsed as a slash command. The one definition of the rule;
+ *  the Command Center and the sidebar's needs-me card both read it. */
+export function replyOptions(s: Pick<ChatSlot, 'has_options' | 'options' | 'running' | 'interrupted' | 'queue_depth'>): string[] {
+  const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
+  if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0) return []
+  return labels
+}
+
+export function buildCommandCenter(source: CommandCenterSources, now = Date.now()) {
   const slots = scopedSlots(source.slots, source.root)
   const keys = new Set(slots.map(s => s.key))
   const attention: AttentionItem[] = []
@@ -183,10 +245,8 @@ export function buildCommandCenter(source: CommandCenterSources) {
   // queued prompt may already be the answer: it writes no transcript row until
   // it runs, so `has_options` stays true and the ask must not be offered twice.
   for (const s of slots) {
-    // A model-authored label sent bare would be parsed as a slash command.
-    const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
-    if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0
-      || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
+    const labels = replyOptions(s)
+    if (!labels.length || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
     addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${labels.join('\u0000')}`, slot: s.key, kind: 'question',
       question: { slot: s.key, followUp: true, questions: [{ question: '', options: labels.map(label => ({ label })) }] } })
   }
@@ -225,11 +285,27 @@ export function buildCommandCenter(source: CommandCenterSources) {
       addAttention({ id: `session-input:${s.key}`, slot: s.key, kind: 'open_session' })
     }
   }
+  // The one rule: a Crew Mode worker's approval is decided on its conductor's
+  // card, so here it is info that links there (edge review R3 G4).
+  const surface = source.root === null ? 'session_dashboards' : 'conductor_side_panel'
+  const rowByKey = new Map(slots.map(s => [s.key, s]))
+  for (let i = 0; i < attention.length; i++) {
+    const item = attention[i]
+    const row = rowByKey.get(item.slot)
+    if (item.kind === 'approval' && crewRootOf(row) && !crewApprovalDecidableHere(row, surface)) {
+      attention[i] = { ...item, crewCard: crewRootOf(row), native: undefined }
+    }
+  }
+  const crewWaiting = source.crewWaiting || {}
+  for (const s of slots) {
+    const count = crewWaiting[s.key] ?? 0
+    if (count > 0) addAttention({ id: `crew-approval:${s.key}`, slot: s.key, kind: 'approval', crewCard: s.key, crewCount: count })
+  }
   // A turn can be idle while delegated work is active, or while a queued
   // message waits to run; those slot flags keep the session running.
   const nodes: RunNode[] = slots.map((s, index) => ({
     id: `session:${s.key}`, kind: 'session', ref: s.key, slot: s.key, title: s.title && s.title !== s.key ? s.title : '', ordinal: index + 1,
-    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running || s.subagents_running || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
+    state: s.needs_input || s.pending_approval || (crewWaiting[s.key] ?? 0) > 0 ? 'needs_input' : s.running || s.subagents_running || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
     detail: s.todo?.current || undefined,
   }))
   const agentIds = new Set<string>()
@@ -248,7 +324,7 @@ export function buildCommandCenter(source: CommandCenterSources) {
     // A paused workflow is resumable, so its label is "waiting" rather than
     // stopped; planning is active work even before execution starts.
     nodes.push({ id: `workflow:${w.run_id}`, kind: 'workflow', ref: w.run_id, slot, title: w.name && w.name !== w.run_id ? w.name : '', ordinal: nodes.length + 1,
-      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? 'blocked' : w.status === 'cancelled' ? 'stopped'
+      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? failedWorkflowState(w.ended_at, now) : w.status === 'cancelled' ? 'stopped'
         : w.status === 'paused' || w.status === 'pausing' ? 'waiting'
           : w.status === 'running' || w.status === 'planning' || w.status === 'planned' ? 'running' : 'idle',
       detail: w.last_log, error: w.error || undefined })

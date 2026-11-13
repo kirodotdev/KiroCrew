@@ -8,6 +8,7 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import { Glass } from '../../components/Glass'
 import type { AutomationRecord } from '../../monitoring/automation'
 import CrewmateRowBody from './CrewmateRowBody'
+import CrewmateStarButton from './CrewmateStarButton'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { fmtList } from '../../i18n/format'
 import { cn } from '../../lib/utils'
@@ -46,17 +47,19 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
  * always the chip's accessible name); open, it is a searchable list of every
  * crewmate, the current one marked, and a "New crewmate" footer that opens the same create dialog the
  * old column's "+" did (one write path, one more front door). A second footer
+ * action, "Show the full roster", brings the roster column back beside the
+ * thread: this list holds crewmates only, and the column is where the team
+ * headers, the filters and the sort live — on desktop,
+ * with the thread's back control hidden, nothing else reaches them. The star
+ * is on both: each row here draws the column's own `CrewmateStarButton`
+ * through the same `toggleStar` (issue #30935). While the
+ * column is showing the same action reads "Hide the roster".
+ *
  * Under the chip the page draws `CrewmateUnreadColumn` (below): one small pill
  * per crewmate with an UNREAD message who is not the open one (issue #19045).
  * The word "Crewmates" and the roster count the chip used to carry said what
  * the page is and how big the crew is — neither is what a reader comes to this
  * corner for, which is "who said something I have not read".
- *
- * action, "Show the full roster", brings the roster column back beside the
- * thread: this list holds crewmates only, and the column is where the team
- * headers, the star, the filters and the sort live — on desktop,
- * with the thread's back control hidden, nothing else reaches them. While the
- * column is showing the same action reads "Hide the roster".
  *
  * Switching here REPLACES the open crewmate the same way a roster row click did:
  * the parent owns the URL, so this component only reports the pick.
@@ -86,6 +89,8 @@ export default function CrewmateSwitcher({
   onPick,
   onCreate,
   onShowRoster,
+  onToggleStar,
+  starPending,
   signals = rowOnlySignals,
   automationOf,
   openRequest = 0,
@@ -106,6 +111,11 @@ export default function CrewmateSwitcher({
    *  only ever shows; the column's own close lifts the pin. Omitted, the
    *  footer action is not drawn. */
   onShowRoster?: () => void
+  /** Stars or unstars a row: the roster's own `toggleStar`, so a star pressed
+   *  here is the column's star. Omitted, the rows draw no star. */
+  onToggleStar?: (m: MemberRosterRow) => void
+  /** Names with a star write in flight (the roster's `starPending`). */
+  starPending?: ReadonlySet<string>
   /** The page's per-row live facts — the same resolver its roster filters
    *  read, so the dot here can never disagree with the filter that counts it.
    *  Omitted, a row shows only its own `running`. */
@@ -265,8 +275,8 @@ export default function CrewmateSwitcher({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={t('pages.membersPage.find_crewmate')}
-            aria-label={t('pages.membersPage.find_crewmate')}
+            placeholder={t('pages.membersPage.search_members')}
+            aria-label={t('pages.membersPage.search_members')}
             className="flex-1 min-w-0 bg-transparent outline-hidden text-[13px] text-text placeholder:text-muted"
             data-testid="crewmate-switcher-search"
             autoFocus
@@ -282,8 +292,10 @@ export default function CrewmateSwitcher({
               const on = m.name === activeName
               const s = signals(m)
               return (
+                // The star is the row button's SIBLING (a button cannot hold a
+                // button), placed over the row's right padding, as on the roster.
+                <div key={m.name} className="group/row relative">
                 <button
-                  key={m.name}
                   type="button"
                   role="option"
                   aria-selected={on}
@@ -294,6 +306,7 @@ export default function CrewmateSwitcher({
                   }}
                   className={cn(
                     'flex items-center gap-2.5 w-full px-2.5 py-2 rounded-xl text-left transition-colors cursor-pointer',
+                    onToggleStar && 'pr-8',
                     on ? 'bg-accent-subtle' : 'hover:bg-bg-hover',
                   )}
                   data-testid="crewmate-switcher-row"
@@ -315,6 +328,15 @@ export default function CrewmateSwitcher({
                   {/* No check mark: the open crewmate is already the row with
                       `aria-selected` and the accent-subtle fill. */}
                 </button>
+                {onToggleStar && (
+                  <CrewmateStarButton
+                    m={m}
+                    onToggle={onToggleStar}
+                    pending={starPending?.has(m.name) ?? false}
+                    testId={`crewmate-switcher-star-${m.slug}`}
+                  />
+                )}
+                </div>
               )
             })
           )}

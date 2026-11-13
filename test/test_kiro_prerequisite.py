@@ -122,10 +122,13 @@ class TestKiroPrerequisiteHelpers:
         file's SIZE at lockdown time — zero means no payload byte existed yet.
         """
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring(target):
-            sizes.append(os.stat(target).st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(os.stat(target).st_size)
             return real_restrict(target)
 
         monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
@@ -853,9 +856,10 @@ class TestKiroPrerequisiteHelpers:
 
         def run(*extra: str) -> str:
             done = subprocess.run(  # noqa: S603 - fixed argv, test-local
-                [sys.executable, "-I", "-c", code, *extra, real_python, "-c", probe],
+                [sys.executable, "-X", "utf8", "-I", "-c", code, *extra, real_python, "-c", probe],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=60,
                 start_new_session=True,
             )
@@ -879,6 +883,8 @@ class TestKiroPrerequisiteHelpers:
         done = subprocess.run(  # noqa: S603 - fixed argv, test-local
             [
                 sys.executable,
+                "-X",
+                "utf8",
                 "-I",
                 "-c",
                 code,
@@ -888,6 +894,7 @@ class TestKiroPrerequisiteHelpers:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
             start_new_session=True,
         )

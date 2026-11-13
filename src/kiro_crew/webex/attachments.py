@@ -16,7 +16,9 @@ Dependency direction is ``webex -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import mimetypes
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.attachments import (
@@ -31,6 +33,23 @@ if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient, WebexInbound
 
 logger = logging.getLogger(__name__)
+
+
+async def _extension(name: str, mimetype: str) -> str:
+    """The extension a temp file for *name* should carry, without its dot.
+
+    The name's own extension when it has one, else the one the mimetype implies,
+    else ``""`` (the ingest then falls back to ``.bin``). Passing the whole name
+    would make ``voice.ogg`` a ``.voiceogg`` file, which the transcription backend
+    and the agent's tools do not recognise. The mimetype lookup runs in a worker
+    thread: its first call reads the system MIME files.
+    """
+    if "." in name:
+        return name.rsplit(".", 1)[-1]
+    base = mimetype.partition(";")[0].strip()
+    if not base:
+        return ""
+    return (await asyncio.to_thread(mimetypes.guess_extension, base) or "").lstrip(".")
 
 
 async def to_attachments(client: "WebexClient", urls: tuple[str, ...]) -> list[Attachment]:
@@ -55,7 +74,7 @@ async def to_attachments(client: "WebexClient", urls: tuple[str, ...]) -> list[A
                 mimetype=mimetype,
                 size=size,
                 url=url,
-                suffix_hint=safe_suffix(name or mimetype),
+                suffix_hint=safe_suffix(await _extension(name, mimetype)),
             )
         )
     return out

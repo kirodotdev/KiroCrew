@@ -17,6 +17,7 @@ mocked -- so what is filtered is exactly the file a side turn writes.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -51,6 +52,15 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _names() -> set[str]:
     return {a.name for a in agent_discovery.list_agents()}
+
+
+def _configure_default_agent(name: str) -> None:
+    """Write ``agent.default_agent`` into this test's own data home config."""
+    from kiro_crew.config import config_path
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"agent": {"default_agent": name}}), encoding="utf-8")
 
 
 class TestThePredicate:
@@ -185,6 +195,43 @@ class TestTheModeRefusalExplanation:
         assert cause == "its ~/.kiro/agents/ops.json is likely missing."
         assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
 
+    def test_a_missing_configured_default_names_the_setting_not_setup(self, registry: Path) -> None:
+        """Every plain session starts from ``agent.default_agent``. Setup writes only
+        Kiro Crew's own specs and never edits the setting, so telling the user to run
+        it leaves every plain session refused; the remedy is the setting."""
+        _configure_default_agent("default")
+        cause, remedy = srs.unavailable_mode_explanation("default")
+        shown = srs._home_relative(registry / "default.json")
+        assert cause == (
+            f"agent.default_agent names 'default', which has no spec at {shown}, "
+            "and setup writes only Kiro Crew's own agents."
+        )
+        assert remedy == (
+            "Run `kirocrew config set agent.default_agent kirocrew`, or pick another "
+            "default in the chat agent picker, then start a new session."
+        )
+        assert "kirocrew setup" not in cause + remedy
+
+    def test_a_missing_managed_default_keeps_the_setup_remedy(self, registry: Path) -> None:
+        """``kirocrew.json`` is a spec setup does write, so setup stays the answer."""
+        _configure_default_agent("kirocrew")
+        cause, remedy = srs.unavailable_mode_explanation("kirocrew")
+        assert cause == "its ~/.kiro/agents/kirocrew.json is likely missing."
+        assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+
+    def test_an_agent_other_than_the_configured_default_keeps_its_answer(
+        self, registry: Path
+    ) -> None:
+        _configure_default_agent("default")
+        _, remedy = srs.unavailable_mode_explanation("ops")
+        assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+        (registry / "default.json").write_text(json.dumps({"name": "default"}), encoding="utf-8")
+        # A default whose file IS present was refused by kiro-cli's parser: the
+        # setting is not what is wrong, so it gets the parse check.
+        cause, remedy = srs.unavailable_mode_explanation("default")
+        assert "agent.default_agent" not in cause + remedy
+        assert "kiro-cli agent validate" in remedy
+
     def test_a_published_spec_is_explained_and_names_its_base(self, registry: Path) -> None:
         cause, remedy = srs.unavailable_mode_explanation("scout--readonly")
         assert "kirocrew setup --agent-only" not in cause + remedy
@@ -221,8 +268,73 @@ class TestTheModeRefusalExplanation:
             json.dumps({"name": "mine--readonly", "description": "mine"}), encoding="utf-8"
         )
         ordinary = "Run `kirocrew setup --agent-only` to materialize the agent config."
-        assert srs.unavailable_mode_explanation("mine--readonly")[1] == ordinary
+        cause, remedy = srs.unavailable_mode_explanation("mine--readonly")
+        # Present, so it gets the present-file answer, not the read-only one.
+        assert "derives from" not in cause
+        assert "kiro-cli agent validate" in remedy
         assert srs.unavailable_mode_explanation("ghost--readonly")[1] == ordinary
+
+    def test_a_present_file_kiro_cli_did_not_list_points_at_validate(self, registry: Path) -> None:
+        """A file that exists was found and refused (or written after kiro-cli
+        started), so "likely missing" sends the user hunting for nothing."""
+        (registry / "ops.json").write_text(json.dumps({"name": "ops"}), encoding="utf-8")
+        cause, remedy = srs.unavailable_mode_explanation("ops")
+        shown = srs._home_relative(registry / "ops.json")
+        assert "likely missing" not in cause
+        assert cause.startswith(f"its {shown} is present, but kiro-cli did not")
+        assert (
+            f"`kiro-cli agent validate --path {srs._shell_quoted(registry / 'ops.json')}`" in remedy
+        )
+        assert "kirocrew setup" not in remedy
+
+    def test_the_shown_path_is_the_probed_file(self, registry: Path, monkeypatch) -> None:
+        """``KIRO_HOME`` moves the agents directory; the answer names that file."""
+        (registry / "ops.json").write_text(json.dumps({"name": "ops"}), encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: registry.parent))
+        cause, remedy = srs.unavailable_mode_explanation("ops")
+        assert f"its ~/{registry.name}/ops.json is present" in cause
+        assert "~/.kiro/agents/ops.json" not in cause + remedy
+
+    def test_a_path_with_a_space_stays_one_shell_argument(self) -> None:
+        import shlex
+
+        quoted = srs._shell_quoted(Path("/opt/Kiro Home/agents/ops.json"))
+        if os.name == "nt":
+            assert quoted.startswith('"') and quoted.endswith('"')
+        else:
+            assert shlex.split(quoted) == ["/opt/Kiro Home/agents/ops.json"]
+
+    def test_a_path_outside_home_is_shown_absolute(self) -> None:
+        outside = Path("/opt/kiro/agents/ops.json")
+        assert srs._home_relative(outside) == str(outside)
+
+    def test_a_key_and_its_alias_together_are_named(self, registry: Path) -> None:
+        """Python's json reads both keys; kiro-cli's strict parser sees one field
+        twice and drops the agent. The answer names both keys and the fix."""
+        (registry / "Devops-Engineer.json").write_text(
+            json.dumps(
+                {"name": "Devops-Engineer", "includeMcpJson": True, "useLegacyMcpJson": True}
+            ),
+            encoding="utf-8",
+        )
+        cause, remedy = srs.unavailable_mode_explanation("Devops-Engineer")
+        assert "'includeMcpJson' and 'useLegacyMcpJson'" in cause
+        assert "duplicate field" in cause
+        assert remedy.startswith("Remove 'useLegacyMcpJson' and keep 'includeMcpJson'")
+
+    def test_one_of_the_two_keys_alone_is_not_flagged(self, registry: Path) -> None:
+        (registry / "ops.json").write_text(
+            json.dumps({"name": "ops", "useLegacyMcpJson": True}), encoding="utf-8"
+        )
+        cause, _ = srs.unavailable_mode_explanation("ops")
+        assert "duplicate field" not in cause
+
+    def test_a_name_that_is_not_one_path_component_keeps_the_missing_answer(
+        self, registry: Path
+    ) -> None:
+        (registry / "ops.json").write_text(json.dumps({"name": "ops"}), encoding="utf-8")
+        cause, _ = srs.unavailable_mode_explanation("../agents/ops")
+        assert cause.endswith("is likely missing.")
 
     def test_the_name_inverse_matches_both_derived_shapes(self) -> None:
         assert srs.readonly_base_name(srs.readonly_agent_name("scout")) == "scout"

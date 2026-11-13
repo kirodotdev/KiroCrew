@@ -10,8 +10,7 @@ import { IMAGE_EXTS, LANG_BY_EXT } from './constants'
 import { extOf, basename, formatBytes, formatTime, isSensitivePath } from './utils'
 import { copyToClipboard } from '../../utils/clipboard'
 import { highlightLanguageForExtension } from '../../utils/highlightLanguages'
-import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile } from '../../components/FilePathMenu'
-import { useBranding } from '../../hooks/useBranding'
+import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile, useCanReveal } from '../../components/FilePathMenu'
 import type { FileMeta } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -48,12 +47,13 @@ function renderViewerBody({ ext, fileMeta, content, openFile }: { ext: string; f
 export default function FileViewer({ filePath, fileMeta, content, loading, error, onReload, onDownload }: FileViewerProps) {
   const isMobile = useIsMobile()
   // Before the early returns: a hook cannot sit behind a conditional.
-  // directLocal gates the Open/Reveal pair — they shell out on the gateway, so a
-  // remote/tunneled browser sees Download only (matching the shared FilePathMenu
-  // and MarkdownPanel's overflow). revealLabel is the shared platform-aware wording.
-  const { directLocal } = useBranding()
-  // Open uses the shared gate (directLocal + non-Windows); the viewer only shows
-  // files, so no kind is passed. Reveal keeps the laxer directLocal-only gate.
+  // The shared reveal gate covers the Open/Reveal pair — they shell out on the
+  // gateway, so a remote/tunneled browser, or one whose gateway host cannot
+  // open a file manager, sees Download only (matching the shared FilePathMenu and
+  // MarkdownPanel's overflow). revealLabel is the shared platform-aware wording.
+  const canReveal = useCanReveal()
+  // Open uses the shared gate (the reveal gate + non-Windows); the viewer only
+  // shows files, so no kind is passed. Reveal works on Windows, so it does not.
   const canOpen = useCanOpenFile()
   const revealLabel = useRevealLabel()
   // A failed open/reveal from the ⋯ menu renders under the viewer bar;
@@ -101,18 +101,19 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
               <button className="mc-fe-iconbtn" title={i18nT('apps.fileExplorer.fileViewer.more_options')} aria-label={i18nT('apps.fileExplorer.fileViewer.more_options')}><MoreHorizontal size={12} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[190px]">
-              {/* Open uses the shared canOpen gate (directLocal + non-Windows);
-                  Reveal uses directLocal alone. A remote session gets Download
-                  only, so it never sees a "reveal" that would open Finder on a
-                  host it is not looking at. Failures funnel through the shared
-                  i18n path. */}
+              {/* Open uses the shared canOpen gate (canReveal + non-Windows);
+                  Reveal uses canReveal alone. A remote session, or a gateway
+                  host that cannot open one, gets Download only, so it never sees a
+                  "reveal" that would open Finder on a host it is not looking at
+                  or could only copy the path. Failures funnel through the
+                  shared i18n path. */}
               {canOpen && (
                 <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'open', reveal) }}>
                   <ExternalLink size={13} className="shrink-0 text-muted" />
                   <span>{i18nT('components.markdownPanel.open_with_default_app')}</span>
                 </DropdownMenuItem>
               )}
-              {directLocal && (
+              {canReveal && (
                 <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'reveal', reveal) }}>
                   <FolderOpen size={13} className="shrink-0 text-muted" />
                   <span>{revealLabel}</span>

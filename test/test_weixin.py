@@ -192,6 +192,41 @@ def test_render_chunks_splits_oversized_content_within_the_limit():
     assert all(len(c) <= WEIXIN_CHUNK_LIMIT for c in out)
 
 
+def _fence_lines(chunk: str) -> int:
+    return sum(line.startswith("```") for line in chunk.split("\n"))
+
+
+def test_render_chunks_reopens_a_code_block_cut_across_chunks():
+    # Each chunk is its own bubble: one that opens a fence must close it, and the
+    # next must reopen it with the same info string, or its code renders as prose.
+    code = "\n".join(f"value_{i} = compute({i})  # step {i}" for i in range(300))
+    text = f"intro\n\n```python\n{code}\n```\n\nouttro"
+    out = render_chunks(text)
+    assert len(out) > 1
+    assert all(_fence_lines(c) % 2 == 0 for c in out)
+    assert all(len(c) <= WEIXIN_CHUNK_LIMIT for c in out)
+    assert out[1].startswith("```python\n")
+
+
+def test_render_chunks_never_cuts_a_line_mid_way():
+    code = "\n".join(f"value_{i} = compute({i})  # step {i}" for i in range(300))
+    text = f"```python\n{code}\n```"
+    source_lines = set(text.split("\n"))
+    for chunk in render_chunks(text):
+        assert all(line in source_lines for line in chunk.split("\n"))
+
+
+def test_render_chunks_holds_the_limit_when_a_fence_line_admits_no_clean_cut():
+    # A line no cut can split cleanly is placed whole with its fence scaffolding
+    # on top; iLink's limit is the channel's own, so it still binds every chunk.
+    limit = 200
+    text = "```" + "a" * 40 + "\n" + "\n".join(["`" * (limit - 5)] * 3) + "\n```"
+    out = render_chunks(text, limit)
+    assert all(len(c) <= limit for c in out)
+    # Nothing is dropped to meet the limit: every source backtick still arrives.
+    assert "".join(out).count("`") >= text.count("`")
+
+
 def test_render_chunks_hard_splits_a_single_oversized_block():
     out = render_chunks("y" * (WEIXIN_CHUNK_LIMIT * 2 + 10))
     assert len(out) == 3
@@ -560,6 +595,46 @@ def test_poll_loop_backs_off_on_ret_keyed_session_expiry(tmp_path, monkeypatch):
     t._running = True
     asyncio.run(t._poll_loop())
     assert sleeps == [600]  # the long session-expiry pause, not a spin
+
+
+def test_an_expired_session_flips_the_badge_off_once_and_back_on_after_login(tmp_path, monkeypatch):
+    """Inbound is dead while iLink answers -14, so the badge must not say connected.
+
+    It flips off once for the whole streak, not on every 10-minute retry, and
+    back on with the first poll that answers without an error. A client-side
+    timeout is no answer, so it leaves the badge off.
+    """
+    t, client, _ = _make(tmp_path)
+    states: list[tuple[bool, str]] = []
+    polls: list[int] = []
+    t.on_state_change = lambda connected, error: (
+        states.append((connected, error)),
+        polls.append(len(polls_done)),
+    )
+    polls_done: list[int] = []
+    replies = [{"ret": -14}, {"ret": -14}, {"ret": 0, "msgs": [], "_timed_out": True}, {"msgs": []}]
+
+    async def fake_sleep(_d):
+        return None
+
+    async def poll(_buf):
+        polls_done.append(1)
+        if not replies:
+            t._running = False
+            return {"msgs": []}
+        return replies.pop(0)
+
+    client.get_updates = poll  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "kiro_crew.weixin.transport.asyncio.sleep", fake_sleep
+    )  # flake-ok: skips the 600s backoff
+    t._running = True
+    asyncio.run(t._poll_forever())
+    assert [c for c, _ in states] == [False, True]
+    assert "session expired" in states[0][1]
+    assert states[1] == (True, "")
+    # Off on the first -14; back on only with the fourth poll, not the timeout.
+    assert polls == [1, 4]
 
 
 def test_poll_loop_backs_off_on_ret_keyed_rate_limit(tmp_path, monkeypatch):

@@ -23,9 +23,17 @@ Provenance: the arm is EXTERNAL -- no ``initiator_slot_key``. The bind route
 knows which session called it, not which turn: a cron injection, an app-driven
 turn or a sub-agent sharing the slot sends the same ``X-Session-Key`` as the
 session's own turn, and only the session-directive consumer can tell them apart.
-So a crew/member conductor's slot refuses this arm as it refuses any outside
-arm; the refusal is logged and the ``unpatrolled`` flag carries the signal.
-The armed message is fixed text authored here, not agent input.
+So a crew conductor's slot refuses this arm as it refuses any outside arm; the
+refusal is logged and the ``unpatrolled`` flag carries the signal.
+
+A crewmate's (``member``) thread is the one exception, and only for this arm:
+when the dispatch route ATTESTS its caller (:func:`attested_caller_slot`: the
+transport vouches for the session key and the session's execution record is a
+member's) and the slot is that caller's own thread, the authorizer admits this
+fixed patrol and nothing else (``autonudge_authz.admits_member_default_patrol``).
+A turn sharing the thread can still make the dispatch call, so the arm carries
+no agent input: the message, the watch and the bounds are fixed text and numbers
+authored here.
 """
 
 from __future__ import annotations
@@ -35,23 +43,99 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Inside the conductor's 300..900 s band; with the two bounds below it passes
-#: the goal-conductor skill's ``patrol_budget.py check`` (pinned by a test).
-PATROL_INTERVAL_SECS = 600
-PATROL_MAX_CYCLES = 300
-PATROL_MAX_RUNTIME_SECS = 86400
+#: The one interval of every work-ledger patrol: this default patrol, and a loop the
+#: conductor arms itself (``monitor_start`` forces it for ``watch="work-ledger"``).
+#: No cycle cap: the patrol runs until the conductor stops it after its final report,
+#: or a person stops it. Its one bound is the runaway backstop
+#: :func:`patrol_max_runtime_secs` (``rfc-permanent-patrol.md``).
+PATROL_INTERVAL_SECS = 300
+PATROL_MAX_CYCLES = 0
+
+
+def patrol_max_runtime_secs() -> int:
+    """The patrol's runtime: the operator's ``monitoring.max_runtime_secs`` ceiling.
+
+    Read at arm time and at the member-thread admission check alike, so both agree
+    whatever ceiling the operator configured (7 days as shipped).
+    """
+    from kiro_crew.monitoring.limits import runtime_ceiling_secs
+
+    return runtime_ceiling_secs()
+
 
 PATROL_WATCH = "work-ledger"
 
+#: The ``caller`` this module arms under, and the only one a member slot admits
+#: as an outside arm.
+PATROL_CALLER = "conductor-patrol"
+
 PATROL_MESSAGE = (
     "Conductor patrol (armed by the gateway when you dispatched work and had no "
-    "active loop). Run work_ledger_read with compact=true. For each item with status "
-    "done, read its bar with a full work_ledger_read, pipe the done-only "
-    "accept_batch into the goal-conductor skill's accept_eval.py, and record the "
-    "answer with work_ledger_record action=verdict. Answer question and blocked "
-    "items with session_send. Ignore progress. Tune this loop with "
-    "monitor_update; call autonudge_stop when every item is terminal or the user "
-    "says stop."
+    "active loop). Run work_ledger_read with compact=true, unless this wake names "
+    "an item whose status is done. For done items call the accept_eval tool with no "
+    "arguments: it reads each done item's bar from your ledger and returns the "
+    "worker's report beside each verdict. Settle a pass with "
+    "one write, work_ledger_record action=close state=accepted verdict=pass; "
+    "record any other answer with "
+    "work_ledger_record action=verdict. A done whose report says it "
+    "finished a step and whose own acceptance is a later step is not a failed "
+    "attempt: do not count it in fails or reject it; send it the next step with "
+    "session_send. "
+    "Answer question and blocked "
+    "items with session_send. Ignore progress. This loop has no cycle cap; its one "
+    "bound is the 7-day runaway backstop. When every item is terminal or the user "
+    "says stop, first send "
+    "the user one final report (what landed, what is left, links); then, in a "
+    "later step, call autonudge_stop."
+)
+
+#: Every text the gateway has armed a default patrol with. A persisted loop keeps
+#: the text it was armed with, so the fire-time check accepts each one; the old
+#: text names the evaluator script, which still runs (by shell) for its reader.
+SHIPPED_PATROL_MESSAGES: frozenset[str] = frozenset(
+    {
+        PATROL_MESSAGE,
+        "Conductor patrol (armed by the gateway when you dispatched work and had no "
+        "active loop). Run work_ledger_read with compact=true. For each item with status "
+        "done, read its bar with a full work_ledger_read, pass the done-only "
+        "accept_batch to the accept_eval tool, and record the "
+        "answer with work_ledger_record action=verdict. A done whose report says it "
+        "finished a step and whose own acceptance is a later step is not a failed "
+        "attempt: do not count it in fails or reject it; send it the next step with "
+        "session_send. "
+        "Answer question and blocked "
+        "items with session_send. Ignore progress. This loop has no cycle cap; its one "
+        "bound is the 7-day runaway backstop. When every item is terminal or the user "
+        "says stop, first send "
+        "the user one final report (what landed, what is left, links); then, in a "
+        "later step, call autonudge_stop.",
+        "Conductor patrol (armed by the gateway when you dispatched work and had no "
+        "active loop). Run work_ledger_read with compact=true. For each item with status "
+        "done, read its bar with a full work_ledger_read, pass the done-only "
+        "accept_batch to the accept_eval tool, and record the "
+        "answer with work_ledger_record action=verdict. Answer question and blocked "
+        "items with session_send. Ignore progress. This loop has no cycle cap; its one "
+        "bound is the 7-day runaway backstop. When every item is terminal or the user "
+        "says stop, first send "
+        "the user one final report (what landed, what is left, links); then, in a "
+        "later step, call autonudge_stop.",
+        "Conductor patrol (armed by the gateway when you dispatched work and had no "
+        "active loop). Run work_ledger_read with compact=true. For each item with status "
+        "done, read its bar with a full work_ledger_read, pass the done-only "
+        "accept_batch to the accept_eval tool, and record the "
+        "answer with work_ledger_record action=verdict. Answer question and blocked "
+        "items with session_send. Ignore progress. Tune this loop with "
+        "monitor_update; call autonudge_stop when every item is terminal or the user "
+        "says stop.",
+        "Conductor patrol (armed by the gateway when you dispatched work and had no "
+        "active loop). Run work_ledger_read with compact=true. For each item with status "
+        "done, read its bar with a full work_ledger_read, pipe the done-only "
+        "accept_batch into the goal-conductor skill's accept_eval.py, and record the "
+        "answer with work_ledger_record action=verdict. Answer question and blocked "
+        "items with session_send. Ignore progress. Tune this loop with "
+        "monitor_update; call autonudge_stop when every item is terminal or the user "
+        "says stop.",
+    }
 )
 
 #: Rides the bind reply whenever no ``work-ledger`` watch is active after the
@@ -116,6 +200,62 @@ def nudge_slot_for(state: Any, conductor_key: str) -> str | None:
     except Exception:  # noqa: BLE001 - a slot-table read must not fail the caller
         logger.debug("slot lookup failed for %s", key, exc_info=True)
         return None
+
+
+def is_fixed_patrol_payload(loop: Any) -> bool:
+    """Whether a stored *loop* still carries exactly the fixed default patrol.
+
+    The fire-time guard reads this before a default-patrol grant admits a wake on
+    a crewmate's thread: the loop store is agent-writable, so the grant covers the
+    fixed text and watch it was given for, not whatever the row holds later. Every
+    field a wake's text or subject is built from must be the fixed one.
+    """
+    monitor = getattr(loop, "monitor", None)
+    return (
+        getattr(loop, "default_patrol", False) is True
+        # Gated, as armed: an ungated row would hand delivery to the structured
+        # monitor controller, whose envelope carries text this grant never covered.
+        and getattr(loop, "gate", False) is True
+        and getattr(loop, "message", None) in SHIPPED_PATROL_MESSAGES
+        and not getattr(loop, "banner", "")
+        and not getattr(loop, "judge", None)
+        and monitor is not None
+        and getattr(monitor, "kind", None) == PATROL_WATCH
+        and not getattr(monitor, "wake_instructions", "")
+    )
+
+
+async def attested_caller_slot(request: Any, state: Any) -> str:
+    """The binding key of the member thread this dispatch request comes from, or "".
+
+    Answers non-blank only when both hold:
+
+    * the transport attests the request's ``X-Session-Key`` (the Unix-socket peer
+      check or the signed per-session token, ``member_memory_auth.session_key_is_attested``),
+      read through ``member_request_scope`` -- the header alone is never enough;
+    * that session's execution record names a member (``selection_kind == "member"``).
+
+    The answer is derived from the attested session alone, not from the ledger the
+    route wrote to. ``admits_member_default_patrol`` then compares it with the
+    patrol's target slot, so the patrol lands only on the caller's own thread.
+    Never raises: any failure is "".
+    """
+    try:
+        from kiro_crew import session_ledger
+        from kiro_crew.dashboard.handlers._shared import member_request_scope
+
+        scope = await member_request_scope(request)
+        execution = scope.execution
+        if not scope.verified or not scope.session or execution is None:
+            return ""
+        if getattr(execution, "selection_kind", "") != "member":
+            return ""
+        # Derived from the ATTESTED session alone, never from *conductor_key*, so the
+        # authorizer's own-thread check compares two independent values.
+        return nudge_slot_for(state, session_ledger.ledger_key(scope.session)) or ""
+    except Exception:  # noqa: BLE001 - an unattested caller is simply not admitted
+        logger.debug("patrol caller attestation failed", exc_info=True)
+        return ""
 
 
 def _stopped_row_is_replaceable(loop: Any) -> bool:
@@ -206,6 +346,7 @@ async def ensure_patrol(
     *,
     has_ledger: bool = True,
     source: str = "work-ledger-bind",
+    attested_caller: str = "",
 ) -> tuple[str, str]:
     """Leave the conductor's slot with a work-ledger patrol, or say why not.
 
@@ -223,6 +364,10 @@ async def ensure_patrol(
     A caller with no work ledger (*has_ledger* False, which the caller reads
     through the store's own route seam) gets nothing armed (``no-ledger``): the
     watch would read nothing and fire on its timer for a day.
+
+    *attested_caller* is what :func:`attested_caller_slot` answered for the
+    dispatch request, or "". It lets a crewmate's own thread take this patrol;
+    any other slot ignores it.
 
     Never raises: every failure is logged and answered as an outcome, because
     the dispatch that called this has already committed.
@@ -266,12 +411,12 @@ async def ensure_patrol(
             message=PATROL_MESSAGE,
             idle_secs=PATROL_INTERVAL_SECS,
             max_cycles=PATROL_MAX_CYCLES,
-            max_runtime_secs=PATROL_MAX_RUNTIME_SECS,
+            max_runtime_secs=patrol_max_runtime_secs(),
             watch=PATROL_WATCH,
             gate=True,
             # The audit tag: which dispatch route armed this patrol.
             source=source,
-            caller="conductor-patrol",
+            caller=PATROL_CALLER,
             # Create-only: a loop that appeared since the read above wins, and
             # nothing is ever stacked beside it. Stopped-row displacement only for
             # the system-stopped row above.
@@ -280,6 +425,9 @@ async def ensure_patrol(
             # The tag that lets the conductor's own ``monitor_start`` replace this
             # loop instead of meeting a 409 (``NudgeLoop.default_patrol``).
             default_patrol=True,
+            # Admits this arm on the caller's OWN member thread only; "" (any
+            # caller the route could not attest) admits nothing extra.
+            attested_caller_slot_key=attested_caller,
             creation_surface=(
                 MonitorCreationSurface.CHANNEL
                 if is_channel_key(slot)

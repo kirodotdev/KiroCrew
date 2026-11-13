@@ -42,8 +42,8 @@ class TestMarkConsolidatedAtomic:
 
     def test_missing_file_is_noop(self, tmp_path: Path) -> None:
         log = ConversationLog(base_dir=tmp_path)
-        # No file for this key — must not raise.
         log.mark_consolidated("nope", 0)
+        assert list(tmp_path.glob("*.jsonl")) == []
 
 
 class TestMarkConsolidatedOffloaded:

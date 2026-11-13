@@ -277,8 +277,12 @@ class TestWrapArgvContract:
         pins that, which is why it is pinned here: the platform default is a
         default, not an override.
         """
+        from kiro_crew.config.superseded_defaults import record_adoptions
         from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
 
+        # A stored false on Windows is adopted once as the stale pre-0.6.0 default;
+        # mark that one-shot done so this false reads as the operator's lockdown.
+        record_adoptions({"agent.sandbox_allow_unsandboxed_exec": False})
         _write_config(
             fresh_windows_home,
             {"agent": {"sandbox": "auto", "sandbox_allow_unsandboxed_exec": False}},

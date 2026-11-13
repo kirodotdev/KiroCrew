@@ -8,7 +8,7 @@ anyio==4.15.1
 certifi==2026.10.19
 click==8.5.0
 fastapi==0.142.2
-filelock==4.0.8
+filelock==4.2.1
 fsspec==2026.9.0
 h11==0.16.0
 hf-xet==1.6.0

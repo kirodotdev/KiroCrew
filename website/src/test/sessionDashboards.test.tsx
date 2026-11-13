@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import { createTestStore, renderWithProviders } from './helpers'
 import SessionDashboardsPage from '../pages/chat/command-center/SessionDashboardsPage'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../hooks/useSandboxDoc', () => ({
   useSandboxDoc: (html: string | null) => ({ url: html ? '/sandbox/card' : null, pending: false, failed: false, retry: vi.fn() }),
@@ -37,7 +38,7 @@ describe('all session dashboards', () => {
 
   it('surfaces exact-session inputs first with saved summaries and no automatic writes', async () => {
     const answer = vi.spyOn(api, 'answerQuestion').mockResolvedValue({})
-    const approve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({})
+    const approve = vi.spyOn(api, 'decideApproval').mockResolvedValue({})
     const generate = vi.spyOn(api, 'generateSessionSummary')
     renderWithProviders(<SessionDashboardsPage />, { store: store() })
     await screen.findByText('Summary for slot-1')
@@ -59,7 +60,7 @@ describe('all session dashboards', () => {
     expect(approve).not.toHaveBeenCalled()
     expect(generate).not.toHaveBeenCalled()
     fireEvent.click(within(inbox).getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
+    await waitFor(() => expect(approve).toHaveBeenCalledWith({ origin: 'coordinator', id: 'approval-2', slot: 'slot-2', instance: 'inst-2' }, 'approve'))
   })
 
   it('keeps cards in place on live activity and re-sorts on a filter change', async () => {
@@ -191,6 +192,32 @@ describe('all session dashboards', () => {
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeInTheDocument()
     // The three sessions with no card are still said to exist, with their number.
     expect(screen.getByText('3 sessions without a status card are not shown.')).toBeVisible()
+  })
+
+  it('lists no Crew Mode worker: no session card and no attention card (edge review R2 F4)', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const fleet = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'root', title: 'Root session', messages: 2, running: false, crew_mode_root: true },
+      { key: 'worker', title: 'Worker session', messages: 2, running: false, created_by: 'root', crew_root: 'root', pending_approval: true,
+        pending_approval_info: { origin: 'native', request_id: 'rid', request_mid: 'mid', tool: 'Shell', tool_input: 'ls', tool_kind: 'execute' } },
+    ] } })
+    renderWithProviders(<SessionDashboardsPage />, { store: fleet })
+    await screen.findByText('Summary for root')
+    await waitFor(() => expect(visualCards()).toHaveLength(1))
+    expect(visualCards().map(card => card.getAttribute('data-slot'))).toEqual(['root'])
+    const inbox = screen.getByRole('region', { name: 'Needs you' })
+    expect(within(inbox).queryByText('Worker session')).toBeNull()
+    // R3 Z2: the conductor carries its worker's wait, as info that links to the
+    // approval card; there is still no worker card and no decision button here.
+    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeInTheDocument()
+    const notice = within(inbox).getByTestId('crew-approval-notice')
+    expect(notice).toHaveTextContent('Crew members waiting for a tool decision: 1')
+    expect(notice).toHaveTextContent('Decide it on the approval card in Root session.')
+    expect(within(notice).getByRole('link', { name: /Open the approval card/ })).toHaveAttribute('href', '/chat?sid=root')
+    expect(within(inbox).queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(within(visualCards()[0]).getByText('Needs you')).toBeInTheDocument()
   })
 
   it('says the open sessions have no card rather than that there are no sessions', async () => {
@@ -325,3 +352,6 @@ describe('all session dashboards', () => {
   })
 
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

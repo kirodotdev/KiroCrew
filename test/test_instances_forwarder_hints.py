@@ -7,18 +7,37 @@ import os
 import pytest
 from instances_helpers import _FakeTunnel
 
+from kiro_crew.testing.ids import unallocatable_pids
+
 
 class TestForwarderPidHints:
     """The registry pid hint lifecycle: recorded on connect, moved by recovery,
     cleared by disconnect. Fake tunnels; no real processes or ports."""
 
     @pytest.fixture(autouse=True)
-    # flake-ok: pre-existing autouse port-free stub on the shared monkeypatch, moved verbatim; no test here calls undo()
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class-local autouse stub, moved verbatim; de-flake pass tracked
-    def _free_ports(self, monkeypatch):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
+    def _free_ports(self):
+        """Every port probe reads free, so no test binds a real loopback port.
 
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        A write to the ``ssh_tunnel_manager`` facade reaches the lifecycle and ports
+        copies (``kiro_crew._facade_mirror``), so the two patches cover every probe.
+        They run in a private context, leaving the shared ``monkeypatch`` alone.
+        """
+        import kiro_crew.instances.port_allocator as pa
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        import kiro_crew.instances.ssh_tunnel_manager_lifecycle as lifecycle
+
+        def always_free(port, host="127.0.0.1"):
+            return True
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(stm, "_is_port_free", always_free)
+            mp.setattr(pa, "_is_port_free", lambda port: True)
+            # connect() probes through the lifecycle module's copy. If the facade
+            # stopped mirroring, every connect test would bind a real port again.
+            assert (
+                lifecycle._is_port_free is always_free
+            ), "the facade patch did not reach connect()"
+            yield
 
     def _mgr(self, tmp_path, *, factory=_FakeTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -37,7 +56,6 @@ class TestForwarderPidHints:
         ):
             return "SECRET_TOK"
 
-        # flake-ok: pre-existing literal base port feeds the real allocator's bind probe, which skips a busy port; moved verbatim
         return reg, SshTunnelManager(
             reg, base_port=54200, mint_token=ok_mint, tunnel_factory=factory
         )
@@ -135,17 +153,19 @@ class TestForwarderPidHints:
         it, or the replacement leaks unrecorded at the next hard-kill."""
         from kiro_crew import platform_compat as pc
 
+        # A pid no OS can allocate, so it is dead by construction and never a
+        # live process whose start time would make the identity non-empty.
+        dead_pid = unallocatable_pids(1)[0]
+
         def factory(*a, **k):
             t = _FakeTunnel(*a, **k)
-            # flake-ok: pre-existing literal stand-in pid for a dead child, never signalled; moved verbatim, tracked for a de-flake pass
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a fake child, never signalled; moved verbatim
-            t.pid = 54321  # dead pid: start-time identity records as ""
+            t.pid = dead_pid  # dead pid: start-time identity records as ""
             return t
 
         reg, mgr = self._mgr(tmp_path, factory=factory)
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
         await mgr.connect("cd-1")
-        assert reg.get("cd-1").forwarder_pid == 54321
+        assert reg.get("cd-1").forwarder_pid == dead_pid
         assert reg.get("cd-1").forwarder_start == ""
         mgr._tunnels["cd-1"].pid = os.getpid()  # the rebuilt child's pid
         await mgr._mark_recovered("cd-1", mgr._tunnels["cd-1"], mgr._tunnel_epoch["cd-1"])
@@ -161,12 +181,8 @@ class TestForwarderPidHints:
     async def test_mark_recovered_persists_the_rebuilt_port(self, tmp_path, monkeypatch):
         """A rebuild landing on a different local port records THAT port.
 
-        ``_recover`` rebuilds on the LIVE tunnel's port, so the port a recovery
-        settles on can differ from the one ``connect`` assigned. Leaving the
-        registry's ``local_port`` behind points every consumer that reads it
-        (the pane URL, ``diagnose``'s fallback) at a port with no listener, and
-        desyncs ``forwarder_sig`` — a MAC over the port — so the orphan reclaim
-        refuses the very child this write exists to record.
+        A stale ``local_port`` points the pane URL at no listener and desyncs
+        ``forwarder_sig`` (a MAC over the port), so the reclaim would refuse the child.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
@@ -209,13 +225,8 @@ class TestForwarderPidHints:
     async def test_both_identity_writes_carry_the_same_fields(self, tmp_path, monkeypatch):
         """``connect`` and ``_mark_recovered`` write ONE record, from one helper.
 
-        Both sites persist the same identity fields, and a field present in one
-        write but absent from the other breaks the record: an identity without
-        the ``local_port`` that ``forwarder_sig`` signs over fails its own
-        verification, so the reclaim refuses the very child the write exists to
-        record. Every other test here checks recorded VALUES, which a missing
-        field can slip past; comparing the recorded KEY SETS is what fails when
-        the two writes disagree.
+        A field missing from one write (e.g. the ``local_port`` ``forwarder_sig``
+        signs) fails verification. Value checks can miss that; KEY SETS cannot.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc

@@ -46,6 +46,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -69,6 +70,7 @@ async def reset(
             refuse_only_on_active_turn=refuse_only_on_active_turn,
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
+            stop_shared_children=stop_shared_children,
             scope=opened,
         )
 
@@ -141,6 +143,11 @@ async def flag_identity_stamp_mismatches(self: SessionManager, live: str) -> lis
     return await self._lifecycle_boundary().flag_identity_stamp_mismatches(live)
 
 
+def holds_kiro_process_of_unknown_account(self: SessionManager, live: str) -> bool:
+    """Whether a claimable Kiro-backed process's stamp proves neither *live* nor another account."""
+    return self._lifecycle_boundary().holds_kiro_process_of_unknown_account(live)
+
+
 async def _retire_kiro_subagent_runtimes(self: SessionManager, *, live: str = "") -> bool:
     """Retire idle companion runtimes that use Kiro's identity store.
 
@@ -201,20 +208,34 @@ async def discard_conversation(
     replay: bool = True,
     skip_if_busy: bool = False,
     refuse_only_on_active_turn: bool = False,
+    refuse_if: Callable[[], bool] | None = None,
+    teardown_reason: str = "",
 ) -> bool:
     """Drop native conversation state while retaining channel linkage.
 
     Returns whether a session was actually torn down; False means
-    ``skip_if_busy`` refused because a turn was in flight. See
+    ``skip_if_busy`` refused because a turn was in flight, or ``refuse_if``
+    answered true. See
     :meth:`SessionLifecycleService.discard_conversation` for the guard's
-    atomicity contract.
+    atomicity contract and ``teardown_reason``.
     """
     return await self._lifecycle_boundary().discard_conversation(
         key,
         replay=replay,
         skip_if_busy=skip_if_busy,
         refuse_only_on_active_turn=refuse_only_on_active_turn,
+        refuse_if=refuse_if,
+        teardown_reason=teardown_reason,
     )
+
+
+async def swap_conversation(self: SessionManager, key: str) -> str:
+    """Start a fresh native conversation for *key* on its live process.
+
+    Keeps the key's sub-agent runs; answers ``"swapped"``, ``"busy"`` or
+    ``"unavailable"``. See :meth:`SessionLifecycleService.swap_conversation`.
+    """
+    return await self._lifecycle_boundary().swap_conversation(key)
 
 
 async def drain_active_turns(self: SessionManager, timeout: float | None = None) -> int:
@@ -235,6 +256,11 @@ def absorb_orphaned_release(self: SessionManager, key: str) -> bool:
 def adopt_turn(self: SessionManager, key: str) -> None:
     """The calling task now holds *key*'s live permit; forget any orphan record."""
     self._lifecycle_boundary().adopt_turn(key)
+
+
+def retire_turn_permit(self: SessionManager, key: str, session: _Session) -> None:
+    """Record a just-popped session's permit holder and wake its parked claimants."""
+    self._lifecycle_boundary().retire_turn_permit(key, session)
 
 
 # ── Cancel ──
@@ -312,6 +338,11 @@ def note_stop(self: SessionManager, key: str) -> bool:
 def open_replay_gap(self: SessionManager, key: str) -> None:
     """Keep Stops recordable for *key* across a reset-then-replay window."""
     self._lifecycle_boundary().open_replay_gap(key)
+
+
+def has_open_replay_gap(self: SessionManager, key: str) -> bool:
+    """Whether *key* is in a reset-to-reacquire window (session popped)."""
+    return self._lifecycle_boundary().has_open_replay_gap(key)
 
 
 def close_replay_gap(self: SessionManager, key: str) -> None:

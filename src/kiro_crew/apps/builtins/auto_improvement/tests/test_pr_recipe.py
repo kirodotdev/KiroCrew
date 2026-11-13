@@ -547,7 +547,9 @@ class TestEveryPushPathScansContent:
         # must neutralize the external helper with ``--no-ext-diff``) or reads objects
         # directly (and so must not render a diff to scan).
         for rel, renders_diff in (
-            ("profiles/github_repo/pr_recipe.py", True),
+            # The recipes' push path lives in the shared base (both providers inherit
+            # it), so the pin follows the implementation there.
+            ("profiles/pr_recipe_base.py", True),
             ("spine/driver.py", False),
             ("backend/commit.py", True),
         ):
@@ -688,6 +690,7 @@ class TestEveryPushPathScansContent:
                 ["git", "-C", str(tmp_path), *args],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
                 cwd=str(tmp_path),
             )
@@ -939,7 +942,8 @@ class TestAFailedDiffIsNeverVacuouslyClean:
 
         root = Path(__file__).resolve().parent.parent
         for rel, marker in (
-            ("profiles/github_repo/pr_recipe.py", "proc.returncode != 0"),
+            # Shared base: both provider recipes inherit this one scan implementation.
+            ("profiles/pr_recipe_base.py", "proc.returncode != 0"),
             ("backend/commit.py", "scanned.returncode == 0"),
         ):
             src = (root / rel).read_text(encoding="utf-8")
@@ -974,6 +978,7 @@ class TestAFailedDiffIsNeverVacuouslyClean:
             ["git", "-C", str(tmp_path), "diff", "no-such-branch..HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(tmp_path),
         )
         assert proc.returncode != 0
@@ -1015,6 +1020,7 @@ class TestCloneCannotReachTheRemoteAtAll:
             ["git", "-C", str(work), "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         ).stdout.strip()
         assert "DISABLED" in fetch.upper(), "the FETCH url is a live push target"
@@ -1023,19 +1029,25 @@ class TestCloneCannotReachTheRemoteAtAll:
             ["git", "-C", str(work), "push", "origin", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         )
         by_url = subprocess.run(
             ["git", "-C", str(work), "push", fetch, "HEAD:refs/heads/probe"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         )
         assert by_name.returncode != 0
         assert by_url.returncode != 0
         # The decisive assertion: nothing reached the remote.
         branches = subprocess.run(
-            ["git", "-C", str(up), "branch"], capture_output=True, text=True, cwd=cwd
+            ["git", "-C", str(up), "branch"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
         ).stdout.strip()
         assert branches == "", f"a push escaped the sandbox: {branches!r}"
 
@@ -1099,7 +1111,11 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
         ok, note = recipe._push_fix_branch(branch="auto-improvement/bug-abc123")
         assert ok is True, note
         branches = subprocess.run(
-            ["git", "-C", str(up), "branch"], capture_output=True, text=True, cwd=cwd
+            ["git", "-C", str(up), "branch"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
         ).stdout
         assert "auto-improvement/bug-abc123" in branches
 
@@ -1266,6 +1282,7 @@ class TestPushedBranchActuallyContainsTheFix:
             ["git", "-C", str(up), "show", "auto-improvement/bug-abc:a.txt"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         ).stdout
         assert got.strip() == "FIXED", f"the drafted branch does not carry the fix: {got!r}"
@@ -1289,6 +1306,53 @@ class TestPushedBranchActuallyContainsTheFix:
             ["git", "-C", str(up), "show", "staged-probe:a.txt"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         ).stdout
         assert got.strip() == "original", "staging alone must not be mistaken for a commit"
+
+
+class TestProviderSeamsStayCompatible:
+    """The GitHub recipe is now a thin adapter over ``profiles/pr_recipe_base.py``.
+
+    These pins keep the split honest: the historical import surface of this module
+    must survive (established callers and tests reach the shared helpers through
+    it), and the safety machinery must remain the base's single implementation.
+    """
+
+    def test_historical_names_remain_importable_here(self) -> None:
+        """Renaming or dropping a re-export silently breaks external importers."""
+        for name in (
+            "GitHubPRRecipe",
+            "DRAFT_CMD",
+            "BRANCH_PREFIX",
+            "extract_pr_url",
+            "ProseRedactionUnavailable",
+            "_redact_prose",
+            "_strip_leading_h1",
+            "_kind_of",
+            "_prefer_authenticated_remote",
+            "_gh_prefers_ssh",
+        ):
+            assert hasattr(pr, name), f"pr_recipe no longer exposes {name}"
+
+    def test_the_recipe_inherits_the_shared_push_machinery(self) -> None:
+        """A GitHub-only override of the push/scan path would fork the safety half."""
+        from kiro_crew.apps.builtins.auto_improvement.profiles.pr_recipe_base import (
+            ProviderPRRecipe,
+        )
+
+        assert issubclass(pr.GitHubPRRecipe, ProviderPRRecipe)
+        for name in ("_push_fix_branch", "_scan_pushable_content", "_scannable_base", "draft"):
+            assert getattr(pr.GitHubPRRecipe, name) is getattr(ProviderPRRecipe, name)
+
+    def test_the_provider_seams_are_github_specific(self, tmp_path: Path) -> None:
+        recipe = pr.GitHubPRRecipe(
+            user="u", clone_path=tmp_path, pr_queue_dir=tmp_path / "q", base_ref="origin/main"
+        )
+        cmd = recipe._create_cmd(summary="fix: x", body_path=tmp_path / "b.md", branch="br")
+        assert cmd[0] == "gh"
+        assert "--draft" in cmd and "--head" in cmd and "--base" in cmd
+        assert recipe._extract_ref("https://github.com/o/r/pull/3\n") == (
+            "https://github.com/o/r/pull/3"
+        )

@@ -6,8 +6,8 @@
  * eligibility in KiroPrerequisiteGate.agentPicker.test.tsx; the status and probe
  * fixtures they share live in KiroPrerequisiteGateTestUtils.tsx.
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { KiroPrerequisiteStatus } from '../api/client'
 import KiroPrerequisiteGate, {
   acpBackendsRefetchInterval,
@@ -83,6 +83,19 @@ describe('KiroPrerequisiteGate', () => {
     expect(kiroPrerequisiteIsBlocking(status({ initial_setup_complete: true }))).toBe(false)
     expect(kiroPrerequisiteIsBlocking(status({ setup_allowed: false }))).toBe(false)
     expect(kiroPrerequisiteIsBlocking(undefined)).toBe(false)
+  })
+
+  it('keeps probing while the out-of-date card blocks an established install', () => {
+    // A terminal `kiro-cli update` touches no gateway, so a latch-reading poll
+    // would hold the card until Check again.
+    const tooOld = status({ installed: true, initial_setup_complete: true, acp_supported: false })
+    expect(kiroPrerequisiteIsBlocking(tooOld, true)).toBe(true)
+    expect(kiroPrerequisiteRefetchInterval(tooOld, true)).toBe(5_000)
+    // A non-owner sees the owner screen and must not drive host probes.
+    expect(kiroPrerequisiteIsBlocking({ ...tooOld, setup_allowed: false }, true)).toBe(false)
+    // Another harness's user sees the dashboard, not the card: no forced probes.
+    expect(kiroPrerequisiteIsBlocking(tooOld, false)).toBe(false)
+    expect(kiroPrerequisiteRefetchInterval(tooOld, false)).toBe(30_000)
   })
 
   it('polls the harness probe at the server\'s cache rate, and only behind a setup screen', () => {
@@ -315,6 +328,38 @@ describe('KiroPrerequisiteGate', () => {
     expect(
       hints[0].compareDocumentPosition(codes[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+    // The commands put a third name on a page that otherwise says "Kiro CLI";
+    // the hint names that binary so the reader can match it to the path.
+    expect(hints[0].textContent).toContain('Kiro CLI (kiro-cli-chat)')
+    expect(screen.queryByText(/starts PowerShell/)).not.toBeInTheDocument()
+  })
+
+  it('on Windows the bundled hint names the PowerShell wrapper and kiro-cli.exe', async () => {
+    // On Windows the shared muted run is a powershell.exe call that switches off
+    // the CLI's self-update before running the bundled exe, not a bare path, so
+    // the hint says what that run does and names the executable it ends in.
+    const prefix =
+      'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
+      + "& 'C:\\Program Files\\Kiro Crew\\resources\\kiro-cli\\kiro-cli.exe'"
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: false,
+      bundled_cli: true,
+      platform: 'Windows',
+      login_command: `${prefix} login"`,
+      sso_login_command: `${prefix} login --use-device-flow --license pro"`,
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText(/Kiro CLI is installed.*Finish signing in/)
+    const hints = screen.getAllByText(/starts PowerShell/)
+    expect(hints).toHaveLength(1)
+    expect(hints[0].textContent).toContain('Kiro CLI (kiro-cli.exe)')
+    expect(hints[0].textContent).toMatch(/PowerShell or Command Prompt/)
+    expect(screen.queryByText(/The long path is/)).not.toBeInTheDocument()
   })
 
   it('a copy that fails says so under the box instead of painting Copied', async () => {
@@ -398,7 +443,7 @@ describe('KiroPrerequisiteGate', () => {
       // retry affordance — the banner is the single action.
       expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
       // Clearing the banner flips the whole surface back to the setup copy.
-      window.dispatchEvent(new CustomEvent('mc-auth-cleared'))
+      act(() => { window.dispatchEvent(new CustomEvent('mc-auth-cleared')) })
       expect(await screen.findByText(/Ask the .* owner to install/)).toBeInTheDocument()
       expect(screen.getByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
@@ -872,6 +917,54 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 
+  it('asks a signed-out browser to sign in again instead of reporting a Kiro CLI check failure', async () => {
+    // A 403 X-Auth-Required refusal: the gateway never ran the check, so the
+    // banner's sign-in is the one remedy and no retry can succeed before it.
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Sign in again to continue.' })).toBeInTheDocument()
+    // The refusal is announced as an error, not dropped into a plain paragraph.
+    expect(screen.getByRole('alert')).toHaveTextContent(/Your sign-in is no longer valid/)
+    expect(screen.queryByText('We could not check Kiro CLI.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('does not mount the app on a first run while the refused status read waits for its retry', async () => {
+    // The dashboard's own retry ladder: a session-expiry 403 gets one more try.
+    // While it waits the query is still pending, and the app's own reads (the
+    // import scan, the sidebar's settings) would be refused the same way.
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+    const { queryClient } = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      { queryDefaults: { retry: 1, retryDelay: 60_000 } },
+    )
+    onTestFinished(() => queryClient.cancelQueries())
+
+    expect(await screen.findByRole('heading', { name: 'Sign in again to continue.' })).toBeInTheDocument()
+    expect(queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('pending')
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('keeps a returning browser on its app while the refused status read waits for its retry', async () => {
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+    const { queryClient } = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      { queryDefaults: { retry: 1, retryDelay: 60_000 } },
+    )
+    onTestFinished(() => queryClient.cancelQueries())
+
+    await waitFor(() => expect(queryClient.getQueryState(['kiro-prerequisite'])?.fetchFailureCount).toBe(1))
+    expect(queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('pending')
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Sign in again to continue.' })).not.toBeInTheDocument()
+  })
+
   it('shows the probe diagnostic when the backend backstop degrades a probe exception to 200', async () => {
     // The backend's last-resort backstop reports an exception as a retryable
     // not-ready 200 body (never a 500), so `prerequisite` resolves and the
@@ -1026,6 +1119,32 @@ describe('KiroPrerequisiteGate', () => {
     await waitFor(() =>
       expect(localStorage.getItem('kirocrew:kiro-setup-complete')).toBe('1'),
     )
+  })
+
+  it('forgets remembered completion when the gateway says setup is not done', async () => {
+    // A reset data home: a later failed read must show the setup error, not the app.
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await waitFor(() =>
+      expect(localStorage.getItem('kirocrew:kiro-setup-complete')).toBeNull(),
+    )
+  })
+
+  it('keeps remembered completion through an LTS lock', async () => {
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ lts_login_required: true }))
+
+    const view = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await waitFor(() => expect(view.queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('success'))
+    expect(localStorage.getItem('kirocrew:kiro-setup-complete')).toBe('1')
   })
 
   it('still gates a genuine first run when no prior completion is remembered', async () => {

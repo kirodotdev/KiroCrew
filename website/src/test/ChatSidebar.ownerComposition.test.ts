@@ -109,11 +109,11 @@ describe('the facade composition', () => {
   // The owner hooks in the order the facade calls them. Each sits where its block sat
   // before the owners were extracted, which is what keeps React's effect order.
   const CALL_ORDER = [
-    'useSessionSources', 'useDebouncedSessionSearch', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
-    'useSessionFilterState', 'useSessionStatusFilters', 'useHistoryPane', 'useSessionCleanup', 'useBulkModelSwitch', 'usePinnedSessionOrder',
+    'useSessionSources', 'useDebouncedSessionSearchState', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
+    'useSessionFilterState', 'useSessionStatusFilters', 'useSharedCrewListView', 'useHistoryPane', 'useSessionCleanup', 'useBulkModelSwitch', 'useResumeAll', 'usePinnedSessionOrder',
     'useManualSessionOrder',
     'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarTags',
-    'useSidebarModels', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
+    'useSidebarModels', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'useNeedsMeHoverCardSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useSearchMatches',
     'useCollapsedCrews', 'useCollapsedCrewSpaces', 'useCrewEnable', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
     'useFolderFilterReveal', 'useConductorLane', 'useLaneCycle', 'useSidebarScrollPeek', 'useShortcutOrder',
@@ -144,13 +144,13 @@ describe('browser-storage keys', () => {
   // Event names share the prefix but are not storage keys.
   const EVENTS = new Set(['mc-config-changed'])
 
-  it('are declared in ./persistence, bar the four status-filter keys', () => {
+  it('are declared in ./persistence, bar the five status-filter keys', () => {
     const elsewhere: string[] = []
     for (const [name, text] of [...ownerSource, ['ChatSidebar', facadeSource] as const]) {
       if (name === 'persistence') continue
       for (const key of keyLiterals(text)) {
         if (EVENTS.has(key)) continue
-        if (name === 'filters' && /^mc-session-(unread|running|pinned|recent)-only$/.test(key)) continue
+        if (name === 'filters' && /^mc-session-(unread|running|pinned|recent|crew)-only$/.test(key)) continue
         elsewhere.push(`${name}: ${key}`)
       }
     }
@@ -164,7 +164,7 @@ describe('browser-storage keys', () => {
     // chips, folders-shelved) read their own keys; everything else goes through
     // a ./persistence reader. The facade reads none.
     const readers = [...ownerSource, ['ChatSidebar', facadeSource] as const]
-      .filter(([, text]) => text.includes('localStorage.getItem('))
+      .filter(([, text]) => text.includes('localStorage.getItem(') || text.includes('safeGetItem('))
       .map(([name]) => name)
       .sort()
     expect(readers).toEqual(['filters', 'history', 'persistence', 'resize'])

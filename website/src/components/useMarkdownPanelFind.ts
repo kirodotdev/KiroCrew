@@ -190,7 +190,12 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   //   • edit mode — Pierre's editor binds the chord on its own content element
   //     and preventDefault()s it, and #6397's `defaultPrevented` guard in
   //     useMessageSearch already stops chat-find from stacking a second pane.
-  //     Nothing to do here; bail so the editor keeps ownership.
+  //     But the editor only claims it while that content element has focus: an
+  //     edit-mode diff (the editor with a diff baseline) leaves deletion rows,
+  //     separators and the gutter outside it. So the event is let through to
+  //     the editor, and a chord it did NOT claim is stopped on the panel root on
+  //     its way out, before chat-find's document listener — the same yield as
+  //     the read-only surfaces below.
   //   • code preview and read-only diff — there is no in-document find for
   //     these yet (code preview is windowed behind Pierre's <Virtualizer> so a
   //     DOM TreeWalker would silently under-report off-screen matches, and the
@@ -205,8 +210,22 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
     const onKey = (e: KeyboardEvent) => {
       if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
       if (!active || crewHidden) return                     // hidden tab or another Crew showing: never claim the key
-      if (editing) return                                   // editor owns it (#6397)
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
+      if (editing) {
+        const panel = (e.target as Element | null)?.closest?.('[data-mc-mdpanel]')
+        if (!panel) {
+          // Focus is not inside the panel, so the editor cannot receive the
+          // chord; yield it here exactly as the read-only branch does.
+          e.stopImmediatePropagation()
+          return
+        }
+        // The editor (inside `panel`) runs first; only an unclaimed chord is
+        // stopped. Removed after this dispatch so it never sees a later key.
+        const yieldUnclaimed = (ev: Event) => { if (!ev.defaultPrevented) ev.stopPropagation() }
+        panel.addEventListener('keydown', yieldUnclaimed, { once: true })
+        setTimeout(() => panel.removeEventListener('keydown', yieldUnclaimed), 0)
+        return
+      }
       if (diffMode || !isMarkdown) {
         // Code preview / read-only diff: no in-document find to open, but keep
         // chat-find from answering with the wrong content. Stopping the event

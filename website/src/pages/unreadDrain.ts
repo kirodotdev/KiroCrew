@@ -9,6 +9,11 @@
  * loaded and genuinely empty", so the persisted-true + data-loads-empty case
  * fires correctly on the first post-load tick.
  *
+ * Active status filters are OR'd, so while another one (Running, Pinned,
+ * Recent, Crew) is on, an empty inbox does not empty the list: the drain keeps
+ * Unread on then, and only fires once the last other filter is lifted over an
+ * inbox that is still empty.
+ *
  * Returns 'disable' when the filter should flip off and the persistence key
  * should be cleared, 'noop' otherwise.
  *
@@ -26,11 +31,18 @@ export function decideUnreadDrain(params: {
   current: number
   slotsLoaded: boolean
   showUnreadOnly: boolean
+  /** Another show-only status filter is active now. */
+  otherFiltersOn: boolean
+  /** The same, as of the previous decision; null before the first one. */
+  prevOtherFiltersOn: boolean | null
 }): DrainAction {
-  const { prev, current, slotsLoaded, showUnreadOnly } = params
+  const { prev, current, slotsLoaded, showUnreadOnly, otherFiltersOn, prevOtherFiltersOn } = params
   if (!slotsLoaded) return 'noop'
   if (!showUnreadOnly) return 'noop'
-  const drainedFromPositive = prev !== null && prev > 0 && current === 0
-  const loadedEmpty = prev === null && current === 0
-  return drainedFromPositive || loadedEmpty ? 'disable' : 'noop'
+  if (otherFiltersOn) return 'noop'
+  if (current !== 0) return 'noop'
+  const drainedFromPositive = prev !== null && prev > 0
+  const loadedEmpty = prev === null
+  const lastOtherFilterLifted = prevOtherFiltersOn === true
+  return drainedFromPositive || loadedEmpty || lastOtherFilterLifted ? 'disable' : 'noop'
 }

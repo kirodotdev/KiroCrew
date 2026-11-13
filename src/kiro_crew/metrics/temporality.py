@@ -60,7 +60,14 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from opentelemetry.sdk.metrics import Counter, Histogram, UpDownCounter
+from opentelemetry.sdk.metrics import (
+    Counter,
+    Histogram,
+    ObservableCounter,
+    ObservableGauge,
+    ObservableUpDownCounter,
+    UpDownCounter,
+)
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
 #: The OpenTelemetry standard variable an operator uses to match a backend that
@@ -82,6 +89,63 @@ def delta_preference() -> "dict[type, AggregationTemporality]":
         UpDownCounter: AggregationTemporality.DELTA,
         Histogram: AggregationTemporality.DELTA,
     }
+
+
+def otel_delta_preset() -> "dict[type, AggregationTemporality]":
+    """The OpenTelemetry ``delta`` preset, with EVERY instrument kind pinned.
+
+    Counter, ObservableCounter and Histogram are DELTA; UpDownCounter,
+    ObservableUpDownCounter and ObservableGauge are CUMULATIVE. That is what the
+    exporter resolves when :data:`TEMPORALITY_ENV_VAR` is ``DELTA``, and what a
+    receiving side built for delta-sending clients expects. It differs from
+    :func:`delta_preference` in two kinds: an up/down counter stays cumulative (a
+    running level, not an increment), and an observable counter is delta. Nothing
+    registers an observable counter today (see the module docstring for why one
+    would re-emit its lifetime total after a consent rebuild), so the second
+    difference has no series behind it yet.
+
+    Every kind is named, not only the ones that differ from the SDK default,
+    because the exporter lays an explicit dict ON TOP of whichever base the
+    operator's environment variable chose; a destination that asked for this
+    preset must get it whatever that variable says. A fresh dict per call.
+    """
+    return {
+        Counter: AggregationTemporality.DELTA,
+        UpDownCounter: AggregationTemporality.CUMULATIVE,
+        Histogram: AggregationTemporality.DELTA,
+        ObservableCounter: AggregationTemporality.DELTA,
+        ObservableUpDownCounter: AggregationTemporality.CUMULATIVE,
+        ObservableGauge: AggregationTemporality.CUMULATIVE,
+    }
+
+
+def cumulative_preset() -> "dict[type, AggregationTemporality]":
+    """Every instrument kind CUMULATIVE, pinned for the reason given above."""
+    return {
+        kind: AggregationTemporality.CUMULATIVE
+        for kind in (
+            Counter,
+            UpDownCounter,
+            Histogram,
+            ObservableCounter,
+            ObservableUpDownCounter,
+            ObservableGauge,
+        )
+    }
+
+
+def preference_for(choice: str) -> "Optional[dict[type, AggregationTemporality]]":
+    """What to pass ``OTLPMetricExporter`` for a destination's ``temporality``.
+
+    ``"delta"`` and ``"cumulative"`` pin every kind for that destination only.
+    ``""`` -- and any other value, which the entry parser already refuses -- is
+    :func:`otlp_preference`, the core default every other destination gets.
+    """
+    if choice == "delta":
+        return otel_delta_preset()
+    if choice == "cumulative":
+        return cumulative_preset()
+    return otlp_preference()
 
 
 def otlp_preference() -> "Optional[dict[type, AggregationTemporality]]":

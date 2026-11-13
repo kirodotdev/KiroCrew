@@ -130,16 +130,9 @@ class TestSetRetentionKeep:
 class TestNonUtf8StateIsUnreadableNotAnException:
     """Bytes that are not UTF-8 are the "exists but could not be read" case.
 
-    `read_text(encoding="utf-8")` raises `UnicodeDecodeError`, which is a `ValueError`
-    and NOT an `OSError`, so a reader catching only `OSError` lets it escape. That
-    matters most at the sweep, which resolves its count before entering its own
-    best-effort handler and whose call site promises retention cannot fail the run: an
-    escaping decode error would report a backup already off-host as failed.
-
-    Both readers treat it as unreadable, and neither overwrites the file. The sweep
-    answers `({}, False)` and keeps every archive; the read-modify-write abandons the
-    mutation. Repair-on-write covers a document that DECODED and then failed to parse,
-    which these bytes never did.
+    `UnicodeDecodeError` is a `ValueError`, not an `OSError`; escaping at the sweep it
+    would fail a backup already off-host. Both readers treat it as unreadable and
+    neither overwrites the file (repair-on-write is only for bytes that decoded).
     """
 
     def _corrupt(self, tmp_path, monkeypatch):
@@ -270,11 +263,8 @@ class TestTheStatusFieldDoesNotClaimAConsumerItDoesNotHave:
 class TestARetentionChangeDuringTheListingStopsTheDelete:
     """The count is re-read at the delete, not trusted from before the listing.
 
-    `list_object_versions` is a network round trip after a build that may have taken
-    minutes. An owner who switches retention off inside that window has chosen to keep
-    these versions, and the deletion is permanent, so a count read before the listing
-    cannot authorize a delete that happens after it. The consent gate beside it already
-    works this way.
+    An owner who switches retention off during the listing chose to keep these
+    versions, and the deletion is permanent.
     """
 
     def _flip_during_listing(self, new_value):
@@ -344,18 +334,36 @@ class TestTheWriterAndTheSweepShareOneGate:
     def test_setting_the_count_waits_for_the_gate(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         finished = threading.Event()
+        at_gate = threading.Event()
+        real_gate = backup._RETENTION_GATE
+
+        class _ArrivalGate:
+            """The real gate, reporting when the setter starts to wait for it."""
+
+            def __enter__(self) -> bool:
+                at_gate.set()
+                return real_gate.__enter__()
+
+            def __exit__(self, *exc: object) -> None:
+                real_gate.__exit__(*exc)
 
         def write():
             backup.set_retention_keep(ACCOUNT, 3)
             finished.set()
 
-        with backup._RETENTION_GATE:
+        with real_gate:
+            # The setter reads the gate name when it runs, so this stand-in sees it
+            # arrive; the test holds the real gate underneath. The facade writes the
+            # stand-in into every module that holds the name.
+            monkeypatch.setattr(backup, "_RETENTION_GATE", _ArrivalGate())
             worker = threading.Thread(target=write, daemon=True)
             worker.start()
+            # Positive signal first: the writer is at the gate while it is held. Only
+            # then is the absence of its finish meaningful.
+            assert at_gate.wait(timeout=30), "the writer never reached the retention gate"
             # Held: the writer must be parked, not racing ahead of a sweep that has
-            # already checked the count and is about to call S3.
-            # flake-ok: pre-existing 0.5 s window on the absent finish while the gate is held, moved verbatim; tracked for a de-flake pass
-            assert not finished.wait(timeout=0.5)
+            # already checked the count and is about to call S3. The window is kept.
+            assert not finished.wait(timeout=0.5), "the writer finished while the gate was held"
         # Released: it proceeds, so the wait above was the lock and not a dead thread.
         assert finished.wait(timeout=5)
         worker.join(timeout=5)
@@ -457,12 +465,8 @@ def _last(kind: str = backup.KIND_SNAPSHOT) -> dict[str, Any]:
 class TestEveryTerminalSweepStateReachesTheStatusRead:
     """How the last sweep ended is served, and a refusal is served like any other end.
 
-    The SEL event and a log line are not where an operator reads whether retention is
-    working; the status read is. Without this record it serves the configured count
-    and nothing about whether a sweep acted on it, so a sweep refused every night reads
-    exactly like a working one: retention on, the bill not falling, and nothing in the
-    app saying why. Unlike the unclaimed pair, this record is written on the refusing
-    paths too, because the refusal is the fact.
+    The operator reads the status, not SEL. Without this record a sweep refused every
+    night reads like a working one, so refusing paths write it too.
     """
 
     def test_nothing_is_served_before_any_sweep_has_ended(self, state):

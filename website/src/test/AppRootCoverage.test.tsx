@@ -9,11 +9,12 @@
  *   segment's error / no-totals branches
  * - the Kiro credits modal with a bonus pool and a signed-in identity
  * - the notification popover's pointer-outside and route-change dismissals
- * - developer mode and the Electron native-menu navigation bridge
+ * - the old /developer route and the Electron native-menu bridges
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { setUpdateProgress, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -25,7 +26,20 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/CapabilitiesPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+// The real hook marks the gateway connected when its socket opens; this stub's
+// socket opens on mount, since a status reply alone never reads as online.
+vi.mock('../hooks/useWebSocket', async () => {
+  const { useEffect } = await import('react')
+  const { useDispatch } = await import('react-redux')
+  const { sseConnected } = await import('../store/dashboardSlice')
+  return {
+    useWebSocket: () => {
+      const dispatch = useDispatch()
+      useEffect(() => { dispatch(sseConnected()) }, [dispatch])
+      return { subscribeLogs: () => {} }
+    },
+  }
+})
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -47,6 +61,8 @@ vi.mock('../api/client', () => ({
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     patchConfig: vi.fn().mockResolvedValue({}),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
@@ -137,10 +153,12 @@ function renderShell(route = '/chat') {
 const changelogDialog = () => screen.findByRole('dialog', { name: 'Changelog' })
 
 describe('baseline probe', () => {
-  it('renders the shell', () => {
+  it('renders the shell', async () => {
     localStorage.setItem('mc-last-version', '0.4.0')
-    renderWithProviders(<App />, { route: '/chat' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('dashboard-shell')).toBeInTheDocument()
+    // Chain: the shell's mount-time queries (status, system, kiro-usage, apps, ...) each answer and re-render App.
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0), namedCeiling('SHELL_QUERIES_SETTLED', 5000))
   })
 })
 
@@ -203,7 +221,7 @@ describe('App — version-change changelog gate', () => {
     const dialog = await changelogDialog()
     expect(within(dialog).getByText(/adds the resource capsule/)).toBeInTheDocument()
     expect(within(dialog).getByText("You're on the latest version")).toBeInTheDocument()
-    expect(within(dialog).queryByRole('button', { name: 'Update Now' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Update when I restart' })).toBeNull()
   })
 })
 
@@ -224,23 +242,28 @@ describe('App — changelog modal controls', () => {
   })
 })
 
-/** Open the changelog and take the "Update Now" path into the progress overlay. */
+/** Open the changelog and click Update when I restart (it arms; nothing installs now). */
 async function startUpdate(route = '/chat') {
   const rendered = renderShell(route)
   const dialog = await changelogDialog()
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Update Now' }))
+  // applyUpdate's failure lands in App a few microtasks after the click: keep it inside the act.
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Update when I restart' })) })
   return rendered
 }
 
+/** Open the overlay the way a running apply does: the click's POST stays pending. */
+async function startProgress(route = '/chat') {
+  vi.mocked(api.applyUpdate).mockReturnValueOnce(new Promise(() => {}) as never)
+  return startUpdate(route)
+}
+
 describe('App — applying an update', () => {
-  it('replaces the changelog with the progress overlay', async () => {
+  it('arms the update, closes the changelog and shows no progress overlay', async () => {
     await startUpdate()
     await waitFor(() => expect(api.applyUpdate).toHaveBeenCalled())
-    expect(await screen.findByText('Updating Kiro Crew…')).toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: 'Changelog' })).toBeNull()
-    // No step reported yet: the overlay shows its neutral waiting copy.
-    expect(screen.getByText('Starting update…')).toBeInTheDocument()
-    expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Changelog' })).toBeNull())
+    // Nothing installs or restarts now, so there is no overlay to wait behind.
+    expect(screen.queryByText('Updating Kiro Crew…')).toBeNull()
   })
 
   it('surfaces the server-supplied reason when applying fails', async () => {
@@ -257,6 +280,36 @@ describe('App — applying an update', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
   })
 
+  it('keeps focus inside the failure dialog and dismisses it on Escape', async () => {
+    vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
+    await startUpdate()
+
+    const dialog = await screen.findByRole('dialog', { name: 'Update error' })
+    // Focus moves in once the dialog's effects have run.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    // The agent hand-off stays beside Dismiss.
+    const ask = within(dialog).getByRole('button', { name: /ask the agent/i })
+    const dismiss = within(dialog).getByRole('button', { name: 'Dismiss' })
+    dismiss.focus()
+    fireEvent.keyDown(dismiss, { key: 'Tab' })
+    expect(document.activeElement).toBe(ask)
+    fireEvent.keyDown(ask, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(dismiss)
+
+    // A page shortcut typed inside the dialog stays inside it.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      fireEvent.keyDown(dismiss, { key: 'k', ctrlKey: true })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+
+    fireEvent.keyDown(dismiss, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
+  })
+
   it('falls back to the raw failure text when it is not a JSON body', async () => {
     vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
     await startUpdate()
@@ -267,7 +320,7 @@ describe('App — applying an update', () => {
 
 describe('App — update progress overlay', () => {
   it('marks earlier steps done and times the active one', async () => {
-    const { store } = await startUpdate()
+    const { store } = await startProgress()
     await screen.findByText('Updating Kiro Crew…')
 
     act(() => { store.dispatch(setUpdateProgress({ step: 'building', detail: 'compiling the wheel' })) })
@@ -286,13 +339,13 @@ describe('App — update progress overlay', () => {
     // froze on the last step with its idle waiting copy — indistinguishable
     // from a hang. Disconnected-while-updating must say the gateway is
     // restarting and that reconnection is in progress.
-    const { store } = await startUpdate()
+    const { store } = await startProgress()
     await screen.findByText('Updating Kiro Crew…')
 
-    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    await act(async () => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
 
-    act(() => { store.dispatch(sseDisconnected()) })
+    await act(async () => { store.dispatch(sseDisconnected()) })
     const note = screen.getByTestId('update-reconnecting')
     expect(note.textContent).toContain('Gateway is restarting — reconnecting…')
     // The idle copy stands down: both lines together would say "waiting" and
@@ -301,7 +354,7 @@ describe('App — update progress overlay', () => {
 
     // Reconnected (the gateway is back, the reload latch takes it from here):
     // the transient line yields back to the idle copy.
-    act(() => { store.dispatch(sseConnected()) })
+    await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('update-reconnecting')).toBeNull()
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
@@ -312,7 +365,7 @@ describe('App — update progress overlay', () => {
     // the merged revision). Both must end the overlay with the failure card:
     // an unrecognised step rendered as a stall until the five-minute stuck
     // timer, with the spinner still pulsing above the reason.
-    const { store } = await startUpdate()
+    const { store } = await startProgress()
     await screen.findByText('Updating Kiro Crew…')
 
     act(() => { store.dispatch(setUpdateProgress({ step, detail: 'Fast-forward to 9f8202496fcf failed (git merge --ff-only)' })) })
@@ -339,9 +392,9 @@ describe('App — header capsule resource posture', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    expect(await screen.findByText('Critical')).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'Critical' })
     expect(screen.getByText('· cap: 2')).toBeInTheDocument()
-    expect(screen.getByTitle(/Host memory is critically low \(1.3 GB free\)/)).toBeInTheDocument()
+    expect(chip).toHaveAccessibleDescription(/Memory is very low on this computer \(1.3 GB free\).*Up to 2 subagents can run at once/)
   })
 
   it('flags a tight host posture', async () => {
@@ -352,8 +405,8 @@ describe('App — header capsule resource posture', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    expect(await screen.findByText('Tight')).toBeInTheDocument()
-    expect(screen.getByTitle(/Host memory is tight \(3.0 GB free\)/)).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'Tight' })
+    expect(chip).toHaveAccessibleDescription('Memory is low on this computer (3.0 GB free). Heavy work may be slower.')
     // No cap reported, so no cap clause is appended.
     expect(screen.queryByText(/cap:/)).toBeNull()
   })
@@ -454,6 +507,8 @@ describe('App — notification popover dismissal', () => {
 
     fireEvent.pointerDown(document.body)
     expect(bell.getAttribute('aria-expanded')).toBe('false')
+    // Chain: closePanel starts the slide-out; its settle callback flips the sheet to `closed` and unmounts it.
+    await waitFor(() => expect(document.querySelector('[data-nc-phase]')).toBeNull(), namedCeiling('NC_SHEET_SLID_OUT', 5000))
   })
 
   it('stays open when the press lands on the bell itself', async () => {
@@ -483,12 +538,13 @@ describe('App — notification popover dismissal', () => {
 describe('App — Electron bridges', () => {
   beforeEach(() => { localStorage.setItem('mc-last-version', '0.4.0') })
 
-  it('relays the boot dev-mode state to the native shell', async () => {
+  it('asks the native shell to show its Developer Tools menu item at boot', async () => {
     const setDevMode = vi.fn()
     setElectronBridge({ setDevMode })
     renderWithProviders(<App />, { route: '/chat' })
     await screen.findByTestId('chat-page')
-    expect(setDevMode).toHaveBeenCalledWith(false)
+    expect(setDevMode).toHaveBeenCalledWith(true)
+    expect(setDevMode).not.toHaveBeenCalledWith(false)
   })
 
   it('routes a plain in-app path from the native menu and ignores a host-relative one', async () => {
@@ -524,32 +580,22 @@ describe('App — Electron bridges', () => {
   })
 })
 
-describe('App — developer mode', () => {
+describe('App — Developer page route', () => {
   beforeEach(() => { localStorage.setItem('mc-last-version', '0.4.0') })
 
-  it('adds the Developer rail entry with an unseen dot, then clears it on visit', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByTestId('chat-page')
-    expect(screen.queryByRole('button', { name: 'Developer' })).toBeNull()
-
-    act(() => { window.dispatchEvent(new CustomEvent('mc-dev-mode-changed', { detail: true })) })
-
-    const devRow = await screen.findByRole('button', { name: 'Developer' })
-    expect(devRow.querySelector('.animate-pulse')).toBeTruthy()
-
-    fireEvent.click(devRow)
-    await screen.findByTestId('developer-page')
-    expect(devRow.querySelector('.animate-pulse')).toBeNull()
+  it('has no Developer rail entry, even with the old dev-mode key set', async () => {
+    localStorage.setItem('mc-dev-mode', '1')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      await screen.findByTestId('chat-page')
+      expect(screen.queryByRole('button', { name: 'Developer' })).toBeNull()
+    } finally {
+      localStorage.removeItem('mc-dev-mode')
+    }
   })
 
-  it('drops the Developer rail entry when developer mode is switched back off', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByTestId('chat-page')
-
-    act(() => { window.dispatchEvent(new CustomEvent('mc-dev-mode-changed', { detail: true })) })
-    expect(await screen.findByRole('button', { name: 'Developer' })).toBeInTheDocument()
-
-    act(() => { window.dispatchEvent(new CustomEvent('mc-dev-mode-changed', { detail: false })) })
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Developer' })).toBeNull())
+  it('still serves the old /developer route', async () => {
+    renderWithProviders(<App />, { route: '/developer' })
+    expect(await screen.findByTestId('developer-page')).toBeInTheDocument()
   })
 })

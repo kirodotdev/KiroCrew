@@ -253,7 +253,11 @@ class TestEnd:
         assert len(calls) == 1
         assert calls[0]["unit"] == "ms"
         assert 55_000 < calls[0]["value"] < 70_000
-        assert calls[0]["attrs"] == {"end_reason": "reset", "session_source": "dashboard"}
+        assert calls[0]["attrs"] == {
+            "end_reason": "reset",
+            "session_source": "dashboard",
+            "harness": "unknown",
+        }
         assert _crumbs(home) == [], "the end must consume the crumb"
 
     def test_no_crumb_unlink_runs_on_the_event_loop(self, home, rec, monkeypatch):
@@ -1231,6 +1235,11 @@ class TestEveryRegistryRemovalRecordsAnEnd:
             "the shared warm OAuth mint's dict[int, _WarmSession], keyed by "
             "activation id -- not the session registry's dict[str, _SessionEntry], "
             "and it writes no crumb, so a removal there cannot leave one behind"
+        ),
+        "shared_crew.send_race": (
+            "the send-race registry's OrderedDict[str, _Session] of per-session "
+            "send revisions, bounded by an idle-only LRU -- not the session registry, "
+            "and it writes no crumb, so evicting a revision cannot leave one behind"
         ),
     }
 

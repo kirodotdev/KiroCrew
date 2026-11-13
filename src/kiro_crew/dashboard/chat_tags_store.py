@@ -16,7 +16,7 @@ import logging
 import math
 import uuid
 import weakref
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.dashboard.chat_tag_grants import (
     mint_grant,
@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_tag_grants import (
     store_write_blocked,
 )
 from kiro_crew.dashboard.chat_tags_policy import _COLOR_RE, _DEFAULT_COLOR, _NAME_MAX
+from kiro_crew.dashboard.chat_utils import run_to_completion
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -46,11 +47,12 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
     (chat_handlers), the folder create/PATCH validation (chat_folders), the
     channel first-filing path, and the channel restore read (channel_slots)
     so an inheritance-rule change cannot land on one path and miss the
-    others. (Three pre-existing slot-restore prunes elsewhere apply the same
-    shape guards inline, and ``api_chat_slot_tags``'s strict inline filter is
-    a fourth spelling differing only on the fail-open axis; consolidating all
-    four onto this helper — likely via a strict-mode flag — is deliberately
-    left to a follow-up. Those sites are outside this change.)
+    others. It reads the vocabulary through
+    :mod:`kiro_crew.dashboard.tag_vocabulary_read`, the one reader the slot
+    metadata restore and the sidebar-column boot prune use too, so the
+    UNKNOWN / KNOWN-EMPTY / KNOWN rule is decided in one place.
+    (``api_chat_slot_tags`` validates REQUEST input against the vocabulary,
+    strictly; it prunes no persisted value and stays its own filter.)
     Callers must invoke it AT THE POINT OF APPLICATION (immediately before the
     ids are written to a slot or persisted), never on a value resolved
     earlier — a tag deletion between resolve and apply would otherwise
@@ -60,7 +62,7 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
 
     * UNCONDITIONAL shape guards — ``raw`` must be a list (``folders.json``
       is hand-editable; anything else yields ``[]``), and each entry must be
-      a string BEFORE the membership test (a non-string entry is unhashable
+      a non-empty string BEFORE the membership test (a non-string entry is unhashable
       and the test itself would raise, turning a malformed store row into a
       500 on every chat created in that folder). Order-preserving,
       de-duplicated.
@@ -73,25 +75,14 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
       filing marker would block re-inheritance forever. A dangling id kept
       this way is pruned by the restore paths on the next authoritative boot.
     """
-    if not isinstance(raw, list):
-        return []
-    check_vocab = getattr(state, "_tags_authoritative", True)
-    # Only string ids enter the vocabulary set: a malformed persisted entry
-    # (e.g. a hand-edited tags.json with a list/dict id) must degrade to
-    # "unknown id" — not crash the set build with an unhashable type.
-    valid_ids = (
-        {i for t in state._tags if isinstance(i := t.get("id"), str)} if check_vocab else None
-    )
-    out: list[str] = []
-    seen: set[str] = set()
-    for tid in raw:
-        if not isinstance(tid, str) or tid in seen:
-            continue
-        if valid_ids is not None and tid not in valid_ids:
-            continue
-        seen.add(tid)
-        out.append(tid)
-    return out
+    # Imported here, not at module scope: a name this owner binds is served by
+    # the chat_tags facade, and the reader is not part of that surface.
+    from kiro_crew.dashboard.tag_vocabulary_read import known_tag_ids, prune_tag_ids
+
+    # Only string ids enter the vocabulary set (known_tag_ids): a malformed
+    # persisted entry (e.g. a hand-edited tags.json with a list/dict id) must
+    # degrade to "unknown id" — not crash the set build with an unhashable type.
+    return prune_tag_ids(raw, known_tag_ids(state))
 
 
 def _tags_write_lock(state: Any) -> LoopBoundLock:
@@ -107,6 +98,46 @@ def _tags_write_lock(state: Any) -> LoopBoundLock:
 # chat_auto_tag.maybe_auto_tag to hold the lock across an entire
 # resolve→merge→persist critical section.
 tags_write_lock = _tags_write_lock
+
+
+async def _commit_tags_snapshot(
+    state: DashboardState,
+    snapshot: list[dict],
+    on_committed: Callable[[], None] | None = None,
+) -> None:
+    """THE choke point for a confirmed tag-vocabulary write: persist, then confirm.
+
+    Every tag write in this package routes through here, which makes "the caller learns
+    whether its bytes landed" a mechanism rather than a convention each call site has to
+    remember. ``on_committed`` mirrors the folder store's hook of the same name: it fires
+    once the write confirms, on BOTH the normal and the cancelled exit, so a caller that
+    captured a cancellation can still tell a landed write from an abandoned one.
+
+    A RETURN VALUE cannot serve, which is why this is a callback: the only caller that
+    needs the answer is one whose await raised, so the cancelled exit never delivers a
+    value to it.
+
+    Deliberately NOT inside ``_write_tags_snapshot``: that is the sync body handed to
+    ``asyncio.to_thread``, which the suites replace wholesale, so a confirmation there
+    would be patched out exactly where it matters most.
+
+    Awaiting the write bare would lose the confirmation, since the worker cannot be
+    interrupted and lands its bytes even when the handler is cancelled, and returning
+    early would release the store lock while the worker is still writing. The wait is
+    the shared ``run_to_completion``. Each mutating caller owns its own rollback.
+    """
+    write = asyncio.ensure_future(asyncio.to_thread(_write_tags_snapshot, state, snapshot))
+    try:
+        await run_to_completion(write)
+    except asyncio.CancelledError:
+        # The worker cannot be interrupted, so a cancelled handler may still land the bytes.
+        # run_to_completion waits for it and raises its own failure first; reaching here
+        # with a write that was not itself cancelled means it landed, so confirm it.
+        if not write.cancelled() and on_committed is not None:
+            on_committed()
+        raise
+    if on_committed is not None:
+        on_committed()
 
 
 def _write_tags_snapshot(state: DashboardState, snapshot: list[dict]) -> None:
@@ -142,6 +173,8 @@ async def _reconcile_failed_tag_create(
         state._tags = durable.tags
         state._unparsed_tag_entries = durable.unparsed
         state._tags_authoritative = True
+        # The in-memory vocabulary mirrors the file it just read.
+        state._tags_load_failed = False
         committed = next((row for row in durable.tags if row.get("id") == tag_id), None)
         if committed is not None:
             logger.warning(
@@ -168,7 +201,7 @@ async def persist_tags_snapshot_unlocked(state: DashboardState) -> None:
     cross-module critical sections (e.g. chat_auto_tag.maybe_auto_tag).
     """
     snapshot = [dict(t) for t in state._tags]
-    await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+    await _commit_tags_snapshot(state, snapshot)
 
 
 def _valid_color(value: str) -> str:
@@ -209,7 +242,7 @@ def create_tag_definition(
         "id": uuid.uuid4().hex[:12],
         "name": clean_name,
         "color": clean_color,
-        "order": len(state._tags),
+        "order": _next_order(state._tags),
         "status": bool(status),
     }
     state._tags.append(tag)
@@ -296,7 +329,7 @@ async def create_tag_definition_off_loop(
                 raise
         snapshot = [dict(t) for t in state._tags]
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
         except Exception:
             committed = await _reconcile_failed_tag_create(
                 state, tag, identity_was_minted=record_protected_identity
@@ -322,3 +355,13 @@ def _order_key(row: dict) -> int:
     if isinstance(value, float) and not math.isfinite(value):
         return 0
     return int(value)
+
+
+def _next_order(rows: list[dict]) -> int:
+    """The position that sorts a new tag or column after every existing row.
+
+    One past the highest stored ``order`` (0 for an empty list). The list
+    length is not that position: deletes leave gaps, so after removing two of
+    four rows the length equals a survivor's ``order`` and the new row ties it.
+    """
+    return max((_order_key(row) for row in rows), default=-1) + 1

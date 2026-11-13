@@ -37,6 +37,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -111,7 +112,7 @@ _BASE_MODULE_NAMES = frozenset("""
     platform_compat popen_limited prevalidated_gh_env re read_local_secret redact
     refuse_unaudited_on_dead_fs replace_with_retry resolve_script_path resolve_serving_port
     run_command_sandboxed run_limited run_script_sandboxed safe_read_file_bytes_nolink
-    sanitize_spec_env sel sensitive_path_refusal shutil signal subprocess sys tempfile
+    sanitize_spec_env sel shutil signal subprocess sys tempfile
     threading time tmp_env urllib validate_secret_env_grant wrap_argv
     """.split())
 
@@ -283,29 +284,11 @@ def test_the_type_checker_census_finds_a_dropped_name() -> None:
     assert "sel" in _home_manifest(source)
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(OWNER_PREFIX) for name in _imported_modules(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(OWNER_PREFIX)
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:

@@ -187,7 +187,9 @@ class TestSeedOnDisk:
             "slot-1", cwd=str(work_dir), **factory_kwargs
         )
         provider._client._write_claude_local_settings()
-        return json.loads((work_dir / ".claude" / "settings.local.json").read_text())
+        return json.loads(
+            (work_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+        )
 
     def test_session_intent_seeds_auto(self, tmp_path: Path) -> None:
         data = self._seed(ACP_BACKEND_CLAUDE, tmp_path, permission_mode=CC_PERMISSION_MODE_AUTO)

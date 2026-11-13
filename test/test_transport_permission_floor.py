@@ -201,6 +201,40 @@ async def test_client_auto_approve_site_runs_the_floor(tmp_path):
     assert 15 not in client._permission_options
 
 
+@pytest.mark.asyncio
+async def test_client_auto_approve_floor_refusal_steers_the_host_notice_first(tmp_path):
+    """No consumer sees a request on this path, so the reject alone reached the
+    model as a user's denial; the host notice is written before it."""
+    import os
+
+    client = _client(tmp_path)
+    client._session_id = "s-floor"
+    trace: list[tuple] = []
+
+    async def _send_request(method, params, **_kw):
+        trace.append(("request", method, params))
+        return 1
+
+    client._send_request = _send_request
+    client._send_response = AsyncMock(
+        side_effect=lambda request_id, payload: trace.append(("response", request_id, payload))
+    )
+    msg = JsonRpcMessage(
+        id=16,
+        method="session/request_permission",
+        params={
+            "toolCall": {"toolCallId": "tc-16", "title": os.path.expanduser("~/.ssh/id_rsa")},
+            "options": [],
+        },
+    )
+    await client._handle_permission(msg)
+    assert [entry[0] for entry in trace] == ["request", "response"], trace
+    assert trace[0][1] == "_session/steer"
+    notice = trace[0][2]["message"]
+    assert "[Kiro Crew host notice]" in notice and "NOT a user action" in notice
+    assert trace[1][1] == 16 and trace[1][2] == {"outcome": {"outcome": OUTCOME_CANCELLED}}
+
+
 def _permission_frame(request_id, options):
     return JsonRpcMessage.from_dict(
         {
@@ -525,13 +559,13 @@ async def test_client_without_an_event_map_is_still_held_to_the_floor():
 # ── AcpSessionHandle ──
 
 
-def _handle():
+def _handle(*, session_key: str = ""):
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     runtime = MagicMock()
     runtime.send_response = AsyncMock()
     runtime.send_error = AsyncMock()
-    return AcpSessionHandle("s1", asyncio.Queue(), runtime)
+    return AcpSessionHandle("s1", asyncio.Queue(), runtime, session_key=session_key)
 
 
 @pytest.mark.asyncio
@@ -800,7 +834,7 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
     {
         ("acp/client_permissions.py", "_handle_permission"): 1,
         ("apps/builtins/auto_improvement/spine/agent_runner.py", "_approve"): 1,
-        ("apps/builtins/code_review_sage/sage_lib/review_pool.py", "send"): 1,
+        ("apps/builtins/code_review_sage/sage_lib/review_pool.py", "_send"): 1,
         ("channel.py", "_stream_task"): 4,
         ("cli_chat.py", "_answer_permission"): 1,
         ("dashboard/chat_turn/permission_prompt.py", "_on_permission_prompt"): 1,

@@ -32,8 +32,6 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.builtins.dev_fleet import gateway_routes, live, pointer_broker, server
 from kiro_crew.testing.wait import async_wait_until, await_until
 
-pytestmark = pytest.mark.asyncio
-
 
 class TestRegistration:
     def test_dev_fleet_is_a_builtin_with_in_gateway_routes(self) -> None:
@@ -50,7 +48,7 @@ class TestRegistration:
         expected = {(r.method, r.resource.canonical) for r in direct.router.routes()}
         assert expected <= mounted, sorted(expected - mounted)
 
-    def test_register_routes_mounts_exactly_the_seven(self) -> None:
+    def test_register_routes_mounts_exactly_the_eight(self) -> None:
         app = web.Application()
         gateway_routes.register_routes(app)
         mounted = sorted(
@@ -59,6 +57,7 @@ class TestRegistration:
         assert mounted == [
             ("DELETE", "/api/apps/dev-fleet/live-target/removal-lease"),
             ("GET", "/api/apps/dev-fleet/live-target"),
+            ("POST", "/api/apps/dev-fleet/create-release-worktree"),
             ("POST", "/api/apps/dev-fleet/live-target/removal-lease"),
             ("POST", "/api/apps/dev-fleet/make-live"),
             ("POST", "/api/apps/dev-fleet/pod-token"),
@@ -153,6 +152,7 @@ async def _client(app) -> TestClient:
 
 
 class TestTheWriteRoutesAreOwnerOnly:
+    @pytest.mark.asyncio
     async def test_owner_human_can_make_live(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app=""))
         try:
@@ -168,6 +168,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_an_unconfigured_checkout_is_a_409_not_a_500(
         self, enabled, recorded, monkeypatch
     ) -> None:
@@ -192,6 +193,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_dev_fleets_own_app_token_is_refused_for_the_write(
         self, enabled, recorded
     ) -> None:
@@ -208,6 +210,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_another_apps_token_is_refused_for_the_write(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app="md-notebook"))
         try:
@@ -217,6 +220,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_human_is_refused(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app="", user="guest", owner_id="owner"))
         try:
@@ -226,6 +230,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_body_contract_is_unchanged_from_the_backend_route(
         self, enabled, recorded
     ) -> None:
@@ -245,6 +250,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_undo_is_validated_and_passed_through(self, enabled, recorded) -> None:
         """The one-level undo rides the same owner-only route: a non-bool
         is refused, undo and expected_staged are mutually exclusive, and a valid undo
@@ -271,6 +277,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_disabled_app_has_no_routes(self, recorded, monkeypatch) -> None:
         """A disabled app answers 404 on every gateway route — and each such answer is a
         refused access, so it leaves the same SEL record every other denial here does
@@ -297,6 +304,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         ]
         assert "make_live" not in recorded
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("bad", ["\x00", "a\x00b", "", 7])
     async def test_malformed_expected_staged_is_refused_before_make_live(
         self, enabled, recorded, bad
@@ -315,6 +323,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_dry_run_and_expected_staged_are_forwarded(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app=""))
         try:
@@ -327,6 +336,7 @@ class TestTheWriteRoutesAreOwnerOnly:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_unparseable_body_is_a_400(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app=""))
         try:
@@ -362,6 +372,7 @@ class TestThePodTokenRoute:
         monkeypatch.setattr(worktree_ops, "_pod_token", _pod_token)
         return calls
 
+    @pytest.mark.asyncio
     async def test_owner_human_gets_the_token(self, minted, recorded) -> None:
         client = await _client(_make_app(principal_app=""))
         try:
@@ -374,6 +385,7 @@ class TestThePodTokenRoute:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("principal", ["dev-fleet", "md-notebook"])
     async def test_any_app_token_is_refused(self, minted, principal) -> None:
         client = await _client(_make_app(principal_app=principal))
@@ -384,6 +396,7 @@ class TestThePodTokenRoute:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_human_is_refused(self, minted) -> None:
         client = await _client(_make_app(principal_app="", user="guest", owner_id="owner"))
         try:
@@ -393,6 +406,7 @@ class TestThePodTokenRoute:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("bad", ["", "a\x00b", 7, "x" * 201])
     async def test_a_malformed_name_is_refused_before_the_mint(self, minted, bad) -> None:
         client = await _client(_make_app(principal_app=""))
@@ -404,6 +418,7 @@ class TestThePodTokenRoute:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_the_audit_row_never_carries_the_token(self, minted, monkeypatch) -> None:
         rows: list[dict] = []
 
@@ -423,6 +438,7 @@ class TestThePodTokenRoute:
         ]
         assert "SECRET" not in json.dumps(rows)
 
+    @pytest.mark.asyncio
     async def test_an_unconfigured_checkout_is_a_409(self, enabled, recorded, monkeypatch) -> None:
         from kiro_crew.apps.builtins.dev_fleet import worktree_ops
 
@@ -440,6 +456,7 @@ class TestThePodTokenRoute:
 
 
 class TestTheReadBroker:
+    @pytest.mark.asyncio
     async def test_dev_fleets_token_may_read(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app="dev-fleet"))
         try:
@@ -457,6 +474,7 @@ class TestTheReadBroker:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_a_dashboard_user_may_not_read(self, enabled, recorded) -> None:
         """The read answers with unredacted checkout paths and has exactly one
         consumer — the backend's broker. The dashboard reads the redacted fleet
@@ -470,6 +488,7 @@ class TestTheReadBroker:
             finally:
                 await client.close()
 
+    @pytest.mark.asyncio
     async def test_another_apps_token_may_not_read(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app="md-notebook"))
         try:
@@ -509,12 +528,13 @@ class TestTheBackendClient:
         app.router.add_get("/api/apps/dev-fleet/live-target", state)
         return app, seen
 
+    @pytest.mark.asyncio
     async def test_exchanges_once_and_caches(self) -> None:
         app, seen = self._fake_gateway(tokens=["t1"])
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="s3cret"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="s3cret"
             )
             first = await broker(False)
             second = await broker(False)
@@ -528,12 +548,13 @@ class TestTheBackendClient:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_reexchanges_once_when_the_token_is_refused(self) -> None:
         app, seen = self._fake_gateway(tokens=["t1", "t2"], refuse_first_get=True)
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="s3cret"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="s3cret"
             )
             state = await broker(False)
             assert state.live == "/wt/live"
@@ -542,12 +563,13 @@ class TestTheBackendClient:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_wrong_secret_is_an_outage_not_none(self) -> None:
         app, _seen = self._fake_gateway(tokens=["t1"])
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="wrong"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="wrong"
             )
             with pytest.raises(live.PointerUnavailable):
                 await broker(False)
@@ -555,21 +577,26 @@ class TestTheBackendClient:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_unreachable_gateway_is_an_outage(self) -> None:
-        broker = pointer_broker.GatewayPointerBroker(port=1, app_secret="s3cret")
+        broker = pointer_broker.GatewayPointerBroker(
+            origin="http://127.0.0.1:1", app_secret="s3cret"
+        )
         with pytest.raises(live.PointerUnavailable):
             await broker(True)
         await broker.aclose()
 
-    def test_no_port_gives_an_unconfigured_provider(self) -> None:
+    def test_no_origin_is_refused(self) -> None:
         with pytest.raises(ValueError):
-            pointer_broker.GatewayPointerBroker(port=0, app_secret="s")
+            pointer_broker.GatewayPointerBroker(origin="", app_secret="s")
 
+    @pytest.mark.asyncio
     async def test_unconfigured_provider_reports_the_reason(self) -> None:
         provider = pointer_broker.unconfigured_provider("no port")
         with pytest.raises(live.PointerUnavailable, match="no port"):
             await provider(False)
 
+    @pytest.mark.asyncio
     async def test_live_verified_crosses_the_broker(self) -> None:
         """A pointer-only live row must reach the backend as unverified, or the
         fleet view would badge it "live" as if the gateway ran from it."""
@@ -579,9 +606,11 @@ class TestTheBackendClient:
         assert state.live == "/wt/live"
         assert state.live_verified is False
 
+    @pytest.mark.asyncio
     async def test_live_verified_defaults_to_true_when_absent(self) -> None:
         assert pointer_broker._parse_state({"live": "/wt/live"}).live_verified is True
 
+    @pytest.mark.asyncio
     async def test_a_non_bool_live_verified_is_an_outage(self) -> None:
         with pytest.raises(live.PointerUnavailable, match="live_verified"):
             pointer_broker._parse_state({"live": "/wt/live", "live_verified": "no"})
@@ -590,6 +619,7 @@ class TestTheBackendClient:
 class TestLiveModuleSeam:
     """``live`` answers locally in the gateway and through the provider in the backend."""
 
+    @pytest.mark.asyncio
     async def test_reads_route_through_the_installed_provider(self, monkeypatch) -> None:
         calls: list[bool] = []
 
@@ -607,6 +637,7 @@ class TestLiveModuleSeam:
             live.install_pointer_provider(None)
         assert calls == [True, False, False]
 
+    @pytest.mark.asyncio
     async def test_make_live_refuses_to_run_in_the_backend(self, monkeypatch) -> None:
         async def provider(fresh: bool) -> live.PointerState:
             raise AssertionError("must not be consulted")
@@ -623,6 +654,7 @@ class TestLiveModuleSeam:
         finally:
             live.install_pointer_provider(None)
 
+    @pytest.mark.asyncio
     async def test_local_reads_when_no_provider(self, monkeypatch, tmp_path) -> None:
         assert live._POINTER_PROVIDER is None
         monkeypatch.setattr(live.live_target, "read_target", lambda: None)
@@ -725,6 +757,7 @@ class TestRemovalLeasesInTheGateway:
             >= worktree_ops._GIT_WORKTREE_REMOVE_TIMEOUT_SECS + live._REMOVAL_LEASE_RENEW_SECS
         )
 
+    @pytest.mark.asyncio
     async def test_no_lease_while_a_cutover_holds_the_lock(self, clean_leases) -> None:
         async with live._MAKE_LIVE_LOCK:
             assert live.acquire_removal_lease("/wt/a") is None
@@ -760,6 +793,7 @@ class TestRemovalLeasesInTheGateway:
         monkeypatch.setattr(live, "_MAKE_LIVE_COMMITTED", True)
         assert live.acquire_removal_lease("/wt/a") is None
 
+    @pytest.mark.asyncio
     async def test_make_live_refuses_busy_while_a_removal_is_leased(
         self, clean_leases, monkeypatch
     ) -> None:
@@ -771,6 +805,7 @@ class TestRemovalLeasesInTheGateway:
         result = await live._make_live("/wt/other")
         assert result["ok"] is False and result["code"] == "busy"
 
+    @pytest.mark.asyncio
     async def test_dry_run_ignores_leases(self, clean_leases, monkeypatch) -> None:
         async def _inner(path, dry_run=False, expected_staged=None, *, undo=False):
             return {"ok": True, "dry_run": dry_run}
@@ -779,6 +814,7 @@ class TestRemovalLeasesInTheGateway:
         live.acquire_removal_lease("/wt/victim")
         assert await live._make_live("/wt/other", dry_run=True) == {"ok": True, "dry_run": True}
 
+    @pytest.mark.asyncio
     async def test_restart_gateway_refuses_while_a_removal_is_leased(
         self, clean_leases, monkeypatch
     ) -> None:
@@ -790,6 +826,7 @@ class TestRemovalLeasesInTheGateway:
         result = await live._restart_gateway()
         assert result["ok"] is False and "removal is in progress" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_gateway_local_removal_lease_context(self, clean_leases) -> None:
         async with live.removal_lease("/wt/a") as granted:
             assert granted.granted is True and granted.refusal is None
@@ -808,6 +845,7 @@ class TestRemovalLeasesFromTheBackend:
     def _install(acquire, renew, release):
         live.install_removal_lease_client((acquire, renew, release))
 
+    @pytest.mark.asyncio
     async def test_lease_goes_through_the_installed_client(self, clean_leases) -> None:
         calls: list[tuple[str, str]] = []
 
@@ -831,6 +869,7 @@ class TestRemovalLeasesFromTheBackend:
             live.install_removal_lease_client(None)
         assert calls == [("acquire", "/wt/a"), ("release", "cap-1")]
 
+    @pytest.mark.asyncio
     async def test_the_heartbeat_renews_with_the_capability(
         self, clean_leases, monkeypatch
     ) -> None:
@@ -860,6 +899,7 @@ class TestRemovalLeasesFromTheBackend:
             live.install_removal_lease_client(None)
         assert len(renewals) >= 3 and set(renewals) == {"cap-hb"}
 
+    @pytest.mark.asyncio
     async def test_a_refused_renewal_marks_the_lease_lost(self, clean_leases, monkeypatch) -> None:
         """The removal checks this at its mutation boundary and refuses to start."""
         monkeypatch.setattr(live, "_REMOVAL_LEASE_RENEW_SECS", 0.02)
@@ -884,6 +924,7 @@ class TestRemovalLeasesFromTheBackend:
         finally:
             live.install_removal_lease_client(None)
 
+    @pytest.mark.asyncio
     async def test_a_transient_renewal_outage_is_not_a_loss(
         self, clean_leases, monkeypatch
     ) -> None:
@@ -916,6 +957,7 @@ class TestRemovalLeasesFromTheBackend:
         finally:
             live.install_removal_lease_client(None)
 
+    @pytest.mark.asyncio
     async def test_a_refused_lease_is_not_released(self, clean_leases) -> None:
         calls: list[str] = []
 
@@ -936,6 +978,7 @@ class TestRemovalLeasesFromTheBackend:
             live.install_removal_lease_client(None)
         assert calls == []
 
+    @pytest.mark.asyncio
     async def test_a_broker_outage_is_not_granted(self, clean_leases) -> None:
         async def acquire(path: str) -> str | None:
             raise live.PointerUnavailable("down")
@@ -953,12 +996,14 @@ class TestRemovalLeasesFromTheBackend:
         finally:
             live.install_removal_lease_client(None)
 
+    @pytest.mark.asyncio
     async def test_unconfigured_lease_client_refuses(self) -> None:
         acquire, renew, release = pointer_broker.unconfigured_lease_client("no port")
         for call in (acquire("/wt/a"), renew("t"), release("t")):
             with pytest.raises(live.PointerUnavailable, match="no port"):
                 await call
 
+    @pytest.mark.asyncio
     async def test_broker_client_round_trips_the_lease_routes(self, clean_leases) -> None:
         seen: list[tuple[str, dict]] = []
 
@@ -984,7 +1029,7 @@ class TestRemovalLeasesFromTheBackend:
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="s3cret"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="s3cret"
             )
             assert await broker.acquire_removal_lease("/wt/a") == "cap-9"
             assert await broker.acquire_removal_lease("/wt/busy") is None
@@ -1004,6 +1049,7 @@ class TestRemovalLeasesFromTheBackend:
 
 
 class TestTheLeaseRoutes:
+    @pytest.mark.asyncio
     async def test_dev_fleet_token_may_lease_renew_and_release(self, enabled, clean_leases) -> None:
         client = await _client(_make_app(principal_app="dev-fleet"))
         try:
@@ -1032,6 +1078,7 @@ class TestTheLeaseRoutes:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_accepted_reads_and_lease_calls_leave_a_sel_record(
         self, enabled, recorded, clean_leases, monkeypatch
     ) -> None:
@@ -1074,6 +1121,7 @@ class TestTheLeaseRoutes:
         assert rows[1]["resources"] == "/wt/a"
         assert not any(cap in str(r) for r in rows), "the capability must never reach the log"
 
+    @pytest.mark.asyncio
     async def test_another_apps_token_may_not_lease(self, enabled, clean_leases) -> None:
         client = await _client(_make_app(principal_app="md-notebook"))
         try:
@@ -1090,6 +1138,7 @@ class TestTheLeaseRoutes:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("user", ["owner", "slack-guest"])
     async def test_a_dashboard_human_may_not_lease(self, enabled, clean_leases, user) -> None:
         """A lease latches ``busy`` on the owner-only cutover and restart, so the read
@@ -1112,6 +1161,7 @@ class TestTheLeaseRoutes:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_lease_is_refused_not_errored_during_a_cutover(
         self, enabled, clean_leases
     ) -> None:
@@ -1126,6 +1176,7 @@ class TestTheLeaseRoutes:
         finally:
             await client.close()
 
+    @pytest.mark.asyncio
     async def test_lease_bodies_are_validated(self, enabled, clean_leases) -> None:
         client = await _client(_make_app(principal_app="dev-fleet"))
         try:
@@ -1144,13 +1195,14 @@ class TestThePreSpawnGate:
     preparation and immediately before the child is spawned, and a refusal never
     spawns (and cleans up the prepared launcher)."""
 
+    @pytest.mark.asyncio
     async def test_run_cmd_refuses_without_spawning_and_unlinks_the_launcher(
         self, monkeypatch, tmp_path
     ) -> None:
         from kiro_crew.apps.builtins.dev_fleet import runtime
 
         launcher = tmp_path / "launcher.sh"
-        launcher.write_text("#!/bin/sh\n")
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         order: list[str] = []
 
         async def _prep(prepare, *, executor=None):
@@ -1174,6 +1226,7 @@ class TestThePreSpawnGate:
         assert order == ["prepare", "gate"], "the gate must run after preparation, never before"
         assert not launcher.exists(), "a refused gate must not leak the prepared launcher"
 
+    @pytest.mark.asyncio
     async def test_run_cmd_proceeds_when_the_gate_allows(self, monkeypatch, tmp_path) -> None:
         from kiro_crew.apps.builtins.dev_fleet import runtime
 
@@ -1196,6 +1249,7 @@ class TestThePreSpawnGate:
         assert rc == 0
         assert order == ["prepare", "gate"]
 
+    @pytest.mark.asyncio
     async def test_confirm_is_an_explicit_renewal(self, clean_leases) -> None:
         renewals: list[str] = []
 
@@ -1219,6 +1273,7 @@ class TestThePreSpawnGate:
         finally:
             live.install_removal_lease_client(None)
 
+    @pytest.mark.asyncio
     async def test_confirm_fails_closed_on_refusal_or_outage_and_marks_loss(
         self, clean_leases
     ) -> None:
@@ -1248,6 +1303,7 @@ class TestThePreSpawnGate:
         finally:
             live.install_removal_lease_client(None)
 
+    @pytest.mark.asyncio
     async def test_a_full_ttl_of_unreachable_renewals_is_a_loss(
         self, clean_leases, monkeypatch
     ) -> None:
@@ -1256,27 +1312,38 @@ class TestThePreSpawnGate:
         monkeypatch.setattr(live, "_REMOVAL_LEASE_RENEW_SECS", 0.02)
         monkeypatch.setattr(live, "_REMOVAL_LEASE_TTL_SECS", 0.08)
 
+        renew_times: list[float] = []
+
         async def acquire(path: str) -> str | None:
             return "cap-e"
 
         async def renew(token: str) -> bool:
+            renew_times.append(time.monotonic())
             raise live.PointerUnavailable("down for good")
 
         async def release(token: str) -> None:
             pass
 
-        def lease_lost() -> bool:
-            return live.removal_lease_lost("/wt/a")
+        started = time.monotonic()
+
+        def lost_or_well_past_the_ttl() -> bool:
+            # A heartbeat that never gives up keeps renewing; two TTLs of failures
+            # end the wait so the check below, not the wait, reports it.
+            past = bool(renew_times) and renew_times[-1] - started >= 0.16
+            return live.removal_lease_lost("/wt/a") or past
 
         live.install_removal_lease_client((acquire, renew, release))
         try:
             async with live.removal_lease("/wt/a"):
-                await async_wait_until(lease_lost)
+                await async_wait_until(lost_or_well_past_the_ttl)
+                assert live.removal_lease_lost("/wt/a") is True
+                assert await live.confirm_removal_lease("/wt/a") is False
         finally:
             live.install_removal_lease_client(None)
 
 
 class TestFleetViewDegradesWithRowsDuringAnOutage:
+    @pytest.mark.asyncio
     async def test_gateway_service_reason_treats_an_unavailable_pointer_as_unknown(
         self, monkeypatch
     ) -> None:
@@ -1302,6 +1369,7 @@ class TestFleetViewDegradesWithRowsDuringAnOutage:
         assert isinstance(reason, str) and reason
         assert "does not belong to any known worktree" not in reason
 
+    @pytest.mark.asyncio
     async def test_fleet_payload_takes_one_pointer_snapshot(self, monkeypatch) -> None:
         """All three pointer-derived fields come from ONE broker read, so a gateway that
         goes away mid-build cannot fail a later field (the cancel-availability probe
@@ -1337,3 +1405,162 @@ class TestFleetViewDegradesWithRowsDuringAnOutage:
         assert "await live._staged_cancel_available()" not in src
         assert "await live._live_worktree_path()" not in src
         assert "await live._staged_target_resolved()" not in src
+
+
+class TestCreateReleaseWorktreeRouteIsOwnerOnly:
+    """POST /create-release-worktree is a dashboard-owner action, like make-live.
+
+    The checkout reads the repo's own config and follows ``include.path``, so it has
+    to run at the gateway's strict tier; an app token (readable by the backend's
+    build children) must never drive it. The action itself is exercised in
+    ``test_dev_fleet_release_worktree.py`` -- here we pin only the route's gate, that
+    it reaches the action when the owner calls it, and that a cancelled request still
+    leaves its SEL record.
+    """
+
+    @pytest.fixture
+    def _action(self, monkeypatch):
+        import kiro_crew.apps.builtins.dev_fleet.release_worktree as release_worktree
+
+        calls: dict[str, Any] = {}
+
+        async def _create():
+            calls["created"] = True
+            return {
+                "ok": True,
+                "path": "/wt/release-channel-stable",
+                "name": "release-channel-stable",
+                "version": "0.12.0",
+                "ref": "refs/tags/v0.12.0",
+                "oid": "a" * 40,
+            }
+
+        async def _ensure():
+            calls["discovered"] = True
+
+        monkeypatch.setattr(release_worktree, "create_release_worktree", _create)
+        monkeypatch.setattr(gateway_routes.repository, "ensure_main_repo_discovered", _ensure)
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_owner_human_can_create_and_the_repo_is_discovered_first(
+        self, enabled, _action
+    ) -> None:
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["ok"] is True and body["version"] == "0.12.0"
+            assert _action["created"] is True
+            assert _action["discovered"] is True, "the gateway must discover the repo first"
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_is_refused_and_never_reaches_the_action(
+        self, enabled, _action
+    ) -> None:
+        """A non-dashboard caller (here Dev Fleet's own app token) is refused 403, and
+        the checkout action is never entered."""
+        client = await _client(_make_app(principal_app="dev-fleet"))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == 403
+            assert "created" not in _action
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("code", "status"),
+        [("sandbox_unavailable", 503), ("unresolved", 409), ("name_taken", 409)],
+    )
+    async def test_a_missing_sandbox_is_a_503_and_every_other_refusal_a_409(
+        self, enabled, _action, monkeypatch, code, status
+    ) -> None:
+        """A step refused for lack of an OS sandbox backend is a failure of this request's
+        own machinery (503); any other refusal is a state the operator can change (409).
+        The body is passed through so the page shows the worded reason either way."""
+        import kiro_crew.apps.builtins.dev_fleet.release_worktree as release_worktree
+
+        async def _refuse():
+            return {"ok": False, "code": code, "error": "the worded reason"}
+
+        monkeypatch.setattr(release_worktree, "create_release_worktree", _refuse)
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == status
+            body = await resp.json()
+            assert body == {"ok": False, "code": code, "error": "the worded reason"}
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_request_cancelled_mid_checkout_still_leaves_its_audit_record(
+        self, enabled, _action, monkeypatch
+    ) -> None:
+        """A gateway restart or shutdown cancels this handler. The checkout settles before
+        the cancellation lands (``_run_uninterruptible``), so the tree can exist with no
+        reply sent; the route still writes the request's SEL record, then lets the
+        cancellation propagate."""
+        from aiohttp.test_utils import make_mocked_request
+
+        import kiro_crew.apps.builtins.dev_fleet.release_worktree as release_worktree
+        from kiro_crew.apps.builtins.dev_fleet import runtime
+
+        records: list[dict[str, Any]] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                records.append(kw)
+
+        async def _owner(_request, _operation):
+            return None
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        settled: list[str] = []
+
+        async def _checkout():
+            started.set()
+            await finish.wait()
+            settled.append("checked out")
+
+        async def _create():
+            await runtime._run_uninterruptible(_checkout())
+            return {"ok": True, "ref": "refs/tags/v0.12.0"}
+
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _Sel())
+        monkeypatch.setattr(gateway_routes, "require_owner_dashboard_request", _owner)
+        monkeypatch.setattr(release_worktree, "create_release_worktree", _create)
+        request = make_mocked_request("POST", "/api/apps/dev-fleet/create-release-worktree")
+        request["app"] = ""
+        request["user"] = "owner"
+
+        handler = asyncio.ensure_future(gateway_routes.handle_create_release_worktree(request))
+        await await_until(started, what="the checkout to start")
+        handler.cancel()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(handler, what="the cancelled handler to settle")
+
+        assert settled == ["checked out"], "the checkout settles before the cancellation lands"
+        audited = [r for r in records if r["operation"] == "dev_fleet_create_release_worktree"]
+        assert len(audited) == 1, records
+        assert audited[0]["outcome"] == "cancelled"
+        assert audited[0]["caller"] == "owner"
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_app_has_no_create_route(self, _action, monkeypatch) -> None:
+        """Like every builtin route: the app being off is a 404, not a live endpoint."""
+        monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda name: False)
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == 404
+            assert "created" not in _action
+        finally:
+            await client.close()

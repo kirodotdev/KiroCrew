@@ -146,7 +146,7 @@ def _candidate_lock(root: Path | None, namespace: str | None):
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         if not nofollow and lock_path.is_symlink():
             raise OSError(f"refusing to lock {lock_path}: symlink")
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+        fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR | nofollow, 0o600)
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:

@@ -36,6 +36,7 @@ import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, PageHeader } f
 import ProjectPicker from '../../components/ProjectPicker'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import {
   scanProject,
   scaffoldProject,
@@ -213,7 +214,7 @@ function CandidateRow({ row, checked, onToggle, parentName }: {
             <span className="font-semibold">
               {i18nT('apps.projectScaffolder.projectScaffolderPage.signals')}
             </span>{' '}
-            <span>{row.signals.map(signalLabel).join(', ')}</span>
+            <span>{fmtList(row.signals.map(signalLabel))}</span>
           </div>
         )}
       </div>
@@ -348,7 +349,10 @@ function NestedSuggestions({ rows, open, onOpenChange, selected, onToggle, onBul
           {open
             ? <ChevronDown size={13} className="lucide-inline shrink-0" />
             : <ChevronRight size={13} className="lucide-inline shrink-0" />}
+          {/* `count` picks the plural form ("1 possible sub-folder"); `n` is the
+              number the copy prints. */}
           {i18nT('apps.projectScaffolder.projectScaffolderPage.n_possible_sub_folders_inside_packages_above', {
+            count: rows.length,
             n: rows.length,
           })}
         </button>

@@ -35,7 +35,12 @@ of these hold:
   so we never signal an unrelated process that merely grabbed the port; and
 * the holder does **not** answer an HTTP liveness probe — a *responsive*
   gateway is a legitimate owner (e.g. a second gateway on a different
-  ``KIROCREW_HOME`` sharing the port) and is never killed.
+  ``KIROCREW_HOME`` sharing the port) and is never killed; and
+* the holder is not a *booting* gateway. A gateway reserves its port (bound
+  and listening, accept deferred) for its whole boot pass, so for that window
+  it is as silent as a wedged one. A holder younger than
+  :data:`BOOTING_PEER_MAX_AGE_SECS` is spared unless it is a single-threaded
+  fork, which no running gateway is (see :func:`_describe_holders`).
 
 Complements — does not replace — :class:`kiro_crew.gateway_lock.GatewayLock`,
 which enforces the single-*writer* invariant per home (and whose ``flock`` the
@@ -65,8 +70,43 @@ NO_HOLDER = "no_holder"          # port already free (race) — nothing to do
 UNAVAILABLE = "unavailable"      # cannot determine/verify holder (lsof/ps missing)
 FOREIGN_HOLDER = "foreign_holder"  # held by a non-KiroCrew process — never touched
 HEALTHY_PEER = "healthy_peer"    # held by a live, responsive gateway — never touched
+BOOTING_PEER = "booting_peer"    # held by a young gateway still in its boot pass — never touched
 RECLAIMED = "reclaimed"          # stale gateway terminated; port should now be free
 RECLAIM_FAILED = "reclaim_failed"  # holder identified as stale but could not be killed
+
+#: A silent holder younger than this is read as a gateway still in its boot
+#: pass, not a wedged one. The boot pass (app-backend spawns, then the runner's
+#: startup hooks) holds the port reserved but unanswered; two minutes covers a
+#: slow host's pass with room to spare. The cost of a wrong guess is bounded: a
+#: young gateway that really is wedged is reclaimed by the first relaunch after
+#: it ages past this, and a wedged fork is never spared (one thread, see
+#: :func:`_holder_is_booting_peer`).
+BOOTING_PEER_MAX_AGE_SECS = 120.0
+
+
+def _holder_age_secs(pid: int) -> float | None:
+    """Seconds since *pid* started, or ``None`` when it cannot be read."""
+    from kiro_crew.session_pid import _pid_age_seconds
+
+    return _pid_age_seconds(pid)
+
+
+def _holder_is_booting_peer(
+    pid: int,
+    holder_age: Callable[[int], float | None],
+    thread_count: Callable[[int], int | None],
+) -> bool:
+    """True when silent holder *pid* looks like a gateway still booting.
+
+    Young AND not a single-threaded fork. An unreadable age is not read as
+    young: that is what an exited or recycled pid shows, and the identity
+    re-check before signalling already guards that case. An unreadable thread
+    count (every platform but Linux) leaves the age to decide alone.
+    """
+    age = holder_age(pid)
+    if age is None or age >= BOOTING_PEER_MAX_AGE_SECS:
+        return False
+    return thread_count(pid) != 1
 
 
 def _listeners_on_port(port: int) -> list[int] | None:
@@ -110,7 +150,37 @@ def _listeners_on_port(port: int) -> list[int] | None:
 
 
 async def _probe_gateway_healthy(port: int, timeout: float) -> bool:
-    """Return ``True`` iff ``127.0.0.1:port`` answers an HTTP request in time.
+    """Return ``True`` iff ``127.0.0.1:port`` answers an HTTP request in time."""
+    return await _probe_host("127.0.0.1", port, timeout)
+
+
+async def _probe_v6_loopback_healthy(port: int, timeout: float) -> bool:
+    """Return ``True`` iff ``[::1]:port`` answers an HTTP request in time."""
+    return await _probe_host("::1", port, timeout)
+
+
+def _holder_reaches_v6_loopback(port: int, pids: list[int]) -> bool | None:
+    """True when one of *pids*' own LISTEN sockets on *port* takes ``::1``.
+
+    A gateway bound to ``::`` sets ``IPV6_V6ONLY`` and has no IPv4 secondary,
+    so it answers on ``::1`` only. Probing ``::1`` is credited to *pids* only
+    when their own socket is the one that probe lands on, so a different
+    program listening there cannot vouch for a stale holder. ``None`` when the
+    listener lookup did not complete, so the answer is unknown.
+    """
+    from kiro_crew.gateway_lock import _listener_reaches
+
+    listeners, completed = platform_compat.probe_port_listeners(port)
+    if not completed:
+        return None
+    wanted = set(pids)
+    return any(
+        _listener_reaches(listener, "::1") for listener in listeners if listener.pid in wanted
+    )
+
+
+async def _probe_host(host: str, port: int, timeout: float) -> bool:
+    """Return ``True`` iff ``host:port`` answers an HTTP request in time.
 
     A plain TCP connect is insufficient: a wedged gateway's kernel still
     ``accept()``s the connection even though the (blocked) loop never replies,
@@ -121,12 +191,9 @@ async def _probe_gateway_healthy(port: int, timeout: float) -> bool:
     the loop watchdog exists to catch).
     """
     try:
-        # Probe loopback deliberately: whether the gateway bound 127.0.0.1
-        # (local-only) or 0.0.0.0 (all interfaces), it is reachable here, and we
-        # only ever want to check the *local* instance — never an external NIC.
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", port), timeout
-        )
+        # Probe loopback deliberately: we only ever want to check the *local*
+        # instance — never an external NIC.
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
     except (OSError, asyncio.TimeoutError):
         return False
     try:
@@ -241,7 +308,11 @@ async def reclaim_stale_gateway_port(
     list_listeners: Callable[[int], list[int] | None] = _listeners_on_port,
     is_kirocrew: Callable[[int], bool] | None = None,
     probe_healthy: Callable[[int, float], Awaitable[bool]] = _probe_gateway_healthy,
+    probe_v6_healthy: Callable[[int, float], Awaitable[bool]] = _probe_v6_loopback_healthy,
+    holder_reaches_v6: Callable[[int, list[int]], bool | None] | None = None,
     terminate: Callable[[list[int]], Awaitable[bool]] | None = None,
+    holder_age: Callable[[int], float | None] | None = None,
+    thread_count: Callable[[int], int | None] | None = None,
     probe_timeout: float = 2.0,
     identity_timeout: float = 5.0,
     log: logging.Logger = logger,
@@ -321,7 +392,27 @@ async def reclaim_stale_gateway_port(
         )
         return FOREIGN_HOLDER
 
-    if await probe_healthy(port, probe_timeout):
+    healthy = await probe_healthy(port, probe_timeout)
+    if not healthy:
+        reaches_v6 = holder_reaches_v6 or _holder_reaches_v6_loopback
+        try:
+            on_v6 = await asyncio.wait_for(
+                asyncio.to_thread(reaches_v6, port, kiro_pids), timeout=identity_timeout
+            )
+        except asyncio.TimeoutError:
+            on_v6 = None
+        if on_v6 is None:
+            # Unknown is not "not on ::1": a healthy v6-only holder would be
+            # killed on a guess, so fall back to wait/retry instead.
+            log.warning(
+                "Cannot read which addresses the holder of port %d listens on — "
+                "not reclaiming.",
+                port,
+            )
+            return UNAVAILABLE
+        if on_v6:
+            healthy = await probe_v6_healthy(port, probe_timeout)
+    if healthy:
         log.error(
             "Port %d is owned by a live, responsive KiroCrew gateway (pid %s) — "
             "not reclaiming. Stop it with `kirocrew stop` or use a different port.",
@@ -349,6 +440,40 @@ async def reclaim_stale_gateway_port(
     if not kiro_pids:
         return NO_HOLDER
 
+    # A booting gateway holds its port reserved and silent for its whole boot
+    # pass, so the failed probe above cannot tell it from a wedged one. Spare
+    # every holder when any of them is young: killing the rest would not free a
+    # port the booting peer still holds.
+    age_of = holder_age if holder_age is not None else _holder_age_secs
+    threads_of = (
+        thread_count if thread_count is not None else platform_compat.process_thread_count
+    )
+    try:
+        booting = await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: [
+                    pid
+                    for pid in kiro_pids
+                    if _holder_is_booting_peer(pid, age_of, threads_of)
+                ]
+            ),
+            timeout=identity_timeout,
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "Age check for the holder of port %d did not complete — not reclaiming.",
+            port,
+        )
+        return UNAVAILABLE
+    if booting:
+        log.error(
+            "Port %d is held by a Kiro Crew gateway that is still starting (pid %s) "
+            "— not reclaiming. Stop it with `kirocrew stop` or use a different port.",
+            port,
+            _describe_holders(booting),
+        )
+        return BOOTING_PEER
+
     if terminate is None:
         terminate = _terminate_pids
     log.warning(
@@ -361,11 +486,15 @@ async def reclaim_stale_gateway_port(
     if ok:
         log.warning("Reclaimed port %d from stale gateway (pid %s).", port, kiro_pids)
         return RECLAIMED
+    # Deferred like the cli_server imports above: the CLI modules import the
+    # dashboard, so a top-level import here would be circular.
+    from kiro_crew.cli_server_stop import _force_stop_command
+
     log.error(
         "Failed to terminate stale gateway (pid %s) on port %d — you may need to "
-        "kill it manually: kill -9 %s",
+        "kill it manually: %s",
         _describe_holders(kiro_pids),
         port,
-        " ".join(str(p) for p in kiro_pids),
+        _force_stop_command(kiro_pids),
     )
     return RECLAIM_FAILED

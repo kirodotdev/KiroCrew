@@ -95,3 +95,33 @@ def test_unreadable_config_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(_boom))
 
     assert _mcp_apps_enabled() is False
+
+
+_OPTED_OUT = '{"mcp_gateway": {"apps_enabled": false, "forward_declared_env": false}}'
+
+
+@pytest.mark.parametrize(
+    ("base", "overlay"),
+    [
+        (_OPTED_OUT[:-2], None),
+        ("{}", _OPTED_OUT[:-2]),
+        (_OPTED_OUT, '{"mcp_gateway": null}'),
+    ],
+    ids=["torn-base", "torn-overlay", "non-object-overlay-section"],
+)
+def test_a_degraded_config_read_keeps_both_stored_opt_outs(
+    tmp_path, monkeypatch, base, overlay
+) -> None:
+    """A torn file or a non-object ``mcp_gateway`` does not raise: the loader
+    builds the defaults, which turn both opt-outs back on. Both gates read the
+    degradation instead and stay off."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew.mcp_gateway.rewriter_env import forward_declared_env_enabled
+
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    (tmp_path / "config.json").write_text(base)
+    if overlay is not None:
+        (tmp_path / "config.local.json").write_text(overlay)
+
+    assert _mcp_apps_enabled() is False
+    assert forward_declared_env_enabled() is False

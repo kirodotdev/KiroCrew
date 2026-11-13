@@ -1,13 +1,7 @@
 """Tests for the session ledger's durability answer and the caches a read goes through.
 
-An entry is on disk before ``record`` returns, and ``record_update`` reports ``durable``
-from this unit's own growth, so a refused or unlanded append is never called durable,
-and an update too large for one entry is refused before the append. The slot map sees a
-unit whose header lands late or that replaces another, and a stray directory does not
-break its scan. The fold cache answers what a cold fold would: it is bounded in resident
-bytes, rebuilt for a new unit, and not stale after an older unit grows or an append
-lands during a read. A timestamp no datetime can hold does not crash the fold. The
-constants, the autouse home fixture, ``_unit`` and ``_entries`` live in
+``durable`` comes from this unit's own growth, so a refused or unlanded append is never
+called durable; the fold cache answers what a cold fold would. Shared helpers are in
 ``session_ledger_projection_helpers.py``.
 """
 
@@ -20,6 +14,7 @@ import threading
 from dataclasses import replace
 
 import pytest
+from crew_log_drain import assert_drained
 from session_ledger_projection_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     LATER_SESSION,
     SESSION,
@@ -335,11 +330,8 @@ def test_a_same_count_unit_swap_invalidates_the_slot_map():
 def test_an_append_landing_during_a_fold_survives_the_next_read():
     """An entry the pass read but the pre-read sample missed stays in the record.
 
-    The heights a read samples are its READ PLAN, never the cell's claim about itself.
-    An append landing during a read is folded in while sitting outside that sample, so a
-    cell that remembered the sample would describe itself as one entry short and send
-    every later read back to the file for a tail it has already folded. Both halves are
-    checked here: the entry is in the answer, and the next read opens no unit.
+    The sampled heights are the READ PLAN, not the cell's size; remembering them would send
+    every later read back for a tail already folded. The next read opens no unit.
     """
     _unit(SESSION)
     for goal in ("first", "second", "third"):
@@ -350,8 +342,7 @@ def test_an_append_landing_during_a_fold_survives_the_next_read():
     # why they go through the emitter rather than through ``record``.
     for goal in ("fourth", "fifth"):
         crew_log_emit.on_ledger_recorded(SESSION, {"slot": SLOT, "goal": goal})
-    # flake-ok: the 5 s cap only names a stuck writer; flush returns as soon as the queue drains
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     # Every committed entry wakes the eager folder, which folds this unit's slot AND
     # session folds on its own thread through the same module attributes the probes
     # below replace. Settled first, and both probes count only THIS thread: otherwise
@@ -410,11 +401,8 @@ def test_an_append_landing_during_a_fold_survives_the_next_read():
 def test_an_update_too_large_for_one_entry_is_refused_before_the_append():
     """A refused append is permanent, so the update must not be reported as taken.
 
-    The writer counts an over-ceiling entry and drops it, which reaches the caller as
-    ``durable=False`` -- the very same value a writer that is merely still busy gives,
-    and that update IS recorded. So a caller acting on ``durable`` alone cannot tell a
-    record that will land from one that can never land, and the one that can never land
-    would be reported recorded and then be absent from the slot at the next read.
+    A dropped over-ceiling entry gives ``durable=False``, the same as a busy writer whose
+    update will still land, so ``durable`` alone cannot tell them apart.
     """
     _unit()
     # The CLAMPS' own worst case, not an arbitrary big value: each key and value is

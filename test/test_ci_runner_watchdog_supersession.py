@@ -49,10 +49,10 @@ def test_a_superseded_orphan_is_cancelled_even_with_no_dispatch_evidence() -> No
 
 
 def test_without_supersession_the_same_run_is_still_held_on_missing_evidence() -> None:
-    """Negative control: the evidence hold itself is not weakened.
+    """The evidence hold itself is not weakened.
 
-    Same runs, same absent evidence, only the branch listing differs. Without this
-    the change could have cleared every hold and read as passing.
+    Same runs and absent evidence as above; only the branch listing differs, so a
+    supersession check that cleared every hold would fail here.
     """
     api = FakeApi(
         {"in_progress": [_run(1, minutes_ago=90)]},
@@ -223,12 +223,9 @@ def _orphan_at_attempt(attempt: int) -> Any:
 def test_a_rerun_attempt_released_from_the_hold_is_still_not_cancelled() -> None:
     """The hold route ends the same way as the no-hold route: red, run named, no cancel.
 
-    A later attempt may BE the operator response this script's logs ask for. The
-    supersession check releases the hold (the hold protects a result the branch has
-    moved past), so the run stays an orphan and reaches the heal path -- where the
-    attempt guard refuses the cancel and records the FAILED outcome. Holding it green
-    instead would recreate the 6-hour block with nobody told; cancelling it would
-    discard a person's work with nothing left to show they did it.
+    A later attempt may BE the operator response the logs ask for. Released from the
+    hold, it reaches the heal path, where the attempt guard refuses the cancel and
+    records the FAILED outcome. Holding it green would hide a 6-hour block.
     """
     api = FakeApi(
         {"in_progress": [_run(1, minutes_ago=90, attempt=2)]},

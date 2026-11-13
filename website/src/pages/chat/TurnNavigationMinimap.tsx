@@ -1,5 +1,5 @@
 import { OverlayPortal } from '../../components/overlayRoot'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type RefObject } from 'react'
 import type { ChatSection } from '../../hooks/useChatNavigation'
 import type { MinimapSide } from './ChatSettings'

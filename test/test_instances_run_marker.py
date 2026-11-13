@@ -6,9 +6,12 @@ sidecar readers, and how clients discover a gateway on a non-default port.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -22,10 +25,11 @@ class TestRunMarker:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.instances import run_marker
 
-        # Fabricate a venv layout: <venv>/bin/{python,kirocrew}
+        # Fabricate a venv layout: <venv>/bin/{python,kirocrew}, with the
+        # launcher named as this OS's pip names it (kirocrew.exe on Windows).
         bindir = tmp_path / "venv" / "bin"
         bindir.mkdir(parents=True)
-        launcher = bindir / "kirocrew"
+        launcher = bindir / ("kirocrew.exe" if os.name == "nt" else "kirocrew")
         launcher.write_text("#!/bin/sh\n")
         launcher.chmod(0o755)
         monkeypatch.setattr(sys, "executable", str(bindir / "python"))
@@ -84,11 +88,8 @@ class TestRunMarker:
     def test_run_dir_lockdown_is_the_directory_helper(self, tmp_path, monkeypatch):
         """``run/`` holds the gateway's credential, pid and launcher marker.
 
-        A bare ``os.chmod(0o700)`` is a silent no-op on Windows, so the
-        directory and everything created inside it keep the inherited DACL.
-        The tightening must go through ``platform_compat.restrict_dir_to_owner``,
-        whose Windows grants carry ``(OI)(CI)`` and so also cover the ``.pid``
-        and ``.bin`` sidecars, which ``atomic_write(mode=0o600)`` cannot.
+        ``os.chmod(0o700)`` is a no-op on Windows; ``platform_compat.restrict_dir_to_owner``
+        grants ``(OI)(CI)``, which also covers the ``.pid`` and ``.bin`` sidecars.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew import platform_compat
@@ -128,40 +129,24 @@ class TestRunMarkerSidecarReadRetry:
     """A sidecar reader must not fold a transient Windows sharing violation into
     ``""`` / ``None``.
 
-    The markers are published with ``mkstemp`` + ``os.replace``
-    (``write_marker``). On Windows a reader that lands in the ``os.replace``
-    window raises ``PermissionError`` (``WinError 32``). The old plain
-    ``read_text`` folded that into ``""`` -- indistinguishable from a genuinely
-    absent marker, so a caller checking whether a gateway runs on a port got a
-    silent FALSE NEGATIVE. Every reader now goes through
-    ``atomic_write.read_bytes_with_retry``, which retries that bounded window.
+    On Windows a read inside the ``os.replace`` window raises ``WinError 32``; folding
+    that to ``""`` would report a running gateway as absent. Every reader goes through
+    ``atomic_write.read_bytes_with_retry``.
 
-    ``read_sharing_violation`` patches ``Path.read_bytes`` and so covers the
-    uncapped readers (``read_secret`` / ``read_launcher`` via ``_read_sidecar``).
-    The capped readers (``read_pid`` and the ``.start`` sidecar) pass
-    ``max_bytes`` and so read through ``_read_bytes``; those are faulted by
-    patching ``atomic_write._read_bytes``, the single chokepoint both branches of
-    the helper call. POSIX permits the read, so this fault only reproduces on the
-    simulator here and on a real Windows host -- it is skipped on this Linux
-    worker's live filesystem, which is why the simulator exists. Not run on a
-    real Windows host.
+    ``read_sharing_violation`` patches ``Path.read_bytes`` (uncapped readers); the
+    capped readers (``read_pid``, ``.start``) are faulted at ``atomic_write._read_bytes``.
+    POSIX permits the read, so the fault exists only in the simulator.
     """
 
     @pytest.fixture(autouse=True)
     def _no_backoff_sleep(self, _floor_monkeypatch):
         """Keep the bounded retry instant; attempt COUNT is what matters here.
 
-        Only the simulator tests belong under this fixture. The real-file
-        concurrency test lives in ``TestRunMarkerSidecarConcurrentRewrite``
-        below, OUTSIDE it, because there the attempts must be spaced in time:
-        with the sleep zeroed the whole budget fits inside one writer syscall.
+        The real-file race lives in ``TestRunMarkerSidecarConcurrentRewrite``, outside
+        this fixture, because with the sleep zeroed the budget fits in one writer syscall.
 
-        Patches through ``_floor_monkeypatch`` (the isolation floor's own
-        ``MonkeyPatch``), not the shared ``monkeypatch``: an autouse fixture that
-        used the shared instance would be lifted by any test here that called
-        ``monkeypatch.undo()`` mid-body, silently restoring the real backoff
-        sleep for the rest of that test (D11 / semgrep
-        ``kirocrew.test-autouse-shared-monkeypatch``).
+        Uses ``_floor_monkeypatch``: a mid-body ``monkeypatch.undo()`` would lift the
+        shared one (semgrep ``kirocrew.test-autouse-shared-monkeypatch``).
         """
         from kiro_crew import atomic_write as aw
 
@@ -218,23 +203,8 @@ class TestRunMarkerSidecarReadRetry:
     ):
         """A window that outlasts the ENTIRE retry budget still folds to None.
 
-        Deterministic coverage of the budget's far edge, complementing the
-        shorter-window simulator test above (two faults then a success). This one
-        faults every one of the ``_REPLACE_MAX_ATTEMPTS``
-        reads, so the reader runs out of attempts and ``read_launcher`` folds the
-        final ``PermissionError`` to ``""`` -> ``None``.
-
-        It takes no time (the autouse ``_no_backoff_sleep`` zeroes the backoff,
-        so faulting the whole budget is instant), with no dependence on a live
-        filesystem's sharing-violation timing. The budget
-        is finite by design (a window that stays open forever MUST eventually be
-        given up on), so a reader that meets a window outlasting the whole budget
-        folds -- which is what this test pins. This and the shorter-window
-        simulator test are the owners of the Windows sharing-violation fold;
-        ``TestRunMarkerSidecarConcurrentRewrite`` is a separate real-file race
-        that reads a sidecar a writer rewrites and asserts the torn-value
-        invariant on every platform -- it permits the fold rather than
-        reproducing it deterministically.
+        All ``_REPLACE_MAX_ATTEMPTS`` reads fault, so ``read_launcher`` folds the final
+        ``PermissionError`` to ``None``. The budget is finite by design.
         """
         from windows_sim import read_sharing_violation
 
@@ -329,91 +299,23 @@ class TestRunMarkerSidecarReadRetry:
 class TestRunMarkerSidecarConcurrentRewrite:
     """Real files, real threads: each read overlaps at most ONE in-flight write.
 
-    Deliberately NOT a member of ``TestRunMarkerSidecarReadRetry``. That class's
-    autouse fixture zeroes ``_REPLACE_BACKOFF_SECONDS`` because its simulator
-    tests count attempts; here the real 50 ms backoff MUST stay in force, because
-    it is the product behaviour under test. On Windows the writer's ``os.replace``
-    (``MoveFileEx`` superseding the target) runs with the GIL released, and a read
-    that opens the file inside that one syscall raises WinError 32; the 10 x 50 ms
-    read-retry budget is what rides that single window out so the read still
-    returns the value a writer published rather than folding to a false ``None``.
+    Kept outside ``TestRunMarkerSidecarReadRetry`` so the real 50 ms backoff stays in
+    force: it is what rides out the Windows ``WinError 32`` window of one replace.
 
-    So the handoff below is a strict three-way lock-step that bounds each read
-    to AT MOST ONE completed replace. Each round: the reader releases the
-    writer (``about_to_read``) and reads ``read_launcher`` concurrently, so the
-    read overlaps that round's single in-flight rename; the writer performs
-    exactly one ``atomic_write`` and acknowledges it (``published``); the reader
-    asserts that acknowledgement arrived before advancing (``read_done`` then
-    gates the writer out of the round). Every ``threading.Event`` is cleared by
-    its consumer so a signal is always fresh and never coalesces across rounds.
-
-    The writer's acknowledgement is what makes the race real rather than vacuous.
-    Without it a reader could set and clear its own signals ``rounds`` times while
-    the writer lagged or never ran, and every read would pass against the seeded
-    value -- a green test that proves nothing. The reader instead asserts
-    ``published`` each round, and the test asserts at the end that the writer
-    completed exactly ``rounds`` replaces, so a writer that publishes nothing
-    fails loudly.
-
-    A read therefore overlaps at most one live replace (so a torn or empty value
-    is catchable, which a settled-file read could never catch), and the
-    contention window per read is bounded to a SINGLE replace, which fits inside
-    the real retry budget -- unlike a back-to-back tight loop, which could chain
-    several replace windows into one read and legitimately exhaust the budget.
-    That bounded, acknowledged overlap is what lets the assertion stay strict:
-    ``got in values`` (never ``None``).
+    A three-way lock-step (``about_to_read``, ``published``, ``read_done``) bounds each
+    read to one replace, so ``got in values`` can stay strict; a tight loop could chain
+    several windows and exhaust the budget. Each ``threading.Event`` is cleared by its
+    consumer so signals never coalesce across rounds.
     """
 
     def test_each_read_overlaps_one_acknowledged_replace_without_tearing(
         self, tmp_path, monkeypatch
     ):
-        """The issue's own reproduction, on real files, with the real backoff.
+        """Every read returns a value some writer published: never torn, never ``None``.
 
-        Each round is a strict three-way lock-step. The reader signals
-        ``about_to_read`` and immediately calls ``read_launcher`` while the writer
-        -- released by that same signal -- performs exactly ONE ``atomic_write``
-        (mkstemp + ``os.replace``) of the next value and then sets ``published``.
-        The reader asserts ``published`` arrived, clears it, and only then signals
-        ``read_done`` to let the writer wait for the next round. So every read
-        overlaps at most one live replace: the window a read can land in is a
-        single rename, which fits inside the real 10 x 50 ms retry budget.
-
-        The invariant asserted holds on EVERY platform and is strict:
-
-            assert got in values
-
-        A read that returns anything must return a value SOME writer published --
-        never a torn or empty value (atomicity: ``os.replace`` is all-or-nothing,
-        and the retry rides out the Windows sharing-violation window of the one
-        replace it overlaps), and never ``None`` (a false absence). This is why
-        the real backoff stays in force: a regression that shrank or removed the
-        50 ms spacing would let the overlapped Windows read exhaust the budget and
-        fold to ``None``, which this assertion would then catch -- whereas with
-        the backoff zeroed (the simulator fixture) even a single replace window
-        can outlast the whole budget, so zeroing it here would make the test
-        unable to tell the product's spacing from its absence.
-
-        The writer's acknowledgement is asserted so the race is never vacuous.
-        The reader asserts ``published`` each round, and the end of the test
-        asserts the writer completed exactly ``rounds`` replaces (``publishes ==
-        rounds``). A writer that lags or never runs therefore fails the test
-        instead of leaving ``got in values`` to pass against the seeded value.
-
-        The launcher-marker sidecar stands in for the whole sidecar family here:
-        the read-retry chokepoint (``read_bytes_with_retry``) is shared by every
-        reader, so the overlap invariant is identical whichever sidecar is
-        exercised. ``read_secret`` has its own deterministic coverage.
-
-        The Windows sharing-violation FOLD (a window that outlasts the whole
-        budget) is owned deterministically by the simulator tests in
-        ``TestRunMarkerSidecarReadRetry``; an uncoordinated real-file race cannot
-        pin that far edge on every platform, so it is not asserted here. This
-        test owns the complementary real-file guarantee: a bounded single-replace
-        overlap, acknowledged by the writer, is ridden out, never torn, never a
-        false absence.
-
-        The writer's failure is surfaced, not swallowed: a writer that dies would
-        otherwise leave a stable file every later read passes against vacuously.
+        ``publishes == rounds`` and the surfaced writer error keep the race from passing
+        vacuously against the seeded value. The launcher sidecar stands in for all
+        sidecars, since ``read_bytes_with_retry`` is shared.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.atomic_write import atomic_write
@@ -492,11 +394,9 @@ class TestRunMarkerSidecarConcurrentRewrite:
 class TestRunMarkerDiscovery:
     """``marker_ports`` — filename-only discovery.
 
-    This backs ``cli_server.resolve_client_port``'s zero-config fallback, so the
-    contract under test is: filename-only parsing and no directory creation.
-    Deciding whether a discovered port is *trustworthy* is deliberately NOT this
-    module's job (a listener is not proof of identity) — see
-    ``TestResolveClientPortRunMarker`` for the ownership gate.
+    Backs ``cli_server.resolve_client_port``'s fallback: no directory creation. Trust
+    in a port is checked in ``TestResolveClientPortRunMarker`` (a listener is not
+    proof of identity).
     """
 
     def _marker(self, home, name: str) -> None:
@@ -613,13 +513,10 @@ class TestRunMarkerDiscovery:
     def test_the_pid_body_still_parses_under_the_reader_shipped_on_main(
         self, tmp_path, monkeypatch
     ):
-        """The whole point of splitting the record out of the pid file.
+        """The pid file holds only digits, so an older client's reader still parses it.
 
-        ``read_pid`` as shipped on ``origin/main`` is ``_read_sidecar(port,
-        ".pid")`` -- the WHOLE file, stripped -- gated on ``isdigit()``. This
-        asserts the body a live ``write_marker`` produces against exactly that
-        reader, so a second line can never be reintroduced without a red test.
-        An older client venv sharing this data home is the caller that breaks.
+        That reader takes the WHOLE ``.pid`` file, stripped, gated on ``isdigit()``; a
+        second line would break an older client venv sharing this data home.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.instances import run_marker
@@ -755,3 +652,447 @@ class TestRunMarkerDiscovery:
         assert not (d / "gateway-6777.bin").exists()
         assert (d / "sandbox-6776.bin").exists()
         assert (d / "gateway-abc.bin").exists()
+
+
+class TestDataHomePointer:
+    """``gateway-<port>.home`` in the default run dir names a non-default data home."""
+
+    @pytest.fixture
+    def run_marker(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import run_marker
+
+        default_run = tmp_path / "default" / "run"
+        default_run.mkdir(parents=True)
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", default_run)
+        monkeypatch.setattr(run_marker, "gateway_launcher_path", lambda: "/venv/bin/kirocrew")
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-wrapped"))
+        monkeypatch.setattr(
+            run_marker, "_PUBLISHED_LISTENERS", {5476: {"127.0.0.1"}, 5477: {"127.0.0.1"}}
+        )
+        return run_marker
+
+    def test_writes_a_pointer_of_its_data_home_then_its_launcher(self, run_marker):
+        import stat
+
+        from kiro_crew.config.paths import config_dir
+
+        run_marker.write_marker(5477)
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_text(encoding="utf-8") == f"{config_dir()}\n/venv/bin/kirocrew\n"
+        if os.name == "posix":
+            assert stat.S_IMODE(pointer.stat().st_mode) == 0o600
+
+    def test_writes_an_empty_launcher_line_for_a_source_tree_launch(self, run_marker, monkeypatch):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "gateway_launcher_path", lambda: None)
+        run_marker.write_marker(5477)
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_text(encoding="utf-8") == f"{config_dir()}\n\n"
+
+    def test_the_default_home_prune_leaves_another_homes_pointer(self, run_marker, monkeypatch):
+        from kiro_crew import port_resolution
+        from kiro_crew.config.paths import config_dir
+
+        run_marker.write_marker(5477)
+        wrapped_home = config_dir()
+        default_run = run_marker._DEFAULT_RUN_DIR
+        (default_run / "gateway-5477.bin").write_text("", encoding="utf-8")  # stale, prunable
+        monkeypatch.setattr(port_resolution, "_gateway_owns_port", lambda port: False)
+        monkeypatch.setenv("KIROCREW_HOME", str(default_run.parent))
+
+        run_marker.write_marker(5476)
+
+        assert run_marker.marker_ports() == [5476]
+        assert (default_run / "gateway-5477.home").read_text(encoding="utf-8") == (
+            f"{wrapped_home}\n/venv/bin/kirocrew\n"
+        )
+
+    @pytest.mark.parametrize(
+        "cover",
+        [("127.0.0.1",), ("0.0.0.0",), ("127.0.0.1", "::1")],
+        ids=["127.0.0.1", "0.0.0.0", "dual-stack"],
+    )
+    def test_a_default_home_gateway_removes_a_pointer_left_for_its_own_port(
+        self, run_marker, monkeypatch, cover
+    ):
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {5476: set(cover)})
+        default_run = run_marker._DEFAULT_RUN_DIR
+        (default_run / "gateway-5476.home").write_text("/elsewhere\n", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(default_run.parent))
+
+        run_marker.write_marker(5476)
+
+        assert not (default_run / "gateway-5476.home").exists()
+        assert run_marker.read_pid(5476) == os.getpid()
+
+    @pytest.mark.parametrize(
+        "listeners",
+        [("127.0.0.2",), ("::1",), ()],
+        ids=["127.0.0.2", "::1", "none"],
+    )
+    @pytest.mark.parametrize("default_home", [False, True], ids=["wrapped", "default"])
+    def test_a_gateway_without_127_0_0_1_cover_leaves_the_pointer_alone(
+        self, run_marker, monkeypatch, caplog, default_home, listeners
+    ):
+        published = {5477: set(listeners)} if listeners else {}
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", published)
+        if default_home:
+            monkeypatch.setenv("KIROCREW_HOME", str(run_marker._DEFAULT_RUN_DIR.parent))
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        seeded = b"/elsewhere\n/other/bin/kirocrew\n"
+        pointer.write_bytes(seeded)
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        assert pointer.read_bytes() == seeded
+        assert any(
+            r.levelno == logging.INFO and "no published listener covers 127.0.0.1" in r.getMessage()
+            for r in caplog.records
+        )
+        assert run_marker.read_pid(5477) == os.getpid()
+
+    def test_writes_no_pointer_when_the_pid_record_names_another_live_gateway(
+        self, run_marker, monkeypatch
+    ):
+        pid_file = run_marker.pid_path(5477)
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("424242\n", encoding="utf-8")
+        run_marker._start_path_for(pid_file).write_text("live-token\n", encoding="utf-8")
+        monkeypatch.setattr(run_marker.platform_compat, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda pid: "live-token")
+
+        run_marker.write_marker(5477)
+
+        assert run_marker.read_pid(5477) == 424242
+        assert not (run_marker._DEFAULT_RUN_DIR / "gateway-5477.home").exists()
+
+    def test_a_pod_writes_no_pointer_while_the_same_gateway_outside_one_does(
+        self, run_marker, monkeypatch
+    ):
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        run_marker.write_marker(5477)
+        assert not pointer.exists()
+
+        monkeypatch.delenv("KIROCREW_POD")
+        run_marker.write_marker(5477)
+        assert pointer.exists()
+
+    def test_never_creates_the_default_run_dir_but_writes_once_it_exists(self, run_marker):
+        default_run = run_marker._DEFAULT_RUN_DIR
+        default_run.rmdir()
+
+        run_marker.write_marker(5477)
+        assert not default_run.exists()
+
+        default_run.mkdir()
+        run_marker.write_marker(5477)
+        assert (default_run / "gateway-5477.home").exists()
+
+    def test_warns_that_the_pointer_was_skipped_because_the_run_dir_is_not_a_dir(
+        self, run_marker, caplog
+    ):
+        run_marker._DEFAULT_RUN_DIR.rmdir()
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        assert any(
+            r.levelno == logging.WARNING
+            and "5477" in r.getMessage()
+            and "is not a dir" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        "pod, dir_exists",
+        [(False, True), (True, False)],
+        ids=["pointer-written", "pod-without-dir"],
+    )
+    def test_logs_no_skip_line_when_the_pointer_is_written_or_in_a_pod(
+        self, run_marker, monkeypatch, caplog, pod, dir_exists
+    ):
+        if pod:
+            monkeypatch.setenv("KIROCREW_POD", "1")
+        if not dir_exists:
+            run_marker._DEFAULT_RUN_DIR.rmdir()
+
+        with caplog.at_level(logging.DEBUG):
+            run_marker.write_marker(5477)
+
+        assert not any("No pointer for port 5477" in r.getMessage() for r in caplog.records)
+
+    def test_a_failed_pointer_write_warns_naming_the_pointer_and_keeps_the_marker(
+        self, run_marker, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda pid: "own-token")
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        pointer.mkdir()
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        prefix = "Could not write the run-marker or pointer for port 5477: "
+        assert any(m.startswith(prefix) and pointer.name in m for m in warnings)
+        assert run_marker.read_pid(5477) == os.getpid()
+        assert run_marker.marker_path(5477).read_text(encoding="utf-8") == "/venv/bin/kirocrew\n"
+        start = run_marker._start_path_for(run_marker.pid_path(5477))
+        assert start.read_text(encoding="utf-8") == "own-token\n"
+
+    @pytest.mark.parametrize(
+        "cover",
+        [("127.0.0.1",), ("0.0.0.0",), ("127.0.0.1", "::1")],
+        ids=["127.0.0.1", "0.0.0.0", "dual-stack"],
+    )
+    def test_clear_marker_removes_the_pointer_naming_this_home(
+        self, run_marker, monkeypatch, cover
+    ):
+        """The pointer is LF where atomic_write's default is CRLF."""
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {5477: set(cover)})
+
+        real = run_marker.atomic_write
+
+        def windows_atomic_write(path, content, *, newline=None, **kwargs):
+            if newline is None and isinstance(content, str):
+                return real(path, content.replace("\n", "\r\n"), newline="", **kwargs)
+            return real(path, content, newline=newline, **kwargs)
+
+        monkeypatch.setattr(run_marker, "atomic_write", windows_atomic_write)
+        run_marker.write_marker(5477)
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_bytes() == os.fsencode(config_dir()) + b"\n/venv/bin/kirocrew\n"
+
+        run_marker.clear_marker(5477)
+
+        assert not pointer.exists()
+
+    @pytest.mark.parametrize(
+        "this_home_plus_cr", [False, True], ids=["elsewhere", "this-home-plus-cr"]
+    )
+    def test_clear_marker_leaves_a_pointer_naming_another_home(self, run_marker, this_home_plus_cr):
+        from kiro_crew.config.paths import config_dir
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        home = os.fsencode(config_dir()) + b"\r" if this_home_plus_cr else b"/elsewhere"
+        pointer.write_bytes(home + b"\n/venv/bin/kirocrew\n")
+
+        run_marker.clear_marker(5477)
+
+        assert pointer.exists()
+
+    def test_clear_marker_leaves_its_own_homes_pointer_without_127_0_0_1_cover(
+        self, run_marker, monkeypatch
+    ):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {5477: {"127.0.0.2"}})
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        own = os.fsencode(config_dir()) + b"\n/venv/bin/kirocrew\n"
+        pointer.write_bytes(own)
+
+        run_marker.clear_marker(5477)
+
+        assert pointer.read_bytes() == own
+        assert run_marker.published_listeners(5477) == frozenset()
+
+    @pytest.mark.parametrize("case", ["missing", "this-home", "other-home"])
+    def test_clear_marker_forgets_its_listeners_and_its_pointer_even_when_not_utf8(
+        self, run_marker, monkeypatch, case
+    ):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {})
+        run_marker.note_published_listener(5477, "127.0.0.1")
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        home = {"this-home": os.fsencode(config_dir()), "other-home": b"/elsewhere"}.get(case)
+        if home is not None:
+            pointer.write_bytes(home + b"\n\xff\n")
+
+        run_marker.clear_marker(5477)
+
+        assert run_marker.published_listeners(5477) == frozenset()
+        assert pointer.exists() == (case == "other-home")
+
+    def test_a_pointer_write_landing_after_the_clean_stop_removes_itself(
+        self, run_marker, monkeypatch
+    ):
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        real = run_marker.atomic_write
+
+        def stop_during_write(path, content, **kwargs):
+            if Path(path) == pointer:
+                run_marker.clear_marker(5477)
+            return real(path, content, **kwargs)
+
+        monkeypatch.setattr(run_marker, "atomic_write", stop_during_write)
+        run_marker.write_marker(5477)
+
+        assert not pointer.exists()
+
+    def test_a_late_pointer_write_leaves_a_successors_pointer_in_place(
+        self, run_marker, monkeypatch
+    ):
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        lock = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home.lock"
+        real = run_marker.atomic_write
+        done = threading.Event()
+        errors: list[BaseException] = []
+
+        def successor():
+            try:
+                with run_marker._marker_lock(5477, lock) as locked:
+                    assert locked
+                    real(pointer, "/other-home\n/other/bin/kirocrew\n", mode=0o600, newline="")
+            except BaseException as e:
+                errors.append(e)
+            finally:
+                done.set()
+
+        # The predecessor holds the pointer lock for the whole write, so the successor
+        # can only land after write_marker returns; waiting for it inside the write
+        # would just time out against that lock.
+        thread = threading.Thread(target=successor)
+
+        def predecessor_write(path, content, **kwargs):
+            if Path(path) == pointer:
+                run_marker.clear_marker(5477)
+                thread.start()
+            return real(path, content, **kwargs)
+
+        monkeypatch.setattr(run_marker, "atomic_write", predecessor_write)
+        run_marker.write_marker(5477)
+
+        assert done.wait(timeout=10)
+        thread.join(timeout=10)
+        assert pointer.read_text(encoding="utf-8") == "/other-home\n/other/bin/kirocrew\n", errors
+
+    def test_writes_no_pointer_and_logs_why_while_the_pointer_lock_is_held(
+        self, run_marker, monkeypatch, caplog
+    ):
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(run_marker, "_MARKER_LOCK_TIMEOUT_SECS", 0.05)
+        lock = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home.lock"
+        (run_marker._DEFAULT_RUN_DIR / "gateway-5477.home").write_text(
+            "/stale-home\n/stale/bin/kirocrew\n", encoding="utf-8"
+        )
+        fd = os.open(os.fspath(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            with platform_compat.file_lock(fd, exclusive=True), caplog.at_level(logging.INFO):
+                run_marker.write_marker(5477)
+        finally:
+            os.close(fd)
+
+        assert run_marker.marker_path(5477).exists()
+        assert not (run_marker._DEFAULT_RUN_DIR / "gateway-5477.home").exists()
+        assert any(
+            "No pointer for port 5477" in r.getMessage() and "pointer lock" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def _stop_and_successor_before_pointer_lock(self, run_marker, monkeypatch, *, lock_taken):
+        """Make the pointer lock acquire after a stop and a successor's pointer write."""
+        lock = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home.lock"
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        real_lock = run_marker._marker_lock
+
+        @contextlib.contextmanager
+        def stop_then_lock(port, path=None):
+            if path != lock:
+                with real_lock(port, path) as locked:
+                    yield locked
+                return
+            run_marker.clear_marker(5477)
+            pointer.write_text("/other-home\n/other/bin/kirocrew\n", encoding="utf-8")
+            if not lock_taken:
+                yield False
+                return
+            with real_lock(port, path) as locked:
+                yield locked
+
+        monkeypatch.setattr(run_marker, "_marker_lock", stop_then_lock)
+
+    def test_a_writer_whose_stop_ran_before_the_pointer_lock_writes_nothing(
+        self, run_marker, monkeypatch
+    ):
+        self._stop_and_successor_before_pointer_lock(run_marker, monkeypatch, lock_taken=True)
+
+        run_marker.write_marker(5477)
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_text(encoding="utf-8") == "/other-home\n/other/bin/kirocrew\n"
+
+    def test_a_stopped_writer_without_the_pointer_lock_leaves_the_successors_pointer(
+        self, run_marker, monkeypatch
+    ):
+        self._stop_and_successor_before_pointer_lock(run_marker, monkeypatch, lock_taken=False)
+
+        run_marker.write_marker(5477)
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_text(encoding="utf-8") == "/other-home\n/other/bin/kirocrew\n"
+
+    def test_an_unavailable_pointer_lock_drops_a_planted_pointer(self, run_marker, caplog):
+        (run_marker._DEFAULT_RUN_DIR / "gateway-5477.home.lock").mkdir()
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        pointer.write_text("/planted-home\n/planted/bin/kirocrew\n", encoding="utf-8")
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        assert run_marker.marker_path(5477).exists()
+        assert not pointer.exists()
+        assert any(
+            "No pointer for port 5477" in r.getMessage() and "pointer lock" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs privilege")
+    def test_the_pointer_lock_does_not_follow_a_symlink(self, run_marker, tmp_path):
+        target = tmp_path / "elsewhere" / "target"
+        target.parent.mkdir()
+        (run_marker._DEFAULT_RUN_DIR / "gateway-5477.home.lock").symlink_to(target)
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        pointer.write_text("/planted-home\n/planted/bin/kirocrew\n", encoding="utf-8")
+
+        run_marker.write_marker(5477)
+
+        assert not target.exists()
+        assert not pointer.exists()
+
+    def test_clear_marker_forgets_the_port_before_it_reads_the_pointer(
+        self, run_marker, monkeypatch
+    ):
+        from kiro_crew.config.paths import config_dir
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        pointer.write_bytes(os.fsencode(config_dir()) + b"\n/venv/bin/kirocrew\n")
+        seen = []
+        real_read_bytes = Path.read_bytes
+
+        def spy_read_bytes(self):
+            if self == pointer:
+                seen.append(run_marker.published_listeners(5477))
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+        run_marker.clear_marker(5477)
+
+        assert seen == [frozenset()]
+        assert not pointer.exists()
+
+    def test_spec_states_the_shutdown_wait_an_orphan_pointer_outlasts(self):
+        from kiro_crew.slack.gateway_runtime.exit_path import _MARKER_WRITE_WAIT_SECS
+
+        spec = Path(__file__).resolve().parent.parent / "docs/system-specs/modules/instances.md"
+        text = " ".join(spec.read_text(encoding="utf-8").split())
+
+        assert f"stalls past shutdown's {_MARKER_WRITE_WAIT_SECS:g} s wait" in text

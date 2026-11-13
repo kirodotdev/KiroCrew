@@ -31,6 +31,8 @@ The rest of the suite sits beside it, one file per area:
 * ``test_pipeline_conductor_fleet_probe_host_lines.py`` -- host posture and the BANNED line;
 * ``test_pipeline_conductor_fleet_probe_cycle.py`` -- one probe cycle, dispositions, config
   and ``main``;
+* ``test_pipeline_conductor_fleet_probe_state_read.py`` -- how a mark reads the state file
+  it writes, and why an unreadable one is refused;
 * ``test_pipeline_conductor_fleet_probe_worker_count.py``,
   ``test_pipeline_conductor_fleet_probe_program_position.py`` and
   ``test_pipeline_conductor_fleet_probe_argv_row.py`` -- the argv runner shape.

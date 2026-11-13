@@ -127,11 +127,11 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import ChatPage from '../pages/ChatPage'
 
-function renderChat() {
+async function renderChat() {
   const store = createTestStore()
   act(() => { store.dispatch(sseSlots([{ key: 'slot-0', title: 'Session 0' } as never])) })
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  render(
+  await act(async () => { render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <ThemeProvider>
@@ -141,7 +141,7 @@ function renderChat() {
         </ThemeProvider>
       </Provider>
     </QueryClientProvider>,
-  )
+  ) })
   return store
 }
 
@@ -170,8 +170,8 @@ describe('ChatPage — mobile sessions drawer frame budget', () => {
   })
   afterEach(() => { vi.clearAllMocks() })
 
-  it('insulates the sidebar from per-frame streaming re-renders', () => {
-    const store = renderChat()
+  it('insulates the sidebar from per-frame streaming re-renders', async () => {
+    const store = await renderChat()
     // The mobile drawer unmounts the sidebar while closed, so the window this
     // guards is the one where it IS mounted: the slide and everything after.
     openDrawer()
@@ -197,8 +197,8 @@ describe('ChatPage — mobile sessions drawer frame budget', () => {
    * real device and rejected on appearance. A future pass reading "full-viewport
    * backdrop-filter" as free perf budget should have to delete this test.
    */
-  it('keeps the frosted scrim, in motion and at rest', () => {
-    renderChat()
+  it('keeps the frosted scrim, in motion and at rest', async () => {
+    await renderChat()
     openDrawer()
     expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-xs')
     finishSlide()

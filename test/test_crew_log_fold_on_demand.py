@@ -29,6 +29,7 @@ from crew_log_fold_eager_helpers import (  # noqa: F401 -- the autouse fixture r
 )
 
 from kiro_crew.crew_log import bus, eager
+from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.dashboard_feed import DashboardFeed
 
 
@@ -89,7 +90,11 @@ def test_on_demand_still_folds_for_the_conductor_wake_filter():
     _wake_work("s-od-cw", "it-1")
     assert (WORK_SLOT, "work") in _memo_keys()
     events = _work_events(seen)
-    assert events and events[-1].value["items"][0]["item_id"] == "it-1"
+    # A work event carries no whole value (a delta, or snapshot_needed): the board the
+    # receiver reads on it holds the item.
+    assert events and events[-1].value is None
+    board = crew_log.read_slot_projection(WORK_SLOT, "work", cold=False).value
+    assert board["items"][0]["item_id"] == "it-1"
     # Other folds the same entry wakes have no subscriber and stay cold.
     assert {fold for (slot, fold) in _memo_keys() if slot == WORK_SLOT} == {"work"}
 
@@ -105,6 +110,9 @@ def test_on_demand_still_folds_for_a_dashboard_feed_with_its_baseline():
     # A cold cell gives no baseline at subscribe time: one background prime folds it
     # and publishes, and that event is the feed's first value. ``drain`` waits for it.
     assert eager.drain(timeout=10.0)
+    # That first publish is a value-less ``snapshot_needed``: the feed re-reads the cell
+    # on its own thread, and ``wait_for_primes`` waits for that read too.
+    feed.wait_for_primes()
     baseline = feed.fold_value("work")
     assert baseline and [i["item_id"] for i in baseline["items"]] == ["it-0"]
     _wake_work("s-od-feed-1", "it-1")

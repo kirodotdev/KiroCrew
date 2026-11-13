@@ -96,9 +96,10 @@ export function splitPaneFixtures(slots) {
  *
  * @param now     epoch seconds the fixture timestamps count back from
  * @param queued  the queued entry's content (its wire text)
+ * @param meta    more of the queued entry's meta, beside its `queueId`
  * @returns { slots, detailA, detailB }
  */
-export function queuedPaneFixtures(now, queued) {
+export function queuedPaneFixtures(now, queued, meta = {}) {
   return {
     slots: [
       { key: 'pane-a', title: 'Design notes', running: false, last_message: 'Working through phase one…', messages: 2, agent: 'kirocrew', memory_mode: 'persistent', modified: Math.floor(now) },
@@ -116,7 +117,7 @@ export function queuedPaneFixtures(now, queued) {
       messages: [
         { role: 'user', ts: now - 120, content: 'Run the deployment checklist for the new release.', cls: 'msg msg-user' },
         { role: 'assistant', ts: now - 60, content: 'Starting phase one: build verification. This will take a few minutes.', cls: 'msg msg-assistant' },
-        { role: 'queued', ts: now - 10, content: queued, cls: 'msg msg-queued', meta: { queueId: 'q-demo-1' } },
+        { role: 'queued', ts: now - 10, content: queued, cls: 'msg msg-queued', meta: { queueId: 'q-demo-1', ...meta } },
       ],
     },
   }

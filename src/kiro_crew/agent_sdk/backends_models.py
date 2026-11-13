@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Mapping
+from typing import FrozenSet, Mapping
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -27,8 +27,10 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -50,6 +52,11 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # ``provider/model`` id pi resolved from its own ``models.json``
 # (``test/fixtures/acp_frames/pi/session-live.jsonl``).
 #
+# ``ACP_BACKEND_MIMOCODE`` is a member on the same evidence as opencode, whose ACP
+# server it forks: its ``session/new`` result advertises a ``model`` select whose
+# ``currentValue`` is the ``provider/model`` id named in ``MIMOCODE_CONFIG_CONTENT``
+# (``test/fixtures/acp_frames/mimocode/session-live.jsonl``).
+#
 # ``ACP_BACKEND_DEEPSEEK`` is a member on the same kind of evidence, with one shape
 # to respect: its ``model`` select carries OPAQUE values. Each is a JSON-encoded
 # ``[provider, model]`` pair -- ``["deepseek-official", "deepseek-v4-flash"]`` -- so
@@ -63,6 +70,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -151,6 +159,13 @@ def model_refusal_phrase(backend: str) -> str:
 # the bare code is a value refusal there too. A ``model`` write resets the variant
 # to the new model's first one, which is why the live switch re-applies the level.
 # ``test/fixtures/acp_frames/opencode/effort-live.jsonl`` is the evidence.
+#
+# mimocode is NOT a member, though its parent is. On 0.1.15 the ``session/new`` result
+# carries a ``model`` select and a ``mode`` select and no effort option: a model's
+# reasoning variants are advertised as model ids of their own,
+# ``<provider>/<model>/<variant>`` (``acp/agent.ts:1686-1692``; seen live as
+# ``xiaomi/mimo-v2.6-flash/low`` beside ``xiaomi/mimo-v2.6-flash``), so the level is
+# chosen with the model and there is no separate option for this channel to write.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -174,6 +189,20 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
 # context window and must reach the wire intact, and opencode's ``provider/model``
 # ids carry no suffix at all -- neither may inherit a split it never advertised.
 ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
+
+# Backends whose ``model`` config option takes ANY string. The push ladder reads a
+# harness's refusal of a value outside its own select as its signal to stay on the
+# backend's default; whether every other member of
+# ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`` refuses such a value was not measured here.
+# A member here answers success instead: MiMo Code 0.1.15's
+# ``setSessionConfigOption`` parses the value into ``provider/model`` and stores it
+# without looking it up. Measured live: an inherited ``claude-opus-5.5`` pin was
+# accepted, and every prompt after it failed inside the harness with
+# ``ProviderModelNotFoundError`` while the ACP turn ended ``end_turn`` with no
+# content, so the session looked like a model that answers nothing. On a member
+# the client therefore judges the value against the advertised select itself
+# before it writes, and a value the select does not carry is handled as refused.
+ACP_BACKENDS_MODEL_SELECT_UNCHECKED = frozenset({ACP_BACKEND_MIMOCODE})
 
 # The ``configId`` each backend spells its reasoning-effort option with. One home
 # for a fact that is per-harness vocabulary, not a constant: claude-agent-acp
@@ -256,10 +285,35 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # "Effort configuration is currently not available on <model>", and
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
-# take a level, is the right authority for them.
+# take a level, is the right authority for a concrete model id. A claude session
+# on no concrete id (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``) is the one case the
+# registry cannot name, and there the option the adapter built for that model
+# answers instead.
+#
+# mimocode is NOT a member: membership presumes the effort channel above, which it is
+# outside. Its levels are model ids, so no advertised effort option exists to read.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
+
+# Backends whose unpinned session serves a pseudo-model rather than a concrete
+# id: the head of the advertised model list, which claude-agent-acp names
+# ``default`` and reports when no model setting applies, or no id at all where a
+# build reports the ``model`` option's current value as ``""``. The registry and
+# its name heuristic recognise neither, so asking them would hide the effort
+# control on every such session and drop a configured level at start. The adapter
+# still rebuilds its effort select for the model it actually serves, so for a
+# member on the pseudo-model that select answers whether a level applies
+# (``AcpProvider.supports_effort``); every concrete id keeps the registry answer.
+ACP_BACKENDS_DEFAULT_PSEUDO_MODEL = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose session offers the ``ultracode`` switch to the dashboard: it changes
+# how Claude Code plans work, not which tools run or how they are approved. Opt-in
+# (harness-parity H6); see claude-code-provider.md, "The ultracode switch".
+ACP_BACKENDS_ULTRACODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
+
+#: The ``configId`` of that switch.
+ULTRACODE_CONFIG_OPTION_ID = "ultracode"
 
 
 def effort_config_option_id(backend: str) -> str:
@@ -337,7 +391,9 @@ def effort_config_option_value(
 # the advertised levels rather than offered, accepted or stepped down onto.
 # claude-agent-acp also offers ``default``, but outside
 # ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` the registry, not the advertised
-# list, decides what it may be sent, so it needs no row.
+# list, decides what it may be sent, so it needs no row here. Its ``default`` is
+# what a live clear writes, which ``EFFORT_CONFIG_OPTION_CLEAR_VALUES`` below
+# records; a value hidden here never reaches that check, so no backend has both.
 EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES: Mapping[str, frozenset[str]] = {
     ACP_BACKEND_OPENCODE: frozenset({"default"}),
 }
@@ -347,6 +403,27 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
     """*values* advertised by *backend*'s effort option, minus its no-override values."""
     hidden = EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES.get(backend, frozenset())
     return [value for value in values if value not in hidden]
+
+
+# The value a backend's effort option takes to DROP a level live, for a backend
+# measured doing so. claude-agent-acp's ``default`` clears the adapter's flag layer
+# and hands effort back to the CLI's own per-model resolution, which is what a cold
+# start with no slot level runs: ``test/fixtures/acp_frames/claude/effort-clear-live.jsonl``
+# writes ``high`` and then ``default`` on one session and reads each back.
+# ``clear_effort`` writes this value instead of asking for a session reset. A backend
+# without a row keeps the reset. Opt-in (harness-parity H6): opencode offers a
+# ``default`` too, but no capture shows what writing it does there, so it has no row.
+#
+# Read ONLY through :func:`effort_config_option_clear_value`, for the reason
+# ``EFFORT_CONFIG_OPTION_IDS`` gives.
+EFFORT_CONFIG_OPTION_CLEAR_VALUES: Mapping[str, str] = {
+    ACP_BACKEND_CLAUDE: "default",
+}
+
+
+def effort_config_option_clear_value(backend: str) -> str | None:
+    """The value that clears *backend*'s effort level live, or None when only a reset does."""
+    return EFFORT_CONFIG_OPTION_CLEAR_VALUES.get(backend)
 
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
@@ -376,6 +453,13 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
 # is the only vocabulary its ``session/set_config_option`` accepts, and the static
 # registry names none of them.
 #
+# ``ACP_BACKEND_MIMOCODE`` is a member for the capture half for opencode's reason: its
+# ids are ``provider/model`` pairs from its own provider list, and a model's
+# reasoning variants are advertised as further rows of the same select
+# (``xiaomi/mimo-v2.6-pro/high``) rather than as a separate effort option, so the
+# advertised select is the only vocabulary its ``session/set_config_option``
+# accepts.
+#
 # ``ACP_BACKEND_PI`` is a member for the capture half too, and its ids come from
 # the same place opencode's do: ``provider/model`` pairs out of the operator's own
 # ``models.json`` (``ollama/llama3.2:3b`` for a local model), which no static
@@ -404,6 +488,7 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -441,8 +526,11 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
     Two opt-ins, one answer: the caller's own per-session request (the dashboard
     slot's Auto intent) first, then :data:`CC_PERMISSION_MODE_ENV` for an operator
     who wants every session on the backend's classifier. ``None`` leaves the
-    seeded ``settings.local.json`` without a ``defaultMode`` key at all, which is
-    the backend's own per-tool default -- so with nothing asking, nothing widens.
+    seeded ``settings.local.json`` without a ``defaultMode`` key at all, so the
+    user's own settings name the starting mode. With
+    :data:`CC_PIN_INHERITED_MODE_ENV` on, ``AcpClient._pin_claude_starting_mode``
+    then moves an ``auto`` or ``bypassPermissions`` start of a session that
+    carries Crew's tools to ``default``, at or above the adapter's version floor.
 
     Fail-closed in both axes. A backend that seeds no per-session settings file
     gets ``None``, asked of :data:`ACP_BACKENDS_SEED_LOCAL_SETTINGS` rather than of
@@ -468,12 +556,45 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
         return CC_PERMISSION_MODE_AUTO
     if requested:
         logger.warning(
-            "permission mode %r is not recognised (only %r is); this session runs on "
-            "the backend's own per-tool default",
+            "permission mode %r is not recognised (only %r is); this session runs as "
+            "if no mode was requested",
             requested,
             CC_PERMISSION_MODE_AUTO,
         )
     return None
+
+
+#: Operator lever, off by default, read by :func:`resolve_cc_pin_inherited_mode`.
+CC_PIN_INHERITED_MODE_ENV = "KIROCREW_CC_PIN_INHERITED_MODE"
+
+
+def resolve_cc_pin_inherited_mode() -> bool:
+    """Whether a claude session that carries Crew's tools has its starting mode pinned.
+
+    Off by default: such a session keeps the mode the user's own settings or its
+    resumed transcript start it in, ``auto`` included. On, an ``auto`` or
+    ``bypassPermissions`` start that Crew did not request is moved to ``default``
+    before the first prompt (``AcpClient._pin_claude_starting_mode``). A truthy
+    value (``1``, ``true``, ``yes``, ``on``) turns it on. Any other value leaves it
+    off, and one that is not a falsy spelling warns, since a lever an operator
+    believes is set should not do nothing in silence.
+    """
+    # Function-scope import: an owner module imports only the standard library and
+    # the facade at module scope (``test_backends_vocabulary_family``).
+    from kiro_crew.constants import ENV_FALSY, ENV_TRUTHY
+
+    raw = os.environ.get(CC_PIN_INHERITED_MODE_ENV, "")
+    value = raw.strip().lower()
+    if value in ENV_TRUTHY:
+        return True
+    if value and value not in ENV_FALSY:
+        logger.warning(
+            "%s=%r is not recognised (set it to 1 to turn it on); the starting-mode "
+            "pin stays off",
+            CC_PIN_INHERITED_MODE_ENV,
+            raw,
+        )
+    return False
 
 
 # Which model-registry NAMESPACE a backend's ids live in. This is a registry index
@@ -509,6 +630,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     ACP_BACKEND_OPENCODE: "opencode",
     # pi likewise: ``provider/model`` pairs from the operator's own models.json.
     ACP_BACKEND_PI: "pi",
+    # MiMo Code likewise, and not opencode's bucket even though it forks opencode:
+    # its provider list is its own (``xiaomi/…``, ``mimo/…``), so a shared bucket
+    # would let one harness's advertised ids replace what the picker offers for the
+    # other.
+    ACP_BACKEND_MIMOCODE: "mimocode",
     # goose likewise, and it is the sharpest case: its ``session/new`` advertises the
     # whole provider catalog it could reach, so sharing the ``acp`` bucket would not
     # merely mix two harnesses' ids -- it would replace kiro-cli's advertised catalog
@@ -524,7 +650,50 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # to them, so sharing the ``acp`` bucket would let a Copilot session replace the
     # list the picker offers for kiro-cli with models kiro-cli cannot serve.
     ACP_BACKEND_COPILOT: "copilot",
+    # strands gets its own key: its ids are ``provider/model`` strings (or bare
+    # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
+    ACP_BACKEND_STRANDS: "strands",
 }
+
+
+#: Backends that take their model as a LAUNCH argument and have no model channel on
+#: the ACP wire. The Strands CLI's Python-project mode reads ``--model`` when it
+#: starts and answers no ``session/set_model`` or model config option, so a member's
+#: startup apply sends nothing (the spawn already passed the pin). A switch on an idle
+#: session replaces the process with one launched on the new model, and that process
+#: ``session/load``s the same session id, so the harness replays its own history
+#: (``acp.launch_tuning``). Strands' own TUI switches the same way: it restarts its
+#: worker on the new model. Such a harness advertises no model list either, so its
+#: picker offers ``auto`` and the model Kiro Crew's settings name for it, and an id
+#: another harness's catalog owns is refused rather than relaunched on.
+ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: Backends that take their reasoning effort as a LAUNCH argument, by the same
+#: mechanism: the Strands CLI reads ``--effort`` when it starts, so a level is
+#: applied at spawn and a change relaunches the process and reloads the session. A
+#: separate set from the model one because the two flags are separate facts of the
+#: CLI, and a harness can take one at launch and the other on the wire.
+ACP_BACKENDS_EFFORT_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: The levels each member of :data:`ACP_BACKENDS_EFFORT_AT_LAUNCH` takes on its argv.
+#: Strands: ``EFFORT_LEVELS`` in ``@strands-agents/harness``, read by
+#: ``cli/arguments.js`` in the pinned release; each of Crew's own levels is spelled the
+#: same there.
+EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND: Mapping[str, FrozenSet[str]] = {
+    ACP_BACKEND_STRANDS: frozenset(
+        {"auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"}
+    ),
+}
+
+
+def launch_effort_supported(backend: str, level: str) -> bool:
+    """Whether a launch-effort harness's CLI takes *level* on its argv.
+
+    The one vocabulary a live change, every cold start and the launch argv judge a
+    level by, so a level the switch accepted is the level the next start launches
+    with. ``False`` for any backend outside the table.
+    """
+    return bool(level) and level in EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND.get(backend, ())
 
 
 def model_registry_namespace(backend: str) -> str:

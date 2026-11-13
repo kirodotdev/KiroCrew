@@ -94,15 +94,8 @@ class TestAgentSkillGlobsHardenedRead:
     ) -> None:
         """An over-cap spec is refused, so the agent falls back to ``[]``.
 
-        The size cap makes this differential: without it the spec would parse
-        and return its globs; the
-        hardened reader refuses it and ``[]`` means "no explicit mapping", so
-        the effect depends on the caller. The skills LISTING
-        (``prompts.py``) drops its agent filter — scope WIDENS to the legacy
-        all-or-nothing default, the same direction any malformed spec already
-        took. The INJECTION plan (``context._skills_injection_plan``) returns
-        ``not is_custom`` for empty globs, so a CUSTOM agent's refused spec
-        drops skill injection to none — fail-closed on that axis.
+        ``[]`` means "no explicit mapping": the listing in ``prompts.py`` widens to all
+        skills, while ``context._skills_injection_plan`` injects none for a custom agent.
         """
         monkeypatch.setattr(kc_hooks, "MAX_FILE_BYTES", 256)
         d = _agents_dir(tmp_path)
@@ -118,13 +111,10 @@ class TestAgentSkillGlobsHardenedRead:
         assert agent_skill_globs("big", agents_dir=d) == []
 
     def test_a_global_agent_is_reopened_from_the_passed_agents_dir(self, tmp_path: Path) -> None:
-        """With BOTH ``agents_dir`` and ``project_dir`` given, a global-scope winner
-        is reopened from ``agents_dir``, not from the machine's real kiro home.
+        """A global-scope winner is reopened from ``agents_dir``, not the real kiro home.
 
-        Differential on that choice: the spec exists ONLY under ``agents_dir``, so
-        resolving to the default home instead would read nothing and return ``[]``.
-        The expanded glob anchors on the project root, which is what
-        ``expand_skill_uri`` does whenever a project is in play.
+        The spec exists only under ``agents_dir``. The glob anchors on the project root,
+        as ``expand_skill_uri`` does whenever a project is in play.
         """
         d = _agents_dir(tmp_path)
         (d / "mapped.json").write_text(

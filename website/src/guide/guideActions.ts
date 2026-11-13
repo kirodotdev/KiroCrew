@@ -32,6 +32,7 @@ import { registeredCopies, registeredId, registeredWithin } from '../uiLocations
 import { GUIDE_GATE_TEXT_KEYS, GUIDE_SELECTION_TEXT_KEYS, isGate, isSelectionScope } from './guidePredicates'
 import { findKey, isFindRole, normalizeName, type FindQuery } from './findByName'
 import { isSensitiveSetting, isTrustRootLocationId, isTrustRootPath } from './findTargetPolicy'
+import { touchFirstForm } from '../lib/touchLayoutForm'
 
 /** Stable `data-guide-anchor` values. A control opts in by carrying one. */
 export const GUIDE_ANCHORS = {
@@ -239,8 +240,9 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
       titleVars: {},
       steps: [
         {
-          // Already on the MCP Servers view: the Add Custom button is visible
-          // and this step is reached at once.
+          // The MCP Servers page's Servers view. Already showing (the page's
+          // default): the Add Custom button is visible and this step is
+          // reached at once.
           target: { kind: 'anchor', anchor: GUIDE_ANCHORS.mcpServersTab },
           complete: { kind: 'reach', targets: [anchor(GUIDE_ANCHORS.mcpAddCustom), anchor(GUIDE_ANCHORS.mcpCustomForm)] },
           textKey: 'components.guideLayer.step_mcp_open_tab',
@@ -259,18 +261,20 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
           textKey: 'components.guideLayer.step_mcp_custom_json',
         },
       ],
-      enter: { kind: 'navigate', to: () => '/capabilities?tab=mcp' },
+      enter: { kind: 'navigate', to: () => '/capabilities?tab=mcp-servers' },
     },
   }
 }
 
-/** `useIsMobile`'s width query (`MOBILE_BREAKPOINT` 768), read directly: the
- *  index's `viewport: mobile` placements are exactly what that hook renders. */
+/** `useIsMobile`'s form, read directly: its width query (`MOBILE_BREAKPOINT`
+ *  768), or a touch-first device's own mode (touchLayoutForm). The index's
+ *  `viewport: mobile` placements are exactly what that hook renders. */
 const PHONE_QUERY = '(max-width: 767px)'
 
 export function currentGuideViewport(): 'desktop' | 'mobile' {
   const mm = typeof window !== 'undefined' ? window.matchMedia : undefined
-  return typeof mm === 'function' && mm.call(window, PHONE_QUERY).matches ? 'mobile' : 'desktop'
+  const phone = touchFirstForm() ?? (typeof mm === 'function' && mm.call(window, PHONE_QUERY).matches)
+  return phone ? 'mobile' : 'desktop'
 }
 
 /** Subscribe to the viewport class changing (for `useSyncExternalStore`). */

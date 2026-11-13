@@ -27,17 +27,25 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_STALLED,
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
+    continue_timed_out_calls,
 )
-from kiro_crew.agent_sdk.mcp_problems import session_mcp_problems
+from kiro_crew.agent_sdk.mcp_problems import (
+    UNATTENDED_MCP_WAIT_SECS,
+    missing_mcp_notice,
+    session_mcp_problems,
+    wait_for_declared_mcp,
+)
 from kiro_crew.agent_sdk.spec_hooks import (
     invalidate_stale_kas_session,
     refuse_stale_switch,
     reproject_claimed_session,
     running_agent,
+    spec_keys_notice,
     turn_spec_hooks,
 )
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
+from kiro_crew.context_assembly.budget import window_for_provider_client
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
     fire_tool_hooks,
@@ -55,7 +63,9 @@ from kiro_crew.messaging.dispatch import (
     rearm_reinjection,
     rollback_skill_bodies,
 )
+from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.providers.base import (
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
@@ -86,6 +96,7 @@ from kiro_crew.task_models import (
     VerificationStatus,
 )
 from kiro_crew.task_planner import group_parallel_tasks
+from kiro_crew.task_status_file import fail_on_declared_failure
 
 if TYPE_CHECKING:
     from kiro_crew.name_grant import Refusal as NameRefusal
@@ -150,6 +161,16 @@ logger = logging.getLogger(__name__)
 
 # Prefix of ``task.error`` when self-review could not judge the step at all.
 _REVIEW_UNVERIFIED = "Self-review could not verify the step"
+
+
+def _step_mcp_problems(provider: object) -> str:
+    """The step notice's MCP line: unusable servers, then declared ones that never reported."""
+    problems, never_reported = session_mcp_problems(provider), missing_mcp_notice(provider)
+    return (
+        f"{problems}; {never_reported}"
+        if problems and never_reported
+        else problems or never_reported
+    )
 
 
 async def _reset_session_quietly(sessions: "SessionManager", session_key: str) -> None:
@@ -367,6 +388,10 @@ async def execute_single_task(
             run=run,
         )
         if on_approval:
+            # The callback keeps its one-argument contract; the task names
+            # its run, so a gate can say WHICH run's task it holds (up to three
+            # runs execute at once and their task indexes overlap).
+            task.run_task_id = run.task_id
             approved = await on_approval(task)
             if approved and task.force_approval:
                 sel().log_api_access(
@@ -649,6 +674,8 @@ def _step_permission_policy(
             event.title,
             session_key=session_key,
             agent=agent,
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict
@@ -762,6 +789,8 @@ async def execute_task(
     # The MCP problem line this step already told the operator about, so a retry
     # on the same broken servers does not repeat the notice every attempt.
     mcp_noticed = ""
+    # Whether this step already said which agent spec keys its session lacks.
+    spec_keys_noticed = False
 
     # ``attempt`` is the TURN ordinal (the re-run prompt reads it), and
     # ``MAX_RETRIES`` bounds the LOGIC failures only: an in-place stall recovery
@@ -831,7 +860,11 @@ async def execute_task(
                 sessions, session_key, agent or "kirocrew", (client, is_new, _resumed), _claim
             )
             _turn_provider = client
-            _mcp_at_open = session_mcp_problems(client)
+            if is_new:
+                # Nobody can reconnect a slow MCP server during a step, so its
+                # first prompt waits (bounded) for the agent spec's servers.
+                await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
+            _mcp_at_open = _step_mcp_problems(client)
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
             if ctx:
@@ -847,13 +880,23 @@ async def execute_task(
                     task_prompt,
                     is_new,
                     session_key,
+                    # No user reads this turn live, so the [OPTIONS:] and
+                    # reply-format guidance a chat turn gets does not apply.
+                    interactive=False,
                     agent=agent or None,
                     project=str(work_dir) if work_dir else None,
                     provider_type=KiroCrewConfig.load().agent.provider,
                     memory_store=memory_store,
+                    # Size the injected context to this step's model, which
+                    # may be pinned smaller than the 1M reference window.
+                    model_window=window_for_provider_client(client),
                     context_provider=client,
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
+                    # Triggers read only what this step asks for, not the role
+                    # text, the plan's other steps, the spec or the instructions
+                    # build_task_prompt wraps it in.
+                    skill_trigger_text=task_trigger_text(task),
                 )
             else:
                 full_prompt = task_prompt
@@ -866,9 +909,20 @@ async def execute_task(
             # the spec the session's projection gated.
             # The agent this session runs NOW: a retry on a session an earlier
             # attempt switched runs the switched-to agent, so its hooks gate.
-            _spec = await turn_spec_hooks(
-                client, running_agent(client, switched_agent or agent or "kirocrew")
-            )
+            _spec_agent = running_agent(client, switched_agent or agent or "kirocrew")
+            _spec = await turn_spec_hooks(client, _spec_agent)
+            if _spec.lost and not spec_keys_noticed:
+                # Once per step, whose session is its own: the notice a dashboard
+                # chat shows at session start.
+                spec_keys_noticed = True
+                try:
+                    await on_notify(
+                        f"\u2139\ufe0f Task {task.index}: agent settings not applied",
+                        spec_keys_notice(_spec_agent, list(_spec.lost)),
+                        run=run,
+                    )
+                except Exception:
+                    logger.debug("spec keys notice failed", exc_info=True)
             # The step's permission ladder, rebuilt when a mode switch changes
             # whose spec hooks gate the requests that follow.
             _policy_for = functools.partial(
@@ -892,7 +946,10 @@ async def execute_task(
             # build and episodic-query embed above are turn setup, not the turn,
             # and this loop re-runs per attempt so each row measures its own turn.
             _turn_t0 = _time.monotonic()
-            async for event in client.stream(full_prompt):
+            # A call whose own silence timer ends the prompt is handed back to the
+            # model on this session (``acp.timed_out_continuation``), so the step
+            # goes on with what it already did instead of re-running from the top.
+            async for event in continue_timed_out_calls(client.stream, full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text
@@ -953,6 +1010,8 @@ async def execute_task(
                     _complete_event = event
                     break
 
+            # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
+            result_text = strip_steering_markers(result_text)
             final_result = result_prefix + result_text
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the
@@ -982,6 +1041,7 @@ async def execute_task(
             # completion, never gets here: the raises above hand those to the
             # retry ladder, and the finally re-arms.
             _turn_landed = True
+            note_turn_landed(sessions, session_key)
             # The ONE place the resume hint is cleared: an attempt completed
             # normally, so nothing it steered is left undone. See Task.resume_hint.
             task.resume_hint = ""
@@ -1020,6 +1080,7 @@ async def execute_task(
                     context_window=_window,
                     elapsed_ms=int((_time.monotonic() - _turn_t0) * 1000),
                     model_source=client,
+                    trigger="workflow",
                 )
             except Exception:
                 logger.debug("usage row (taskrunner) persist failed", exc_info=True)
@@ -1380,7 +1441,7 @@ async def execute_task(
             # one. A failure handler that already reset the session leaves it
             # empty, so the reading taken at open stands in. Operator-only (log
             # + dashboard notification), never fed back into a prompt.
-            mcp_problems = session_mcp_problems(_turn_provider) or _mcp_at_open
+            mcp_problems = _step_mcp_problems(_turn_provider) or _mcp_at_open
             if _acquired:
                 sessions.release(session_key)
             if mcp_problems and mcp_problems != mcp_noticed:
@@ -1398,6 +1459,10 @@ async def execute_task(
                     )
                 except Exception:
                     logger.debug("MCP problem notice failed", exc_info=True)
+
+        # The step's own report decides first: a failure it declared ends the run.
+        if task.status_file and await fail_on_declared_failure(run, task, work_dir):
+            return False
 
         # Only an exit-0 run of the configured command is PASSED (verified).
         if not auto_test:
@@ -1452,6 +1517,13 @@ async def execute_task(
 
     task.status = TaskStatus.FAILED
     return False
+
+
+def task_trigger_text(task: Task) -> str:
+    """The text a step's skill triggers match: its own title and description."""
+    if task.description and task.description != task.title:
+        return f"{task.title}\n\n{task.description}"
+    return task.title
 
 
 async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Path) -> str:
@@ -1676,6 +1748,7 @@ async def self_review(
                 context_window=_window,
                 elapsed_ms=int((_time.monotonic() - _review_t0) * 1000),
                 model_source=client,
+                trigger="workflow",
             )
         except Exception:
             logger.debug("usage row (self_review) persist failed", exc_info=True)

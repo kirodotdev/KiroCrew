@@ -154,7 +154,7 @@ describe('LocalStorageDebug scan', () => {
 
     render(<LocalStorageDebug />)
 
-    expect(screen.getByText('1 keys')).toBeInTheDocument()
+    expect(screen.getByText('1 key')).toBeInTheDocument()
     expect(renderedKeys()).toEqual(['real'])
 
     fireEvent.click(keyRow('real'))

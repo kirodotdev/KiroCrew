@@ -55,7 +55,7 @@ Non-goals:
 | the slot runs `kirocrew-conductor` (or its deprecated alias) | other agents can call the tool too; the exception is the conductor's alone |
 | the wake names its loop id | a wake from outside the fire path has no loop to vouch for it |
 | that loop is the slot's current loop and is active | a wake that outlived a Stop or a replacement may not act |
-| the self-arm record (`autonudge_selfarm.is_recorded_self_arm`) says this loop was armed by this slot's own turn | the gateway never writes it for a cron, a sub-agent, a person's dashboard arm or the bind-time default patrol |
+| the self-arm record (`autonudge_selfarm.is_recorded_self_arm`) says this loop was armed by this slot's own turn, and the loop is not tagged `default_patrol` | the gateway never writes the record for a cron, a sub-agent or a person's dashboard arm. Since 2026-11-02 the default patrol on a crewmate's own thread gets a separate default-patrol grant in the same file so its wakes can fire ([rfc-conductor-default-patrol.md](rfc-conductor-default-patrol.md) section 10). That grant never answers `is_recorded_self_arm`, and a loop tagged `default_patrol` is refused as well |
 | no question card and no tool approval is pending in the slot | a reset would drop the context the answer is meant for |
 
 Any failed check refuses with a reason, audited `denied`, and nothing is queued. The loop is read again after the off-loop trust read, so a Pause or Stop landing inside it still wins. A reset a wake queued also waits, at the turn boundary where it lands, while a question card or tool approval is pending; a person's own reset does not.

@@ -77,6 +77,20 @@ describe('VoiceStatusBar', () => {
     expect(screen.getByText('Default microphone')).toBeTruthy()
   })
 
+  it('shows how long the recording has run, only while recording', () => {
+    const { rerender } = render(<VoiceStatusBar recording level={0.2} />)
+    expect(screen.getByTestId('voice-recording-elapsed').textContent).toBe('0:00')
+    // Capture is over: the strip that explains the wait has no clock, since
+    // nothing is being recorded any more.
+    rerender(<VoiceStatusBar recording={false} level={0} download={{ done: 0, total: 0, stage: 'preparing' }} />)
+    expect(screen.queryByTestId('voice-recording-elapsed')).toBeNull()
+  })
+
+  it('shows no elapsed time beside a mic error', () => {
+    render(<VoiceStatusBar recording level={0.2} error="Microphone permission denied" />)
+    expect(screen.queryByTestId('voice-recording-elapsed')).toBeNull()
+  })
+
   it('shows a dismissible error and prefers it over the recording indicator', () => {
     const onDismissError = vi.fn()
     render(
@@ -115,9 +129,9 @@ describe('VoiceStatusBar', () => {
   it('keeps the notice plain text when there is no action, or the label is not in the text', () => {
     const { rerender } = render(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Dictation added to your message', tone: 'ok' }} />)
     expect(screen.queryByRole('button')).toBeNull()
-    rerender(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use in another chat', tone: 'muted', action: { label: 'kirocrew', onClick: vi.fn() } }} />)
+    rerender(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use elsewhere', tone: 'muted', action: { label: 'kirocrew', onClick: vi.fn() } }} />)
     expect(screen.queryByRole('button')).toBeNull()
-    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use in another chat')
+    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use elsewhere')
   })
 
   it('offers Retry plus one menu holding Save recording and Discard, with Discard as the dismissal', () => {

@@ -60,27 +60,16 @@ class AgentInfo:
     def __post_init__(self) -> None:
         """Make the annotations above TRUE, at every construction site.
 
-        ``~/.kiro/agents`` is a SHARED directory: ACP adapters and IDE plugins
-        drop their own specs there and do not all spell every field as a plain
-        string (observed: ``"model": {"id": "anthropic:claude-opus-4-8"}``, and
-        bare ``null``). ``to_dict()`` is what ``/api/agents/installed``
-        serialises, so any such value reached the dashboard verbatim; rendered as
-        a JSX child it threw React error #31 ("Objects are not valid as a React
-        child") and put the WHOLE Agent Templates tab into the error boundary —
-        every other agent's row with it.
+        ``~/.kiro/agents`` is shared with other tools, which may write a field as
+        an object or ``null`` (e.g. ``"model": {"id": ...}``). ``to_dict()`` feeds
+        ``/api/agents/installed``, and a non-string rendered as a JSX child throws
+        React error #31 and blanks the whole Agent Templates tab. The check lives
+        in the constructor because the fields render bare in several places and
+        there are two construction sites, one an out-of-tree edition seam.
 
-        The enforcement lives HERE rather than in per-field calls at each caller
-        because the fields are rendered bare in several places (`{a.name}`,
-        `{a.package}`, `<SourceBadge source={a.source}>`, `a.filename.startsWith`)
-        and there are two construction sites, one of them an out-of-tree edition
-        seam. A per-field fix at one caller only *looks* complete: the next
-        foreign spelling, or the next field someone renders, reopens the same
-        whole-tab crash. A constructor invariant cannot be forgotten.
-
-        Fallbacks are per field because they are not interchangeable: ``model``
-        defers to ``"auto"`` (see :func:`spec_model` — the same "non-string means
-        no pin" rule the execution path applies), ``source`` to its
-        ``"builtin"`` default, and the free-text fields to empty.
+        Fallbacks are per field: ``model`` defers to ``"auto"`` (the "non-string
+        means no pin" rule of :func:`spec_model`), ``source`` to ``"builtin"``,
+        and the free-text fields to empty.
         """
         for name, fallback in (
             ("name", ""),
@@ -125,10 +114,8 @@ def is_internal_agent_spec(info: object) -> bool:
       cannot put one back. An app launch copy (``kirocrew-app-launch-*``,
       ``apps.agent_launch``) is matched the same way.
 
-    A roster that offers either sends the model straight into a spawn that
-    fails: the read-only spec is written per side turn, after the shared
-    kiro-cli listed its agents, so the child never advertises it. Reads fields
-    with ``getattr`` because the rosters' tests and edition seams hand in rows
+    A roster that offers either sends the model into a spawn that fails.
+    Fields are read with ``getattr`` because tests and edition seams pass rows
     that are not full ``AgentInfo`` objects.
     """
     if is_readonly_spec_description(getattr(info, "description", None)):
@@ -162,20 +149,11 @@ _DEFER_MODEL = "auto"
 def spec_str(data: dict[str, Any], key: str, default: str = "") -> str:
     """Read a raw spec field as a ``str``, for callers that are NOT an AgentInfo.
 
-    ``AgentInfo.__post_init__`` is what enforces the type contract for the
-    dataclass; this is its counterpart for the two places that hand spec fields
-    to the dashboard WITHOUT going through it:
-
-    - ``api_agent_detail``, which returns ``{**data, ...}`` — the raw on-disk spec
-      — so the detail panel receives whatever the file happened to contain.
-    - ``list_agents``, for ``name``, where the useful fallback is the file's own
-      stem rather than the generic empty string.
-
-    ``~/.kiro/agents`` is a SHARED directory: other tools (ACP adapters, IDE
-    plugins) drop their own specs there and do not all spell every field as a
-    plain string. Observed in the wild: ``"model": {"id":
-    "anthropic:claude-opus-4-8"}``, and a bare ``null``. Rendered as a React
-    child, either throws error #31 and blanks the whole Agent Templates tab.
+    The counterpart of ``AgentInfo.__post_init__`` for the two places that hand
+    spec fields to the dashboard without it: ``api_agent_detail`` (the raw spec)
+    and ``list_agents`` for ``name`` (falling back to the file's stem). A
+    non-string field from a shared directory would crash the Agent Templates
+    tab, for the reason given there.
     """
     value = data.get(key, default)
     return value if isinstance(value, str) else default
@@ -191,8 +169,6 @@ def spec_model(data: dict[str, Any]) -> str:
     extracting ``id`` here would make the displayed chip disagree with the model
     actually used — and ``anthropic:claude-opus-4-8`` is a provider-prefixed id
     kiro-cli would reject anyway, turning a display bug into a spawn failure.
-
-    It also leaked into ``subagent.py``'s spawn kwargs as a ``--model`` argument.
     """
     return spec_str(data, "model", _DEFER_MODEL)
 
@@ -206,10 +182,19 @@ def _builder_mcp_skills(data: dict[str, Any]) -> list[str]:
     if not isinstance(bm, dict):
         return []
     args = bm.get("args") or []
+    if not isinstance(args, list):
+        return []
     skills: list[str] = []
     for i, arg in enumerate(args):
         if arg == "--skill-name-filter" and i + 1 < len(args):
-            skills.extend(s.strip() for s in args[i + 1].split(",") if s.strip())
+            # ``~/.kiro/agents`` is a shared directory, so the value after the
+            # flag is not a trusted string: a foreign or mistyped spec may put a
+            # list, number or null there. A non-string contributes no skill
+            # names rather than raising, which would drop the whole agent from
+            # the roster (the scan skips a spec whose row construction throws).
+            value = args[i + 1]
+            if isinstance(value, str):
+                skills.extend(s.strip() for s in value.split(",") if s.strip())
     return skills
 
 
@@ -280,15 +265,11 @@ def expand_skill_uri(
     ``skill://.kiro/skills/*/SKILL.md`` (workspace-relative to the cwd at
     session start).
 
-    A workspace-relative URI resolves against *project_dir* when the caller
-    supplies one — every path that resolves skills for a prompt passes the
-    session's own project, which is the cwd kiro-cli is launched in. With no
-    project supplied it falls back to the project root inferred from
-    *agent_path*: for the ``<project>/.kiro/agents/foo.json`` layout that is three
-    levels up (``foo.json`` -> ``agents`` -> ``.kiro`` -> ``<project>``), so
-    appending the ``.kiro/``-prefixed glob yields ``<project>/.kiro/...`` without
-    doubling the ``.kiro`` segment. Both are best-effort: the cwd kiro-cli
-    actually uses may differ.
+    A workspace-relative URI resolves against *project_dir* (the session's
+    project, which is kiro-cli's cwd) when given, else against the project root
+    three levels above *agent_path* (``<project>/.kiro/agents/foo.json``), so the
+    ``.kiro/`` glob prefix is not doubled. Both are best-effort: kiro-cli's
+    actual cwd may differ.
 
     Returns ``None`` for anything that is not a ``skill://`` URI.
     """
@@ -306,21 +287,13 @@ def expand_skill_uri(
 def skill_uri_for_path(skill_md: Path) -> str:
     """Render a ``SKILL.md`` path as a ``skill://`` resource URI.
 
-    The forward direction of :func:`expand_skill_uri`, and the one renderer both
-    writers that MINT a mapping call -- the Agent Templates editor
-    (``dashboard.handlers._shared.skill_uri_for_key``) and the builtin-agent
-    installers (``agent_materialization.skill_resources``) -- so a mapping written
-    by either expands back to the same path.
+    The inverse of :func:`expand_skill_uri`, shared by both writers that mint a
+    mapping (``dashboard.handlers._shared.skill_uri_for_key`` and
+    ``agent_materialization.skill_resources``). A path under ``$HOME`` is written
+    in portable ``~/`` form; anything else is absolute.
 
-    A path under ``$HOME`` is emitted in ``~/`` form: kiro-cli expands it, and it
-    keeps the written spec portable across machines and home directories. Anything
-    else is emitted absolute, the form :func:`expand_skill_uri` returns unchanged.
-
-    ``agent._relocated_skill_uri`` renders a ``skill://`` URI too and deliberately
-    does NOT come here: it REPOINTS an existing mapping at a relocated skill and
-    keeps whichever form that mapping was already written in, so a ``~/`` entry a
-    person authored stays portable instead of being rewritten absolute. Minting and
-    repointing are different rules, which is why there are two.
+    ``agent._relocated_skill_uri`` does not use this: repointing an existing
+    mapping keeps the form it was written in.
     """
     try:
         rel_home = skill_md.relative_to(Path.home())

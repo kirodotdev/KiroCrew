@@ -132,7 +132,7 @@ class TestConfigDir:
         # KIROCREW_HOME to a tmp dir for every test; this one specifically
         # exercises the UNSET-env default, so clear it and pin Path.home to a
         # tmp dir to keep the assertion hermetic (mirrors
-        # test_config_paths.py::test_default_is_home_dotkirocrew).
+        # test_config_paths.py::test_default_is_home_dotkiro_crew).
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         d = config_dir()

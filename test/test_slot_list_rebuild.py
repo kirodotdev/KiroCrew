@@ -217,6 +217,7 @@ class TestConnectSnapshot:
         state.serialize_slots.return_value = [{"key": "chat-1-1", "title": "restored"}]
         state._folders = []
         state.folders_generation.return_value = 0
+        state.tags_generation.return_value = 0
         state.slot_list_rebuilding = rebuilding
         state.slot_list_held_keys.return_value = ["chat-held"]
         state.slot_list_hold_channels.return_value = True
@@ -237,7 +238,9 @@ class TestConnectSnapshot:
 
         fake_ws = _FakeWebSocket()
         _floor_monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        _floor_monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        _floor_monkeypatch.setattr(
+            dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws
+        )
         _floor_monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", _no_allowlist)
         _floor_monkeypatch.setattr(
             dashboard_ws,
@@ -333,6 +336,55 @@ class TestBootRestore:
             await self._stop_reconciler(state)
 
     @pytest.mark.asyncio
+    async def test_owed_keys_stay_until_the_recent_sessions_pass_has_run(
+        self, state, _floor_monkeypatch
+    ) -> None:
+        seen = []
+
+        async def _open(st) -> int:
+            st.restoring_open_slot_keys = frozenset({"chat-1-100"})
+            return 0
+
+        async def _recent(st, *_a, **_k) -> int:
+            seen.append(st.restoring_open_slot_keys)
+            return 0
+
+        _floor_monkeypatch.setattr(srv.chat, "restore_open_slots_async", _open)
+        _floor_monkeypatch.setattr(srv.chat, "restore_recent_sessions_async", _recent)
+        state.begin_slot_list_rebuild()
+        try:
+            await srv._restore_dashboard_sessions(state, _restore_cfg())
+
+            assert seen == [frozenset({"chat-1-100"})]
+            assert state.restoring_open_slot_keys == frozenset()
+            assert state.owed_slot_keys_known.is_set()
+        finally:
+            await self._stop_reconciler(state)
+
+    @pytest.mark.asyncio
+    async def test_owed_keys_are_cleared_when_the_recent_sessions_pass_raises(
+        self, state, _floor_monkeypatch
+    ) -> None:
+        async def _open(st) -> int:
+            st.restoring_open_slot_keys = frozenset({"chat-1-100"})
+            st.owed_slot_keys_known.set()
+            return 0
+
+        _floor_monkeypatch.setattr(srv.chat, "restore_open_slots_async", _open)
+        _floor_monkeypatch.setattr(
+            srv.chat, "restore_recent_sessions_async", AsyncMock(side_effect=RuntimeError("x"))
+        )
+        state.begin_slot_list_rebuild()
+        try:
+            with pytest.raises(RuntimeError):
+                await srv._restore_dashboard_sessions(state, _restore_cfg())
+
+            assert state.restoring_open_slot_keys == frozenset()
+            assert state.owed_slot_keys_known.is_set()
+        finally:
+            await self._stop_reconciler(state)
+
+    @pytest.mark.asyncio
     async def test_first_complete_channel_pass_releases_the_startup_hold(self, state) -> None:
         state.conversation_log = SimpleNamespace(list_sessions_status=lambda: ([], True))
         state.begin_slot_list_rebuild()
@@ -401,12 +453,10 @@ class TestBootRestore:
     ) -> None:
         """The routine container boot: a remote-only reopen seed must not hold the label.
 
-        Under ``KIROCREW_CONTAINER_AUTHORITY_RESTORED=1`` a listed tab whose transcript
-        is not on local disk stays in ``unrestored_slot_keys`` on EVERY boot, by design
-        (its transcript is fetched lazily, if ever). A finish that waited on that set
-        kept ``slotsPartial`` for the process lifetime, so the dashboard never drained
-        a deleted session's unread dot. The seed and the notice both come from the
-        real restore here, so this proves the condition against what a boot produces.
+        Under ``KIROCREW_CONTAINER_AUTHORITY_RESTORED=1`` a tab whose transcript is not on
+        local disk stays in ``unrestored_slot_keys`` on every boot by design, so waiting
+        on that set would keep ``slotsPartial`` forever. Seed and notice come from the
+        real restore.
         """
         from chat_test_helpers import _make_state
 
@@ -973,3 +1023,68 @@ class TestPartialDeadline:
         assert state.slot_list_rebuilding is True
         assert state._slot_list_rebuild_deadline is not None
         state._slot_list_rebuild_deadline.cancel()
+
+
+class TestDeferredCrewmateThreadHold:
+    @pytest.mark.parametrize(
+        ("driver", "ending"),
+        [("sync", "history_deleted"), ("async", "confirmed_absent"), ("async", "built")],
+    )
+    def test_a_deferred_thread_stays_held_until_it_leaves_the_reopen_seed(
+        self, tmp_path, _floor_monkeypatch, driver, ending
+    ) -> None:
+        """A complete list must not drain the unread mark of a thread waiting on its retry."""
+        from chat_test_helpers import _make_state
+        from members_dm_thread_helpers import CREW
+
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard import chat_persistence, member_slot_retry
+        from kiro_crew.members import DM_SLOT_MODE, dm_binding_path, member_slot_key, slug_for_name
+        from kiro_crew.members_parts import dm_bindings
+
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        slug = slug_for_name(CREW)
+        key = member_slot_key(slug)
+        binding = dm_binding_path(slug)
+        binding.parent.mkdir(parents=True, exist_ok=True)
+        binding.write_text(
+            json.dumps({"member_id": slug, "member": CREW, "slug": slug, "slot_key": key}),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path / "sessions")
+        state.conversation_log.append(f"dashboard:{key}", "user", "hello")
+        state.conversation_log.update_metadata(
+            f"dashboard:{key}", {"agent": CREW, "mode": DM_SLOT_MODE}
+        )
+        (tmp_path / "open_slots.json").write_text(json.dumps({"keys": [key], "ts": 0.0}))
+
+        def unresolved(_cfg, _member_id):
+            raise ValueError("member identity is missing or ambiguous")
+
+        _floor_monkeypatch.setattr(execution_context, "member_config_for_id", unresolved)
+        if driver == "sync":
+            assert chat_persistence.restore_open_slots(state) == 0
+        else:
+            assert asyncio.run(chat_persistence.restore_open_slots_async(state)) == 0
+        assert state.deferred_member_slot_keys == {key}
+        assert state.unrestored_slot_notice["keys"] == [], "deferred, not reported dropped"
+        assert state.slot_list_held_keys() == [key]
+
+        if ending == "built":
+            _floor_monkeypatch.setattr(
+                execution_context, "member_config_for_id", lambda _cfg, _id: (CREW, object())
+            )
+        else:
+            outcome = dm_bindings.DmBindingOutcome.UNKNOWN
+            if ending == "confirmed_absent":
+                outcome = dm_bindings.DmBindingOutcome.CONFIRMED_ABSENT
+            _floor_monkeypatch.setattr(
+                dm_bindings, "resolve_dm_binding_outcome", lambda _key: outcome
+            )
+        built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == (1 if ending == "built" else 0)
+        if ending == "history_deleted":
+            # The retry could not tell, so the seed stays, and with it the hold.
+            assert state.slot_list_held_keys() == [key]
+            state.release_deleted_slot_keys([key])
+        assert state.slot_list_held_keys() == []

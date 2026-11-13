@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,23 @@ from kiro_crew.dashboard.handlers.secrets import (
     _unused_stored_secrets,
     setup_secrets_routes,
 )
+from kiro_crew.platform_compat import symlink_or_junction
 from kiro_crew.secrets import SecretVault
+
+
+def _channels_settings_path() -> str:
+    """The click path to the channel settings tab, as the English dashboard labels it.
+
+    Read from the UI index the dashboard build generates, so a rename of the tab
+    fails here instead of leaving the refusal pointing at a tab that is gone.
+    """
+    from kiro_crew.ui_index import load_index
+
+    idx = load_index()
+    english = idx.labels["en"]
+    page = english[idx.by_id["page.settings"]["label_key"]]
+    tab = english[idx.by_id["settings.tab.channels"]["label_key"]]
+    return f"{page} → {tab}"
 
 
 class _FakeState:
@@ -386,6 +403,12 @@ class TestGerritManagedRows:
     def test_no_hosts_no_rows(self) -> None:
         assert _managed_secret_catalog([], [], False, False, []) == []
 
+    def test_stored_wakatime_oauth_tokens_stay_labelled_while_wakatime_is_off(self) -> None:
+        # The vault routes refuse this entry whether or not WakaTime is enabled,
+        # so a disabled integration must not turn it into a deletable custom row.
+        catalog = _managed_secret_catalog(["WAKATIME_OAUTH_TOKENS"], [], False, False, [])
+        assert catalog == [{"name": "WAKATIME_OAUTH_TOKENS", "kind": "wakatime_oauth"}]
+
     def test_lone_host_offers_the_global_name(self) -> None:
         catalog = _managed_secret_catalog([], [], False, False, [_GERRIT_ONE])
         assert catalog == [
@@ -512,6 +535,90 @@ class TestApiSecretsSet:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/secrets", json={"name": "X"})
                 assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_symlinked_vault_folder_refused_with_json_error(self, tmp_path: Path) -> None:
+        """Saving into a vault whose ``.vault`` folder is a symlink is refused with
+        a typed JSON error the page can render, not a bare 500.
+
+        ``atomic_write`` refuses to write through a symlinked parent, so the
+        secret never lands at the link's target. The handler maps that refusal to
+        a 409 carrying an ``error`` reason and a ``vault_folder_symlinked`` code,
+        and nothing is written through the link.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        data_home = tmp_path / "home"
+        data_home.mkdir()
+        link_target = tmp_path / "elsewhere"
+        link_target.mkdir()
+        # The data home's .vault redirects to another folder: a symlink, or on a
+        # Windows host without symlink privilege a junction, which the handler
+        # and ``atomic_write`` treat the same way.
+        symlink_or_junction(link_target, data_home / ".vault")
+
+        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(data_home)):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/secrets", json={"name": "GH_TOKEN", "value": "s3cr3t"}
+                )
+                assert resp.status == 409
+                assert resp.headers["Content-Type"].startswith("application/json")
+                data = await resp.json()
+                assert data["code"] == "vault_folder_symlinked"
+                # A readable reason the page can show, with no raw server path.
+                assert isinstance(data["error"], str) and data["error"].strip()
+                assert "symlink" in data["error"]
+                assert str(data_home) not in data["error"]
+                assert str(link_target) not in data["error"]
+
+        # Nothing was written through the symlink: no encrypted store landed at
+        # the link's target.
+        assert not (link_target / "secrets.enc").exists()
+        # And the secret is not retrievable, i.e. the vault holds no entry for it.
+        assert SecretVault(data_home).get("GH_TOKEN") is None
+
+    @pytest.mark.asyncio
+    async def test_non_symlink_write_failure_is_generic_json_error(self, tmp_path: Path) -> None:
+        """A vault write that fails for a reason OTHER than a symlinked folder
+        gets a generic JSON error, not the symlink message.
+
+        A full disk, a permission denial or a read-only filesystem raises an
+        OSError that has nothing to do with a symlink. The handler must answer
+        with the ``vault_write_failed`` code and a reason that does not claim the
+        folder is a symlink (the ``.vault`` folder here is a real directory), so
+        the operator is not sent toward the wrong fix.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        # A real .vault directory (not a link), so the symlink branch is not taken.
+        (tmp_path / ".vault").mkdir()
+
+        async def _raise_enospc(
+            _self: SecretVault, _name: str, _item_type: str, _fields: object
+        ) -> str:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch.object(SecretVault, "set_item_with_revision", _raise_enospc),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/secrets", json={"name": "GH_TOKEN", "value": "s3cr3t"}
+                )
+                assert resp.status == 500
+                assert resp.headers["Content-Type"].startswith("application/json")
+                data = await resp.json()
+                assert data["code"] == "vault_write_failed"
+                assert isinstance(data["error"], str) and data["error"].strip()
+                # It must NOT claim a symlink: the folder is a real directory.
+                assert "symlink" not in data["error"].lower()
+                assert str(tmp_path) not in data["error"]
 
 
 class TestApiSecretsDelete:
@@ -1014,7 +1121,7 @@ class TestApiSecretsChannelCredentialRemote:
 
         assert status == 409
         assert data["code"] == "managed_by_channels"
-        assert "Channels" in data["error"]
+        assert _channels_settings_path() in data["error"]
         assert SecretVault(tmp_path).get("SLACK_BOT_TOKEN").reveal() == "xoxb-original"
 
     @pytest.mark.asyncio
@@ -1091,3 +1198,27 @@ class TestApiSecretsChannelCredentialRemote:
             status, _ = await self._call(tmp_path, "delete", name, headers=_REMOTE)
             assert status == 200, name
             assert SecretVault(tmp_path).get(name) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["post", "delete"])
+async def test_wakatime_oauth_tokens_entry_is_not_edited_here(vault_dir: Path, method: str) -> None:
+    """The OAuth flow rotates WAKATIME_OAUTH_TOKENS under its own lock, so the
+    generic routes refuse it with 409 and leave the stored entry untouched."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.config.loader import CRED_WAKATIME_OAUTH_TOKENS
+
+    SecretVault(vault_dir)._set_sync(CRED_WAKATIME_OAUTH_TOKENS, "{}")
+    with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)):
+        async with TestClient(TestServer(_app())) as client:
+            if method == "post":
+                resp = await client.post(
+                    "/api/secrets", json={"name": CRED_WAKATIME_OAUTH_TOKENS, "value": "x"}
+                )
+            else:
+                resp = await client.delete(f"/api/secrets/{CRED_WAKATIME_OAUTH_TOKENS}")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "managed_by_wakatime_oauth"
+    stored = SecretVault(vault_dir).get(CRED_WAKATIME_OAUTH_TOKENS)
+    assert stored is not None and stored.reveal() == "{}"

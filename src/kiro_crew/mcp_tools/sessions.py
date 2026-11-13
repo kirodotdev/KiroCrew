@@ -19,142 +19,21 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
 from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
-from kiro_crew.history_search import split_title_scope
+from kiro_crew.history_search import search_coverage_note, split_title_scope
+from kiro_crew.mcp_tools.catalog.sessions import (  # noqa: F401
+    schemas,
+)
 from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
     LIST_SESSIONS_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
     validate_tool_args,
 )
-
-
-def schemas() -> list[dict[str, Any]]:
-    """Descriptors for the sessions tools."""
-    return [
-        {
-            "name": "search_chat_history",
-            "description": (
-                "Search your own past conversation transcripts (chat history) by "
-                "keyword and get back ranked, snippet-level hits. Use this to "
-                "recover the exact words of a past conversation — 'the error message "
-                "from that debugging session', a name/number/path mentioned earlier, "
-                "the verbatim evidence behind a conclusion memory_recall gave you. "
-                "For what was decided or learned, call memory_recall first: it "
-                "searches the memory store bound to this session by meaning. "
-                "Search like a human: try a query, read the snippets, then re-search "
-                "with different keywords if the first hit isn't right. Returns "
-                "metadata + a short snippet per session (NOT full transcripts) — "
-                "call get_chat_session with a returned session_key to read the full "
-                "thread once a hit looks promising. Scoped to your current workspace "
-                "by default. This is a READ — it never modifies memory or history."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Keyword(s) to search for in past conversations.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max results to return (default 10, max 50).",
-                        "default": 10,
-                    },
-                    "before": {
-                        "type": "string",
-                        "description": "Optional ISO date (YYYY-MM-DD); only sessions modified before this day.",
-                    },
-                    "after": {
-                        "type": "string",
-                        "description": "Optional ISO date (YYYY-MM-DD); only sessions modified on/after this day.",
-                    },
-                    "all_workspaces": {
-                        "type": "boolean",
-                        "description": "Search across all workspaces instead of just the current one (default false).",
-                        "default": False,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-        {
-            "name": "get_chat_session",
-            "description": (
-                "Read the full message transcript of one past conversation, "
-                "identified by a session_key returned from search_chat_history. "
-                "Returns the messages as role/content pairs, tail-capped at "
-                "max_messages. Use after search_chat_history when a snippet hit "
-                "looks like the thread you need. Refuses incognito/temporary "
-                "sessions. This is a READ — it never modifies memory or history."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "session_key": {
-                        "type": "string",
-                        "description": "The session_key from a search_chat_history result.",
-                    },
-                    "max_messages": {
-                        "type": "integer",
-                        "description": "Max (most recent) messages to return (default 50, max 200).",
-                        "default": 50,
-                    },
-                    "all_workspaces": {
-                        "type": "boolean",
-                        "description": "Allow reading a session from a different workspace than the caller's (default false — deny cross-workspace).",
-                        "default": False,
-                    },
-                },
-                "required": ["session_key"],
-            },
-        },
-        {
-            "name": "list_sessions",
-            "description": (
-                "List your recent conversation sessions in this workspace so you "
-                "can see the work in flight and what you've been doing — titles, "
-                "owning agent, approximate message volume, and created time, "
-                "ordered by newest activity first. Use this when the user asks 'what are you working on?', "
-                "'what sessions are open?', 'what have we been doing?', or when you "
-                "need a bird's-eye view of your own workspace before acting. This "
-                "is a READ — it never modifies memory or history. It complements "
-                "search_chat_history (which finds a specific past thread by "
-                "keyword): list_sessions is the browse/overview, search is the "
-                "lookup. Scoped to your current workspace by default; "
-                "incognito/temporary sessions are never listed."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max sessions to return, newest first (default 20, max 100).",
-                        "default": 20,
-                    },
-                    "all_workspaces": {
-                        "type": "boolean",
-                        "description": "List sessions across all workspaces instead of just the current one (default false).",
-                        "default": False,
-                    },
-                    "summarize": {
-                        "type": "boolean",
-                        "description": (
-                            "When true, generate a fresh one-line LLM summary for the top "
-                            "sessions (bounded, best-effort — costs tokens + latency, so it's "
-                            "opt-in). When false (default), the existing session title is used "
-                            "with zero cost."
-                        ),
-                        "default": False,
-                    },
-                },
-            },
-        },
-    ]
-
 
 #: Seconds a search waits for the gateway to split its Chinese runs. The first
 #: Chinese query on a host also loads the dictionary there (about 0.15 s).
@@ -176,6 +55,179 @@ def gateway_cjk_words(runs: list[str]) -> list[Any] | None:
     return words if isinstance(words, list) else None
 
 
+# ── crew scope: delegate to the local gateway's MCP-only crew-read endpoints ──
+#
+# When a read tool is called with crew=<id|name>, it reads that REMOTE crew's
+# sessions instead of the local ConversationLog. The MCP process cannot touch
+# the tunnel, so it GETs the local gateway's internal-secret crew-sessions
+# endpoints (handlers_instances.api_crew_sessions_*), which proxy over the
+# tunnel and return already-redacted rows. The local (no-crew) branches below
+# are unchanged.
+
+
+def _crew_scope_refusal(store: str) -> str:
+    """Refuse a crew-scoped read from a session fenced to a private member store.
+
+    ``store`` is the private V2 store this session is bound to, and ``""`` for an
+    ordinary session — so a NON-EMPTY value is the fenced case.
+
+    This fence is LOCAL to the crew path and depends on nothing but the caller's own
+    binding, which is deliberate: there is no local per-key store index for it to
+    consult, and even with one a remote crew's transcripts carry no local
+    private-store provenance — no record here could vouch for a peer key's store.
+    Reading a
+    peer crew's whole corpus is the boundary crossing the fence exists to
+    prevent, so it fails closed here rather than reaching the tunnel.
+    """
+    if store:
+        return "Access denied: a private-memory session cannot read another crew's sessions."
+    return ""
+
+
+def _caller_private_store(session_key: str) -> "tuple[str, str]":
+    """The private member store ``session_key`` is fenced to, or a refusal.
+
+    Returns ``("", "")`` for an ordinary session: no store, nothing to refuse.
+
+    ``session_key`` MUST be the strictly resolved key each tool obtains from
+    ``mcp_core.require_strict_session_key`` at its entry, and the same key is
+    what the crew helpers put on the wire. That single-resolution property is
+    the point, and it is why this takes the key rather than resolving its own:
+
+    * Under the lenient resolution (``mcp_core._resolve_session_key``, which
+      includes the ``/proc`` ancestor walk) a subagent resolves to its PARENT
+      slot, so the request would carry an authority the caller does not hold.
+    * When resolution degrades to empty, ``_get`` omits ``X-Session-Key``
+      ENTIRELY -- and the peer-read gate treats an absent key as the gateway/CLI
+      trust root, because that is what a loopback ``curl`` holding the internal
+      secret looks like. A degraded agent identity is then indistinguishable
+      from the gateway itself and is admitted.
+
+    Checking one identity and acting as another is exactly the check-then-use
+    split those two cases produce, so the three crew helpers take the key as a
+    REQUIRED positional parameter: a future call site that forgets it is a
+    ``TypeError`` rather than a silent return to the lenient walk.
+
+    A store that cannot be read fails CLOSED. An unreadable binding is
+    indistinguishable from a fenced member whose store we simply could not
+    confirm, and the safe reading of "unknown" on a cross-crew read is "refuse".
+    """
+    from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+    try:
+        return private_memory_store_for_session(session_key), ""
+    except (OSError, ValueError):
+        return "", "Error: this session's private memory is unavailable."
+
+
+def _refuse_crew_read(session_key: str, tool_name: str) -> str:
+    """Return and audit any private-memory refusal for a crew-scoped read."""
+    store, refusal = _caller_private_store(session_key)
+    outcome = "error"
+    if not refusal:
+        refusal = _crew_scope_refusal(store)
+        outcome = "denied_private_memory"
+    if refusal:
+        mcp_core.sel().log_tool_invocation(
+            session_key=session_key,
+            source="mcp",
+            tool_name=tool_name,
+            outcome=outcome,
+            error=refusal,
+        )
+    return refusal
+
+
+def _crew_qs(params: "dict[str, str]") -> str:
+    """The URL-encoded query for a crew read, WITHOUT a leading ``?``.
+
+    Empty params are dropped so an absent optional never becomes ``key=``. The
+    gateway owns tunnel auth, peer-reply byte caps, and redaction.
+
+    The ``?`` stays at each call site rather than being added here, and each call
+    site spells its own literal path instead of receiving one as an argument.
+    That is what lets ``test_every_transport_call_resolves_to_a_path`` vouch for
+    these three sites: its resolver truncates a path at the first ``?``, so the
+    literal prefix must be visible in the f-string. Routing all three through one
+    ``_get`` with a ``path`` parameter made the resolved path start with an
+    unknown, and the guard cannot vouch for a call whose endpoint it cannot name.
+    """
+    return urlencode({k: v for k, v in params.items() if v not in ("", None)})
+
+
+def _crew_error(crew: str, verb: str, resp: object) -> str:
+    msg = resp.get("error") if isinstance(resp, dict) else "unreachable"
+    return mcp_core._redact_history_output(f"Crew '{crew}' {verb} failed: {msg}")
+
+
+def _crew_search_history(crew: str, query: str, limit: int, session_key: str) -> str:
+    qs = _crew_qs({"crew": crew, "q": query, "limit": str(limit)})
+    resp = mcp_core._get(f"/api/crew-sessions/search?{qs}", session_key)
+    if not isinstance(resp, dict) or resp.get("error"):
+        return _crew_error(crew, "search", resp)
+    rows = resp.get("sessions") or []
+    if not rows:
+        return mcp_core._redact_history_output(f"No matching conversations found on crew '{crew}'.")
+    lines = [
+        f"\U0001f50e Chat history matches on crew '{crew}' (snippets only — use "
+        f"get_chat_session with crew='{crew}' to read a full thread):"
+    ]
+    for r in rows:
+        lines.append("\n---")
+        lines.append(f"**{r.get('title') or r.get('key')}**  ·  `{r.get('key')}`")
+        if r.get("date"):
+            lines.append(f"_{r['date']}_")
+        if r.get("snippet"):
+            lines.append(f"\n{r['snippet']}")
+    return mcp_core._redact_history_output("\n".join(lines))
+
+
+def _crew_list_sessions(crew: str, limit: int, session_key: str) -> str:
+    qs = _crew_qs({"crew": crew, "limit": str(limit)})
+    resp = mcp_core._get(f"/api/crew-sessions/list?{qs}", session_key)
+    if not isinstance(resp, dict) or resp.get("error"):
+        return _crew_error(crew, "session list", resp)
+    rows = resp.get("sessions") or []
+    if not rows:
+        return mcp_core._redact_history_output(f"No sessions found on crew '{crew}'.")
+    lines = [f"\U0001f5c2\ufe0f Sessions on crew '{crew}' ({len(rows)}, newest first):"]
+    for r in rows:
+        key = r.get("key")
+        title = r.get("title") or key
+        meta_bits = []
+        if r.get("agent"):
+            meta_bits.append(f"agent={r['agent']}")
+        if r.get("messages") is not None:
+            meta_bits.append(f"~{r['messages']} msgs")
+        if r.get("created"):
+            meta_bits.append(str(r["created"])[:16])
+        lines.append("\n---")
+        lines.append(f"**{title}**  ·  `{key}`")
+        if meta_bits:
+            lines.append(f"_{'  ·  '.join(meta_bits)}_")
+        if r.get("preview"):
+            lines.append(f"\n{r['preview']}")
+    return mcp_core._redact_history_output("\n".join(lines))
+
+
+def _crew_get_session(crew: str, key: str, max_messages: int, session_key: str) -> str:
+    qs = _crew_qs({"crew": crew, "key": key, "max_messages": str(max_messages)})
+    resp = mcp_core._get(f"/api/crew-sessions/read?{qs}", session_key)
+    if not isinstance(resp, dict) or resp.get("error"):
+        return _crew_error(crew, "session read", resp)
+    msgs = resp.get("messages") or []
+    if not msgs:
+        return mcp_core._redact_history_output(
+            f"No readable messages for `{key}` on crew '{crew}'."
+        )
+    lines = [f"\U0001f4dc Conversation `{key}` on crew '{crew}':", ""]
+    for m in msgs:
+        role = str(m.get("role", "?")).title()
+        lines.append(f"**{role}:** {m.get('content') or ''}")
+        lines.append("")
+    return mcp_core._redact_history_output("\n".join(lines))
+
+
 def search_chat_history(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SEARCH_CHAT_HISTORY_SCHEMA)
     session_key, refusal = mcp_core.require_strict_session_key(
@@ -186,6 +238,14 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     query = args["query"]
     limit = args.get("limit", 10)
     all_workspaces = args.get("all_workspaces", False)
+    crew = args.get("crew")
+    if crew:
+        # Remote crew scope: read that crew's sessions over the tunnel. Local
+        # filters (before/after/all_workspaces) do not apply in this v1.
+        refusal = _refuse_crew_read(session_key, "search_chat_history")
+        if refusal:
+            return refusal
+        return _crew_search_history(crew, query, limit, session_key)
     # A supplied-but-unparseable date (one that passes the regex but names no
     # real calendar day, like Feb 30) must ERROR, not be silently dropped — a silent
     # drop would return the UNFILTERED set and mislead the caller.
@@ -208,7 +268,13 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     # not a fixed limit*3 over-fetch: heavy incognito/workspace/date drops on
     # the first page could otherwise starve a caller whose real matches rank
     # lower, returning "no results" while hits exist.
-    ranked: list[dict] = cl.search_sessions(query, limit=mcp_core._SEARCH_HISTORY_SCAN)
+    # The excerpt is built below for the rows kept, so the ranking reads none.
+    ranked: list[dict] = cl.search_sessions(
+        query, limit=mcp_core._search_history_scan(query), snippets=False
+    )
+    # Said in the reply, empty or not: a session older than the scan window was
+    # never searched, and "no matches" must not read as "not in history".
+    coverage_note = search_coverage_note(ranked)
     # A leading ``title:`` term only picks which titles qualify; the transcript
     # was searched for the text after it, so the excerpt looks for that text too.
     scope = split_title_scope(query)
@@ -266,12 +332,16 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
             outcome="no_results",
             metadata={"query_len": len(query)},
         )
+        if coverage_note:
+            return f"No matching conversations found. {coverage_note}"
         return "No matching conversations found. Try different keywords."
 
     lines = [
         "\U0001f50e Chat history matches "
         "(snippets only — use get_chat_session to read a full thread):"
     ]
+    if coverage_note:
+        lines.append(f"_{coverage_note}_")
     for r in results:
         lines.append("\n---")
         lines.append(f"**{r['title']}**  ·  `{r['session_key']}`")
@@ -316,6 +386,16 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
             outcome="rejected_bad_key",
         )
         return "Invalid session_key."
+
+    crew = args.get("crew")
+    if crew:
+        # Remote crew scope: read the transcript from that crew over the tunnel.
+        # The local key guard above still applies as defense-in-depth; the
+        # gateway re-vets the key before it reaches the peer path.
+        refusal = _refuse_crew_read(session_key, "get_chat_session")
+        if refusal:
+            return refusal
+        return _crew_get_session(crew, key, max_messages, session_key)
 
     cl = ConversationLog()
     if not cl.has_log(key):
@@ -406,7 +486,7 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
     lines = [f"\U0001f4dc Conversation: **{title}**  ·  `{key}`", ""]
     for m in messages:
         role = str(m.get("role", "?")).title()
-        lines.append(f"**{role}:** {m.get('content', '')}")
+        lines.append(f"**{role}:** {m.get('content') or ''}")
         lines.append("")
 
     output = mcp_core._redact_history_output("\n".join(lines))
@@ -430,12 +510,20 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
     limit = args.get("limit", 20)
     all_workspaces = args.get("all_workspaces", False)
     summarize = args.get("summarize", False)
+    crew = args.get("crew")
+    if crew:
+        # Remote crew scope: list that crew's sessions over the tunnel.
+        # 'summarize' (LLM pass on local sessions) does not apply in crew mode.
+        refusal = _refuse_crew_read(session_key, "list_sessions")
+        if refusal:
+            return refusal
+        return _crew_list_sessions(crew, limit, session_key)
 
     cl = ConversationLog()
     list_ws: str | None = None if all_workspaces else mcp_core._caller_workspace(cl, session_key)
 
     rows: list[dict] = []
-    for meta in cl.list_sessions():
+    for meta in cl.list_sessions_indexed():
         key = meta.get("key", "")
         if not key:
             continue

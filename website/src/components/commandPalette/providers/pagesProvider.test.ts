@@ -84,21 +84,25 @@ describe('createPagesProvider — registry + extras', () => {
     expect(spy).toHaveBeenCalledWith('/crs')
   })
 
-  it('includes routed-but-not-in-rail EXTRA_PAGES (e.g. Developer)', async () => {
-    // Was exemplified by Hooks until `capabilities-hooks` became a registered
-    // surface: two rows then resolved to the same HooksPage under the identical
-    // title "Hooks", which this file's own webhooks comment forbids ("differ in
-    // BOTH title and icon"), so the hand-list row went. Developer is the same
-    // KIND of entry -- a real route with no rail surface -- so the property this
-    // test exists for is unchanged; only the specimen moved.
+  it('includes routed-but-not-in-rail EXTRA_PAGES (e.g. Tasks)', async () => {
+    // Tasks is a real route with no rail surface, the kind of entry this
+    // test exists for.
     const { nav, spy } = navigate()
     const p = createPagesProvider(nav)
 
-    const arr = await run(p, 'developer')
-    const hit = arr.find((r) => r.title === 'Developer')
+    const arr = await run(p, 'tasks')
+    const hit = arr.find((r) => r.title === 'Tasks')
     expect(hit).toBeDefined()
     hit!.onActivate()
-    expect(spy).toHaveBeenCalledWith('/developer')
+    expect(spy).toHaveBeenCalledWith('/tasks')
+  })
+
+  it('does not list the Developer route, which redirects into Settings', async () => {
+    const { nav, spy } = navigate()
+    const p = createPagesProvider(nav)
+
+    for (const r of await run(p, 'developer')) r.onActivate()
+    expect(spy).not.toHaveBeenCalledWith('/developer')
   })
 
   it('offers Knowledge and lands on the Capabilities knowledge tab', async () => {

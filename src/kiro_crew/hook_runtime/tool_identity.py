@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -19,9 +20,11 @@ if TYPE_CHECKING:
         _BUILTIN_APP_AGENTS,
         _BUILTIN_APP_MCP_SERVERS,
         _BUILTIN_APP_NAMES,
+        _CODE_READ_ONLY_OPERATIONS,
         _FIRST_PARTY_READ_ONLY_MCP_TOOLS,
         _GLOBAL_INLINE_FLAGS_RE,
         _HOST_READ_ONLY_BUILTIN_TOOLS,
+        _HOST_SEARCH_BUILTIN_TOOLS,
         _TITLE_ONLY_GRANT_NOTED,
         _TITLE_ONLY_GRANT_NOTED_CAP,
         _TITLE_TRUNCATION_MARKER,
@@ -30,10 +33,15 @@ if TYPE_CHECKING:
         DEEPSEEK_READ_ONLY_TOOLS,
         KIRO_TOOL_ALIASES,
         TOOL_AUTO_APPROVE,
+        SpecDeniedGrant,
         ToolHookResult,
         _bounded_pattern_search,
+        _every_operation_names_a_path,
+        as_spec_denied_grant,
         logger,
         policy_aliases,
+        security,
+        target_paths,
     )
 
 
@@ -153,11 +161,15 @@ class ToolCall:
     #: read-only built-in proof.
     identity_trusted: bool = False
     #: ``AcpEvent.mcp_identity_unreadable``: the frame PRESENTED an MCP server or
-    #: tool name longer than Crew's own tool surface admits, so ``mcp_tool`` is
-    #: empty because the name could not be retained, not because there was none.
-    #: The exact ``@server/tool`` deny it may be under cannot be checked, so the
-    #: gate denies the call outright rather than judging it by title.
+    #: tool name Crew cannot read (``identity_unreadable_reason`` says which
+    #: check), so ``mcp_tool`` is empty because the name could not be retained,
+    #: not because there was none. The exact ``@server/tool`` deny it may be
+    #: under cannot be checked, so the gate denies the call outright rather than
+    #: judging it by title.
     identity_unreadable: bool = False
+    #: ``AcpEvent.mcp_identity_unreadable_reason``: the check that set
+    #: ``identity_unreadable``, which the gate's deny names.
+    identity_unreadable_reason: str = ""
     #: ``AcpEvent.kas_builtin_ids``: the permission event came from a harness in
     #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), whose built-in ids
     #: (``read_file``, ``run_command``) are the ones ``platform.tool_names``
@@ -166,6 +178,52 @@ class ToolCall:
     #: the read-only proof): another harness that stamps the same bare id is
     #: judged under that id alone, exactly as on main.
     kas_builtin_ids: bool = False
+    #: ``AcpEvent.spec_granted_builtins``: the built-ins the KAS session's own
+    #: agent spec grants that its KAS policy keeps at ``ask``, written by the
+    #: session handle from the projection it registered. Read by the
+    #: ``spec-builtin-grant`` tier only, after every deny tier and governance.
+    #: Empty (every other harness, a sub-session, a hand-built call) grants nothing.
+    spec_granted_builtins: frozenset[str] = frozenset()
+    #: ``AcpEvent.spec_hook_held``: the ``@server/tool`` grants of the KAS session's
+    #: own agent a PreToolUse hook kept at ``ask``. Read by the ``batch-guard-grant``
+    #: row only, and only when the surface fires those hooks
+    #: (``GateFacts.pre_tool_hooks_fire``). Empty grants nothing.
+    spec_hook_held: frozenset[str] = frozenset()
+    #: ``AcpEvent.spec_granted_commands``: the KAS session's own agent's
+    #: ``toolsSettings.shell.allowedCommands`` as Python regexes, written the same
+    #: way. Read by the ``spec-builtin-grant`` tier only, against the recovered
+    #: ``command``. Empty grants nothing.
+    spec_granted_commands: tuple[str, ...] = ()
+    #: ``AcpEvent.spec_shell_allowlist``: when the KAS or claude session's own agent sets
+    #: ``toolsSettings.shell.denyByDefault``, the only commands its shell may run;
+    #: ``None`` otherwise. Read by the ``spec-shell-allowlist`` tier, which REFUSES
+    #: a shell call none matches. A restriction, never a grant.
+    spec_shell_allowlist: tuple[str, ...] | None = None
+    #: ``AcpEvent.spec_write_allowlist``: when the KAS or claude session's own agent sets
+    #: ``toolsSettings.fs_write.fallbackAction: "deny"``, the absolute globs its
+    #: write tool may touch; ``None`` otherwise. Read by the
+    #: ``spec-write-allowlist`` tier, which REFUSES a file write none covers. A
+    #: restriction, never a grant.
+    spec_write_allowlist: tuple[str, ...] | None = None
+    #: ``AcpEvent.spec_write_cwd``: the KAS or claude session's own directory, which the
+    #: ``spec-write-allowlist`` tier joins a relative write target to. ``""``
+    #: leaves a relative target uncovered.
+    spec_write_cwd: str = ""
+    #: ``AcpEvent.spec_denied_grant``: grants that hold only after the
+    #: ``spec-denies`` row finds no deny naming the call. ``None`` grants nothing.
+    spec_denied_grant: SpecDeniedGrant | None = None
+    #: ``AcpEvent.spec_shell_readonly``: the KAS session's own agent sets
+    #: ``autoAllowReadonly: true`` beside ``denyByDefault``, so the
+    #: ``spec-shell-allowlist`` tier lets a read-only command past for the
+    #: read-only tier to answer. ``False`` lifts nothing.
+    spec_shell_readonly: bool = False
+    #: ``AcpEvent.spec_granted_paths``: the KAS session's own agent's write
+    #: ``allowedPaths`` as absolute globs. Read by the ``spec-builtin-grant`` tier
+    #: only, against every target of a file write. Empty grants nothing.
+    spec_granted_paths: tuple[str, ...] = ()
+    #: ``AcpEvent.spec_granted_read_paths``: the same for the read ``allowedPaths``,
+    #: against the target of a file read. Empty grants nothing.
+    spec_granted_read_paths: tuple[str, ...] = ()
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
@@ -223,7 +281,28 @@ class ToolCall:
             "mcp_tool": getattr(event, "tool_name", "") or "",
             "identity_trusted": bool(getattr(event, "mcp_identity_trusted", False)),
             "identity_unreadable": bool(getattr(event, "mcp_identity_unreadable", False)),
+            "identity_unreadable_reason": _plain_str(
+                getattr(event, "mcp_identity_unreadable_reason", "")
+            ),
             "kas_builtin_ids": bool(getattr(event, "kas_builtin_ids", False)),
+            "spec_granted_builtins": _granted_names(getattr(event, "spec_granted_builtins", None)),
+            "spec_hook_held": _granted_names(getattr(event, "spec_hook_held", None)),
+            "spec_granted_commands": _granted_patterns(
+                getattr(event, "spec_granted_commands", None)
+            ),
+            "spec_shell_allowlist": _allowlist_patterns(
+                getattr(event, "spec_shell_allowlist", None)
+            ),
+            "spec_write_allowlist": _allowlist_patterns(
+                getattr(event, "spec_write_allowlist", None)
+            ),
+            "spec_write_cwd": _plain_str(getattr(event, "spec_write_cwd", "")),
+            "spec_denied_grant": as_spec_denied_grant(getattr(event, "spec_denied_grant", None)),
+            "spec_shell_readonly": getattr(event, "spec_shell_readonly", False) is True,
+            "spec_granted_paths": _granted_patterns(getattr(event, "spec_granted_paths", None)),
+            "spec_granted_read_paths": _granted_patterns(
+                getattr(event, "spec_granted_read_paths", None)
+            ),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
@@ -248,11 +327,61 @@ class ToolCall:
             "mcp_tool_name": self.mcp_tool,
             "mcp_identity_trusted": self.identity_trusted,
             "mcp_identity_unreadable": self.identity_unreadable,
+            "mcp_identity_unreadable_reason": self.identity_unreadable_reason,
             "kas_builtin_ids": self.kas_builtin_ids,
+            "spec_granted_builtins": self.spec_granted_builtins,
+            "spec_hook_held": self.spec_hook_held,
+            "spec_granted_commands": self.spec_granted_commands,
+            "spec_shell_allowlist": self.spec_shell_allowlist,
+            "spec_write_allowlist": self.spec_write_allowlist,
+            "spec_write_cwd": self.spec_write_cwd,
+            "spec_denied_grant": self.spec_denied_grant,
+            "spec_shell_readonly": self.spec_shell_readonly,
+            "spec_granted_paths": self.spec_granted_paths,
+            "spec_granted_read_paths": self.spec_granted_read_paths,
             "harness_builtin_tool": self.harness_builtin_tool,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
         }
+
+
+def _granted_names(value: object) -> frozenset[str]:
+    """``AcpEvent.spec_granted_builtins`` as the frozenset the gate reads.
+
+    A test double or provider event without the field, or with anything that is
+    not a set of strings, yields the empty set: no grant.
+    """
+    if not isinstance(value, (set, frozenset, tuple, list)):
+        return frozenset()
+    return frozenset(n for n in value if isinstance(n, str) and n)
+
+
+def _granted_patterns(value: object) -> tuple[str, ...]:
+    """``AcpEvent.spec_granted_commands`` as the tuple the gate reads, read like
+    :func:`_granted_names`: anything that is not a sequence of strings grants nothing."""
+    if not isinstance(value, (tuple, list)):
+        return ()
+    return tuple(p for p in value if isinstance(p, str) and p)
+
+
+def _plain_str(value: object) -> str:
+    """*value* when it is a string, else ``""``."""
+    return value if isinstance(value, str) else ""
+
+
+def _allowlist_patterns(value: object) -> tuple[str, ...] | None:
+    """``AcpEvent.spec_shell_allowlist`` (or ``spec_write_allowlist``) as the gate
+    reads it.
+
+    ``None`` (no restriction) only when the event carries ``None`` or no such
+    field. Any other value that is not a sequence of strings reads as ``()``, which
+    allows no command or path: a malformed restriction never lifts itself.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (tuple, list)):
+        return ()
+    return tuple(p for p in value if isinstance(p, str) and p)
 
 
 def hook_gate_kwargs(event: object, **overrides: Any) -> dict[str, Any]:
@@ -365,6 +494,135 @@ def _is_host_read_only_builtin(
     return any(alias in _HOST_READ_ONLY_BUILTIN_TOOLS for alias in policy_aliases(mcp_tool_name))
 
 
+def _is_host_search_builtin_call(
+    mcp_tool_name: str,
+    mcp_server_name: str,
+    raw_params: object,
+    *,
+    mcp_identity_trusted: bool,
+) -> bool:
+    """True when a kiro-cli file-search call is proven to only read the files it names.
+
+    The interactive read-only tier's proof for the calls its kind allow-list cannot
+    take: kiro-cli stamps ``kind="search"`` on ``grep`` / ``glob`` and
+    ``kind="read"`` on every ``code`` call, a rewrite included, so neither kind says
+    what runs. What does is the identity kiro-cli stamped and the call's own
+    arguments, which are what the tool executes:
+
+    * the identity is host-trusted and names a built-in, by the same rule as
+      :func:`_is_host_read_only_builtin` (``mcp_identity_trusted``, no server);
+    * the tool is ``grep`` or ``glob`` (:data:`_HOST_SEARCH_BUILTIN_TOOLS`), or
+      ``code`` with an ``operation`` in :data:`_CODE_READ_ONLY_OPERATIONS`;
+    * every path argument is anchored (:func:`_search_root_anchored`: absolute,
+      ``~`` allowed, no ``$VAR`` that expands, a drive on Windows) and there is at
+      least one.
+      kiro-cli resolves a relative path, or none, against the session's folder,
+      while the sensitive-path keystone resolves it against the gateway's own, so
+      a ``../`` spelling of a guarded file could pass the keystone. kiro-cli asks
+      only for a search outside the session's folder, which names a path anyway;
+    * no path argument CONTAINS a sensitive location
+      (``security.path_contains_sensitive``). The keystone refuses a root that is
+      itself sensitive, but a search walks everything below its root, hidden
+      folders included (captured live, 2.35.1), so ``grep`` over the home folder
+      reads ``~/.ssh`` while its root names no credential. A check that stalls
+      counts as containing one;
+    * a ``glob`` pattern neither starts a new root nor climbs out of the one named
+      (absolute, ``~`` or a ``..`` segment), since kiro-cli joins it onto the root.
+
+    A call that fails any of these is not refused here; it reaches the prompt it
+    reached before.
+    """
+    if not mcp_identity_trusted or mcp_server_name or not isinstance(raw_params, Mapping):
+        return False
+    if mcp_tool_name == "code":
+        if raw_params.get("operation") not in _CODE_READ_ONLY_OPERATIONS:
+            return False
+    elif mcp_tool_name not in _HOST_SEARCH_BUILTIN_TOOLS:
+        return False
+    if mcp_tool_name == "glob":
+        pattern = raw_params.get("pattern")
+        if not isinstance(pattern, str) or _glob_pattern_leaves_root(pattern):
+            return False
+    return _builtin_paths_proven(raw_params)
+
+
+def _is_host_file_read_builtin_call(
+    mcp_tool_name: str,
+    mcp_server_name: str,
+    raw_params: object,
+    *,
+    mcp_identity_trusted: bool,
+) -> bool:
+    """True when a kiro-cli file read is proven to only read the files it names.
+
+    The interactive read-only tier's proof for kiro-cli's file reader: its
+    permission request carries no ``kind`` (only the tool_call frame states
+    ``read``), so the kind allow-list never sees the call, and its ``Reading …``
+    title is no form the title fallback takes. All of this must hold:
+
+    * the identity is host-trusted and names a built-in, by the same rule as
+      :func:`_is_host_read_only_builtin` (``mcp_identity_trusted``, no server);
+    * the tool is the FILE reader, ``read`` or ``fs_read`` after
+      :func:`_host_builtin_alias`. ``web_fetch`` and ``web_search`` are host
+      read-only built-ins too, but they reach the network, so they get no proof
+      here, as :data:`_HOST_SEARCH_BUILTIN_TOOLS` keeps them out of the search one;
+    * every operation names its target under a key the argument scan reads and
+      none is an Image read (``governance._every_operation_names_a_path``): an
+      Image read's ``image_paths`` is not scanned, so its target would be unproven;
+    * the path checks of :func:`_is_host_search_builtin_call`
+      (:func:`_builtin_paths_proven`). A Directory read lists the tree below its
+      path, so a path that contains a sensitive location keeps the prompt.
+
+    A call that fails any of these is not refused here; it reaches the prompt it
+    reached before.
+    """
+    if not mcp_identity_trusted or mcp_server_name or not isinstance(raw_params, Mapping):
+        return False
+    if (_host_builtin_alias(mcp_tool_name, mcp_server_name) or mcp_tool_name) != "fs_read":
+        return False
+    return _every_operation_names_a_path(raw_params) and _builtin_paths_proven(raw_params)
+
+
+def _builtin_paths_proven(raw_params: Mapping) -> bool:
+    """Whether a host file built-in's paths name what it reads for the gate as well.
+
+    At least one path argument, the scan not truncated, and every path anchored
+    (:func:`_search_root_anchored`) with no sensitive location below it
+    (``security.path_contains_sensitive``, which counts a stall as one).
+    """
+    paths = target_paths(raw_params)
+    if paths.truncated or not paths:
+        return False
+    return all(
+        _search_root_anchored(path) and not security.path_contains_sensitive(path) for path in paths
+    )
+
+
+def _search_root_anchored(path: str, pathmod: Any = os.path) -> bool:
+    """Whether a search root names one folder for kiro-cli and for the gate alike.
+
+    Absolute after ``~``. A ``$VAR`` that expands is refused: the sensitive-path
+    matcher expands variables and would judge a folder other than the literal one
+    the tool walks. On Windows the root must carry a drive, since ``\\x`` is
+    relative to each process's current drive. ``pathmod`` is ``os.path``; a test
+    passes ``ntpath`` to read a path the Windows way on any host.
+    """
+    if pathmod.expandvars(path) != path:
+        return False
+    expanded = pathmod.expanduser(path)
+    if not pathmod.isabs(expanded):
+        return False
+    return pathmod.__name__ != "ntpath" or bool(pathmod.splitdrive(expanded)[0])
+
+
+def _glob_pattern_leaves_root(pattern: str) -> bool:
+    """Whether a glob pattern names a root of its own or climbs out of the one given."""
+    if pattern.startswith("~") or os.path.isabs(pattern):
+        return True
+    # Both separators: kiro-cli on Windows reads either one.
+    return ".." in re.split(r"[\\/]", pattern)
+
+
 def _is_first_party_read_only_mcp_tool(
     mcp_tool_name: str, mcp_server_name: str, *, mcp_identity_trusted: bool
 ) -> bool:
@@ -463,7 +721,10 @@ def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
 
     Called once at gateway boot with the names from
     ``apps.execution.builtin_app_mcp_servers`` (which enumerates the same
-    immutable manifest sources as ``builtin_app_names``). Dependency-inverted
+    immutable manifest sources as ``builtin_app_names``) and the adopted servers
+    ``apps.builtin_adoption_gate`` keeps (each one a shipped manifest declares,
+    launched as adoption carried it, under the pin's repository trust).
+    Dependency-inverted
     like ``set_builtin_app_names`` so ``hooks`` never imports ``apps`` and the
     gate never touches the filesystem. Idempotent; a later call replaces the set.
     """
@@ -489,8 +750,9 @@ def set_builtin_app_names(names: Iterable[str]) -> None:
 
     Called once at gateway boot with the names discovered from the shipped
     manifests (``apps.execution.builtin_app_names``, which enumerates the same
-    sources as ``shipped_builtin_app_root`` — core + the active edition). The
-    dependency is
+    sources as ``shipped_builtin_app_root`` — core + the active edition) plus each
+    former builtin whose adopted record keeps a server
+    (``apps.builtin_adoption_gate``). The dependency is
     inverted on purpose — boot code (which already imports ``apps``) pushes the
     names in, so ``hooks`` never imports ``apps`` and the gate never touches the
     filesystem. Idempotent; a later call replaces the set.
@@ -502,8 +764,10 @@ def set_builtin_app_names(names: Iterable[str]) -> None:
 def _is_first_party_app(app: str) -> bool:
     """True when *app* is a shipped builtin (first-party gateway code).
 
-    Only a BUILTIN app's MCP server is provably the gateway's own shipped code,
-    so only then does the app-own-server auto-approve's justification — "the
+    Only a BUILTIN app's MCP server is provably the gateway's own shipped code (a
+    former builtin adopted from its pin keeps it under the operator's grant to the
+    pinned repository, ``apps.builtin_adoption_gate``), so only then does the
+    app-own-server auto-approve's justification — "the
     server is the app's own declared code and only touches the app's own data,
     never a host surface" — actually hold.  A THIRD-PARTY installed app's server
     is arbitrary operator-installed code whose internals the PreToolUse gate
@@ -524,7 +788,8 @@ def set_builtin_app_agents(mapping: "Mapping[str, str]") -> None:
     """Install the agent → owning-builtin-app map for the gate.
 
     Called once at gateway boot with ``apps.execution.builtin_app_agents()`` —
-    derived only from shipped manifests whose install is builtin-owned, with
+    derived only from shipped manifests whose install is builtin-owned (or adopted
+    with a kept server, ``apps.builtin_adoption_gate``), with
     ambiguous names already dropped. Dependency-inverted like
     ``set_builtin_app_names`` so ``hooks`` never imports ``apps``. Idempotent; a
     later call replaces the map.

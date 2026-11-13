@@ -132,11 +132,18 @@ export const notesApi = {
   readNote: (vault: string | null, path: string) =>
     mdnbCall<NoteDoc>('GET', mdnbVaultQuery(`/note?path=${encodeURIComponent(path)}`, vault)),
 
-  saveNote: (vault: string | null, path: string, content: string, baseMtime?: number) =>
-    mdnbCall<{ ok: boolean; mtime: number }>('PUT', mdnbVaultQuery('/note', vault), {
+  saveNote: (
+    vault: string | null,
+    path: string,
+    content: string,
+    baseMtime?: number,
+    baseHash?: string,
+  ) =>
+    mdnbCall<{ ok: boolean; mtime: number; contentHash?: string }>('PUT', mdnbVaultQuery('/note', vault), {
       path,
       content,
       baseMtime,
+      baseHash,
     }),
 
   deleteNote: (vault: string | null, path: string) =>

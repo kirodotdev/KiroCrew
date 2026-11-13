@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from kiro_crew._sqlite_compat import is_cjk_char
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
+from kiro_crew.memory_history_stamps import is_history_day_header, is_history_stamp
 
 #: Most semantic rows one graph request reads, in key order with lessons excluded
 #: (they are drawn from ``get_lessons``), through the key index so the read stops
@@ -153,6 +155,10 @@ def _build_memory_graph(
             stripped = line.strip()
             m = re.match(r"^#{1,4}\s+(.+)", stripped)
             if m:
+                # ``append_history``'s day header and per-entry time stamp carry
+                # no content of their own, so drawing them only adds empty nodes.
+                if is_history_day_header(stripped) or is_history_stamp(stripped):
+                    continue
                 raw = str(_redact_memory_field(m.group(1).strip()))
                 _add("hist", raw[:80], "history", raw)
             elif stripped.startswith("[") and "]" in stripped and len(stripped) > 20:
@@ -212,7 +218,14 @@ def _build_memory_graph(
             for proj_id, short in project_matchers:
                 if n["id"] == proj_id:
                     continue
-                if re.search(r"\b" + re.escape(short) + r"\b", title_lower):
+                if any(map(is_cjk_char, short)):
+                    # CJK prose has no spaces, and Python's Unicode regex counts
+                    # ideographs and kana as ``\w``, so ``\b`` never splits two
+                    # of them ("查询账单服务接口"): match a plain substring.
+                    matched = short in title_lower
+                else:
+                    matched = re.search(r"\b" + re.escape(short) + r"\b", title_lower) is not None
+                if matched:
                     edges.append({"from": n["id"], "to": proj_id})
 
     return nodes, edges

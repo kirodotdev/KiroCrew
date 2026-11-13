@@ -1,12 +1,8 @@
 """``kirocrew cron add`` as a headless registration surface.
 
-The CLI is a thin front-end over ``CronService.add_job``: every field the
-flags capture is forwarded into that ONE locked build+persist, and the two
-zero-token kinds (``--script`` / ``--command``) go through the same
-storage-time security vet the MCP ``cron_add`` tool and the apps SDK apply.
-The contract an installer relies on -- validated up front, nothing written
-on refusal, the reason on stderr, exit 1 -- is pinned here alongside the
-argparse-level exclusivity of the schedule and job-kind flag groups.
+Every flag goes into the one locked ``CronService.add_job``, and ``--script`` /
+``--command`` get the same security vet as the MCP ``cron_add`` tool. On refusal
+nothing is written, the reason goes to stderr, and the exit code is 1.
 """
 
 from __future__ import annotations
@@ -24,8 +20,10 @@ import pytest
 
 from kiro_crew.cli_commands import _cron, _format_schedule
 from kiro_crew.config.loader import config_dir
-from kiro_crew.cron import CronSchedule
+from kiro_crew.cron import CronSchedule, CronService
 from kiro_crew.validation import MODEL_NAME_HINT
+
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
 
 
 def test_at_schedule_uses_configured_timezone_when_job_timezone_is_unset(monkeypatch):
@@ -94,6 +92,14 @@ def _write_script(body: str = "def run(ctx):\n    return None\n") -> Path:
     return path
 
 
+def _stored_after_add(args: argparse.Namespace):
+    """Run ``cron add`` against the real store in *home* and return the one row it wrote."""
+    with patch("kiro_crew.cli_commands.sel"):
+        _cron(args)
+    (job,) = CronService(base_dir=config_dir()).list_jobs(include_disabled=True)
+    return job
+
+
 def _refused(args: argparse.Namespace, capsys) -> str:
     """Run the verb, assert the refusal contract, return stderr."""
     with pytest.raises(SystemExit) as exc:
@@ -106,9 +112,7 @@ def _refused(args: argparse.Namespace, capsys) -> str:
     return err
 
 
-# ---------------------------------------------------------------------------
 # One locked transaction, every field forwarded
-# ---------------------------------------------------------------------------
 
 
 class TestSingleTransaction:
@@ -155,14 +159,8 @@ class TestSingleTransaction:
     def test_absolute_script_spec_round_trips_unchanged(self, home):
         script = _write_script()
         spec = f"{str(Path(script).resolve())}:run"
-        with (
-            patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            svc = svc_cls.return_value
-            svc.add_job.return_value = _mock_job("s3")
-            _cron(_ns(message="", every=3600, script=spec))
-            assert svc.add_job.call_args.kwargs["script"] == spec
+        job = _stored_after_add(_ns(message="", every=3600, script=spec))
+        assert job.script == spec
 
     def test_command_job_forwards_timeouts_and_defaults(self, home):
         with (
@@ -237,14 +235,8 @@ class TestSingleTransaction:
     def test_model_auto_sentinel_is_stored_as_unset(self, home):
         # "auto" is the inherit sentinel with no pinned provider id; the CLI
         # normalises it to "" exactly as cron_add and the dashboard POST do.
-        with (
-            patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            svc = svc_cls.return_value
-            svc.add_job.return_value = _mock_job()
-            _cron(_ns(every=300, model="auto"))
-            assert svc.add_job.call_args.kwargs["model"] == ""
+        job = _stored_after_add(_ns(every=300, model="auto"))
+        assert job.model == ""
 
     def test_audit_line_names_the_job_kind(self, home):
         script = _write_script()
@@ -272,9 +264,7 @@ class TestSingleTransaction:
         assert capsys.readouterr().out.startswith("Added job: ok1 ")
 
 
-# ---------------------------------------------------------------------------
 # --at one-shot
-# ---------------------------------------------------------------------------
 
 
 class TestOneShot:
@@ -404,19 +394,12 @@ class TestOneShot:
         assert "--timezone applies to --cron and --at only" in err
 
     def test_timezone_with_cron_still_succeeds(self, home):
-        with (
-            patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            svc = svc_cls.return_value
-            svc.add_job.return_value = _mock_job()
-            _cron(_ns(cron_expr="0 9 * * *", timezone="Asia/Tokyo"))
-            assert svc.add_job.call_args.kwargs["timezone"] == "Asia/Tokyo"
+        job = _stored_after_add(_ns(cron_expr="0 9 * * *", timezone="Asia/Tokyo"))
+        assert job.timezone == "Asia/Tokyo"
+        assert job.schedule.cron_expr == "0 9 * * *"
 
 
-# ---------------------------------------------------------------------------
 # Refusals: nothing written, stderr, exit 1
-# ---------------------------------------------------------------------------
 
 
 class TestRefusals:
@@ -627,9 +610,7 @@ class TestRefusals:
         assert "No space left on device" in err
 
 
-# ---------------------------------------------------------------------------
 # Security refusals are audited; plain validation is not
-# ---------------------------------------------------------------------------
 
 
 class TestDenialAudit:
@@ -839,9 +820,7 @@ class TestDenialAudit:
         assert capsys.readouterr().out.startswith("Added job: j1 (job) [")
 
 
-# ---------------------------------------------------------------------------
 # End to end against the real store
-# ---------------------------------------------------------------------------
 
 
 class TestRealStore:
@@ -874,9 +853,7 @@ class TestRealStore:
         assert row["schedule"]["every_secs"] == 3600
 
 
-# ---------------------------------------------------------------------------
 # argparse: the flag groups are exclusive at parse time too
-# ---------------------------------------------------------------------------
 
 
 class TestArgparse:

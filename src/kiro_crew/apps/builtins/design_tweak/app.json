@@ -58,5 +58,46 @@
   "heroImage": "/app-assets/design-tweak/hero-light.svg",
   "heroImageDark": "/app-assets/design-tweak/hero-dark.svg",
   "heroImageDetail": "/app-assets/design-tweak/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/design-tweak/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/design-tweak/hero-detail-dark.svg",
+  "agentTools": {
+    "route": "agent-tools",
+    "tools": [
+      {
+        "name": "design_tweak_update_thread",
+        "title": "Update design-tweak thread",
+        "description": "Report progress on one Design Tweak comment thread, so its dot in the live preview updates as you apply the batched edits. This is the ONLY way an agent session can update a thread: the raw `POST /thread` the skill once documented needs a dashboard credential the session does not hold (the credential-exfil safety floor blocks minting one), so it 403s and the dots never change. The MCP server process holds the credential and you never see one. Pass `request_id` (the request's id) and usually `comment_id` (the `cid` of the specific comment you are working) so the note lands on that comment's bubble; omit `comment_id` only for a note that spans the whole batch. Post a short `text` note when you start a comment and at each meaningful step; when that comment is finished, send `status='done'` so its dot turns green. `status` accepts only `done` — the tool reports forward progress and exposes no destructive thread action (it cannot clear or dismiss a request). `text` or `status` is required. Never write the request file yourself; progress is reported ONLY through this tool.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "The request's id (the `id` the request file is keyed by). Matches `^[A-Za-z0-9._-]+$`.",
+              "maxLength": 200
+            },
+            "comment_id": {
+              "type": "string",
+              "description": "The `cid` of the specific comment to report against, so the note lands on that comment's bubble. Omit for a request-level note that spans the whole batch (e.g. 'rebuilding, one moment'). Matches `^[A-Za-z0-9._-]+$`.",
+              "maxLength": 200
+            },
+            "text": {
+              "type": "string",
+              "description": "A single short progress line, e.g. 'Editing styles.css — uppercasing .section-title'. Required unless `status` is given.",
+              "maxLength": 2048
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "done"
+              ],
+              "description": "Set `done` to mark the comment finished so its dot turns green. Only `done` is accepted. Required unless `text` is given."
+            }
+          },
+          "required": [
+            "request_id"
+          ]
+        },
+        "maxResultChars": 20000
+      }
+    ]
+  }
 }

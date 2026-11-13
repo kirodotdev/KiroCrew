@@ -36,6 +36,17 @@ def _warn_unreadable_skill(path: str, fingerprint: str, problem: str) -> None:
     logger.warning("Skipping skill whose SKILL.md could not be read: %s (%s)", path, problem)
 
 
+# ``inclusion: always`` is the steering key: a skill that carries it instead of
+# ``always: true`` stays on demand, so say so once per saved file, bounded as above.
+@functools.lru_cache(maxsize=256)
+def _warn_inclusion_ignored(path: str, fingerprint: str) -> None:
+    logger.warning(
+        "Skill %s sets inclusion: always, which only steering files read; "
+        "add always: true to inject it into every session",
+        path,
+    )
+
+
 def _warning_fingerprint(skill_file: Path, *, within: str | None) -> str:
     """The stat fingerprint the warning bound keys on, one for every unconfined reader.
 
@@ -76,8 +87,9 @@ def _readable_frontmatter(
     ``_cached_frontmatter`` raises rather than guessing. A reader has the
     opposite duty -- the index it is building, or the turn it is serving, must
     not die on one file -- so every reader on the per-turn path takes its
-    metadata through here: the listing, the trigger matcher, and the two
-    renderers of its matches. A SKILL.md that is not UTF-8 (a UTF-16 file
+    metadata through here: the listing, the trigger matcher, the two
+    renderers of its matches, the always-on lister and the auto-skill dedupe.
+    A SKILL.md that is not UTF-8 (a UTF-16 file
     PowerShell wrote, say) or that cannot be opened costs its own row, with one
     warning naming the file and the problem, and the caller skips it. A
     confined row never raises here (its reader already degrades), so the call
@@ -324,6 +336,9 @@ def list_skills(
         skill_reads += reads
         if sk._html_skill_refused(meta, skill_file):
             continue
+        always = meta.get("always", "").strip().lower() == "true"
+        if not always and meta.get("inclusion", "").strip().lower() == "always":
+            _warn_inclusion_ignored(str(skill_file), fingerprint)
         skills.append(
             {
                 # Internal: lets a later re-read (see _rank_key) reuse the root
@@ -335,7 +350,7 @@ def list_skills(
                 "description": meta.get("description", name),
                 "path": str(skill_file),
                 "dir": str(skill_file.parent),
-                "always": meta.get("always", "").strip().lower() == "true",
+                "always": always,
                 # Carried so a caller assembling context can drop a
                 # repo-scoped skill from the INDEX, not just from the
                 # injected body: a summary line the agent is told to read
@@ -356,6 +371,10 @@ def list_skills(
                 "content_digest": (meta.get("_content_digest", "") if project_root is None else ""),
                 "metadata_indexed": project_root is None and bool(fingerprint),
                 **loader._usage_fields(name),
+                # Unix time from the frontmatter's ``created_at`` (auto skills
+                # record it), else ``None``. Never the file's mtime: an edit,
+                # copy or restore moves that, so an old skill would sort as new.
+                "created_at": loader._auto_created_ts(meta) or None,
                 "owned": loader._owned_hint(skill_file),
             }
         )

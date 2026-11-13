@@ -15,8 +15,8 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 
 Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
-``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
-``_turn_done``, ``memory_mode``.
+``_native_skill_projection``, ``_process``, ``_session_id``, ``_stderr_lines``,
+``_stderr_task``, ``_turn_done``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -29,9 +29,10 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, TypeVar
 
+from kiro_crew import kiro_sandbox_conflict
 from kiro_crew.acp import transport_framing
 from kiro_crew.acp._dispatch import _loggable_request_id
-from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp._frame_record import record_frame, record_sent_frame
 from kiro_crew.acp.client_spawn_env import _exit_origin
 from kiro_crew.acp.client_timeouts import (
     _DRAIN_DURATION,
@@ -39,11 +40,13 @@ from kiro_crew.acp.client_timeouts import (
     _READ_TIMEOUT,
     _WAIT_RESPONSE_MAX_TIMEOUT,
 )
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.runtime_models import (
     _extract_advisory_detail,
     _is_model_substitution_advisory,
     _substitute_model_from_advisory,
 )
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import (
     RequestWriteResult,
@@ -65,6 +68,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
+    UPDATE_AVAILABLE_COMMANDS,
     UPDATE_CONFIG_OPTION,
     UPDATE_CURRENT_MODE,
     UPDATE_PLAN,
@@ -74,7 +78,10 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_FORBIDDEN_MODES
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
+)
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -132,6 +139,13 @@ _AGENT_ACTIVITY_UPDATE_KINDS = frozenset(
         UPDATE_PLAN,
     }
 )
+# session/update kinds whose listed fields are full snapshots: every reader of two
+# frames that differ only in those fields ends where the later frame alone leaves it.
+# A kind a reader starts to treat as incremental must leave this table.
+_SNAPSHOT_UPDATE_FIELDS: dict[str, frozenset[str]] = {
+    UPDATE_USAGE: frozenset({"used", "size"}),
+    UPDATE_AVAILABLE_COMMANDS: frozenset({"availableCommands"}),
+}
 
 
 def _session_update_kind(msg: JsonRpcMessage) -> tuple[str, dict]:
@@ -160,7 +174,8 @@ def _ends_agent_started_turn(msg: JsonRpcMessage) -> bool:
     response. No request is sent under that turn's id, so a response to a
     request sent before the turn began answers a wait that already ended,
     usually a prompt whose turn ended here, and the frames read were that
-    prompt's tail. ``_read_turn`` leaves a response to a later request unread.
+    prompt's tail. ``_read_turn`` leaves a response to a later request unread,
+    and reads the answer to a steering request as a stray response.
     """
     if msg.method is None and msg.id is not None:
         return True
@@ -170,6 +185,24 @@ def _ends_agent_started_turn(msg: JsonRpcMessage) -> bool:
     meta = update.get("_meta")
     origin = meta.get("_claude/origin") if isinstance(meta, dict) else None
     return isinstance(origin, dict) and origin.get("kind") in _CLAUDE_AUTONOMOUS_ORIGIN_KINDS
+
+
+def _supersedes(newer: JsonRpcMessage, older: JsonRpcMessage) -> bool:
+    """True when *newer* differs from *older* only in its kind's snapshot fields.
+
+    Both are ``session/update`` frames of one ``_SNAPSHOT_UPDATE_FIELDS`` kind with
+    the same keys. Everything else must match: the session, ``_meta``, and a
+    ``usage_update``'s cost, which is billed as the change between readings, so
+    each reading counts.
+    """
+    kind, update = _session_update_kind(newer)
+    fields = _SNAPSHOT_UPDATE_FIELDS.get(kind)
+    older_kind, older_update = _session_update_kind(older)
+    if fields is None or older_kind != kind or update.keys() != older_update.keys():
+        return False
+    return {**newer.params, "update": None} == {**older.params, "update": None} and all(
+        update[key] == older_update[key] for key in update.keys() - fields
+    )
 
 
 def _next_req_id(self: AcpClient) -> int:
@@ -187,12 +220,15 @@ async def _send_request(
     params: dict,
     *,
     on_id: Callable[[int], None] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> int:
     """Write one request frame and return its id.
 
     ``on_id`` is called with the id before the frame is written, so a caller
     that waits for the answer can register for it before the write's drain
     can suspend and the turn's read loop can read that answer.
+    ``before_write`` runs under the write lock right before the frame is
+    written; whatever it raises aborts the write with nothing written.
     """
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
@@ -219,7 +255,10 @@ async def _send_request(
         # co-tenant waits behind the lock, but a single session can self-wedge
         # too). A stall raises AcpProcessDied, the same recovery a closed pipe
         # already gets.
-        await self._write_request_bounded(data, req_id, method)
+        if before_write is None:
+            await self._write_request_bounded(data, req_id, method)
+        else:
+            await self._write_request_bounded(data, req_id, method, before_write=before_write)
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
     self._last_activity = time.monotonic()
@@ -227,7 +266,12 @@ async def _send_request(
 
 
 async def _write_request_bounded(
-    self: AcpClient, data: bytes, request_id: int, method: str
+    self: AcpClient,
+    data: bytes,
+    request_id: int,
+    method: str,
+    *,
+    before_write: Callable[[], None] | None = None,
 ) -> None:
     """Write a REQUEST frame under the write lock and the same no-progress bound.
 
@@ -263,6 +307,8 @@ async def _write_request_bounded(
         self._stdin_write_lock(),
         data,
         bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+        before_write=before_write,
+        on_written=self._record_sent,
     )
     if result is RequestWriteResult.OK:
         return
@@ -288,6 +334,12 @@ async def _write_request_bounded(
         f"sending request req={safe_id}",
         ambiguous_delivery=result is RequestWriteResult.DRAIN_STALL,
     )
+
+
+def _record_sent(self: AcpClient, data: bytes) -> None:
+    """Feed a written request or notification to the frame recorder, gated like the read side."""
+    if self.memory_mode == "persistent":
+        record_sent_frame(self.backend, data)
 
 
 def _stdin_write_lock(self: AcpClient) -> asyncio.Lock:
@@ -397,7 +449,8 @@ async def _send_error(self: AcpClient, request_id: str | int, code: int, message
 def _install_idle_reader(self: AcpClient) -> None:
     """Bind the idle reader's steps over this client's own methods, once.
 
-    Each stdout reader claims stdout, a turn read under
+    Each stdout reader claims stdout, a reader other than a turn keeps a
+    pending agent-started turn's frames for it, a turn read under
     ``_AGENT_STARTED_REQUEST_ID`` ends on the frame that closes it, a prompt
     waits until no such turn reads, and the two paths that end the process drop
     the reader. The claude adapter calls this
@@ -409,11 +462,37 @@ def _install_idle_reader(self: AcpClient) -> None:
         return
     self._idle_reader_installed = True
     gate = self._agent_turn_gate = asyncio.Lock()
-    prompt_loop, kill_process, reset_state = (
+    read_message, prompt_loop, kill_process, reset_state = (
+        self._read_message,
         self._prompt_loop,
         self._kill_process,
         self._reset_state,
     )
+
+    # While a claimed reader holds a pending turn's frames (_claiming_stdout),
+    # a request from the agent is held with them, in the same list, so a
+    # permission request keeps its place among the turn's chunks, and so is the
+    # autonomous usage_update that closes the turn, so the turn still ends on
+    # it. A response is never held: it answers that reader. A held frame
+    # reads as nothing, so that reader still checks its own deadline. Past
+    # _buffer's room a frame is not held, so putting them back pushes none out.
+    async def read(
+        timeout: float = _READ_TIMEOUT, *, check_cancel: bool = True
+    ) -> JsonRpcMessage | None:
+        msg = await read_message(timeout, check_cancel=check_cancel)
+        held = self._agent_turn_held
+        if (
+            held is None
+            or msg is None
+            or not (
+                _starts_agent_turn(msg)
+                or (msg.method is not None and _ends_agent_started_turn(msg))
+            )
+            or len(held) + len(self._buffer) >= (self._buffer.maxlen or 0)
+        ):
+            return msg
+        held.append(msg)
+        return None
 
     def read_turn(req_id: int, timeout: float) -> AsyncGenerator[tuple[str, JsonRpcMessage], None]:
         return self._read_turn(prompt_loop, req_id, timeout)
@@ -471,7 +550,7 @@ def _install_idle_reader(self: AcpClient) -> None:
             "_read_steer_answers",
         )
     }
-    bound.update(_prompt_loop=read_turn, _kill_process=kill, _reset_state=reset)
+    bound.update(_read_message=read, _prompt_loop=read_turn, _kill_process=kill, _reset_state=reset)
     for name in ("send_message", "send_message_stream", "stream_events", "stream_command"):
         bound[name] = queued(getattr(self, name))
     for name, method in bound.items():
@@ -481,12 +560,27 @@ def _install_idle_reader(self: AcpClient) -> None:
 def _claiming_stdout(
     self: AcpClient, read: Callable[..., Awaitable[_R]]
 ) -> Callable[..., Awaitable[_R]]:
+    """*read* with stdout claimed.
+
+    On a pending hand-off the claim also keeps the turn's frames for it: what
+    *read* reads of them is held, and goes back to the front of ``_buffer`` in
+    arrival order when *read* returns, so the turn still starts on its first
+    frame and the hand-off stands.
+    """
+
     @functools.wraps(read)
     async def claimed(*args: Any, **kwargs: Any) -> _R:
         await self._claim_stdout()
+        held: list[JsonRpcMessage] | None = None
+        if self._agent_turn_held is None and self._agent_turn_pending():
+            held = self._agent_turn_held = []
         try:
             return await read(*args, **kwargs)
         finally:
+            # Not after _cancel_idle_reader dropped the hold with the process.
+            if held is not None and self._agent_turn_held is held:
+                self._agent_turn_held = None
+                self._buffer.extendleft(reversed(held))
             self._release_stdout()
 
     return claimed
@@ -504,9 +598,11 @@ async def _read_turn(
     arrives, so this yields a ``complete`` of its own on the frame that closes
     the cycle (``_ends_agent_started_turn``), or before the response to a
     request sent while this turn reads, which it leaves at the front of
-    ``_buffer`` for that request's reader.
+    ``_buffer`` for that request's reader. The answer to a steering request
+    ends no turn: it is passed on as a stray response, as in a user turn.
     """
     first_unsent_id = self._next_id
+    unanswered_steering = self._unanswered_steering_ids()
     await self._claim_stdout()
     try:
         # An end marker read before this turn's first activity belongs to an
@@ -514,7 +610,12 @@ async def _read_turn(
         saw_activity = False
         async with aclosing(prompt_loop(req_id, timeout)) as frames:
             async for action, msg in frames:
-                if req_id != _AGENT_STARTED_REQUEST_ID:
+                # _prompt_loop hands a steer that still waits its answer first,
+                # so a steering answer that reaches here came too late for it.
+                late_steering_answer = msg.method is None and msg.id in unanswered_steering
+                if late_steering_answer:
+                    unanswered_steering.discard(msg.id)
+                if req_id != _AGENT_STARTED_REQUEST_ID or late_steering_answer:
                     yield action, msg
                     continue
                 result: dict = {}
@@ -570,13 +671,16 @@ def _cancel_idle_reader(self: AcpClient) -> None:
         task.cancel()
     self._idle_reader = None
     self._agent_turn_start = None
+    self._agent_turn_held = None
 
 
 def _agent_turn_pending(self: AcpClient) -> bool:
-    """True while the frame an agent-started turn began with is still unread.
+    """True while the frame an agent-started turn began with is still in _buffer.
 
-    Whichever reader takes it from _buffer ends the hand-off: a turn reads it
-    as its own, and a request wait files it the way it files any notification.
+    A turn that takes it ends the hand-off by reading it as its own. Any other
+    claimed reader holds it for the turn and puts it back when it returns
+    (``_claiming_stdout``); until then this is False, so ``stream_unsolicited``
+    does not read beside that reader.
     """
     start = self._agent_turn_start
     return start is not None and any(frame is start for frame in self._buffer)
@@ -598,7 +702,8 @@ def _maybe_start_idle_reader(self: AcpClient) -> None:
 
 async def _idle_read_loop(self: AcpClient) -> None:
     # The frames go back to the front of _buffer in arrival order however this
-    # ends, a cancel included, so the next reader sees what it would have read.
+    # ends, a cancel included, so the next reader sees what it would have read,
+    # less the snapshot frames a later one superseded.
     # Held locally until then because _read_message pops _buffer first.
     # Not after _cancel_idle_reader dropped this reader: the process those
     # frames came from is gone, and _buffer may already serve its successor.
@@ -618,6 +723,7 @@ async def _idle_read_loop(self: AcpClient) -> None:
                 if not self._is_process_alive():
                     return
                 continue
+            held = [frame for frame in held if not _supersedes(msg, frame)]
             held.append(msg)
             if _starts_agent_turn(msg):
                 start = msg
@@ -686,12 +792,16 @@ async def _read_message(
             # pipe, and every later settle on this failure would wait on it
             # again.
             await settle_drain(self._stderr_task, 0.5, shield=False)
-            stderr_tail = "; ".join(self._stderr_lines) if self.memory_mode == "persistent" else ""
-            if stderr_tail:
-                from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            # Both spellings of the tail go past the redactor before any of it
+            # is published: a secret wrapped across two stderr lines hides
+            # behind the "; " separator otherwise.
+            from kiro_crew.acp.stderr_tail import safe_stderr_tail
 
-                stderr_tail, _ = redact_exfiltration_urls(stderr_tail)
-                stderr_tail, _ = redact_credentials(stderr_tail)
+            stderr_tail = (
+                safe_stderr_tail(self._stderr_lines, "; ")
+                if self.memory_mode == "persistent"
+                else ""
+            )
             detail = f" — {stderr_tail}" if stderr_tail else ""
             code = self._process.returncode
             origin = _exit_origin(code, self._kill_sent)
@@ -728,13 +838,53 @@ async def _read_message(
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         data = projection.frame(data)
-    return JsonRpcMessage(
+    msg = JsonRpcMessage(
         id=data.get("id"),
         method=data.get("method"),
         result=data.get("result"),
         error=data.get("error"),
         params=data.get("params"),
     )
+    if self.backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS:
+        self._note_advertised_commands(msg)
+    return msg
+
+
+def _note_advertised_commands(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Keep the newest command list the agent advertised, with the session it names.
+
+    Each ``available_commands_update`` replaces the whole list. The session id rides
+    along because ``new_conversation`` swaps the session on this same process. Both
+    strings go to the dashboard, so they get the same scrub as every other string the
+    harness reports back (``_scrub_observed``).
+    """
+    kind, update = _session_update_kind(msg)
+    commands = update.get("availableCommands")
+    if kind != UPDATE_AVAILABLE_COMMANDS or not isinstance(commands, list):
+        return
+    rows = []
+    for command in commands:
+        name = command.get("name") if isinstance(command, dict) else None
+        if isinstance(name, str) and name:
+            description = command.get("description")
+            text = description if isinstance(description, str) else ""
+            rows.append(
+                {
+                    "name": str(self._scrub_observed(name)),
+                    "description": str(self._scrub_observed(text)),
+                }
+            )
+    self._advertised_commands = (str(msg.params.get("sessionId") or ""), tuple(rows))
+
+
+def advertised_commands(self: AcpClient) -> list[dict[str, str]]:
+    """The commands this session last advertised: name and description, scrubbed.
+
+    Empty before the first ``available_commands_update``, and when the list names a
+    session other than the one this process runs.
+    """
+    session_id, rows = self._advertised_commands
+    return list(rows) if session_id and session_id == self._session_id else []
 
 
 async def _wait_for_response(
@@ -832,11 +982,25 @@ async def _wait_for_response(
                 # discipline as the substitution-advisory log site above.
                 _err_log, _ = redact_exfiltration_urls(str(msg.error))
                 _err_log, _ = redact_credentials(_err_log)
-                raise AcpError(f"JSON-RPC error: {_err_log}", code=_jsonrpc_error_code(msg.error))
+                _err_text = f"JSON-RPC error: {_err_log}"
+                if method in {METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME}:
+                    # kiro-cli's own sandbox stops Crew's MCP servers starting, and
+                    # its error names only the server. Off the loop: the
+                    # hint reads kiro-cli's settings file, and only after the error
+                    # text already names a Crew server.
+                    _hint = await asyncio.to_thread(
+                        kiro_sandbox_conflict.session_start_hint, _err_log, self.backend
+                    )
+                    if _hint:
+                        _err_text = f"{_err_text}. {_hint}"
+                raise AcpError(_err_text, code=_jsonrpc_error_code(msg.error))
             return msg.result or {}
         # Notification (has method, no id) — buffer for drain.
         if msg.method and msg.id is None:
             self._mcp_notifications.append(msg)
+            # No turn reads this buffer, and the frame may be the one that
+            # dropped the conversation's pictures (a late compaction or clear).
+            self._forget_sent_images()
             logger.debug("Buffered notification: %s (req=%d)", msg.method, req_id)
             continue
         # Server→client request (method AND id) or a foreign-id response
@@ -911,7 +1075,9 @@ async def _drain_notifications(
             return
         params = msg.params if isinstance(msg.params, dict) else {}
         server_name = str(params.get("serverName") or params.get("name") or "")
-        oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+        oauth_url = with_google_offline_access(
+            str(params.get("oauthUrl") or params.get("url") or "")
+        )
         # Drop unsafe-scheme URLs *before* recording dedupe so a later safe
         # retry for the same server still gets through.
         if not _is_safe_oauth_url(oauth_url):
@@ -959,6 +1125,8 @@ async def _drain_notifications(
     # Process notifications buffered during _wait_for_response
     for idx, msg in enumerate(self._mcp_notifications):
         drained += 1
+        if consume_stale_compaction_status(self, msg):
+            continue
         _capture_oauth(msg)
         _capture_config_update(msg)
         _capture_agent_switched(msg)
@@ -972,8 +1140,9 @@ async def _drain_notifications(
             # process, so there is no co-tenant whose frame could arrive
             # here. Stated rather than defaulted so a transport that gains
             # tenants has to answer the question instead of inheriting a
-            # yes.
-            self._mcp_report.record_frame(msg, owned=True)
+            # yes. ``fold_frame`` is the owned fold, and tells the report's
+            # reader when this frame changed it.
+            self._mcp_report.fold_frame(msg)
         name = ""
         if isinstance(msg.params, dict):
             name = msg.params.get("name") or msg.params.get("serverName") or ""
@@ -1014,10 +1183,12 @@ async def _drain_notifications(
             if not read_msg.method:
                 continue
             drained += 1
+            if consume_stale_compaction_status(self, read_msg):
+                continue
             _capture_oauth(read_msg)
             _capture_config_update(read_msg)
             _capture_agent_switched(read_msg)
-            self._mcp_report.record_frame(read_msg, owned=True)
+            self._mcp_report.fold_frame(read_msg)
             if "mcp" in (read_msg.method or ""):
                 name = ""
                 if isinstance(read_msg.params, dict):

@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import logging
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
+from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     SESSION_APPROVAL_PENDING_KEY,
@@ -22,6 +24,8 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     _declared_grant_entries,
     _effective_approved_grants,
+    _import_app_tree_grants,
+    _is_sidecar_entry,
     _now_iso,
     _read_installed,
     _session_approval_consent_unrecorded,
@@ -34,6 +38,8 @@ from kiro_crew.apps.manager_records import (
     holds_app_record_locks,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
+from kiro_crew.apps.point_grants import grant_source
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -113,14 +119,37 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
         return None
 
 
+def _owner_enable_unrecorded(name: str) -> AppResult:
+    """The refusal for an enable whose owner-enable marker could not be written.
+
+    The record may already read enabled; enabling again (the "already enabled"
+    path) retries the marker, so that is the recovery the message names.
+    """
+    return AppResult(
+        ok=False,
+        name=name,
+        error=(
+            f"could not record that the owner enabled {name!r}; free up space or fix "
+            "the data folder's permissions, then enable the app again"
+        ),
+    )
+
+
 @holds_app_record_locks
 def enable_app(
     name: str,
     *,
     session_approval_consent: bool = False,
+    member_threads_consent: bool = False,
     grants_consent: dict[str, list[str]] | None = None,
 ) -> AppResult:
     """Enable an installed app.
+
+    ``member_threads_consent`` says the disclosure the owner confirmed named
+    member threads. A consent whose disclosure did not is refused when the
+    live manifest declares ``permissions.memberThreads`` beside the grant: an
+    update can add the scope while the dialog is open, and a consent covers
+    only what it showed.
 
     ``grants_consent`` names the held-back ``permissions.api``/``events``
     entries the owner was shown and approved (see ``approvedGrants``). Only
@@ -131,9 +160,13 @@ def enable_app(
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     hold_app_record_lock(name)
+    # Finish the one-time import first: it records disables from an older build,
+    # and one that ran after this enable would put the disable back.
+    _import_app_tree_grants()
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+
     # Governance: the ``apps`` allowlist may forbid activating this app entirely.
     gov_denied = _app_activation_denied(name)
     if gov_denied:
@@ -180,12 +213,42 @@ def enable_app(
             error="session approval consent must be confirmed from a disclosure surface",
             error_code="session_approval_consent_required",
         )
+    # Judged against the manifest read once here, under the record lock the
+    # lifecycle writers also take, and recorded from the same read below.
+    consented_scope = False
+    if session_approval_consent:
+        consented = get_app_manifest(name)
+        consented_scope = bool(
+            consented
+            and consented.permissions.sessionApproval
+            and consented.permissions.memberThreads
+        )
+        if consented_scope and not member_threads_consent:
+            # The dashboard shows this from its catalog
+            # (``pages.appDetailPage.session_approval_member_threads_refused``);
+            # this English is what every other caller reads.
+            return AppResult(
+                ok=False,
+                name=name,
+                error=(
+                    "This app now also asks to reach your chats with your Bots. "
+                    "Review it and enable again."
+                ),
+                error_code="session_approval_consent_required",
+            )
 
     current_grants = _effective_approved_grants(name, meta) if grants_consent is not None else None
     approve_grants = grants_consent is not None and current_grants is not None
     # A pending record still needs the consent written, even when it reads
     # enabled (one from before the consent marker existed).
     if meta.enabled and not approve_grants and not meta.sessionApprovalConsentPending:
+        # An install upgraded while already enabled has no grant yet (the grant file
+        # is new this version), and this early return is the path its owner hits when
+        # they re-enable to recover. Mint here too, so re-enabling records the grant
+        # instead of dead-ending at a 403. Still owner-authenticated: the owner,
+        # governance and execution checks above have already passed.
+        if not grant_host_exec(name):
+            return _owner_enable_unrecorded(name)
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
     still_staged = False
@@ -200,11 +263,13 @@ def enable_app(
                 error="the app manifest cannot be read right now; try approving again",
                 error_code="grants_manifest_unreadable",
             )
-        declared = _declared_grant_entries(live.permissions)
+        declared = _declared_grant_entries(grant_source(live))
         approved: dict[str, list[str]] = {}
         for family in STAGED_GRANT_FAMILIES:
             shown = {e for e in grants_consent.get(family, ()) if isinstance(e, str)}
-            kept = list(current_grants.get(family, ()))
+            # A family the stored set predates approves what is declared. An
+            # explicit-only family is never absent here (``_parse_approved_grants``).
+            kept = list(current_grants[family] if family in current_grants else declared[family])
             kept += [e for e in declared[family] if e in shown and e not in kept]
             approved[family] = kept
             still_staged = still_staged or any(e not in kept for e in declared[family])
@@ -218,8 +283,23 @@ def enable_app(
         )
     meta.enabled = True
     meta.sessionApprovalConsentPending = False
+    if session_approval_consent:
+        # Reaching here with the scope declared means the confirmed disclosure
+        # named it (refused above otherwise). A manifest that gains the scope
+        # later is not covered (``_session_approval_consent_unrecorded``).
+        meta.memberThreadsConsented = consented_scope
     meta.updatedAt = _now_iso()
+    # The owner's enable is the one write that ends their disable.
+    protected_app_state.set_owner_disabled(name, False)
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
+
+    # Mint the owner-enable grant. This path runs only after the owner, governance
+    # and execution checks above, so it is owner-authenticated, and it is never
+    # derived from installed.json, so a forged record cannot produce a grant.
+    # The same marker authorizes the app token exchange, so an enable that could not
+    # record it is reported, not passed off as success.
+    if not grant_host_exec(name):
+        return _owner_enable_unrecorded(name)
 
     logger.info("Enabled app %s", name)
     return AppResult(
@@ -268,7 +348,7 @@ def session_approval_consent_candidates() -> list[str]:
     return [
         entry.name
         for entry in entries
-        if not entry.name.startswith(".")
+        if not _is_sidecar_entry(entry.name)
         and _check_path_safety(entry.name)
         and _session_approval_consent_unrecorded_on_disk(entry.name)
     ]
@@ -287,6 +367,17 @@ def mark_session_approval_consent_pending(name: str) -> bool:
     hold_app_record_lock(name)
     if not _session_approval_consent_unrecorded_on_disk(name):
         return False
+    try:
+        raw = json.loads((app_dir(name) / INSTALLED_META_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    # A record that already holds the grant's consent owes it only for the
+    # member-thread scope (``_session_approval_consent_unrecorded``).
+    scope_only = (
+        isinstance(raw, dict)
+        and SESSION_APPROVAL_PENDING_KEY in raw
+        and raw.get(SESSION_APPROVAL_PENDING_KEY) is not True
+    )
     meta = _read_installed(name)
     if meta is None:
         return False
@@ -300,8 +391,12 @@ def mark_session_approval_consent_pending(name: str) -> bool:
             operation="session_approval_widened",
             outcome="disabled",
             resources=f"name={name!r}",
-            error="install predates the consent record for permissions.sessionApproval; "
-            "re-enable to consent",
+            error=(
+                "consent on record predates permissions.memberThreads; re-enable to consent"
+                if scope_only
+                else "install predates the consent record for permissions.sessionApproval; "
+                "re-enable to consent"
+            ),
         )
     except Exception:  # noqa: BLE001 - the disable already happened
         logger.warning("could not audit session approval reconcile for %r", name, exc_info=True)
@@ -317,12 +412,42 @@ def disable_app(name: str) -> AppResult:
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+    # Recorded first and outside the app's tree, so a later rewrite of installed.json
+    # cannot turn the app back on. Fail closed: no success without it.
+    try:
+        protected_app_state.set_owner_disabled(name, True)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not record the disable of {name!r}: {exc}"
+        )
     if not meta.enabled:
+        # Already disabled ON DISK -- which a sandboxed shell can forge by writing
+        # enabled:false to the writable installed.json. This early return otherwise
+        # skips the revoke the write path does, leaving a grant from a real earlier
+        # enable live, so a pod still starts after the owner disabled the app. Revoke
+        # here too, and fail closed if the grant cannot be removed. The record is
+        # written after the revoke, so the token cutoff moves to now and a token
+        # minted before this disable stays refused after a later enable.
+        revoke_host_exec(name)
+        revoke_worker_auto_approve(name)
+        if host_exec_granted(name):
+            return AppResult(
+                ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
+            )
+        meta.updatedAt = _now_iso()
+        _write_installed(name, meta)
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False
     meta.updatedAt = _now_iso()
-    _write_installed(name, meta)
+    _write_installed(name, meta)  # revokes the host-exec grant (enabled is False)
+
+    # Fail closed: a disable that reports success must not leave a live grant that
+    # still authorizes a pod. _write_installed's revoke is best-effort, so verify.
+    if host_exec_granted(name):
+        return AppResult(
+            ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
+        )
 
     logger.info("Disabled app %s", name)
     return AppResult(ok=True, name=name, message=f"disabled {name}")

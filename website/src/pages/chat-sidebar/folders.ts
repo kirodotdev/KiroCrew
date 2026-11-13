@@ -7,10 +7,10 @@ import { useOptimisticConfigPaths, setConfigPathValue } from '../settings/useOpt
 import { useFolderSortRead, type FolderSortConfigBody } from '../../hooks/useFolderSortMode'
 import { type FolderSortMode, folderComparator, coveredByHiddenAncestor, collectFolderSubtreeIds } from '../../utils/folderTree'
 import { api } from '../../api/client'
-import { CHAT_FOLDERS_WRITE_KEY, invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
+import { CHAT_FOLDERS_WRITE_KEY, invalidateFoldersWhenIdle, seedCreatedChatFolder } from '../../api/chatFoldersWrite'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
-import { computeActiveSubtree, folderIsHidden } from '../../utils/folderVisibility'
+import { computeActiveSubtree, folderIsHidden, computePinnedSubtree, computePinnedAncestors, computeFirstPinnedDescendant } from '../../utils/folderVisibility'
 import type { ChatFolder } from '../../types'
 import type { Slot } from './types'
 
@@ -184,13 +184,39 @@ export function useFolderVisibility({ folders, localSlots, filterHiddenFolders }
     [foldersWithActiveSubtree, revealForcedVisible],
   )
 
+  // Folder IDs covered by a folder pin (the pinned folders and everything under
+  // them). A pinned folder's sessions stay listed while the status chips, the tag
+  // chips or the folder checkboxes narrow the list, so every consumer that
+  // narrows asks this set first. Text search is deliberately NOT stepped over:
+  // a query names what the person wants to see, a chip only trims the view.
+  const pinnedFolderSubtree = useMemo(() => computePinnedSubtree(folders), [folders])
+  // The folders ABOVE a pinned one. The pinned block renders inside them, so the
+  // folder hide cannot take them away while the pin holds: their checkboxes and
+  // Hide folder items are inert. Their own sessions still answer to the chips.
+  const pinnedFolderAncestors = useMemo(() => computePinnedAncestors(folders), [folders])
+  // The unchecks the pin leaves in force: the saved set minus every folder under
+  // or above a pin. The saved set itself is left alone, so a hide on such a folder
+  // comes back on unpin. Every lane reads the folder hide through this set.
+  const effectiveHiddenFolders = useMemo(() => {
+    if (pinnedFolderSubtree.size === 0 && pinnedFolderAncestors.size === 0) return filterHiddenFolders
+    const effective = new Set(filterHiddenFolders)
+    for (const id of pinnedFolderSubtree) effective.delete(id)
+    for (const id of pinnedFolderAncestors) effective.delete(id)
+    return effective
+  }, [filterHiddenFolders, pinnedFolderSubtree, pinnedFolderAncestors])
+
   // Folder IDs whose sessions are excluded from the flat lane because the
   // folder — or any ancestor — is unchecked in the filter menu's folder list.
   // Unchecking a parent hides its whole subtree, matching what the user sees
   // in the tree. Cycle-guarded: a hand-edited folders.json can contain a
   // parent_id loop and must not freeze the tab.
+  //
+  // Built from the effective set, so a folder under or above a pin is never in
+  // it: neither is unchecked there, and no unchecked folder sits above a pinned
+  // subtree. That is what makes a pinned folder's sessions survive the hide in
+  // the tree, the flat lane, the conductor lane and the board alike.
   const filterHiddenSubtree = useMemo(() => {
-    if (filterHiddenFolders.size === 0) return new Set<string>()
+    if (effectiveHiddenFolders.size === 0) return new Set<string>()
     const byId = new Map(folders.map(f => [f.id, f]))
     const hidden = new Set<string>()
     for (const f of folders) {
@@ -198,27 +224,32 @@ export function useFolderVisibility({ folders, localSlots, filterHiddenFolders }
       const visited = new Set<string>()
       while (cur && !visited.has(cur.id)) {
         visited.add(cur.id)
-        if (filterHiddenFolders.has(cur.id)) { hidden.add(f.id); break }
+        if (effectiveHiddenFolders.has(cur.id)) { hidden.add(f.id); break }
         cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
       }
     }
     return hidden
-  }, [folders, filterHiddenFolders])
-  return { slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree }
+  }, [folders, effectiveHiddenFolders])
+  return { slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree, effectiveHiddenFolders, pinnedFolderSubtree, pinnedFolderAncestors }
 }
 
 /** The rows that announce folders the filter menu is hiding, and their peeks. */
-export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive }: {
+export function useFolderFilterReveal({ folderFilterActive, effectiveHiddenFolders: filterHiddenFolders, folders, isFolderHidden, folderCompare, boardFoldersDrawn }: {
   folderFilterActive: boolean
-  filterHiddenFolders: Set<string>
+  /** The unchecks a pin leaves in force (`useFolderVisibility`). Everything below
+   *  reads this set, never the raw one, so the block, the reveal rows and the
+   *  count agree with the rows on screen. */
+  effectiveHiddenFolders: Set<string>
   folders: ChatFolder[]
   isFolderHidden: (f: ChatFolder) => boolean
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
-  boardLaneActive: boolean
+  /** The board is on screen with its folder blocks: not board-flat, which draws none. */
+  boardFoldersDrawn: boolean
 }) {
-  // List view (the folder tree) drops an unchecked folder's whole block —
-  // header and sessions together. Only the folder's OWN id is checked here:
-  // removing a parent block already takes its descendants with it.
+  // List view (the folder tree) drops an unchecked folder's whole block --
+  // header and sessions together -- and the board column does the same. Only
+  // the folder's OWN id is checked: removing a parent block already takes its
+  // descendants with it.
   const isFolderFilteredOut = useCallback(
     (f: ChatFolder) => folderFilterActive && filterHiddenFolders.has(f.id),
     [folderFilterActive, filterHiddenFolders],
@@ -282,13 +313,14 @@ export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders,
    *  absent at all.
    *
    *  `allHiddenFolders` is the wrong number too, and in the opposite direction, for a
-   *  BOARD: it drops a folder its own hide-when-empty attribute would remove, and a
-   *  board column draws a folder block whatever that attribute says
+   *  BOARD WITH FOLDER BLOCKS: it drops a folder its own hide-when-empty attribute
+   *  would remove, and a board column draws a folder block whatever that attribute says
    *  (`relevantFolders` filters on `isFolderFilteredOut` alone). So on a board the
    *  uncheck does take that block away, and dropping it announces nothing while the
    *  header disappears — the exact traceless hide this row exists to end. The other
-   *  lanes narrow by `isFolderHidden` themselves, so there the uncheck takes nothing
-   *  a reader would otherwise have seen, and counting it would over-report.
+   *  lanes narrow by `isFolderHidden` themselves, and board-flat draws no folder block
+   *  at all, so there the uncheck takes nothing a reader would otherwise have seen,
+   *  and counting it would over-report.
    *
    *  Hence one predicate and two scopes, not two unrelated counts. A count and not a
    *  list, because nothing renders this population: the reveal rows draw from
@@ -299,12 +331,12 @@ export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders,
     let n = 0
     for (const f of folders) {
       if (!filterHiddenFolders.has(f.id)) continue
-      if (!boardLaneActive && isFolderHidden(f)) continue
+      if (!boardFoldersDrawn && isFolderHidden(f)) continue
       if (coveredByHiddenAncestor(f, folders, filterHiddenFolders)) continue
       n += 1
     }
     return n
-  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden, boardLaneActive])
+  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden, boardFoldersDrawn])
   return {
     isFolderFilteredOut, revealedContainers, toggleReveal, hiddenByContainer, allHiddenFolders,
     hiddenFolderCount,
@@ -312,23 +344,32 @@ export function useFolderFilterReveal({ folderFilterActive, filterHiddenFolders,
 }
 
 /** The filter menu folder rows, in tree order with direct counts. */
-export function useFolderFilterRows({ folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree }: {
+export function useFolderFilterRows({ folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors }: {
   /** The row model's folder index: the filtered rows filed directly in each folder. */
   folderTree: { rowsIn: (folderId: string) => Slot[] }
   folders: ChatFolder[]
   folderCompare: (a: ChatFolder, b: ChatFolder) => number
   filterHiddenFolders: Set<string>
   filterHiddenSubtree: Set<string>
+  pinnedFolderSubtree: Set<string>
+  pinnedFolderAncestors: Set<string>
 }) {
+  const pinnedDescendantOf = useMemo(
+    () => (pinnedFolderAncestors.size === 0 ? new Map<string, ChatFolder>() : computeFirstPinnedDescendant(folders, folderCompare)),
+    [folders, folderCompare, pinnedFolderAncestors],
+  )
+
   // Folder rows for the filter menu: every folder in tree order, each with the
-  // count of flat-lane sessions filed directly in it, and whether an unchecked
-  // ancestor is already hiding it (that row renders inert).
+  // count of flat-lane sessions filed directly in it, whether an unchecked
+  // ancestor is already hiding it, whether a folder pin covers it, and the
+  // pinned folder it holds when it sits above one. All but the first plain case
+  // render inert: the hide is the ancestor's, or the pin overrides the checkbox.
   const folderFilterRows = useMemo(() => {
     // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
     // visited set so a parent_id cycle terminates instead of recursing forever.
     const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
     const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
-    const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean }[] = []
+    const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean; pinned: boolean; pinnedDescendant: ChatFolder | null }[] = []
     const visited = new Set<string>()
     const walk = (list: ChatFolder[], depth: number) => {
       for (const f of list) {
@@ -340,6 +381,8 @@ export function useFolderFilterRows({ folderTree, folders, folderCompare, filter
           count: folderTree.rowsIn(f.id).length,
           hidden: filterHiddenFolders.has(f.id),
           hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
+          pinned: pinnedFolderSubtree.has(f.id),
+          pinnedDescendant: pinnedDescendantOf.get(f.id) ?? null,
         })
         walk(childrenOf(f.id), depth + 1)
       }
@@ -356,10 +399,12 @@ export function useFolderFilterRows({ folderTree, folders, folderCompare, filter
         count: folderTree.rowsIn(f.id).length,
         hidden: filterHiddenFolders.has(f.id),
         hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
+        pinned: pinnedFolderSubtree.has(f.id),
+        pinnedDescendant: pinnedDescendantOf.get(f.id) ?? null,
       })
     }
     return rows
-  }, [folders, folderTree, filterHiddenFolders, filterHiddenSubtree, folderCompare])
+  }, [folders, folderTree, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedDescendantOf, folderCompare])
   return { folderFilterRows }
 }
 
@@ -374,36 +419,22 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
 }) {
   // Folder mutations
   const createFolderMutation = useMutation({
-    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; defaultDestinationCrew?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[] }) =>
+    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; defaultDestinationCrew?: string; defaultPrompt?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[] }) =>
       api.createChatFolder(v.name.trim(), v.parentId, {
         project_dir: v.projectDir || undefined,
         default_agent: v.defaultAgent || undefined,
         default_destination_crew: v.defaultDestinationCrew || undefined,
+        default_prompt: v.defaultPrompt || undefined,
         color: v.color || undefined,
         icon: v.icon || undefined,
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
         steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
       }),
-    // Add the server's own record to the cache before the refetch, so the new
-    // folder is in the tree on the next render. The create modal reveals it right
-    // after this resolves, and the reveal looks the folder up in this list: without
-    // the seed it would find nothing and give up before the refetch landed. The
-    // refetch still runs and replaces the seed with the authoritative list.
-    //
-    // Only into a list that already loaded. When the first load failed the cache
-    // holds no data, and seeding one folder into it would read as a successful
-    // load: the error notice and its Retry would vanish and the tree would show
-    // that one folder alone.
-    onSuccess: (created: unknown) => {
-      const row = created as ChatFolder | null
-      if (row && typeof row.id === 'string' && row.id) {
-        queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
-          old && !old.some(f => f.id === row.id) ? [...old, row] : old)
-      }
-      // Through the idle gate, not a direct invalidate: a refetch here would
-      // land inside a still-pending update's optimistic window.
-      invalidateFoldersWhenIdle(queryClient)
-    },
+    // The create modal reveals the new folder right after this resolves, and the
+    // reveal looks the folder up in the cache, so the server's record is seeded
+    // there before the refetch (`seedCreatedChatFolder` says why, and why only
+    // into a list that already loaded).
+    onSuccess: (created: unknown) => seedCreatedChatFolder(queryClient, created),
     onError: (e) => { setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))); setFolderOfflineNotice('') },
   })
   const deleteFolderMutation = useMutation({
@@ -474,7 +505,31 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
     }
     updateFolderMutation.mutate({ id, body: { collapsed: !f.collapsed } })
   }, [folders, updateFolderMutation, connected, queryClient])
-  return { createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse }
+  // "Collapse all folders": the server closes the whole tree in one write. A
+  // failure changes nothing there, so the settle-time refetch redraws it.
+  const closeAllInCache = useCallback(() => {
+    queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
+      (old ?? []).map(f => f.collapsed ? f : { ...f, collapsed: true }))
+  }, [queryClient])
+  const collapseAllMutation = useMutation({
+    mutationKey: CHAT_FOLDERS_WRITE_KEY,
+    mutationFn: () => api.collapseAllChatFolders(),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['chat-folders'] })
+      closeAllInCache()
+    },
+    onError: (err) => {
+      setFolderActionError((errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')))
+      setFolderOfflineNotice('')
+    },
+    onSettled: () => invalidateFoldersWhenIdle(queryClient),
+  })
+  const collapseAllFolders = useCallback(() => {
+    // Offline it closes the cached tree and sends nothing, as `toggleCollapse` does.
+    if (!connected) closeAllInCache()
+    else collapseAllMutation.mutate()
+  }, [connected, closeAllInCache, collapseAllMutation])
+  return { createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse, collapseAllFolders }
 }
 
 /** The folder writes, typed once for the owners that call them. */

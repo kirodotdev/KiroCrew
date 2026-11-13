@@ -29,10 +29,9 @@ from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the Telegram session modules' autouse trust reset and auto-title stub, moved verbatim; none of them calls monkeypatch.undo()
-def _reset_shared_trust(monkeypatch: Any) -> Any:
+def _reset_shared_trust(_floor_monkeypatch: Any) -> Any:
     clear_trusted_sessions()
-    monkeypatch.setattr(auto_title, "try_claim", lambda _key: False)
+    _floor_monkeypatch.setattr(auto_title, "try_claim", lambda _key: False)
     yield
     clear_trusted_sessions()
 
@@ -244,6 +243,13 @@ class _Sessions:
 
     async def try_acquire(self, key: str) -> bool:
         return not self.busy
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     async def discard_conversation(self, key: str) -> None:
         return None

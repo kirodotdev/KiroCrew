@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES, assert_rejected_without_backtracking
 from kiro_crew.messaging.display_safety import canonicalize_display
 from kiro_crew.messaging.renderer import _default_redactor
-from kiro_crew.wecom.client import WECOM_MAX_REPLY_BYTES
+from kiro_crew.wecom.client import WECOM_MAX_REPLY_BYTES, WECOM_SAFE_REPLY_CHARS
 from kiro_crew.wecom.renderer import WeComRenderer, _render_options_as_text
-from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+from kiro_crew.wecom.transport import WECOM_CAPABILITIES, WeComTransport
 
 # The PEM markers are ASSEMBLED from fragments, never written as one literal, so
 # the internal content scan (rule ``credential-private-key``, which matches a
@@ -1020,3 +1021,105 @@ class TestACredentialCannotStraddleTheRotationSeam:
         assert any(
             "省略" in d and "推理" in d for d in delivered
         ), "the reasoning-overflow notice was not announced"
+
+
+class TestInlineImages:
+    @pytest.mark.asyncio
+    async def test_a_picture_that_fails_to_send_puts_its_path_back(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Extraction already cut the reference out of the answer, so a refused
+        # send must bring the path back rather than leave the reader with neither.
+        monkeypatch.setattr("kiro_crew.wecom.renderer._STREAM_THROTTLE_S", 0.0)
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        c = FakeClient()
+
+        async def refuse(conversation_id, document):
+            return None
+
+        r = WeComRenderer(
+            c,
+            "rq1",
+            "https://resp.url",
+            WECOM_CAPABILITIES,
+            chat_id="Wei",
+            send_document=refuse,
+            send_message=WeComTransport(c, allowed_users=["Wei"]).send_message,
+        )
+        r.authorize_upload_root(str(tmp_path))
+        await r.on_turn_start()
+        await r.on_text_chunk(f"![chart]({chart})")
+        await r.on_done()
+        await r.close()
+
+        assert c.frames[-1]["content"] == "…"  # a picture-only reply still seals
+        assert c.pushed == [("Wei", f"⚠️ 以下图片未能发送，文件仍在本机：\n- `{chart}`")]
+
+    @pytest.mark.asyncio
+    async def test_a_picture_follows_the_whole_answer_including_its_overflow(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The tail of a long answer is released from close(); a picture sent before
+        # it would land between two chunks of one answer.
+        monkeypatch.setattr("kiro_crew.wecom.renderer._STREAM_THROTTLE_S", 0.0)
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        c = FakeClient()
+
+        async def send_document(conversation_id, document):
+            c.pushed.append((conversation_id, f"<picture {document.path}>"))
+            return "mid-1"
+
+        r = WeComRenderer(
+            c,
+            "rq1",
+            "https://resp.url",
+            WECOM_CAPABILITIES,
+            chat_id="Wei",
+            send_document=send_document,
+            send_message=WeComTransport(c, allowed_users=["Wei"]).send_message,
+        )
+        r.authorize_upload_root(str(tmp_path))
+        await r.on_turn_start()
+        await r.on_text_chunk(f"![chart]({chart})\n\n" + "word " * WECOM_SAFE_REPLY_CHARS)
+        await r.on_done()
+        await r.close()
+
+        *tail, last = c.pushed
+        assert tail and all("<picture" not in content for _, content in tail)
+        assert last == ("Wei", "<picture chart.png>")
+
+    @pytest.mark.asyncio
+    async def test_a_recipient_removed_during_the_upload_is_not_sent_the_paths(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The failure report goes through the transport's authorized push, so a
+        # userid taken off the allow-list mid-upload gets neither the picture nor
+        # a message naming its local path.
+        monkeypatch.setattr("kiro_crew.wecom.renderer._STREAM_THROTTLE_S", 0.0)
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        c = FakeClient()
+        transport = WeComTransport(c, allowed_users=["Wei"])
+
+        async def revoked_during_upload(conversation_id, document):
+            transport.reconfigure(SimpleNamespace(allowed_users=[]))
+            return None
+
+        r = WeComRenderer(
+            c,
+            "rq1",
+            "https://resp.url",
+            WECOM_CAPABILITIES,
+            chat_id="Wei",
+            send_document=revoked_during_upload,
+            send_message=transport.send_message,
+        )
+        r.authorize_upload_root(str(tmp_path))
+        await r.on_turn_start()
+        await r.on_text_chunk(f"![chart]({chart})")
+        await r.on_done()
+        await r.close()
+
+        assert c.pushed == []

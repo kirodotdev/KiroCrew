@@ -40,7 +40,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -191,8 +198,10 @@ describe('a pinned session is exempt from the property filters', () => {
     localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t2']))
     const utils = renderSidebar(PINNED_SLOTS)
     await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+    // The tag filter narrows only once the tag vocabulary has loaded, and beta is
+    // shown before and after that, so wait for the row the filter hides.
+    await waitFor(() => expect(utils.queryByText('gamma session')).toBeNull())
     expect(utils.queryByText('alpha session')).not.toBeNull()
-    expect(utils.queryByText('gamma session')).toBeNull()
   })
 
   it('the search is not exempt: a pinned row the query does not name is dropped', async () => {

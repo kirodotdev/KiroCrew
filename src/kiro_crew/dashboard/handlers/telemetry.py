@@ -56,7 +56,12 @@ from kiro_crew.dashboard.handlers.usage import (
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
-from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_active
+from kiro_crew.metrics.provider import (
+    TELEMETRY_ENV_VAR,
+    env_pin,
+    otlp_egress_listing,
+    pin_env_var,
+)
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC, TURN_METRIC
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -222,6 +227,12 @@ class _TelemetryState(NamedTuple):
     # this, so the OTEL cards cannot cover a wider window. 0 means no age
     # pruning (``telemetry.max_total_mb`` can still drop the oldest shards).
     retention_days: int = 0
+    # Every destination enabling collection would send to, as
+    # ``{"name", "source", "locked"}`` rows: names only, never an endpoint or a
+    # host, which can carry credentials. Empty when ``otlp_configured`` is False,
+    # and also when posture could not be resolved (``otlp_configured`` is then
+    # True: a disclosure that cannot name its destinations still says they exist).
+    otlp_destinations: "tuple[dict, ...]" = ()
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -241,6 +252,7 @@ def _telemetry_cfg() -> _TelemetryState:
     enabled = False
     env_pinned = False
     otlp_configured = False
+    destinations: "tuple[dict, ...]" = ()
     retention_days = 0
     directory = config_dir() / "metrics"
     try:
@@ -256,7 +268,15 @@ def _telemetry_cfg() -> _TelemetryState:
         # leave the machine. The endpoint value never leaves that resolution; the
         # panel only needs to know whether egress would happen.
         try:
-            otlp_configured = otlp_egress_active(cfg)
+            destinations = tuple(
+                {
+                    "name": row.destination.name,
+                    "source": row.source,
+                    "locked": row.locked,
+                }
+                for row in otlp_egress_listing(cfg)
+            )
+            otlp_configured = bool(destinations)
         except Exception:
             # Posture unresolvable (a provider that raised, an uncomposable
             # context). Report egress rather than promising local-only: this
@@ -269,6 +289,7 @@ def _telemetry_cfg() -> _TelemetryState:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
     env_var = TELEMETRY_ENV_VAR
     try:
+        env_var = pin_env_var()
         pin = env_pin()
     except Exception:
         logger.debug("telemetry env pin resolution failed", exc_info=True)
@@ -276,7 +297,9 @@ def _telemetry_cfg() -> _TelemetryState:
     if pin is not None:
         enabled = pin
         env_pinned = True
-    return _TelemetryState(enabled, directory, env_pinned, env_var, otlp_configured, retention_days)
+    return _TelemetryState(
+        enabled, directory, env_pinned, env_var, otlp_configured, retention_days, destinations
+    )
 
 
 def _shards_in_window(directory: Path, days: float, until: float | None = None) -> list[Path]:
@@ -301,9 +324,9 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
     last = end.date()
     out: list[Path] = []
     for p in directory.glob("metrics-*.jsonl"):
-        # Defensive: skip any shard that resolves to a sensitive path (symlink).
-        if validate_file_path(str(p)) is None:
-            continue
+        # Parse the filename date first (cheap string work) and skip shards
+        # outside the window before the path gate, so an unpruned directory does
+        # not pay the full validate_file_path resolve for shards it never reads.
         # filename: metrics-YYYY-MM-DD-<pid>.jsonl
         stem = p.stem  # metrics-YYYY-MM-DD-<pid>
         parts = stem.split("-")
@@ -313,8 +336,13 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
             d = datetime.strptime("-".join(parts[1:4]), "%Y-%m-%d").date()
         except ValueError:
             continue
-        if cutoff <= d and (until is None or d <= last):
-            out.append(p)
+        if not (cutoff <= d and (until is None or d <= last)):
+            continue
+        # Defensive: an in-window shard that resolves to a sensitive path
+        # (symlink) is still skipped before it is read.
+        if validate_file_path(str(p)) is None:
+            continue
+        out.append(p)
     return out
 
 
@@ -710,11 +738,27 @@ def _iter_export_cycles(
                 for line in bounded_records(fh, p, label="telemetry"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
+                        continue
+                    if not isinstance(obj, dict):
+                        # ``NaN``, ``[1, 2]`` or a bare number parses but is no
+                        # export cycle: skipped like an unparseable line.
                         continue
                     yield obj, shard_day, shard_pid
         except (OSError, UnicodeDecodeError):
             continue
+
+
+def _dict_items(value: Any) -> list[dict[str, Any]]:
+    """The dict members of *value* when it is a list, else ``[]``.
+
+    Each level of an export cycle is read through this, so a list member or a
+    whole list that is not the exporter's shape is skipped instead of raising
+    and failing the panel.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _bound_ns(seconds: float) -> int:
@@ -791,7 +835,7 @@ def _iter_metric_points(
         return untimed_ok[shard_day]
 
     for obj, shard_day, shard_pid in _iter_export_cycles(shard_paths):
-        for rm in obj.get("resource_metrics", []) or []:
+        for rm in _dict_items(obj.get("resource_metrics")):
             resource = rm.get("resource")
             res_attrs = resource.get("attributes") if isinstance(resource, dict) else None
             identity = ""
@@ -799,13 +843,15 @@ def _iter_metric_points(
                 raw = res_attrs.get(RESOURCE_ATTR_PROCESS_START_TIME)
                 if isinstance(raw, str):
                     identity = raw
-            for sm in rm.get("scope_metrics", []) or []:
-                for metric in sm.get("metrics", []) or []:
-                    name = metric.get("name") or ""
-                    if not name.startswith("kirocrew."):
+            for sm in _dict_items(rm.get("scope_metrics")):
+                for metric in _dict_items(sm.get("metrics")):
+                    name = metric.get("name")
+                    if not isinstance(name, str) or not name.startswith("kirocrew."):
                         continue
-                    data = metric.get("data") or {}
-                    for dp in data.get("data_points", []) or []:
+                    data = metric.get("data")
+                    if not isinstance(data, dict):
+                        continue
+                    for dp in _dict_items(data.get("data_points")):
                         if span_ns is not None:
                             ns = _finite_int(dp.get("time_unix_nano"))
                             if ns is not None and ns > 0:
@@ -1621,8 +1667,14 @@ def _app_is_enabled(app_name: str) -> bool:
         return False
 
 
-def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, str]:
+def _persisted_titles(
+    conversation_log: Any, slot_keys: list[str], transcripts: dict[str, str]
+) -> dict[str, str]:
     """Read the persisted title for each of *slot_keys*. Blocking; call off-loop.
+
+    A slot resolves through the transcript its usage rows recorded (*transcripts*)
+    before its name: a closed tab linked to another session (a task review, a
+    workflow, a cron run) is found no other way.
 
     ``get_metadata`` rather than ``list_sessions``: the latter falls back to the
     first user message and then to the session key when the metadata line names
@@ -1631,8 +1683,7 @@ def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, 
     ``metadata["title"]`` counts here, which is the same thing the live slot
     carries.
 
-    Keyed by SLOT key on the way out, so the caller never has to know how a slot
-    maps onto a transcript. Distinct slots can share one transcript (a
+    Keyed by SLOT key on the way out. Distinct slots can share one transcript (a
     channel-born slot's conversation IS the channel's), so the read is
     deduplicated by transcript key rather than by slot.
     """
@@ -1640,7 +1691,7 @@ def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, 
     out: dict[str, str] = {}
     for slot_key in slot_keys:
         try:
-            transcript_key = slot_transcript_key(slot_key)
+            transcript_key = transcripts.get(slot_key) or slot_transcript_key(slot_key)
         except Exception:  # pragma: no cover — a key shape no rule recognises
             continue
         if transcript_key not in by_transcript:
@@ -1686,6 +1737,10 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
     title in module-global cache and keep serving it for the rest of the TTL
     after the conversation was renamed or closed.
     """
+    # Server-side only: off the payload before any return below.
+    transcripts = cost.get("transcripts") or {}
+    if "transcripts" in cost:
+        cost = {k: v for k, v in cost.items() if k != "transcripts"}
     try:
         state = request.app["state"]
     except KeyError:
@@ -1713,7 +1768,9 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
 
     conversation_log = getattr(state, "conversation_log", None)
     if unresolved and conversation_log is not None:
-        titles.update(await asyncio.to_thread(_persisted_titles, conversation_log, unresolved))
+        titles.update(
+            await asyncio.to_thread(_persisted_titles, conversation_log, unresolved, transcripts)
+        )
 
     rows = []
     for row in conversations:
@@ -1801,7 +1858,9 @@ async def api_beacon_status(request: web.Request) -> web.Response:
             "reason_code": str(info.get("reason_code", "")),
             "endpoint_configured": bool(info.get("endpoint_configured", False)),
             "env_override": beacon.is_env_opted_out(),
-            "env_var": beacon.DISABLE_ENV,
+            # DO_NOT_TRACK when that is what pins it, so the note names the
+            # variable that actually has to be unset.
+            "env_var": beacon.opt_out_env_var(),
             "overlay_override": overlay_override,
             # Resolved inside beacon.status (already on a worker thread) rather
             # than re-evaluated here, so this reports the same verdict that
@@ -1839,6 +1898,13 @@ async def api_collection_status(request: web.Request) -> web.Response:
     itself is never returned: it can carry credentials, and the panel only needs to
     know that one exists.
 
+    ``otlp_destinations`` lists each of those destinations by NAME, with where it
+    came from (``otlp_endpoint``, ``otlp_endpoints`` or ``provider``)
+    and whether this build locked it on. Every configured entry is listed, including
+    one that is refused right now for a reason that can lift on its own (an unset
+    ``headers_env`` variable, a host the policy refuses today): this is a
+    disclosure, so its closed direction is "assume it exports".
+
     Nothing here is an egress control — the switch cannot start egress, by the gate
     above — so unlike the beacon there is no governance ceiling to report.
     """
@@ -1851,6 +1917,7 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "env_var": state.env_var,
             "overlay_override": overlay_override,
             "otlp_configured": state.otlp_configured,
+            "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }
     )

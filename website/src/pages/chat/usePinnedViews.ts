@@ -8,6 +8,10 @@ import './pinnedViews.css'
 /** Summary, pinned ahead of the permanent block by Pin Summary. A module
  *  constant, so the reconcile effect sees the same array on every render. */
 const SUMMARY_FIRST: readonly ViewKind[] = ['summary']
+/** an Ultra Mode chat pins its Crew tab first. */
+const CREW_FIRST: readonly ViewKind[] = ['workers']
+const CREW_AND_SUMMARY_FIRST: readonly ViewKind[] = ['workers', 'summary']
+const NONE_FIRST: readonly ViewKind[] = []
 
 /**
  * The side panel's pinned block: Files / Artifacts / Changes are ALWAYS present
@@ -30,7 +34,7 @@ const SUMMARY_FIRST: readonly ViewKind[] = ['summary']
  * and not closable instead of dropping behind the block until the read lands.
  * A host that withholds Summary never pins it.
  */
-export function usePinnedViews({ tabsCtl, slot, panelHidden, pinSummary, summaryOn, summaryWithheld }: {
+export function usePinnedViews({ tabsCtl, slot, panelHidden, pinSummary, summaryOn, summaryWithheld, crewFirst = false }: {
   tabsCtl: Pick<ReturnType<typeof usePanelTabs>, 'tabs' | 'syncPinned' | 'openView'>
   slot: string
   panelHidden: boolean
@@ -38,14 +42,17 @@ export function usePinnedViews({ tabsCtl, slot, panelHidden, pinSummary, summary
   /** Session summaries are on for this chat; `undefined` until the read answers. */
   summaryOn: boolean | undefined
   summaryWithheld: boolean
+  /** an Ultra Mode chat (root or crew member): Crew pinned first. */
+  crewFirst?: boolean
 }): { pinnedViews: readonly ViewKind[]; summaryPinned: boolean } {
   const { tabs, syncPinned, openView } = tabsCtl
   const pinAllowed = pinSummary && !summaryWithheld
   // Summary ahead of the block is the shape only a reconcile that pinned it
   // leaves, so an unknown flag reads it as "still pinned" and writes nothing.
-  const summaryHeld = tabs[0]?.id === 'summary' && tabs[1]?.id === PINNED_VIEWS[0]
+  const summaryHeld = (tabs[0]?.id === 'summary' && tabs[1]?.id === PINNED_VIEWS[0]) || (tabs[0]?.id === 'workers' && tabs[1]?.id === 'summary')
   const summaryPinned = pinAllowed && (summaryOn ?? summaryHeld)
-  useEffect(() => { syncPinned(PINNED_VIEWS, summaryPinned ? SUMMARY_FIRST : []) }, [syncPinned, summaryPinned])
+  const leading = useMemo<readonly ViewKind[]>(() => (crewFirst ? (summaryPinned ? CREW_AND_SUMMARY_FIRST : CREW_FIRST) : summaryPinned ? SUMMARY_FIRST : NONE_FIRST), [crewFirst, summaryPinned])
+  useEffect(() => { syncPinned(PINNED_VIEWS, leading) }, [syncPinned, leading])
   const shownSlot = panelHidden || !slot ? null : slot
   // Gated on a known-on flag, not on `summaryPinned`, so the landing is not
   // taken while the flag is still loading on a fresh show.
@@ -53,6 +60,6 @@ export function usePinnedViews({ tabsCtl, slot, panelHidden, pinSummary, summary
   useEffect(() => {
     if (shownSlot && landsOnSummary && takePlainPanelShow(shownSlot)) openView('summary', { automatic: true })
   }, [shownSlot, landsOnSummary, openView])
-  const pinnedViews = useMemo(() => (summaryPinned ? [...SUMMARY_FIRST, ...PINNED_VIEWS] : PINNED_VIEWS), [summaryPinned])
+  const pinnedViews = useMemo(() => [...leading, ...PINNED_VIEWS], [leading])
   return { pinnedViews, summaryPinned }
 }

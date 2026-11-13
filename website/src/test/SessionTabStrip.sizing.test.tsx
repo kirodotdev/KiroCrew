@@ -53,6 +53,7 @@ function Harness({ initial, onClose }: { initial: string[]; onClose?: (k: string
         activeKey={tabs[0] ?? null}
         onSelect={vi.fn()}
         onClose={k => { onClose?.(k); setTabs(t => t.filter(x => x !== k)) }}
+        onReorder={vi.fn()}
       />
     </>
   )
@@ -67,7 +68,7 @@ function renderHarness(initial = ['a', 'b', 'c', 'd', 'e'], onClose?: (k: string
 }
 
 const tab = (k: string) => screen.getByTestId(`session-tab-${k}`)
-const closeBtn = (k: string) => tab(k).querySelector('button') as HTMLButtonElement
+const closeBtn = (k: string) => tab(k).querySelector('button:last-of-type') as HTMLButtonElement
 /** A real mouse click: detail 1. A keyboard-synthesized click has detail 0. */
 const mouseClose = (k: string) => fireEvent.click(closeBtn(k), { detail: 1 })
 

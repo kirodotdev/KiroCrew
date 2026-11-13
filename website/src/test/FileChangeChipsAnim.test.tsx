@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 
 const hoisted = vi.hoisted(() => ({
   options: [] as { collapsed: boolean; unsafeCSS: string }[],
@@ -251,7 +251,7 @@ describe('chip row collapse animation', () => {
     fireEvent.click(before)
 
     const outside = getByTestId('outside-focus')
-    outside.focus()
+    act(() => { outside.focus() })
     expect(document.activeElement).toBe(outside)
 
     hoisted.renderPrefix = true
@@ -313,7 +313,7 @@ describe('chip row collapse animation', () => {
     chevron().focus()
     fireEvent.click(chevron())
     const outside = getByTestId('outside-focus')
-    outside.focus()
+    act(() => { outside.focus() })
 
     await waitFor(() => expect(container.querySelector('[data-testid="pierre-pair"]')).toBeNull())
     expect(document.activeElement).toBe(outside)

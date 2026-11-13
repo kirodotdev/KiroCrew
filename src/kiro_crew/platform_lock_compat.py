@@ -419,8 +419,8 @@ def open_create_or_existing(
     *flags* carries everything but the create bits (``O_RDWR``, ``O_NOFOLLOW``,
     ``O_APPEND``, ...). *dir_fd* makes the open descriptor-relative, so a caller
     that pinned the directory keeps its pin anchoring the open. Returns the raw
-    integer fd; the caller owns it. Shared by the SEL chain lock, the decision
-    log and the app-deps provisioning lock, which all hit the same race.
+    integer fd; the caller owns it. Every by-name lock-sidecar open in the
+    package goes through it, since each one can meet the same race.
     """
     name = os.fspath(path)
     try:

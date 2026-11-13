@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -66,6 +67,18 @@ export default function TeamDialog({
   const membersChanged = added.length > 0 || removed.length > 0
   const dirty = name !== (team?.name ?? '') || membersChanged
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Each press in the delete row unmounts the focused button, so the swap is
+  // committed synchronously and focus moves to the button that replaced it.
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const keepRef = useRef<HTMLButtonElement>(null)
+  const armDelete = () => {
+    flushSync(() => setConfirmDelete(true))
+    keepRef.current?.focus()
+  }
+  const keepTeam = () => {
+    flushSync(() => setConfirmDelete(false))
+    deleteRef.current?.focus()
+  }
   const [error, setError] = useState<string | null>(null)
   const [errorKind, setErrorKind] = useState<'save' | 'delete' | null>(null)
 
@@ -144,7 +157,17 @@ export default function TeamDialog({
   const busy = save.isPending || remove.isPending
   // In edit mode an unchanged team has nothing to send (the route refuses an
   // empty update), so Save stays disabled until a field actually differs.
-  const canSave = trimmed.length > 0 && !busy && (!editing || nameChanged || membersChanged)
+  const sendable = trimmed.length > 0 && (!editing || nameChanged || membersChanged)
+  const canSave = sendable && !busy
+  // The controls a request can be started FROM (Save, the name field's Enter,
+  // the delete confirm) are held with `aria-disabled` and a guard while it is
+  // out, never native `disabled`: disabling the focused control blurs it to
+  // `<body>`, outside the dialog. Same look as `Btn`'s `disabled:` variants,
+  // which differ for a primary button: muted surface, not a faded accent.
+  const held = busy || undefined
+  const heldClass = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
+  const heldPrimaryClass =
+    'aria-disabled:cursor-not-allowed aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60'
   const title = t(editing ? 'pages.membersPage.team_edit' : 'pages.membersPage.team_new')
   const errorTitle = t(
     errorKind === 'delete'
@@ -170,8 +193,10 @@ export default function TeamDialog({
           <Btn
             type="button"
             primary
-            disabled={!canSave}
-            onClick={() => save.mutate()}
+            disabled={!sendable}
+            aria-disabled={held}
+            onClick={() => { if (canSave) save.mutate() }}
+            className={heldPrimaryClass}
             data-testid="team-dialog-save"
           >
             {t(editing ? 'pages.membersPage.team_save' : 'pages.membersPage.team_create')}
@@ -195,7 +220,8 @@ export default function TeamDialog({
             placeholder={t('pages.membersPage.team_name_placeholder')}
             autoFocus
             maxLength={80}
-            disabled={busy}
+            readOnly={busy}
+            aria-disabled={held}
             data-testid="team-dialog-name"
           />
         </label>
@@ -260,8 +286,9 @@ export default function TeamDialog({
               </span>
             ) : (
               <button
+                ref={deleteRef}
                 type="button"
-                onClick={() => setConfirmDelete(true)}
+                onClick={armDelete}
                 disabled={busy}
                 className="text-[12px] text-danger hover:underline bg-transparent border-none cursor-pointer p-0"
                 data-testid="team-dialog-delete"
@@ -272,10 +299,10 @@ export default function TeamDialog({
             {confirmDelete && (
               <>
                 <span className="text-[12px] text-muted flex-1 min-w-[8rem]">{t('pages.membersPage.team_delete_confirm')}</span>
-                <Btn type="button" onClick={() => setConfirmDelete(false)} disabled={busy} data-testid="team-dialog-delete-keep">
+                <Btn ref={keepRef} type="button" onClick={keepTeam} disabled={busy} data-testid="team-dialog-delete-keep">
                   {t('pages.membersPage.team_delete_keep')}
                 </Btn>
-                <Btn type="button" danger onClick={() => remove.mutate()} disabled={busy} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
+                <Btn type="button" danger onClick={() => { if (!busy) remove.mutate() }} aria-disabled={held} className={heldClass} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
                   {t('pages.membersPage.team_delete_named', { name: team?.name ?? '' })}
                 </Btn>
               </>

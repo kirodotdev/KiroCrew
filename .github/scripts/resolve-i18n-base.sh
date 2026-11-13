@@ -16,7 +16,7 @@
 #
 # ## Why a script and not three copies of the same `if`
 #
-# Three steps in ci.yml need this (`frontend-lint`, `frontend-tests`, and the render
+# Three steps in ci.yml need this (`frontend-ratchets`, `frontend-tests`, and the render
 # gate in `e2e`). It used to be an inline three-liner in each, which was tolerable
 # while the only case was "a PR passes origin/<base>, a push passes nothing". It is
 # not tolerable now that a push passes a bare SHA, because the ref-vs-SHA handling
@@ -61,10 +61,16 @@ if [ "$REF" = "$ZERO_SHA" ]; then
   exit 0
 fi
 
-# The checkout is shallow, so the base is not present. Fetching it is NOT optional and
+# A shallow checkout lacks the base commit. Fetching it is NOT optional and
 # a failure here must fail the step: ci.yml records having watched a sibling gate skip
 # itself green on an unreadable base ref and silently stop checking for a whole PR.
-if ! git fetch --depth=1 origin "${REF#origin/}" >&2; then
+# Depth 1 only into a checkout that is already shallow: in a full clone (a local run,
+# or a `fetch-depth: 0` job) it would make the clone and all its worktrees shallow.
+DEPTH=()
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  DEPTH=(--depth=1)
+fi
+if ! git fetch ${DEPTH[@]+"${DEPTH[@]}"} origin "${REF#origin/}" >&2; then
   echo "::error::could not fetch base commit ${REF#origin/}; $LABEL cannot run" >&2
   exit 1
 fi

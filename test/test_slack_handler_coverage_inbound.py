@@ -35,11 +35,8 @@ class TestSharedPrivacyDelegation:
     """The Slack names are wrappers over ``messaging.privacy_mode``, and the two
     LRU dicts are the SAME objects.
 
-    Identity is what the ~45 enforcement sites in this package, the dashboard
-    predicates, and the autouse ``_clean_slack_thread_state`` conftest fixture all
-    rely on: each reaches the tracker through the Slack spelling while the shared
-    module reads its own name. A copy would leave a session restricted on one side
-    and not the other, silently.
+    Enforcement sites read the tracker by the Slack name and the shared module by its
+    own, so a copy would silently restrict a session on one side only.
     """
 
     def test_the_trackers_are_the_shared_objects(self):

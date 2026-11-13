@@ -1,16 +1,14 @@
 /**
- * All four app API clients must surface a refusal as the shared typed error.
+ * The app API clients must surface a refusal as the shared typed error.
  *
  * Before this, each threw `new Error(body || \`HTTP ${status}\`)`, so a refusal
  * body reached the UI as raw wire JSON and no caller could branch on the status.
  * These assertions are per-client on purpose: the bug was four independent
  * copies of the same mistake, so one shared-helper test would not catch a single
- * client drifting back.
+ * client drifting back. The Files, Design Tweak and Design Critique clients are
+ * pinned the same way in their own directories (`apps/<app>/api.typedErrors.test.ts`).
  */
 import { ApiError } from '../api/apiError'
-import { api as designTweakApi } from '../apps/design-tweak/api'
-import { fileExplorerApi } from '../apps/file-explorer/api'
-import { designCritiqueApi } from '../apps/design-critique/api'
 import { getWatchlist } from '../apps/mochi/api'
 
 /** A refusal whose body is the JSON envelope the backends actually send. */
@@ -43,21 +41,6 @@ describe('app API clients surface refusals as ApiError', () => {
     vi.unstubAllGlobals()
   })
 
-  it('design-tweak', async () => {
-    vi.stubGlobal('fetch', refuse())
-    await expectTypedRefusal(() => designTweakApi.get('/projects'))
-  })
-
-  it('file-explorer', async () => {
-    vi.stubGlobal('fetch', refuse())
-    await expectTypedRefusal(() => fileExplorerApi.health())
-  })
-
-  it('design-critique', async () => {
-    vi.stubGlobal('fetch', refuse())
-    await expectTypedRefusal(() => designCritiqueApi.getSlot('slot-1'))
-  })
-
   it('mochi', async () => {
     vi.stubGlobal('fetch', refuse())
     await expectTypedRefusal(() => getWatchlist())
@@ -67,11 +50,11 @@ describe('app API clients surface refusals as ApiError', () => {
     // NOT purely additive, and worth pinning as its own case: friendlyErrText's
     // 429 branch replaces the body outright, because a dashboard behind API
     // Gateway gets the opaque {"message":"Rate exceeded","throttlingReasons":null}
-    // and rendering that verbatim is useless. So a 429 through any of these four
+    // and rendering that verbatim is useless. So a 429 through any of these
     // clients now reads as the rate-limit sentence, where before it showed the
     // raw throttle envelope.
     vi.stubGlobal('fetch', refuse(429, '{"message":"Rate exceeded","throttlingReasons":null}'))
-    const e = (await fileExplorerApi.health().catch((err: unknown) => err)) as ApiError
+    const e = (await getWatchlist().catch((err: unknown) => err)) as ApiError
     expect(e.status).toBe(429)
     expect(e.message).toContain('Rate limited')
     expect(e.message).not.toContain('throttlingReasons')
@@ -79,19 +62,12 @@ describe('app API clients surface refusals as ApiError', () => {
     expect(e.body).toContain('throttlingReasons')
   })
 
-  it('all four keep the HTTP <status> fallback for an empty body', async () => {
+  it('keeps the HTTP <status> fallback for an empty body', async () => {
     // The bare-Error calls used `body || HTTP <status>`, so an empty-body refusal
     // must read exactly as it did before the change.
-    for (const call of [
-      () => designTweakApi.get('/projects'),
-      () => fileExplorerApi.health(),
-      () => designCritiqueApi.getSlot('slot-1'),
-      () => getWatchlist(),
-    ]) {
-      vi.stubGlobal('fetch', refuse(500, ''))
-      const e = (await call().catch((err: unknown) => err)) as ApiError
-      expect(e).toBeInstanceOf(ApiError)
-      expect(e.message).toBe('HTTP 500')
-    }
+    vi.stubGlobal('fetch', refuse(500, ''))
+    const e = (await getWatchlist().catch((err: unknown) => err)) as ApiError
+    expect(e).toBeInstanceOf(ApiError)
+    expect(e.message).toBe('HTTP 500')
   })
 })

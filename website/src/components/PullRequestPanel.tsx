@@ -24,9 +24,10 @@ import {
   RefreshCw,
   SkipForward,
   TriangleAlert,
+  X,
   XCircle,
 } from 'lucide-react'
-import { api } from '../api/client'
+import { usePullRequestClient } from './pullRequestClient'
 import type {
   PullRequestCheck,
   PullRequestComment,
@@ -51,8 +52,10 @@ import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import CommentThreads from './CommentThreads'
 import { Btn } from './ui'
+import { useRovingTabs } from './Tablist'
 
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
@@ -356,6 +359,14 @@ const settledMergeField = (value: string | undefined): string | undefined =>
  *    nobody asked. `SourceTabState` suppresses CI on the same predicate and for
  *    the same reason -- the lifecycle glyph is the terminal signal.
  */
+/** A source's partial sections split by cause. A failed read is an error the
+ *  panel shows through `ErrorNotice`; a section cut at a page limit failed
+ *  nothing, so it stays the status note. */
+export function partialSectionsByCause(source: { partialSections?: string[]; failedSections?: string[] }) {
+  const failed = source.failedSections ?? []
+  return { failed, truncated: (source.partialSections ?? []).filter(section => !failed.includes(section)) }
+}
+
 export function selectedSourceStatus(
   source: PullRequestSource,
   cached: PullRequestStatus | undefined,
@@ -605,7 +616,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
           target="_blank"
           rel="noopener noreferrer"
           className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 no-underline hover:bg-bg-hover transition-colors"
-          aria-label={`Open ${check.name} check details`}
+          aria-label={i18nT('components.pullRequestPanel.open_check_details', { name: check.name })}
         >
           {details}
         </a>
@@ -671,6 +682,7 @@ export function pullRequestIsLive(source: PullRequestSource): boolean {
  * double-click cannot land on a confirm that appeared under the cursor. */
 export function PullRequestActions({ source }: { source: PullRequestSource }) {
   const queryClient = useQueryClient()
+  const client = usePullRequestClient()
   const [confirmAutoMerge, setConfirmAutoMerge] = useState(false)
   const [immediateMergeWarning, setImmediateMergeWarning] = useState('')
   const meta = sourceProviderMeta(source.provider)
@@ -687,12 +699,12 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
     void queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'] })
   }
   const readyMutation = useMutation({
-    mutationFn: () => api.markPullRequestReady(source.url),
+    mutationFn: () => client.markReady(source.url),
     onSuccess: invalidate,
   })
   const autoMergeMutation = useMutation({
     mutationFn: (acknowledgeImmediateMerge: boolean) =>
-      api.enablePullRequestAutoMerge(source.url, acknowledgeImmediateMerge),
+      client.enableAutoMerge(source.url, acknowledgeImmediateMerge),
     onSuccess: () => {
       setConfirmAutoMerge(false)
       setImmediateMergeWarning('')
@@ -888,6 +900,7 @@ export default function PullRequestPanel({
   selectedUrl,
   onSelect,
   onReconcile,
+  onDismiss,
   onAddToChat,
 }: {
   sources: PullRequestLink[]
@@ -899,6 +912,9 @@ export default function PullRequestPanel({
   // transcript that lacks the remembered url may simply be a cached one that is
   // still being refetched. Defaults to onSelect for callers that do not care.
   onReconcile?: (url: string) => void
+  // Closes a tab in the source strip. The chat window passes it and remembers
+  // the close per session; a host without it renders tabs with no close control.
+  onDismiss?: (url: string) => void
   // Optional so the panel can render outside chat (e.g. the Code Review Sage
   // page), where there is no composer to hand text to. When absent the
   // chat-handoff affordances are hidden rather than rendered inert.
@@ -922,6 +938,7 @@ export default function PullRequestPanel({
   const checkPollStateRef = useRef({ url: '', failures: 0 })
   const forceRefreshRef = useRef(false)
   const queryClient = useQueryClient()
+  const client = usePullRequestClient()
 
   useEffect(() => {
     if (selected && selected.url !== selectedUrl) (onReconcile || onSelect)(selected.url)
@@ -950,7 +967,7 @@ export default function PullRequestPanel({
     queryFn: () => {
       const force = forceRefreshRef.current
       forceRefreshRef.current = false
-      return api.pullRequestSource(selected!.url, force)
+      return client.source(selected!.url, force)
     },
     enabled: !!selected,
     staleTime: Infinity,
@@ -1003,7 +1020,7 @@ export default function PullRequestPanel({
     queryFn: async () => {
       const url = selected!.url
       try {
-        const result = await api.pullRequestChecks(url)
+        const result = await client.checks(url)
         const nextState = { url, failures: 0 }
         checkPollStateRef.current = nextState
         setCheckPollState(nextState)
@@ -1066,7 +1083,7 @@ export default function PullRequestPanel({
   const statusQuery = useQuery<PullRequestStatusBatch>({
     queryKey: ['pull-request-statuses', statusUrls] as const,
     queryFn: async () => {
-      const result = await api.pullRequestStatuses(statusUrls)
+      const result = await client.statuses(statusUrls)
       // Count consecutive polls that found a refresh in flight, so a provider
       // that never settles can't hold the panel on the fast interval forever.
       statusFollowupsRef.current = result.refreshing?.length
@@ -1091,6 +1108,7 @@ export default function PullRequestPanel({
     ),
   })
   const handleRefresh = () => {
+    if (query.isFetching) return
     forceRefreshRef.current = true
     // Also force the strip-wide status poll now, instead of waiting out its
     // current interval (or its post-error backoff).
@@ -1130,6 +1148,7 @@ export default function PullRequestPanel({
     && checkCounts.complete === checkCounts.total
   const showAllChecksPassed = allChecksPassed && !query.isFetching
   const mergeBlocker = source ? pullRequestMergeBlocker(source) : null
+  const partial = partialSectionsByCause(source ?? {})
   const statusByUrl = useMemo(() => {
     const cached = statusQuery.data?.statuses || {}
     const merged: Record<string, PullRequestStatus> = { ...cached }
@@ -1192,26 +1211,37 @@ export default function PullRequestPanel({
   // back to the first tab is derived rather than an effect, so the very first
   // render is already correct instead of flashing an empty section.
   const activeTab: SourceTab = tabs.some(item => item.id === tab) ? tab : 'changes'
+  // Both rails are one tab stop with arrow keys, like the shared Tablist.
+  const sourceRoving = useRovingTabs(cappedSources.map(item => ({ key: item.url })), selected?.url, onSelect)
+  const sectionRoving = useRovingTabs(tabs.map(item => ({ key: item.id })), activeTab, setTab)
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* The source strip only earns its row when there is a choice to make. A
-          single-source host (the Code Review Sage detail pane, where the left rail
-          already picked the pull request) would otherwise get a tab bar holding
-          exactly one tab that does nothing. */}
-      {cappedSources.length > 1 && (
+      {/* The source strip only earns its row when there is a choice to make, or
+          a tab to close. A single-source host with no close (the Code Review Sage
+          detail pane, where the left rail already picked the pull request) would
+          otherwise get a tab bar holding exactly one tab that does nothing. */}
+      {(cappedSources.length > 1 || onDismiss) && (
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-        {cappedSources.map(item => {
+        {cappedSources.map((item, i) => {
           const itemMeta = sourceProviderMeta(item.provider)
           const qualifier = tabQualifier(item)
+          const isSelected = item.url === selected?.url
+          const closeLabel = i18nT('components.pullRequestPanel.close_source_tab', {
+            label: qualifier ? `${qualifier} ${itemMeta.refLabel(item.number)}` : itemMeta.refLabel(item.number),
+          })
           return (
+          // The close control is the tab's sibling, not its child: a button
+          // cannot hold another button. The wrapper carries the tab's fill so
+          // the two read as one tab.
+          <span key={item.url} className={`group shrink-0 flex items-center rounded-md transition-colors ${isSelected ? 'bg-bg-hover text-text' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}>
           <Btn
-            key={item.url}
             type="button"
             role="tab"
-            aria-selected={item.url === selected?.url}
+            {...sourceRoving(i)}
+            aria-selected={isSelected}
             onClick={() => onSelect(item.url)}
-            className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
+            className={`flex items-center gap-1.5 ${onDismiss ? 'pl-2.5 pr-1' : 'px-2.5'} py-1.5 rounded-md border-none cursor-pointer text-[12px] bg-transparent text-inherit hover:bg-transparent`}
             title={item.url}
           >
             <SourceProviderMark provider={item.provider} size={13} />
@@ -1224,6 +1254,36 @@ export default function PullRequestPanel({
             <span>{itemMeta.refLabel(item.number)}</span>
             <SourceTabState status={statusByUrl[item.url]} />
           </Btn>
+          {onDismiss && (<>
+            {/* A divider and a smaller glyph keep the close control apart from
+                the tab's status marks, so it never reads as a "failed" mark.
+                Both show on the selected tab, and on another only on hover or focus. */}
+            <span aria-hidden="true" className={`ml-1 h-3.5 w-px bg-border ${isSelected ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 group-focus-within:opacity-70 [@media(hover:none)]:opacity-70'}`} />
+            <Btn
+              type="button"
+              // Only the selected tab's close is a Tab stop, so the strip stays
+              // two stops however many tabs it holds.
+              tabIndex={isSelected ? 0 : -1}
+              onClick={(e) => {
+                // Closing the selected tab hands the selection, and focus, to a
+                // neighbour first, so a keyboard user keeps their place.
+                const next = cappedSources[i + 1] ?? cappedSources[i - 1]
+                if (isSelected && next) {
+                  onSelect(next.url)
+                  const wrapper = e.currentTarget.parentElement
+                  const neighbour = wrapper?.nextElementSibling ?? wrapper?.previousElementSibling
+                  neighbour?.querySelector<HTMLElement>('[role="tab"]')?.focus()
+                }
+                onDismiss(item.url)
+              }}
+              aria-label={closeLabel}
+              title={closeLabel}
+              className={`ml-1 mr-1 p-1 rounded-sm border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover ${isSelected ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 group-focus-within:opacity-70 [@media(hover:none)]:opacity-70'}`}
+            >
+              <X size={11} aria-hidden="true" />
+            </Btn>
+          </>)}
+          </span>
           )
         })}
       </div>
@@ -1315,8 +1375,12 @@ export default function PullRequestPanel({
               <Btn
                 type="button"
                 onClick={handleRefresh}
-                disabled={query.isFetching}
-                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                // Inert-but-focusable while busy, like the Discover store Refresh:
+                // `aria-disabled` plus the guard in handleRefresh, NOT `disabled`,
+                // which leaves the tab order and drops a keyboard user's focus to
+                // the page for the whole refresh.
+                aria-disabled={query.isFetching || undefined}
+                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-default"
                 aria-label={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
                 title={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
               >
@@ -1353,23 +1417,39 @@ export default function PullRequestPanel({
             </div>
           )}
 
-          {source.partialSections && source.partialSections.length > 0 && (
+          {partial.failed.length > 0 && (
+            // askAgent on: the panel is read-only (no draft), and a secondary
+            // read the provider refused is the kind of failure the agent can
+            // diagnose.
+            <ErrorNotice
+              className="shrink-0 mx-4 my-2"
+              variant="inline"
+              message={sourceProviderMeta(source.provider).pullRequestWording
+                ? i18nT('components.pullRequestPanel.provider_results_failed_pull_request', { sections: fmtList(partial.failed, { style: 'narrow' }) })
+                : i18nT('components.pullRequestPanel.provider_results_failed_merge_request', { sections: fmtList(partial.failed, { style: 'narrow' }) })}
+              askAgent
+              testId="pull-request-panel-failed-sections"
+            />
+          )}
+
+          {partial.truncated.length > 0 && (
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
                 {sourceProviderMeta(source.provider).pullRequestWording
-                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
-                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
+                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: fmtList(partial.truncated, { style: 'narrow' }) })
+                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: fmtList(partial.truncated, { style: 'narrow' }) })}
               </span>
             </div>
           )}
 
           <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-            {tabs.map(item => (
+            {tabs.map((item, i) => (
               <Btn
                 key={item.id}
                 type="button"
                 role="tab"
+                {...sectionRoving(i)}
                 id={`pr-tab-${item.id}`}
                 aria-selected={activeTab === item.id}
                 aria-controls="pr-tabpanel"

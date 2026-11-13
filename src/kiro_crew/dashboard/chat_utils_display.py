@@ -76,7 +76,7 @@ BLOCKED_LINKS_ORDERED_KEY = "blocked_links_ordered"
 
 
 def variant_from_row(row: dict) -> dict:
-    """Stash a row as a variant, taking its redaction records with it.
+    """Stash a row as a variant, taking its redaction records and turn stats with it.
 
     The mirror of ``adopt_variant_text``: that one moves a variant onto the row,
     this one moves the row into the variant list. Both directions carry the
@@ -84,7 +84,8 @@ def variant_from_row(row: dict) -> dict:
     content is already redacted, so what they describe is gone and a rescan
     finds nothing to describe. A stash that dropped them would destroy the
     explanation for good, and the reader switching back would be handed a bare
-    placeholder with no way to learn what was removed.
+    placeholder with no way to learn what was removed. The turn stats (model,
+    credits, time) are that reply's own too, and nothing can measure them again.
     """
     entry = {"content": row.get("content", ""), "ts": row.get("ts", "")}
     meta = row.get("meta")
@@ -97,6 +98,10 @@ def variant_from_row(row: dict) -> dict:
                 entry[key] = records
         if entry.get("blocked_links") and meta.get(BLOCKED_LINKS_ORDERED_KEY) is True:
             entry[BLOCKED_LINKS_ORDERED_KEY] = True
+        stats = meta.get("turn_stats")
+        if isinstance(stats, dict):
+            # Redacted as the row's meta is when it is saved: the list is saved too.
+            entry["turn_stats"] = _redact_value(stats)
     return entry
 
 
@@ -153,13 +158,15 @@ def _variant_for_emit(variant: dict) -> dict:
             bounded["blocked_links"] = left
         else:
             bounded.pop("blocked_links", None)
-    return with_bounded_redaction_records(
-        {**bounded, "content": redact_display_content(bounded.get("content", ""))}
-    )
+    out = {**bounded, "content": redact_display_content(bounded.get("content", ""))}
+    # The page reads a reply's stats from its row, which a switch updates; the
+    # variant's copy is only there for the switch to put back.
+    out.pop("turn_stats", None)
+    return with_bounded_redaction_records(out)
 
 
 def adopt_variant_text(row: dict, variant: dict) -> None:
-    """Move a row onto one of its variants, text and redaction records together.
+    """Move a row onto one of its variants: text, redaction records and turn stats.
 
     A record describes ONE text: it names what was removed from a placeholder
     standing in that text. A caller that takes a variant's content without its
@@ -185,6 +192,21 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
         meta.pop(BLOCKED_LINKS_ORDERED_KEY, None)
         if meta.get("blocked_links") and variant.get(BLOCKED_LINKS_ORDERED_KEY) is True:
             meta[BLOCKED_LINKS_ORDERED_KEY] = True
+    # The page reads a row's turn stats as the end of its turn, so they move only
+    # on the row its turn stamped, which is when the newest variant carries them.
+    # The first row of a reply that ran tools carries none and stays unstamped; a
+    # list saved before variants carried stats keeps the row's stats as they are.
+    variants = row.get("variants")
+    newest = variants[-1] if isinstance(variants, list) and variants else None
+    if isinstance(newest, dict) and isinstance(newest.get("turn_stats"), dict):
+        stats = variant.get("turn_stats")
+        if isinstance(stats, dict):
+            if not isinstance(meta, dict):
+                meta = {}
+                row["meta"] = meta
+            meta["turn_stats"] = dict(stats)
+        elif isinstance(meta, dict):
+            meta.pop("turn_stats", None)
     if isinstance(meta, dict) and not meta:
         row.pop("meta", None)
 
@@ -227,12 +249,35 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
     }
 
     if role == "mcp_oauth":
+        # Imported here so the chat_utils facade serves no new name.
+        from kiro_crew.dashboard.mcp_oauth_provenance import was_emitted
+
         out: dict = {}
         for k, v in list(meta.items()):
             if k in REDACTION_RECORD_FIELDS:
                 continue
+            if (
+                k == "oauth_url"
+                and v
+                and not (isinstance(v, str) and was_emitted(meta.get("child"), v))
+            ):
+                # Provenance before shape. The gate below exempts the protocol's
+                # own high-entropy parameters at trusted endpoints, and that is
+                # only sound for a URL an ACP child of THIS gateway sent: a
+                # transcript line is agent-writable, so a forged row could carry
+                # a secret in `state` or `client_id` and copy a live child stamp.
+                # A URL the emit site never recorded (see mcp_oauth_provenance),
+                # or a value that is not a string at all, is withheld, and an
+                # open banner is shown as expired, the state the liveness gate
+                # gives a link nobody can redeem.
+                # The key is dropped rather than blanked so the expired branch,
+                # not the vanish branch, renders it on every client.
+                if not (meta.get("completed") or meta.get("failed") or meta.get("superseded")):
+                    out["expired"] = True
+                continue
             if k == "oauth_url" and isinstance(v, str):
-                # Two gates, and deliberately NOT a third:
+                # A recorded URL still passes two shape gates, and deliberately
+                # NOT a third:
                 #   1. http(s)-only — a tampered history line can't smuggle a
                 #      javascript:/data: URL into <a href>.
                 #   2. URL must not embed an actual credential — a legit OAuth
@@ -278,6 +323,13 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
             out["quote"] = bounded["quote"]
         else:
             out.pop("quote", None)
+    if "banner" in out:
+        # A transcript line is attacker-writable: a rejected label falls back to the full content.
+        from kiro_crew.dashboard.chat_delivery import banner_meta
+
+        shown = banner_meta(out) if role == "user" else {}
+        out.pop("banner")
+        out.update(shown)
     return out
 
 
@@ -337,13 +389,21 @@ _NO_BASE = object()
 
 
 def _display_redaction_cache_key(
-    text: str, base: object = _NO_BASE, exempt_hosts: frozenset[str] | None = None
+    text: str,
+    base: object = _NO_BASE,
+    exempt_hosts: frozenset[str] | None = None,
+    *,
+    token_param_prefixes: tuple[str, ...] | None = None,
 ) -> tuple[_DisplayRedactionKey, int]:
     """Digest the exact string entering the battery together with the exempt sets it reads.
 
     ``exempt_hosts`` is the caller's one read of the platform set and the scoped
     override, the same snapshot it hands the battery, so the key names the set
     the output is computed under. ``None`` reads the set here.
+
+    ``token_param_prefixes`` is the caller's one read of the pass-4 prefix set,
+    the same snapshot it hands the battery, so the key names the set the output
+    is computed under. ``None`` reads the set here.
 
     The key is fixed-size: a 32-byte digest and the input byte length. The host set
     is sorted and folded into the MAC input behind a NUL separator (a host never
@@ -359,7 +419,9 @@ def _display_redaction_cache_key(
     if exempt_hosts is None:
         exempt_hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
     hosts = "\0".join(sorted(exempt_hosts)).encode("utf-8", errors="surrogatepass")
-    prefixes = _token_param_exempt_prefixes()
+    prefixes = token_param_prefixes
+    if prefixes is None:
+        prefixes = _token_param_exempt_prefixes()
     tail = hosts
     if prefixes:
         tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
@@ -383,10 +445,36 @@ def _display_redaction_cache_key(
     return (digest, len(raw)), len(raw)
 
 
+#: Moved by every reset of the display caches, so a memo keyed on
+#: :func:`display_redaction_stamp` is dropped whenever they are.
+_display_cache_epoch = 0
+
+
+def display_redaction_stamp() -> tuple[object, ...] | None:
+    """Everything besides the text that the display battery's answer depends on.
+
+    The same material :func:`_display_redaction_cache_key` folds into every
+    digest -- the exempt-host set, the token-parameter prefixes and the verdict
+    MAC base -- plus the cache epoch. Equal stamps mean ``_redact_for_display``
+    and ``_redacted_preview`` give the same answer for the same text, so a
+    caller may memo their outputs under it. ``None`` inside a scope that changes
+    the battery's answer, where nothing may be memoized
+    (:func:`_display_scope_changes_battery`). Read it once per pass: it costs a
+    few microseconds, the digest's set reads.
+    """
+    if _display_scope_changes_battery():
+        return None
+    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    base = _display_verdicts.mac_base()
+    return (_display_cache_epoch, hosts, _token_param_exempt_prefixes(), base)
+
+
 def _clear_display_redaction_cache() -> None:
     """Reset the process-local caches for deterministic tests."""
     global _display_redaction_cache_bytes, _display_clean_young, _display_clean_old
-    global _display_preview_cache_bytes
+    global _display_preview_cache_bytes, _display_preview_by_object_chars
+    global _display_preview_by_object_context, _display_cache_epoch
+    _display_cache_epoch += 1
     with _display_redaction_cache_lock:
         _display_redaction_cache.clear()
         _display_redaction_cache_bytes = 0
@@ -394,6 +482,9 @@ def _clear_display_redaction_cache() -> None:
         _display_clean_old = set()
         _display_preview_cache.clear()
         _display_preview_cache_bytes = 0
+        _display_preview_by_object.clear()
+        _display_preview_by_object_chars = 0
+        _display_preview_by_object_context = None
 
 
 # Entries keyed under the per-process salt are unreachable once the
@@ -488,15 +579,20 @@ def _redact_for_display(text: str) -> str:
     (:func:`_display_scope_changes_battery`) the battery runs uncached: no cache
     and no stored verdict is read or written.
 
-    The exempt-host set is read ONCE and that snapshot feeds both the key and
-    the battery. A second read inside the battery could see another set (the
-    platform read moves mid-process and degrades a failure to the empty set),
-    and the cache would store one set's output under another set's key.
+    The exempt-host set and the pass-4 token-parameter prefix set are each read
+    ONCE and those snapshots feed both the key and the battery. A second read
+    inside the battery (the host set in ``redact_exfiltration_urls``, the prefix
+    set in ``redact_credentials``) could see another set -- the platform read
+    moves mid-process and degrades a failure to the empty set -- and the cache
+    would store one set's output under another set's key.
     """
     scoped = _display_scope_changes_battery()
     stored, base = (None, None) if scoped else _display_verdicts.active()
     hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
-    key, input_bytes = _display_redaction_cache_key(text, base, hosts)
+    prefixes = _token_param_exempt_prefixes()
+    key, input_bytes = _display_redaction_cache_key(
+        text, base, hosts, token_param_prefixes=prefixes
+    )
     ck = _clean_verdict_key(key)
     tag = key[0]
     if not scoped:
@@ -525,7 +621,7 @@ def _redact_for_display(text: str) -> str:
             _remember_redacted(key, input_bytes, verdict)
             return verdict
 
-    redacted = display_battery(text, exempt_hosts=hosts)
+    redacted = display_battery(text, exempt_hosts=hosts, token_param_prefixes=prefixes)
     if scoped:
         return redacted
     if redacted == text:
@@ -576,6 +672,30 @@ _DISPLAY_PREVIEW_CACHE_MAX_BYTES = 2 * 1024 * 1024
 _DisplayPreviewKey = tuple[bytes, int, int]
 _display_preview_cache: OrderedDict[_DisplayPreviewKey, tuple[str, int]] = OrderedDict()
 _display_preview_cache_bytes = 0
+#: ``id(text) -> (text, limit, preview)``: the previous answer for the same string
+#: object, so an unchanged tab's preview costs no digest. Holding ``text`` keeps
+#: its id from being reused while the entry lives, and keeps the whole raw string
+#: alive, so the map is bounded by entries AND by the characters of the texts it
+#: holds; past either it is emptied, not trimmed. A text longer than the character
+#: bound is never held here (it goes through the digest-keyed cache only). The
+#: preview is cut to ``limit``. Every entry answers for ONE redaction context
+#: (exempt hosts, token-parameter prefixes, verdict base), held once in
+#: ``_display_preview_by_object_context``; a different context empties the map, so
+#: the host set is retained once however many entries there are.
+_DISPLAY_PREVIEW_BY_OBJECT_MAX = 4_096
+_DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS = 4 * 1024 * 1024
+_display_preview_by_object: dict[int, tuple[str, int, str]] = {}
+_display_preview_by_object_chars = 0
+_display_preview_by_object_context: tuple | None = None
+
+
+def _same_preview_context(held: tuple | None, context: tuple) -> bool:
+    return (
+        held is not None
+        and held[0] == context[0]
+        and held[1] == context[1]
+        and held[2] is context[2]
+    )
 
 
 def _cut_preview(text: str, limit: int) -> str:
@@ -595,6 +715,59 @@ def _redacted_preview(text: str, limit: int) -> str:
     if _display_scope_changes_battery():
         # _redact_for_display runs the battery uncached here too.
         return _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
+    # Every slots broadcast previews each tab's last message, and the same string
+    # object comes back until that message changes. Matching on the object and on
+    # the inputs the key folds in (exempt hosts, token-parameter prefixes, verdict
+    # base) answers it without hashing the whole text on the event loop again.
+    context = (
+        _exempt_exact_hosts() | current_scoped_exempt_hosts(),
+        _token_param_exempt_prefixes(),
+        _display_verdicts.mac_base(),
+    )
+    with _display_redaction_cache_lock:
+        if _same_preview_context(_display_preview_by_object_context, context):
+            seen = _display_preview_by_object.get(id(text))
+            if seen is not None and seen[0] is text and seen[1] == limit:
+                return seen[2]
+    preview = _redacted_preview_by_digest(text, limit)
+    after = (
+        _exempt_exact_hosts() | current_scoped_exempt_hosts(),
+        _token_param_exempt_prefixes(),
+        _display_verdicts.mac_base(),
+    )
+    # Remembered only when the inputs did not move while it was computed, the
+    # same rule the digest-keyed cache applies before it files an entry.
+    if _same_preview_context(after, context) and len(text) <= _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS:
+        _remember_preview_by_object(text, limit, context, preview)
+    return preview
+
+
+def _remember_preview_by_object(text: str, limit: int, context: tuple, preview: str) -> None:
+    """File *preview* for the string object *text*, inside both bounds and one context."""
+    global _display_preview_by_object_chars, _display_preview_by_object_context
+    with _display_redaction_cache_lock:
+        if not _same_preview_context(_display_preview_by_object_context, context):
+            _display_preview_by_object.clear()
+            _display_preview_by_object_chars = 0
+            _display_preview_by_object_context = context
+        replaced = _display_preview_by_object.pop(id(text), None)
+        if replaced is not None:
+            _display_preview_by_object_chars -= len(replaced[0])
+        if (
+            len(_display_preview_by_object) >= _DISPLAY_PREVIEW_BY_OBJECT_MAX
+            or _display_preview_by_object_chars + len(text) > _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS
+        ):
+            _display_preview_by_object.clear()
+            _display_preview_by_object_chars = 0
+        _display_preview_by_object[id(text)] = (text, limit, preview)
+        _display_preview_by_object_chars += len(text)
+
+
+def _redacted_preview_by_digest(text: str, limit: int) -> str:
+    """:func:`_redacted_preview` through the digest-keyed preview cache."""
+    # Imported here so the chat_utils facade does not forward the strip as its own name.
+    from kiro_crew.preview_text import strip_markdown_preview
+
     (digest, length), _ = _display_redaction_cache_key(text)
     key = (digest, length, limit)
     with _display_redaction_cache_lock:
@@ -791,7 +964,27 @@ def _live_child_instance(state: "DashboardState", slot: "_ChatSlot") -> str:
         return ""
 
 
-def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot") -> None:
+def _open_oauth_banner_rows(slot: "_ChatSlot") -> list[dict]:
+    """*slot*'s ``mcp_oauth`` rows that still offer a link and record no outcome."""
+    return [
+        message
+        for message in list(slot.messages)
+        if message.get("role") == "mcp_oauth"
+        for meta in (message.get("meta") or {},)
+        if meta.get("oauth_url")
+        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
+    ]
+
+
+def _oauth_banner_row_key(message: dict) -> str:
+    """A stable name for one banner row: its ``mid``, else its ``ts``."""
+    meta = message.get("meta") or {}
+    return str(meta.get("mid") or message.get("ts") or "")
+
+
+def _broadcast_expired_oauth_banners(
+    state: "DashboardState", slot: "_ChatSlot", *, only: "set[str] | None" = None
+) -> None:
     """Push the read-time gate's current verdict on *slot*'s OAuth banners to open tabs.
 
     The gate in `_prepare_messages` runs only when a client FETCHES, so an
@@ -828,16 +1021,15 @@ def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot")
     # any tab in this process (opening the tab loads the window first), so no
     # tab shows one of its banners to withdraw; asking would load its whole
     # transcript on the loop for nothing.
+    #
+    # ``only`` limits the frames to the rows with those keys
+    # (:func:`_oauth_banner_row_key`), so a caller that already announced some
+    # rows does not send them again.
     if getattr(slot, "window_pending", False) is True:
         return
-    candidates = [
-        message
-        for message in slot.messages
-        if message.get("role") == "mcp_oauth"
-        for meta in (message.get("meta") or {},)
-        if meta.get("oauth_url")
-        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
-    ]
+    candidates = _open_oauth_banner_rows(slot)
+    if only is not None:
+        candidates = [m for m in candidates if _oauth_banner_row_key(m) in only]
     if not candidates:
         return
     live_child = _live_child_instance(state, slot)
@@ -953,7 +1145,13 @@ def _prepare_messages(
     hosts a reader allowed there, the same hosts the segment flush relaxed, so
     an allowed link reaches the page it was kept for.
     """
-    with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+    # Imported here so the chat_utils facade serves no new name.
+    from kiro_crew.security.exfil import allowed_host_audit_epoch
+    from kiro_crew.security.redaction_allow import normalize_workspace
+
+    # The epoch is read before the hosts, so a revoke between them marks it stale.
+    epoch = allowed_host_audit_epoch()
+    with scoped_exempt_hosts(allowed_hosts_for(workspace), normalize_workspace(workspace), epoch):
         return _prepare_messages_scoped(messages, running, live_child=live_child)
 
 
@@ -984,6 +1182,24 @@ def with_allowed_links_restored(m: dict) -> dict:
     else:
         new_meta.pop("blocked_links", None)
     return {**m, "content": new_text, "meta": new_meta}
+
+
+def _carry_row_mid(meta: dict, msg: dict) -> dict:
+    """*meta* (parsed from a row's ``cls``) with the row's own ``mid`` kept.
+
+    A row whose structured fields live in ``cls`` (a permission row) keeps its
+    delivery identity, ``mid``, in the stored ``meta`` dict instead. The live
+    ``chat_message`` frame merges the two, so a card rendered live carries the
+    mid a native decide is bound by; a reader that rebuilt meta from ``cls``
+    alone dropped it, and every card rendered after a reload (or over the
+    stream) then named no request and refused its own presses. Only the mid is
+    carried: the rest of the stored meta keeps its own handling on each path.
+    """
+    stored = msg.get("meta")
+    mid = stored.get("mid") if isinstance(stored, dict) else None
+    if isinstance(mid, str) and mid and "mid" not in meta:
+        return {**meta, "mid": mid}
+    return meta
 
 
 def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
@@ -1053,11 +1269,8 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # elicitation rows only (the two the approval registry binds, and
             # the two whose resolution frame names a `mid`), so every other
             # row's wire meta stays exactly as before.
-            stored = m.get("meta")
-            stored_mid = stored.get("mid") if isinstance(stored, dict) else None
-            keep_mid = isinstance(stored_mid, str) and stored_mid and "mid" not in meta
-            if role in ("permission", "elicitation") and keep_mid:
-                meta = {**meta, "mid": stored_mid}
+            if role in ("permission", "elicitation"):
+                meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, meta), live_child
             )

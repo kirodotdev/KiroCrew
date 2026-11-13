@@ -121,7 +121,7 @@ async def test_a_failed_create_in_the_boards_first_second_is_still_undone(monkey
         CONDUCTOR, {"action": "create", "title": "same second", "acceptance": ACCEPTANCE}
     )
     assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
-    assert wl.read_work_item(CONDUCTOR, body["item_id"]) is None
+    assert body["item_id"] is None and wl.list_work_items(CONDUCTOR) == []
     header = wl.read_conductor(CONDUCTOR)
     assert header is not None and header.goal == "ship it"
     monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", real)
@@ -663,6 +663,9 @@ async def test_a_rebuild_never_reclaims_a_worker_another_board_now_holds(monkeyp
         WORKER, {"status": "done", "summary": "finished", "artifacts": {"commit": "abc1234"}}
     )
     assert status == 200, body
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     status, body = await _record(
         CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}
     )
@@ -839,3 +842,25 @@ def test_a_rebuild_refuses_while_a_units_header_cannot_be_read():
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.rebuild_from_projection(CONDUCTOR)
     assert caught.value.code == "crew_log_incomplete"
+
+
+def test_the_session_tree_checkpoint_folder_never_refuses_a_rebuild():
+    """The session tree saves its checkpoint in a folder beside the units. It is not a
+    unit, so a rebuild goes ahead with it there."""
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog, store
+    from kiro_crew.crew_log.session_tree_projection_checkpoint import _checkpoint_path
+
+    unit = CrewLog.create(
+        lg.KIND_SESSION, "u-conductor", owner="raymond", agent="kirocrew", slot=CONDUCTOR
+    )
+    goal = {"slot": CONDUCTOR, "actor": "conductor", "by": CONDUCTOR, "action": "goal"}
+    unit.append("work/recorded", {**goal, "goal": "g", "round": 1}, src="gateway")
+    checkpoint = _checkpoint_path()
+    checkpoint.parent.mkdir(exist_ok=True)
+    checkpoint.write_text("{}", encoding="utf-8")
+
+    assert store.unprovable_session_units() == 0
+    wl.rebuild_from_projection(CONDUCTOR)
+    header = wl.read_conductor(CONDUCTOR)
+    assert header is not None and header.goal == "g"

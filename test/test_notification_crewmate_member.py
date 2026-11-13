@@ -366,11 +366,11 @@ class TestSendMessageRouteAttribution:
 
 class TestSendMessageBellFallback:
     @pytest.mark.asyncio
-    async def test_fallback_note_attributes_the_declared_crewmate(self, monkeypatch):
+    async def test_fallback_note_attributes_the_declared_crewmate(self, monkeypatch, tmp_path):
         from kiro_crew.dashboard.messaging_api import proactive_send
 
         slot = _bind_ada()
-        state = MagicMock()
+        state = _make_state(monkeypatch, tmp_path)
         outcome = proactive_send._SendMessageOutcome()
         await proactive_send._deliver_send_message_fallback(
             state,
@@ -394,5 +394,6 @@ class TestSendMessageBellFallback:
             is_cron_caller=False,
             send_to_slack=False,
         )
-        state.notify.assert_called_once()
-        assert state.notify.call_args.kwargs["member"] == ADA
+        note = state._notification_log[-1]
+        assert (note["kind"], note["title"], note["body"]) == ("agent", "t", "hello")
+        assert note["member"] == ADA

@@ -241,6 +241,8 @@ class DiscordClient:
         self._seq: int | None = None
         self._session_id: str = ""
         self._resume_url: str = ""
+        # Failed reconnects since the last READY or RESUMED (see _gateway_loop).
+        self._failures_since_session = 0
         self._hb_acked = True
         self._ws: Any = None  # WS handle; aiohttp generics vary across versions
         # Live turn tasks — prevent GC of in-flight handlers.
@@ -1095,11 +1097,14 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.discord.client_gateway import (  # noqa: F401
+        _DEFAULT_HEARTBEAT_SECS,
         _GATEWAY_URL,
         _HANDLED_INTERACTIONS,
         _INTERACTION_APPLICATION_COMMAND,
         _INTERACTION_MESSAGE_COMPONENT,
+        _MAX_HEARTBEAT_SECS,
         _MIN_HEALTHY_CONN_SECS,
+        _MIN_HEARTBEAT_SECS,
         _OP_DISPATCH,
         _OP_HEARTBEAT,
         _OP_HEARTBEAT_ACK,
@@ -1108,9 +1113,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OP_INVALID_SESSION,
         _OP_RECONNECT,
         _OP_RESUME,
+        _RESUME_CLOSE_CODE,
+        _RESUME_FAILURES_BEFORE_IDENTIFY,
         _WS_HEARTBEAT_SECS,
         _command_options,
         _find_button_label,
+        _heartbeat_interval_secs,
+        _reply_message_id,
     )
     from kiro_crew.discord.client_recheck import (  # noqa: F401
         _REVOKED_DETAIL,

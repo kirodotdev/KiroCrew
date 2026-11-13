@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -201,7 +202,7 @@ async def test_lane_settled_ok_does_not_count_a_deferred_done(
     """A ``done`` whose terminal write the store could not take is deferred to
     the admission's durable retry and returns ``ok=False``: the slot is already
     freed and the window long past, so crediting it late would mis-time it.
-    ``settled_ok`` stays put; a later replay through ``flush_pending_finish``
+    ``settled_ok`` stays put; a later replay through ``retry_terminal_writes``
     writes the row without re-entering the settle choke point, so it is never
     counted."""
     adm, _ = _admission(store, clock, cap=4)
@@ -315,6 +316,23 @@ async def test_runner_lane_refuses_a_wait_only_its_own_ancestor_could_end() -> N
     assert lane.running == 1 and lane.waiting == 0
     lane.release("outer")
     assert lane.running == 0 and lane.holders == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_runner_lane_cancel_after_a_refusal_frees_no_slot() -> None:
+    """A waiter refused while parked, then cancelled before it resumes, never
+    held a slot: its cancel must not give one back for a holder still running."""
+    lane = r.RunnerLane(2, name="refuse-cancel")
+    await lane.acquire("outer")
+    await lane.acquire("unrelated")
+    nested = asyncio.create_task(lane.acquire("inner", ancestors=["outer"]))
+    await asyncio.sleep(0)
+    assert lane.waiting == 1
+    lane.set_effective_cap(1)
+    lane.release("unrelated")  # pump refuses inner: only its ancestor holds now
+    nested.cancel()  # the cancel lands before inner resumes
+    await asyncio.gather(nested, return_exceptions=True)
+    assert lane.running == 1 and lane.holders == frozenset({"outer"})
 
 
 @pytest.mark.asyncio
@@ -829,6 +847,107 @@ async def test_admit_cancelled_leaves_a_row_another_owner_claimed_alone(
 
 
 @pytest.mark.asyncio
+async def test_admit_cancelled_while_its_claim_commits_ends_the_claimed_row(
+    store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """A cancel cannot stop a claim the writer thread is already running, so the
+    row goes ``admitted`` under this incarnation's lease all the same. The caller
+    never receives that claim's generation, and the cancel arm's own read cannot
+    tell this claim from another admission's, so the claim's result ends the row
+    once it lands."""
+    adm, _ = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    committed, release = threading.Event(), threading.Event()
+    real_claim = store.claim
+
+    def _claim_then_hold(task_id, **kw):
+        result = real_claim(task_id, **kw)
+        committed.set()
+        release.wait(30)
+        return result
+
+    monkeypatch.setattr(store, "claim", _claim_then_hold)
+    admitting = asyncio.create_task(adm.admit(rec.id))
+    await async_wait_until(committed.is_set)
+    admitting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await admitting
+    release.set()
+    await settle_store_writes(store, rounds=2)  # the claim, then the end it hands on
+    row = store.get(rec.id)
+    assert row.state == m.CANCELLED and row.lease_owner is None
+    assert adm.lane.running == 0 and adm.lane.waiting == 0
+
+
+@pytest.mark.asyncio
+async def test_accept_cancelled_while_it_commits_ends_the_accepted_row(
+    store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """The same window one step earlier: the accept commits after its caller was
+    cancelled, so nothing will admit the row. ``taskrunner_step`` has no
+    dispatcher and the queued-orphan sweep skips a row this incarnation
+    accepted, so the row is ended instead of staying ``queued`` for the life of
+    the store."""
+    adm, _ = _admission(store, clock, cap=1)
+    committed, release = threading.Event(), threading.Event()
+    real_accept = adm.accept
+
+    def _accept_then_hold(**kw):
+        rec = real_accept(**kw)
+        committed.set()
+        release.wait(30)
+        return rec
+
+    monkeypatch.setattr(adm, "accept", _accept_then_hold)
+    accepting = asyncio.create_task(
+        adm.accept_async(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    )
+    await async_wait_until(committed.is_set)
+    accepting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await accepting
+    release.set()
+    await settle_store_writes(store, rounds=2)
+    assert store.state_of("taskrunner:r:task1") == m.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_accept_cancelled_before_the_writer_reaches_it_writes_nothing(
+    store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """The other side of that race: a cancel that lands while the accept still
+    waits behind another write wins, and no row is written at all."""
+    adm, _ = _admission(store, clock, cap=1)
+    busy, release = threading.Event(), threading.Event()
+
+    def _hold_the_writer() -> None:
+        busy.set()
+        release.wait(30)
+
+    holding = store.post(_hold_the_writer)
+    await async_wait_until(busy.is_set)
+    real_post, posted = store.post, asyncio.Event()
+
+    def _post(fn, /, *args, **kw):
+        future = real_post(fn, *args, **kw)
+        posted.set()
+        return future
+
+    monkeypatch.setattr(store, "post", _post)
+    accepting = asyncio.create_task(
+        adm.accept_async(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    )
+    await await_until(posted)
+    accepting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await accepting
+    release.set()
+    await holding
+    await settle_store_writes(store, rounds=2)
+    assert store.get("taskrunner:r:task1") is None
+
+
+@pytest.mark.asyncio
 async def test_admit_cancelled_with_no_store_only_reraises(clock: Clock) -> None:
     adm, _ = _admission(None, clock, cap=1)
     h = await adm.admit("holder")
@@ -958,6 +1077,37 @@ def test_claim_only_hands_back_no_handle_when_the_start_write_is_refused(
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_claim_only_cancelled_while_it_commits_ends_the_started_row(
+    store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """A run's container row has the same window: the claim and its ``starting``
+    write commit after the run was cancelled, and the handle that would settle
+    the row is dropped with the result. The row is ended instead of staying
+    ``starting`` under this incarnation's lease until the next boot."""
+    adm, _ = _admission(store, clock)
+    rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r")
+    committed, release = threading.Event(), threading.Event()
+    real_claim_only = adm.claim_only
+
+    def _claim_then_hold(task_id, **kw):
+        handle = real_claim_only(task_id, **kw)
+        committed.set()
+        release.wait(30)
+        return handle
+
+    monkeypatch.setattr(adm, "claim_only", _claim_then_hold)
+    claiming = asyncio.create_task(adm.claim_only_async(rec.id))
+    await async_wait_until(committed.is_set)
+    claiming.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await claiming
+    release.set()
+    await settle_store_writes(store, rounds=2)
+    row = store.get(rec.id)
+    assert row.state == m.CANCELLED and row.lease_owner is None
+
+
 def test_a_refused_container_start_reports_the_state_the_requeue_read_back(
     tmp_path: Path, clock: Clock, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1029,6 +1179,46 @@ def test_l3_ladder_bounds_the_stall_recoveries(clock: Clock) -> None:
 
 
 # ── waits: dependency ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_wait_the_store_cannot_record_still_honours_the_retry_instant(
+    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adm, sleeps = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:w:agent1")
+    h = await adm.admit(rec.id, kind=m.KIND_WORKFLOW_AGENT)
+    h.running()
+
+    def store_down(*_args, **_kwargs):
+        raise TaskStoreUnavailable("disk I/O error")
+
+    monkeypatch.setattr(store, "enter_wait", store_down)
+    signal = DependencySignal(
+        kind=KIND_RATE_LIMITED, dependency_scope="api", source="test", retry_at=clock.t + 30
+    )
+    assert await adm.yield_dependency(h, signal) is True
+    # The server asked for 30 s; an immediate re-run would just hit the limit again.
+    assert sleeps.calls == [pytest.approx(30.0)]
+    assert adm.lane.running == 1  # slot taken back for the retry
+
+
+@pytest.mark.asyncio
+async def test_a_wait_the_store_refuses_keeps_its_immediate_retry(
+    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A refusal is a fenced generation, not an outage: this owner's handling of
+    # it is unchanged here and tracked separately.
+    adm, sleeps = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:w:agent1")
+    h = await adm.admit(rec.id, kind=m.KIND_WORKFLOW_AGENT)
+    h.running()
+    monkeypatch.setattr(store, "enter_wait", lambda *_a, **_k: False)
+    signal = DependencySignal(
+        kind=KIND_RATE_LIMITED, dependency_scope="api", source="test", retry_at=clock.t + 30
+    )
+    assert await adm.yield_dependency(h, signal) is True
+    assert sleeps.calls == [0.0]
 
 
 @pytest.mark.asyncio
@@ -1401,6 +1591,43 @@ async def test_the_resume_after_a_wait_returns_the_stores_word_and_not_the_handl
 
     assert store.state_of(rec.id) == m.RUNNING, "the resume answered True with no write"
     assert h.state == m.RUNNING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("woken_to", [m.RETRY_WAIT, m.QUEUED, m.RECOVERING])
+async def test_a_resume_reclaims_a_row_the_wake_left_in_any_claimable_state(
+    store: TaskStore, clock: Clock, woken_to: str
+) -> None:
+    """Every ``CLAIMABLE`` state is taken back under a NEW claim, not only
+    ``retry_wait``: the coordinator moves a parked row on to ``queued``, and a
+    wait can end in ``recovering``. A resume that adopted such a row's generation
+    instead would answer False and stop the step with the row left claimable."""
+    adm, _ = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    h = await adm.admit(rec.id)
+    h.running()
+    assert store.enter_wait(
+        rec.id,
+        WaitRecord.input("q-1", since=clock(), reason="passphrase?").to_dict(),
+        generation=h.generation,
+    )
+    if woken_to == m.RECOVERING:
+        assert store.transition(rec.id, m.RECOVERING, generation=store.get(rec.id).generation)
+    else:
+        assert WaitLedger(store, clock=clock).wake(rec.id, reason="input answered") is not None
+        if woken_to == m.QUEUED:
+            assert store.transition(
+                rec.id, m.QUEUED, generation=store.get(rec.id).generation, next_run_at=clock()
+            )
+    assert store.state_of(rec.id) == woken_to
+    left_by_wake = store.get(rec.id).generation
+
+    assert await adm._resume_after_wait(h) is True
+
+    row = store.get(rec.id)
+    assert row.state == m.RUNNING
+    assert h.generation == row.generation > left_by_wake, "the resume did not take a new claim"
+    assert adm.lane.running == 1
 
 
 @pytest.mark.asyncio

@@ -431,6 +431,18 @@ class TestPathComplete:
         assert data["outside"] is True
 
     @pytest.mark.asyncio
+    async def test_a_drive_root_project_completes_below_itself(self, project, mock_sel):
+        """A project at a drive root (``H:\\``, or ``/``) keeps its trailing separator
+        through realpath; ``root + os.sep`` would refuse every witness below it."""
+        real = os.path.realpath(str(project))
+        drive_root = os.path.splitdrive(real)[0] + os.sep
+        rel = os.path.relpath(real, drive_root).replace(os.sep, "/")
+        status, data = await _get(drive_root, path=drive_root, dir=f"./{rel}/")
+        assert status == 200
+        assert data.get("outside") is not True
+        assert sorted(_names(data)) == ["readme.md", "src"]
+
+    @pytest.mark.asyncio
     async def test_a_sensitive_project_root_is_403(self, project, mock_sel):
         from kiro_crew.dashboard.handlers import files as files_mod
 

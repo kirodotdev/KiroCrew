@@ -16,6 +16,7 @@ import { languageLabel } from '../../../../i18n/languages'
 import GitLabGroupsSection from './GitLabGroupsSection'
 
 import { i18nT } from '../../../../i18n/t'
+import { Trans } from 'react-i18next'
 /** General (app-wide) settings — full width. The GitHub identity and the list
  * of connected repos. Each repo card jumps to that repo's own settings page.
  * `anchor` scrolls to the requested sub-section when the rail asks for it. */
@@ -45,7 +46,7 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
     <div className="w-full max-w-6xl px-4 py-8 md:px-8">
       <h1 className="text-[22px] font-semibold mb-1">{i18nT('apps.issueRadar.views.settings.generalSettings.settings')}</h1>
       <p className="text-[13px] text-muted mb-8">
-        {i18nT('apps.issueRadar.views.settings.generalSettings.your')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.generalSettings.identity_and_the_repositories_issue_radar_watche')}
+        {i18nT('apps.issueRadar.views.settings.generalSettings.your_provider_identity_and_watched_repos', { provider: terms.providerName })}
       </p>
 
       <section ref={accountRef} className="mb-10 scroll-mt-8">
@@ -59,14 +60,16 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
               <div className="min-w-0">
                 <div className="text-[14px] font-medium">{me}</div>
                 <div className="text-[12px] text-muted">
-                  {i18nT('apps.issueRadar.views.settings.generalSettings.authenticated_through_your_local')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.generalSettings.cli_issue_radar_keeps_no_credentials')}
+                  <Trans i18nKey="apps.issueRadar.views.settings.generalSettings.authenticated_through_cli" components={{ cli: <code>{terms.cli}</code> }} />
                 </div>
               </div>
             </div>
           ) : (
             <div className="text-[13px] text-muted">
-              {i18nT('apps.issueRadar.views.settings.generalSettings.not_signed_in_the')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.generalSettings.cli_has_no_active_session_run')}{' '}
-              <code>{terms.loginCommand}</code> {i18nT('apps.issueRadar.views.settings.generalSettings.in_your_terminal')}
+              <Trans
+                i18nKey="apps.issueRadar.views.settings.generalSettings.not_signed_in_run_login"
+                components={{ cli: <code>{terms.cli}</code>, login: <code>{terms.loginCommand}</code> }}
+              />
             </div>
           )}
         </div>

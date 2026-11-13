@@ -33,11 +33,8 @@ from kiro_crew.validation import JUDGE_OFF_KEY
 class TestAnOwedWakeSurvives:
     """A judge verdict that says fire must not be lost if the fire never happens.
 
-    The judge advances DURABLE read cursors before deciding, so a process that stops
-    between the verdict and the fire leaves the next tick reading nothing new: it would
-    answer quiet and suppress the very turn that is owed. The marker lives on the loop
-    rather than on ``MonitorState`` because a judge-only loop has no monitor record, so
-    every mechanism guarded by ``monitor is not None`` misses it.
+    The judge advances DURABLE cursors before deciding, so the next tick reads nothing
+    new. The marker lives on the loop: a judge-only loop has no ``MonitorState``.
     """
 
     @staticmethod
@@ -114,14 +111,9 @@ class TestAnOwedWakeSurvives:
 class TestAScreenedPullRequestTickLeavesTheProbesQuietAlone:
     """A gated PR watch must not pay a turn for a tick its own probe re-armed free.
 
-    On the gated path the judge is asked only AFTER the typed probe returned quiet, so
-    the subject HAS been read. The canonical observation the PR collector wants has one
-    writer and it is on the structured path, so the reader finds none -- and the
-    question that decides this loop's cost is whether that counts as an unread target.
-    Counted unread it is a FALLBACK, which fires: a turn, a durable write and a notice
-    row every interval, for the life of the watch, against one turn per streak floor
-    without any judge at all. So the screen would invert its own purpose for the
-    commonest gated loop there is.
+    The judge runs only after the typed probe read the subject, but the canonical
+    observation is written only on the structured path. Counting that as unread would
+    FALLBACK and fire every interval.
     """
 
     def test_a_probe_covered_tick_answers_quiet(self) -> None:
@@ -322,11 +314,8 @@ class TestANarrowedWatchIsNeverWidened:
 class TestCursorsMoveOnlyWithAVerdict:
     """Read positions are a consequence of a verdict, so they land only with one.
 
-    The judge await is cancellable -- a user typing cancels exactly that task -- so a
-    tick can end after the reading and before any commit. Publishing the advanced
-    positions before that point consumes rows for a verdict that never happened: the
-    next tick reads nothing new, answers quiet, and the wake those rows had earned is
-    gone, silently, until the streak floor.
+    User input cancels the judge await, so publishing positions before the verdict would
+    consume rows nobody judged.
     """
 
     @staticmethod
@@ -446,11 +435,8 @@ class TestTickLeavesEverythingAloneWhenItShould:
     def test_the_seam_refusing_stores_the_brief_and_ignores_it(self) -> None:
         """Refused means the loop is a plain timer, and the brief waits for later.
 
-        One test, because the service does not tell the two refusals apart: a missing
-        ``nudge_evidence`` scope and a lane with no runner installed both arrive as
-        ``is_enabled`` answering False, which is the seam resolving the lane and its
-        arming together. Keeping the brief is what makes granting the scope later arm
-        every loop already carrying one, with no re-arming.
+        A missing ``nudge_evidence`` scope and a missing runner both arrive as
+        ``is_enabled`` False. Keeping the brief lets a later grant arm the loop.
         """
         svc = _service()
 
@@ -466,12 +452,8 @@ class TestTickLeavesEverythingAloneWhenItShould:
     def test_the_tick_asks_the_seam_and_resolves_no_lane_of_its_own(self) -> None:
         """One rule, and it is the gate's.
 
-        The gate arms Jev only on consent AND this point's scope. A resolver here that
-        arms it on endpoint consent alone picks the Jev lane on a machine that consented
-        without granting the scope; the gate then refuses that lane and the judge is
-        skipped, when the gate itself picks the small-model lane, which needs neither.
-        So this asserts against the module's SYMBOLS rather than a call: the fault is a
-        second rule existing at all, and a call-level test passes either way.
+        A second resolver could pick a lane the gate refuses. The test checks the
+        module's SYMBOLS: a call-level test passes even when a second rule exists.
         """
         from kiro_crew import autonudge as _autonudge
 

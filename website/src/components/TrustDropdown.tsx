@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown, Clock } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
@@ -48,7 +48,8 @@ interface TrustDropdownProps {
   /** Catalog keys for the two per-command tiers, for a surface whose grants
       are scoped differently from chat's (a channel grant is agent-scoped and
       lasts until restart). Same contract as `trustAllLabelKey`: the label must
-      name the actual grant. Both keys take `cmd` / `base` plus `labelValues`. */
+      name the actual grant. Both keys place the command or base with a
+      `<mono/>` slot, which this component fills, and take `labelValues`. */
   trustCommandLabelKey?: string
   trustBaseLabelKey?: string
   /** Extra interpolation values for the tier labels (e.g. `role`). */
@@ -105,19 +106,19 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
      *  shape every consuming surface is written against. */
     fire: () => void
     icon: ReactNode
-    /** The menu item's body. `plain` is the same text as one string, for the
-     *  collapsed button, whose accessible name must be the whole label. */
+    /** The menu item's body, and the whole label of the collapsed button. */
     body: ReactNode
-    plain: string
   }[] = []
   // A command row's body, shared by the chat-long row and its timed rows. Why
   // it renders the whole command, wrapped, is set out on the command row below.
+  // The command and the base are each a <mono/> chip's child, never a value:
+  // <Trans> parses its string as markup, so a value would be parsed with it.
   const commandBody = (key: string, extra: Record<string, string> = {}) => (
     <span className="min-w-0 whitespace-pre-wrap" title={fullCommand}>
       <Trans
         i18nKey={key}
-        values={{ cmd: fullCommand, ...extra, ...labelValues }}
-        components={{ mono: <span className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border" /> }}
+        values={{ ...extra, ...labelValues }}
+        components={{ mono: <span className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{fullCommand}</span> }}
       />
     </span>
   )
@@ -128,8 +129,8 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
     <span className={timedGrants ? 'min-w-0' : 'truncate'}>
       <Trans
         i18nKey={key}
-        values={{ base: baseLabel, ...extra, ...labelValues }}
-        components={{ mono: <span className="font-mono" /> }}
+        values={{ ...extra, ...labelValues }}
+        components={{ mono: <span className="font-mono">{baseLabel}</span> }}
       />
     </span>
   )
@@ -164,12 +165,11 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       // two letters ("until Kiro Crew rest / arts") is prose the reader has to
       // reassemble on the consent surface; those words wrap at spaces, and
       // only the command -- which may have none -- breaks anywhere.
-      body: commandBody(commandKey),
       // No `aria-label` beside the visible text: the row's accessible name is
       // its own content, which is now the whole command, so an added label
       // could only duplicate it -- and would silently stop matching the visible
       // one the day either changes (WCAG 2.5.3).
-      plain: i18nT(commandKey, { cmd: fullCommand, ...labelValues }),
+      body: commandBody(commandKey),
     })
     if (timedGrants) {
       for (const duration of GRANT_DURATIONS) {
@@ -182,7 +182,6 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
           fire: () => onAction('trust_command', fullCommand, grantTtlSeconds(duration, new Date())),
           icon: <Clock size={12} className="shrink-0 text-accent" />,
           body: commandBody(key, { time: endsAt(duration) }),
-          plain: i18nT(key, { cmd: fullCommand, time: endsAt(duration), ...labelValues }),
         })
       }
     }
@@ -194,7 +193,6 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       fire: () => onAction('trust_base', basePattern),
       icon: <ShieldPlus size={12} className="shrink-0 text-ok" />,
       body: baseBody(baseKey),
-      plain: i18nT(baseKey, { base: baseLabel, ...labelValues }),
     })
     if (timedGrants) {
       for (const duration of GRANT_DURATIONS) {
@@ -205,7 +203,6 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
           fire: () => onAction('trust_base', basePattern, grantTtlSeconds(duration, new Date())),
           icon: <Clock size={12} className="shrink-0 text-ok" />,
           body: baseBody(key, { time: endsAt(duration) }),
-          plain: i18nT(key, { base: baseLabel, time: endsAt(duration), ...labelValues }),
         })
       }
     }
@@ -217,7 +214,6 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       fire: () => onAction('trust_reads'),
       icon: <BookOpen size={12} className="shrink-0 text-accent" />,
       body: <span className="min-w-0">{i18nT(trustReadsLabelKey)}</span>,
-      plain: i18nT(trustReadsLabelKey),
     })
   }
   if (showTrustAll) {
@@ -232,7 +228,6 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       // min-w-0 lets a long scope-qualified label wrap inside the menu's
       // viewport-aware width cap instead of overflowing it.
       body: <span className="min-w-0">{label}</span>,
-      plain: label,
     })
   }
 
@@ -254,7 +249,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
         onClick={only.fire}
       >
         {only.icon}
-        {only.plain}
+        {only.body}
       </button>
     )
   }
@@ -286,5 +281,24 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
         </DropdownMenuContent>
       </DropdownMenu>
     </GuideTrustRootProvider>
+  )
+}
+
+/** Trust's place on an approval bar whose request takes no standing grant: the
+    menu's own trigger, disabled and just as wide, so Allow once and Reject sit
+    where they do beside the Trust menu and a reflex click there never lands on a
+    grant. Native `disabled` keeps it out of the tab order and the approve chord's
+    probe. The reason is a `title` on the wrapper, since a disabled button gets no
+    pointer events, rather than an InfoTip, which would add a control to the row. */
+export function TrustUnavailable({ className }: { className?: string }) {
+  const reasonId = useId()
+  const reason = i18nT('components.trustDropdown.trust_unavailable')
+  return (
+    <span title={reason} className="inline-flex cursor-not-allowed">
+      <button disabled aria-describedby={reasonId} className={`${className ?? ''} pointer-events-none`}>
+        <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
+      </button>
+      <span id={reasonId} hidden>{reason}</span>
+    </span>
   )
 }

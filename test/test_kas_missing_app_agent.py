@@ -108,8 +108,8 @@ async def test_member_session_names_the_crew_member(agents_dir, tmp_path, monkey
         await _start("worker", tmp_path, session_key="member-scout")
 
     assert str(caught.value) == (
-        f'Crew member "scout" comes from the {LABEL} app, which is disabled. '
-        f"Enable {LABEL} in Apps \u203a Library to use this crew member."
+        f'Bot "scout" comes from the {LABEL} app, which is disabled. '
+        f"Enable {LABEL} in Apps \u203a Library to use this Bot."
     )
 
 
@@ -133,6 +133,74 @@ async def test_agent_no_app_declares_gets_the_generic_reason(agents_dir, tmp_pat
         await _start("worker", tmp_path)
 
     assert str(caught.value) == 'The agent "worker" can\'t start: its agent definition is missing.'
+
+
+def _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch) -> None:
+    """This checkout is a linked worktree and *agents_dir* is the shared home."""
+    wt = tmp_path / "wt"
+    (wt / "src" / "kiro_crew").mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /somewhere/KiroCrew/.git/worktrees/wt\n", encoding="utf-8")
+    monkeypatch.setattr(agent_mod, "__file__", str(wt / "src" / "kiro_crew" / "agent.py"))
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    # The guard compares against the default data home; keep it off the real one.
+    monkeypatch.setattr(paths_mod, "_resolve_default_home", lambda: tmp_path / "default")
+    # The agents dir is what the ambient environment resolves: the shared home.
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: agents_dir)
+    assert agent_mod._decline_shared_agent_home(audit=False) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_worktree_gateway_with_specs_on_the_shared_home_keeps_the_plain_reason(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A home that already holds kirocrew.json was written by an install, so one
+    agent missing from it is not the worktree guard's doing: no hint."""
+    _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch)
+    (agents_dir / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    assert str(caught.value) == 'The agent "worker" can\'t start: its agent definition is missing.'
+
+
+@pytest.mark.asyncio
+async def test_a_worktree_gateway_refused_the_shared_home_says_so(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A linked-worktree gateway on an empty shared home never writes a
+    spec, so the refusal names the guard and the way out, not a missing file."""
+    _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch)
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    message = str(caught.value)
+    assert message.startswith('The agent "worker" can\'t start: its agent definition is missing.')
+    assert "runs from a linked git worktree" in message
+    assert str(agents_dir) in message
+    assert "Run it from a main clone or a regular install" in message
+
+
+@pytest.mark.asyncio
+async def test_a_missing_default_agent_names_the_setting_as_the_fix(agents_dir, tmp_path):
+    """Every session that names no agent starts from ``agent.default_agent``, so a
+    default nothing defines refuses all of them until the setting changes."""
+    from kiro_crew.config import config_path
+
+    config_path().write_text(json.dumps({"agent": {"default_agent": "worker"}}), encoding="utf-8")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    assert str(caught.value) == (
+        'The agent "worker" can\'t start: its agent definition is missing. It is '
+        "agent.default_agent, which setup does not write. Run `kirocrew config set "
+        "agent.default_agent kirocrew`, or pick another default in the chat agent "
+        "picker, then start a new session."
+    )
 
 
 @pytest.mark.asyncio
@@ -287,3 +355,49 @@ def test_chat_row_withholds_resume_for_an_unavailable_agent():
 
     assert _terminal_error_meta(exc) == {"kind": APP_AGENT_REFUSED_KIND}
     assert _terminal_error_meta(AcpRuntimeError("other")) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("builtin", ["kiro_default", "kiro_planner", "kiro_guide"])
+async def test_a_kiro_cli_builtin_agent_is_refused_naming_crews_default_agent(
+    agents_dir, tmp_path, builtin
+):
+    """KAS has no safe match for kiro-cli's built-ins, so the start is refused, never mapped."""
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start(builtin, tmp_path)
+
+    message = str(caught.value)
+    assert f'"{builtin}" is built into kiro-cli and has no safe match on KAS' in message
+    assert 'Pick Kiro Crew\'s default agent "kirocrew" instead' in message
+    assert f"`kiro-cli --agent {builtin}` in this chat's Terminal tab" in message
+    assert "Agent Harness" not in message
+    assert caught.value.agent == builtin
+    assert caught.value.transient is False
+
+
+@pytest.mark.asyncio
+async def test_an_app_agent_named_like_a_kiro_cli_builtin_keeps_the_app_refusal(
+    agents_dir, tmp_path
+):
+    _install_app(enabled=False, declared="kiro_default")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("kiro_default", tmp_path)
+
+    assert f"comes from the {LABEL} app, which is disabled" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_default_agent_set_to_a_kiro_cli_builtin_names_the_managed_default(
+    agents_dir, tmp_path, monkeypatch
+):
+    """The pick offered is never another agent this refusal turns away."""
+    from kiro_crew.config import loader
+
+    # Through the facade, which patches every holder of the name together.
+    monkeypatch.setattr(loader, "default_template", lambda config: "kiro_planner")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("kiro_default", tmp_path)
+
+    assert 'Pick Kiro Crew\'s default agent "kirocrew" instead' in str(caught.value)

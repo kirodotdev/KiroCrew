@@ -16,6 +16,7 @@ from chat_test_helpers import _make_state, _make_tags_app
 
 from kiro_crew.dashboard import chat_tags as chat_tags_module
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.wait import async_wait_until, until_parked
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _hermetic_signing_secret = chat_tags_helpers._hermetic_signing_secret
@@ -288,6 +289,7 @@ class TestUpdateDeleteRace:
     @pytest.mark.asyncio
     async def test_concurrent_delete_causes_update_to_404(self, tmp_path, monkeypatch):
         import asyncio as _asyncio
+        import threading as _threading
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -296,31 +298,31 @@ class TestUpdateDeleteRace:
             tag = await (await client.post("/api/chat/tags", json={"name": "Race"})).json()
             tid = tag["id"]
 
-            # Make _write_tags_snapshot slow so the DELETE holds the lock long
-            # enough for PATCH to queue behind it.
-            original_write = __import__(
-                "kiro_crew.dashboard.chat_tags", fromlist=["_write_tags_snapshot"]
-            )._write_tags_snapshot
+            # DELETE revokes the tag's grant in a worker thread, under the tag lock and
+            # before it removes the tag. The stub reports when DELETE is inside the
+            # revoke and holds there until released, so PATCH is sent while the tag
+            # still exists and DELETE owns the lock. (Once DELETE has removed the tag
+            # a PATCH answers 404 before it ever asks for the lock.)
+            entered = _threading.Event()
+            release = _threading.Event()
+            original_revoke = chat_tags_module.revoke_grant
 
-            def _slow_write(st, snap):
-                # flake-ok: pre-existing 150 ms sleep in the stubbed write, holding the lock so the PATCH queues behind the DELETE; moved verbatim, tracked for a de-flake pass
-                __import__("time").sleep(0.15)
-                return original_write(st, snap)
+            def _held_revoke(tag_id):
+                entered.set()
+                release.wait(timeout=30)
+                return original_revoke(tag_id)
 
             # Run DELETE and PATCH concurrently.
             # DELETE wins the lock; PATCH waits, then re-resolves -> 404.
-            with patch(
-                "kiro_crew.dashboard.chat_tags._write_tags_snapshot",
-                side_effect=_slow_write,
-            ):
+            with patch("kiro_crew.dashboard.chat_tags.revoke_grant", side_effect=_held_revoke):
                 delete_task = _asyncio.ensure_future(client.delete(f"/api/chat/tags/{tid}"))
-                # Small delay so DELETE grabs the lock first.
-                # flake-ok: pre-existing 10 ms barrier that lets the DELETE take the lock first; moved verbatim, tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms barrier that lets the DELETE take the lock first; moved verbatim, tracked for a de-flake pass
-                await _asyncio.sleep(0.01)
+                await async_wait_until(entered.is_set, timeout=30)
                 patch_task = _asyncio.ensure_future(
                     client.patch(f"/api/chat/tags/{tid}", json={"name": "Updated"})
                 )
+                # PATCH has asked for the tag lock DELETE holds once it is parked on it.
+                await until_parked(chat_tags_module.tags_write_lock(state), timeout=30)
+                release.set()
 
                 delete_resp, patch_resp = await _asyncio.gather(delete_task, patch_task)
 
@@ -358,13 +360,9 @@ class TestTagOrderInfinity:
 class TestNonObjectBodiesAcrossConvertedHandlers:
     """Every converted handler answers 400, never 5xx, on a non-object body.
 
-    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
-    ``request.json()`` returned them and the ``.get()`` (or ``in``) that each
-    handler performs next raised from OUTSIDE the parse ``try`` -- a 500 for
-    what is really malformed client input. Driven through a real
-    client so the shared guard's 64 KB pre-decode cap is exercised on the wire,
-    which is how these endpoints now read their body; the cap decision for each
-    site is recorded in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
+    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are valid JSON, so a ``.get()`` after the
+    parse would raise. A real client exercises the 64 KB pre-decode cap; per-site caps are
+    in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
     """
 
     @pytest.mark.asyncio

@@ -95,6 +95,7 @@ class TestKiroPrerequisiteWorkflowSandbox:
             "strip_python_env": True,
             "extra_hidden_dirs": (),
             "extra_visible_dirs": (),
+            "first_party_fixed_argv": False,
         }
         assert captured["spawn_argv"] == [
             sys.executable,

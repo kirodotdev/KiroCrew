@@ -144,7 +144,7 @@ describe('WakaTimeTab', () => {
     mount()
     await screen.findByText('Python')
     expect(wakatimeStats).toHaveBeenCalledWith('last_7_days')
-    fireEvent.click(screen.getByRole('button', { name: /last 30 days/i }))
+    fireEvent.click(screen.getByRole('radio', { name: /last 30 days/i }))
     await waitFor(() => expect(wakatimeStats).toHaveBeenCalledWith('last_30_days'))
   })
 

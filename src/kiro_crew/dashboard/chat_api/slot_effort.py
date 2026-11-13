@@ -1,12 +1,14 @@
-"""Reasoning effort: the selection-capabilities read and
-``POST /api/chat/slots/{slot}/reasoning-effort``.
+"""Reasoning effort: the selection-capabilities read,
+``POST /api/chat/slots/{slot}/reasoning-effort`` and the ultracode switch beside it
+(``POST /api/chat/slots/{slot}/ultracode``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -32,24 +34,49 @@ if TYPE_CHECKING:
         effective_session_key,
         get_reasoning_effort_ordered,
         get_reasoning_effort_values,
+        harness_effort,
         logger,
         model_registry,
+        own_models_backend,
         read_bounded_json,
         relay_archive_refusal,
+        resolve_effective_model,
         slot_not_found,
     )
 
 
-async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
-    """Resolve a cold slot through the same member-aware gate as the provider factory."""
-    config = await asyncio.to_thread(KiroCrewConfig.load)
-    from kiro_crew.members import select_provider_backend
+async def _configured_backend_for_slot(
+    slot: _ChatSlot, config: KiroCrewConfig | None = None
+) -> str:
+    """Resolve a cold slot through the same member-aware gate as the provider factory.
 
+    *config* is the one to select from; without it, ``config.json`` is read.
+    """
+    if config is None:
+        config = await asyncio.to_thread(KiroCrewConfig.load)
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+    from kiro_crew.members import select_provider_backend, session_backend_pick
+
+    session_key = effective_session_key(slot)
+    # A session created on a harness reads as that harness before it starts.
+    pick = session_backend_pick(session_key)
     return select_provider_backend(
-        effective_session_key(slot),
+        session_key,
         config.agent.member_acp_backend,
         config.agent.acp_backend,
+        backend_override=pick,
+        crew_backend=crewmate_backend_pin(config, session_key) if pick is None else None,
     )
+
+
+async def _own_models_field(backend: str, config: Any = None) -> dict[str, str]:
+    """``models_backend`` for a slot on *backend*, when its pickers need that backend's list.
+
+    *config* is the caller's already-loaded one, so the cold path reads it once.
+    """
+    config = config if config is not None else await asyncio.to_thread(KiroCrewConfig.load)
+    own = own_models_backend(backend, config.agent.acp_backend)
+    return {} if own is None else {"models_backend": own}
 
 
 async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Response:
@@ -71,13 +98,48 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
         # The slot can exist before its ACP session. The configured harness
         # still knows whether model IDs encode effort, so the picker can render
         # the base rows while live effort options are pending.
-        backend = await _configured_backend_for_slot(slot)
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+        try:
+            backend = await _configured_backend_for_slot(slot)
+        except CrewmateHarnessUnavailable as exc:
+            # The crewmate's pinned harness cannot start: say so, not a 500.
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
+        config = await asyncio.to_thread(KiroCrewConfig.load)
+        # An app-owned slot starts on that app's own model setting, as its session does.
+        app_kw = {"app_name": slot._app} if slot._app else {}
+        # Scoped to the harness this slot routes to, as the session factory scopes it.
+        from kiro_crew import model_scope
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        pin = slot.model and model_scope.scoped_pin(
+            slot.model,
+            capabilities_for(backend).model_id_namespace,
+            source="slot",
+            log_level=logging.DEBUG,
+        )
+        model = pin or await asyncio.to_thread(
+            resolve_effective_model,
+            config,
+            slot.agent or None,
+            selection_kind=slot.agent_kind,
+            backend=backend,
+            **app_kw,
+        )
         return web.json_response(
             {
                 "known": False,
                 # The harness a new session would get: the Context panel names it.
                 "backend": backend,
                 "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+                **await _own_models_field(backend, config),
+                **harness_effort(
+                    state,
+                    backend,
+                    model,
+                    slot.agent or "",
+                    model_answers=backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+                ),
             }
         )
     backend = provider.capabilities.backend
@@ -105,6 +167,7 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             ),
             source="local fallback",
         )
+    ultracode = provider.ultracode_enabled()
     return web.json_response(
         {
             "known": True,
@@ -112,6 +175,9 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             "effort_supported": supported and bool(levels),
             "effort_levels": levels,
             "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+            **await _own_models_field(backend),
+            # Present only while the session advertises the switch.
+            **({} if ultracode is None else {"ultracode": ultracode}),
         }
     )
 
@@ -228,11 +294,16 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         legacy_base = ""
         if model_registry.split_effort_suffix(legacy_model)[1]:
             # The backend is only worth resolving when the pin carries a suffix.
-            backend = (
-                provider.capabilities.backend
-                if isinstance(provider, AcpProvider)
-                else await _configured_backend_for_slot(slot)
-            )
+            from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+            try:
+                backend = (
+                    provider.capabilities.backend
+                    if isinstance(provider, AcpProvider)
+                    else await _configured_backend_for_slot(slot)
+                )
+            except CrewmateHarnessUnavailable as exc:
+                return web.json_response({"error": str(exc), "code": exc.code}, status=409)
             legacy_base = legacy_effort_base(
                 legacy_model, pair_id_backend=backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
             )
@@ -275,14 +346,32 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     {"ok": True, "reasoning_effort": effort, "deferred": True, **normalized}
                 )
             # change_effort handles both backends and persists the per-model
-            # override + overlay. "" clears the override → fall back to model
-            # default (kiro: /effort with model default; claude: leave as-is).
+            # override + overlay. "" clears the slot's level → fall back to the
+            # model default (kiro: /effort with the workspace default; claude: the
+            # adapter's ``default`` live), else False asks for the reset below.
             try:
                 if effort:
                     _updated_live = await provider.change_effort(effort)
                 else:
-                    _updated_live = await provider.clear_effort()
+                    _updated_live = await provider.clear_effort(every_model=True)
             except Exception as exc:
+                if provider.switches_by_relaunch is True or (
+                    effort and getattr(exc, "command_refused", False) is True
+                ):
+                    # The relaunch refused the level and put the prior one back,
+                    # or kiro-cli refused it and change_effort rolled back.
+                    # Committing it, or resetting to cold-start on it, would only
+                    # fail the same way on every later message.
+                    logger.warning(
+                        "change_effort(%s) refused for slot %s: %s: %s",
+                        effort,
+                        name,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return web.json_response(
+                        {"error": str(exc), "code": "effort_refused"}, status=400
+                    )
                 logger.warning(
                     "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
                     effort,
@@ -509,3 +598,79 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         normalized = normalize_legacy_model()
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})
+
+
+async def api_chat_slot_ultracode(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/ultracode — turn the session's ultracode switch on or off.
+
+    Body: ``{"enabled": true | false}``; answers the value the session reads back.
+    Only a live session that advertises the switch takes it (409
+    ``ultracode_not_offered``), and never while a turn runs (409 ``turn_in_flight``):
+    the write's response wait would read the harness's output beside the streaming
+    turn, the hazard the effort route defers its live push for. Nothing is persisted
+    here: the switch is the adapter's own per-session state.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if slot is None:
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_ultracode")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be true or false", "code": "invalid_value"}, status=400
+        )
+    # The lock order and re-checks of the effort route: a model switch on the same
+    # session must not run its own config write beside this one.
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_ultracode"):
+            return slot_not_found()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_ultracode"):
+            return slot_not_found()
+        denied = _app_cancel_denied(request, slot, "chat.slot_ultracode", session_key)
+        if denied is not None:
+            return denied
+        provider = state.sessions.get_provider(session_key)
+        if not isinstance(provider, LLMProvider) or provider.ultracode_enabled() is None:
+            return web.json_response(
+                {
+                    "error": "this session offers no ultracode switch",
+                    "code": "ultracode_not_offered",
+                },
+                status=409,
+            )
+        # The write also holds the session's turn lease, taken without waiting: a
+        # channel turn holds it before its prompt is in flight, which the busy probe
+        # cannot see, and that prompt would read the stdout this write's reply wait reads.
+        lease_key = state.sessions._fold_key(session_key)
+        if _switch_target_busy(state, slot, session_key, provider) or not (
+            await state.sessions.try_acquire(lease_key)
+        ):
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+        try:
+            value = await provider.set_ultracode(enabled)
+        except Exception as exc:
+            logger.warning(
+                "set_ultracode(%s) failed for slot %s: %s: %s",
+                enabled,
+                name,
+                type(exc).__name__,
+                exc,
+            )
+            return web.json_response({"error": str(exc), "code": "ultracode_refused"}, status=502)
+        finally:
+            state.sessions.release(lease_key, wake_queue=True)
+    logger.info("Slot %s ultracode switched to %s", name, value)
+    return web.json_response({"ok": True, "ultracode": value})

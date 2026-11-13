@@ -244,6 +244,33 @@ def test_automated_value_and_metadata_conflicts_preserve_owner_and_deduplicate(s
     assert store.get_semantic("user.work_email") is not None
 
 
+@pytest.mark.parametrize("store", ["v2"], indirect=True)
+def test_one_change_proposed_by_every_session_stays_one_proposal(store):
+    # Consolidation writes as consolidation:<session> with a per-span source_ref
+    # and its own confidence, so a dedup keyed on any provenance never matches.
+    fact(store)
+    reasons = {
+        store.set_semantic(
+            "user.work_email",
+            "other@example.com",
+            confidence,
+            f"consolidation:dashboard:{session}",
+            metadata={"source_ref": f"span {session}", "observed_at": observed},
+        )
+        for session, confidence, observed in (
+            ("a", 0.85, "2026-11-01T00:00:00+00:00"),
+            ("b", 0.95, "2026-11-02T00:00:00+00:00"),
+        )
+    }
+    assert len(reasons) == 1 and None not in reasons
+    assert (
+        store.db.execute(
+            "SELECT COUNT(*) FROM memory_revisions WHERE status='conflict'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def correction(before, *, role="user", quote=None):
     quote = quote or "Please replace old@example.com with new@example.com."
     return meta.verified_correction(
@@ -416,6 +443,68 @@ def test_temporal_rows_do_not_crowd_current_fact_or_episode_context(store):
     assert recall["total_chars"] <= 2000
     # Owner management retains future/past records; eligibility is retrieval-only.
     assert len(store.get_all_semantic()) == 3
+
+
+def test_a_new_value_does_not_inherit_a_window_that_already_closed(store):
+    window = {"valid_from": "2000-01-01", "valid_until": "2000-02-01"}
+    fact(store, "alice@example.com", metadata=window)
+    # Rewriting the expired value itself keeps its window, as before.
+    assert store.set_semantic("user.work_email", "alice@example.com", 0.5, "user_explicit") is None
+    kept = meta.get_record_metadata(store.db, "key:user.work_email")
+    assert kept["valid_until"].startswith("2000-02-01")
+
+    fact(store, "bob@example.com")
+    stored = meta.get_record_metadata(store.db, "key:user.work_email")
+    assert (stored["valid_from"], stored["valid_until"]) == ("", "")
+    assert meta.eligible(stored)
+    assert "bob@example.com" in store.get_semantic_context(query_text="bob", cap=2000)
+
+
+def test_an_escaped_copy_of_the_same_value_keeps_its_closed_window(store):
+    fact(store, "Zürich", metadata={"valid_from": "2000-01-01", "valid_until": "2000-02-01"})
+    # An older row holds the default escaped dump of the same value.
+    with store.db:
+        store.db.execute(
+            f"UPDATE {store._sem_rel} SET value_json=? WHERE key=?",
+            (json.dumps("Zürich"), "user.work_email"),
+        )
+    assert store.set_semantic("user.work_email", "Zürich", 0.5, "user_explicit") is None
+    stored = meta.get_record_metadata(store.db, "key:user.work_email")
+    assert stored["valid_until"].startswith("2000-02-01")
+
+
+def test_a_value_of_another_json_type_is_a_new_value(store):
+    window = {"valid_from": "2000-01-01", "valid_until": "2000-02-01"}
+    assert store.set_semantic("pref.flag", True, 1, "user_explicit", metadata=window) is None
+    assert store.set_semantic("pref.flag", 1, 1, "user_explicit") is None
+    stored = meta.get_record_metadata(store.db, "key:pref.flag")
+    assert json.loads(store.get_semantic("pref.flag")["value_json"]) == 1
+    assert (stored["valid_from"], stored["valid_until"]) == ("", "")
+
+
+def test_a_memory_editor_change_keeps_a_closed_window(store, request):
+    from kiro_crew import memory_edit
+
+    fact(store, "alice@example.com", metadata={"valid_until": "2000-02-01"})
+    name = "member-alice" if request.node.callspec.params["store"] == "v2" else ""
+    secret = b"test-preview-key"
+    row = memory_edit.list_records(store, {"kind": "fact"})["entries"][0]
+    body = {
+        "selection": {"items": [{key: row[key] for key in ("kind", "id", "revision")}]},
+        "operation": {"type": "replace_text", "find": "alice", "replacement": "redacted"},
+    }
+    preview = memory_edit.preview_edit(store, name, secret, body)
+    assert memory_edit.apply_edit(store, name, secret, preview["preview_id"])["changed_count"] == 1
+    assert json.loads(store.get_semantic("user.work_email")["value_json"]) == "redacted@example.com"
+    stored = meta.get_record_metadata(store.db, "key:user.work_email")
+    assert stored["valid_until"].startswith("2000-02-01")
+
+
+def test_a_new_value_keeps_a_window_that_is_still_open(store):
+    fact(store, "alice@example.com", metadata={"valid_until": "2100-01-01"})
+    fact(store, "bob@example.com")
+    stored = meta.get_record_metadata(store.db, "key:user.work_email")
+    assert stored["valid_until"].startswith("2100-01-01")
 
 
 @pytest.mark.parametrize("store", ["v2"], indirect=True)

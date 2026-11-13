@@ -7,7 +7,9 @@ failed.
 
 import contextlib
 import json
+import threading
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from kiro_crew.apps.builtins.ops_mission_control.tests.store_and_gate_helpers import _HomeIsolated
@@ -654,9 +656,24 @@ class TestTheIndexIsNeverPublishedOverAFailedRead(_HomeIsolated):
             with self.assertRaises(OSError):
                 store.transition(inc.incident_id, models.STATUS_INVESTIGATING)
 
-        # The lock must be free again, on the very next attempt.
-        # flake-ok: pre-existing reacquire only a release regression could wedge; moved verbatim
-        moved = store.transition(inc.incident_id, models.STATUS_INVESTIGATING)
+        # The lock must be free again, on the very next attempt. The attempt runs in a
+        # thread: flock is per open file description, so a leaked lock wedges this
+        # attempt exactly as it would wedge the app. The join bound only names a hang.
+        outcome: dict[str, Any] = {}
+
+        def _reacquire() -> None:
+            try:
+                outcome["moved"] = store.transition(inc.incident_id, models.STATUS_INVESTIGATING)
+            except BaseException as exc:  # reported on the test thread below
+                outcome["error"] = exc
+
+        attempt = threading.Thread(target=_reacquire, name="index-lock-reacquire", daemon=True)
+        attempt.start()
+        attempt.join(timeout=30)
+        assert not attempt.is_alive(), "the index lock was never released: the mutation wedged"
+        if "error" in outcome:
+            raise outcome["error"]
+        moved = outcome["moved"]
         self.assertEqual(moved.status, models.STATUS_INVESTIGATING)
         # ...and the index must still hold exactly the one incident, not a second copy.
         self.assertEqual(list(store.read_index()), [inc.incident_id])

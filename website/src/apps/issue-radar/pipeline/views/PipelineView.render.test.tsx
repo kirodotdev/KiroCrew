@@ -27,7 +27,7 @@
  * component keys the branch off.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { CrewFabricItem, CrewFabricResponse, RepoRef } from '../api'
@@ -141,13 +141,13 @@ function fabric(items: CrewFabricItem[], generatedAt: string | null = T(4)): Cre
   }
 }
 
-function renderView() {
+function renderView(repo: RepoRef = { owner: 'acme', repo: 'widget' }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
   return render(
     <QueryClientProvider client={qc}>
-      <PipelineView repo={{ owner: "acme", repo: "widget" }} />
+      <PipelineView repo={repo} />
     </QueryClientProvider>,
   )
 }
@@ -155,15 +155,18 @@ function renderView() {
 /** Mount, wait for the board to actually populate (a lane row, not just the
  * repo-picker button in the chrome), then report the observed track width so the
  * wide/narrow branch is exercised. */
-async function mountBoard(items: CrewFabricItem[], opts: { width?: number; generatedAt?: string | null } = {}) {
+async function mountBoard(
+  items: CrewFabricItem[],
+  opts: { width?: number; generatedAt?: string | null; repo?: RepoRef } = {},
+) {
   crewFabric.mockResolvedValue(fabric(items, opts.generatedAt ?? T(4)))
-  const utils = renderView()
+  const utils = renderView(opts.repo)
   // Wait for the FIRST lane to render — the board has left its loading skeleton
   // and the ColumnHeader (the element the ResizeObserver is attached to) is
   // mounted, so an emit below reaches a live observer.
   const firstLabel = `IS-${items[0].number}`
   await waitFor(() => expect(screen.getByText(firstLabel)).toBeTruthy())
-  FakeResizeObserver.emit(opts.width ?? 1500)
+  act(() => { FakeResizeObserver.emit(opts.width ?? 1500) })
   return utils
 }
 
@@ -215,6 +218,24 @@ describe('PipelineView — populated board', () => {
 
     // The board meta strip counts the items it drew.
     expect(screen.getByText('WORK ITEMS').nextElementSibling?.textContent).toBe('3')
+  })
+
+  it('writes a GitLab merge request as !N, because #N there is a different issue', async () => {
+    await mountBoard(
+      [item({ number: 42, crew_id: 'crew-a', phase: 'implementing', pr_number: 17, title: 'zzq gitlab' })],
+      { repo: { owner: 'acme', repo: 'widget', provider: 'gitlab', host: 'gitlab.example.com' } },
+    )
+    const lane = laneFor(42)
+    expect(within(lane).getByText('!17')).toBeTruthy()
+    expect(within(lane).queryByText('#17')).toBeNull()
+    // The legend under the board names the same sigil and noun as the pill.
+    expect(screen.getByText("A !N pill is the item's MR; a lane with no MR shows no !N pill.")).toBeTruthy()
+  })
+
+  it('keeps the GitHub legend in #N / PR terms', async () => {
+    await mountBoard([item({ number: 42, crew_id: 'crew-a', phase: 'implementing', pr_number: 17, title: 'zzq github' })])
+    expect(within(laneFor(42)).getByText('#17')).toBeTruthy()
+    expect(screen.getByText("A #N pill is the item's PR; a lane with no PR shows no #N pill.")).toBeTruthy()
   })
 })
 
@@ -401,5 +422,87 @@ describe('PipelineView — empty state', () => {
     // state either (a repo IS connected).
     expect(screen.queryByText(/^IS-\d+$/)).toBeNull()
     expect(screen.queryByTestId('atp-no-repo')).toBeNull()
+  })
+})
+
+describe('PipelineView — failed read', () => {
+  it('says the read failed, not that the queue is empty, and retries on request', async () => {
+    // A failed fabric read is not an idle queue: the empty card's "No crew
+    // activity yet" in front of an outage is a claim nobody could make.
+    crewFabric.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }))
+    renderView()
+
+    const card = await screen.findByTestId('atp-fabric-error')
+    expect(within(card).getByText('Could not load the pipeline')).toBeTruthy()
+    expect(within(card).getByText('503 Service Unavailable')).toBeTruthy()
+    expect(screen.queryByTestId('atp-empty')).toBeNull()
+
+    crewFabric.mockResolvedValue(fabric([], null))
+    fireEvent.click(within(card).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.getByTestId('atp-empty')).toBeTruthy())
+    expect(screen.queryByTestId('atp-fabric-error')).toBeNull()
+    expect(crewFabric).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the board from an earlier read and flags it when a refetch fails', async () => {
+    crewFabric.mockResolvedValue(fabric([item({ number: 7 })]))
+    renderView()
+    await screen.findByText('IS-7')
+
+    crewFabric.mockRejectedValue(new TypeError('Failed to fetch'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh the pipeline' }))
+
+    await screen.findByTestId('atp-fabric-error')
+    expect(screen.getByText('IS-7')).toBeTruthy()
+  })
+})
+
+describe('PipelineView — refresh button', () => {
+  it('names the disabled button for the refresh in flight, then restores it', async () => {
+    // A disabled "Refresh the pipeline" reads as unavailable; while the read
+    // runs its name and tooltip say it is busy instead.
+    crewFabric.mockResolvedValue(fabric([item({ number: 7 })]))
+    renderView()
+    await screen.findByText('IS-7')
+
+    let release: (v: CrewFabricResponse) => void = () => {}
+    crewFabric.mockReturnValue(new Promise(resolve => { release = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh the pipeline' }))
+
+    const busy = await screen.findByRole('button', { name: 'Refreshing the pipeline…' })
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toHaveAttribute('title', 'Refreshing the pipeline…')
+    expect(screen.queryByRole('button', { name: 'Refresh the pipeline' })).toBeNull()
+
+    await act(async () => { release(fabric([item({ number: 7 })])) })
+
+    const idle = await screen.findByRole('button', { name: 'Refresh the pipeline' })
+    expect(idle).not.toHaveAttribute('aria-disabled')
+    expect(idle).toHaveAttribute('title', 'Refresh the pipeline')
+  })
+
+  it('keeps keyboard focus on Refresh while the read runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole read.
+    crewFabric.mockResolvedValue(fabric([item({ number: 7 })]))
+    renderView()
+    await screen.findByText('IS-7')
+
+    let release: (v: CrewFabricResponse) => void = () => {}
+    crewFabric.mockReturnValue(new Promise(resolve => { release = resolve }))
+    const calls = crewFabric.mock.calls.length
+    const button = screen.getByRole('button', { name: 'Refresh the pipeline' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing the pipeline…' })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(crewFabric.mock.calls.length).toBe(calls + 1)
+
+    await act(async () => { release(fabric([item({ number: 7 })])) })
+    await screen.findByRole('button', { name: 'Refresh the pipeline' })
+    expect(button).toHaveFocus()
   })
 })

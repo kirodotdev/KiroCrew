@@ -28,6 +28,7 @@ class FakeState:
     def __init__(self) -> None:
         self.whatsapp_connected: bool | None = None
         self.whatsapp_connect_error: str | None = None
+        self.whatsapp_connect_failed: bool | None = None
         self.registered: list[Any] = []
 
     def register_channel_transport(self, transport: Any) -> None:
@@ -99,6 +100,7 @@ def test_missing_extra_reports_error_and_returns_none(monkeypatch):
     assert state.whatsapp_connect_error == (
         "The gateway started without neonize. Restart it once neonize is installed."
     )
+    assert state.whatsapp_connect_failed is True
 
 
 def test_missing_extra_without_state_is_still_a_noop(monkeypatch):
@@ -165,6 +167,37 @@ def test_start_wires_client_transport_dispatcher_and_connects(monkeypatch):
     client.on_state_change("logged_out", "unlinked")
     assert state.whatsapp_connected is False
     assert "logged_out" in (state.whatsapp_connect_error or "")
+
+
+@pytest.mark.parametrize(
+    ("new_state", "failed"),
+    [
+        ("connected", False),
+        ("unpaired", False),
+        ("pairing", False),
+        ("logged_out", True),
+        ("banned", True),
+        ("error", True),
+    ],
+)
+def test_state_observer_writes_the_failure_flag(monkeypatch, new_state, failed):
+    """The flag is the verdict the panel reads; the error text is only detail."""
+    _patch_success(monkeypatch)
+    state = FakeState()
+    client = asyncio.run(maybe_start_whatsapp(_orch(state=state)))
+    client.on_state_change(new_state, "detail")
+    assert state.whatsapp_connect_failed is failed
+
+
+def test_state_observer_clears_the_flag_on_reconnect(monkeypatch):
+    _patch_success(monkeypatch)
+    state = FakeState()
+    client = asyncio.run(maybe_start_whatsapp(_orch(state=state)))
+    client.on_state_change("error", "disconnected (auto-reconnecting)")
+    assert state.whatsapp_connect_failed is True
+    client.on_state_change("connected", "")
+    assert state.whatsapp_connect_failed is False
+    assert state.whatsapp_connect_error == ""
 
 
 def test_start_pins_the_session_store_to_the_protected_path(monkeypatch, tmp_path):
@@ -243,6 +276,7 @@ def test_connect_failure_is_swallowed_and_recorded(monkeypatch):
     assert asyncio.run(maybe_start_whatsapp(orch)) is None
     assert state.whatsapp_connected is False
     assert "pairing socket refused" in (state.whatsapp_connect_error or "")
+    assert state.whatsapp_connect_failed is True
 
 
 def test_connect_failure_without_state_returns_none(monkeypatch):
@@ -297,7 +331,8 @@ def _warnings(caplog) -> list[str]:
     return [
         r.getMessage()
         for r in caplog.records
-        if r.levelno >= logging.WARNING and "allowed_wa_ids is empty" not in r.getMessage()
+        if r.levelno >= logging.WARNING
+        and "configured with an empty allowlist" not in r.getMessage()
     ]
 
 
@@ -581,7 +616,7 @@ class TestNonOperatorTurnsUnservableWarning:
         cfg.whatsapp.allowed_wa_ids = []
         with caplog.at_level(logging.WARNING):
             gw._warn_if_non_operator_turns_unservable(cfg)
-        assert any("allowed_wa_ids is empty" in r.getMessage() for r in caplog.records)
+        assert any("configured with an empty allowlist" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.parametrize("dm_policy", ["Self", " self ", "nonsense", "allowlist", "disabled"])
     def test_silent_when_the_policy_admits_nobody_beyond_the_operator(self, caplog, dm_policy):
@@ -632,3 +667,38 @@ class TestNonOperatorTurnsUnservableWarning:
         with caplog.at_level(logging.WARNING):
             gw._warn_if_non_operator_turns_unservable(cfg)
         assert not caplog.records
+
+    def test_a_groups_own_list_counts_when_the_global_list_is_empty(self, caplog):
+        """A group's own ``allowed_wa_ids`` replaces the global list, so a group
+        that lists members of its own is not reported as answering only you."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+        cfg = self._cfg(
+            groups=[{"jid": "g@g.us", "allowed_wa_ids": ["447700900111"]}],
+            dm_policy="self",
+            backend=ACP_BACKEND_KIRO,
+        )
+        cfg.whatsapp.allowed_wa_ids = []
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert not caplog.records
+
+    def test_a_groups_own_empty_list_is_reported_despite_a_global_list(self, caplog):
+        """An empty list on the group admits nobody there, whatever the global
+        list holds, so only that group is named."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+        cfg = self._cfg(
+            groups=[{"jid": "a@g.us", "allowed_wa_ids": []}, {"jid": "b@g.us"}],
+            dm_policy="self",
+            backend=ACP_BACKEND_KIRO,
+        )
+        cfg.whatsapp.allowed_wa_ids = ["447700900111"]
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        named = [
+            r.getMessage()
+            for r in caplog.records
+            if "configured with an empty allowlist" in r.getMessage()
+        ]
+        assert len(named) == 1 and named[0].startswith("whatsapp: 1 group(s)")

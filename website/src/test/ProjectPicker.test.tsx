@@ -40,10 +40,12 @@ describe('ProjectPicker', () => {
       expect(screen.queryByText('Recent')).not.toBeInTheDocument()
     })
 
-    it('renders nothing when open but no anchor (rect or ref) is provided', () => {
+    it('renders nothing when open but no anchor (rect or ref) is provided', async () => {
       renderWithProviders(
         <ProjectPicker open={true} onOpenChange={vi.fn()} onSelect={vi.fn()} />
       )
+      await waitFor(() => expect(api.recentProjects).toHaveBeenCalled())
+      await waitFor(() => expect(api.favoriteProjects).toHaveBeenCalled())
       expect(screen.queryByText('Recent')).not.toBeInTheDocument()
     })
 

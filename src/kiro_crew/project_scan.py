@@ -265,6 +265,52 @@ def _string_list(value: object, *, where: str) -> list[str]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
+#: Maximum bracket/brace nesting depth allowed in a declaration file before the
+#: parser is refused.  A real member list is flat; anything deeper is either
+#: pathological input or an exploit attempt.  The cap is enforced BEFORE handing
+#: text to a recursive parser, so the parser never reaches the recursion ceiling
+#: and the process never enters the state where a GC-triggered finalizer finds
+#: no stack headroom to run pytest's unraisable hook.
+_MAX_DECLARATION_NESTING = 64
+
+
+def _nesting_too_deep(text: str) -> bool:
+    """Return whether ``text`` contains bracket/brace nesting beyond the cap.
+
+    Walks the raw characters with a simple quote-state machine so that brackets
+    inside string literals are ignored.  The scan is intentionally coarse: it
+    is a quick-check cap that rejects adversarial input before it reaches a recursive
+    parser, not a full grammar check.  Escape sequences inside strings are
+    handled with a single ``escaped`` flag that skips the next character, which
+    is sufficient because the only characters that matter to this scanner are
+    ``[``, ``{``, ``]``, ``}``, ``"``, ``'``, and ``\\``.
+    """
+    depth = 0
+    in_string: str | None = None  # the opening quote character, or None
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if in_string is not None:
+            if ch == in_string:
+                in_string = None
+            continue
+        if ch in ('"', "'"):
+            in_string = ch
+            continue
+        if ch in ("[", "{"):
+            depth += 1
+            if depth > _MAX_DECLARATION_NESTING:
+                return True
+        elif ch in ("]", "}"):
+            depth -= 1
+    return False
+
+
 def _npm_workspaces(text: str) -> list[str]:
     """Return the member patterns declared by a ``package.json``.
 
@@ -274,6 +320,8 @@ def _npm_workspaces(text: str) -> list[str]:
     packages.
     """
 
+    if _nesting_too_deep(text):
+        raise DeclarationError("nesting too deep to be a valid member list")
     try:
         data = json.loads(text)
     except (ValueError, RecursionError) as exc:
@@ -323,6 +371,8 @@ def _load_no_alias_yaml(text: str) -> object:
 def _pnpm_packages(text: str) -> list[str]:
     """Return the member patterns declared by a ``pnpm-workspace.yaml``."""
 
+    if _nesting_too_deep(text):
+        raise DeclarationError("nesting too deep to be a valid member list")
     try:
         data = _load_no_alias_yaml(text)
     except (yaml.YAMLError, RecursionError, ValueError) as exc:
@@ -350,6 +400,8 @@ def _cargo_members(text: str) -> list[str]:
 
     if _toml is None:  # pragma: no cover - only on 3.10 without tomli
         return _scan_cargo_members(text)
+    if _nesting_too_deep(text):
+        raise DeclarationError("nesting too deep to be a valid member list")
     try:
         data = _toml.loads(text)
     except (ValueError, RecursionError) as exc:  # TOMLDecodeError is a ValueError

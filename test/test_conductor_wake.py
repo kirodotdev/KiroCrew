@@ -38,6 +38,7 @@ from conductor_wake_helpers import (
     _service,
     _Svc,
 )
+from crew_log_drain import assert_drained
 
 from kiro_crew import conductor_wake, work_ledger
 from kiro_crew.testing.wait import async_wait_until, default_timeout
@@ -245,6 +246,45 @@ def test_each_waking_status_pushes(monkeypatch):
         assert fired == [(CONDUCTOR, "it_a")], status
 
 
+def _tail_board(stamp: str, *events: "tuple[str, str | None]") -> "list[tuple[str, str, str]]":
+    """One item whose event tail is *events* (``(kind, status)``), read by ``_board_items``."""
+    rows = [{"id": f"ev{n}", "kind": kind, "status": st} for n, (kind, st) in enumerate(events)]
+    status = next((st for kind, st in reversed(events) if kind == "report"), "")
+    item = {"item_id": "it_a", "last_report_at": stamp, "status": status, "events": rows}
+    return conductor_wake._board_items({"items": [item]})
+
+
+@pytest.mark.parametrize(
+    "tail, pushes",
+    [
+        ((("bind", None), ("report", "blocked")), True),
+        ((("report", "blocked"), ("report", "blocked")), False),
+        ((("report", "blocked"), ("report", "done")), True),
+        ((("report", "blocked"), ("report", "question")), True),
+        ((("report", "blocked"), ("decision", None), ("report", "blocked")), True),
+        ((("report", "blocked"), ("report", "progress"), ("report", "blocked")), True),
+        ((("report", "blocked"),), True),
+        ((("report", "question"), ("report", "question")), True),
+    ],
+    ids=[
+        "first",
+        "repeat",
+        "done-after-blocked",
+        "question-after-blocked",
+        "after-decide",
+        "after-progress",
+        "tail-cut-short",
+        "question-again",
+    ],
+)
+def test_only_a_changed_status_pushes(monkeypatch, tail, pushes):
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _tail_board("t1", ("bind", None))))
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _tail_board("t2", *tail)))
+    assert fired == ([(CONDUCTOR, "it_a")] if pushes else [])
+
+
 def test_an_item_that_has_not_reported_yet_pushes_nothing(monkeypatch):
     """A board whose item carries no status is a ``create`` or a ``bind``, not news."""
     fired = _record_fires(monkeypatch)
@@ -302,7 +342,11 @@ def test_two_reports_in_one_second_each_push(monkeypatch):
                     "status": _WAKING,
                     "worker_session_key": WORKER,
                     "state": "open",
-                    "events": [{"id": e, "kind": "report"} for e in event_ids],
+                    # Each report a new status, so ``_repeats_status`` stays out of it.
+                    "events": [
+                        {"id": e, "kind": "report", "status": "progress" if n == 0 else _WAKING}
+                        for n, e in enumerate(event_ids)
+                    ],
                 }
             ]
         }
@@ -503,7 +547,7 @@ def _write(unit: str, **fields) -> None:
     from kiro_crew.crew_log import emit as crew_log_emit
 
     assert crew_log_emit.on_work_recorded(unit, dict(fields), timeout=5.0) is True
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert crew_log_eager.drain(timeout=10.0)
 
 
@@ -590,14 +634,10 @@ def _spy_events(monkeypatch) -> "list[tuple[str, str, str]]":
 
 
 def test_a_workers_report_wakes_its_conductor_through_the_bus(real_crew_log, monkeypatch):
-    """MUTATION-SENSITIVE. A worker's ``work_report`` append wakes the bound conductor's
-    loop within the one eager batch that folds it -- through the bus, not through a call
-    the folder makes.
+    """A ``work_report`` append wakes the bound conductor's loop through the bus.
 
-    The baseline is the board's first sight and pushes nothing; the report then moves
-    ``it_p``'s stamp and fires for that item. Re-adding a direct call from the eager
-    folder would leave this green, so ``test_the_eager_folder_names_no_conductor`` pins
-    that side.
+    A direct call from the eager folder would also pass here, so
+    ``test_the_eager_folder_names_no_conductor`` pins that side.
     """
     _board("acp-c", CONDUCTOR, WORKER)
     _unit("acp-w", WORKER)
@@ -612,6 +652,40 @@ def test_a_workers_report_wakes_its_conductor_through_the_bus(real_crew_log, mon
         await asyncio.to_thread(_report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z")
         assert await _until(lambda: svc.fired), "the report reached the conductor's loop"
         assert svc.fired == [LOOP_ID]
+
+    asyncio.run(body())
+
+
+def test_who_else_can_report_is_read_off_the_folds_own_board(real_crew_log, monkeypatch):
+    """END TO END for the wake window's one exemption.
+
+    Whether a reporter is alone is read off the board the ``work`` fold renders, never
+    off a second store. With another worker bound and open the report waits the window;
+    once that item is closed, the same worker's next report is armed at once.
+    """
+    monkeypatch.setenv(conductor_wake.WAKE_BATCH_ENV, "7")
+    _board("acp-c", CONDUCTOR, WORKER)
+    base = {"slot": CONDUCTOR, "actor": "conductor", "by": CONDUCTOR, "item_id": "it_q"}
+    _write("acp-c", **base, action="create", title="t", acceptance={"kind": "human_approval"})
+    _write("acp-c", **base, action="bind", worker_session_key="chat-worker-b")
+    _unit("acp-w", WORKER)
+
+    async def body() -> None:
+        svc = _Listing(_Loop())
+        _on_this_loop(monkeypatch, svc)
+        await _sync_and_join(svc)
+        assert conductor_wake._registry.live[CONDUCTOR] == {"it_p", "it_q"}
+        await asyncio.to_thread(_report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z")
+        assert await _until(lambda: svc.delays), "the report reached the conductor's loop"
+        assert svc.delays == [7.0], "a second worker is still out"
+
+        await asyncio.to_thread(_write, "acp-c", **base, action="close", state="accepted")
+        assert await _until(lambda: conductor_wake._registry.live[CONDUCTOR] == {"it_p"})
+        await asyncio.to_thread(
+            _report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:02Z", status="question"
+        )
+        assert await _until(lambda: len(svc.delays) == 2)
+        assert svc.delays == [7.0, 0.0], "nobody is left to share the turn with"
 
     asyncio.run(body())
 
@@ -791,13 +865,8 @@ def test_the_service_start_installs_one_observer(monkeypatch):
 def test_a_worker_session_closing_reaches_no_wake():
     """A close carries no statement from the worker, so it wakes nobody.
 
-    Structural, and that is the point: there is no hook to call. A close is the
-    dashboard's event, not the worker's word, so a push from one tells a conductor
-    something it cannot tell apart from the worker having spoken. What covers a worker
-    whose session is gone is the item's own ``stale`` flag on the next patrol tick --
-    no window needed, as ``is_stale`` answers at once for a closed worker that has
-    reported -- and that same flag is the only cover for a worker whose process dies
-    with its slot still open.
+    A gone worker is caught by the item's ``stale`` flag on the next patrol tick,
+    which ``is_stale`` answers at once for a closed worker that has reported.
     """
     import importlib
     import pkgutil
@@ -883,14 +952,10 @@ def test_a_done_item_ruled_fail_is_woken_by_the_close():
 
 
 def test_an_item_that_never_reported_keeps_the_window_even_when_closed():
-    """The bind-to-first-report gap, which is what the window was written for.
+    """The bind-to-first-report gap, which is what the window is for.
 
-    ``worker_closed`` is answered by FAILING to find a session, and for a worker that has
-    never reported that absence is as likely to mean "not registered yet" as "gone" -- a
-    slot table still rehydrating, a boot tick, a key that table does not carry. This PR
-    makes ticks land in those moments far more often (a boot tick, and a pull-forward on
-    any sibling worker's write), so without the report requirement the conductor would
-    spend a turn on "worker gone" for a worker about to register.
+    ``worker_closed`` means no session was found; for a worker that never reported,
+    that is as likely "not registered yet" as "gone", so the window still decides.
     """
     item_id = _bind()
     item = _item(item_id)
@@ -898,7 +963,7 @@ def test_an_item_that_never_reported_keeps_the_window_even_when_closed():
     assert not work_ledger.is_stale(
         item, worker_running=False, worker_closed=True, window_secs=3600
     )
-    # The window still decides it, exactly as before this input existed.
+    # With no report, the window alone decides.
     assert work_ledger.is_stale(item, worker_running=False, worker_closed=True, window_secs=0)
 
 
@@ -968,12 +1033,8 @@ def test_a_table_that_cannot_answer_existence_reports_no_close():
 def test_a_reported_worker_under_construction_is_not_closed(tmp_path):
     """A rehydrating or resuming worker is open, though ``get_slot`` hides it.
 
-    Driven against a REAL ``DashboardState``, because the hiding is that class's own
-    rule and a stub table would only pin this test against itself. Both shapes the
-    construction path takes are covered: the slot registered while marked, and the
-    slot retracted from ``_slots`` across the import tail with the mark still set.
-    The control is the same key with no mark and no slot, which must read as closed --
-    otherwise the two False answers would pass for a function that never says True.
+    Uses a real ``DashboardState``, since the hiding is that class's rule. The control
+    (no mark, no slot) must read closed, so the False answers are not vacuous.
     """
     from chat_test_helpers import _make_state
 
@@ -1069,11 +1130,14 @@ def _record_close(monkeypatch, *, save_fails: bool) -> list[str]:
     events: list[str] = []
     monkeypatch.setattr(autonudge, "_INSTANCE", None)
 
-    async def _save(_state, _slot, *_a, **kw) -> None:
+    async def _save(_state, _slot, *_a, **kw) -> bool:
         if kw.get("closed"):
             events.append("save")
             if save_fails:
                 raise OSError("disk full")
+        # True: this double models the durable write itself; a bare None reads
+        # as the save's own refusal, which the close answers rather than ignores.
+        return True
 
     async def _wake(_svc, board: str, item_id: str = "") -> str:
         events.append(f"wake:{board}:{item_id}")

@@ -198,3 +198,95 @@ def test_a_rewrite_in_a_process_that_never_paged_carries_the_persisted_index(
     assert page.total == ROWS
     assert _contents(page)[-1].startswith(f"row-{ROWS - 1} ")
     assert meter.framed <= _bound(), meter.framed
+
+
+def test_a_copied_data_home_resumes_from_the_copied_sidecar(transcript, tmp_path, monkeypatch):
+    """A backup restore or a copy of the data home gives every transcript a new
+    inode; the sidecar still names the same rows, so the first page frames the page."""
+    import shutil
+
+    from kiro_crew.history import ConversationLog
+
+    base_dir, key = transcript
+    ConversationLog(base_dir=base_dir).read_messages_chained_page(key, limit=50)
+    copied = tmp_path / "copied-hist"
+    shutil.copytree(base_dir, copied)
+    meter = _FrameMeter(monkeypatch)
+    page = ConversationLog(base_dir=copied).read_messages_chained_page(key, limit=50)
+    assert page.total == ROWS
+    assert _contents(page)[-1].startswith(f"row-{ROWS - 1} ")
+    assert meter.framed <= _bound(), meter.framed
+
+
+def test_a_whole_file_save_behind_a_new_first_line_resumes(transcript, monkeypatch):
+    """The dashboard's full save rewrites the whole file through an atomic replace:
+    a new inode, a first line of another length, the same rows behind it. The page
+    index follows the rows rather than the inode."""
+    import os
+
+    from kiro_crew.history import ConversationLog
+
+    base_dir, key = transcript
+    log = ConversationLog(base_dir=base_dir)
+    log.read_messages_chained_page(key, limit=50)
+    path = log._path(key)
+    lines = path.read_bytes().splitlines(keepends=True)
+    head = json.loads(lines[0])
+    head["title"] = "a much longer title than the transcript had before " * 3
+    staged = path.with_name("staged.jsonl")
+    staged.write_bytes((json.dumps(head) + "\n").encode() + b"".join(lines[1:]))
+    os.replace(staged, path)
+    meter = _FrameMeter(monkeypatch)
+    restarted = ConversationLog(base_dir=base_dir)
+    page = restarted.read_messages_chained_page(key, limit=50)
+    assert page.total == ROWS
+    assert _contents(page) == [m["content"] for m in restarted.read_messages_chained(key)[-50:]]
+    assert meter.framed <= _bound(), meter.framed
+
+
+def test_a_middle_row_rewritten_to_another_length_is_rescanned(transcript):
+    """Offsets after an edited row move by its change in length, which no first-line
+    shift explains, so the saved base is refused and the page is built afresh."""
+    import os
+
+    from kiro_crew.history import ConversationLog
+
+    base_dir, key = transcript
+    log = ConversationLog(base_dir=base_dir)
+    log.read_messages_chained_page(key, limit=50)
+    path = log._path(key)
+    lines = path.read_bytes().splitlines(keepends=True)
+    lines[ROWS // 2] = json.dumps({"role": "user", "content": "short"}).encode() + b"\n"
+    staged = path.with_name("staged.jsonl")
+    staged.write_bytes(b"".join(lines))
+    os.replace(staged, path)
+    restarted = ConversationLog(base_dir=base_dir)
+    page = restarted.read_messages_chained_page(key, limit=10, before=ROWS // 2 + 5)
+    full = restarted.read_messages_chained(key)
+    assert page.total == len(full) == ROWS
+    assert _contents(page) == [m["content"] for m in full[ROWS // 2 - 5 : ROWS // 2 + 5]]
+
+
+def test_interior_row_length_changes_that_cancel_out_are_rescanned(transcript):
+    """One row shortened and a later one lengthened by the same amount keeps the
+    head, the end and the file length; the checkpoints between them still move."""
+    import os
+
+    from kiro_crew.history import ConversationLog
+
+    base_dir, key = transcript
+    log = ConversationLog(base_dir=base_dir)
+    log.read_messages_chained_page(key, limit=50)
+    path = log._path(key)
+    lines = path.read_bytes().splitlines(keepends=True)
+    # Line 0 is the metadata line, so row n is line n + 1.
+    lines[1000] = lines[1000].replace(b"x" * 10, b"", 1)
+    lines[2000] = lines[2000].replace(b"x" * 10, b"x" * 20, 1)
+    staged = path.with_name("staged.jsonl")
+    staged.write_bytes(b"".join(lines))
+    os.replace(staged, path)
+    restarted = ConversationLog(base_dir=base_dir)
+    full = restarted.read_messages_chained(key)
+    for before in (1_200, 1_600, 1_990):
+        page = restarted.read_messages_chained_page(key, limit=10, before=before)
+        assert _contents(page) == [m["content"] for m in full[before - 10 : before]]

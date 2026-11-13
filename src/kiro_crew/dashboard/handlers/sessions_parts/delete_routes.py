@@ -45,7 +45,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.delete_claim import (
 )
 from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (
     _is_user_listed_row,
-    _open_slot_transcript_keys,
+    _open_row_test,
 )
 from kiro_crew.dashboard.handlers.sessions_parts.slot_teardown import _remove_slot_for_history_key
 from kiro_crew.dashboard.state import DashboardState
@@ -253,7 +253,7 @@ async def _clear_history_rows(
     ]
     for key in clearable:
         # Re-check per iteration so a tab opened during an earlier await wins.
-        if key in _open_slot_transcript_keys(state):
+        if _open_row_test(state)(key):
             skipped += 1
             continue
 
@@ -404,21 +404,24 @@ def _clearable_history_keys(
     missing identity as permission. The bulk clear reports those rows by id and
     code; the single delete refuses them with 409 ``cron_ownership_unknown``.
 
-    Reads the filesystem (``list_sessions`` globs and stats every session file),
-    so callers offload it off the event loop.
+    Reads the rows from the listing index, the listing ``GET /api/sessions`` serves
+    the dashboard, so a row the pane hides is hidden here too, even after another
+    process wrote to it and before the index reconciles. It may read files (a
+    build, a re-read), so callers offload it off the event loop.
     """
-    open_keys = _open_slot_transcript_keys(state)
+    # The same "open" the Older-sessions list hides and the search marks.
+    is_open = _open_row_test(state)
 
     clearable: list[str] = []
     skipped = 0
     unreadable: list[str] = []
-    for row in log.list_sessions():
+    for row in log.list_sessions_indexed():
         key = row.get("key", "")
         if not key:
             continue
-        if user_only and not _is_user_listed_row(log, row):
+        if user_only and not _is_user_listed_row(log, row, indexed=True):
             continue
-        if key in open_keys:
+        if is_open(key):
             skipped += 1
             continue
         # Mirror delete_session(skip_pinned=True): pinned and unreadable metadata

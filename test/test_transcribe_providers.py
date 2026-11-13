@@ -28,6 +28,7 @@ from transcribe_helpers import (
 
 from kiro_crew import stt, transcribe
 from kiro_crew.config.loader import SttConfig
+from kiro_crew.testing.wait import await_until
 from kiro_crew.transcribe import _ProfileCredentialResolver, transcribe_audio
 
 # ---------------------------------------------------------------------------
@@ -1281,6 +1282,8 @@ class TestStagedFfmpegOutlivesSpawn:
         owned.write_bytes(b"")
         monkeypatch.setattr(transcribe, "_make_temp_wav", lambda: str(owned))
         started = asyncio.Event()
+        # Never set: the fake child parks here until the test cancels the conversion.
+        release = asyncio.Event()
 
         class _Proc:
             returncode = None
@@ -1292,9 +1295,7 @@ class TestStagedFfmpegOutlivesSpawn:
                 self._calls += 1
                 if self._calls == 1:
                     started.set()
-                    # flake-ok: pre-existing hour-long sleep that parks the fake child's first communicate() until the test cancels the conversion, moved verbatim; tracked for a de-flake pass
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(3600)
+                    await release.wait()
                 assert "closed" not in events, "handle closed before the child was reaped"
                 events.append("reaped")
                 return b"", b""
@@ -1307,12 +1308,12 @@ class TestStagedFfmpegOutlivesSpawn:
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         task = asyncio.create_task(transcribe._pcm_via_ffmpeg(str(tmp_path / "memo.webm"), 60))
-        # flake-ok: pre-existing Event wait with no timeout that blocks until the fake child's first communicate sets the started signal, moved verbatim; tracked for a de-flake pass
-        await started.wait()
+        await await_until(started, what="fake ffmpeg child reached its first communicate()")
         task.cancel()
+        done, _pending = await asyncio.wait({task}, timeout=30)
+        assert task in done, "cancelled transcode did not finish its kill and reap cleanup"
         with pytest.raises(asyncio.CancelledError):
-            # flake-ok: pre-existing await on the cancelled transcode task with no timeout, waiting for the kill and reap cleanup to finish, moved verbatim; tracked for a de-flake pass
-            await task
+            task.result()
         assert events == ["killed", "reaped", "closed"]
         assert not owned.exists()
 

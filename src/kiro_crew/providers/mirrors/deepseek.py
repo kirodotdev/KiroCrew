@@ -157,6 +157,15 @@ class DeepSeekMirror(AgentConfigMirror):
                 "in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS, so a saved hooks block is reported "
                 "as a projection gap rather than claimed",
             ),
+            Concern.TOOLS_SETTINGS: Ruling(
+                _D.WITHHELD,
+                "the session/new element set has no toolsSettings field and Crew feeds this "
+                "backend's permission requests no spec allowlist, so the field is reported as a "
+                "projection gap rather than claimed. Its subagent.availableAgents is the "
+                "exception: Crew's spawn gate reads it from the parent's spec on every backend "
+                "(subagent_parts/agent_policy.py). A new chat session whose spec sets it gets "
+                "one notice naming what of it goes unapplied",
+            ),
         }
 
     def session_params(

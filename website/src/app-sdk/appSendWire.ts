@@ -68,15 +68,20 @@ import { i18nT } from '../i18n/t'
 const APP_SEND_PATH = '/api/chat?ws=1'
 
 /** `agent` is the agent the generic endpoint binds when it has to CREATE the
- *  slot. Part of the wire, not of the transport contract: only this surface
- *  sends it. */
-export function appApiSendWire(api: AppApi, agent?: string): SendWire {
+ *  slot, and `app` the app whose page sends: the gateway records it on a
+ *  conversation the send begins, so uninstalling the app resets it. Part of the
+ *  wire, not of the transport contract: only this surface sends them. */
+export function appApiSendWire(api: AppApi, agent?: string, app?: string): SendWire {
   return (payload, signal) => settleUnderSignal<SendResponseLike>(signal, () =>
     api.post<unknown>(APP_SEND_PATH, {
       message: payload.message,
       slot: payload.slot,
       agent: agent || '',
+      ...(app ? { embed_app: app } : {}),
       ...(payload.meta ? { meta: payload.meta } : {}),
+      // The same flag the dashboard wire sends. The gateway decides: it steers a
+      // person's send and queues an app-token one (`chat_send.py`).
+      ...(payload.steer ? { steer: payload.steer } : {}),
     }).then(
       (parsed: unknown): SendResponseLike => ({ ok: true, json: () => Promise.resolve(parsed) }),
       (err: unknown): SendResponseLike => {

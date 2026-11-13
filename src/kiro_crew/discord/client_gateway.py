@@ -5,16 +5,10 @@ reconnects; ``_run_connection`` runs hello, identify or resume and the read loop
 the op-1 heartbeat loop recycles a connection whose acknowledgement went missing.
 ``_on_dispatch`` normalizes ``READY``, ``RESUMED``, ``MESSAGE_CREATE`` and
 ``INTERACTION_CREATE`` into :class:`DiscordInbound` and :class:`DiscordInteraction`
-records and runs each handler in a task of its own. Each function here whose first
-parameter is ``self`` is bound as the ``DiscordClient`` attribute of the same name in
-:mod:`kiro_crew.discord.client`, which keeps the client's state, so ``self.<name>(...)``
-calls and instance and class patches reach it as they reach a method defined in the
-class body. They read ``_closed``, ``_hb_acked``, ``_hb_task``, ``_intents``,
-``_on_interaction``, ``_on_message``, ``_proxy``, ``_resume_url``, ``_seq``,
-``_session_id``, ``_token``, ``bot_user_id``, ``fatal_error`` and ``ready``, write
-``_closed``, ``_hb_acked``, ``_hb_task``, ``_resume_url``, ``_seq``, ``_session_id``,
-``_ws``, ``application_id``, ``bot_user_id`` and ``fatal_error``, and update
-``_handler_tasks`` and ``ready`` in place. New Gateway work goes here.
+records and runs each handler in a task of its own. Each function whose first parameter
+is ``self`` is bound as the ``DiscordClient`` attribute of the same name, so
+``self.<name>(...)`` calls and patches reach it like a method; the state stays on the
+client. New Gateway work goes here.
 """
 
 from __future__ import annotations
@@ -29,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from kiro_crew.discord.client_rest import _coerce_float
+
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
 
@@ -37,16 +33,11 @@ logger = logging.getLogger("kiro_crew.discord.client")
 
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-# Transport-level WS ping interval (seconds). Deliberately a SECOND liveness
-# layer under Discord's op-1 application heartbeat, because the two have
-# different failure domains: op-1 runs in a cancellable user task and proves
-# the Discord session is alive, while the aiohttp ping runs inside the
-# library's read loop and proves the TCP path (host -> NAT -> edge) is alive.
-# Without it, a NAT-evicted half-open connection blocks the dispatch loop
-# forever with no error while outbound REST keeps working. 60s is longer than
-# Discord's ~41s heartbeat so healthy traffic keeps the path warm anyway, and
-# generous enough that a briefly stalled event loop does not flap the
-# connection with false-positive pong timeouts.
+# Transport-level WS ping interval (seconds), a second liveness layer under the
+# op-1 heartbeat: op-1 proves the Discord session, the aiohttp ping proves the
+# TCP path. Without it a NAT-evicted half-open socket blocks dispatch forever
+# while REST keeps working. 60s exceeds Discord's ~41s heartbeat and tolerates a
+# briefly stalled loop without false pong timeouts.
 _WS_HEARTBEAT_SECS = 60.0
 
 # A Gateway connection must live at least this long for its close to count as
@@ -54,6 +45,29 @@ _WS_HEARTBEAT_SECS = 60.0
 # curve so a repeating clean close cannot hot-loop. Mirrors WebexClient and
 # WeComClient, which carry the same guard for the same reason.
 _MIN_HEALTHY_CONN_SECS = 5.0
+
+# Reconnects in a row with no READY or RESUMED after which a resume is given up
+# for a fresh IDENTIFY on the main gateway URL (see ``_gateway_loop``). Seven puts
+# the fallback past the backoff cap, about two minutes in, so a short local outage
+# still resumes and gets its missed events replayed.
+# shortcut: a fixed count, not configurable; make it a setting only if asked.
+_RESUME_FAILURES_BEFORE_IDENTIFY = 7
+
+# Close code for every close that means "reconnect and resume". Discord ends
+# the session on a 1000 or 1001 close, so the RESUME that follows fails and the
+# events sent in the gap are lost. Any other code keeps the session resumable;
+# 4000 is Discord's own "unknown error, reconnect" code, which the close-code
+# classification in ``_run_connection`` treats as recoverable. A real shutdown
+# (``DiscordClient.close``) keeps aiohttp's default 1000 on purpose.
+_RESUME_CLOSE_CODE = 4000
+
+# Bounds on HELLO's ``heartbeat_interval`` (seconds). Discord sends 41.25s; the
+# value goes straight to ``asyncio.sleep``, where NaN never returns and zero or a
+# negative spins the loop, so a value that is missing, non-finite or not positive
+# falls back to Discord's documented interval, and the rest is clamped.
+_DEFAULT_HEARTBEAT_SECS = 41.25
+_MIN_HEARTBEAT_SECS = 1.0
+_MAX_HEARTBEAT_SECS = 300.0
 
 
 # Gateway opcodes.
@@ -93,6 +107,18 @@ class DiscordInbound:
     guild_id: str = ""  # empty string == DM channel
     is_bot: bool = False
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    #: Id of the message this one REPLIES to, or "". With the channel id it names
+    #: a bridged note an ``approve`` / ``deny`` reply answers (notifications, B4g).
+    reply_to_message_id: str = ""
+
+
+def _reply_message_id(d: dict[str, Any]) -> str:
+    """The id of the message a REPLY (type 19) quotes, or "", read defensively."""
+    if d.get("type", 0) != 19:
+        return ""
+    ref = d.get("message_reference")
+    raw = ref.get("message_id") if isinstance(ref, dict) else None
+    return raw if isinstance(raw, str) and raw.isdigit() else ""
 
 
 @dataclass
@@ -174,6 +200,19 @@ async def _gateway_loop(self: DiscordClient) -> None:
                 continue
             reason = "gateway closed the connection immediately"
         attempt += 1
+        # Counted apart from ``attempt``: a READY or RESUMED resets it, so only
+        # reconnects that never got a session back count toward giving up.
+        self._failures_since_session += 1
+        if self._failures_since_session >= _RESUME_FAILURES_BEFORE_IDENTIFY and self._session_id:
+            # Session state is otherwise cleared only by a close code or an op 9,
+            # and both need a socket that connected. When the regional resume
+            # host itself is unreachable (a proxy allow-list, a regional outage)
+            # nothing would ever clear it, so every retry would go to the same
+            # dead URL and inbound would stop until a restart. Give up the
+            # replay and identify fresh on the main gateway instead.
+            logger.warning("Discord gateway resume keeps failing; identifying fresh")
+            self._session_id = ""
+            self._seq = None
         delay = min(1.0 * (2 ** (attempt - 1)), 60.0) + random.random()
         logger.warning("Discord gateway disconnected (%s), reconnect in %.1fs", reason, delay)
         await asyncio.sleep(delay)
@@ -256,13 +295,21 @@ async def _run_connection(self: DiscordClient) -> None:
             self._notify_state(False, f"reconnecting (close {close_code or 'none'})")
 
 
+def _heartbeat_interval_secs(hello: Any) -> float:
+    """HELLO's ``heartbeat_interval`` (milliseconds) as a bounded sleep in seconds."""
+    raw = hello.get("heartbeat_interval") if isinstance(hello, dict) else None
+    millis = _coerce_float(raw)
+    if millis is None or millis <= 0:
+        return _DEFAULT_HEARTBEAT_SECS
+    return min(max(millis / 1000.0, _MIN_HEARTBEAT_SECS), _MAX_HEARTBEAT_SECS)
+
+
 async def _handle_frame(self: DiscordClient, ws: Any, frame: dict) -> None:
     op = frame.get("op")
     if frame.get("s") is not None:
         self._seq = frame["s"]
     if op == _OP_HELLO:
-        interval = float(frame["d"]["heartbeat_interval"]) / 1000.0
-        self._start_heartbeat(ws, interval)
+        self._start_heartbeat(ws, _heartbeat_interval_secs(frame.get("d")))
         if self._session_id and self._resume_url:
             await ws.send_json(
                 {
@@ -281,13 +328,13 @@ async def _handle_frame(self: DiscordClient, ws: Any, frame: dict) -> None:
     elif op == _OP_HEARTBEAT_ACK:
         self._hb_acked = True
     elif op == _OP_RECONNECT:
-        await ws.close()
+        await ws.close(code=_RESUME_CLOSE_CODE)
     elif op == _OP_INVALID_SESSION:
         if not frame.get("d"):
             self._session_id = ""
             self._seq = None
         await asyncio.sleep(1.0 + random.random() * 4.0)  # per docs
-        await ws.close()
+        await ws.close(code=_RESUME_CLOSE_CODE)
     elif op == _OP_DISPATCH:
         self._on_dispatch(frame.get("t") or "", frame.get("d") or {})
 
@@ -329,7 +376,7 @@ async def _heartbeat_loop(self: DiscordClient, ws: Any, interval: float) -> None
         while not self._closed and not ws.closed:
             if not self._hb_acked:
                 logger.warning("Discord gateway heartbeat not acked — reconnecting")
-                await ws.close()
+                await ws.close(code=_RESUME_CLOSE_CODE)
                 return
             self._hb_acked = False
             await ws.send_json({"op": _OP_HEARTBEAT, "d": self._seq})
@@ -345,7 +392,7 @@ async def _heartbeat_loop(self: DiscordClient, ws: Any, interval: float) -> None
         # loop reconnects instead of carrying a heartbeat-less connection.
         logger.warning("Discord heartbeat loop failed — recycling connection", exc_info=True)
         try:
-            await ws.close()
+            await ws.close(code=_RESUME_CLOSE_CODE)
         except Exception:
             logger.debug("Discord heartbeat close failed", exc_info=True)
 
@@ -363,15 +410,24 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
         # lose precision as a float on any round-trip through JSON.
         self.application_id = str((d.get("application") or {}).get("id", "") or "")
         logger.info("Discord gateway READY (bot user %s)", self.bot_user_id)
+        self._failures_since_session = 0
         self.ready.set()
         self._notify_state(True, "")
         return
     if event == "RESUMED":
         logger.info("Discord gateway session resumed")
+        self._failures_since_session = 0
         self.ready.set()
         self._notify_state(True, "")
         return
     if event == "MESSAGE_CREATE":
+        # Only a person's own message (DEFAULT 0, REPLY 19) is a prompt. A system
+        # notice also arrives as MESSAGE_CREATE and some carry text in
+        # ``content`` -- a thread rename (4) its new name, a thread start (18)
+        # its title -- authored by the person who acted, so no author check
+        # would stop it from running as a turn.
+        if d.get("type", 0) not in (0, 19):
+            return
         author = d.get("author") or {}
         inbound = DiscordInbound(
             channel_id=str(d.get("channel_id", "")),
@@ -386,6 +442,7 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
                 for attachment in (d.get("attachments") or [])
                 if isinstance(attachment, dict)
             ],
+            reply_to_message_id=_reply_message_id(d),
         )
         if inbound.is_bot or inbound.user_id == self.bot_user_id:
             return  # never respond to bots (incl. ourselves) — loop guard

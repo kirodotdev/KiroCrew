@@ -245,6 +245,33 @@ class TestTagAssign:
         assert "added `Blocked`" in out and "removed `Active`" in out
         assert "`kirocrew`, `Blocked`" in out
 
+    def test_an_empty_stored_list_is_reported_not_the_request(self) -> None:
+        """The endpoint drops a tag deleted between the GET and the PUT."""
+        out, _ = _call(
+            "chat_tag_assign",
+            {"session": "chat-3-300", "add": ["Active"]},
+            _reads(put={"ok": True, "tags": []}),
+        )
+        assert "added" not in out
+        assert "nothing changed" in out and "Tags now: none." in out
+
+    def test_a_dropped_add_is_not_reported_as_added(self) -> None:
+        out, _ = _call(
+            "chat_tag_assign",
+            {"session": "chat-3-300", "add": ["Active", "Blocked"]},
+            _reads(put={"ok": True, "tags": ["bbbbbbbbbbbb"]}),
+        )
+        assert "added `Blocked`." in out and "`Active`" not in out
+        assert "Tags now: `Blocked`." in out
+
+    def test_a_legacy_ack_without_a_list_reports_the_request(self) -> None:
+        out, _ = _call(
+            "chat_tag_assign",
+            {"session": "chat-3-300", "add": ["Active"]},
+            _reads(put={"ok": True}),
+        )
+        assert "added `Active`" in out and "Tags now: `Active`." in out
+
     def test_a_no_op_delta_writes_nothing(self) -> None:
         out, dash = _call(
             "chat_tag_assign", {"session": "chat-2-200", "add": ["Active"], "remove": ["Blocked"]}

@@ -6,6 +6,7 @@
  * through the transcript's own tool rows; only the API boundary is stubbed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import React from 'react'
 import path from 'node:path'
@@ -79,6 +80,9 @@ const BUSY = slot(true)
 const IDLE = slot(false)
 
 beforeEach(() => {
+  // These tests are about the busy send that queues; the steer side is
+  // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+  setBusySendDefault('queue')
   vi.clearAllMocks()
   vi.useFakeTimers()
   resetEmbedRecoveryForTests()

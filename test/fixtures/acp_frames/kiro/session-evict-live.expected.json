@@ -1,0 +1,49 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.35.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": false,
+      "current": "kiro_default",
+      "ids": []
+    },
+    "session_id": "kiro-evict-session-1"
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": "Session not found",
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 5
+  }
+]

@@ -39,6 +39,17 @@ TYPES: tuple[EntryType, ...] = (
                     "existed."
                 ),
             ),
+            Field(
+                "attempt",
+                JSON_INT,
+                note=(
+                    "Which try at turn asked, matching turn/started's attempt, so a child "
+                    "of a regenerated or rewound turn names its own try. Written only "
+                    "beside turn. ABSENT means not observed, which is not attempt 1: the "
+                    "dispatch can be pinned before the turn's attempt is derived, and "
+                    "every log written before the field omits it."
+                ),
+            ),
             Field("agent", JSON_STRING, note="The child's agent name, when one was resolved."),
             Field("model", JSON_STRING, note="The child's model, when one was resolved."),
             Field(
@@ -132,6 +143,15 @@ TYPES: tuple[EntryType, ...] = (
                     "background/completed takes."
                 ),
             ),
+            Field(
+                "child_sid",
+                JSON_STRING,
+                note=(
+                    "The session the child last ran in, so a reader can find its "
+                    "own transcript after its result.txt is pruned. Absent "
+                    "when the run never got a session, and on the crash-repair closer."
+                ),
+            ),
         ),
         note=(
             "Only the completed outcome. A stopped or failed child closes through "
@@ -177,6 +197,15 @@ TYPES: tuple[EntryType, ...] = (
                     "attempted turn. A run that did not finish still spent, so this is "
                     "where that charge would otherwise be lost. Absent when unbilled or "
                     "zero, and on the crash-repair closer, which measured nothing."
+                ),
+            ),
+            Field(
+                "child_sid",
+                JSON_STRING,
+                note=(
+                    "The session the child last ran in, so a reader can find its "
+                    "own transcript after its result.txt is pruned. Absent "
+                    "when the run never got a session, and on the crash-repair closer."
                 ),
             ),
         ),

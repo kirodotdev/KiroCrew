@@ -39,18 +39,17 @@ class TestLinuxServiceScopesUninstall:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-    def _not_root(self, monkeypatch, tmp_path):
+    def _not_root(self, _floor_monkeypatch, tmp_path):
         from kiro_crew.service import linux as svc_linux
 
-        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
-        monkeypatch.setenv("USER", "tester")
+        _floor_monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        _floor_monkeypatch.setenv("USER", "tester")
         # No system unit file unless a test writes one: uninstall's system-scope
         # probe is a stat of this path. The per-user unit's own path is the
         # remedy's layout under tmp_path, so a test that writes there owns the
         # file by path and one that writes elsewhere owns it by the marker.
-        monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent" / _UNIT)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent" / _UNIT)
+        _floor_monkeypatch.setattr(
             svc_linux,
             "user_unit_file_path",
             lambda: tmp_path / ".config" / "systemd" / "user" / _UNIT,

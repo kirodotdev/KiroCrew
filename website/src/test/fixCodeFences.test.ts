@@ -171,3 +171,30 @@ describe('fixCodeFences — a ``` run in the middle of prose', () => {
     expect(fixCodeFences('note```js {1,3}\r\nx')).toBe('note\n\n```js {1,3}\r\nx')
   })
 })
+
+describe('fixCodeFences — a fence indented under a list item', () => {
+  it('leaves each item\'s one-line block inside its item', () => {
+    // Moving the indented fences to column 0 took each block out of its item,
+    // and the moved closing fence left two empty lines inside the block.
+    const input = [1, 2, 3].map(n => `${n}. Step ${n}:\n   \`\`\`bash\n   echo ${n}\n   \`\`\``).join('\n')
+    expect(fixCodeFences(input)).toBe(input)
+  })
+
+  it('splits a closing fence glued to text inside the item, at the fence\'s indentation', () => {
+    // The splitter matched column 0 only, so the indented closer stayed glued
+    // and the next step's text rendered inside the block.
+    expect(fixCodeFences('1. Check:\n   ```bash\n   echo ok\n   ```358KB\n   Next.\n'))
+      .toBe('1. Check:\n   ```bash\n   echo ok\n   ```\n   358KB\n   Next.\n')
+  })
+
+  it('leaves inline triple-backtick code that starts an indented line alone', () => {
+    const input = '1. Install:\n   ```npm install``` then run it.\n2. Next\n'
+    expect(fixCodeFences(input)).toBe(input)
+  })
+
+  it('keeps the line split off an uppercase info string inside the item', () => {
+    // The split line went to column 0, which ended the item and left its block empty.
+    expect(fixCodeFences('1. Query:\n   ```SQL\n   SELECT 1;\n   ```\n'))
+      .toBe('1. Query:\n   ```\n   SQL\n   SELECT 1;\n   ```\n')
+  })
+})

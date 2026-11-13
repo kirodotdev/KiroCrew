@@ -33,10 +33,16 @@ from kiro_crew.messaging.link import (  # noqa: F401
     legacy_dashboard_mirror_key,
     split_dm_session_key,
 )
-from kiro_crew.messaging.privacy_mode import PRIVACY_LRU_MAX, _serialized, needs_tightening
+from kiro_crew.messaging.privacy_mode import PRIVACY_LRU_MAX, needs_tightening
 from kiro_crew.sel import _infer_source, sel
 from kiro_crew.session_map_links import ConversationOwnershipConflict  # noqa: F401
-from kiro_crew.session_map_store import _MAP_LOCK, _P, _R, _guarded  # noqa: F401
+from kiro_crew.session_map_store import (  # noqa: F401
+    _MAP_LOCK,
+    _P,
+    _R,
+    GENERATION_FLOOR_FIELD,
+    _guarded,
+)
 from kiro_crew.validation import bounded_session_id
 
 logger = logging.getLogger(__name__)
@@ -139,10 +145,8 @@ SUPPRESS_REPLAY_FLAG = "suppress_replay"
 #: later mapping of a different sid can never inherit the verdict.
 UNLANDED_SID_FIELD = "unlanded_sid"
 
-# Highest explicit DM generation acknowledged before its first provider turn.
-# Stored on the stable bucket entry so repeated /new commands cost one integer,
-# not one immortal map row per empty generation.
-GENERATION_FLOOR_FIELD = "generation_floor"
+# Highest explicit DM generation acknowledged before its first provider turn:
+# ``kiro_crew.session_map_store.GENERATION_FLOOR_FIELD``, which reads it too.
 
 # A rewind's request that the key's next cold start fork the native session it
 # discarded: ``{"sid": <source sid>, "message_id": <fork point>}``. It stands in
@@ -261,11 +265,17 @@ def _header_records_privacy_mode(key: str, flagged: list[str]) -> bool:
     modifier stamped headers has the mode in its map row alone, so the mode is
     copied into an EXISTING transcript's header first (``update_metadata_if``,
     tighten-only, ``require_existing`` -- this must never create a transcript),
-    and only then is the header consulted. A transcript that does not exist, an
-    unreadable header, or a header carrying a weaker mode than the flag all
-    answer False. The answer decides nothing about the map row -- no privacy row
-    is removed on it (see :func:`_keeps_entry`) -- it is the count
-    :meth:`SessionMap.stamp_privacy_headers` reports.
+    and only then is the header consulted. A transcript that does not exist, or
+    a legacy message-first one (a first line that is valid JSON but not a header,
+    which no writer can stamp), answers False. An EXISTING transcript whose
+    header is still weaker than the flag after the write -- the write raised (an
+    I/O error, a lock timeout), was deferred on a read that failed and then
+    recovered, or did not land -- RAISES instead: it is a repair still owed, and
+    a ``False`` would read as "nothing to repair", letting the sweep report the
+    header recorded with an unrestricted header left behind. The answer
+    decides nothing about the map row -- no privacy row is removed on it (see
+    :func:`_keeps_entry`) -- it is the count :meth:`SessionMap.stamp_privacy_headers`
+    reports.
 
     Disk I/O on purpose kept out of every guarded method: call it from a worker
     thread with no map lock held (:meth:`SessionMap.stamp_privacy_headers`).
@@ -291,16 +301,28 @@ def _header_records_privacy_mode(key: str, flagged: list[str]) -> bool:
         return needs_tightening(transcript_privacy_mode(metadata.get("memory_mode")), mode)
 
     log = ConversationLog()
-    try:
-        log.update_metadata_if(key, {"memory_mode": mode}, _tighten_only, require_existing=True)
-        header_mode = transcript_privacy_mode(log.get_metadata(key).get("memory_mode"))
-    except Exception:
-        return False
-    if not header_mode:
-        return False
+    log.update_metadata_if(key, {"memory_mode": mode}, _tighten_only, require_existing=True)
+    metadata = log.get_metadata(key)
+    header_mode = transcript_privacy_mode(metadata.get("memory_mode"))
     # ``_PRIVACY_STRICTNESS`` is strictest first: the header is enough iff it is
     # at least as strict as the strictest flag the entry carries.
-    return _PRIVACY_STRICTNESS.index(header_mode) <= _PRIVACY_STRICTNESS.index(mode)
+    if header_mode and _PRIVACY_STRICTNESS.index(header_mode) <= _PRIVACY_STRICTNESS.index(mode):
+        return True
+    if log.mtime_of(key) is None:
+        return False  # no transcript: nothing to stamp, and nothing to serve
+    metadata, readable = log.get_metadata_status(key)
+    if readable and metadata.get("_type") != "metadata":
+        # A legacy message-first transcript: its first line is valid JSON but
+        # not a header, which every line writer leaves as it is, so no retry
+        # can ever stamp it.
+        return False
+    # An existing transcript whose header is still weaker than its flag after
+    # the tighten-only write -- the write was deferred on a read that failed and
+    # then recovered, or did not land. A repair still owed, never "done".
+    raise OSError(
+        f"the transcript header of {key!r} records {header_mode or 'no mode'!r}, "
+        f"weaker than its {mode!r} flag"
+    )
 
 
 def _survives_prune(entry: dict) -> bool:
@@ -550,7 +572,35 @@ class SessionMap:
         self._snapshot_seq = 0
         self._written_seq = 0
         self._io_lock = threading.Lock()
+        # Set by ``_load`` when the file exists but could not be read; while set
+        # ``_write_payload`` raises, so the unread map on disk is never replaced.
+        # ``_reread_after_failed_load`` may clear it; its one attempt is this task.
+        self._load_failed = False
+        self._reread_task: asyncio.Task[None] | None = None
+        # Set by ``_load`` when the file exists but is not usable JSON; the first
+        # ``_write_payload`` moves it to ``<name>.corrupt-<utc>`` and clears it.
+        self._set_aside_owed = False
+        # Moved by ``_touch`` after every mutation (see ``mutation_generation``).
+        self._mutation_gen = 0
         self._load()
+
+    def mutation_generation(self) -> int:
+        """A counter that moves after every in-memory mutation of this map.
+
+        Every write to ``_data`` or ``_thread_to_session`` is followed by
+        ``_save()`` or, for the writes that persist nothing, ``_touch()``; both
+        move it (``test_session_map_bindings`` checks every mutator for one of
+        the two). So a reader that records the value BEFORE reading the map and
+        finds it unchanged later knows nothing it read has changed since. The
+        slots projection keys its per-slot channel-link rows on it. Read without
+        the lock: an int read is atomic, and a bump racing the read only costs
+        that reader one recompute.
+        """
+        return self._mutation_gen
+
+    def _touch(self) -> None:
+        """Move :meth:`mutation_generation` after a write that is not saved."""
+        self._mutation_gen += 1
 
     async def _flush_async(self) -> None:
         """Debounce, serialize under the lock, write off the loop; repeat.
@@ -574,6 +624,7 @@ class SessionMap:
         try:
             while True:
                 await asyncio.sleep(_FLUSH_DEBOUNCE_SECS)
+                await self._reread_after_failed_load()
                 snapshot = self._take_pending_snapshot()
                 if snapshot is None:
                     return
@@ -864,6 +915,19 @@ class SessionMap:
             self._data[key] = entry
         self._save()
 
+    @_guarded
+    def clear_cwd(self, key: str) -> None:
+        """Drop *key*'s stored CWD, keeping its resume sid.
+
+        A resume with no requested cwd restores the stored one, so a project the user
+        removed would otherwise come back on the next resume.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry or "cwd" not in entry:
+            return
+        del entry["cwd"]
+        self._save()
+
     def get_cwd(self, key: str) -> str:
         """Return the stored CWD for *key*, or '' if not set."""
         entry = self._data.get(canonical_key(key))
@@ -1098,55 +1162,29 @@ class SessionMap:
     async def stamp_privacy_headers(self) -> int:
         """Ensure every privacy-flagged row's EXISTING transcript header records its mode.
 
-        The startup path awaits this right after :meth:`prune`. The rows are
-        NAMED under the map lock with no filesystem call
-        (:meth:`privacy_flagged_entries`) -- a snapshot of candidates, nothing
-        more -- and each is then stamped one at a time under that row's
-        durable-write lock (``privacy_mode._serialized``, the lock the
-        modifier's commit and a reservation's release hold across their own
-        row-and-header sequences): the row is re-read under the lock
-        (:meth:`privacy_flags`), a row the re-read finds unflagged is skipped,
-        and only a row still flagged has its transcript header probed and --
-        for a row flagged before the modifier stamped headers, or tightened
-        since -- written, on a worker thread
-        (:func:`_header_records_privacy_mode`: tighten-only,
-        ``require_existing``, so a transcript that does not exist stays that
-        way). The event loop never pays a transcript read for these rows and
-        the map lock is never held across one.
-
-        Serialized with the release because the snapshot goes stale: on a
-        non-blocking pool start the sweep runs as a detached task while traffic
-        flows, and a reservation released after the snapshot restores the
-        header and clears the row under ITS lock. Unserialized, a stamp from
-        the snapshot alone writes the released mode back into a header the
-        release has just restored, over a row that is gone -- and nothing
-        loosens a header from there: the sweep only tightens, from rows, and a
-        later release of the same mode reads the stale stamp as its own
-        ``header_before`` and restores to it, so the thread's consolidation
-        stays refused for good. Under the row's lock the stamp lands either
-        before the release, which then finds the header still saying the mode
-        and restores it, or after it, when the re-read finds no flag and
-        nothing is written.
+        The startup path awaits this right after :meth:`prune`. The locked
+        per-row walk lives in :func:`privacy_mode.stamp_flagged_headers`, which
+        owns the durable-write lock (``privacy_mode._serialized``) so the lock
+        stays module-private and the invariant "every durable privacy write on a
+        key runs under its lock" has one owner. This map supplies the two data
+        probes it keeps undecorated per the locking ratchet:
+        :meth:`privacy_flagged_entries` names the candidate rows under the map
+        lock with no filesystem call (the snapshot), and :meth:`privacy_flags`
+        re-reads one row. The event loop never pays a transcript read for these
+        rows and the map lock is never held across one.
 
         REMOVES NOTHING. A privacy row is the record the channel's inbound gate
         hydrates from, and removing it -- however complete the header -- leaves
         that gate reading the thread as persistent after the next restart (the
-        module comment above ``_PRIVACY_STRICTNESS``). A flag tightened DURING
-        the probe leaves the header stamped with the mode the worker saw: never
-        looser than before, since the stamp is tighten-only, and never lost,
-        since the next pass reads the current flags and re-stamps the tightened
-        mode. Returns the number of rows whose header records the mode
-        afterwards -- housekeeping telemetry, nothing acts on it.
+        module comment above ``_PRIVACY_STRICTNESS``). Returns the number of rows
+        whose header records the mode afterwards -- housekeeping telemetry,
+        nothing acts on it -- and raises ``privacy_mode.PrivacySweepIncomplete``
+        when any row's stamp failed, so the failure is logged rather than
+        reported as a clean sweep; the next ``start_pool`` sweeps again.
         """
-        recorded = 0
-        for key in self.privacy_flagged_entries():
-            async with _serialized(key):
-                flagged = self.privacy_flags(key)
-                if not flagged:
-                    continue
-                if await asyncio.to_thread(_header_records_privacy_mode, key, flagged):
-                    recorded += 1
-        return recorded
+        from kiro_crew.messaging import privacy_mode
+
+        return await privacy_mode.stamp_flagged_headers(self)
 
     @_guarded
     def mapped_sids_by_key(self) -> dict[str, str]:
@@ -1264,6 +1302,7 @@ class SessionMap:
         if entry is None:
             entry = {"sid": "", "slack_thread_ts": None, "slack_channel_id": None}
             self._data[key] = entry
+            self._touch()
         return entry
 
     @_guarded
@@ -1399,6 +1438,7 @@ class SessionMap:
     # The map's critical section and its file: ``kiro_crew.session_map_store``.
     batched_save = _store.batched_save
     _load = _store._load
+    _reread_after_failed_load = _store._reread_after_failed_load
     _save = _store._save
     _take_pending_snapshot = _store._take_pending_snapshot
     _serialize = _store._serialize
@@ -1409,6 +1449,7 @@ class SessionMap:
     aclose = _store.aclose
     _write = _store._write
     _write_payload = _store._write_payload
+    writes_refused = _store.writes_refused
 
     # A session's channel links: ``kiro_crew.session_map_links``.
     _rebuild_thread_index = _links._rebuild_thread_index

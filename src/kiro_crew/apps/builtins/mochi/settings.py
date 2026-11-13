@@ -110,7 +110,7 @@ ACTIVITY_TIERS = ("economy", "balanced", "active", "unlimited")
 #: ``initI18n()``, which resolves the language the dashboard persisted and only
 #: then falls back to the browser locale.
 LANG_FOLLOW_SYSTEM = ""
-_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
+_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
 
 #: Global-shortcut actions Mochi can bind, and their defaults — the original's
 #: `config.shortcuts` (src/shared/config.ts). voiceInput is omitted: push-to-talk
@@ -316,7 +316,9 @@ def settings_mutation(data_dir: Path) -> Iterator[None]:
     target = settings_path(data_dir)
     lock_path = target.with_name(target.name + ".lock")
     data_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield

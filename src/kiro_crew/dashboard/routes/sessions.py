@@ -15,6 +15,7 @@ from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
 from kiro_crew.dashboard.handlers import chat_elicitation
 from kiro_crew.dashboard.handlers import debug as debug_handlers
 from kiro_crew.dashboard.handlers import session_environments as session_environment_handlers
+from kiro_crew.dashboard.handlers import slot_question
 
 
 def register(app: web.Application) -> None:
@@ -68,6 +69,19 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)
+    # The slot's own ask_question card, for its owner app (ChatEmbed) or the owner.
+    app.router.add_get("/api/chat/slots/{slot}/question", slot_question.api_chat_slot_question)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/answer", slot_question.api_chat_slot_question_answer
+    )
+    # The native mid-turn card's two routes: steer its answer into the running
+    # turn (app provenance), and retire its needs_input status.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/steer", slot_question.api_chat_slot_question_steer
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/dismiss", slot_question.api_chat_slot_question_dismiss
+    )
     app.router.add_post(
         "/api/chat/slots/{slot}/elicitation", chat_elicitation.api_chat_slot_elicitation
     )
@@ -89,6 +103,8 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
+    # Auto-generate in the folder modal: returns an emoji, saves nothing.
+    app.router.add_post("/api/chat/folders/{id}/icon-preview", chat.api_chat_folder_icon_preview)
     # Atomic multi-folder reorder -- one transaction for a whole sidebar drag or
     # tool renumber, so a partial failure cannot leave a mix of old and new
     # order numbers. Registered BEFORE the "{id}" delete so its literal path is
@@ -97,6 +113,8 @@ def register(app: web.Application) -> None:
     # Bulk delete of folders that hold no live session (dry run first). A literal
     # path, registered before the "{id}" delete for the same reason as reorder.
     app.router.add_post("/api/chat/folders/cleanup", chat.api_chat_folders_cleanup)
+    # The sidebar's "Collapse all folders": one write, same literal-path rule.
+    app.router.add_post("/api/chat/folders/collapse-all", chat.api_chat_folders_collapse_all)
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
@@ -121,6 +139,10 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/chat/slots/{slot}/environment/browse",
         session_environment_handlers.api_chat_slot_environment_browse,
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/environment/health",
+        session_environment_handlers.api_chat_slot_environment_health,
     )
     app.router.add_put(
         "/api/chat/slots/{slot}/environment/file",

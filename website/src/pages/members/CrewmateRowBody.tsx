@@ -8,8 +8,8 @@
  * Everything here reads ONE `MemberSignals` record (`signalsOf`, in
  * useMembersPageRoster.ts), the same reading the status filters count, so a
  * marker can never disagree with the filter that lists it. The host owns the
- * row's chrome -- the button, its active state, the roster's star and team
- * indent, the switcher's check mark -- and hands this component the row's
+ * row's chrome -- the button, its active state, the star (`CrewmateStarButton`,
+ * a sibling of the button) and the roster's team indent -- and hands this component the row's
  * identity, its signals and the automation record for the avatar ring.
  *
  * Markers, left to right:
@@ -66,8 +66,12 @@ export default function CrewmateRowBody({
   const watchLabel = t('pages.membersPage.loop_on')
   return (
     <>
+      {/* `flex`, not the blockified default: a block holding the inline-flex
+          avatar opens a text line box whose strut descent grows this box
+          below the face, so `items-center` on the row centred the box and
+          left the face sitting a few px above the name + status block. */}
       <span
-        className="relative shrink-0"
+        className="relative flex shrink-0"
         style={faceOnStage ? { visibility: 'hidden' } : undefined}
         data-testid={`${testIdPrefix}-face`}
         data-entrance-empty={faceOnStage ? '' : undefined}

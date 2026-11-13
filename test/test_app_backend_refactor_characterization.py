@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 import kiro_crew.apps.backend as bmod
+from conftest import requires_symlinks
 from kiro_crew.apps.backend import AppProcess, HealthProbeOutcome
 
 
@@ -72,9 +73,7 @@ def sel(monkeypatch: pytest.MonkeyPatch) -> _Sel:
     return recorder
 
 
-# ---------------------------------------------------------------------------
 # Generation safety: a verdict about a replaced record never lands on its successor
-# ---------------------------------------------------------------------------
 
 
 class TestHealthVerdictsStayOnTheirGeneration:
@@ -157,9 +156,7 @@ class TestHealthVerdictsStayOnTheirGeneration:
         assert transitions == [True, True]
 
 
-# ---------------------------------------------------------------------------
 # The lifecycle table: stops, in-flight starts, reservations
-# ---------------------------------------------------------------------------
 
 
 class TestLifecycleGuards:
@@ -236,9 +233,7 @@ class TestLifecycleGuards:
         assert bmod._pid_is_self_or_descendant_of(1000 + depth + 1, 1000) is False
 
 
-# ---------------------------------------------------------------------------
 # PID identity persistence
-# ---------------------------------------------------------------------------
 
 
 class TestPidfileIdentity:
@@ -271,13 +266,11 @@ class TestPidfileIdentity:
         }
 
 
-# ---------------------------------------------------------------------------
 # Provisioning failures are audited once
-# ---------------------------------------------------------------------------
 
 
 class TestProvisioningFailureAudit:
-    @pytest.mark.skipif(sys.platform == "win32", reason="the fixture needs a symlink")
+    @requires_symlinks
     def test_a_dangling_requirements_link_fails_with_one_log_and_one_sel_row(
         self, tmp_path: Path, sel: _Sel, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -297,7 +290,7 @@ class TestProvisioningFailureAudit:
             }
         ]
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="the fixture needs a symlink")
+    @requires_symlinks
     def test_a_linked_data_directory_is_refused_before_anything_is_created(
         self, tmp_path: Path, sel: _Sel
     ) -> None:
@@ -313,15 +306,12 @@ class TestProvisioningFailureAudit:
         assert [row["outcome"] for row in sel.rows] == ["deps_provision_failed"]
 
 
-# ---------------------------------------------------------------------------
 # The boot wave: order across the reap, the listing, the preclaim and the spawns
-# ---------------------------------------------------------------------------
 
 
 class TestBootOrdering:
     def test_boot_reaps_before_it_lists_any_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
         order: list[str] = []
-        monkeypatch.setattr(bmod, "_DEV_FLEET_DEFERRED", False)
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: order.append("reap") or 0)
         monkeypatch.setattr(bmod, "list_apps", lambda: order.append("list") or [])
         assert bmod.start_enabled_app_backends() == []
@@ -365,26 +355,8 @@ class TestBootOrdering:
         assert sorted(started) == ["adopted-app", "fresh-app"]
         assert registered == [(adopted, True)]
 
-    def test_a_refused_deferred_spawn_does_not_re_arm(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The deferral is consumed before the re-checks: a Dev Fleet disabled in the
-        # window is not spawned later when it comes back.
-        spawned: list[list[str]] = []
-        monkeypatch.setattr(bmod, "_DEV_FLEET_DEFERRED", True)
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
-        monkeypatch.setattr(
-            bmod, "_start_backends_concurrently", lambda names: spawned.append(names) or names
-        )
-        assert bmod.start_deferred_app_backends() == []
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
-        assert bmod.start_deferred_app_backends() == []
-        assert spawned == [] and bmod._DEV_FLEET_DEFERRED is False
 
-
-# ---------------------------------------------------------------------------
 # Dependency activation and the path-based (no pinned walk) arm
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -451,7 +423,7 @@ class TestDepsActivationGate:
         self._mark(root, bmod._DEPS_ABI_NAME, bmod._deps_abi_tag())
         assert bmod._deps_tree_stamp_current(root, root / "requirements.txt") is False
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="the fixture needs a symlink")
+    @requires_symlinks
     def test_links_never_activate(self, tmp_path: Path) -> None:
         root = self._app(tmp_path)
         outside = tmp_path / "outside.txt"
@@ -466,6 +438,24 @@ class TestDepsActivationGate:
         (root / "requirements.txt").symlink_to(outside)
         (bmod.app_deps_dir(root) / bmod._DEPS_ABI_NAME).unlink()
         self._mark(root, bmod._DEPS_ABI_NAME, bmod._deps_abi_tag())
+        assert bmod._deps_tree_stamp_current(root, root / "requirements.txt") is False
+
+    @requires_symlinks
+    def test_a_stamp_link_planted_after_the_screen_never_activates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No ABI marker is written: a valid one would activate on its own.
+        root = self._app(tmp_path)
+        target = tmp_path / "outside-stamp"
+        target.write_text(bmod._deps_digest(b"requests==2.0\n"), encoding="utf-8")
+        (bmod.app_deps_dir(root) / bmod._DEPS_STAMP_NAME).symlink_to(target)
+        # The screen ran before the link landed, so only the open can refuse it.
+        real = bmod.platform_compat.is_link_or_junction
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "is_link_or_junction",
+            lambda p: False if Path(p).name == bmod._DEPS_STAMP_NAME else real(p),
+        )
         assert bmod._deps_tree_stamp_current(root, root / "requirements.txt") is False
 
 
@@ -511,9 +501,7 @@ class TestPathBasedPinnedDir:
             bmod._PinnedDir(tmp_path / "data")
 
 
-# ---------------------------------------------------------------------------
 # The watch's enforcement of a closed execution ceiling, verdict by verdict
-# ---------------------------------------------------------------------------
 
 
 class TestCeilingRevocationVerdicts:

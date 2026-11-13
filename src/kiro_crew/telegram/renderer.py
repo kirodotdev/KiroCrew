@@ -49,6 +49,7 @@ import os
 import re
 import sys as _sys
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import _facade_mirror
@@ -93,6 +94,8 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.split import (
     bounded_for_delivery,
+    fence_line_safe_offset,
+    rebalance_fenced_cuts,
     repaired_for_delivery,
     split_markdown_safe,
 )
@@ -108,6 +111,7 @@ from kiro_crew.telegram.client import (
     TELEGRAM_MAX_PHOTO_BYTES,
     TELEGRAM_MAX_TOTAL_UPLOAD_BYTES,
     TELEGRAM_RICH_MAX_CHARS,
+    truncate_html_safe,
 )
 from kiro_crew.telegram.renderer_display import (
     _MIN_SPLIT_LIMIT,
@@ -117,6 +121,7 @@ from kiro_crew.telegram.renderer_display import (
     _may_exceed_rendered,
     _neutralize_md,
     _shrunk_limit,
+    _utf16_len,
 )
 from kiro_crew.telegram.renderer_tables import (
     _FENCE_LINE_RE,
@@ -165,11 +170,11 @@ def md_to_telegram_html_safe(text: str) -> str:
     whole function to ``asyncio.to_thread`` -- one hop covering both steps, since
     the redaction is the part that scans.
 
-    ``_html_len`` and the split budget keep using the raw translator: they MEASURE
+    ``_rendered_len`` and the split budget keep using the raw translator: they MEASURE
     the render, and redacting there would size a segment against text that is not
     the text being sent.
     """
-    return _md_to_telegram_html(_display_safe(text))
+    return _md_to_telegram_html(_display_safe(text.replace("\x00", "")))
 
 
 # Widest label that still shows whole on a half-width inline button on a
@@ -226,7 +231,9 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     return {"inline_keyboard": buttons}
 
 
-def _split_markdown(text: str, limit: int) -> list[str]:
+def _split_markdown(
+    text: str, limit: int, redactor: Callable[[str], str] | None = None
+) -> list[str]:
     """Split markdown into <=``limit`` chunks, keeping fenced code blocks balanced.
 
     A cut inside a ``` fence leaves the chunk unbalanced, the per-chunk HTML pass
@@ -256,9 +263,10 @@ def _split_markdown(text: str, limit: int) -> list[str]:
     the boundaries as the reader sees them and moves the cut instead, which keeps
     every character. Nothing here asks for the prefix-stable mode: a rotation
     replaces the buffer with the retained tail, so text already sealed is never
-    part of a later cut.
+    part of a later cut. *redactor* defaults to ``_default_redactor``; a caller
+    whose text was already graded with a wider one passes that one.
     """
-    return split_markdown_safe(text, limit, redactor=_default_redactor)
+    return split_markdown_safe(text, limit, redactor=redactor or _default_redactor)
 
 
 # Telegram renders a small HTML subset (<b>/<i>/<code>/<pre>/<a>) far more
@@ -327,6 +335,7 @@ def _seal_table_fallback(text: str) -> str:
 
 def _md_to_telegram_html(text: str) -> str:
     """Translate the agent's Markdown into Telegram's supported HTML subset."""
+    text = text.replace("\x00", "")  # NUL marks a placeholder; callers drop it before redacting
     stash: list[str] = []
 
     def _keep(fragment: str) -> str:
@@ -343,11 +352,23 @@ def _md_to_telegram_html(text: str) -> str:
     text = TELEGRAM_FALLBACK_HEADING.sub(
         lambda m: f"<b>{telegram_fallback_heading_text(m)}</b>", text
     )
+
+    # Links before emphasis, with each tag stashed: a URL's own ``_x_`` or
+    # ``*x*`` is then out of the emphasis passes' reach, and only the link
+    # text between the stashed tags is formatted.
+    def _unstash(fragment: str) -> str:
+        return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], fragment)
+
+    # A url's own placeholders (a code span inside it) resolve before its tag is
+    # stashed, so the single un-stash pass below leaves none inside the href.
+    text = TELEGRAM_FALLBACK_LINK.sub(
+        lambda m: _keep('<a href="' + _unstash(m.group(2)) + '">') + m.group(1) + _keep("</a>"),
+        text,
+    )
     text = TELEGRAM_FALLBACK_BOLD_STAR.sub(lambda m: f"<b>{m.group(1)}</b>", text)
     text = TELEGRAM_FALLBACK_BOLD_USCORE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
     text = _ITALIC_STAR_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
     text = _ITALIC_USCORE_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
-    text = TELEGRAM_FALLBACK_LINK.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
     text = _BULLET_RE.sub(lambda m: f"{m.group(1)}\u2022 ", text)
     # Group consecutive "> " lines (escaped to "&gt; ") into a native Telegram
     # <blockquote> — the ▎ quote bar. Runs after inline formatting so bold/italic
@@ -365,11 +386,13 @@ def _md_to_telegram_html(text: str) -> str:
 
 
 def _rendered_len(source: str) -> int:
-    """Length of ``source`` once converted to Telegram HTML."""
-    return len(_md_to_telegram_html(source))
+    """Length of ``source`` once converted to Telegram HTML, in Telegram's UTF-16 units."""
+    return _utf16_len(_md_to_telegram_html(source))
 
 
-def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
+def _split_markdown_bounded(
+    text: str, rendered_limit: int, redactor: Callable[[str], str] | None = None
+) -> list[str]:
     """Split markdown so every chunk's RENDERED HTML fits ``rendered_limit``.
 
     ``_split_markdown`` budgets the *source*, but ``_md_to_telegram_html``
@@ -392,12 +415,16 @@ def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
     chunk over the budget, and this channel's client truncates a larger payload
     after every scan has run. The bound cuts that answer back and grades the
     sequence it actually produced.
+
+    *redactor* grades every boundary and defaults to ``_default_redactor``. A
+    caller whose text the composed grader (``redact_via_context``) already split
+    passes that grader, so this second split cannot sever a credential only the
+    wider grader knows.
     """
+    grader = redactor or _default_redactor
     src_limit = max(_MIN_SPLIT_LIMIT, rendered_limit)
     while True:
-        chunks = bounded_for_delivery(
-            _split_markdown(text, src_limit), src_limit, _default_redactor
-        )
+        chunks = bounded_for_delivery(_split_markdown(text, src_limit, grader), src_limit, grader)
         worst = max((_rendered_len(c) for c in chunks), default=0)
         if worst <= rendered_limit or src_limit <= _MIN_SPLIT_LIMIT:
             return chunks
@@ -747,16 +774,9 @@ class TelegramRenderer(Renderer):
                 chunks = [partial]
         else:
             chunks = await asyncio.to_thread(_split_markdown_bounded, raw, rendered_cap)
-        # Mid-stream the source fence is often still OPEN (the model has not
-        # emitted its closing ``` yet). _split_markdown balances each chunk by
-        # appending a synthetic closer, which is right for the chunks we seal but
-        # wrong for the tail we keep streaming into: every later token would land
-        # after that closer, rendering outside <pre>, and the model's real closing
-        # fence would then show up literally. Drop it from the retained tail.
-        if chunks and raw.count("```") % 2 == 1:
-            tail = chunks[-1].rstrip()
-            if tail.endswith("```"):
-                chunks[-1] = tail[:-3].rstrip("\n")
+        # A fence still open mid-stream stays open in the retained tail: the shared
+        # splitter leaves its FINAL chunk unclosed, so later tokens land inside it.
+        # Any ``` the tail ends in is the model's own text.
         # The chunks are sealed as separate messages and each is redacted on its own,
         # so a key the cut severed matches nothing in any one of them while the
         # reader's client renders the markup away and reads them as one key down the
@@ -778,25 +798,37 @@ class TelegramRenderer(Renderer):
             # rejected answer is the same answer every rotation and nothing ever goes
             # out. Off the loop for the cost reason the redaction above carries -- each
             # sampled offset is two full-buffer redaction passes.
-            budget, head, offset = limit, "", 0
+            #
+            # A source slice cut inside an open fence is sealed with the fence's
+            # closer and the remainder reopened, so the budget is measured on the
+            # head as it will actually be sealed.
+            budget, offset = limit, 0
+            cut: list[str] = []
             while True:
                 offset = await asyncio.to_thread(
                     safe_split_offset, raw, budget, _default_redactor, _delivered_form
                 )
-                head = raw[:offset]
-                worst = await asyncio.to_thread(_rendered_len, head)
+                offset = fence_line_safe_offset(raw, offset)
+                cut = rebalance_fenced_cuts([raw[:offset], raw[offset:]])
+                worst = await asyncio.to_thread(_rendered_len, cut[0])
                 if not offset or worst <= rendered_cap:
                     break
                 if budget <= _MIN_SPLIT_LIMIT:
                     offset = 0
                     break
                 budget = _shrunk_limit(budget, rendered_cap, worst)
+            # The fence repair adds delimiter lines the search did not grade, so
+            # what is sealed is graded again before anything goes out.
+            if offset and await asyncio.to_thread(
+                severs_a_credential, cut, _default_redactor, _delivered_form
+            ):
+                offset = 0
             if not offset:
                 # Deliver NOTHING: the withheld text rides the next rotation, and the
                 # final seal re-splits and seals an over-cap segment chunk by chunk.
                 self._buf = [raw + protocol_suffix]
                 return
-            chunks = [head, raw[offset:]]
+            chunks = cut
         for ch in chunks[:-1]:
             self._buf = [ch]
             # A length rotation never extracts: only a SEMANTIC seal (steer
@@ -835,6 +867,7 @@ class TelegramRenderer(Renderer):
                 offset = await asyncio.to_thread(
                     safe_split_offset, rest, budget, _default_redactor, _delivered_form
                 )
+                offset = fence_line_safe_offset(rest, offset)
                 if not offset:
                     return None
                 head = rest[:offset]
@@ -846,7 +879,12 @@ class TelegramRenderer(Renderer):
                 budget = _shrunk_limit(budget, rendered_cap, worst)
             graded.append(head)
             rest = rest[offset:]
-        chunks = [*graded, rest]
+        # Every piece is sealed, so one cut inside an open fence is closed on its
+        # piece and reopened on the next; a repaired piece is held to the cap too.
+        chunks = rebalance_fenced_cuts([*graded, rest])
+        for chunk in chunks:
+            if await asyncio.to_thread(_rendered_len, chunk) > rendered_cap:
+                return None
         if await asyncio.to_thread(severs_a_credential, chunks, _default_redactor, _delivered_form):
             return None
         return chunks
@@ -911,9 +949,9 @@ class TelegramRenderer(Renderer):
         """
         html_text = _seal_table_fallback(text)
         replaced: int | None = None
-        if len(html_text) > self._rendered_limit():
+        if _utf16_len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(text)
-            if len(html_text) > self._rendered_limit():
+            if _utf16_len(html_text) > self._rendered_limit():
                 chunks = await asyncio.to_thread(self._degraded_table_chunks, text)
                 all_landed = True
                 for ch in chunks[:-1]:
@@ -930,7 +968,7 @@ class TelegramRenderer(Renderer):
                 # So it is graded again here, against what the reader can now see.
                 text = await asyncio.to_thread(self._seam_safe, text)
                 html_text = _seal_table_fallback(text)
-                if len(html_text) > self._rendered_limit():
+                if _utf16_len(html_text) > self._rendered_limit():
                     html_text = _md_to_telegram_html(text)
         return html_text, text, replaced
 
@@ -1152,11 +1190,9 @@ class TelegramRenderer(Renderer):
     async def _post_thinking(self) -> None:
         """Post the accumulated reasoning as ONE expandable blockquote.
 
-        ``<blockquote expandable>`` is Telegram's native collapsed-by-default
-        quote, which is the closest thing the channel has to Slack's 💭 thread
-        reply: the reasoning is there for whoever wants it and costs one line for
-        everyone else. Posted after the answer so the answer is what the
-        notification previews.
+        ``<blockquote expandable>`` is Telegram's collapsed quote, its nearest match
+        to Slack's 💭 thread reply: there for whoever wants it, one line for everyone
+        else. Posted after the answer so the answer is what the notification previews.
         """
         if self._thinking_posted:
             return
@@ -1164,25 +1200,26 @@ class TelegramRenderer(Renderer):
         body = "".join(self._thinking).strip()
         if not body:
             return
-        # The reasoning is model output reaching an external surface, so it goes
-        # through the same display sink as the answer: redact against the RENDERED
-        # form, since Telegram's own markup can reassemble a credential the literal
-        # bytes split. Off-loop because a reasoning body is unbounded and the scan
-        # is a full credential/exfil pass.
+        # Model output reaching an external surface: redact against the RENDERED form
+        # like the answer, since Telegram's markup can reassemble a credential the
+        # literal bytes split. Off-loop: the body is unbounded and the scan is a full
+        # credential/exfil pass. Then one message, a tag-safe cut, no half entity.
         safe = await asyncio.to_thread(_display_safe, body)
-        # One message. Reasoning is unbounded and is not the answer, so a
-        # tag-safe truncation beats a burst of continuation bubbles.
-        inner = html.escape(safe)[: self._thinking_budget()]
+        inner = truncate_html_safe(html.escape(safe), self._thinking_budget())
         try:
-            await self._client.send_message(
+            err: dict[str, Any] = {}
+            mid = await self._client.send_message(
                 self._chat_id,
                 f"<blockquote expandable>💭 {inner}</blockquote>",
                 parse_mode="HTML",
                 retry_plain=False,
                 message_thread_id=self._thread_id,
                 disable_notification=True,
+                err_out=err,
             )
-            self._tally_redactions(inner)
+            # Only a refusal (400) proves nothing landed; a timeout may have posted it.
+            if mid is not None or err.get("error_code") != 400:
+                self._tally_redactions(inner)
         except Exception:
             logger.debug("Telegram: thinking post failed", exc_info=True)
 
@@ -1228,20 +1265,21 @@ class TelegramRenderer(Renderer):
                 await self._maybe_send_redaction_notice()
                 return
             placeholder = "…" if ok else (self._failure_reason or _GENERIC_ERROR_TEXT)
-            if self._stream_mid is not None:
-                await self._client.edit_message(
-                    self._chat_id,
-                    self._stream_mid,
-                    placeholder,
-                    reply_markup=keyboard,
-                )
-            else:
-                await self._client.send_message(
-                    self._chat_id,
-                    placeholder,
-                    reply_markup=keyboard,
-                    message_thread_id=self._thread_id,
-                )
+            # A failed edit falls through to a send that replaces the frame, as the seal does.
+            async with self._frame_lock:
+                stale_mid = self._stream_mid
+                if stale_mid is None or not await self._client.edit_message(
+                    self._chat_id, stale_mid, placeholder, reply_markup=keyboard
+                ):
+                    mid = await self._client.send_message(
+                        self._chat_id,
+                        placeholder,
+                        reply_markup=keyboard,
+                        message_thread_id=self._thread_id,
+                    )
+                    if mid is not None and stale_mid is not None:
+                        self._stream_mid = None
+                        await self._delete_replaced_frame(stale_mid)
             await self._post_thinking()
             await self._maybe_send_redaction_notice()
             return
@@ -1297,7 +1335,7 @@ class TelegramRenderer(Renderer):
         src_cap = max(_MIN_SPLIT_LIMIT, rendered_cap - 128)
         while True:
             chunks = _split_markdown_table_aware(text, src_cap, src_cap)
-            worst = max((len(_seal_table_fallback(c)) for c in chunks), default=0)
+            worst = max((_utf16_len(_seal_table_fallback(c)) for c in chunks), default=0)
             if worst <= rendered_cap:
                 return chunks
             if src_cap <= _MIN_SPLIT_LIMIT:
@@ -1311,7 +1349,7 @@ class TelegramRenderer(Renderer):
         # headroom covers the <pre> wrapper on any piece that stays detected.
         out: list[str] = []
         for c in chunks:
-            if len(_seal_table_fallback(c)) > rendered_cap:
+            if _utf16_len(_seal_table_fallback(c)) > rendered_cap:
                 out.extend(_split_markdown_bounded(c, max(_MIN_SPLIT_LIMIT, rendered_cap - 64)))
             else:
                 out.append(c)
@@ -1338,7 +1376,7 @@ class TelegramRenderer(Renderer):
         """
         chunk = await asyncio.to_thread(self._seam_safe, chunk)
         html_text = _seal_table_fallback(chunk)
-        if len(html_text) > self._rendered_limit():
+        if _utf16_len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(chunk)
         stale_mid: int | None = None
         if self._stream_mid is not None:
@@ -1527,7 +1565,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _strip_steering,
         _utf16_chunks,
         _utf16_cut,
-        _utf16_len,
     )
     from kiro_crew.telegram.renderer_live import (  # noqa: F401
         _EDIT_THROTTLE_S,

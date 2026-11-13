@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
         HEARTBEAT_KEY,
         HEARTBEAT_TASK_TIMEOUT_SECS,
+        UNATTENDED_MCP_WAIT_SECS,
         AgentTurnUsage,
         Any,
         Callable,
@@ -31,8 +32,10 @@ if TYPE_CHECKING:
         _build_heartbeat_hooks,
         configured_fallback_chain,
         consume_reinjection,
+        declared_mcp_not_ready_note,
         is_keep_response,
         logger,
+        note_turn_landed,
         persist_token_record_async,
         provider_last_turn_usage,
         read_context_tokens,
@@ -48,6 +51,7 @@ if TYPE_CHECKING:
         stop_reason_landed,
         stream_and_collect,
         strip_keep_sentinel,
+        wait_for_declared_mcp,
     )
 
 
@@ -59,9 +63,14 @@ async def _persist_turn_row(
     surface: str,
     agent_fallback: Callable[[], str],
     t0: float,
+    trigger: str = "other",
     usage: AgentTurnUsage | None = None,
 ) -> None:
     """Persist one per-turn usage row for a background dispatch surface.
+
+    ``trigger`` is who started the turn (``metrics.usage_attrs``):
+    ``heartbeat`` for a heartbeat task, ``monitor`` for a monitor wake. A
+    caller that passes nothing records ``other``, never ``user``.
 
     The heartbeat and monitor surfaces — each with a success and a timeout twin —
     share this one implementation rather than each carrying its own copy of the
@@ -94,6 +103,7 @@ async def _persist_turn_row(
             context_window=_window,
             elapsed_ms=int((time.monotonic() - t0) * 1000),
             model_source=client,
+            trigger=trigger,
         )
     except Exception:
         logger.debug("usage row (%s) persist failed", surface, exc_info=True)
@@ -160,6 +170,10 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 agent="kirocrew-heartbeat",
             )
             _acquired = True
+            if is_new:
+                # Unattended: hold the first prompt (bounded) for the agent spec's
+                # MCP servers, which nobody can reconnect during a heartbeat.
+                await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
 
             # Prepend an unmissable HEARTBEAT_KEEP reminder to every task
             # text before message build.  This survives context
@@ -180,9 +194,14 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 self.ctx_builder.build_message,
                 injected,
                 is_new,
+                # Unattended: no user reads a heartbeat turn live.
+                interactive=False,
                 memory_store=_memory_store,
                 needs_reinjection=_needs_reinjection,
                 skill_bodies_session=session_key,
+                # Triggers read the task as the operator wrote it, never the
+                # HEARTBEAT_KEEP reminder prepended above.
+                skill_trigger_text=task_text,
             )
 
             # A heartbeat turn runs unattended. Bound it with a hard deadline
@@ -207,6 +226,9 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                     approval_policy=ToolApprovalPolicy.HOOK_BASED,
                     hooks=heartbeat_hooks,
                     on_tool_approval=self._heartbeat_approval,
+                    # Nobody watches a heartbeat task: a governance check that
+                    # cannot be evaluated refuses the call.
+                    unattended=True,
                     on_complete=_note_complete,
                     on_compaction=_note_compaction,
                     fallback_models=configured_fallback_chain(),
@@ -214,10 +236,17 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 timeout=HEARTBEAT_TASK_TIMEOUT_SECS,
             )
             _turn_landed = stop_reason_landed(_turn_stop["reason"])
+            if _turn_landed:
+                note_turn_landed(self.sessions, session_key)
 
             if not result_text:
                 result_text = "_No response._"
-            result_text = _annotate_model_fallback(result_text, client)
+            result_text = _annotate_model_fallback(
+                result_text, client, stop_reason=_turn_stop["reason"]
+            )
+            _missing = declared_mcp_not_ready_note(client)
+            if _missing:
+                result_text = f"⚠ {_missing}.\n\n{result_text}"
 
             # ── Per-turn usage row: attribute heartbeat spend. ──
             await _persist_turn_row(
@@ -227,6 +256,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 surface="heartbeat",
                 agent_fallback=lambda: "kirocrew-heartbeat",
                 t0=_turn_t0,
+                trigger="heartbeat",
             )
         except asyncio.TimeoutError:
             # Tear down the in-flight turn so the underlying claude-agent-acp
@@ -258,6 +288,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 surface="heartbeat",
                 agent_fallback=lambda: "kirocrew-heartbeat",
                 t0=_turn_t0,
+                trigger="heartbeat",
             )
             try:
                 await self.sessions.reset(session_key)
@@ -288,7 +319,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 # Release the per-session semaphore so the next task in
                 # this cycle (asyncio.gather'd) can acquire the SAME
                 # warm session.  Cycle-end teardown is handled by
-                # ``_recycle_heartbeat`` (called once after gather
+                # ``recycle_heartbeat`` (called once after gather
                 # completes) — see ``HeartbeatService._process_heartbeat_file``.
                 self.sessions.release(session_key)
 
@@ -340,9 +371,26 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
         except Exception:
             logger.warning("Heartbeat: cycle-end recycle failed", exc_info=True)
 
+    async def _admitted_heartbeat_task(task_text: str, deliver: str) -> str | None:
+        # Shared Crew fair admission: a heartbeat is Crew automation. A refused
+        # task is skipped this beat (None, like a task that produced nothing).
+        from kiro_crew.shared_crew.admission import OperationKind
+        from kiro_crew.shared_crew.turn_gate import run_admitted
+
+        return await run_admitted(
+            _heartbeat_task(task_text, deliver),
+            session_key=HEARTBEAT_KEY,
+            text=task_text,
+            automation=True,
+            operation=OperationKind.BACKGROUND,
+            refused=lambda reason: logger.info(
+                "Heartbeat task skipped by fair admission (%s)", getattr(reason, "value", reason)
+            ),
+        )
+
     self.heartbeat_svc = HeartbeatService(
         memory=memory,
-        on_task=_heartbeat_task,
+        on_task=_admitted_heartbeat_task,
         consolidator=self.consolidator,
         on_cycle_end=_on_cycle_end,
     )

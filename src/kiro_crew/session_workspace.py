@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import shutil
 from pathlib import Path
 
@@ -18,7 +19,14 @@ _SAFE_ID_RE = __import__("re").compile(r"^[a-zA-Z0-9_.:-]+$")
 
 
 def _validate_id(value: str, label: str = "id") -> str:
-    if not value or ".." in value or "/" in value or "\\" in value or not _SAFE_ID_RE.fullmatch(value):
+    if (
+        not value
+        or ".." in value
+        or "/" in value
+        or "\\" in value
+        or ntpath.splitdrive(value)[0]  # "D:name" joins onto another drive on Windows
+        or not _SAFE_ID_RE.fullmatch(value)
+    ):
         raise ValueError(f"Invalid {label}: {value!r}")
     return value
 

@@ -317,7 +317,7 @@ class TestDrain:
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
         monkeypatch.setattr(
             "kiro_crew.teams.transport_dispatch.inbound_permitted",
-            lambda _c: _true(),
+            lambda _c, **_kw: _true(),
         )
         sessions = _Sessions(_Provider(), busy=False)
         d = _dispatcher(sessions, _Client())
@@ -360,7 +360,7 @@ class TestDrain:
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
         monkeypatch.setattr(
             "kiro_crew.teams.transport_dispatch.inbound_permitted",
-            lambda _c: _true(),
+            lambda _c, **_kw: _true(),
         )
         sessions = _Sessions(_Provider())
         d = _dispatcher(sessions, _Client())
@@ -389,7 +389,7 @@ class TestDrain:
         monkeypatch.setattr(TeamsDispatcher, "_drain_queue", _spy)
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
         monkeypatch.setattr(
-            "kiro_crew.teams.transport_dispatch.inbound_permitted", lambda _c: _true()
+            "kiro_crew.teams.transport_dispatch.inbound_permitted", lambda _c, **_kw: _true()
         )
         sessions = _Sessions(_Provider(), busy=False)
         d = _dispatcher(sessions, _Client())
@@ -441,7 +441,7 @@ class TestDrainIdentity:
         monkeypatch.setattr(TeamsDispatcher, "handle_message", _spy)
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
         monkeypatch.setattr(
-            "kiro_crew.teams.transport_dispatch.inbound_permitted", lambda _c: _true()
+            "kiro_crew.teams.transport_dispatch.inbound_permitted", lambda _c, **_kw: _true()
         )
         return envelopes, turns
 

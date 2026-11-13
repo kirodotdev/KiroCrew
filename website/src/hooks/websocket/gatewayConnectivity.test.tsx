@@ -8,6 +8,7 @@ import reducer, { sseConnected, sseDisconnected, sseStatus } from '../../store/d
 import type { StatusData } from '../../types'
 import { __resetGatewayConnectedForTests, isGatewayConnected } from '../../utils/errorReport'
 import { markGatewayConnected, markGatewayDisconnected } from './gatewayConnectivity'
+import { createAppSlotPush, resetAppSlotPushForTests } from '../../utils/appSlotPush'
 
 beforeEach(() => { __resetGatewayConnectedForTests() })
 afterEach(() => { __resetGatewayConnectedForTests() })
@@ -29,9 +30,10 @@ describe('gatewayConnectivity helpers', () => {
     expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
   })
 
-  // Pins the errorReport docstring: sseStatus sets the store flag on its own,
-  // so after a disconnect the two flags can differ.
-  it('sseStatus sets the store flag on its own, leaving the seam apart', () => {
+  // A late `/api/status` reply with no socket open must not read as online
+  // (#34405): sseStatus stores the status only, so the store flag stays
+  // paired with the seam.
+  it('sseStatus leaves the store flag alone, keeping it paired with the seam', () => {
     let state = reducer(undefined, { type: '@@INIT' })
     const dispatch = (action: Parameters<typeof reducer>[1]) => { state = reducer(state, action) }
 
@@ -40,7 +42,19 @@ describe('gatewayConnectivity helpers', () => {
     expect(isGatewayConnected()).toBe(false)
 
     dispatch(sseStatus({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData))
-    expect(state.connected).toBe(true)
+    expect(state.status?.uptime).toBe('1h')
+    expect(state.connected).toBe(false)
     expect(isGatewayConnected()).toBe(false)
+  })
+
+  it('moves app embeds\' push channel with the same flag', () => {
+    resetAppSlotPushForTests(() => 'spec-builder')
+    const push = createAppSlotPush('spec-builder')
+    const dispatch = vi.fn()
+    markGatewayConnected(dispatch as never)
+    expect(push.connected('s1')).toBe(true)
+    markGatewayDisconnected(dispatch as never)
+    expect(push.connected('s1')).toBe(false)
+    resetAppSlotPushForTests()
   })
 })

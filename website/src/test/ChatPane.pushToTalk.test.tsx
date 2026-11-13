@@ -64,7 +64,10 @@ vi.mock('../hooks/useVoiceInput', () => ({
 }))
 const ptt = vi.hoisted(() => ({ disabled: [] as (boolean | undefined)[] }))
 vi.mock('../hooks/usePushToTalk', () => ({
-  usePushToTalk: (_voice: unknown, opts?: { disabled?: boolean }) => { ptt.disabled.push(opts?.disabled) },
+  usePushToTalk: (_voice: unknown, opts?: { disabled?: boolean }) => {
+    ptt.disabled.push(opts?.disabled)
+    return { config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }
+  },
 }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'default' }], defaultAgent: 'default' }) }))

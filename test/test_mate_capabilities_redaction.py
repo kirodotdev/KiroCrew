@@ -131,6 +131,79 @@ def test_a_mask_without_retain_paths_is_refused_and_the_file_is_unchanged(mate):
     assert path.read_text() == before
 
 
+GATEWAY_TOKEN = "gw-tok-5c19e0d7b2"
+GATEWAY_ENTRY = {
+    "command": "gh-mcp",
+    "args": ["--stdio"],
+    "env": {"GITHUB_TOKEN": GATEWAY_TOKEN, "FEATURE_X_ENABLED": "true"},
+}
+
+
+@pytest.fixture
+def gateway(monkeypatch):
+    """The gateway runs ``github``; the fixture's dict is its live entry, edited in place."""
+    entry = json.loads(json.dumps(GATEWAY_ENTRY))
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.mcp._find_server_spec_anywhere",
+        lambda name: json.loads(json.dumps(entry)) if name == "github" else None,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.member_capability_catalog._switched_on",
+        lambda name: name == "github",
+    )
+    return entry
+
+
+def _masked_gateway_addition():
+    from kiro_crew.dashboard.handlers.member_capability_catalog import mask_settings
+
+    return {
+        "section": "mcpServers",
+        "id": "github",
+        "action": "set",
+        "value": mask_settings(GATEWAY_ENTRY),
+    }
+
+
+def test_a_gateway_server_its_card_shows_masked_is_written_with_the_gateways_values(mate, gateway):
+    """A ``request_capabilities`` card carries the values masked; the write takes the gateway's."""
+    service, path = mate
+    view = service.get("qwe")
+    op = _masked_gateway_addition()
+    preview = service.preview("qwe", _body(view["revision"], [op]))
+    assert GATEWAY_TOKEN not in json.dumps(preview)
+    result = service.put("qwe", _body(view["revision"], [op]))
+    assert GATEWAY_TOKEN not in json.dumps(result)
+    assert json.loads(path.read_text())["mcpServers"]["github"] == GATEWAY_ENTRY
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"args": ["--stdio", "--moved"]},
+        {"args": ["--stdio", "--token=tok-1"]},
+        {"switched_off": True},
+    ],
+    ids=["launch_line", "credential_argument", "switched_off"],
+)
+def test_a_masked_gateway_server_whose_entry_changed_is_refused(mate, gateway, monkeypatch, change):
+    service, path = mate
+    before = path.read_text()
+    view = service.get("qwe")
+    op = _masked_gateway_addition()
+    if change.pop("switched_off", False):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.member_capability_catalog._switched_on",
+            lambda name: False,
+        )
+    gateway.update(change)
+    for call in (service.preview, service.put):
+        with pytest.raises(CapabilityError) as exc:
+            call("qwe", _body(view["revision"], [op]))
+        assert (exc.value.code, exc.value.status) == ("entry_changed", 409)
+    assert path.read_text() == before
+
+
 def test_a_retain_path_onto_an_unmasked_leaf_is_refused(mate):
     service, _ = mate
     view = service.get("qwe")

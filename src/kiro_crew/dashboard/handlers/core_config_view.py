@@ -24,7 +24,10 @@ from kiro_crew.config.loader import (
     SUBAGENT_MAX_TURNS_CEILING,
     KiroCrewConfig,
 )
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    body_not_object_error,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.external_text import redact_external_text as _redact_external
 
@@ -68,6 +71,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "memory_store",
     "model",
     "worker_model",
+    # A crewmate's harness pin is kept as written so the selection gate can
+    # refuse it with its reason, so any string a hand edit left can arrive here.
+    "acp_backend",
     "source",
     "telegram_account",
 )
@@ -103,6 +109,17 @@ def _mask_agent_free_text(value: object) -> object:
     # unchanged, so ``""`` compares equal and passes through — a ``value and``
     # guard here would only look like the fail-open bug class without being it.
     if _redact_external(value) != value:
+        return _SENSITIVE_MASK
+    return value
+
+
+def _mask_strings(value: object) -> object:
+    """*value* with every non-empty string inside it masked; structure kept."""
+    if isinstance(value, dict):
+        return {key: _mask_strings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_strings(item) for item in value]
+    if isinstance(value, str) and value:
         return _SENSITIVE_MASK
     return value
 
@@ -175,9 +192,16 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                     sub = entries
                 if not isinstance(sub, dict):
                     continue
+                sensitive = sub.get("x-meta", {}).get("sensitive", False)
                 if isinstance(val, (dict, list)):
-                    _walk(val, sub)
-                elif isinstance(val, str) and val and sub.get("x-meta", {}).get("sensitive", False):
+                    # A container marked sensitive (``telemetry.otlp_endpoints``)
+                    # masks every string under it: its items have no schema of
+                    # their own to mark which value is the secret.
+                    if sensitive:
+                        node[key] = _mask_strings(val)
+                    else:
+                        _walk(val, sub)
+                elif isinstance(val, str) and val and sensitive:
                     node[key] = _SENSITIVE_MASK
         elif isinstance(node, list):
             items = schema.get("items")
@@ -313,6 +337,9 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return _deny("invalid JSON")
+        if body_not_object_error(body) is not None:
+            # The same answer, through ``_deny`` so it is audited like every refusal.
+            return _deny("body must be a JSON object", code="body_not_object")
         agent_settings = body.get("agent")
         if not isinstance(agent_settings, dict):
             return _deny("agent must be an object")
@@ -362,14 +389,21 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
 
             # Capture the hard cap from the *persisted* config BEFORE applying any
             # subagent_auto_max from this request — deny-by-default prevents a
-            # same-request ceiling-raise+spend.
-            persisted_hard_cap = agent.get("subagent_auto_max", 16)
+            # same-request ceiling-raise+spend. An unset value is the loader's own
+            # default, the cap the gateway really runs under and the page shows.
+            # Imported here, not at module top: this module is mirrored by the
+            # ``core`` facade, and a new top-level name would have to join it.
+            from kiro_crew.config.fields import field_default
+            from kiro_crew.config.loader import AgentConfig
+
+            default_hard_cap = field_default(AgentConfig, "subagent_auto_max")
+            persisted_hard_cap = agent.get("subagent_auto_max", default_hard_cap)
             if (
                 not isinstance(persisted_hard_cap, int)
                 or isinstance(persisted_hard_cap, bool)
                 or persisted_hard_cap < 3
             ):
-                persisted_hard_cap = 16
+                persisted_hard_cap = default_hard_cap
             persisted_hard_cap = min(persisted_hard_cap, SUBAGENT_AUTO_MAX_CEILING)
 
             if "subagent_auto_max" in agent_settings:
@@ -419,6 +453,9 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             )
             _result["applied"] = applied
             _result["restart_required"] = restart_required
+            # This raw write bypasses save(), which is what drops retired keys;
+            # do it here so the load-time "dropped on the next save" holds.
+            _resolution.drop_retired_section_keys(data)
             return data
 
         try:
@@ -444,7 +481,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                     # or keeps while changing that mapping). The message names
                     # env-var keys only, never the value, and is the same
                     # instruction the CLI prints; nothing reached disk.
-                    return _deny(str(exc), 400, code="config_write_refused")
+                    return _deny(str(exc), 400, code=exc.code)
 
                 if _validation_error:
                     msg, status = _validation_error[0]
@@ -474,4 +511,55 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()
-    return web.json_response(_masked_config_dict(cfg))
+    return web.json_response(_config_body(cfg, await _kas_in_use(cfg)))
+
+
+async def _kas_in_use(cfg: KiroCrewConfig) -> bool | None:
+    """``crewmate_harness.kas_runs_here`` off the event loop, or ``None`` when it fails.
+
+    Off the loop because on it a Bot's worker-spec answer is only the held one,
+    empty until a background refresh lands, so a read soon after boot would say
+    nothing runs on KAS for a Bot whose spec moves it there. ``None`` leaves the
+    field out: the dashboard then reads the main harness alone, and the config
+    read itself never fails over a hint.
+    """
+    from kiro_crew.crewmate_harness import kas_runs_here
+
+    try:
+        return await asyncio.to_thread(kas_runs_here, cfg)
+    except Exception:
+        logger.debug("could not tell whether anything runs on KAS", exc_info=True)
+        return None
+
+
+def _config_body(cfg: KiroCrewConfig, kas_in_use: bool | None = None) -> dict:
+    """The ``/api/config/kirocrew`` body: GET's, and every PATCH reply's.
+
+    Both must carry the same edition view, because the dashboard caches a PATCH
+    reply in place of the GET one. An LTS build (RFC D12) reports every Feature
+    Preview off, and lists in ``locked_controls`` the one browser-only control the
+    dashboard drops, ``debug_tools``. The preview lock itself reaches the dashboard
+    as ``lockedByPolicy`` on each preview path in ``GET /api/config/schema``. On
+    ``oss`` the field is absent and the body is the masked config as before.
+
+    *kas_in_use* (from :func:`_kas_in_use`) says whether any session here runs on
+    KAS, Bots included, so the dashboard shows the Kiro sign-in wherever something
+    signs in with it, not only on a KAS main harness. ``None`` leaves it out.
+    """
+    from kiro_crew.edition_locks import feature_previews, locked_controls
+
+    body = _masked_config_dict(cfg)
+    if kas_in_use is not None:
+        body["kas_in_use"] = kas_in_use
+    dashboard = body.get("dashboard")
+    if isinstance(dashboard, dict) and "feature_previews" in dashboard:
+        # Unchanged on oss; {} in LTS, whatever the Debug tools lock does.
+        dashboard["feature_previews"] = feature_previews(dashboard["feature_previews"])
+    locked = [c for c in locked_controls() if c in _DASHBOARD_LOCKS]
+    if locked:
+        body["locked_controls"] = locked
+    return body
+
+
+#: The locked controls the dashboard enforces in the browser and has no config path for.
+_DASHBOARD_LOCKS = ("debug_tools",)

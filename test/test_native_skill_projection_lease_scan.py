@@ -23,6 +23,7 @@ from native_skill_projection_helpers import (
     _hold_the_prune_clock,
     _legacy_alias,
     _metadata_file,
+    _wait_for_dropped_projection_ends,
 )
 
 from conftest import requires_symlinks
@@ -31,6 +32,9 @@ from kiro_crew.acp import skill_projection as projection
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _no_eager_prune = native_skill_projection_helpers._no_eager_prune
 _prune_on_every_spawn = native_skill_projection_helpers._prune_on_every_spawn
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 cyclic_gc_quiesced = native_skill_projection_helpers.cyclic_gc_quiesced
 native_tree = native_skill_projection_helpers.native_tree
 
@@ -272,7 +276,7 @@ def test_lease_scan_overflow_is_uncertain_and_retains_stale_alias(native_tree, m
     first = projection.prepare_native_skill_projection(project)
     stale = _alias_file(agents, first)
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     source.unlink()
 
     # The scan ceiling bounds EVERY directory entry, not just the ``.json``
@@ -553,7 +557,7 @@ def test_census_counts_what_the_reclaim_would_keep_and_remove(native_tree, tmp_p
     assert ended is not None
     published = len(ended.aliases)
     del ended
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     live = projection.prepare_native_skill_projection(project)
     assert live is not None
 
@@ -647,8 +651,24 @@ def _released_backlog(agents, project, count):
     backlog = [(_alias_file(agents, p), _metadata_file(agents, p)) for p in held]
     del held
     gc.collect()
+    # Each drop's end -- the lease release AND the eager prune -- is handed to the
+    # reaper thread (never run inline on the dropping thread; see
+    # ``_end_projection``). Wait for the reaper to drain every queued end, so the
+    # backlog's leases are released before the drain under test runs.
+    _settle_reaper()
     assert all(alias.exists() and meta.exists() for alias, meta in backlog)
     return backlog
+
+
+def _settle_reaper():
+    """Block until the reaper has run every projection end queued so far.
+
+    A dropped projection's end runs on the reaper thread in queue order, so a
+    marker queued now has run once it fires -- and so have the ends ahead of it.
+    """
+    reached = threading.Event()
+    projection._COLLECTED_ENDS.put(reached.set)
+    assert reached.wait(10), "the reaper never drained the queued projection ends"
 
 
 def _recorded_batches(monkeypatch):
@@ -673,6 +693,25 @@ def test_boot_drain_clears_a_backlog_past_the_per_spawn_cap(native_tree, monkeyp
 
     assert projection.drain_stale_aliases() == 7
     assert not any(alias.exists() or meta.exists() for alias, meta in backlog)
+
+
+def test_the_stop_prune_removes_released_views_in_one_pass_and_keeps_a_held_one(
+    native_tree, monkeypatch
+):
+    """A stopping gateway's one awaited prune retires this home's views no projection
+    holds, so a home deleted after it stops leaves none behind."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps({"name": "custom", "prompt": "held"}), encoding="utf-8"
+    )
+    held = projection.prepare_native_skill_projection(project)
+    backlog = _released_backlog(agents, project, 3)
+    # The exact count assumes the walk ends on the backlog, not on the clock.
+    _hold_the_prune_clock(monkeypatch)
+
+    assert projection.prune_stale_aliases_at_stop() == 3
+    assert not any(alias.exists() or meta.exists() for alias, meta in backlog)
+    assert _alias_file(agents, held).exists()
 
 
 def test_boot_drain_keeps_aliases_a_live_projection_holds(native_tree, monkeypatch):

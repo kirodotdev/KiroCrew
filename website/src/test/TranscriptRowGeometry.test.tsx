@@ -23,6 +23,7 @@
  * evidence lives in `capture/transcript-row-geometry.tsx`.
  */
 import { describe, it, expect } from 'vitest'
+import { act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { renderWithProviders } from './helpers'
@@ -121,10 +122,16 @@ describe('transcript row geometry belongs to the host', () => {
    * right of every row above it, which is the only left edge the reader has to
    * compare it against.
    */
-  it('ChatFooter applies the column gutter once and adds no inner inset', () => {
-    const { container } = renderWithProviders(
-      <ChatFooter running stopping={false} state="running" lastRole="assistant" />,
-    )
+  it('ChatFooter applies the column gutter once and adds no inner inset', async () => {
+    // ThemeProvider writes <html data-theme> after the footer first reads it, and the footer's
+    // MutationObserver re-reads it in a microtask: render inside an async act so that update lands in it.
+    let view!: ReturnType<typeof renderWithProviders>
+    await act(async () => {
+      view = renderWithProviders(
+        <ChatFooter running stopping={false} state="running" lastRole="assistant" />,
+      )
+    })
+    const { container } = view
     const root = container.querySelector('[data-testid="chat-footer"]') as HTMLElement
     expect(root).toBeTruthy()
     expect(root.classList.contains(GUTTER)).toBe(true)

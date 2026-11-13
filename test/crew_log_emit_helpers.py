@@ -48,8 +48,7 @@ def _assert_drained_for_shutdown(what: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no module of this family calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, _floor_monkeypatch):
     """Every test writes into its own data home, never the live one.
 
     The retry backoff is also flattened to zero here. What the retention tests
@@ -61,9 +60,9 @@ def _isolated_home(tmp_path, monkeypatch):
     the same three tests passed locally and on Windows while failing a loaded Linux
     shard. Zeroed, they wait only on the writer's own barrier.
     """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
-    monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+    _floor_monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
     emit.reset_caches()
     yield
     # Stop the writer BEFORE pytest removes tmp_path. The writer runs on its own

@@ -50,7 +50,8 @@ const {
 } = require("./bundle-location");
 const { createUpdateReporter } = require("./runtime/update/state-reporter");
 const { createManagedLane } = require("./runtime/update/managed-lane");
-const { createFeedLane } = require("./runtime/update/feed-lane");
+const { runStartupApply: applyArmedUpdateAtStart } = require("./runtime/update/startup-apply");
+const { createFeedLane, gatewayStillRunningNotificationBody } = require("./runtime/update/feed-lane");
 
 // The Linux package formats this app ships. A format is BOTH the feed
 // sub-directory a package install reads its channel file from AND the download
@@ -146,6 +147,13 @@ const EXTERNALLY_MANAGED_MAX_BYTES = 8192;
 const MANAGED_BY_MAX_CHARS = 128;
 const UPDATE_COMMAND_MAX_CHARS = 512;
 const CHECK_COMMAND_MAX_CHARS = 512;
+// A path, so an over-cap value is refused rather than cut: a truncated path
+// names a different file.
+const RELAUNCH_PATH_MAX_CHARS = 1024;
+// The one `updatePrompts` value the reader honours: the edition's own update
+// widget is the prompt for this install, so the dashboard opens neither of the
+// core's update dialogs. Any other value is ignored and the core's dialogs stay.
+const UPDATE_PROMPTS_EDITION = "edition";
 
 /**
  * Is this install's update lifecycle owned by an external package manager?
@@ -178,8 +186,19 @@ const CHECK_COMMAND_MAX_CHARS = 512;
  * `managedBy` names the owning system for the About panel, `updateCommand` is
  * the command the panel offers to copy AND (when the managed auto-update path
  * is active) the command run to apply an update, and `checkCommand` is the
- * optional command run to discover whether an update is available. Every
- * degenerate marker — empty, unparsable,
+ * optional command run to discover whether an update is available. The optional
+ * `relaunchPath` is the executable (absolute, or `~/`-relative; see
+ * resolveRelaunchPath) the managed lane relaunches after a
+ * successful apply, instead of the path this process was started as: a macOS
+ * app opened from the Dock runs its version's own payload path, so a bare
+ * `app.relaunch()` brings back the version that was just replaced (#22774). A
+ * packager that keeps a stable launch link names the binary behind it here.
+ * The optional `updatePrompts: "edition"` says the edition's own top-bar update
+ * widget is the update surface: every lifecycle push and getInfo() then carry
+ * `updatePrompts: "edition"` (state-reporter.js), and the dashboard opens
+ * neither its "update available" popup nor its "update ready" dialog. The key
+ * is returned only when set, so every other marker keeps the four-field shape.
+ * Every degenerate marker — empty, unparsable,
  * over-cap, a directory, a symlink, a dangling symlink — still means MANAGED:
  * an operator who dropped SOMETHING at that name gets the safe behavior
  * (updater off) even when the metadata is wrong, never a silent fallback to
@@ -202,7 +221,8 @@ const CHECK_COMMAND_MAX_CHARS = 512;
  * @param {(p:string)=>boolean} [o.probeMarkerRewritable=canRewriteMarker]
  * @param {string} [o.bakedMarkerPath]  where the in-code marker lives; defaults
  *   to `EXTERNALLY-MANAGED` beside this module (inside app.asar when packaged)
- * @returns {{managedBy:string, updateCommand:string, checkCommand:string}|null} null when not managed
+ * @param {() => string} [o.homeDir]  the account's home, for a `~/` relaunchPath
+ * @returns {{managedBy:string, updateCommand:string, checkCommand:string, relaunchPath:string, updatePrompts?:"edition"}|null} null when not managed
  */
 function readExternallyManaged({
   env = process.env,
@@ -226,6 +246,8 @@ function readExternallyManaged({
   // (Electron's fs shim reads through the archive), and the module directory
   // in a dev checkout, where the file simply does not exist.
   bakedMarkerPath = require("path").join(__dirname, EXTERNALLY_MANAGED_MARKER),
+  // The account's home, for a `~/` relaunchPath (see resolveRelaunchPath).
+  homeDir = () => require("os").userInfo().homedir,
 } = {}) {
   let raw = null;
   let markerPath = "";
@@ -294,6 +316,8 @@ function readExternallyManaged({
   let managedBy = "";
   let updateCommand = "";
   let checkCommand = "";
+  let relaunchPath = "";
+  let updatePrompts = "";
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
@@ -306,11 +330,52 @@ function readExternallyManaged({
       if (typeof parsed.checkCommand === "string") {
         checkCommand = parsed.checkCommand.trim().slice(0, CHECK_COMMAND_MAX_CHARS);
       }
+      if (typeof parsed.relaunchPath === "string") {
+        relaunchPath = resolveRelaunchPath(parsed.relaunchPath, { homeDir });
+      }
+      if (typeof parsed.updatePrompts === "string" && parsed.updatePrompts.trim() === UPDATE_PROMPTS_EDITION) {
+        updatePrompts = UPDATE_PROMPTS_EDITION;
+      }
     }
   } catch {
     // Presence alone is the signal; a bare marker means managed, no metadata.
   }
-  return { managedBy, updateCommand, checkCommand };
+  return {
+    managedBy,
+    updateCommand,
+    checkCommand,
+    relaunchPath,
+    ...(updatePrompts ? { updatePrompts } : {}),
+  };
+}
+
+/**
+ * The marker's `relaunchPath`, as the absolute path the lane relaunches, or ""
+ * to keep the bare relaunch.
+ *
+ * Kept: an absolute path, or one starting with `~/`, which is the account's
+ * home. A baked marker is the same file for every user, and a stable launch
+ * link usually lives under the home, so `~/` is how it names one. The home is
+ * read from the account entry (os.userInfo), not from HOME: the launch
+ * environment is the user's to rewrite, the account entry is not, and the
+ * marker's own commands derive the home the same way. Dropped: anything
+ * relative, with a NUL, or over the cap (a cut path names another file).
+ *
+ * @param {string} raw
+ * @param {{homeDir?: () => string}} [o]  injectable for tests
+ * @returns {string}
+ */
+function resolveRelaunchPath(raw, { homeDir = () => require("os").userInfo().homedir } = {}) {
+  const path = require("path");
+  let p = String(raw).trim();
+  if (!p || p.length > RELAUNCH_PATH_MAX_CHARS || p.includes("\0")) return "";
+  if (p.startsWith("~/")) {
+    let home = "";
+    try { home = homeDir() || ""; } catch { home = ""; }
+    if (!home || !path.isAbsolute(home)) return "";
+    p = path.join(home, p.slice(2));
+  }
+  return path.isAbsolute(p) ? p : "";
 }
 
 // Can THIS process rewrite the externally-managed marker?
@@ -454,12 +519,15 @@ const SUPPORTED_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 // Byte host for human (manual) downloads -- deliberately the same CDN the
 // updater pulls from, so a manual reinstall lands on identical artifacts.
 const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
-// Channels with a desktop publish lane. "dev" has none.
-const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
+// Channels with a desktop publish lane. "dev" has none. "lts" is the LTS
+// edition's own channel (policy-channel.js), published by release-lts.yml
+// (test_windows_signing_contract.py keeps the two sets equal).
+const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable", "lts"]);
 // Channels with a WINDOWS publish lane. publish-windows.yml is wired into
 // nightly.yml and both of release.yml's channels: insider publishes a fresh
 // signed build, and stable rebuilds by default (or, in promote mode set by
-// vars.STABLE_PROMOTE_BYTES, republishes the promotion bundle's installer). That is
+// vars.STABLE_PROMOTE_BYTES, republishes the promotion bundle's installer), and
+// release-lts.yml publishes a fresh signed build on lts. That is
 // every channel in KNOWN_CHANNELS, so Windows carries no channel restriction of
 // its own and channelHasLane needs no win32 arm -- a separate set here would be a
 // comment claiming a restriction that does not exist.
@@ -499,6 +567,11 @@ function channelForFlavor(flavor) {
   return flavor === "beta" ? "insider" : "stable";
 }
 
+// An edition's build of a stable release as the shell carries it: the bare
+// numeric base, one "-", one numeric build. Mirrored for display by
+// website/src/utils/displayVersion.ts editionBuildVersion.
+const EDITION_BUILD_STAMP = /^[0-9]+(?:\.[0-9]+)*-[0-9]+$/;
+
 /**
  * Derive the update channel from the running version. CI stamps the app
  * version per channel (nightly.yml: <base>-nightly.<stamp>; release.yml:
@@ -508,12 +581,21 @@ function channelForFlavor(flavor) {
  * insider, bare semver is stable. Without this, a nightly/insider build
  * would check the stable feed, see a differing version, and silently
  * migrate the user onto stable.
+ *
+ * One shape is not a prerelease: a single numeric "-N" over a bare numeric
+ * base (EDITION_BUILD_STAMP). That is how packaging/build-desktop.sh carries
+ * an edition's four-part build of a stable release into the shell
+ * (0.13.0.11 as "0.13.0-11", since electron-builder takes only semver), and
+ * the backend reads the same build's BUILD_VERSION stamp as stable, so the
+ * shell does too. The release lanes tag a prerelease with a label
+ * (-insider.N, -rc.N), never a bare number.
  * @param {string} version
  * @returns {"nightly"|"insider"|"stable"|null} null when unstamped (dev)
  */
 function channelForVersion(version) {
   if (!version || typeof version !== "string") return null;
   if (version.includes("-nightly.")) return "nightly";
+  if (EDITION_BUILD_STAMP.test(version)) return "stable";
   if (version.includes("-")) return "insider";
   return "stable";
 }
@@ -554,14 +636,20 @@ function channelForVersion(version) {
  *
  * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
  * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = default
- * @param {"nightly"|"insider"|"stable"|""} [required] - policy channel, "" = none
- * @returns {"nightly"|"insider"|"stable"|null}
+ * An LTS build requires `lts` (RFC crew-lts-edition D11). Its bytes
+ * carry a bare version, so it is a production stamp that follows `lts`. Whether
+ * `lts` has a publish lane is channelHasLane's question, not this one.
+ *
+ * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
+ * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = default
+ * @param {"nightly"|"insider"|"stable"|"lts"|""} [required] - policy channel, "" = none
+ * @returns {"nightly"|"insider"|"stable"|"lts"|null}
  */
 function resolveChannel(stamped, preference, required = "") {
   if (stamped === null) return null;
   if (required) {
     if (stamped === "nightly") return required === "nightly" ? "nightly" : null;
-    return required === "insider" || required === "stable" ? required : null;
+    return required === "insider" || required === "stable" || required === "lts" ? required : null;
   }
   if (stamped === "nightly") return "nightly";
   if (preference === "insider" || preference === "stable") return preference;
@@ -579,6 +667,11 @@ function resolveChannel(stamped, preference, required = "") {
  * stays loadable outside an Electron runtime; a stubbed/absent semver yields
  * null (fail-open) rather than throwing.
  *
+ * A packager can number its builds with a fourth part (`0.12.0.3`, then
+ * `0.12.0.4`). semver has no fourth part and coerces both to `0.12.0`, so when
+ * the first three parts tie the fourth decides; a version without one counts
+ * as `.0`.
+ *
  * @param {string} candidate
  * @param {string} current
  * @returns {boolean|null}
@@ -595,10 +688,17 @@ function isNewerVersion(candidate, current) {
   const b = semver.valid(current) || semver.valid(semver.coerce(current));
   if (!a || !b) return null;
   try {
+    if (semver.eq(a, b)) return fourthVersionPart(candidate) > fourthVersionPart(current);
     return semver.gt(a, b);
   } catch {
     return null;
   }
+}
+
+// The fourth part of a four-part build number (`0.12.0.4` -> 4), else 0.
+function fourthVersionPart(version) {
+  const match = /^v?\d+\.\d+\.\d+\.(\d+)$/.exec(String(version).trim());
+  return match ? Number(match[1]) : 0;
 }
 
 /**
@@ -747,13 +847,16 @@ function manualDownloadUrl(channel, osPlatform, osArch = process.arch, linuxForm
   // A published artifact FILENAME, not prose: the joined form is what
   // publish-linux.yml writes to the CDN, and the arch and extension are
   // interpolated because there are now six (arch, format) pairs to name.
-  const linuxFile = linuxArch ? `KiroCrew-${linuxArch}.${linuxExt}` : null; // brand-ok
+  // The lts channel publishes the LTS edition under its own file stem
+  // (release-lts.yml, `KiroCrew-LTS`), so a download never reads as the oss app. // brand-ok
+  const stem = channel === "lts" ? "KiroCrew-LTS" : "KiroCrew"; // brand-ok
+  const linuxFile = linuxArch ? `${stem}-${linuxArch}.${linuxExt}` : null;
   // Windows ships x64 only. build-windows.yml has no arm64 leg, and Windows has
   // exactly one channel file whatever the arch (electron-updater appends an arch
   // suffix for linux alone), so a second arch means another entry in the same
   // latest.yml rather than another feed.
-  const windowsFile = { x64: "KiroCrew-Setup.exe" }[osArch];
-  const macFile = MAC_DIST_ARCHES.has(macDistArch) ? `KiroCrew-${macDistArch}.dmg` : "KiroCrew.dmg"; // brand-ok
+  const windowsFile = { x64: `${stem}-Setup.exe` }[osArch];
+  const macFile = MAC_DIST_ARCHES.has(macDistArch) ? `${stem}-${macDistArch}.dmg` : `${stem}.dmg`;
   const file = osPlatform === "darwin"
     ? macFile
     : osPlatform === "linux"
@@ -924,6 +1027,9 @@ function classifyError(err) {
  *   the "writable external disk still updates" case is unassertable.
  * @param {object} [deps.nativeAutoUpdater]     - Electron's native autoUpdater, observed
  *   for `before-quit-for-update` to know the installer took over (tests inject a stub)
+ * @param {() => Array<{isDestroyed:Function, destroy:Function}>} [deps.getAllWindows]
+ *   - every open window, so a darwin install can close one that refuses to
+ *   (defaults to Electron's BrowserWindow.getAllWindows)
  * @param {string} [deps.feedBase]             - override feed host
  * @param {(state:object) => void} [deps.onUpdateState] - if provided, the
  *   in-app UI drives the install prompt: state transitions are pushed here
@@ -955,6 +1061,9 @@ function initAutoUpdate(deps) {
     getAutoDownloadPreference = () => false,
     notifyUpdateFound = null,
     stopGateway,
+    // On Windows, BaseWindow emits 'session-end' but App does not. Pass the window
+    // provider so feed-lane can register the pending-update notice on the right object.
+    getMainWindow = () => null,
     // Host hook: an install is now in flight, so a gateway that stops answering
     // is INTENTIONAL. main.js uses it to disarm the liveness watchdog, which
     // otherwise resurrects the gateway mid-swap. Optional (absent in tests).
@@ -990,6 +1099,18 @@ function initAutoUpdate(deps) {
     nativeAutoUpdater = (() => {
       try { return require("electron").autoUpdater || null; } catch { return null; }
     })(),
+    // Every open BrowserWindow. On darwin Squirrel hands the swap to ShipIt only
+    // once ALL windows have closed (see forceExitFailsafe), so the lane needs to
+    // reach a window that refuses to close. Resolved lazily for the same reason
+    // as nativeAutoUpdater; outside Electron there are no windows.
+    getAllWindows = () => {
+      try {
+        const { BrowserWindow } = require("electron");
+        return BrowserWindow && typeof BrowserWindow.getAllWindows === "function"
+          ? BrowserWindow.getAllWindows()
+          : [];
+      } catch { return []; }
+    },
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
@@ -998,6 +1119,14 @@ function initAutoUpdate(deps) {
     // caller (ipc-registrar.js) to a variable the renderer updates via
     // update:notify-policy-governed once the gateway status is known.
     isPolicyGoverned = () => false,
+    // The managed lane's armed-update record (runtime/update/update-arm.js), the
+    // client for the gateway's own record (gateway-arm.js) and a start-time
+    // apply failure to show once. All optional: absent, the lane arms in memory
+    // and tells no gateway.
+    updateArm = undefined,
+    gatewayArm = null,
+    startupApplyError = null,
+    isOwnGateway = null,
   } = deps;
 
   // Linux install shape. Resolved once, and BEFORE getInfo() is defined: the
@@ -1077,7 +1206,15 @@ function initAutoUpdate(deps) {
       launchCheckDelayMs: LAUNCH_CHECK_DELAY_MS,
       checkIntervalMs: CHECK_INTERVAL_MS,
       isPolicyGoverned,
+      getMainWindow,
+      Notification,
+      osPlatform,
       log,
+      ...(updateArm ? { updateArm } : {}),
+      gatewayArm,
+      startupApplyError,
+      isNewerVersion,
+      ...(isOwnGateway ? { isOwnGateway } : {}),
     });
   }
   // Updating requires an installed, signed bundle (macOS code signature
@@ -1176,6 +1313,7 @@ function initAutoUpdate(deps) {
     dialog,
     Notification,
     getAutoDownloadPreference,
+    getRequiredChannel,
     notifyUpdateFound,
     stopGateway,
     onInstallDispatched,
@@ -1184,6 +1322,8 @@ function initAutoUpdate(deps) {
     linux,
     macDistArch,
     nativeAutoUpdater,
+    getAllWindows,
+    getMainWindow,
     feedBase,
     uiDriven,
     log,
@@ -1196,6 +1336,28 @@ function initAutoUpdate(deps) {
     launchCheckDelayMs: LAUNCH_CHECK_DELAY_MS,
     checkIntervalMs: CHECK_INTERVAL_MS,
     isPolicyGoverned,
+  });
+}
+
+/**
+ * Finish an armed update at app start, in Electron main, before the gateway
+ * spawns and before any window opens (D-c). Only an install whose
+ * EXTERNALLY-MANAGED marker names an updateCommand can have one.
+ */
+function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined, probeGateway = null, Notification = null }) {
+  return applyArmedUpdateAtStart({
+    app,
+    store,
+    managed: managed !== undefined ? managed : readExternallyManaged({ resourcesPath }),
+    managedPath,
+    log,
+    probeGateway,
+    notifyGatewayRunning: Notification
+      ? (stopCommand) => new Notification({
+        title: "Update not installed",
+        body: gatewayStillRunningNotificationBody(stopCommand),
+      }).show()
+      : null,
   });
 }
 
@@ -1213,6 +1375,7 @@ module.exports = {
   resolveLinuxInstall,
   resolveMacDistArch,
   readExternallyManaged,
+  runStartupApply,
   canRewriteMarker,
   DEFAULT_FEED_BASE,
   DOWNLOAD_BASE,

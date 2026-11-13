@@ -174,12 +174,8 @@ class TestStatusSnapshot:
 class TestAllStatusSnapshotCallersPassTheUpdateFields:
     """The status funnel joins the update fields to the snapshot for every emitter.
 
-    A snapshot without the update fields carries ``update_available=None`` and a
-    dark badge, hiding a real update from that transport. Rather than trust each
-    emitter to spread ``status_update_fields()``, the sole funnel
-    (``status_counts.cached_status_snapshot``) reads them itself, so the contract
-    is structural — "the only ``status_snapshot`` call lives in the funnel" — not
-    "the literal kwarg appears at every call site".
+    A snapshot without them shows a dark badge and hides a real update, so the sole
+    funnel (``status_counts.cached_status_snapshot``) reads them itself.
     """
 
     def test_the_shared_reader_carries_every_update_field(self) -> None:
@@ -193,13 +189,22 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_latest_version",
             "update_latest_version_display",
             "update_channel",
+            "update_upcoming",
             "update_channel_move_pending",
             "update_managed_by",
+            "update_policy_file",
             "update_commits_ahead",
             "update_commits_behind",
             "update_can_arm",
             "update_auto_effect",
+            "update_auto_manual_only",
             "update_bundled_by_app",
+            "update_restart_ready",
+            "update_restart_ready_version",
+            "update_restart_ready_reason",
+            "update_armed_version",
+            "update_armed_at",
+            "pending_apply_error",
             "update_last_checked_at",
             "update_check_interval_secs",
             "update_required",
@@ -267,6 +272,35 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             updates._update_info.clear()
             updates._update_info.update(original)
 
+    def test_policy_file_is_named_only_when_the_home_policy_owns_updates(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The About notice says "edit security_policy.json"; this field says where.
+        Only the home tier's file can change the update commands, so any other
+        tier, or no command provider, names nothing."""
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import updates
+        from kiro_crew.platform import context, governance
+
+        policy = tmp_path / "security_policy.json"
+        monkeypatch.setattr(governance, "_policy_home_path", lambda: policy)
+        ceiling = SimpleNamespace(tier=governance.TIER_HOME)
+        monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=ceiling))
+        original = dict(updates._update_info)
+        try:
+            updates._update_info.clear()
+            updates._update_info.update({"managed_by": "command"})
+            assert status_fields_of(updates)["update_policy_file"] == str(policy)
+            ceiling.tier = governance.TIER_CENTRAL
+            assert status_fields_of(updates)["update_policy_file"] == ""
+            ceiling.tier = governance.TIER_HOME
+            updates._update_info.update({"managed_by": ""})
+            assert status_fields_of(updates)["update_policy_file"] == ""
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+
     def test_snapshot_accepts_every_shared_reader_field(self) -> None:
         """Every emitter calls ``status_snapshot(**status_update_fields())``,
         so a key the reader gains that the snapshot's keyword-only signature
@@ -289,12 +323,8 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
     def test_the_funnel_joins_every_update_field_into_the_snapshot(self, state, monkeypatch):
         """``cached_status_snapshot`` surfaces every ``status_update_fields`` key.
 
-        This pins the funnel — the one place the update fields and the cached
-        counts are joined — not any caller: it patches the reader to a sentinel
-        dict of the real keys and asserts each surfaces with its value in the
-        funnel's output. It fails on the previous head only if a caller forgot
-        to spread the fields; now that the funnel reads them itself, an emitter
-        cannot drop them.
+        Pins the funnel, not any caller: the reader is patched to a sentinel dict of
+        the real keys and each must surface with its value.
         """
         import asyncio
 
@@ -304,7 +334,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
         sentinel = {key: f"S:{key}" for key in status_update_fields()}
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.updates.status_update_fields",
-            lambda: dict(sentinel),
+            lambda *_next_start: dict(sentinel),
         )
 
         async def _run():
@@ -315,25 +345,11 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             assert snap[key] == value
 
     def test_every_status_snapshot_call_site_uses_the_shared_reader(self) -> None:
-        """Named-module checks miss a NEW emitter, which is how one already slipped.
+        """Exactly one ``status_snapshot(...)`` call exists, inside ``cached_status_snapshot``.
 
-        The SSE stream in ``handlers/updates.py`` read the cache directly, on a key
-        this contract had renamed — so it published a hardcoded ``False`` and no test
-        noticed, because the earlier per-emitter checks only looked at the two modules
-        that were known emitters when they were written. This walks the AST instead.
-
-        The three emitters now funnel through
-        ``status_counts.cached_status_snapshot``, which is the ONE place that
-        may call ``DashboardState.status_snapshot`` — and which joins in the
-        update fields from ``status_update_fields()`` itself, so no caller has
-        to spread them. The structural contract is therefore: exactly ONE
-        ``status_snapshot(...)`` call exists in the package, it is the one
-        inside ``cached_status_snapshot`` in ``status_counts.py``, and it
-        spreads ``status_update_fields()``. A call anywhere else, or a second
-        call anywhere in ``status_counts.py``, bypasses the off-loop count
-        cache (reintroducing the blocking-call freeze class) or the shared
-        update-fields join, so the ratchet counts calls rather than trusting a
-        filename.
+        Walks the AST because a per-module check misses a new emitter. A call anywhere
+        else bypasses the off-loop count cache (a blocking call on the loop) or the
+        shared update-fields join, so the ratchet counts calls, not filenames.
         """
         import ast
         import pathlib
@@ -410,12 +426,8 @@ def status_fields_of(updates_module) -> dict:
 class TestBuildInfoResolution:
     """set_build_info() is the ONLY resolver — build info is never resolved at import.
 
-    Resolving git_build_info() at state.py *module import* is wrong: under systemd
-    the entrypoint imports this module BEFORE main() detects KIROCREW_PROJECT_DIR,
-    so it resolves with no project dir and lru_cache then pins ("", "") for the
-    process lifetime, leaving the dropdown blank. The value is recorded by the CLI
-    gateway entrypoint (sync, pre-loop, post-detection) via set_build_info() and
-    only read here.
+    Under systemd this module is imported before main() detects KIROCREW_PROJECT_DIR,
+    so resolving at import would let lru_cache pin ("", "") for the process lifetime.
     """
 
     def test_setter_flows_into_new_state(self, monkeypatch, tmp_path) -> None:
@@ -556,6 +568,27 @@ class TestAutoUpdateEffectOnTheStatusFrame:
         _fresh.record_auto_update_effect(AutoUpdateEffect("notify", None, "why"))
         assert status_fields_of(_fresh)["update_auto_effect"] == "notify"
 
+    @pytest.mark.parametrize(
+        ("effect", "route", "manual_only"),
+        [
+            # `updates.unattended_apply: false`: the one notify that keeps its route.
+            pytest.param("notify", "wheel", True, id="policy-keeps-the-route"),
+            pytest.param("notify", None, False, id="nothing-can-install"),
+            pytest.param("install", "wheel", False, id="installs"),
+            pytest.param("mandatory", "git", False, id="floor"),
+        ],
+    )
+    def test_manual_only_says_a_persons_update_still_installs(
+        self, _fresh, effect, route, manual_only
+    ) -> None:
+        from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+        assert status_fields_of(_fresh)["update_auto_manual_only"] is False
+        _fresh.record_auto_update_effect(AutoUpdateEffect(effect, route, "why"))
+        fields = status_fields_of(_fresh)
+        assert fields["update_auto_effect"] == effect
+        assert fields["update_auto_manual_only"] is manual_only
+
     @pytest.mark.asyncio
     async def test_a_stale_effect_is_rederived_off_the_loop(self, _fresh, monkeypatch) -> None:
         """A branch switch or policy edit shows within one TTL, never blocking the frame."""
@@ -579,7 +612,9 @@ class TestAutoUpdateEffectOnTheStatusFrame:
 
         _fresh.record_auto_update_effect(AutoUpdateEffect("install", "git"))
         monkeypatch.setattr(_fresh, "_AUTO_EFFECT_TTL_SECS", 60.0)
-        monkeypatch.setattr(_fresh, "_auto_effect", (time.monotonic() - 120.0, "install"))
+        monkeypatch.setattr(
+            _fresh, "_auto_effect", (time.monotonic() - 120.0, AutoUpdateEffect("install", "git"))
+        )
         calls = {"n": 0}
 
         def _boom():

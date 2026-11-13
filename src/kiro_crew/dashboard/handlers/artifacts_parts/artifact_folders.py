@@ -37,7 +37,8 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _set_folder_and_reload,
     logger,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor, subprocess_executor
+from kiro_crew.notifications.bus import _finite_json
 
 
 def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
@@ -49,8 +50,16 @@ def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
 
 # ── Folders ─────────────────────────────────────────────────────
 def _serialize_folder(folder: dict[str, Any], *, path: str | None = None) -> dict[str, Any]:
-    """Serialize a folder record; redact the (user/LLM-set) name, icon, and path."""
-    out = dict(folder)
+    """Serialize a folder record; redact the (user/LLM-set) name, icon, and path.
+
+    ``artifact_folders.json`` is loaded verbatim, so a hand edit can store a
+    non-finite number, which written out as-is is not JSON. It reads as
+    ``None``, and a non-finite ``order`` as 0, the position the store sorts it
+    at. The stored record is left as it is.
+    """
+    out = _finite_json(dict(folder))
+    if "order" in out and out["order"] is None and folder.get("order") is not None:
+        out["order"] = 0
     if isinstance(out.get("name"), str) and out["name"]:
         out["name"] = _redact_text(out["name"])
     # icon is LLM-derived (generate_emoji_for_name) or user-supplied (set_icon
@@ -80,7 +89,7 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
             ]
 
         loop = asyncio.get_running_loop()
-        out = await loop.run_in_executor(subprocess_executor(), _list_serialized)
+        out = await loop.run_in_executor(discovery_executor(), _list_serialized)
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact folder list failed: %s", exc)
         return _err(str(exc), status=500)
@@ -104,10 +113,39 @@ def _spawn_artifact_folder_icon_task(
     the value :meth:`ArtifactFolderStore.rename` returns from inside its own
     bump's critical section, and the create path pins 0, which a fresh folder's
     epoch is by construction. A read-back would be a second lock acquisition and
-    could capture a competing mutation's epoch."""
+    could capture a competing mutation's epoch.
+
+    Coalesced per folder: at most ONE generation is in flight per folder, and
+    a spawn that arrives while one runs only records itself as the folder's
+    NEXT request (a later spawn replaces it; an older epoch never displaces a
+    newer one). When the in-flight task finishes, the latest recorded request
+    starts. So a rename burst costs at most two model calls per folder however
+    long it is. The in-flight task is never cancelled: it may be part-way
+    through acquiring a background session, and cancelling it there would leak
+    that session. Folder delete drops the queued request of every folder it
+    removes (:func:`_cancel_artifact_folder_icon_tasks`); an in-flight one
+    finishes and its write is dropped, because the folder is gone."""
     state = request.app.get("state")
     if state is None:
         return
+    _prune_icon_state_from_other_loops(asyncio.get_running_loop())
+    current = _ARTIFACT_FOLDER_ICON_INFLIGHT.get(folder_id)
+    # The entry counts as occupied until its own cleanup removes it, even once
+    # its task is done: that cleanup is what starts the queued request, so a
+    # spawn starting here in between would leave an older queued request to
+    # run after it.
+    if current is not None:
+        queued = _ARTIFACT_FOLDER_ICON_NEXT.get(folder_id)
+        if expected_epoch >= current[1] and (queued is None or expected_epoch >= queued[1]):
+            _ARTIFACT_FOLDER_ICON_NEXT[folder_id] = (name, expected_epoch)
+        return
+    _start_artifact_folder_icon_task(state, folder_id, name, expected_epoch)
+
+
+def _start_artifact_folder_icon_task(
+    state: Any, folder_id: str, name: str, expected_epoch: int
+) -> None:
+    """Run one icon generation for *folder_id*; when it ends, start the queued one."""
 
     async def _run() -> None:
         try:
@@ -124,11 +162,62 @@ def _spawn_artifact_folder_icon_task(
 
     task = asyncio.ensure_future(_run())
     _ARTIFACT_FOLDER_ICON_TASKS.add(task)
-    task.add_done_callback(_ARTIFACT_FOLDER_ICON_TASKS.discard)
+    _ARTIFACT_FOLDER_ICON_INFLIGHT[folder_id] = (task, expected_epoch)
+
+    def _cleanup(done: asyncio.Task[None]) -> None:
+        _ARTIFACT_FOLDER_ICON_TASKS.discard(done)
+        current = _ARTIFACT_FOLDER_ICON_INFLIGHT.get(folder_id)
+        if current is None or current[0] is not done:
+            return
+        del _ARTIFACT_FOLDER_ICON_INFLIGHT[folder_id]
+        queued = _ARTIFACT_FOLDER_ICON_NEXT.pop(folder_id, None)
+        if queued is not None:
+            _start_artifact_folder_icon_task(state, folder_id, queued[0], queued[1])
+
+    task.add_done_callback(_cleanup)
+
+
+def _prune_icon_state_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop icon bookkeeping bound to a loop other than the running one.
+
+    These module globals outlive their loop (an embedded gateway restart, or a
+    test loop per test). A task whose loop was torn down never runs its done
+    callback, so its in-flight entry would stay forever and every later spawn
+    for that folder would only queue behind it. Its queued request goes with it:
+    only that cleanup could have started it.
+    """
+    for task in list(_ARTIFACT_FOLDER_ICON_TASKS):
+        if task.get_loop() is not loop:
+            _ARTIFACT_FOLDER_ICON_TASKS.discard(task)
+    for fid, (task, _epoch) in list(_ARTIFACT_FOLDER_ICON_INFLIGHT.items()):
+        if task.get_loop() is not loop:
+            del _ARTIFACT_FOLDER_ICON_INFLIGHT[fid]
+            _ARTIFACT_FOLDER_ICON_NEXT.pop(fid, None)
+
+
+def _cancel_artifact_folder_icon_tasks(folder_ids: Any) -> None:
+    """Drop the queued icon request of each deleted folder.
+
+    The in-flight generation, if any, is left to finish (see
+    :func:`_spawn_artifact_folder_icon_task` for why it is never cancelled);
+    its write-back re-finds the folder under the store lock and drops the icon
+    for a folder that is gone. Nothing new starts for the folder after it.
+    """
+    for fid in folder_ids:
+        _ARTIFACT_FOLDER_ICON_NEXT.pop(str(fid), None)
 
 
 # Keep strong refs so in-flight icon tasks aren't garbage-collected mid-run.
 _ARTIFACT_FOLDER_ICON_TASKS: set[asyncio.Task[None]] = set()
+
+#: The generation running for each folder, with the epoch it is pinned to.
+#: Entries remove themselves through the task's done callback.
+_ARTIFACT_FOLDER_ICON_INFLIGHT: dict[str, tuple[asyncio.Task[None], int]] = {}
+
+#: The latest (name, epoch) request that arrived while a folder's generation
+#: was in flight; it starts when that generation ends. One per folder, so the
+#: backlog behind the serialized generator stays bounded.
+_ARTIFACT_FOLDER_ICON_NEXT: dict[str, tuple[str, int]] = {}
 
 
 async def api_artifact_folder_create(request: web.Request) -> web.Response:
@@ -152,12 +241,21 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
     name = str(body.get("name") or "").strip()
     if not name:
         return _err("name required")
+    fstore = await _run_off_loop(get_default_folder_store)
+    color = str(body.get("color") or "")
+    # mkdir -p below saves ``parent`` at once, so what the create refuses is
+    # refused first: the color here, a path too deep for a child in the resolve.
+    try:
+        fstore.clean_color(color)
+    except ArtifactValidationError as exc:
+        _audit(tool="artifact_folder_create", request=request, outcome="denied", error=str(exc))
+        return _err(str(exc))
     # ``parent`` accepts an id OR a human path (mkdir -p); ``parent_id`` is
     # id-only — resolved read-only so a path-looking value can never
     # auto-create folders through the id-only key.
     if "parent" in body:
         parent_id, ferr = await _resolve_folder_ref_off_loop(
-            body.get("parent"), create_missing=True
+            body.get("parent"), create_missing=True, as_parent=True
         )
     else:
         parent_id, ferr = await _resolve_folder_ref_off_loop(
@@ -166,8 +264,6 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
     if ferr:
         _audit(tool="artifact_folder_create", request=request, outcome="denied", error=ferr)
         return _err(ferr)
-    fstore = get_default_folder_store()
-    color = str(body.get("color") or "")
     try:
         folder = await _run_off_loop(lambda: fstore.create(name, parent_id=parent_id, color=color))
     except ArtifactValidationError as exc:
@@ -224,6 +320,9 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     if folder is None:  # exists() checked above; guards against a concurrent delete
         return _err("folder not found", status=404)
 
+    # A null name asks for no rename: str(None) would rename the folder "None".
+    renaming = body.get("name") is not None
+
     # Set by _apply_updates when it renames: the icon epoch the rename's own
     # bump produced, read inside that same critical section. The handler must
     # arm background generation with THIS value and never re-read the epoch
@@ -236,16 +335,25 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         f = fstore.get(fid)
         if f is None:
             raise ArtifactNotFoundError(f"folder not found: {fid}")
-        if "name" in body:
-            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
+        # A refused field must leave the folder untouched, so every check runs
+        # before the first write. name, color and order are checked here from the
+        # body alone; reparent is the one check that reads the tree, so it is the
+        # first write -- once it lands, no later write can be refused as invalid.
+        if renaming:
+            fstore.clean_name(str(body["name"]))
+        if "color" in body:
+            fstore.clean_color(str(body.get("color") or ""))
+        order = body_int(body["order"]) if "order" in body else None
         if "parent_id" in body:
             f = fstore.reparent(fid, str(body.get("parent_id") or ""))
+        if renaming:
+            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
         if "icon" in body:
             f = fstore.set_icon(fid, str(body.get("icon") or ""))
         if "color" in body:
             f = fstore.set_color(fid, str(body.get("color") or ""))
-        if "order" in body:
-            fstore.reorder([{"id": fid, "order": body_int(body["order"])}])
+        if order is not None:
+            fstore.reorder([{"id": fid, "order": order}])
             ref = fstore.get(fid)
             if ref is not None:
                 f = ref
@@ -278,7 +386,7 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     )
     # A rename re-derives the emoji icon from the new name (chat-folder
     # parity) — unless this same request set an explicit icon, which wins.
-    if "name" in body and "icon" not in body:
+    if renaming and "icon" not in body:
         # Arm with the epoch the rename itself produced, captured under the
         # rename's own lock. Re-reading it here instead would pick up a manual
         # icon set that landed in between and let the generated icon overwrite
@@ -482,6 +590,7 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
             extra={"folder_id": fid},
         )
         return _err(str(exc), status=500)
+    _cancel_artifact_folder_icon_tasks(summary.get("deleted_folder_ids") or [fid])
     kept = list(summary.get("kept_published_artifact_slugs", []))
     _audit(
         tool="artifact_folder_delete",
@@ -577,35 +686,38 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    if "folder" in body:
-        folder_id, ferr = await _resolve_folder_ref_off_loop(
-            body.get("folder"), create_missing=True
-        )
-    else:
-        folder_id, ferr = await _resolve_folder_ref_off_loop(
-            body.get("folder_id"), create_missing=False
-        )
-    if ferr:
-        _audit(
-            tool="artifact_set_folder",
-            request=request,
-            outcome="denied",
-            error=ferr,
-            extra={"slug": slug},
-        )
-        return _err(ferr)
-    # A non-empty id passed directly must reference a real folder.
-    fstore = get_default_folder_store()
-    if folder_id and not await _run_off_loop(lambda: fstore.exists(folder_id)):
-        _audit(
-            tool="artifact_set_folder",
-            request=request,
-            outcome="denied",
-            error="folder not found",
-            extra={"slug": slug, "folder_id": folder_id},
-        )
-        return _err("folder not found", status=400)
     try:
+        if "folder" in body:
+            # Prove the slug first: create_missing=True saves every new path
+            # segment, which a 404/400 would leave behind.
+            await _run_off_loop(lambda: get_default_store().get(slug))
+            folder_id, ferr = await _resolve_folder_ref_off_loop(
+                body.get("folder"), create_missing=True
+            )
+        else:
+            folder_id, ferr = await _resolve_folder_ref_off_loop(
+                body.get("folder_id"), create_missing=False
+            )
+        if ferr:
+            _audit(
+                tool="artifact_set_folder",
+                request=request,
+                outcome="denied",
+                error=ferr,
+                extra={"slug": slug},
+            )
+            return _err(ferr)
+        # A non-empty id passed directly must reference a real folder.
+        fstore = get_default_folder_store()
+        if folder_id and not await _run_off_loop(lambda: fstore.exists(folder_id)):
+            _audit(
+                tool="artifact_set_folder",
+                request=request,
+                outcome="denied",
+                error="folder not found",
+                extra={"slug": slug, "folder_id": folder_id},
+            )
+            return _err("folder not found", status=400)
         art = await _run_off_loop(lambda: _set_folder_and_reload(slug, folder_id))
     except ArtifactNotFoundError as exc:
         _audit(

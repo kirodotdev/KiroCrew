@@ -172,7 +172,13 @@ export default function HandoverPanel() {
         {/* The one line someone gets if they read nothing else. */}
         <p className="text-sm mb-3">{digest?.headline}</p>
         <div className="flex items-center gap-2">
-          <Btn disabled={query.isFetching} onClick={() => query.refetch()}>
+          {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+              order and drops a keyboard user's focus to the page while it runs. */}
+          <Btn
+            aria-disabled={query.isFetching || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+            onClick={() => { if (!query.isFetching) void query.refetch() }}
+          >
             <RefreshCw className="lucide-inline" />{' '}
             {query.isFetching
               ? i18nT('apps.opsMissionControl.handoverPanel.refreshing')

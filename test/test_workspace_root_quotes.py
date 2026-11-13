@@ -59,6 +59,66 @@ def test_saved_quoted_root_resolves_to_the_real_directory(
     assert not list(tmp_path.glob('"*'))
 
 
+def test_a_saved_root_with_a_byte_order_mark_is_still_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An editor's "UTF-8 with BOM" must not turn the saved path relative."""
+    monkeypatch.delenv("KIROCREW_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(loader, "_default_workspace_base", lambda: tmp_path / "base")
+    target = tmp_path / "ws"
+    saved = tmp_path / "workspace_dir"
+    saved.write_bytes(b"\xef\xbb\xbf" + str(target).encode("utf-8") + b"\r\n")
+    monkeypatch.setattr(loader, "_workspace_dir_file", lambda: saved)
+
+    assert workspace_root() == target.resolve()
+
+
+def test_a_saved_root_that_is_not_utf8_falls_back_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KIROCREW_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(loader, "_default_workspace_base", lambda: tmp_path / "base")
+    saved = tmp_path / "workspace_dir"
+    saved.write_bytes((str(tmp_path / "caf\u00e9" / "ws") + "\n").encode("cp1252"))
+    monkeypatch.setattr(loader, "_workspace_dir_file", lambda: saved)
+
+    assert workspace_root() == (tmp_path / "base" / loader._WORKSPACE_DIR_NAME).resolve()
+
+
+def test_a_saved_root_that_cannot_be_created_falls_back_to_the_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A component that is a file must not stop startup: the default is used."""
+    monkeypatch.delenv("KIROCREW_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(loader, "_default_workspace_base", lambda: tmp_path / "base")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory", encoding="utf-8")
+    saved = tmp_path / "workspace_dir"
+    saved.write_text(f"{blocker / 'ws'}\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "_workspace_dir_file", lambda: saved)
+
+    assert workspace_root() == (tmp_path / "base" / loader._WORKSPACE_DIR_NAME).resolve()
+
+
+def test_the_wizard_reads_a_saved_root_with_a_byte_order_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kiro_crew import cli_setup
+
+    target = tmp_path / "ws"
+    saved = tmp_path / "workspace_dir"
+    saved.write_bytes(b"\xef\xbb\xbf" + str(target).encode("utf-8") + b"\n")
+    monkeypatch.setattr("kiro_crew.cli_setup._workspace_dir_file", lambda: saved)
+    monkeypatch.setattr("kiro_crew.cli_setup._input_or_skip", lambda _prompt: "")
+
+    cli_setup._setup_workspace_dir()
+
+    assert f"Configured: {target}" in capsys.readouterr().out
+
+
 def test_relative_root_falls_back_to_the_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

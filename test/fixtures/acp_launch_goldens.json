@@ -20,6 +20,7 @@
       "/opt/lib/codex-acp/index.js"
     ],
     "env_added": {
+      "CODEX_ACP_EXTERNAL_SANDBOX": "true",
       "CODEX_SQLITE_HOME": "<scratch>",
       "DISABLE_MCP_CONFIG_FILTERING": "true",
       "KIROCREW_RUNTIME_AGENT": "kirocrew",
@@ -134,6 +135,27 @@
     "spawn_label": "kiro-cli acp",
     "stderr_label": "kiro-cli"
   },
+  "mimocode": {
+    "argv": [
+      "/opt/bin/mimo",
+      "acp"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "MIMOCODE_CODEX_MODE": "false",
+      "MIMOCODE_CONFIG_CONTENT": "{\"permission\":\"ask\"}",
+      "MIMOCODE_DISABLE_CLAUDE_CODE_MCP": "1",
+      "MIMOCODE_DISABLE_CLAUDE_IMPORT": "1",
+      "MIMOCODE_DISABLE_CRON": "1",
+      "MIMOCODE_EXPERIMENTAL_CRON": "false",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "mimo acp",
+    "stderr_label": "mimo"
+  },
   "opencode": {
     "argv": [
       "/opt/bin/opencode",
@@ -170,5 +192,32 @@
     },
     "spawn_label": "pi-acp via /opt/lib/pi-acp/index.js",
     "stderr_label": "pi-acp via /opt/lib/pi-acp/index.js"
+  },
+  "strands": {
+    "argv": [
+      "/opt/bin/strands",
+      "--acp-server",
+      "--agent",
+      "/opt/run/strands/agent.py"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SCRATCH": "<scratch>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STRANDS_GATE_SESSION": "<nonce>",
+      "KIROCREW_STRANDS_STATE_DIR": "<state-dir>",
+      "KIROCREW_STRANDS_WITHHELD": "ANTHROPIC_API_KEY:AWS_ACCESS_KEY_ID:AWS_BEARER_TOKEN_BEDROCK:AWS_SECRET_ACCESS_KEY:AWS_SESSION_TOKEN:GEMINI_API_KEY:LITELLM_API_KEY:OPENAI_API_KEY",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "KIRO_CHAT_LOG_FILE": "<scratch-log>",
+      "PATH": "<augmented-path>",
+      "STRANDS_CLI_MCP_DISCOVERY": "off",
+      "STRANDS_CLI_SKILL_DISCOVERY": "off",
+      "TEMP": "<scratch>",
+      "TMP": "<scratch>",
+      "TMPDIR": "<scratch>"
+    },
+    "spawn_label": "strands --acp-server --agent /opt/run/strands/agent.py",
+    "stderr_label": "strands --acp-server --agent /opt/run/strands/agent.py"
   }
 }

@@ -27,6 +27,8 @@ from dashboard_server_composition_contract_helpers import (
 )
 
 import kiro_crew.dashboard.server as server
+from kiro_crew.crew_log import read_budget
+from kiro_crew.testing.wait import async_wait_until
 
 # ── the clauses the bootstrap carries ─────────────────────────────────────────
 
@@ -112,13 +114,15 @@ async def test_the_heartbeat_claims_the_capture_before_it_beats_and_logs_off_the
     """One bounded enrichment per lag episode: the capture is claimed before the beat
     that would end the episode, and the collector runs on an executor thread behind a
     shielded, bounded wait, so the loop it watches never waits on it unbounded."""
-    real_sleep = asyncio.sleep
     ticks: list[float] = []
+    # The intervals are virtual: each sleep the heartbeat asks for is recorded and takes one
+    # of three permits, so it beats three times and parks in its fourth sleep until it is
+    # cancelled. How far it gets is the permits handed out, not a count of loop turns.
+    intervals = asyncio.Semaphore(3)
 
     async def _sleep(delay: float, *args: Any, **kwargs: Any) -> None:
         ticks.append(delay)
-        # flake-ok: pre-existing asyncio.sleep stand-in that yields one tick instead of waiting; moved verbatim and tracked for a de-flake pass
-        await real_sleep(0)
+        await intervals.acquire()
 
     monkeypatch.setattr(asyncio, "sleep", _sleep)
     state = MagicMock()
@@ -128,11 +132,10 @@ async def test_the_heartbeat_claims_the_capture_before_it_beats_and_logs_off_the
     watchdog = _Watchdog()
     task = server._start_loop_heartbeat(state, watchdog, trimmer)
     try:
-        for _ in range(200):
-            if sum(1 for name, _ in watchdog.calls if name == "beat") >= 3:
-                break
-            # flake-ok: pre-existing 10 ms poll bounded at 200 rounds while the heartbeat beats three times; moved verbatim and tracked for a de-flake pass
-            await real_sleep(0.01)
+        await async_wait_until(
+            lambda: sum(1 for name, _ in watchdog.calls if name == "beat") >= 3,
+            describe=lambda: f"the heartbeat made these calls: {watchdog.calls!r}",
+        )
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -186,12 +189,12 @@ async def test_the_decision_http_release_waits_for_its_import(
     import it to close nothing."""
     import kiro_crew.decisions as decisions
 
-    name = "kiro_crew.decisions.impl_jev"
+    name = "kiro_crew.decisions.impl_systemone"
     app = web.Application()
     server._register_stt_hooks(app)
     hook = next(h for h in app.on_cleanup if h.__name__ == "_decision_http_shutdown")
     monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.delattr(decisions, "impl_jev", raising=False)
+    monkeypatch.delattr(decisions, "impl_systemone", raising=False)
     await hook(app)
     assert name not in sys.modules
     closed: list[bool] = []
@@ -202,7 +205,7 @@ async def test_the_decision_http_release_waits_for_its_import(
     module = types.ModuleType(name)
     module.close_sessions = _close_sessions  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, name, module)
-    monkeypatch.setattr(decisions, "impl_jev", module, raising=False)
+    monkeypatch.setattr(decisions, "impl_systemone", module, raising=False)
     await hook(app)
     assert closed == [True]
 
@@ -301,9 +304,13 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
     on_staged, on_consumed = _skill_hooks(monkeypatch, state)
     info = {"slug": "tidy-up", "name": "Tidy", "kind": "update", "target": "tidy"}
     await asyncio.to_thread(on_staged, info)
-    for _ in range(3):
-        # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
+    await async_wait_until(
+        lambda: state.notify.called,
+        describe=lambda: (
+            f"notify calls: {state.notify.call_args_list!r}; "
+            f"broadcast calls: {state.broadcast_ws.call_args_list!r}"
+        ),
+    )
     payload = {"slug": "tidy-up", "candidate_kind": "update", "target": "tidy"}
     title, body, url, actions = server._pending_skill_notification(info)
     state.notify.assert_called_once_with(
@@ -312,9 +319,15 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
     state.broadcast_ws.assert_called_once_with("skills.pending_changed", payload)
     await asyncio.to_thread(on_consumed, {"slug": "tidy-up", "consumed_at": "t1"})
     await asyncio.to_thread(on_consumed, {"slug": "", "consumed_at": "t2"})
-    for _ in range(5):
-        # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
+    # The retire task is awaited once, and has left the set once its done callback ran.
+    await async_wait_until(
+        lambda: state.resolve_skill_review_notifications.await_count >= 1
+        and not state._background_tasks,
+        describe=lambda: (
+            f"retired: {state.resolve_skill_review_notifications.await_args_list!r}; "
+            f"tasks still tracked: {state._background_tasks!r}"
+        ),
+    )
     state.resolve_skill_review_notifications.assert_awaited_once_with("tidy-up", "t1")
     assert state._background_tasks == set()
 
@@ -386,6 +399,7 @@ async def test_the_recorder_row_reads_the_gateway_counters(
         "sessions": 2,
         "subagents": 0,
         "live_loops": 3,
+        "crew_log_reads": read_budget.snapshot(),
         "adaptive_cap": None,
         "adaptive_action": "hold",
         "adaptive_reason": "ok",
@@ -443,11 +457,14 @@ async def test_the_recorder_stop_is_awaited_and_never_raises(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_macos", [False, True], ids=["linux", "macos"])
 async def test_the_watchdog_budget_falls_back_to_the_managed_service_grace(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, is_macos: bool
 ) -> None:
     """A config failure must not erase the grace a managed service launch asked for:
-    the watchdog is armed with the environment's budget and a fresh dump file."""
+    the watchdog is armed with the environment's budget and a fresh dump file, and
+    on macOS also with the page-in reader and its shorter paging grace cap."""
+    monkeypatch.setattr(server.platform_compat, "IS_MACOS", is_macos)
     steps: list[str] = []
     monkeypatch.setattr(server, "sweep_stale_dumps", lambda: steps.append("sweep"))
     monkeypatch.setattr(server, "rotate_dumps", lambda: steps.append("rotate"))
@@ -462,7 +479,11 @@ async def test_the_watchdog_budget_falls_back_to_the_managed_service_grace(
     monkeypatch.setattr(server, "LoopStallWatchdog", watchdog)
     assert await server._open_loop_watchdog({"KIROCREW_MANAGED": "1"}) is watchdog.return_value
     assert steps == ["sweep", "rotate"]
-    watchdog.assert_called_once_with(dump_file="dump.txt", exit_after=40.0)
+    expected: dict[str, Any] = {"dump_file": "dump.txt", "exit_after": 40.0}
+    if is_macos:
+        expected["loop_major_faults"] = server.read_loop_pageins_under_pressure
+        expected["paging_grace_max"] = server.PAGING_GRACE_MAX_SECS_MACOS
+    watchdog.assert_called_once_with(**expected)
 
 
 @pytest.mark.asyncio
@@ -473,11 +494,12 @@ async def test_a_blocked_loop_is_logged_and_a_dead_heartbeat_reports_itself(
     capture that fails does not stop the beat, and a heartbeat that dies says so."""
     import logging
 
-    real_sleep = asyncio.sleep
+    # The two intervals are virtual: each sleep takes a permit, and the clock the heartbeat
+    # reads is the one below, so no interval has to pass for the lag to be the one named.
+    intervals = asyncio.Semaphore(2)
 
     async def _sleep(delay: float, *args: Any, **kwargs: Any) -> None:
-        # flake-ok: pre-existing asyncio.sleep stand-in that yields one tick instead of waiting; moved verbatim and tracked for a de-flake pass
-        await real_sleep(0)
+        await intervals.acquire()
 
     clock = iter([0.0, 10.0, 10.0, 15.5])
     monkeypatch.setattr(asyncio, "sleep", _sleep)
@@ -496,9 +518,14 @@ async def test_a_blocked_loop_is_logged_and_a_dead_heartbeat_reports_itself(
     with caplog.at_level(logging.DEBUG, logger=_FACADE):
         task = server._start_loop_heartbeat(state, watchdog, trimmer)
         await asyncio.gather(task, return_exceptions=True)
-        for _ in range(3):
-            # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-            await real_sleep(0)
+        # The done callback the heartbeat registered is what says it died: wait for its record.
+        await async_wait_until(
+            lambda: any(
+                record.getMessage() == "event-loop heartbeat task exited unexpectedly"
+                for record in caplog.records
+            ),
+            describe=lambda: f"logged: {[record.getMessage() for record in caplog.records]!r}",
+        )
     messages = [record.getMessage() for record in caplog.records]
     assert "event-loop heartbeat: lag 5.0s (loop was blocked)" in messages
     assert "Gateway heap trim returned 16 MiB to the OS" in messages
@@ -719,20 +746,34 @@ def test_a_rebound_listener_republishes_the_sidecar_it_owns(
 
 
 def test_a_second_listener_that_cannot_withdraw_ends_the_process(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Losing the second loopback family degrades to an explicit sign-in only while
     its sidecar was withdrawn; otherwise both guards are asked for the exit."""
+    import logging
+
     secondary = server.SecondaryLoopback(address="::1", site=MagicMock())
     state = types.SimpleNamespace(_listener_guard=MagicMock(), _secondary_listener_guard=None)
     monkeypatch.setattr(server, "_withdraw_listener_sidecar", lambda s, which: True)
-    server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
+    with caplog.at_level(logging.WARNING, logger=_FACADE):
+        server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
     state._listener_guard.request_exit.assert_not_called()
+    serving_on = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == _FACADE]
+    assert len(serving_on) == 1
+    assert serving_on[0][0] == logging.WARNING
+    assert "keeps serving its primary listener" in serving_on[0][1]
+    caplog.clear()
     monkeypatch.setattr(server, "_withdraw_listener_sidecar", lambda s, which: False)
     state._secondary_listener_guard = MagicMock()
-    server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
+    with caplog.at_level(logging.WARNING, logger=_FACADE):
+        server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
     state._listener_guard.request_exit.assert_called_once_with("rebind refused")
     state._secondary_listener_guard.request_exit.assert_called_once_with("rebind refused")
+    exiting = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == _FACADE]
+    assert len(exiting) == 1
+    assert exiting[0][0] == logging.CRITICAL
+    assert "could not be withdrawn" in exiting[0][1]
+    assert f"exiting with status {server.LISTENER_LOST_EXIT_CODE}" in exiting[0][1]
 
 
 @pytest.mark.asyncio
@@ -777,11 +818,22 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     created["on_event"]("run-1", {"kind": "step"})
 
     created["on_done"]("run-1", {"name": "nightly", "status": "done"})
-    for _ in range(3):
-        # flake-ok: pre-existing bounded yield ticks for the tasks the code under test schedules; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
+    # The delivery task opens the agent turn, then leaves the set once its done callback ran.
+    await async_wait_until(
+        lambda: state.push_slots_update.called and not state._background_tasks,
+        describe=lambda: (
+            f"enqueued: {slot.enqueue_or_run_prompt.call_args_list!r}; "
+            f"slot updates: {state.push_slots_update.call_args_list!r}; "
+            f"tasks still tracked: {state._background_tasks!r}"
+        ),
+    )
     prompt = slot.enqueue_or_run_prompt.call_args.args[0]
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
+    # The gateway's words: an inject row, run as a synthetic payload.
+    assert slot.enqueue_or_run_prompt.call_args.kwargs == {
+        "gateway_prompt_kind": "workflow_followup"
+    }
+    assert slot.enqueue_or_run_prompt.call_args.args[1].keywords == {"_synthetic_payload": True}
     state.push_slots_update.assert_called_once_with()
     assert state._background_tasks == set()
 
@@ -838,3 +890,97 @@ async def test_the_optional_post_bind_work_never_fails_the_gateway(
     assert "local decision model: starting qwen-small" in messages
     assert "local decision model: resume at startup failed" in messages
     assert cancelled not in server._OWN_HOST_WARM_TASKS
+
+
+@pytest.mark.asyncio
+async def test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """aiohttp stops at the first cleanup hook that raises, so each step contains its own.
+
+    The steps here are registered in the order the dashboard entrypoint uses: the Kiro
+    services, the remote puller, then the instance tunnels and the crew-log drain. Every
+    one before the drain raises, the way a network close or a gone process does at
+    shutdown; the drain must still write out the session logs' buffered appends.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    drained: list[bool] = []
+    monkeypatch.setattr(crew_log_emit, "drain_for_shutdown", lambda: drained.append(True))
+
+    class _Raises:
+        async def close(self) -> None:
+            raise ConnectionError("network is down")
+
+        async def shutdown(self) -> None:
+            raise ProcessLookupError("ssh child already gone")
+
+        async def stop(self) -> None:
+            raise OSError("socket closed under the puller")
+
+    puller = types.ModuleType("kiro_crew.dashboard.handlers.remote_puller")
+    puller.stop = _Raises().stop  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, puller.__name__, puller)
+
+    app = web.Application()
+    app["kiro_prerequisite_service"] = _Raises()
+    app["kas_login_service"] = _Raises()
+    state = types.SimpleNamespace(instances_manager=_Raises())
+    server._register_kiro_service_shutdown(app)
+    app.on_cleanup.append(server._stop_remote_puller)
+    server._register_instances_hooks(app, state, 0)
+    app.on_cleanup.freeze()
+
+    with caplog.at_level("WARNING"):
+        await app.on_cleanup.send(app)
+
+    assert drained == [True]
+    for what in ("Kiro prerequisite", "KAS login", "Remote report puller", "Instance tunnel"):
+        assert what in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_decision_model_cleanup_steps_log_a_failure_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stop that fails at shutdown is logged, so the cleanup steps after it still run."""
+    import kiro_crew.decisions as decisions
+
+    def _deactivate(**_kwargs: Any) -> None:
+        raise ProcessLookupError("local model server already gone")
+
+    async def _close_sessions() -> None:
+        raise ConnectionError("network is down")
+
+    runtime = types.ModuleType("kiro_crew.decisions.local_runtime")
+    runtime.get_runtime = lambda: types.SimpleNamespace(deactivate=_deactivate)  # type: ignore[attr-defined]
+    client = types.ModuleType("kiro_crew.decisions.impl_systemone")
+    client.close_sessions = _close_sessions  # type: ignore[attr-defined]
+    for module in (runtime, client):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        monkeypatch.setattr(decisions, module.__name__.rsplit(".", 1)[1], module, raising=False)
+
+    app = web.Application()
+    server._register_stt_hooks(app)
+    names = ("_local_decision_model_shutdown", "_decision_http_shutdown")
+    with caplog.at_level("WARNING"):
+        for hook in (h for h in app.on_cleanup if h.__name__ in names):
+            await hook(app)
+    assert "Local decision model stop failed" in caplog.text
+    assert "Decision HTTP session close failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_speech_task_that_failed_does_not_raise_out_of_its_cleanup_step() -> None:
+    """The idle sweep or prewarm task ending with an error must not stop later steps."""
+
+    async def _failed() -> None:
+        raise RuntimeError("model load failed")
+
+    app = web.Application()
+    server._register_stt_hooks(app)
+    task = asyncio.ensure_future(_failed())
+    await asyncio.wait({task})
+    app["stt_idle_sweep"] = task
+    hook = next(h for h in app.on_cleanup if h.__name__ == "_stt_shutdown")
+    await hook(app)

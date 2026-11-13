@@ -64,6 +64,9 @@ name                                       value      attributes      source
 ``kirocrew.inventory.mcp.servers``         count      ``class``       MCP roster
 ``kirocrew.inventory.config.toggle``       0/1        ``key``         config flags
 ``kirocrew.inventory.webhooks.registered`` count      —               ``hooks.json``
+``kirocrew.inventory.members``             count      —               crew roster config
+``kirocrew.inventory.voice.provider``      1          ``kind``,       ``stt`` /
+                                                      ``provider``    ``voice_reply``
 ``kirocrew.inventory.probe.failures``      count      ``probe``       this module
 =========================================  =========  ==============  ==================
 
@@ -132,6 +135,7 @@ knowledge documents        ``sqlite3`` connect + one indexed COUNT(*)   300s TTL
 lessons                    mtime-cached JSONL read                      store's own
 MCP servers                a few small ``json.loads``                   none
 registered webhooks        one small ``json.loads`` of ``hooks.json``   none
+members                    fingerprint-cached config read (2 stats)     none
 =========================  ===========================================  ==========
 
 Nothing here walks a whole data directory, opens a write connection, or creates a
@@ -188,7 +192,12 @@ GAUGE_LESSONS = "kirocrew.inventory.lessons"
 GAUGE_MCP_SERVERS = "kirocrew.inventory.mcp.servers"
 GAUGE_CONFIG_TOGGLE = "kirocrew.inventory.config.toggle"
 GAUGE_WEBHOOKS_REGISTERED = "kirocrew.inventory.webhooks.registered"
+GAUGE_MEMBERS = "kirocrew.inventory.members"
 GAUGE_PROBE_FAILURES = "kirocrew.inventory.probe.failures"
+#: 1 per ``kind`` (``stt`` / ``tts``), on the selected provider's closed label
+#: (``metrics.voice.provider_label``). The share of installs on each provider, and
+#: how it moves after a default changes, is a group-by on ``provider``.
+GAUGE_VOICE_PROVIDER = "kirocrew.inventory.voice.provider"
 
 ALL_METRIC_NAMES = (
     GAUGE_CRONS_ACTIVE,
@@ -200,7 +209,9 @@ ALL_METRIC_NAMES = (
     GAUGE_MCP_SERVERS,
     GAUGE_CONFIG_TOGGLE,
     GAUGE_WEBHOOKS_REGISTERED,
+    GAUGE_MEMBERS,
     GAUGE_PROBE_FAILURES,
+    GAUGE_VOICE_PROVIDER,
 )
 
 #: Gauges here whose reading is a monotonic PROCESS-LIFETIME total rather than a
@@ -228,6 +239,8 @@ PROBE_LESSONS = "lessons"
 PROBE_MCP = "mcp"
 PROBE_CONFIG_TOGGLES = "config_toggles"
 PROBE_WEBHOOKS = "webhooks"
+PROBE_MEMBERS = "members"
+PROBE_VOICE_PROVIDER = "voice_provider"
 
 ALL_PROBES = (
     PROBE_CRONS,
@@ -239,6 +252,8 @@ ALL_PROBES = (
     PROBE_MCP,
     PROBE_CONFIG_TOGGLES,
     PROBE_WEBHOOKS,
+    PROBE_MEMBERS,
+    PROBE_VOICE_PROVIDER,
 )
 
 #: The knowledge table this module counts. A named constant rather than a literal
@@ -643,6 +658,44 @@ def read_registered_webhooks() -> Optional[int]:
     return count
 
 
+def read_members() -> Optional[int]:
+    """Count of crewmates the person created on this install (the Crewmates page).
+
+    Reduced by ``members.count_person_created_crewmates``, the owner of the
+    roster's own ``dashboard_created`` rule, so the gauge cannot drift from which
+    rows the Crewmates page lists as created by the person. Mate (shipped with the
+    product), package-synced and app-made crews, legacy rows and the reserved
+    ``default`` member are not counted: on a busy host the package-synced rows are
+    the large majority of the raw roster, and counting them would bury the number
+    this gauge exists to show.
+
+    One fingerprint-cached config load per collection, the same cost as the config
+    toggles, so it is uncached for the same reason. No name, slug or member id
+    leaves the process: the count rides in the VALUE.
+
+    An empty roster is a real 0, the steady state of an install whose person has
+    not created a crewmate yet. A HALF-READ config is a fault, not a count: the
+    loader does not raise on an unreadable base or overlay file, it keeps going
+    with what it could read, so the crewmates held in the unreadable file would
+    silently drop out and publish a false decrease -- possibly a false 0. Those
+    cases record a ``members`` probe failure and return ``None``, the same as a
+    config read that raises.
+
+    One case this cannot separate: a file that parses but whose ``agents`` value
+    is not an object. The loader reads that section as empty without marking it
+    degraded, so it arrives identical to an install with no crews and reads 0 --
+    the same limit :func:`read_mcp_server_classes` documents for its roster.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.members import count_person_created_crewmates
+
+    cfg = KiroCrewConfig.load()
+    if cfg._base_unreadable or cfg._overlay_unreadable:
+        _note_probe_failure(PROBE_MEMBERS)
+        return None
+    return count_person_created_crewmates(cfg)
+
+
 def read_mcp_server_classes() -> Optional[dict[str, int]]:
     """MCP server counts split into first-party and third-party.
 
@@ -686,8 +739,8 @@ def read_config_toggles() -> Optional[dict[str, int]]:
 
     A key whose field cannot be resolved is omitted rather than reported as 0 —
     a renamed config field must read as a missing series, never as a switch
-    someone turned off. ``test_every_declared_toggle_resolves`` is what keeps
-    that from being a silent hole.
+    someone turned off. ``test_every_declared_toggle_resolves_against_a_real_config``
+    is what keeps that from being a silent hole.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -702,6 +755,60 @@ def read_config_toggles() -> Optional[dict[str, int]]:
             continue
         out[key] = int(value)
     return out or None
+
+
+def read_voice_providers() -> Optional[dict[str, str]]:
+    """The selected dictation and reply provider, as ``{kind: closed label}``.
+
+    ``stt`` is ``stt.provider``. ``tts`` is ``voice_reply.provider`` resolved the
+    way every reader resolves it (``voice_reply.resolve_configured_provider``), so
+    an absent key reads as the provider actually in use, the edition's default
+    included. Labels come from ``metrics.voice.provider_label``: a built-in as
+    itself, an edition-registered provider as ``registered``, anything else
+    ``other``. Config is read once for both.
+    """
+    from kiro_crew.config.loader import (
+        KiroCrewConfig,
+        config_local_path,
+        config_path,
+        read_merged_config_files,
+    )
+    from kiro_crew.metrics.voice import KIND_STT, KIND_TTS, provider_label
+    from kiro_crew.voice_reply import resolve_configured_provider
+
+    cfg = KiroCrewConfig.load()
+    raw = getattr(cfg, "raw", None)
+    section = raw.get("voice_reply") if isinstance(raw, dict) else None
+    if not isinstance(section, dict):
+        merged = read_merged_config_files(config_path(), config_local_path())
+        section = merged.get("voice_reply") if isinstance(merged, dict) else None
+    return {
+        KIND_STT: provider_label(KIND_STT, cfg.stt.provider),
+        # warn=False: this runs on every collection, and a typo'd provider would
+        # otherwise log the same warning once per export interval.
+        KIND_TTS: provider_label(
+            KIND_TTS,
+            resolve_configured_provider(section if isinstance(section, dict) else None, warn=False),
+        ),
+    }
+
+
+def _voice_provider_observations() -> "Callable[[CallbackOptions], Iterable[Observation]]":
+    """One observation of 1 per kind, carrying ``kind`` and ``provider``."""
+    from opentelemetry.metrics import Observation
+
+    def _callback(options: "CallbackOptions") -> "Iterator[Observation]":
+        if not is_install_reporter():
+            return
+        try:
+            values = read_voice_providers()
+        except Exception:  # noqa: BLE001 -- never let a probe break the exporter
+            _note_probe_failure(PROBE_VOICE_PROVIDER)
+            return
+        for kind, provider in (values or {}).items():
+            yield Observation(1, attributes={"kind": kind, "provider": provider})
+
+    return _callback
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +952,18 @@ def register_inventory_gauges(meter: "Meter") -> None:
             callbacks=[_observations(PROBE_WEBHOOKS, read_registered_webhooks)],
             unit="1",
             description="Webhook callback contexts registered on this install",
+        )
+        meter.create_observable_gauge(
+            GAUGE_MEMBERS,
+            callbacks=[_observations(PROBE_MEMBERS, read_members)],
+            unit="1",
+            description="Bots the person created on this install",
+        )
+        meter.create_observable_gauge(
+            GAUGE_VOICE_PROVIDER,
+            callbacks=[_voice_provider_observations()],
+            unit="1",
+            description="Selected dictation and reply provider, per kind, on closed labels",
         )
         meter.create_observable_gauge(
             GAUGE_PROBE_FAILURES,

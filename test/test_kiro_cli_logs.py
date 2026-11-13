@@ -5,11 +5,11 @@ is attributable to the code rather than to the fixture:
 
 1. SCOPE. The tool reads kiro-cli's mcp/lsp PROTOCOL logs only. The two
    conversation-bearing sources kiro-cli also writes — ``kiro-chat.log`` and the
-   ``sessions/cli/<sid>.jsonl`` transcripts — are single shared host files per
-   gateway, so returning either would disclose another session's private
+   ``sessions/cli/<sid>.jsonl`` transcripts — are not scoped to the calling
+   session, so returning either would disclose another session's private
    conversation to the calling session; the credential-oriented redaction stack
    does not narrow prose. ``test_chat_log_is_not_a_source`` plants a populated
-   chat log and asserts none of it comes back.
+   shared and per-process chat log and asserts none of either comes back.
 2. REDACTION. Every live-secret shape kiro-cli writes into its logs — a bearer
    token, a mid-line ``Authorization: Basic <b64>`` header, an ``mc_token`` auth
    cookie, and the serialized ``"authorization": ...`` JSON form — must be gone
@@ -110,14 +110,21 @@ def test_chat_log_is_not_a_source(tmp_path, monkeypatch):
     not narrow conversation prose, and there is no per-session delimiter to filter
     on — so an agent-callable read of it would hand session A's private
     conversation to session B. The bundle collector still includes it (that path
-    is user-to-user); this tool must not.
+    is user-to-user); this tool must not. The per-process chat logs the bundle
+    finds in agent scratch (``_scratch_kiro_chat_logs``) are no narrower: one
+    kiro-cli process can serve several sessions, so they stay out too.
 
-    The guard is mutation-shaped: the chat log EXISTS and is discoverable here,
-    so an implementation that appended it as a source would fail this test.
+    The guard is mutation-shaped: both chat logs EXIST and are discoverable here,
+    so an implementation that appended either as a source would fail this test.
     """
     chat = tmp_path / "kiro-chat.log"
     chat.write_text("2026-09-06T16:00:00 SESSION-B-PRIVATE-CONVERSATION-PROSE\n")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: chat)
+    scratch_chat = tmp_path / "runtime-00000001" / "kiro-log" / "kiro-chat.log"
+    scratch_chat.parent.mkdir(parents=True)
+    scratch_chat.write_text("2026-09-06T16:00:00 SESSION-C-PER-PROCESS-PROSE\n")
+    monkeypatch.setattr(diagnostics.agent_scratch, "scratch_root", lambda: tmp_path)
+    assert diagnostics._scratch_kiro_chat_logs() == [scratch_chat]
     # A protocol log is present too, so the tool has something to return and the
     # assertion below cannot pass merely because the reader found nothing at all.
     _source(monkeypatch, tmp_path, "2026-09-06T16:00:00 mcp handshake ok\n")
@@ -126,7 +133,8 @@ def test_chat_log_is_not_a_source(tmp_path, monkeypatch):
 
     assert "mcp handshake ok" in out, "the protocol log should still be read"
     assert "SESSION-B-PRIVATE-CONVERSATION-PROSE" not in out
-    assert "=== kiro-chat.log" not in out, "the chat log must not appear as a section"
+    assert "SESSION-C-PER-PROCESS-PROSE" not in out
+    assert "=== kiro-chat" not in out, "no chat log may appear as a section"
 
 
 def test_oversized_single_line_returns_only_the_marker(tmp_path, monkeypatch):

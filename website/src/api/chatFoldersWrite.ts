@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
+import type { ChatFolder } from '../types'
 
 /** Mutation key carried by the folder-tree optimistic writes the idle gate
  *  covers — the `useFolderMutations` update/create/delete writes.
@@ -44,3 +45,28 @@ export function invalidateFoldersWhenIdle(queryClient: QueryClient): void {
   }, 0)
 }
 const scheduled = new WeakSet<QueryClient>()
+
+/** Put a just-created folder into the `['chat-folders']` cache, then refetch.
+ *
+ *  The server's own record goes in before the refetch, so the new folder is in
+ *  the tree on the next render: a caller that reveals the folder, or moves a
+ *  session into it, right after the create resolves looks the folder up in
+ *  this list, and without the seed it would find nothing until the refetch
+ *  landed. The refetch still runs and replaces the seed with the authoritative
+ *  list.
+ *
+ *  Only into a list that already loaded. When the first load failed the cache
+ *  holds no data, and seeding one folder into it would read as a successful
+ *  load: the error notice and its Retry would vanish and the tree would show
+ *  that one folder alone.
+ *
+ *  The refetch goes through the idle gate, not a direct invalidate: a refetch
+ *  here would land inside a still-pending update's optimistic window. */
+export function seedCreatedChatFolder(queryClient: QueryClient, created: unknown): void {
+  const row = created as ChatFolder | null
+  if (row && typeof row.id === 'string' && row.id) {
+    queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
+      old && !old.some(f => f.id === row.id) ? [...old, row] : old)
+  }
+  invalidateFoldersWhenIdle(queryClient)
+}

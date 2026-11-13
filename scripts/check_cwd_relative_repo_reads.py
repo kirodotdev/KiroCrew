@@ -72,6 +72,7 @@ import ast
 import configparser
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,18 +226,43 @@ def _rooted_literal(node: ast.AST, bound: dict[str, str]) -> str | None:
     return None
 
 
+def _binding_sites(tree: ast.AST) -> Counter[str]:
+    """How many places in the file bind each name: targets, parameters, imports."""
+    sites: Counter[str] = Counter()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            sites[node.id] += 1
+        elif isinstance(node, ast.arg):
+            sites[node.arg] += 1
+        elif isinstance(node, ast.alias):
+            sites[(node.asname or node.name).split(".")[0]] += 1
+    return sites
+
+
 def names_bound_to_relative_paths(tree: ast.AST) -> dict[str, str]:
     """``P = Path("src/x")`` -> ``{"P": "src/x"}``, so a later ``P.read_text()`` is seen.
 
     File-wide rather than per-scope: a module-level constant accessed inside a
     method is the shape this pattern actually takes.
+
+    A join or ``.resolve()`` chain (``P = Path("src") / "x"``) is followed only when
+    nothing else in the file binds ``P`` or the name the chain starts from. With no
+    scope model, a second binding could be the one a read sees; this keeps the chain
+    from adding a false positive to a merge-blocking gate, at the cost of missing a
+    chain-bound name that is bound twice.
     """
+    sites = _binding_sites(tree)
     bound: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
             literal = _path_literal(node.value)
-            if isinstance(target, ast.Name) and literal is not None:
+            if literal is None and sites[target.id] == 1:
+                unique = {name: value for name, value in bound.items() if sites[name] == 1}
+                literal = _rooted_literal(node.value, unique)
+            if literal is not None:
                 bound[target.id] = literal
     return bound
 
@@ -325,6 +351,11 @@ _PROBES: tuple[tuple[str, str, bool], ...] = (
     (
         "a relative path bound to a name first",
         'from pathlib import Path\nP = Path("src/kiro_crew/x.py")\nP.read_text()\n',
+        True,
+    ),
+    (
+        "a join bound to a name first",
+        'from pathlib import Path\nP = Path("src/kiro_crew") / "x.py"\nP.read_text()\n',
         True,
     ),
     (

@@ -860,11 +860,14 @@ def test_a_measurement_with_no_open_turn_attaches_nowhere():
 # Rewinds, any sequence
 # --------------------------------------------------------------------------- #
 
-from hypothesis import given, settings  # noqa: E402
+from hypothesis import example, given, settings  # noqa: E402
 from hypothesis import strategies as st  # noqa: E402
 
 
 @settings(max_examples=200, deadline=None)
+# 32 turns, then a rewind to turn 2. Turn 1's row left the ring at turn 31, so the
+# trend holds turn 2 alone.
+@example(step=1, steps=[0] * 17 + [18] + [0] * 14 + [2])
 @given(
     st.sampled_from([1, 2, 3]),
     st.lists(
@@ -876,9 +879,10 @@ from hypothesis import strategies as st  # noqa: E402
 def test_any_rewind_sequence_keeps_ordinals_unique_and_equal_to_one_through_turns(step, steps):
     """Each step either sends a new message (0) or cuts the conversation back to turn k
     and sends it again. Turn numbers are the durable row count, ``step`` apart, as the
-    dashboard writes them. A rewind to a turn still in the ring leaves the newest turns
-    1..turns, each once; one to an older turn is unknown and takes a new ordinal. In
-    every case ordinals are unique, rise left to right, and end at ``turns``."""
+    dashboard writes them. A rewind to a turn the memo knows keeps its ordinal and the
+    held rows below it, each once; a row that already left the ring stays gone. One to
+    an older turn is unknown and takes a new ordinal. In every case ordinals are unique,
+    rise left to right, and end at ``turns``."""
     ctx = measured_mod.context_start()
     seq = 0
 
@@ -891,14 +895,19 @@ def test_any_rewind_sequence_keeps_ordinals_unique_and_equal_to_one_through_turn
     count = 0  # turns in the conversation, as the user sees them
     expected = 0  # the fold's ordinal count, which an unknown rewind moves on
     dense = True  # every rewind here is within the memo's range
+    # The ordinals the ring holds, oldest first. A row that left the ring is gone for
+    # good: a rewind to an older turn keeps only the rows below it that are still held.
+    ring: list[int] = []
     for choice in steps:
         known = 0 < choice <= count
         if choice == 0 or choice > count:
             count += 1
             expected += 1
+            ring = [*ring, expected][-measured_mod.TREND_TURNS :]
         elif known:
             expected -= count - choice
             count = choice
+            ring = [*(o for o in ring if o < expected), expected]
         else:
             count = choice
             expected += 1
@@ -920,4 +929,4 @@ def test_any_rewind_sequence_keeps_ordinals_unique_and_equal_to_one_through_turn
     if dense:
         assert view["turns"] == count == expected
         assert ordinals == list(range(count - len(ordinals) + 1, count + 1))
-        assert len(ordinals) == min(count, measured_mod.TREND_TURNS)
+        assert ordinals == ring

@@ -1,9 +1,9 @@
 """Source-scan security invariants that span several modules.
 
 Each class reads source or template text and pins a control a security scan
-asked for: masked emails in channel inbound logs, no raw exception text in the
-Code Review Sage 502 bodies, non-security hashing marked as such, TLS-only S3
-bucket policies, and an encrypted reaper alarm topic.
+asked for: masked emails in channel inbound logs, non-security hashing marked as
+such, TLS-only S3 bucket policies, and an encrypted reaper alarm topic. An app's
+own invariants of this kind live in its own tests.
 """
 
 from __future__ import annotations
@@ -46,22 +46,6 @@ class TestEmailRedactionInLogs:
             assert "***" in who, f"Email logged without redaction: {who}"
 
 
-class TestSageRoutesErrorDisclosure:
-    """The 502 catch-all handlers must not return str(e)."""
-
-    def test_no_raw_exception_in_502_response(self):
-        src = (
-            ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "code_review_sage" / "backend"
-        ) / "routes.py"
-        text = "\n".join(
-            p.read_text(encoding="utf-8")
-            for p in [src, *sorted(src.with_name("routes_parts").glob("*.py"))]
-        )
-        lines_502 = [line for line in text.splitlines() if "status=502" in line]
-        for line in lines_502:
-            assert "str(e)" not in line, f"str(e) leaked in 502 response: {line.strip()}"
-
-
 class TestWeakCryptography:
     """MD5 must carry usedforsecurity=False; SHA-1 must be replaced."""
 
@@ -72,13 +56,6 @@ class TestWeakCryptography:
             assert (
                 "usedforsecurity=False" in line or "usedforsecurity = False" in line
             ), f"MD5 call without usedforsecurity=False: {line.strip()}"
-
-    def test_sage_learning_no_sha1(self):
-        src = (
-            ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "code_review_sage" / "sage_lib"
-        ) / "learning.py"
-        text = src.read_text(encoding="utf-8")
-        assert "hashlib.sha1(" not in text, "SHA-1 must be replaced with SHA-256"
 
 
 class TestS3BucketPolicyTLS:

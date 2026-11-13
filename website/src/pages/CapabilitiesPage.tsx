@@ -1,48 +1,44 @@
 import { lazy, Suspense, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
-import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2 } from 'lucide-react'
+import { Navigate, useLocation } from 'react-router-dom'
+import { BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2, Puzzle, Server } from 'lucide-react'
 import { api } from '../api/client'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
 import ErrorNotice from '../components/ErrorNotice'
 import { PinSurfaceButton } from '../components/PinSurfaceButton'
 import { useProvider } from '../providers'
-import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import KiroCrewAgentsPage from './KiroCrewAgentsPage'
 import HooksPage from './HooksPage'
-import ConnectionsPage from './connections/ConnectionsPage'
-import KnowledgePage from './KnowledgePage'
+import { legacyConnectionsTarget } from './connections/connectionsLinks'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
+import KiroPowersTab from './overview/KiroPowersTab'
 import { ContentSkeleton } from '../components/ui'
 
 // The custom-agent editor is a drill-in most sessions never open; its chunk is
 // fetched on the first visit rather than riding in the dashboard shell.
 const AgentTemplatesTab = lazy(() => import('./overview/AgentTemplatesTab'))
 
+// The Knowledge tab is its own chunk: the sources list, the ingestion
+// controls and the remote-source form are the largest first-party code on
+// this page and only one of eight tabs reaches them, so they sit behind the
+// same lazy boundary App.tsx gives its heavy pages (SessionsPage, MembersPage)
+// rather than in the App chunk that scripts/check-bundle-size.mjs budgets.
+const KnowledgePage = lazy(() => import('./KnowledgePage'))
 
-/**
- * Escape hatch for the Connections services gallery.
- *
- * The Connections work (provider registry, OAuth relay, card gallery) ships ON:
- * with no `connections_ui` key — the state of every install that never touched
- * it — this tab's Services panel offers the launched provider cards. Setting
- * `connections_ui: false` in the running instance's `$KIROCREW_HOME/config.json`
- * empties that panel again, leaving the MCP Servers sub-tab as the only way to
- * reach a server. Config is read live, so no gateway restart is needed either
- * way.
- *
- * The predicate lives in hooks/useConnectionsUi so chat's banner gate reads the
- * same answer. WHICH providers a launched gallery offers is decided per provider
- * in pages/connections/registry.ts, not here.
- */
+// MCP Servers: the server list, the sharing hero and its gateway queries are
+// their own chunk, fetched on the first visit to the tab.
+const McpPage = lazy(() => import('./McpPage'))
+
 
 export default function CapabilitiesPage() {
   const provider = useProvider()
   const { t } = useTranslation()
 
-  const connectionsUiEnabled = useConnectionsUiEnabled()
+  const { search, hash } = useLocation()
+  const legacyTarget = legacyConnectionsTarget(search, hash)
 
   // Generated skill candidates wait for approval in the Skills tab's review
   // queue, which only renders while that tab is open. The page remembers the
@@ -87,13 +83,12 @@ export default function CapabilitiesPage() {
       // themselves.
       { key: 'templates', label: t('pages.capabilitiesPage.templates_label'), icon: <FileCode2 size={16} />, description: t('pages.capabilitiesPage.templates_description'), group: groupAgent },
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent, badge: { count: pendingSkillCount, label: t('pages.capabilitiesPage.skills_awaiting_review', { count: pendingSkillCount }) } },
-      // The label and description are deliberately unchanged. Substituting the
-      // pre-gallery "MCP Servers" strings was tried and reverted: those keys were
-      // renamed when the gallery landed and no catalog still resolves them, so
-      // the render-time i18n gate correctly caught a raw key leaking into the
-      // tab label. Wording is a follow-up; what matters for the release is that
-      // the gallery itself is unreachable.
-      { key: 'mcp', label: t('pages.capabilitiesPage.connections_label'), icon: <Link2 size={16} />, description: t('pages.capabilitiesPage.connections_description'), group: groupAgent },
+      // MCP Servers sits beside Skills: both are what the agent can use.
+      // `view` (Sharing) is a drill-in, so a rail pick opens the Servers view.
+      { key: 'mcp-servers', label: t('nav.mcp_servers'), icon: <Server size={16} />, description: t('pages.capabilitiesPage.mcp_servers_description'), group: groupAgent, drillInParams: ['view'] },
+      // Powers and Agent Plugins installed for Kiro, listed read-only: none is
+      // loaded yet, and each row says why (agent-plugins spec §6).
+      { key: 'powers', label: t('pages.capabilitiesPage.powers_label'), icon: <Puzzle size={16} />, description: t('pages.capabilitiesPage.powers_description'), group: groupAgent },
       // Knowledge lives here rather than on the main rail: its consumer is the
       // agent (retrieval), and the human's intent on this surface is "manage
       // what the agent knows" — the same asset-management intent as Prompts and
@@ -112,6 +107,9 @@ export default function CapabilitiesPage() {
     // first computed and the rail would stay in the old language after a switch.
   }, [provider, t, pendingSkillCount])
 
+  // Before the layout mounts: it would otherwise remember a tab that is gone.
+  if (legacyTarget) return <Navigate to={legacyTarget} replace />
+
   return (
     <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" footer={pendingSkillsNotice} headerRight={<PinSurfaceButton defaultTab={tabs[0]?.key} />}>
       {tab => <>
@@ -120,13 +118,17 @@ export default function CapabilitiesPage() {
             deploy rejects the import, and without a local boundary that rejection
             would replace the whole dashboard with the app-shell error screen. */}
         {tab === 'templates' && <ErrorBoundary><Suspense fallback={<ContentSkeleton rows={6} />}><AgentTemplatesTab /></Suspense></ErrorBoundary>}
-        {tab === 'mcp' && <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
         {tab === 'skills' && <SkillsTab />}
+        {tab === 'mcp-servers' && <ErrorBoundary><Suspense fallback={<ContentSkeleton rows={6} />}><McpPage embedded /></Suspense></ErrorBoundary>}
+        {tab === 'powers' && <KiroPowersTab />}
         {/* ErrorBoundary preserves the crash isolation the /knowledge route
             used to provide: the page lazy-loads the Graph chunk, and a stale
             chunk after a deploy would otherwise reject through to the root
-            boundary and take the whole dashboard down with it. */}
-        {tab === 'knowledge' && <ErrorBoundary><KnowledgePage embedded /></ErrorBoundary>}
+            boundary and take the whole dashboard down with it. The Suspense
+            covers the page's own chunk the same way, with the skeleton the
+            Templates tab shows while its chunk loads: a null fallback leaves
+            the pane empty on the first visit after a deploy. */}
+        {tab === 'knowledge' && <ErrorBoundary><Suspense fallback={<ContentSkeleton rows={6} />}><KnowledgePage embedded /></Suspense></ErrorBoundary>}
         {tab === 'steering' && <SteeringTab />}
         {tab === 'hooks' && <HooksPage embedded />}
         {tab === 'prompts' && <PromptsTab />}

@@ -20,7 +20,7 @@
  *   number with no detail — you could see "12 remaining" but not what they were.
  * - Claim one now, rather than waiting for the next heartbeat.
  */
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   RefreshCw,
@@ -93,9 +93,14 @@ export default function SignalsPanel() {
     enabled: false,
   })
 
+  // Claimed in the click itself: `claimMutation.isPending` only re-renders a tick
+  // after `mutate()`, so two fast presses would both read it as false. One mutation
+  // serves every row, so one ref is right — a claim is in flight for the whole panel.
+  const claimClaimed = useRef(false)
   const claimMutation = useMutation({
     mutationFn: (signal: Signal) => opsApi.claim(signal),
     onSettled: () => {
+      claimClaimed.current = false
       queryClient.invalidateQueries({ queryKey: ['ops-mission-control', 'state'] })
       queryClient.invalidateQueries({ queryKey: SIGNALS_QUERY_KEY })
     },
@@ -333,9 +338,12 @@ export default function SignalsPanel() {
         )}
 
         <div className="flex items-center gap-2 mt-3">
+          {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+              order and drops a keyboard user's focus to the page while it polls. */}
           <Btn
-            disabled={signalsQuery.isFetching}
-            onClick={() => signalsQuery.refetch()}
+            aria-disabled={signalsQuery.isFetching || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+            onClick={() => { if (!signalsQuery.isFetching) void signalsQuery.refetch() }}
             title={i18nT('apps.opsMissionControl.signalsPanel.poll_every_configured_source_now_read_only')}
           >
             <RefreshCw className="lucide-inline" />{' '}
@@ -345,8 +353,10 @@ export default function SignalsPanel() {
           </Btn>
           {signalsQuery.data ? (
             <span className="text-[12px] text-muted">
-              {firing.length} {i18nT('apps.opsMissionControl.signalsPanel.firing_2')} {suppressed.length} {i18nT('apps.opsMissionControl.signalsPanel.parked_at_provider')}{' '}
-              {cleared.length} {i18nT('apps.opsMissionControl.signalsPanel.cleared')} {unclaimed.length} {i18nT('apps.opsMissionControl.signalsPanel.not_yet_claimed')}
+              {i18nT('apps.opsMissionControl.signalsPanel.firing_count', { count: firing.length })}{' '}
+              {i18nT('apps.opsMissionControl.signalsPanel.parked_count', { count: suppressed.length })}{' '}
+              {i18nT('apps.opsMissionControl.signalsPanel.cleared_count', { count: cleared.length })}{' '}
+              {i18nT('apps.opsMissionControl.signalsPanel.unclaimed_count', { count: unclaimed.length })}
               {/* The one state where "nothing is firing" on its own would be a lie: the
                   estate is not quiet, it is muted, and the operator needs to know which
                   before they conclude everything is fine. */}
@@ -502,9 +512,17 @@ export default function SignalsPanel() {
                     {i18nT('apps.opsMissionControl.signalsPanel.provider')}
                   </a>
                 ) : null}
+                {/* While claiming: `aria-disabled` plus the claim, NOT `disabled`,
+                    which leaves the tab order and drops a keyboard user's focus to
+                    the page while the claim runs. */}
                 <Btn
-                  disabled={claimMutation.isPending}
-                  onClick={() => claimMutation.mutate(s)}
+                  aria-disabled={claimMutation.isPending || undefined}
+                  className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                  onClick={() => {
+                    if (claimClaimed.current) return
+                    claimClaimed.current = true
+                    claimMutation.mutate(s)
+                  }}
                 >
                   {i18nT('apps.opsMissionControl.signalsPanel.claim')}
                 </Btn>

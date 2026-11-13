@@ -38,3 +38,11 @@ export { default as Clickable } from '../components/Clickable'
 export { default as Modal } from '../components/Modal'
 export { default as ErrorNotice } from '../components/ErrorNotice'
 export { SettingsSection, SettingsCard, SettingsInput, SettingsToggle, SettingsSelect } from '../components/settings'
+
+// Inline dropdown: a narrowed wrapper over the host's own select.
+export { default as Select } from './Select'
+export type { SelectProps } from './Select'
+
+// The guide's caution marker, spread onto a control that removes something, so a
+// dashboard guide shows its caution line before a press there.
+export { guideCaution } from '../guide/trustRoot'

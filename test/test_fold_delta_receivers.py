@@ -59,7 +59,7 @@ def _fresh_bus():
 
 
 def _cases() -> list[dict[str, Any]]:
-    return list(json.loads(FIXTURES.read_text())["cases"])
+    return list(json.loads(FIXTURES.read_text(encoding="utf-8"))["cases"])
 
 
 def _delta(revision: int, base: int, value: Any = None, ops: Any = None) -> bus.FoldAdvanced:
@@ -122,7 +122,12 @@ def test_a_baseline_is_labelled_with_the_published_revision_and_the_next_delta_a
     assert len(got) == 2
     delta = got[1]
     assert delta.kind == fold_delta.KIND_DELTA and delta.base_revision == published
-    assert fold_delta.apply_work(got[0].value, delta.delta or {}) == dict(delta.value)
+    assert delta.value is None, "a work delta carries no whole value"
+    assert got[0].value is not None
+    assert (
+        fold_delta.apply_work(got[0].value, delta.delta or {})
+        == crew_log.read_slot_projection(WORK_SLOT, "work").value
+    )
 
 
 def test_a_live_delta_off_the_floor_reaches_a_baseline_subscriber_as_snapshot_needed():
@@ -170,11 +175,19 @@ def test_held_events_replay_on_the_baseline_by_the_base_rule():
 # --------------------------------------------------------------------------- #
 
 
-def _real_events() -> list[bus.FoldAdvanced]:
+def _real_events() -> "list[tuple[bus.FoldAdvanced, dict[str, Any]]]":
     """The ``work`` events a real board publishes over a run of conductor and worker
-    writes, closes past the closed cap included, so ``remove`` ops appear."""
-    events: list[bus.FoldAdvanced] = []
-    bus.subscribe(bus.FOLD_ADVANCED, events.append, scope="slot", key=WORK_SLOT, fold="work")
+    writes, closes past the closed cap included, so ``remove`` ops appear. Each beside
+    the render it stands for (``eager.published_value`` inside the publish), since the
+    event itself carries none."""
+    events: "list[tuple[bus.FoldAdvanced, dict[str, Any]]]" = []
+
+    def _record(event: bus.FoldAdvanced) -> None:
+        whole = eager.published_value(event.key, event.fold, event.revision)
+        assert whole is not None
+        events.append((event, whole))
+
+    bus.subscribe(bus.FOLD_ADVANCED, _record, scope="slot", key=WORK_SLOT, fold="work")
     writer = _Writer()
     writer.create("it_a")
     _publish_now()
@@ -203,16 +216,22 @@ def _real_events() -> list[bus.FoldAdvanced]:
 
 
 def test_conductor_wake_reports_the_same_items_from_deltas_as_from_whole_values():
-    events = _real_events()
+    pairs = _real_events()
+    events = [event for event, _whole in pairs]
+    assert all(e.value is None for e in events)
     kinds = {e.kind for e in events[1:]}
     assert kinds == {fold_delta.KIND_DELTA}, kinds
     assert any((e.delta or {}).get("remove") for e in events), "a remove op was exercised"
     whole = conductor_wake._Registry()
     delta = conductor_wake._Registry()
-    for event in events:
-        expected = whole.observe(WORK_SLOT, conductor_wake._board_items(dict(event.value)))
+    for event, render in pairs:
+        expected = whole.observe(WORK_SLOT, conductor_wake._board_items(dict(render)))
         items, order = conductor_wake._event_news(event)
-        assert items is not None
+        if items is None:
+            # The first publish is ``snapshot_needed`` with no value: the receiver reads
+            # the board, which at that publish is the recorded render.
+            assert event.kind == fold_delta.KIND_SNAPSHOT_NEEDED and order is None
+            items = conductor_wake._board_items(dict(render))
         if order is None:
             got = delta.observe(WORK_SLOT, items)
         else:
@@ -328,7 +347,7 @@ def test_metrics_subscribes_to_session_folds_only_so_never_sees_a_work_delta():
     bus.subscribe(bus.FOLD_ADVANCED, seen.append, scope=bus.SCOPE_SESSION)
     bus.publish(bus.FOLD_ADVANCED, _delta(5, 4))
     assert seen == []
-    source = pathlib.Path(crew_log_export.__file__).read_text()
+    source = pathlib.Path(crew_log_export.__file__).read_text(encoding="utf-8")
     assert "scope=crew_log_bus.SCOPE_SESSION" in source
 
 

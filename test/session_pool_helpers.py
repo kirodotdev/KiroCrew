@@ -16,8 +16,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture, moved verbatim; it only sets KIROCREW_HOME, and no test in a module that imports it calls monkeypatch.undo()
-def _isolate_config_dir(tmp_path, monkeypatch):
+def _isolate_config_dir(tmp_path, _floor_monkeypatch):
     """Point config_dir() at a throwaway dir so SessionManager's SessionMap
     writes to a per-test ``session_map.json`` instead of the real
     ``~/.kirocrew/session_map.json``.
@@ -30,7 +29,7 @@ def _isolate_config_dir(tmp_path, monkeypatch):
     under xdist. Isolating config_dir also stops the suite from polluting
     the developer's real ``~/.kirocrew``.
     """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew_home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew_home"))
 
 
 def _make_cfg(

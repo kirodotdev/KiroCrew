@@ -37,7 +37,8 @@ const STORAGE_KEY = 'mc-bottom-terminal'
 let store: typeof import('../hooks/useBottomTerminal') | null = null
 
 afterEach(() => {
-  store?.__resetBottomTerminal()
+  // The view is still mounted here (RTL unmounts after this hook), so the reset re-renders it.
+  act(() => { store?.__resetBottomTerminal() })
   store = null
   localStorage.clear()
 })

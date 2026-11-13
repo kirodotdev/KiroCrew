@@ -61,8 +61,10 @@ def sniff_audio(raw: bytes) -> str:
     """
     if raw.startswith(b"ID3"):
         return ".mp3"
-    # A bare MPEG frame with no ID3 tag: 11 sync bits.
-    if len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0:
+    # A bare MPEG frame with no ID3 tag: 11 sync bits, then a layer field that
+    # is not 00. Layer 00 is reserved in MPEG audio and is the AAC ADTS header
+    # (FF F1 / FF F9), which is not one of the three containers.
+    if len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0 and raw[1] & 0x06:
         return ".mp3"
     if raw.startswith(b"OggS"):
         return ".ogg"

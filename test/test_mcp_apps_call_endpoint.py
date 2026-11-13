@@ -94,7 +94,7 @@ def _spool_record(
 
 
 def _cbs(spool_id: str):
-    """The record's #418 callback capability (minted by write_spool)."""
+    """The record's callback capability (minted by write_spool)."""
     rec = load_spool(spool_id) or {}
     return rec.get("callback_secret")
 
@@ -143,16 +143,9 @@ async def _spawn_pooled_server() -> _LivePool:
         last_used_at=now,
     )
     pump = asyncio.get_running_loop().create_task(backend.run_stdout_pump())
-    # Build the owner of aclose() BEFORE the first await that can fail. The
-    # handshake below can raise (asyncio.TimeoutError from the bounded
-    # inbox.get() on a loaded shard, BackendGone from forward_from_stub if the
-    # child died during startup), and every one of this file's callers only
-    # reaps through the `finally: await live.aclose()` around the value we
-    # return — so a raise from inside the helper strands the real python MCP
-    # server unless this reaps it, and that server blocks on
-    # `for line in sys.stdin` and therefore lives
-    # until the xdist worker exits and the kernel closes its pipe, plus the
-    # never-cancelled pump task and an unreaped child watcher thread.
+    # Build the owner of aclose() BEFORE the first await that can fail: callers reap
+    # only via the returned value, so a handshake raise (TimeoutError, BackendGone)
+    # would strand the child, which blocks on stdin until the xdist worker exits.
     live = _LivePool(BackendPool(max_backends=4), backend, process, pump)
     try:
         await live.pool.add(key, backend)
@@ -182,9 +175,7 @@ async def _spawn_pooled_server() -> _LivePool:
     return live
 
 
-# --------------------------------------------------------------------------
 # Gateway side: handle_app_call against the real fake server
-# --------------------------------------------------------------------------
 
 
 async def test_app_call_happy_path(apps_flag_on, spool_tmp):
@@ -508,18 +499,9 @@ async def test_each_agents_own_profile_applies_through_one_shared_backend(
 ):
     """Each agent's own governance profile applies through a shared backend.
 
-    Two agents SHARE a backend, so ``backend.pool_key`` holds no single agent to
-    read. The governance input is the agent gatewayd stamped on each render's own
-    spool record, and this measures that both directions hold at once, against
-    ONE live backend and ONE pool digest:
-
-    * ``gpu-dev`` carries a task-bound profile denying ``@fake-mcp-app/draw``.
-      Its call is refused.
-    * ``kirocrew`` carries no profile. The SAME tool on the SAME backend runs.
-
-    Resolving the agent from the backend instead would answer with whichever
-    agent happened to register it, so one of these two assertions would have to
-    fail -- which is why they are one test and not two.
+    The agent comes from each render's spool record, not ``backend.pool_key``. On one
+    backend ``gpu-dev`` (profile denies ``@fake-mcp-app/draw``) is refused and
+    ``kirocrew`` (no profile) runs; one test, since a backend-keyed lookup fails one half.
     """
     import kiro_crew.platform.governance_profiles as gp
 
@@ -582,16 +564,9 @@ async def test_app_call_without_a_session_cannot_be_governed_so_it_is_denied(
 ):
     """An UNATTRIBUTED render is still held to its producing agent's ceiling.
 
-    A spool record whose producer could not attribute a session names no session
-    -- but it still names the AGENT whose stub produced it, because gatewayd
-    stamps that from the Register frame rather than inferring it from the
-    session. So the agent-bound profile is found and applied, where reading the
-    agent off a session-side store would have had to give up here and either
-    refuse every such render or govern it against a default surface.
-
-    The control is in the same test: the same unattributed shape produced by an
-    agent with NO profile runs, so the refusal is about the profile and not
-    about the missing session key.
+    gatewayd stamps the agent from the Register frame, so a record with no session
+    still names it. Control: the same shape from an agent with NO profile runs, so
+    the refusal is about the profile, not the missing session key.
     """
     import kiro_crew.platform.governance_profiles as gp
 
@@ -685,15 +660,9 @@ async def test_a_session_rewriting_its_own_transcript_cannot_pick_its_ceiling(
 ):
     """The governance agent comes off the record, so editing the transcript does nothing.
 
-    The attack the stamp exists to stop, measured end to end. The render was
-    produced by a stub declaring ``gpu-dev``, which carries a task-bound profile
-    denying ``@fake-mcp-app/draw``. The session then rewrites its own transcript
-    metadata to name ``kirocrew``, an agent with no profile -- the one store a
-    sandboxed shell can write. The call must still be refused.
-
-    The second half is the control: the same name on the RECORD, which only
-    gatewayd writes, does move the answer. Without it the refusal above could be
-    any unrelated denial rather than evidence about which store decides.
+    A ``gpu-dev`` render stays refused after the session rewrites its transcript (the
+    store a sandboxed shell can write) to name ``kirocrew``. Control: the same name on
+    the RECORD, which only gatewayd writes, does move the answer.
     """
     import kiro_crew.platform.governance_profiles as gp
 
@@ -815,10 +784,7 @@ async def test_app_call_non_ascii_secret_takes_the_audited_deny(apps_flag_on, sp
     comparison keeps a forged capability carrying one non-ASCII character on the
     audited deny path instead of an unaudited dropped connection.
 
-    The capability gate runs before any backend work, so no live server is
-    needed — a spare pool is enough, exactly as for the other pre-forward deny
-    tests. The sibling endpoint (``/api/mcp-apps/message``) pins the same shape
-    at ``test_mcp_apps_message_endpoint.py``.
+    The gate runs before backend work, so a spare pool is enough.
     """
     pool = BackendPool(max_backends=2)
     spool_id = _spool_record()
@@ -903,13 +869,10 @@ async def test_app_call_rejects_malformed_frames(apps_flag_on, spool_tmp):
 
 
 async def test_app_call_allows_tool_with_no_declared_visibility(apps_flag_on, spool_tmp):
-    """The bug this PR fixes, against the real fake server.
+    """A server that declares no ``visibility`` still accepts an app callback.
 
-    ``visibility`` is optional and SEP-1865 defaults it to ``["model", "app"]``,
-    so a server that declares nothing must still accept an app callback. The old
-    gate denied on absence, which broke the spec's Interactive Updates pattern
-    (a rendered app calling a tool to refresh itself) for every default-visibility
-    server — apps rendered but their controls were inert.
+    SEP-1865 defaults ``visibility`` to ``["model", "app"]``; denying on absence would
+    break the spec's Interactive Updates pattern.
     """
     live = await _spawn_pooled_server()
     try:
@@ -963,11 +926,8 @@ async def test_app_call_still_denies_model_only_tool(apps_flag_on, spool_tmp):
 async def test_app_call_denies_a_malformed_declaration(apps_flag_on, spool_tmp):
     """An unreadable declaration must deny on the APP path too.
 
-    The parser bucketed this correctly all along, but nothing drove a malformed
-    declaration through ``handle_app_call``, so the DELEGATION was unpinned: a
-    fail-open of the shape ``v.allowed or v.unreadable`` passed the whole suite.
-    A container this host cannot read may be hiding an exclusion, so admitting
-    it would authorize a call the server may have meant to refuse.
+    Drives a malformed declaration through ``handle_app_call`` so a fail-open like
+    ``v.allowed or v.unreadable`` fails. An unreadable container may hide an exclusion.
     """
     live = await _spawn_pooled_server()
     try:
@@ -1039,9 +999,7 @@ async def test_app_call_tools_list_is_fetched_fresh_per_call(apps_flag_on, spool
         await live.aclose()
 
 
-# --------------------------------------------------------------------------
 # Dashboard side: POST /api/mcp-apps/call relay
-# --------------------------------------------------------------------------
 
 
 async def _fake_gateway(sock_path: Path, reply: dict):
@@ -1122,14 +1080,9 @@ def relay_env(short_sock_dir, monkeypatch):
     """Client factory for an app exposing ONLY the relay route, with the
     gateway socket redirected at a tmp path via the config override hook.
 
-    Returns ``(make_client, sock)``; open the client with ``async with``
-    inside each test, following the suite's convention for teardown that must await on the test's own loop
-    (see test_denied_commands_api.py).
-
-    Uses ``short_sock_dir`` rather than ``tmp_path``: an AF_UNIX path is capped
-    at ~104 bytes by ``sockaddr_un.sun_path``, and pytest's ``tmp_path`` under
-    macOS's ``/private/var/folders/...`` temp root already exceeds that before
-    the filename is appended.
+    Returns ``(make_client, sock)``; open the client with ``async with`` in each test
+    so teardown awaits on the test's own loop. ``short_sock_dir``, not ``tmp_path``:
+    AF_UNIX caps ``sun_path`` at ~104 bytes, which macOS ``tmp_path`` exceeds.
     """
     sock = short_sock_dir / "gateway.sock"
     monkeypatch.setattr(mcp_apps_handlers, "_socket_path", lambda: str(sock))
@@ -1294,7 +1247,7 @@ async def test_relay_validates_body(relay_env, spool_tmp):
 
 
 async def test_app_call_requires_callback_secret(apps_flag_on, spool_tmp):
-    """#418: the model-visible spool_id authorizes NOTHING — a call with a
+    """The model-visible spool_id authorizes NOTHING — a call with a
     wrong or missing callback_secret is denied even for a live record."""
     live = await _spawn_pooled_server()
     try:

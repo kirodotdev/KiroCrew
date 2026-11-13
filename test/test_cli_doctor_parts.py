@@ -1,12 +1,7 @@
 """``kiro_crew.cli_doctor`` composes its split-out rows onto one namespace.
 
-The Model section and the model-pin audit, MCP Tools and MCP Governance, the host probes
-and the KAS relay rows moved out of ``cli_doctor.py`` into the
-``kiro_crew.cli_doctor_parts`` owners, and :func:`kiro_crew._facade_compose.compose` runs
-every function they define on ``kiro_crew.cli_doctor``'s module globals. The facade's own
-contract (``test/test_cli_doctor_refactor_facade.py``) passes because of that, with its two
-universal source scans widened to the owner files; these tests pin what the composition
-itself promises:
+:func:`kiro_crew._facade_compose.compose` runs every ``kiro_crew.cli_doctor_parts`` owner
+function on ``kiro_crew.cli_doctor``'s globals. These tests pin that composition:
 
 * every owner function runs on the facade's globals, names the facade as its module, is
   the object the facade binds, and every global it reads -- nested code included -- is
@@ -49,6 +44,13 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_cli_doctor_parts")
 
+SHARED_FACADE_CHECKS = (
+    "the_sweep_reports_a_global_the_namespace_does_not_bind",
+    "the_value_check_can_fail",
+    "an_owner_imports_the_facade_only_for_type_checking_and_no_project_module",
+    "the_package_init_defines_nothing",
+)
+
 FACADE = cli_doctor.__name__
 PACKAGE = cli_doctor_parts.__name__
 _PARTS_DIR = Path(cli_doctor_parts.__file__).resolve().parent
@@ -71,14 +73,17 @@ _BASE_SURFACE: dict[str, dict[str, str]] = {
         "_git_line": "(repo: 'Path', *args: 'str') -> 'str | None'",
         "_kiro_cli_signed_in": "() -> 'bool | None'",
         "_linger_enabled": "(user: 'str') -> 'bool | None'",
-        "_report_node": "(issues: 'list[str]') -> 'None'",
+        "_report_node": (
+            "(issues: 'list[str]', *, bundle_route: 'bool' = False, "
+            "bundle_node_version: 'str | None' = None) -> 'None'"
+        ),
         "_venv_deps_ok": "(venv_py: 'Path') -> 'bool'",
     },
     "kas_relay": {
         "_doctor_kas": "(issues: 'list[str]') -> 'None'",
         "_kas_relay_help": "(binary: 'str') -> 'str | None'",
         "_report_kas_backend": "(issues: 'list[str]') -> 'None'",
-        "_report_kas_bundle": "(issues: 'list[str]') -> 'None'",
+        "_report_kas_bundle": "(issues: 'list[str]', *, automatic: 'bool' = False) -> 'None'",
         "_report_kas_spec_permissions": "(issues: 'list[str]') -> 'None'",
         "_report_kas_tool_vocabulary": "(issues: 'list[str]') -> 'None'",
     },
@@ -137,7 +142,8 @@ _BASE_IMPORTS = frozenset("""
     env_path format_node_version get_dumps_dir importlib install_url
     installed_kiro_cli_version intent_probe is_agent_spec_name is_claude_code
     is_dispatchable_member_name is_local_only is_registered_agent_name is_sensitive_path
-    job_pause_state_from_disk json kas_engine_gap KAS_RELAY_ENGINE kas_relay_help
+    job_pause_state_from_disk json kas_auth_client_flag_supported kas_engine_gap
+    KAS_RELAY_ENGINE kas_relay_help
     kas_verified_releases kas_vocabulary_drift kiro_agents_dir KIRO_CLI_BIN
     KiroCrewConfig LEGACY_CONFIG_DIR_NAME logging machine_hostname may_skip_gate_now
     mcp_governance_may_apply mcp_ref_owned_by McpServerInfo MIN_NODE_VERSION
@@ -230,15 +236,6 @@ def test_every_owner_function_runs_on_the_facade_globals_as_the_facade_binds_it(
         or vars(cli_doctor).get(fn.__name__) is not fn
     ]
     assert wrong == []
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:
@@ -476,15 +473,6 @@ def test_the_owner_import_check_sees_every_spelling(source: str, flagged: bool) 
     assert bool(_bad_owner_imports(ast.parse(source))) is flagged
 
 
-def test_an_owner_imports_the_facade_only_for_type_checking_and_no_project_module() -> None:
-    bad = {
-        stem: found
-        for stem, path in _owner_paths().items()
-        if (found := _bad_owner_imports(_tree(path)))
-    }
-    assert bad == {}
-
-
 def _module_values(tree: ast.Module) -> list[str]:
     """Top-level statements that are neither the docstring, an import, the
     ``TYPE_CHECKING`` block nor a function definition."""
@@ -500,13 +488,6 @@ def _module_values(tree: ast.Module) -> list[str]:
     return found
 
 
-def test_the_value_check_can_fail() -> None:
-    assert _module_values(ast.parse('"""doc"""\nimport os\nLIMIT = 3\nclass K: ...\n')) == [
-        "3: Assign",
-        "4: ClassDef",
-    ]
-
-
 def test_no_owner_defines_a_module_level_value() -> None:
     """The doctor's constants stay on the facade: a test that rebinds one there rebinds
     what every composed row reads, and an owner copy would read stale."""
@@ -516,12 +497,6 @@ def test_no_owner_defines_a_module_level_value() -> None:
         if (values := _module_values(_tree(path)))
     }
     assert found == {}
-
-
-def test_the_package_init_defines_nothing() -> None:
-    init = _PARTS_DIR / "__init__.py"
-    assert _facade_mirror._defined_names(_tree(init)) == set()
-    assert [n for n in _tree(init).body if not isinstance(n, ast.Expr)] == []
 
 
 def _imports_an_owner(source: str) -> bool:
@@ -617,11 +592,9 @@ def unexpected_imports(source: str, owner_names: dict[str, set[str]], read: set[
     """Names *source* binds by a runtime import that nothing accounts for: the F401 check
     ``setup.cfg`` switches off for this module, kept as a test.
 
-    A name is accounted for when the module bound it before its rows moved out (BASE),
-    the composition glue imports it, an owner module defines it (for an import from that
-    owner), or the family reads it: the facade's own code, a composed owner function, or
-    a ``doctor_checks`` family through ``cli_doctor.<name>``. Imports under
-    ``if TYPE_CHECKING:`` bind nothing at run time and are the facade contract's business.
+    Accounted for: in BASE, imported by the glue, defined by the owner imported from, or
+    read by the facade, a composed owner function or ``doctor_checks`` via
+    ``cli_doctor.<name>``. ``TYPE_CHECKING`` imports bind nothing at run time.
     """
     found: list[str] = []
     for node in ast.parse(source).body:

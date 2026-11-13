@@ -1,18 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Check, AlertTriangle, Plus, X, Lock } from 'lucide-react'
+import { ExternalLink, Check, AlertTriangle, Plus, X, Lock, RefreshCw } from 'lucide-react'
 import { SlackIcon } from '../../components/SlackIcon'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
+import { ApiError } from '../../api/apiError'
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 import ErrorNotice from '../../components/ErrorNotice'
+import InfoTip from '../../components/InfoTip'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
+import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
+import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
+import { forgetSlackInstallReading } from './SlackManifestUpdate'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
@@ -29,6 +34,8 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
+  /** Slack Code: the registered switches and the code-channel defaults. */
+  code: SlackCodeDraft
 }
 
 function draftFrom(c: SlackConfigData): Draft {
@@ -43,6 +50,7 @@ function draftFrom(c: SlackConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
     auto_link_sessions: !!c.auto_link_sessions,
+    code: slackCodeDraftFrom(c),
   }
 }
 
@@ -62,31 +70,81 @@ function StatusBadge({ config }: { config: SlackConfigData }) {
 }
 
 /**
- * The gateway's startup failure (`connect_error`), kept apart from
+ * The sentence for a recorded connect failure. One mapper for the startup
+ * reading and a Reconnect click, so the same failure reads the same way
+ * whichever attempt produced it.
+ */
+function describeConnectError(code: string): string {
+  switch (code) {
+    case 'invalid_auth': return i18nT('pages.settings.slackPanel.connect_error_invalid_auth')
+    case 'tokens_missing': return i18nT('pages.settings.slackPanel.connect_error_tokens_missing')
+    case 'owner_id_missing': return i18nT('pages.settings.slackPanel.connect_error_owner_id_missing')
+    case 'enterprise_validation_failed': return i18nT('pages.settings.slackPanel.connect_error_enterprise_validation_failed')
+    case 'denied_by_policy': return i18nT('pages.settings.slackPanel.connect_error_denied_by_policy')
+    case 'workspace_switch_needs_restart': return i18nT('pages.settings.slackPanel.connect_error_workspace_switch_needs_restart')
+    case 'owner_change_needs_restart': return i18nT('pages.settings.slackPanel.connect_error_owner_change_needs_restart')
+    default: return i18nT('pages.settings.slackPanel.connect_error_other', { error: code })
+  }
+}
+
+/**
+ * The gateway's recorded connect failure (`connect_error`), kept apart from
  * {@link connectionHint}: it is the outcome of something that FAILED, so it
  * renders through `ErrorNotice`, while the hint describes a state that has not
  * gone wrong yet.
  */
 function connectError(config: SlackConfigData): string {
   if (config.connected || !config.configured || !config.connect_error) return ''
-  if (config.connect_error === 'invalid_auth') {
-    return i18nT('pages.settings.slackPanel.slack_rejected_the_stored_tokens_invalid_auth_re')
-  }
-  return i18nT('pages.settings.slackPanel.slack_connection_failed_at_startup', { error: config.connect_error })
+  return describeConnectError(config.connect_error)
 }
 
 /** One-line explanation of WHY Slack is not connected, with the fix. */
 function connectionHint(config: SlackConfigData): string {
-  // A startup failure is shown by `connectError`; "saved but not yet active"
+  if (config.connected) return ''
+  // Both tokens without an owner still reads "Needs setup"; name the missing piece.
+  if (config.bot_token_set && config.app_token_set && !config.owner_id) {
+    return i18nT('pages.settings.slackPanel.owner_id_missing')
+  }
+  // A recorded failure is shown by `connectError`; "saved but not yet active"
   // would only repeat it underneath.
-  if (config.connected || !config.configured || config.connect_error) return ''
-  return i18nT('pages.settings.slackPanel.tokens_are_saved_but_not_yet_active_restart_the')
+  if (!config.configured || config.connect_error) return ''
+  return i18nT('pages.settings.slackPanel.tokens_saved_click_reconnect')
 }
 
+/**
+ * Why a Reconnect click got no handshake result. A refusal the gateway answered
+ * carries its own `code`; anything else (no answer, an unstructured body from a
+ * proxy) means the request never reached a gateway that could answer it.
+ */
+function reconnectRefusal(e: unknown): string {
+  let code = ''
+  if (e instanceof ApiError) {
+    try {
+      const body: unknown = JSON.parse(e.body)
+      if (body && typeof body === 'object' && typeof (body as { code?: unknown }).code === 'string') {
+        code = (body as { code: string }).code
+      }
+    } catch {
+      code = ''
+    }
+  }
+  switch (code) {
+    case 'remote_read_only': return i18nT('pages.settings.slackPanel.slack_settings_are_managed_on_the_machine_runnin')
+    case 'slack_reconnect_unavailable': return i18nT('pages.settings.slackPanel.reconnect_unavailable')
+    case 'credential_store_unreadable': return i18nT('pages.settings.slackPanel.reconnect_credentials_unreadable')
+    default: return i18nT('pages.settings.slackPanel.reconnect_failed_is_the_gateway_running')
+  }
+}
+
+type ReconnectOutcome = { connected: true } | { connected: false; message: string }
+
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
-export function TagListEditor({ label, description, values, placeholder, onChange, validate, readOnly }: {
+export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly }: {
   label: string
   description?: string
+  /** An info tip beside the label, for prose that explains what the list IS;
+   *  the same split as the Settings row primitives' `hint`. */
+  hint?: string
   values: string[]
   placeholder: string
   onChange: (next: string[]) => void
@@ -107,7 +165,10 @@ export function TagListEditor({ label, description, values, placeholder, onChang
   }
   return (
     <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
-      <span className="text-[13px] font-semibold text-text">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[13px] font-semibold text-text">{label}</span>
+        {hint && <InfoTip text={hint} placement="top" />}
+      </div>
       {description && <div className="text-[12px] text-muted">{description}</div>}
       {values.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -134,7 +195,7 @@ export function TagListEditor({ label, description, values, placeholder, onChang
           {/* min-w-0 + flex-1: a `flex-none` input keeps its intrinsic width, which
               pushes the Add button off the card at 320px. Letting the input shrink
               keeps both on one row at every width the repo supports. */}
-          <Input value={draft} placeholder={placeholder} className="min-w-0 flex-1 font-mono"
+          <Input value={draft} placeholder={placeholder} aria-label={label} className="min-w-0 flex-1 font-mono"
             onChange={e => { setDraft(e.target.value); setErr('') }}
             {...ime.bindEnter({ onEnter: add })} />
           <Btn onClick={add} disabled={!draft.trim()} className="shrink-0"><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
@@ -167,6 +228,14 @@ export function SlackPanel() {
   const [formKey, setFormKey] = useState(0)  // bump to remount secret fields after save
   const [saved, setSaved] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
+  // Sticky until a reconnect succeeds: a later config-only save must not hide
+  // that earlier saved credentials are still not live.
+  const [reconnectHint, setReconnectHint] = useState(false)
+  // Counts saves that asked for a reconnect. A reconnect clears the hint only
+  // when no such save landed after it started: that save's credentials may
+  // not be the ones the reconnect read.
+  const credSaves = useRef(0)
+  const [reconnectOutcome, setReconnectOutcome] = useState<ReconnectOutcome | null>(null)
   const [verifyWarning, setVerifyWarning] = useState('')
   const [tokensVerified, setTokensVerified] = useState(false)
   const [manifestCopied, setManifestCopied] = useState(false)
@@ -181,9 +250,19 @@ export function SlackPanel() {
     staleTime: Infinity,
     retry: false,
   })
+  // The update panel copies this YAML to reinstall the app, so it gets it only
+  // while it is the one for the SAVED switches: not during the refetch a save
+  // starts, not after that refetch failed (React Query keeps the old data),
+  // and not when the switches it was rendered for differ from the saved ones.
+  const savedSwitches = SLACK_CODE_SWITCHES.filter(k => !!data?.[k]).sort().join(',')
+  const manifestFeatures = manifestQ.data?.features
+  const manifestMatchesSaved = manifestQ.isSuccess && !manifestQ.isFetching && !manifestQ.isError
+    && (manifestFeatures === undefined || [...manifestFeatures].sort().join(',') === savedSwitches)
+  // Every way out of this page (Copy, Create, the update panel) exports only this.
+  const currentManifest = manifestMatchesSaved ? manifestQ.data : undefined
 
   const copyManifest = useCallback(async () => {
-    if (!manifestQ.data) return
+    if (!currentManifest) return
     setManifestCopyFailed(false)
     // The shared helper, not `navigator.clipboard.writeText` directly: on a
     // plain-HTTP remote dashboard `navigator.clipboard` is undefined, and a
@@ -192,7 +271,7 @@ export function SlackPanel() {
     // back to `execCommand`, and resolves `false` (or rejects) when both fail.
     let ok = false
     try {
-      ok = await copyToClipboard(manifestQ.data.manifest)
+      ok = await copyToClipboard(currentManifest.manifest)
     } catch {
       ok = false
     }
@@ -202,17 +281,24 @@ export function SlackPanel() {
     }
     setManifestCopied(true)
     setTimeout(() => setManifestCopied(false), 1500)
-  }, [manifestQ.data])
+  }, [currentManifest])
   const [error, setError] = useState('')
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
   // must not discard in-progress edits (including a just-pasted token).
   const syncArmed = useRef(true)
+  // What the Slack Code draft was seeded from. The save sends only the fields
+  // that differ from THIS snapshot, not from the latest refetch: a background
+  // refetch that picks up a CLI edit leaves the draft as it was, so comparing
+  // against the refreshed data would send the stale draft value and undo it.
+  const codeBaseline = useRef<SlackCodeDraft | null>(null)
   useEffect(() => {
     if (data && syncArmed.current) {
       syncArmed.current = false
-      setDraft(draftFrom(data))
+      const seeded = draftFrom(data)
+      codeBaseline.current = seeded.code
+      setDraft(seeded)
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
   }, [data])
@@ -239,13 +325,60 @@ export function SlackPanel() {
     onSuccess: (res, vars) => {
       setSaved(true)
       setRestartHint(!!res.restart_required)
+      if (res.reconnect_required) {
+        credSaves.current += 1
+        setReconnectHint(true)
+        // The last click's outcome described the credentials before this save.
+        setReconnectOutcome(null)
+      } else if (res.restart_required) {
+        // A restart applies every saved credential, and an owner change makes
+        // Reconnect refuse: an earlier save's Reconnect offer is retired.
+        setReconnectHint(false)
+      }
       setVerifyWarning(res.verify_warning || '')
       setTokensVerified(!!(vars.bot_token || vars.app_token) && !res.verify_warning)
       syncArmed.current = true
       setFormKey(k => k + 1)
       setTimeout(() => setSaved(false), 6000)
       qc.invalidateQueries({ queryKey: ['slack-config'] })
+      // The manifest renders for the saved Slack Code switches, so a save can
+      // change it and what the installed app is compared against.
+      qc.invalidateQueries({ queryKey: ['slack-manifest'] })
+      // The status read records the install's scopes; the capability lines come
+      // from the config query, so read it once more after the status settles.
+      // A new or cleared bot token may be another app: start its reading over
+      // instead of keeping the previous app's while the new one loads.
+      const tokenChanged = !!(vars.bot_token || vars.bot_token_clear)
+      void (tokenChanged
+        ? forgetSlackInstallReading(qc)
+        : qc.invalidateQueries({ queryKey: ['slack-manifest-status'] }))
+        .then(() => qc.invalidateQueries({ queryKey: ['slack-config'] }))
     },
+  })
+
+  const reconnectMut = useMutation({
+    mutationFn: () => api.reconnectSlack(),
+    // The previous outcome steps aside while the click is in flight, so
+    // "Reconnecting…" never sits beside a red "failed" from the last try.
+    onMutate: () => {
+      setReconnectOutcome(null)
+      return { credSavesAtStart: credSaves.current }
+    },
+    onSuccess: (res, _vars, ctx) => {
+      // A refusal leaves a working connection up, so `connected` can be true
+      // beside a `connect_error`: the error is this click's outcome.
+      if (res.connected && !res.connect_error) {
+        setReconnectOutcome({ connected: true })
+        if (ctx?.credSavesAtStart === credSaves.current) setReconnectHint(false)
+      } else {
+        setReconnectOutcome({
+          connected: false,
+          message: i18nT('pages.settings.slackPanel.reconnect_failed', { reason: describeConnectError(res.connect_error) }),
+        })
+      }
+      qc.invalidateQueries({ queryKey: ['slack-config'] })
+    },
+    onError: (e: unknown) => setReconnectOutcome({ connected: false, message: reconnectRefusal(e) }),
   })
 
   const handleSave = useCallback(() => {
@@ -261,6 +394,7 @@ export function SlackPanel() {
       // to "Slack", which is what the toggle's description promises.
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
       auto_link_sessions: draft.auto_link_sessions,
+      ...(codeBaseline.current ? slackCodePayload(draft.code, codeBaseline.current) : {}),
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
@@ -275,8 +409,17 @@ export function SlackPanel() {
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
-  const startupError = connectError(data)
-  const hint = connectionHint(data)
+  // A click's own outcome (or one in flight) replaces the recorded reading:
+  // both describe the same connection, and two notices read as two problems.
+  const showRecorded = !reconnectMut.isPending && reconnectOutcome === null
+  const startupError = showRecorded ? connectError(data) : ''
+  const hint = showRecorded ? connectionHint(data) : ''
+  const reconnectBtn = (testId: string) => (
+    <Btn data-testid={testId} className="shrink-0" onClick={() => reconnectMut.mutate()} disabled={reconnectMut.isPending}>
+      <RefreshCw size={13} />
+      {reconnectMut.isPending ? i18nT('pages.settings.slackPanel.reconnecting') : i18nT('pages.settings.slackPanel.reconnect')}
+    </Btn>
+  )
 
   return (
     <>
@@ -289,6 +432,8 @@ export function SlackPanel() {
           <div className="flex items-center gap-3 flex-wrap">
             <h3 className="text-[15px] font-semibold text-text-strong">{i18nT('pages.settings.slackPanel.slack')}</h3>
             <StatusBadge config={data} />
+            {/* Hidden on read-only remote sessions, like Save: the route is local-only. */}
+            {!ro && reconnectBtn('slack-reconnect')}
           </div>
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
@@ -298,6 +443,14 @@ export function SlackPanel() {
               command, session folder) live in this panel's local state —
               navigating to the chat would discard them. */}
           <ErrorNotice message={startupError} className="mt-2" />
+          {reconnectOutcome?.connected && (
+            <p className="text-[12px] text-ok mt-1 flex items-center gap-1.5">
+              <Check size={12} className="flex-none" />
+              {i18nT('pages.settings.slackPanel.reconnect_succeeded')}
+            </p>
+          )}
+          {/* No hand-off: the same unsaved `botToken` / `appToken` / `draft` as above. */}
+          <ErrorNotice message={reconnectOutcome && !reconnectOutcome.connected ? reconnectOutcome.message : ''} className="mt-2" />
           {hint && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
               <AlertTriangle size={12} className="flex-none" />
@@ -325,14 +478,15 @@ export function SlackPanel() {
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
-              href={manifestQ.data?.create_url ?? '#'}
+              href={currentManifest?.create_url ?? '#'}
+              tabIndex={currentManifest ? undefined : -1}
               target="_blank" rel="noopener noreferrer"
-              aria-disabled={!manifestQ.data}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${manifestQ.data ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
+              aria-disabled={!currentManifest}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${currentManifest ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
             >
               {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
             </a>
-            <Btn onClick={() => { void copyManifest() }} disabled={!manifestQ.data}>
+            <Btn onClick={() => { void copyManifest() }} disabled={!currentManifest}>
               {manifestCopied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.copy_manifest_yaml')}
             </Btn>
             <a href={SETUP_GUIDE} target="_blank" rel="noopener noreferrer"
@@ -386,9 +540,23 @@ export function SlackPanel() {
         </SettingsCard>
       </SettingsSection>
 
+      {/* ── Slack Code: switches, code-channel defaults, manifest update ──
+          Right below the tokens, above the rest of the configuration: turning
+          a switch on is followed by updating the Slack app, and both happen
+          in this one card, with the page's own save inside it. */}
+      <SlackCodeSection
+        data={data}
+        draft={draft.code}
+        onChange={patch => setDraft(d => (d ? { ...d, code: { ...d.code, ...patch } } : d))}
+        readOnly={ro}
+        manifestText={currentManifest?.manifest}
+        onSave={handleSave}
+        saving={saveMut.isPending}
+      />
+
       {/* ── Identity & access ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.identity_access')}>
-        <SettingsCard index={2}>
+        <SettingsCard index={3}>
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.owner_slack_member_id')}
             description={i18nT('pages.settings.slackPanel.the_one_member_who_can_always_interact_with_the')}
@@ -399,7 +567,7 @@ export function SlackPanel() {
           />
           <TagListEditor
             label={i18nT('pages.settings.slackPanel.allowed_enterprise_orgs')}
-            description={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o')}
+            description={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o_summary')} hint={i18nT('pages.settings.slackPanel.enterprise_grid_org_ids_to_allow_starts_with_e_o')}
             values={draft.allowed_enterprise_ids}
             placeholder={i18nT('pages.settings.slackPanel.e0123abc456')}
             onChange={v => upd({ allowed_enterprise_ids: v })}
@@ -411,7 +579,7 @@ export function SlackPanel() {
 
       {/* ── Behavior ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.behavior')}>
-        <SettingsCard index={3}>
+        <SettingsCard index={4}>
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.slash_command')}
             description={i18nT('pages.settings.slackPanel.trigger_word_for_the_slack_slash_command_without')}
@@ -426,14 +594,14 @@ export function SlackPanel() {
           <div className="-mt-1 pb-1"><SchemaRestartBadge configKey="slack.command" /></div>
           <SettingsToggle
             label={i18nT('pages.settings.slackPanel.phase_reactions')}
-            description={i18nT('pages.settings.slackPanel.show_phase_aware_emoji_reactions_queued_thinking')}
+            hint={i18nT('pages.settings.slackPanel.show_phase_aware_emoji_reactions_queued_thinking')}
             checked={draft.reactions_enabled}
             onChange={v => upd({ reactions_enabled: v })}
             disabled={ro}
           />
           <SettingsToggle
             label={i18nT('pages.settings.slackPanel.show_thinking')}
-            description={i18nT('pages.settings.slackPanel.post_the_model_s_reasoning_as_a_thread_reply_dis')}
+            hint={i18nT('pages.settings.slackPanel.post_the_model_s_reasoning_as_a_thread_reply_dis')}
             checked={draft.show_thinking}
             onChange={v => upd({ show_thinking: v })}
             disabled={ro}
@@ -444,7 +612,8 @@ export function SlackPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.auto_link_sessions')}
-              description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc')}
+              description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc_summary')}
+              hint={i18nT('pages.settings.slackPanel.auto_link_sessions_desc')}
               checked={draft.auto_link_sessions}
               onChange={v => upd({ auto_link_sessions: v })}
               disabled={ro}
@@ -456,7 +625,7 @@ export function SlackPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -465,7 +634,7 @@ export function SlackPanel() {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={CHANNEL_NAME}
@@ -486,14 +655,24 @@ export function SlackPanel() {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-wrap items-center gap-3 mt-1 mb-4">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.slackPanel.saving') : i18nT('pages.settings.slackPanel.save_slack_settings')}
         </Btn>
+        {/* Beside the confirmation too: the header button may be scrolled off
+            above the long form. */}
+        {reconnectHint && reconnectBtn('slack-reconnect-save-row')}
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokensVerified ? (restartHint ? i18nT('pages.settings.slackPanel.verified_with_slack_and_saved_restart_the_gatewa') : i18nT('pages.settings.slackPanel.verified_and_saved')) : restartHint ? i18nT('pages.settings.slackPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.slackPanel.saved')}
+            <Check size={14} /> {tokensVerified
+              ? (reconnectHint ? i18nT('pages.settings.slackPanel.verified_saved_click_reconnect')
+                : restartHint ? i18nT('pages.settings.slackPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.slackPanel.verified_and_saved'))
+              : reconnectHint ? i18nT('pages.settings.slackPanel.saved_click_reconnect')
+                : restartHint ? i18nT('pages.settings.slackPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.slackPanel.saved')}
           </span>
+        )}
+        {saved && reconnectHint && restartHint && (
+          <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slash_command_needs_restart')}</span>
         )}
         {saved && verifyWarning && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-warn">

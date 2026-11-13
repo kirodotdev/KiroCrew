@@ -23,6 +23,7 @@ working could not pass as an SSH forward.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -281,6 +282,28 @@ def test_forward_reads_keystone_not_agent_config(monkeypatch, tmp_path):
     assert sb._forward_ssh_auth_sock("strict", ()) is True
 
 
+def test_a_store_that_is_not_utf8_reads_as_no_consent(monkeypatch, tmp_path):
+    """Bytes that do not decode fail closed like bad JSON, without raising.
+
+    A UTF-16 save of ``{"enabled": true}`` is the likely shape. The socket stays
+    scrubbed either way; reading it as "not granted" is what lets the consent
+    notice still tell the operator how to grant it.
+    """
+    from kiro_crew import ssh_auth_sock_consent as consent
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(sb.platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: None)
+    leaf = tmp_path / "c.json"
+    monkeypatch.setattr(consent, "ssh_auth_sock_consent_path", lambda: leaf)
+    monkeypatch.setattr(loader, "ssh_auth_sock_consent_path", lambda: leaf)
+    leaf.write_bytes('{"enabled": true}'.encode("utf-16"))
+
+    assert consent.is_granted() is False
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
+    assert str(leaf) in sb.ssh_auth_sock_consent_notice("kiro", "strict", ())
+
+
 def test_keystone_leaf_is_fenced_and_sealed():
     """The consent leaf sits on both fences that keep it agent-unwritable."""
     from kiro_crew import sandbox as _sb
@@ -407,15 +430,18 @@ def test_cc_extended_to_hide_ssh_needs_consent(_no_consent, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no SSH_AUTH_SOCK forward on Windows")
+@pytest.mark.parametrize("via_async", [False, True], ids=["wrap_argv", "wrap_argv_async"])
 @pytest.mark.parametrize(("floor", "expected"), [("strict", False), (None, True)])
 def test_wrap_rejudges_forward_against_the_floor_it_applies(
-    _no_consent, monkeypatch, floor, expected
+    _no_consent, monkeypatch, floor, expected, via_async
 ):
     """A floor raised after the launch tail resolved the forward drops the socket.
 
     The tail judged ``standard`` and passed ``forward_ssh_auth_sock=True``; the wrap
     then reads its own floor. The flag handed to the backend builder must follow the
-    tier the wrap APPLIES. Control row: no floor raise keeps the forward.
+    tier the wrap APPLIES, and the same verdict comes back to the caller, through the
+    async entry the launch tail awaits too, so the tail records the wrap's verdict
+    rather than its own. Control row: no floor raise keeps the forward.
     """
 
     class _Stop(Exception):
@@ -433,9 +459,15 @@ def test_wrap_rejudges_forward_against_the_floor_it_applies(
     monkeypatch.setattr(sb, "_inside_kirocrew_sandbox", lambda: False)
     monkeypatch.setattr(sb, "namespace_argv", _builder)
     monkeypatch.setattr(sb, "sandbox_exec_argv", _builder)
+    applied: list[bool] = []
+    call = {"mode": "standard", "forward_ssh_auth_sock": True, "forward_ssh_auth_sock_out": applied}
     with pytest.raises(_Stop):
-        sb.wrap_argv(["/bin/true"], mode="standard", forward_ssh_auth_sock=True)
+        if via_async:
+            asyncio.run(sb.wrap_argv_async(["/bin/true"], **call))
+        else:
+            sb.wrap_argv(["/bin/true"], **call)
     assert seen["forward"] is expected
+    assert applied == [expected]
 
 
 def test_rejudge_never_grants_a_forward_the_caller_refused(_no_consent):

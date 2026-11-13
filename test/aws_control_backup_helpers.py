@@ -1,15 +1,8 @@
 """Shared constants and a Layer B harness for the ``aws_control`` backup tests.
 
-Each importer imports ``ACCOUNT``, the account id under test. ``_store`` writes a
-scope marker covering conversations under its default ``scope``, ``_SCOPED``, and
-none under ``scope=None``. ``ARCHIVE_FINGERPRINT`` is the MD5 hex digest of
-``ARCHIVE_BYTES``, a fake download body. ``_SessionsArchiveLayerBGateHarness``
-isolates state, stubs the conversation store and seeds session halves and grants.
-
-``test_aws_control_backup_layer_b.py`` (which also imports ``_SCOPED``) and
-``test_aws_control_backup_layer_b_mid_build.py`` subclass the harness;
-``test_aws_control_backup_ownership.py`` and
-``test_aws_control_backup_upload_records.py`` import the two archive constants.
+``ACCOUNT`` is the account id under test. ``ARCHIVE_FINGERPRINT`` is the MD5 hex
+digest of ``ARCHIVE_BYTES``, a fake download body. ``_SCOPED`` is the default scope
+marker ``_store`` writes.
 """
 
 from __future__ import annotations
@@ -42,34 +35,18 @@ ARCHIVE_FINGERPRINT = hashlib.md5(ARCHIVE_BYTES).hexdigest()
 class _SessionsArchiveLayerBGateHarness:
     """Non-collected base of the ``TestSessionsArchiveLayerBGate*`` test classes.
 
-    The autouse ``_isolated_state`` fixture keeps the state document under ``tmp_path``
-    and stubs out the host's kiro-cli conversation store; ``_synthetic_store`` swaps in
-    a synthetic SQLite one. ``_both_halves`` populates the Kiro Crew and kiro-cli
-    session halves and ``_store`` writes the permission as raw JSON. A sessions backup
-    with the push mocked runs in ``_run_capturing_names``, which returns the record and
-    archive member names; ``_skip_without_pinning`` skips where pinning is unavailable.
-
-    Its name does not start with ``Test``, so pytest collects nothing from it; the test
-    class in each of ``test_aws_control_backup_layer_b.py`` and
-    ``test_aws_control_backup_layer_b_mid_build.py`` subclasses it.
+    The autouse ``_isolated_state`` keeps state under ``tmp_path`` and stubs the host's
+    kiro-cli store. ``_run_capturing_names`` runs a backup with the push mocked and
+    returns the record and member names.
     """
 
     @pytest.fixture(autouse=True)
     # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test that inherits it calls monkeypatch.undo()
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
-        # The terminal conversation export rides the same permission, and these
-        # tests assert EXACT archive member lists. Left unstubbed, a host that
-        # happens to have a kiro-cli store would add a `conversations/` root on the
-        # permitted path and redden an assertion about the transcript halves. The
-        # two tests that are about the export point this at a synthetic store of
-        # their own.
-        #
-        # The empty reason here is a STUB CONVENIENCE, not a pair the resolver can
-        # return: real absence reports `store_absent`, which suppresses the retention
-        # sweep. These tests assert member lists and the permission gate, so the reason
-        # is immaterial to them and a reasonless pair keeps them from also asserting
-        # suppression. Do not read it as the resolver's contract.
+        # These tests assert exact member lists, so a real kiro-cli store on the host
+        # would add a `conversations/` root. The empty reason is a stub convenience:
+        # the real resolver reports `store_absent` for absence.
         monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (None, ""))
         yield
 
@@ -77,11 +54,8 @@ class _SessionsArchiveLayerBGateHarness:
     def _synthetic_store(tmp_path, monkeypatch, *, rows: int = 3):
         """Point the export at a synthetic conversation store. Returns its path.
 
-        Shaped like the real one only as far as the export reads it: the
-        allowlisted table plus a token-bearing table that must never ride. The
-        export's own properties are pinned in
-        test_aws_control_backup_conversations.py; what these tests add is whether
-        the call site consults the permission at all.
+        The allowlisted table plus a token-bearing table that must never ride. The
+        export itself is pinned in test_aws_control_backup_conversations.py.
         """
         db = tmp_path / "data.sqlite3"
         conn = sqlite3.connect(str(db))
@@ -125,14 +99,8 @@ class _SessionsArchiveLayerBGateHarness:
     def _store(tmp_path, value, account: str = ACCOUNT, *, scope: Any = _SCOPED) -> None:
         """Write the permission straight into the state document.
 
-        Written as raw JSON rather than through :func:`set_sessions_layer_b`, so a
-        malformed or hand-mangled value can be offered to the reader -- which is
-        the case the withhold-on-anything-unparseable claim is about, and one the
-        boolean-validating writer cannot produce.
-
-        The scope marker is written by default, because a grant made through the
-        owner-gated writer carries one and that is the state most of these tests are
-        about. Pass ``scope=None`` for a grant recorded without it, which covers the
+        Raw JSON, so a malformed value the validating writer cannot produce can reach
+        the reader. ``scope=None`` writes a grant with no scope marker, covering the
         ``cli`` half only.
         """
         entry: dict[str, Any] = {backup.SESSIONS_LAYER_B_KEY: value}

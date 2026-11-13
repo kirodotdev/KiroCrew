@@ -690,6 +690,128 @@ def test_no_hook_identifier_or_summary_is_restated_in_this_module():
 
 
 # ---------------------------------------------------------------------------
+# raw readers -- members (crewmates the person created)
+# ---------------------------------------------------------------------------
+
+
+def _roster_config(agents):
+    """A real ``KiroCrewConfig`` whose ``agents`` are real crew records."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.sections_session import KiroCrewAgentConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {
+        name: KiroCrewAgentConfig(kiro_agent="kirocrew", **fields)
+        for name, fields in agents.items()
+    }
+    return cfg
+
+
+def _read_members_with(cfg):
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        return ig.read_members()
+
+
+def test_members_empty_roster_is_a_genuine_zero():
+    assert _read_members_with(_roster_config({})) == 0
+
+
+def test_members_counts_only_crewmates_the_person_created():
+    cfg = _roster_config(
+        {
+            "atlas": {"source": "kirocrew", "member_id": "atlas"},
+            "Dr. Eggbot": {"source": "kirocrew", "member_id": "dr-eggbot"},
+            "nova": {"source": "kirocrew", "member_id": "nova-2"},
+            # Shipped with the product, not made by the person.
+            "mate": {"source": "builtin", "member_id": "mate"},
+            # Written by the package sync.
+            "kirocrew-oncall": {"source": "package", "member_id": "oncall"},
+            # A legacy crew-manager row with no member memory allocated.
+            "legacy": {"source": "kirocrew"},
+            "blank-id": {"source": "kirocrew", "member_id": "   "},
+            # The reserved main member is never a created crewmate.
+            "default": {"source": "kirocrew", "member_id": "default"},
+        }
+    )
+    assert _read_members_with(cfg) == 3
+
+
+def test_members_skips_a_row_the_roster_cannot_address():
+    """A name or member id the roster drops never reaches the count either."""
+    cfg = _roster_config(
+        {
+            "atlas": {"source": "kirocrew", "member_id": "atlas"},
+            # member_slug refuses an id that is not a slug, so the roster skips it.
+            "broken": {"source": "kirocrew", "member_id": "Not A Slug!"},
+            # Not a dispatchable member name.
+            "": {"source": "kirocrew", "member_id": "empty"},
+        }
+    )
+    assert _read_members_with(cfg) == 1
+
+
+def test_members_count_agrees_with_the_roster_dashboard_created_rule():
+    """The gauge and the Crewmates roster share ONE predicate, so they cannot drift."""
+    import inspect
+
+    from kiro_crew.dashboard.handlers import members_roster
+
+    assert "is_person_created_crewmate" in inspect.getsource(members_roster.api_members)
+    assert "count_person_created_crewmates" in inspect.getsource(ig.read_members)
+
+
+def test_members_unreadable_config_is_a_gap_and_a_counted_fault():
+    """A config read that raises yields no observation, never a crash or a fake 0."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    ig.reset_for_testing()
+    try:
+        with patch.object(KiroCrewConfig, "load", side_effect=OSError("unreadable")):
+            metrics = _collect()
+        assert ig.GAUGE_MEMBERS not in metrics or not metrics[ig.GAUGE_MEMBERS]
+        failures = {dp.attributes["probe"]: dp.value for dp in metrics[ig.GAUGE_PROBE_FAILURES]}
+        assert failures.get(ig.PROBE_MEMBERS) == 1, f"members fault not published: {failures}"
+    finally:
+        ig.reset_for_testing()
+
+
+def test_members_half_read_config_is_a_gap_not_a_false_count():
+    """An unreadable base or overlay file must not publish a short count.
+
+    The loader keeps going on a file it cannot parse, so the crewmates in that
+    file are simply absent from ``agents``; counting them would report a false
+    decrease (often a false 0) as data.
+    """
+    for flag in ("_base_unreadable", "_overlay_unreadable"):
+        cfg = _roster_config({"atlas": {"source": "kirocrew", "member_id": "atlas"}})
+        setattr(cfg, flag, True)
+        ig.reset_for_testing()
+        try:
+            assert _read_members_with(cfg) is None, flag
+            assert ig.read_probe_failures() == {ig.PROBE_MEMBERS: 1}, flag
+        finally:
+            ig.reset_for_testing()
+
+
+def test_members_publishes_a_bare_count_with_no_name_attribute():
+    secret = "acme-secret-crewmate"
+    cfg = _roster_config({secret: {"source": "kirocrew", "member_id": "acme"}})
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    ig.reset_for_testing()
+    try:
+        with patch.object(KiroCrewConfig, "load", return_value=cfg):
+            metrics = _collect()
+        (point,) = metrics[ig.GAUGE_MEMBERS]
+        assert point.value == 1
+        assert dict(point.attributes or {}) == {}
+    finally:
+        ig.reset_for_testing()
+
+
+# ---------------------------------------------------------------------------
 # OTEL registration + collection
 # ---------------------------------------------------------------------------
 
@@ -731,6 +853,7 @@ def test_collection_yields_every_instrument_with_the_expected_shape():
         ),
         patch.object(ig, "read_config_toggles", return_value={"beacon": 1, "stt": 0}),
         patch.object(ig, "read_registered_webhooks", return_value=5),
+        patch.object(ig, "read_members", return_value=7),
     ):
         metrics = _collect()
 
@@ -773,6 +896,11 @@ def test_collection_yields_every_instrument_with_the_expected_shape():
     (hooks,) = metrics[ig.GAUGE_WEBHOOKS_REGISTERED]
     assert hooks.value == 5
     assert dict(hooks.attributes or {}) == {}
+
+    # The Mates count rides in the value too; no crewmate name or id is an attribute.
+    (members,) = metrics[ig.GAUGE_MEMBERS]
+    assert members.value == 7
+    assert dict(members.attributes or {}) == {}
 
 
 def test_no_mcp_server_name_reaches_any_attribute():
@@ -927,14 +1055,19 @@ def test_claiming_the_role_is_idempotent_and_enables_publication():
         ig.reset_for_testing()
 
 
-def test_registration_failure_is_swallowed():
+def test_registration_failure_is_swallowed(caplog):
     """register_inventory_gauges never raises, even on a hostile meter."""
 
     class _HostileMeter:
         def __getattr__(self, name):
             raise RuntimeError("no instruments for you")
 
-    ig.register_inventory_gauges(_HostileMeter())  # must not raise
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.metrics.inventory_gauges"):
+        ig.register_inventory_gauges(_HostileMeter())  # must not raise
+    logged = [
+        r.getMessage() for r in caplog.records if r.name == "kiro_crew.metrics.inventory_gauges"
+    ]
+    assert logged == ["inventory gauge registration failed: no instruments for you"]
 
 
 # ---------------------------------------------------------------------------
@@ -1047,3 +1180,59 @@ def test_inventory_failure_does_not_cost_the_process_gauges(monkeypatch):
                 process.assert_called_once()
     finally:
         provider_mod.reset_for_testing()
+
+
+# ── voice provider ───────────────────────────────────────────────────────────
+
+
+def _write_voice_config(data: dict) -> None:
+    import json
+
+    from kiro_crew.config.loader import _invalidate_config_cache, config_path
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    _invalidate_config_cache()
+
+
+def test_voice_providers_read_the_stored_choice() -> None:
+    _write_voice_config({"stt": {"provider": "transcribe"}, "voice_reply": {"provider": "polly"}})
+    assert ig.read_voice_providers() == {"stt": "transcribe", "tts": "polly"}
+
+
+def test_voice_providers_default_to_the_providers_in_use() -> None:
+    _write_voice_config({})
+    assert ig.read_voice_providers() == {"stt": "local", "tts": "system"}
+
+
+def test_voice_provider_labels_are_closed() -> None:
+    from kiro_crew.metrics import voice as voice_metrics
+
+    _write_voice_config({"stt": {"provider": "apple"}, "voice_reply": {"provider": "ploly"}})
+    values = ig.read_voice_providers()
+    assert values is not None
+    allowed_stt = set(voice_metrics.STT_PROVIDER_VALUES) | {"registered", "other"}
+    allowed_tts = set(voice_metrics.TTS_PROVIDER_VALUES) | {"registered", "other"}
+    assert values["stt"] in allowed_stt
+    # A typo resolves to the built-in default, as every reader resolves it.
+    assert values["tts"] in allowed_tts
+
+
+def test_an_invalid_reply_provider_reads_quietly(caplog) -> None:
+    """A collection must not repeat the resolver's invalid-value warning each interval."""
+    _write_voice_config({"voice_reply": {"provider": "ploly"}})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+        first = ig.read_voice_providers()
+        second = ig.read_voice_providers()
+    assert first == second
+    assert first is not None and first["tts"] == "system"
+    assert not [r for r in caplog.records if r.name == "kiro_crew.voice_reply"]
+
+
+def test_the_voice_provider_gauge_is_registered_and_exportable() -> None:
+    from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
+
+    assert ig.GAUGE_VOICE_PROVIDER in ig.ALL_METRIC_NAMES
+    assert ig.PROBE_VOICE_PROVIDER in ig.ALL_PROBES
+    assert ig.GAUGE_VOICE_PROVIDER in PRODUCT_METRICS

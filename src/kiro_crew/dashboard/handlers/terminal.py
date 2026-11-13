@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror, platform_compat
-from kiro_crew.dashboard import terminal_commands
+from kiro_crew.dashboard import terminal_commands, ws_heartbeat
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.dashboard.handlers.terminal_complete import (
@@ -47,10 +47,14 @@ from kiro_crew.dashboard.handlers.terminal_complete import (
 from kiro_crew.dashboard.handlers.terminal_lifecycle import (
     _TERMINAL_WS_CLOSE_SHELL_EXITED,
     _close_terminal_fd,
+    _end_evicted_shell,
     _handle_pty_reader_end,
     _kill_session,
+    _restore_evicted_shell,
     _sess_alive,
     _sess_pid,
+    _take_shell_to_evict,
+    apply_terminal_enabled,
 )
 from kiro_crew.dashboard.handlers.terminal_placement import (
     _CHAT_NOT_LOADED,
@@ -71,6 +75,7 @@ from kiro_crew.dashboard.handlers.terminal_session import (
     _get_registry,
     _is_enabled,
     _sel,
+    _terminal_enabled,
     _TerminalSession,
 )
 from kiro_crew.dashboard.handlers.terminal_shell import (
@@ -89,7 +94,8 @@ from kiro_crew.dashboard.handlers.terminal_transport import (
     _write_terminal_input,
 )
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
-from kiro_crew.executors import discovery_executor, subprocess_executor
+from kiro_crew.executors import subprocess_executor  # noqa: F401 -- facade name
+from kiro_crew.executors import discovery_executor
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.sandbox import RLIMIT_PROFILE_NONE, spawn_shim_argv
 from kiro_crew.security import (  # noqa: F401 - is_sensitive_path: tests patch it here
@@ -155,7 +161,7 @@ def _proc_cwd(pid: int) -> str | None:
     try:
         out = subprocess.run(
             [lsof, "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, encoding="utf-8", timeout=2,
         ).stdout
         for line in out.splitlines():
             if line.startswith("n") and len(line) > 1:
@@ -206,7 +212,7 @@ async def _session_cwd_cached(sess: "_TerminalSession") -> str | None:
     if probe is not None and now - probe[0] < _CWD_PROBE_TTL_S:
         return probe[1]
     loop = asyncio.get_running_loop()
-    cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+    cwd = await loop.run_in_executor(discovery_executor(), _session_cwd, sess)
     # _session_cwd memoizes its own probes; this covers the branches where it
     # returns without probing (no shell, non-POSIX host) so those do not re-hop
     # to the executor on every keystroke.
@@ -636,7 +642,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         )
         return refusal_ws
 
-    # Reserve slot synchronously before any await to prevent race condition
+    # Reserve slot synchronously before any await to prevent race condition.
+    # At the cap, the longest-detached shell gives up its slot in the same step;
+    # it ends only once this open goes ahead, and returns to its slot otherwise.
+    evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
     if not existing and len(registry) >= max_sessions:
         _sel().log_api_access(
             caller=caller,
@@ -645,7 +654,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"max_sessions={max_sessions}",
         )
-        return web.Response(status=429, text=f"Max {max_sessions} terminal sessions")
+        return web.Response(status=409, text=f"Max {max_sessions} terminal sessions")
 
     # Reserve a placeholder so concurrent requests see the slot as taken
     placeholder = not existing
@@ -653,7 +662,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         registry[session_id] = None
 
     try:
-        ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        ws = ws_heartbeat.LagTolerantWebSocketResponse(heartbeat=30, timeout=300)
         cwd = ""
         if placeholder:
             try:
@@ -672,6 +681,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             except (OSError, ValueError, asyncio.TimeoutError, _PathProbeBusy):
                 registry.pop(session_id, None)
                 placeholder = False
+                # The placeholder held the displaced shell's slot, so the shell
+                # goes back in this same step: during the refusal's awaits below
+                # another opener sees the cap full rather than a free slot.
+                if evicted is not None:
+                    displaced, evicted = evicted, None
+                    if not _restore_evicted_shell(registry, displaced):
+                        await _end_evicted_shell(request.app, displaced, max_sessions)
                 _sel().log_api_access(
                     caller=caller,
                     operation="terminal.ws.open",
@@ -692,6 +708,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 )
                 return ws
         await ws.prepare(request)
+        if evicted is not None:
+            # The directory resolved and the socket is up, so the open goes
+            # ahead: only now does the shell it displaces end.
+            ending, evicted = evicted, None
+            await _end_evicted_shell(request.app, ending, max_sessions)
 
         if existing:
             # Reconnect to existing PTY.
@@ -967,6 +988,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # release retires that ownership before another handler can reserve it.
         if placeholder:
             registry.pop(session_id, None)
+        # An open refused, failed or cancelled before going ahead leaves the
+        # displaced shell untouched: it goes back unless its id was opened afresh.
+        if evicted is not None and not _restore_evicted_shell(registry, evicted):
+            await _end_evicted_shell(request.app, evicted, max_sessions)
+
+    # A switch-off applied while this open awaited skipped its reservation: read the
+    # switch again now that the shell is published, so this read or the applier ends it.
+    cfg = _get_config(request)
+    if registry.get(session_id) is sess and not _terminal_enabled(cfg):
+        await apply_terminal_enabled(registry, cfg)
+        return ws
 
     # The placement check above ran before this shell was published, and a bind
     # in between skipped the then-unpublished reservation: read it again now
@@ -1152,7 +1184,7 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         return t
 
     try:
-        redacted = await loop.run_in_executor(subprocess_executor(), _scan, text)
+        redacted = await loop.run_in_executor(discovery_executor(), _scan, text)
     except Exception:
         # Fail closed: the caller gets no text to insert.
         logger.exception("terminal: selection redaction failed")
@@ -1441,17 +1473,18 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
                 # ioctl, /proc reads, lsof where nothing cheaper answers) that
                 # can wedge on a D-state process or a stuck fs; run them off the
-                # loop on the subprocess pool (same rationale as the os.close
-                # offload in _kill_session) so one stuck read can never freeze
-                # the gateway event loop. Both probes share one cwd lookup via
-                # the session's memo.
+                # loop so one stuck read can never freeze the gateway event
+                # loop. They ride the discovery pool, not the subprocess pool,
+                # so process-tree walks holding every subprocess worker cannot
+                # stall the title. Both probes share one cwd lookup via the
+                # session's memo.
                 # The WS can detach (sess.ws = None) or be displaced by a
                 # reconnect while an executor probe is in flight — capture +
                 # revalidate the socket after EACH hop, and let the bounded
                 # owner-checked sender re-confirm identity under the transport
                 # lock so a displaced socket never receives a frame and a
                 # blocked transport can never park the singleton poller.
-                title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
+                title = await loop.run_in_executor(discovery_executor(), _session_title, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue
@@ -1467,7 +1500,7 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # Live cwd (full path) rides the same poll: the frontend uses it
                 # to attribute terminal output handed off to chat. Pushed only
                 # on change, like the title.
-                cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+                cwd = await loop.run_in_executor(discovery_executor(), _session_cwd, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue
@@ -1514,11 +1547,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.terminal_lifecycle import (  # noqa: F401
         _CHILD_REAP_TIMEOUT_S,
         _CONPTY_STATUS_POLL_S,
+        _ORPHAN_SWEEP_INTERVAL_S,
+        _ORPHAN_TIMEOUT_MIN_S,
         _ORPHAN_TIMEOUT_S,
         _TERMINAL_FD_CLOSE_TIMEOUT_S,
         _child_exit_status,
+        _format_idle,
         _notify_shell_failed,
+        _orphan_timeout_s,
+        _record_orphan_reap,
         _shell_failure_note,
+        _shell_to_evict,
+        _sweep_terminals,
+        end_shells_if_policy_refuses,
         reap_orphaned_terminals,
     )
     from kiro_crew.dashboard.handlers.terminal_placement import (  # noqa: F401
@@ -1532,6 +1573,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.terminal_session import (  # noqa: F401
         _ConptyBackend,
         _enabled_cache,
+        _policy_refuses_terminal,
+        _read_terminal_config,
     )
     from kiro_crew.dashboard.handlers.terminal_transport import (  # noqa: F401
         _OWNER_CONTROL_SEND_TIMEOUT_S,
@@ -1547,7 +1590,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew.config.loader import config_path, read_config_text  # noqa: F401
+    from kiro_crew.config.loader import (  # noqa: F401
+        config_local_path,
+        config_path,
+        read_config_text,
+        read_merged_config_files,
+    )
+    from kiro_crew.executors import maintenance_executor  # noqa: F401
     from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.notifications.bus import NotificationPayload  # noqa: F401
     from kiro_crew.sandbox import without_python_env  # noqa: F401

@@ -39,19 +39,11 @@ from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 def _own_probe_sel(probe_home: str):
     """Give ``_sandbox_can_spawn`` a synchronous SEL bound under *probe_home*, or None.
 
-    Returns the instance the probe now owns, or ``None`` when the process already
-    held a singleton -- one the operator's code constructed (a ``base_dir``
-    instance from a sibling module, say) is not the probe's to replace or retire,
-    and ``wrap_argv()`` will simply append to it. If construction fails, the
-    probe clears the partially published singleton before propagating the error.
+    Returns ``None`` when the process already held a singleton, which is not the probe's
+    to replace. A failed construction clears the partial singleton before raising.
 
-    ``sync=True`` is the whole point: the probe's denial audit is then written
-    INLINE on this thread and NO writer thread is ever started, so nothing can
-    outlive the ``with TemporaryDirectory()`` holding a reference to the
-    directory it is about to remove. The earlier shape retired an async instance
-    after the fact with ``flush()`` + shutdown sentinel + ``join(timeout=5)``,
-    and a join that times out leaves a daemon thread whose next ``_flush_batch``
-    re-creates the deleted home -- the leak this exists to close, one race away.
+    ``sync=True`` writes the audit inline with no writer thread, so nothing outlives the
+    ``TemporaryDirectory()`` and re-creates the deleted home.
     """
     from kiro_crew.sel import SecurityEventLog
 
@@ -85,41 +77,17 @@ def _retire_probe_sel(owned) -> None:
 def _sandbox_can_spawn() -> bool:
     """True if the OS sandbox can launch a surviving child on this host.
 
-    start_app_backend() fail-closes to None when the sandbox launcher can't
-    start — e.g. GitHub hosted runners allow unshare(NEWUSER) but deny the
-    launcher's separate unshare(NEWNS) (errno 1). sandbox._probe_unshare() used
-    to give a false positive there because it issued NEWUSER|NEWNS in a SINGLE
-    unshare call, which the kernel satisfies atomically; the probe now mirrors
-    the launcher's split sequence, so detect_backend() reports such hosts
-    honestly. This gate still runs the production path rather than trusting any
-    probe: a spawn can fail for reasons a capability probe cannot see, and
-    reusing wrap_argv() means this check can never drift from
-    start_app_backend().
+    It runs the production path (``wrap_argv()``) rather than a capability probe, since
+    a spawn can fail for reasons a probe cannot see (e.g. CI runners that deny a separate
+    unshare(NEWNS)).
 
-    The probe runs under an EMPTY ``KIROCREW_HOME``. It is evaluated at
-    collection, before the per-test isolation fixture pins the data home, so a
-    bare ``wrap_argv()`` here reads the OPERATOR's real ``~/.kiro/crew/config.json``
-    -- and on a Windows or macOS developer machine that file routinely carries
-    ``agent.sandbox_allow_unsandboxed_exec=true`` (the only way Kiro Crew runs
-    there). That made the probe answer "can spawn" for a host with no sandbox
-    backend at all, and every test it gates then failed closed under the
-    fixture's default config, while CI (no operator config) skipped them. The
-    gate must observe what the tests will observe: the default config.
+    It runs under an EMPTY ``KIROCREW_HOME``: at collection time a bare ``wrap_argv()``
+    would read the operator's real config, which on Windows or macOS often sets
+    ``agent.sandbox_allow_unsandboxed_exec=true``. The gate must see the default config.
 
-    The probe also OWNS the Security Event Log ``wrap_argv()`` writes to. On a
-    host with no sandbox backend the call fail-closes and records a ``denied``
-    audit through ``sel()`` -- a process SINGLETON whose ``_dir`` is bound once,
-    here from ``empty_home``. Left to construct itself that instance would be
-    ASYNC, and (a) its writer thread keeps the chain lock / log open long enough
-    on Windows that ``TemporaryDirectory`` cannot remove ``empty_home`` -- the
-    failure lands in the bare ``except`` below and the directory leaks at the
-    TEMP root, one per xdist worker, holding a ``security_events.jsonl`` and a
-    ``trust/sel_hmac.key`` -- and (b) it outlives the probe: the rootdir
-    ``_isolate_sel_default_dir`` floor only resets the singleton at the first
-    test's setup, and any write on the lingering thread ``mkdir``s the deleted
-    home back into existence. MEASURED: five full runs each left ten such
-    directories. So the probe constructs the singleton itself, ``sync=True``
-    (inline writes, no thread), and clears it before the directory goes.
+    The probe owns the ``sel()`` singleton and builds it ``sync=True``. An async writer
+    thread would hold the log open on Windows and re-create the deleted home later,
+    leaking a temp directory per xdist worker.
     """
     try:
         from kiro_crew import sandbox as _sb
@@ -254,12 +222,8 @@ def test_spawn_sets_forking_launcher_true_for_the_namespace_launcher_wrap(
 ):
     """The spawn path identifies the forking launcher from its cleanup path.
 
-    On Linux a non-null cleanup path names the generated namespace launcher, so the
-    published record carries ``forking_sandbox_launcher=True`` and
-    ``running_spawned_backend_pids`` will widen to the launcher's forked server child.
-    The predicate is ``IS_LINUX and cleanup_path is not None``; on a non-Linux host
-    the seatbelt profile's cleanup path does not mark a forking launcher, so the flag
-    stays False -- which is what this asserts against the live platform.
+    The predicate is ``IS_LINUX and cleanup_path is not None``: on Linux it names the
+    namespace launcher; elsewhere the seatbelt cleanup path leaves the flag False.
     """
     from kiro_crew import platform_compat
 
@@ -292,13 +256,9 @@ def test_spawn_sets_forking_launcher_true_for_the_namespace_launcher_wrap(
 def test_the_namespace_launcher_forks_once_and_its_parent_only_waits(tier):
     """Pins the launcher shape that ``forking_sandbox_launcher`` relies on.
 
-    For a record marked ``forking_sandbox_launcher``,
-    ``running_spawned_backend_pids`` claims the Popen root's direct children,
-    because the generated namespace launcher forks exactly once, its child execs
-    the server, and its parent only waits for that child. A launcher that gained
-    or lost a fork layer would make that claim over- or under-reach with no other
-    test turning red, so revisit the children claim in
-    ``apps/backend_runtime/tracking.py`` before changing this shape.
+    ``running_spawned_backend_pids`` claims the Popen root's direct children because the
+    launcher forks exactly once. Changing that shape means revisiting the claim in
+    ``apps/backend_runtime/tracking.py``.
     """
     import ast
 
@@ -478,11 +438,8 @@ class TestFixedAndAutoPortIsolation:
     def test_a_fixed_port_app_claims_it_before_binding(self, tmp_path, app_env, monkeypatch):
         """The SPAWN PATH must claim a fixed manifest port, not just record it later.
 
-        Boot spawns concurrently, and a fixed-port app that records its port only
-        AFTER binding. An auto-port app selecting inside that window could be handed
-        the same number, so one of the two children would die of EADDRINUSE and its
-        backend would stay unavailable. Asserted at the real seam: the port must
-        already be reserved by the time the spawn body runs.
+        Boot spawns concurrently, so a late record lets an auto-port app take the same
+        number (EADDRINUSE). The port must be reserved when the spawn body runs.
         """
         import kiro_crew.apps.backend as bmod
 
@@ -572,11 +529,8 @@ class TestFixedAndAutoPortIsolation:
     def test_a_fixed_port_already_taken_by_another_app_is_refused(self):
         """Claiming a fixed port must FAIL when another app already holds it.
 
-        Fixed manifest ports are required to sit inside the auto range
-        (_MIN_PORT.._MAX_PORT), so under concurrent boot an auto app can reserve
-        the very number a fixed-port app declares. Recording the claim anyway
-        leaves two apps mapped to one port; both children then bind it and the
-        loser dies of EADDRINUSE, staying unavailable.
+        Fixed ports sit inside the auto range (_MIN_PORT.._MAX_PORT), so an auto app may
+        already hold it; recording anyway maps two apps to one port.
         """
         import kiro_crew.apps.backend as bmod
 
@@ -1502,3 +1456,74 @@ class TestShellDispatch:
         manifest = get_app_manifest(name)
         assert manifest is not None
         assert bmod._start_app_backend_body(name, manifest) is None
+
+    def test_platform_refusal_names_the_exec_backend_on_non_posix(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The routes read this after start_app_backend's None, so it must
+        # answer exactly the spawn body's exec refusal and nothing else.
+        import kiro_crew.apps.backend as bmod
+
+        def _install(name, entry, body, **backend):
+            src = tmp_path / "source" / name
+            src.mkdir(parents=True)
+            (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+                "name": name, "version": "1.0.0",
+                "displayName": name, "description": "platform refusal test",
+                "author": "tester",
+                "backend": {"entryPoint": entry, "port": "auto", **backend},
+            }))
+            (src / entry).write_text(body)
+            install_app(src)
+
+        _install("win-exec", "run.sh", "#!/bin/sh\necho hi\n", type="exec")
+        _install("win-sh", "launch.sh", "#!/bin/sh\necho hi\n")
+        _install("win-node", "server.js", "console.log(1)\n", type="node")
+        _install("win-py", "server.py", "print(1)\n", type="python")
+
+        monkeypatch.setattr(bmod.platform_compat, "IS_POSIX", True)
+        assert bmod.exec_backend_platform_refusal("win-exec") is None
+
+        monkeypatch.setattr(bmod.platform_compat, "IS_POSIX", False)
+        for name in ("win-exec", "win-sh"):
+            reason = bmod.exec_backend_platform_refusal(name)
+            assert reason is not None
+            assert name in reason
+            assert "not supported on native Windows" in reason
+        assert bmod.exec_backend_platform_refusal("win-node") is None
+        assert bmod.exec_backend_platform_refusal("win-py") is None
+        assert bmod.exec_backend_platform_refusal("no-such-app") is None
+
+    def test_platform_refusal_screens_the_entry_before_sniffing_it(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The persisted manifest is read without validate(), so an edited untyped
+        # entry that escapes the root must be refused by the spawn's own file-entry
+        # screen before _is_shell_entry opens or probes it.
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import app_dir
+
+        name = "win-escape"
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        manifest = {
+            "name": name, "version": "1.0.0",
+            "displayName": name, "description": "entry screen test",
+            "author": "tester",
+            "backend": {"entryPoint": "launch.sh", "port": "auto"},
+        }
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest))
+        (src / "launch.sh").write_text("#!/bin/sh\necho hi\n")
+        install_app(src)
+        outside = tmp_path / "outside-launch"
+        outside.write_text("#!/bin/sh\necho hi\n")
+        installed = app_dir(name) / APP_MANIFEST_FILENAME
+        manifest["backend"]["entryPoint"] = str(outside)
+        installed.write_text(json.dumps(manifest))
+
+        def _no_sniff(entry):  # pragma: no cover - must not be reached
+            raise AssertionError(f"sniffed an unscreened entry: {entry}")
+
+        monkeypatch.setattr(bmod, "_is_shell_entry", _no_sniff)
+        monkeypatch.setattr(bmod.platform_compat, "IS_POSIX", False)
+        assert bmod.exec_backend_platform_refusal(name) is None

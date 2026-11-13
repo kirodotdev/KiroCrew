@@ -313,6 +313,7 @@ class AgentRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             bufsize=1,  # line-buffered so streamed lines arrive promptly
             env=scrubbed_env,
             # Make the child its own process group so we can kill it (and any children it
@@ -915,6 +916,10 @@ class SessionAgentRunner:
                         provider = factory(session_key, agent=self.agent_name)
                     except TypeError:
                         provider = factory(session_key)
+                # The app ``_governance_denial`` judges this run's calls under, so the
+                # session's own governance reads, its KAS projection among them, judge
+                # under the same app (an allocated session gets it from ``owning_app``).
+                provider.owning_app = "auto-improvement"
                 await provider.start()
             text_parts: list[str] = []
             # Streamed assistant text arrives as MANY tiny provider chunks (often sub-word
@@ -1384,5 +1389,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _VALUE_TAKING_OPTIONS,
         _WRAPPER_VALUE_TAKING_LONG_OPTIONS,
         _refusal,
+        _segments,
         _shell_words,
     )

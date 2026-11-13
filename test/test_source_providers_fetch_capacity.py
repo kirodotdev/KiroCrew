@@ -7,13 +7,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
-from source_providers_helpers import _app, _rollup_reply
+from source_providers_helpers import _ISSUE_URL, _app, _rollup_reply
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.dashboard.source_providers import cache as cache_source
 from kiro_crew.dashboard.source_providers import github as github_source
+from kiro_crew.testing.wait import await_until, finished
 
 
 @pytest.mark.asyncio
@@ -65,21 +67,20 @@ async def test_full_fetch_coalesces_concurrent_forced_refreshes(monkeypatch) -> 
         nonlocal calls
         calls += 1
         started.set()
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held fetch")
         return {"provider": "github", "url": ref.url}
 
     monkeypatch.setattr(source, "_fetch_github", fetch)
     url = "https://github.com/acme/repo/pull/12"
     first = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await started.wait()
+    await await_until(started, what="the stubbed fetch starting")
     second = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
     await source.asyncio.sleep(0)
     release.set()
 
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    assert await first == await second
+    first_payload = await await_until(first, what="the first refresh finishing")
+    second_payload = await await_until(second, what="the second refresh finishing")
+    assert first_payload == second_payload
     assert calls == 1
     await source.asyncio.sleep(0)
     assert url not in source._FULL_FETCH_INFLIGHT
@@ -149,8 +150,7 @@ async def test_resolve_supersedes_active_full_fetch(monkeypatch) -> None:
         resolved = state["resolved"]
         if calls == 1:
             old_started.set()
-            # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_old.wait()
+            await await_until(release_old, what="the test releasing the held stale fetch")
         return {"provider": "github", "url": ref.url, "resolved": resolved}
 
     membership = {
@@ -169,18 +169,19 @@ async def test_resolve_supersedes_active_full_fetch(monkeypatch) -> None:
     monkeypatch.setattr(source, "_run_json", run)
     url = "https://github.com/acme/repo/pull/12"
     stale_task = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await old_started.wait()
+    await await_until(old_started, what="the stale fetch starting")
 
     await source.resolve_pull_request_thread(url, "PRRT_thread1")
-    # flake-ok: pre-existing 0.5 s ceiling proving the fresh fetch does not join the held stale fetch, moved verbatim; tracked for a de-flake pass
-    fresh = await source.asyncio.wait_for(source.fetch_pull_request(url, refresh=True), timeout=0.5)
+    # Still held: a fresh fetch that joined the stale one would never come back.
+    fresh = await finished(
+        source.fetch_pull_request(url, refresh=True),
+        "the fresh fetch finishing while the stale fetch is held",
+    )
     assert fresh["resolved"] is True
     assert calls == 2
 
     release_old.set()
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    stale = await stale_task
+    stale = await await_until(stale_task, what="the stale fetch finishing")
     assert stale["resolved"] is False
     assert source._CACHE[url][2]["resolved"] is True
     await source.asyncio.sleep(0)
@@ -204,21 +205,20 @@ async def test_checks_fetch_coalesces_concurrent_requests(monkeypatch) -> None:
         nonlocal calls
         calls += 1
         started.set()
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held checks fetch")
         return [{"name": "test", "bucket": "pending"}]
 
     monkeypatch.setattr(source, "_fetch_github_checks", fetch)
     url = "https://github.com/acme/repo/pull/12"
     first = source.asyncio.create_task(source.fetch_pull_request_checks(url))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await started.wait()
+    await await_until(started, what="the stubbed checks fetch starting")
     second = source.asyncio.create_task(source.fetch_pull_request_checks(url))
     await source.asyncio.sleep(0)
     release.set()
 
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    assert await first == await second
+    first_checks = await await_until(first, what="the first checks request finishing")
+    second_checks = await await_until(second, what="the second checks request finishing")
+    assert first_checks == second_checks
     assert calls == 1
     await source.asyncio.sleep(0)
     assert not source._CHECKS_FETCH_INFLIGHT
@@ -238,14 +238,12 @@ async def test_direct_fetch_pending_bound_is_combined_and_coalesces(monkeypatch)
 
     async def fetch_full(ref):
         full_started.set()
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held full fetch")
         return {"provider": "github", "url": ref.url}
 
     async def fetch_checks(_ref):
         checks_started.set()
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held checks fetch")
         return [{"name": "test", "bucket": "pending"}]
 
     monkeypatch.setattr(source, "_DIRECT_FETCH_PENDING_MAX", 16)
@@ -265,10 +263,8 @@ async def test_direct_fetch_pending_bound_is_combined_and_coalesces(monkeypatch)
 
     full = source.asyncio.create_task(source.fetch_pull_request(full_url, refresh=True))
     checks = source.asyncio.create_task(source.fetch_pull_request_checks(checks_url))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await full_started.wait()
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await checks_started.wait()
+    await await_until(full_started, what="the stubbed full fetch starting")
+    await await_until(checks_started, what="the stubbed checks fetch starting")
     duplicate = source.asyncio.create_task(source.fetch_pull_request(full_url, refresh=True))
     await source.asyncio.sleep(0)
 
@@ -283,10 +279,10 @@ async def test_direct_fetch_pending_bound_is_combined_and_coalesces(monkeypatch)
     assert len(source._CHECKS_FETCH_INFLIGHT) <= 2
 
     release.set()
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    assert await full == await duplicate
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await checks
+    full_payload = await await_until(full, what="the full fetch finishing")
+    duplicate_payload = await await_until(duplicate, what="the duplicate full fetch finishing")
+    assert full_payload == duplicate_payload
+    await await_until(checks, what="the checks fetch finishing")
     await source.asyncio.sleep(0)
     assert not source._FULL_FETCH_INFLIGHT
     assert not source._FULL_FETCH_TASKS
@@ -313,19 +309,16 @@ async def test_cancelled_waiter_keeps_shared_fetch_and_reservation(monkeypatch) 
         nonlocal calls
         calls += 1
         started.set()
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held fetch")
         return {"provider": "github", "url": ref.url}
 
     monkeypatch.setattr(source, "_fetch_github", fetch)
     url = "https://github.com/acme/repo/pull/22"
     waiter = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await started.wait()
+    await await_until(started, what="the stubbed fetch starting")
     waiter.cancel()
     with pytest.raises(source.asyncio.CancelledError):
-        # flake-ok: pre-existing unbounded await of the waiter the test just cancelled, moved verbatim; tracked for a de-flake pass
-        await waiter
+        await await_until(waiter, what="the cancelled waiter ending")
 
     assert url in source._FULL_FETCH_INFLIGHT
     assert list(source._DIRECT_FETCH_RESERVATIONS.values()) == [
@@ -336,8 +329,7 @@ async def test_cancelled_waiter_keeps_shared_fetch_and_reservation(monkeypatch) 
     assert calls == 1
 
     release.set()
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    assert (await coalesced)["url"] == url
+    assert (await await_until(coalesced, what="the coalesced fetch finishing"))["url"] == url
     await source.asyncio.sleep(0)
     assert not source._direct_fetch_tasks()
     assert not source._DIRECT_FETCH_RESERVATIONS
@@ -365,12 +357,10 @@ async def test_stale_and_fresh_full_fetches_fit_exact_reservation_ceiling(
         calls += 1
         if calls == 1:
             old_started.set()
-            # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_old.wait()
+            await await_until(release_old, what="the test releasing the held stale fetch")
         else:
             fresh_started.set()
-            # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_fresh.wait()
+            await await_until(release_fresh, what="the test releasing the held fresh fetch")
         return {"provider": "github", "url": ref.url, "call": calls}
 
     monkeypatch.setattr(source, "_fetch_github", fetch)
@@ -382,12 +372,10 @@ async def test_stale_and_fresh_full_fetches_fit_exact_reservation_ceiling(
     monkeypatch.setattr(source, "_DIRECT_FETCH_WAIT_SECS", 0.05)
     url = "https://github.com/acme/repo/pull/23"
     stale = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await old_started.wait()
+    await await_until(old_started, what="the stale fetch starting")
     await source._invalidate_pull_request_cache(url)
     fresh = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await fresh_started.wait()
+    await await_until(fresh_started, what="the fresh fetch starting")
 
     assert len(source._DIRECT_FETCH_RESERVATIONS) == 2
     assert sum(source._DIRECT_FETCH_RESERVATIONS.values()) == (
@@ -398,10 +386,8 @@ async def test_stale_and_fresh_full_fetches_fit_exact_reservation_ceiling(
 
     release_old.set()
     release_fresh.set()
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await stale
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await fresh
+    await await_until(stale, what="the stale fetch finishing")
+    await await_until(fresh, what="the fresh fetch finishing")
     await source.asyncio.sleep(0)
     assert not source._direct_fetch_tasks()
     assert not source._DIRECT_FETCH_RESERVATIONS
@@ -427,8 +413,7 @@ async def test_direct_fetch_bound_counts_detached_stale_full_task(monkeypatch) -
         resolved = state["resolved"]
         if calls == 1:
             old_started.set()
-            # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_old.wait()
+            await await_until(release_old, what="the test releasing the held stale fetch")
         return {"provider": "github", "url": ref.url, "resolved": resolved}
 
     membership = {
@@ -447,8 +432,7 @@ async def test_direct_fetch_bound_counts_detached_stale_full_task(monkeypatch) -
     monkeypatch.setattr(source, "_run_json", run)
     url = "https://github.com/acme/repo/pull/23"
     stale = source.asyncio.create_task(source.fetch_pull_request(url, refresh=True))
-    # flake-ok: pre-existing unbounded wait for the stub to signal it started, moved verbatim; tracked for a de-flake pass
-    await old_started.wait()
+    await await_until(old_started, what="the stale fetch starting")
     await source.resolve_pull_request_thread(url, "PRRT_1")
 
     assert url not in source._FULL_FETCH_INFLIGHT
@@ -460,8 +444,7 @@ async def test_direct_fetch_bound_counts_detached_stale_full_task(monkeypatch) -
         await source.fetch_pull_request(url, refresh=True)
 
     release_old.set()
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    assert (await stale)["resolved"] is False
+    assert (await await_until(stale, what="the stale fetch finishing"))["resolved"] is False
     await source.asyncio.sleep(0)
     assert not source._direct_fetch_tasks()
     assert not source._DIRECT_FETCH_RESERVATIONS
@@ -511,8 +494,7 @@ async def test_saturated_pool_queues_the_next_fetch_instead_of_refusing(monkeypa
     async def fetch(ref):
         nonlocal started
         started += 1
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held fetch")
         return {"provider": "github", "url": ref.url}
 
     monkeypatch.setattr(source, "_fetch_github", fetch)
@@ -543,14 +525,11 @@ async def test_saturated_pool_queues_the_next_fetch_instead_of_refusing(monkeypa
     assert _reserved_bytes() <= source._DIRECT_FETCH_MAX_RESERVED_BYTES
 
     release.set()
-    # flake-ok: pre-existing 5 s ceiling on the queued fetch the test released, moved verbatim; tracked for a de-flake pass
-    assert (await source.asyncio.wait_for(queued, timeout=5))["url"] == (
+    assert (await await_until(queued, what="the queued fetch finishing"))["url"] == (
         "https://github.com/acme/repo/pull/3"
     )
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await first
-    # flake-ok: pre-existing unbounded await of a task the test has already released, moved verbatim; tracked for a de-flake pass
-    await second
+    await await_until(first, what="the first fetch finishing")
+    await await_until(second, what="the second fetch finishing")
     await source.asyncio.sleep(0)
     assert not source._DIRECT_FETCH_RESERVATIONS
     assert not source._DIRECT_FETCH_WAITERS
@@ -573,8 +552,7 @@ async def test_queued_fetch_waits_outside_the_cache_lock(monkeypatch) -> None:
     async def fetch(ref):
         nonlocal started
         started += 1
-        # flake-ok: pre-existing unbounded hold in the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-        await release.wait()
+        await await_until(release, what="the test releasing the held fetch")
         return {"provider": "github", "url": ref.url}
 
     monkeypatch.setattr(source, "_fetch_github", fetch)
@@ -596,10 +574,8 @@ async def test_queued_fetch_waits_outside_the_cache_lock(monkeypatch) -> None:
     release.set()
     # Both complete: the holder could still take _CACHE_LOCK to write its cache
     # entry while the queued caller was waiting.
-    # flake-ok: pre-existing 5 s ceiling on the holder fetch the test released, moved verbatim; tracked for a de-flake pass
-    assert await source.asyncio.wait_for(holder, timeout=5)
-    # flake-ok: pre-existing 5 s ceiling on the queued fetch the test released, moved verbatim; tracked for a de-flake pass
-    assert await source.asyncio.wait_for(queued, timeout=5)
+    assert await await_until(holder, what="the holder fetch finishing")
+    assert await await_until(queued, what="the queued fetch finishing")
     source._CACHE.clear()
 
 
@@ -697,3 +673,105 @@ async def test_capacity_error_audits_its_own_reason(monkeypatch, _mock_source_se
 async def test_capacity_error_remains_a_source_provider_error() -> None:
     """Every existing ``except SourceProviderError`` site must still catch it."""
     assert issubclass(source.SourceCapacityError, source.SourceProviderError)
+
+
+def _future_on_a_closed_loop() -> source.asyncio.Future:
+    """A pending future whose loop is gone, so its done callbacks can never run."""
+    other = source.asyncio.new_event_loop()
+    try:
+        return other.create_future()
+    finally:
+        other.close()
+
+
+_PR_URL = "https://github.com/acme/repo/pull/7"
+
+
+async def _fetch_pr(monkeypatch) -> object:
+    async def fetch(ref, generation, *, refresh=False):
+        return {"url": ref.url}
+
+    monkeypatch.setattr(cache_source, "_fetch_pull_request_uncached", fetch)
+    return await cache_source.fetch_pull_request(_PR_URL, refresh=True)
+
+
+async def _fetch_checks(monkeypatch) -> object:
+    async def fetch(ref):
+        return [{"url": ref.url}]
+
+    monkeypatch.setattr(cache_source, "_fetch_pull_request_checks_uncached", fetch)
+    return await cache_source.fetch_pull_request_checks(_PR_URL)
+
+
+async def _fetch_issue(monkeypatch) -> object:
+    async def fetch(ref):
+        return {"url": ref.url}
+
+    monkeypatch.setattr(cache_source, "_fetch_issue_uncached", fetch)
+    return await cache_source.fetch_issue(_ISSUE_URL, refresh=True)
+
+
+async def _fetch_contributors(monkeypatch) -> object:
+    async def fetch(ref, key):
+        return [{"login": key}]
+
+    monkeypatch.setattr(cache_source, "_fetch_github_contributors", fetch)
+    return await cache_source.fetch_app_contributors("https://github.com/acme/repo", refresh=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("store", "key", "fetch", "expected"),
+    [
+        ("_FULL_FETCH_INFLIGHT", _PR_URL, _fetch_pr, {"url": _PR_URL}),
+        ("_CHECKS_FETCH_INFLIGHT", _PR_URL, _fetch_checks, [{"url": _PR_URL}]),
+        ("_ISSUE_FETCH_INFLIGHT", _ISSUE_URL, _fetch_issue, {"url": _ISSUE_URL}),
+        (
+            "_contributors_inflight",
+            "github.com/acme/repo",
+            _fetch_contributors,
+            [{"login": "github.com/acme/repo"}],
+        ),
+    ],
+)
+async def test_a_fetch_left_by_a_torn_down_loop_is_not_reused(
+    monkeypatch, store, key, fetch, expected
+) -> None:
+    """A shared fetch whose loop is gone never runs its cleanup, so its entry
+    stays; the next request for that URL must start its own fetch, not await it."""
+    _reset_direct_fetch_state()
+    cache_source._contributors_cache.clear()
+    cache_source._contributors_inflight.clear()
+    getattr(cache_source, store)[key] = _future_on_a_closed_loop()
+    # Gathered so a reused dead entry shows up as a wrong answer, not a crash.
+    assert await source.asyncio.gather(fetch(monkeypatch), return_exceptions=True) == [expected]
+    await source.asyncio.sleep(0)
+    assert key not in getattr(cache_source, store)
+    _reset_direct_fetch_state()
+    cache_source._contributors_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_fetches_left_by_a_torn_down_loop_do_not_hold_capacity(monkeypatch) -> None:
+    """Dead tasks, their leases and their capacity waiters are not counted.
+
+    Without the prune every slot stays taken forever and a fresh request waits
+    out its whole budget and is refused.
+    """
+    _reset_direct_fetch_state()
+    for i in range(source._DIRECT_FETCH_PENDING_MAX):
+        url = f"https://github.com/acme/repo/pull/{100 + i}"
+        dead = _future_on_a_closed_loop()
+        source._FULL_FETCH_TASKS[url] = {dead}
+        source._FULL_FETCH_GENERATIONS[url] = 1
+        source._DIRECT_FETCH_RESERVATIONS[dead] = source._FULL_FETCH_RESERVATION_BYTES
+    source._DIRECT_FETCH_WAITERS.append(_future_on_a_closed_loop())
+    monkeypatch.setattr(cache_source, "_DIRECT_FETCH_WAIT_SECS", 0.0)
+    outcome = await source.asyncio.gather(_fetch_pr(monkeypatch), return_exceptions=True)
+    assert outcome == [{"url": _PR_URL}]
+    await source.asyncio.sleep(0)
+    assert not source._FULL_FETCH_TASKS
+    assert not source._FULL_FETCH_GENERATIONS
+    assert not source._DIRECT_FETCH_RESERVATIONS
+    assert not source._DIRECT_FETCH_WAITERS
+    _reset_direct_fetch_state()

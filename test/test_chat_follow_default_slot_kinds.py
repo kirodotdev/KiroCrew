@@ -63,8 +63,9 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ("dashboard/channel_slots.py", "surface_channel_session"): (
         "excluded: linked_session_key=session_key and channel_origin=True at birth"
     ),
-    ("dashboard/chat_api/chat_send.py", "api_chat"): (
-        "person: a dashboard send that opens its own tab; request_slot_origin is USER only "
+    ("dashboard/chat_api/chat_send.py", "_api_chat_send"): (
+        "person: a dashboard send that opens its own tab (api_chat's body, behind the "
+        "Crew Mode steer split); request_slot_origin is USER only "
         "with no app token and no attested cron creator (else APP with app=, or CRON)"
     ),
     ("dashboard/chat_api/resume.py", "_materialise_slot_from_history"): _RESTORED,
@@ -113,6 +114,11 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ),
     ("dashboard/workflow_inject.py", "inject_bound_workflow_result"): (
         "excluded: linked_session_key=origin at birth"
+    ),
+    ("slack/code_channels/binding.py", "create_bound_session"): (
+        "person: a code channel an allowed Slack user's request opened; model=spec.model is "
+        "the Slack Code default model ('' when unset, so it follows the default); a set one "
+        "is a kept pick the press counts and clears, like a New chat tab's"
     ),
     ("slack/gateway_runtime/result_egress.py", "_deliver_result"): (
         "no kept model: a heartbeat delivery appends one assistant row and runs no turn, so "

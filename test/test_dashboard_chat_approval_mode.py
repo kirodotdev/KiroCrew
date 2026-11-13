@@ -56,6 +56,25 @@ class TestApiChatModePropagation:
         state.sessions.set_approval_policy.assert_called_with("dashboard:s1", "")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["trust_reads", "trust"])
+    async def test_a_slot_pick_ends_gateway_approval_yolo(self, tmp_path, monkeypatch, mode):
+        """Narrowing one slot ends ``gateway --approval yolo``'s grant, as it ends a declared one."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.safety_override import safety_override
+
+        monkeypatch.setattr("kiro_crew.safety_override.sel", MagicMock())
+        safety_override().activate_declared("cli")
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": mode, "slot": "s1"})
+            assert (await resp.json())["ok"] is True
+
+        assert safety_override().is_active() is False
+
+    @pytest.mark.asyncio
     async def test_trust_mode_scoped_to_slot_channel(self, tmp_path, monkeypatch):
         """Trust with slot_key only trusts that slot's linked channel."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -434,7 +453,8 @@ class TestApiChatModeGlobalOverrideScope:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/mode", json={"mode": {}, "slot": "s1"})
 
-        assert resp.status == 200  # falls through to the normal branch, as before
+        # Not a mode id Crew knows, so it is refused as bad input (RFC LTS D9).
+        assert resp.status == 400
 
 
 class TestApproveYoloPropagation:
@@ -527,11 +547,8 @@ class TestBulkApproveBroadcast:
     async def test_slot_scoped_trust_leaves_other_slots_pending(self, tmp_path, monkeypatch):
         """A slot-scoped ``trust`` must NOT sweep other slots' pending approvals.
 
-        Regression: bulk auto-approve iterated EVERY slot regardless of scope, so
-        trusting one chat resolved the pending approval card in unrelated chats
-        (making them LOOK approved) while their ``_trust`` flag stayed False — so
-        their next tool call prompted again. Scope the sweep to the target
-        session; other slots keep their pending future AND their untrusted state.
+        Sweeping every slot would make other chats look approved while their ``_trust``
+        stays False. Other slots keep their pending future and their untrusted state.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())

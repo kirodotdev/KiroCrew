@@ -415,9 +415,9 @@ class DependencyCoordinator:
     ``store`` may be ``None`` for callers that only want the schedule (the
     controller's signal path); every store write is then skipped. ``capacity``
     returns the current effective admission capacity and is consulted on each
-    wake tick when ``wake_per_tick`` is 0. ``on_wake`` is called once per woken
-    task after its row is ``queued`` again, so the dispatcher's pump can be
-    armed; a wake never bypasses admission -- the row is merely eligible.
+    wake tick when ``wake_per_tick`` is 0. ``on_wake`` is called once per task a
+    :meth:`tick` reports as woken, so the dispatcher's pump can be armed; a wake
+    never bypasses admission.
     ``clock`` and ``rng`` are injectable for deterministic tests.
 
     ``wake_through`` is the run loop's seam: asked ``(task_id, generation)``
@@ -436,7 +436,7 @@ class DependencyCoordinator:
     and reads the same schedule (:meth:`forget`, :meth:`recovered`,
     :meth:`waiters`, :meth:`next_deadline`, :func:`shared_retry_at`). So
     ``_lock`` covers the in-memory schedule ONLY and is never held across a store
-    write: one ``BEGIN IMMEDIATE`` waits up to ``TaskStore.BUSY_TIMEOUT_SECS`` for
+    write: one ``BEGIN IMMEDIATE`` waits up to ``taskq.store.BUSY_TIMEOUT_SECS`` for
     a competing writer, and a batch of them under the lock would stall the loop
     for that many timeouts with nothing in ``store.loop_thread_calls`` to show it
     (the loop thread never reaches the store here). Each write therefore takes a
@@ -1073,8 +1073,6 @@ class DependencyCoordinator:
                     plan.append((task_id, generation, instant))
                 if sched.waiters:
                     sched.retry_at = now + self._wake_spacing
-                elif not sched.in_flight:
-                    del self._scopes[scope]
         for failed, instant, reason in failures:
             self._write_scope_failure(failed, instant, reason, callbacks=callbacks)
         for task_id, generation, instant in plan:

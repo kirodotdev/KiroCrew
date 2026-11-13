@@ -10,7 +10,7 @@
  * failing `/api/agents`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
@@ -107,5 +107,34 @@ describe('SchedulePage roster failure wiring (#5990)', () => {
     // a retry that refreshed only this page would leave the shell's roster (and
     // its agent-cycle shortcuts) on the empty one it failed with.
     await waitFor(() => expect(store.getState().dashboard.refreshTrigger).toBe(before + 1))
+  })
+
+  it('keeps keyboard focus on the list-page roster Retry while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole retry.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [job] })
+    renderWithProviders(<SchedulePage />)
+    const notice = await screen.findByTestId('schedule-roster-error', {}, { timeout: 5000 })
+    const retry = within(notice.parentElement!).getByRole('button', { name: 'Retry' })
+
+    let fail: (e: Error) => void = () => {}
+    vi.mocked(api).agentCatalog.mockReturnValue(new Promise((_, reject) => { fail = reject }))
+    const calls = vi.mocked(api).agentCatalog.mock.calls.length
+
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'))
+    expect(retry).not.toBeDisabled()
+    expect(retry).toHaveFocus()
+    fireEvent.click(retry)
+
+    await act(async () => { fail(new Error('still down')) })
+    await waitFor(() => expect(retry).not.toHaveAttribute('aria-disabled'))
+    // Counted after the retry settles: a second press would have started a
+    // second catalog fetch by now.
+    expect(vi.mocked(api).agentCatalog.mock.calls.length).toBe(calls + 1)
+    expect(retry.isConnected).toBe(true)
+    expect(retry).toHaveFocus()
   })
 })

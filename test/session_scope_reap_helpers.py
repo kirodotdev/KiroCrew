@@ -26,8 +26,7 @@ _NOW = 1_000_000.0
 
 
 @pytest.fixture(name="_scope_errors_fail_the_test", autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_session_scope_reap*.py modules calls monkeypatch.undo()
-def _scope_errors_fail_the_test_fixture(request, monkeypatch):
+def _scope_errors_fail_the_test_fixture(request, _floor_monkeypatch):
     """Fail any test in which a scope evaluation or reclaim raised, unless it opts in.
 
     The sweep turns an exception into a skip so one bad scope cannot stop the
@@ -42,8 +41,8 @@ def _scope_errors_fail_the_test_fixture(request, monkeypatch):
         errors.append((unit_name, phase, exc))
         real(unit_name, phase, exc, errored)
 
-    monkeypatch.setattr(r, "_warn_scope_error", record)
-    monkeypatch.setattr(r, "_SCOPE_ERRORS_WARNED", {})
+    _floor_monkeypatch.setattr(r, "_warn_scope_error", record)
+    _floor_monkeypatch.setattr(r, "_SCOPE_ERRORS_WARNED", {})
     yield errors
     if "allow_scope_errors" not in request.fixturenames:
         assert errors == [], f"a scope raised during the sweep: {errors!r}"

@@ -21,6 +21,7 @@ from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.dashboard import member_message_notes
 from kiro_crew.dashboard.handlers.messaging import api_notification_channels
 from kiro_crew.dashboard.member_message_notes import MEMBER_CHANNEL, post_turn_reply
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import DashboardState, row_mid
 from kiro_crew.members import DM_SLOT_MODE, member_slot_key, write_dm_binding
 from kiro_crew.notifications.bus import SYSTEM_CHANNELS
@@ -105,7 +106,7 @@ class TestMessageNote:
         assert note["slot"] == slot
         assert note["group_key"] == slot
         # Passive notes do not raise the unread count either.
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
 
     def test_the_deep_link_carries_the_exact_name(self, monkeypatch, tmp_path):
         # The Members page selects a thread by the crew's exact name, not its slug.
@@ -221,7 +222,7 @@ class TestChannel:
         [note] = _member_notes(state)
         assert note["silenced"] is True
         assert note["priority"] == "passive"
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
 
     def test_raising_the_channel_gives_the_note_that_priority(self, monkeypatch, tmp_path):
         # Passive is the channel's default, not a cap: the user can opt in.
@@ -231,7 +232,7 @@ class TestChannel:
         [note] = _member_notes(state)
         assert note["priority"] == "default"
         assert "silenced" not in note
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
     def test_muting_agent_notes_leaves_crewmate_messages_alone(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)

@@ -36,7 +36,8 @@ eager path stores equal to the one a reader would have folded.
 
 WHAT IT PUBLISHES, AND WHAT MADE THAT POSSIBLE. An advanced fold is published on
 :mod:`kiro_crew.crew_log.bus` as a ``FoldAdvanced(scope, key, fold, revision, value,
-seq)``, one per coalesced batch per fold it moved. Through a bus and not to a named consumer, because this value has
+seq)``, one per coalesced batch per fold it moved (a ``work`` event carries a delta
+and no value; see :func:`_delta_event`). Through a bus and not to a named consumer, because this value has
 several consumers coming and this module must know about none of them; the dashboard's WS
 exporter subscribes where the dashboard state exists, and the conductor pull-forward
 (:mod:`kiro_crew.conductor_wake`) subscribes where the loops it fires exist. The ``work``
@@ -74,6 +75,7 @@ about the same cell.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import queue
 import sys
@@ -116,6 +118,7 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
         "dashboard/goal_recorded",
         "dashboard/waiting_changed",
         "dashboard/custom_value",
+        "dashboard/custom_failed",
         # The ``workers`` fold: a crewmate's creates, and each worker's own turns,
         # replies and end, which it reads from the worker's log and routes to the
         # crewmate's cell (:func:`_creator_slot`).
@@ -737,14 +740,17 @@ def _fold_batch(
             key = (creator, _WORKERS_FOLD)
             work[key] = max(work.get(key, 0), seq)
     for slot in closed_slots:
-        # The savepoint story for a slot fold is the memo, so dropping it costs the next
-        # read one cold fold of a unit that has stopped growing -- and holds nothing for
-        # a session that will never append again.
+        # The memo holds nothing for a session that will never append again, so it is
+        # dropped -- after its savepoint is brought up to the closer, so the next read
+        # resumes from disk instead of folding every unit cold.
         #
         # NAMED, one fold at a time. A bare ``slot=`` matches every ``(home, slot, *)``
         # memo, and a ``session/closed`` is not always the end of a board: a slot reset,
         # or one worker unit of a LIVE crew, would take that crew's other cells with it.
         for eager_name in projection.EAGER_SLOT_FOLD_NAMES:
+            # Sealed first: the savepoint written here is what the next read resumes
+            # from, so the drop costs a tail read rather than a cold fold.
+            projection.seal_slot_fold(slot, eager_name)
             projection.forget_slot_folds(slot=slot, name=eager_name)
         # The memo cell is gone, so the next value is a rebuild: publish it as
         # ``snapshot_needed`` rather than a delta against a board nobody will extend.
@@ -768,6 +774,9 @@ def _fold_batch(
     for unit_id, seq in newest.items():
         _advance_session(unit_id)
         if closed.get(unit_id, 0) >= seq > 0:
+            # Sealed first, as the slot cells above are: the unit will not append
+            # again, so its savepoint is brought to the closer before the cell goes.
+            projection.seal_session_folds(unit_id)
             projection.forget_session_folds(unit_id)
 
 
@@ -1013,17 +1022,59 @@ def _delta_event(slot: str, name: str, revision: int, value: dict[str, Any], seq
         _published.move_to_end((slot, name))
         while len(_published) > _PUBLISHED_CAP:
             _published.popitem(last=False)
+    # NO WHOLE VALUE on the event: every receiver applies the delta on what it holds or
+    # reads a snapshot. The render stays recorded above as the next base, and a reader
+    # that needs it whole for this exact publish asks :func:`published_value`.
     return bus.FoldAdvanced(
         scope=bus.SCOPE_SLOT,
         key=slot,
         fold=name,
         revision=revision,
-        value=value,
+        value=None,
         seq=seq,
         kind=kind,
         base_revision=base_revision,
         delta=ops,
     )
+
+
+def published_value(slot: str, name: str, revision: int) -> "dict[str, Any] | None":
+    """The render last published for *slot*'s delta fold *name*, if it is *revision*'s.
+
+    For the one reader that still needs a ``work`` value whole: the WS exporter, for a
+    tab that cannot apply deltas. It asks from inside the publish of *revision* (the
+    bus calls it synchronously, on this thread, under ``_published_lock``), so the
+    recorded base is exactly that publish's render and no render or read is added.
+    ``None`` when the base recorded is another revision (an older or repeated publish,
+    or one already overtaken). The value is the publisher's own object: read it, never
+    mutate it. No I/O.
+    """
+    with _published_lock:
+        return _published_value_locked(slot, name, revision)
+
+
+def try_published_value(slot: str, name: str, revision: int) -> "dict[str, Any] | None":
+    """:func:`published_value`, but ``None`` at once when another thread holds the lock.
+
+    For a bus subscriber that may be called while it holds its own delivery guard
+    (a held event replayed after a baseline). A publish holds ``_published_lock`` while
+    it waits on that guard, so a blocking acquire here would take the two locks in the
+    opposite order and deadlock. The publishing thread itself always gets in: the lock
+    is re-entrant. A miss means "read a snapshot instead". No I/O.
+    """
+    if not _published_lock.acquire(blocking=False):
+        return None
+    try:
+        return _published_value_locked(slot, name, revision)
+    finally:
+        _published_lock.release()
+
+
+def _published_value_locked(slot: str, name: str, revision: int) -> "dict[str, Any] | None":
+    base = _published.get((slot, name))
+    if base is None or base[0] != int(revision):
+        return None
+    return base[1]
 
 
 def published_revision(slot: str, name: str) -> int:
@@ -1109,14 +1160,16 @@ def _slot_of(unit_id: str) -> str:
 def drain(timeout: float = 5.0) -> bool:
     """Wait until every wake queued so far has been FOLDED. ``True`` when it has.
 
-    Two callers. A test that has just committed an entry and needs the fold to have
-    happened before it reads. And the shutdown barrier (``emit.drain_for_shutdown``),
-    which waits here so nothing is still folding into the data home once it returns. No
-    READ waits for this -- an eager fold is currency, and a reader that arrives first is
-    served by the lazy path. The wait
-    is on the counters rather than on the queue being empty: an empty queue means the
-    worker has TAKEN the last wake, which is not the same as having folded it, and a
-    waiter that stopped there would read a value the fold had not reached yet.
+    Three callers. A test that has just committed an entry and needs the fold to have
+    happened before it reads. The shutdown barrier (``emit.drain_for_shutdown``), which
+    waits here so nothing is still folding into the data home once it returns. And the
+    history-delete funnel, which waits here so the seal a ``session/closed`` woke has let
+    go of the unit's lease before the removal claims it sole. No READ waits for this --
+    an eager fold is currency, and a reader that arrives first is served by the lazy
+    path. The wait is on the counters rather than on the queue being empty: an empty
+    queue means the worker has TAKEN the last wake, which is not the same as having
+    folded it, and a waiter that stopped there would read a value the fold had not
+    reached yet.
     """
     deadline = time.monotonic() + max(timeout, 0.0)
     if _queue is not None:
@@ -1128,8 +1181,11 @@ def drain(timeout: float = 5.0) -> bool:
                 _progress.wait(min(remaining, _POLL_SECONDS))
     # A wake whose cell was cold handed its fold to a background prime, which also writes
     # into the data home: the barrier covers it too. Looked up rather than imported, so a
-    # process that never primed loads nothing here.
-    primes = sys.modules.get("kiro_crew.crew_log.slot_prime")
+    # process that never primed loads nothing here. Through ``import_module`` once it is
+    # listed: the worker that loads it may still be running its body, and only the import
+    # machinery waits for that.
+    name = "kiro_crew.crew_log.slot_prime"
+    primes = importlib.import_module(name) if name in sys.modules else None
     if primes is not None:
         return bool(primes.drain(max(deadline - time.monotonic(), 0.0)))
     return True

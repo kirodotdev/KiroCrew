@@ -15,6 +15,7 @@ import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
+import { clearSlotSuccession, resolveSlotSuccession } from '../utils/slotSuccession'
 
 interface VirtuosoMockProps {
   data?: unknown[]
@@ -75,6 +76,9 @@ import { __resetComposerSendHoldsForTests, isComposerSendHeld, takeComposerArriv
 import '../surfaces/builtins'
 
 beforeEach(() => {
+  // runMemorySwitch records each hand-over; a chain left by an earlier test
+  // would change what a later one resolves.
+  clearSlotSuccession()
   createChatSlot.mockReset()
   deleteChatSlot.mockReset().mockResolvedValue(undefined)
   vi.mocked(api.chatSlotDetail).mockReset().mockImplementation(async () => ({
@@ -188,9 +192,13 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
 
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
+    // The replacement names the chat it replaces, so the agent resolves in its project.
+    expect(createChatSlot.mock.calls[0][12]).toBe('slot-a')
     // deleteSlot rethrows its own 'save failed' in place of the API error.
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
+    // slot-a is still alive, so it is no longer recorded as replaced.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 
   it('keeps the unsent draft when switching memory mode, both directions', async () => {
@@ -206,8 +214,10 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(composer().value).toBe('half-written prompt'), SWITCH_CHAIN_WAIT)
+    // The hand-over is recorded, so a host embedding slot-a can follow it.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-b')
 
     // And back: the "switch to persistent" chip recreates the slot again.
     fireEvent.change(composer(), { target: { value: 'half-written prompt, more' } })
@@ -275,8 +285,8 @@ describe('memory chip above the composer', () => {
 
     // The unused replacement is dropped; slot A (and its draft) survives and
     // the view stays where the user put it.
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b', undefined), SWITCH_CHAIN_WAIT)
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a', undefined)
     expect(store.getState().chat.activeSlot).toBe('slot-x')
   })
 
@@ -296,8 +306,8 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { resolveCreate({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' }) })
 
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b', undefined), SWITCH_CHAIN_WAIT)
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a', undefined)
     expect(settledSwitches).not.toContain('slot-b')
     expect(store.getState().chat.activeSlot).toBe('slot-a')
   })
@@ -431,6 +441,7 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-b')
 
     // While slot-b's transcript is still loading, the user goes back to slot-a
     // and then on to a third session before the switch resolves.
@@ -440,8 +451,10 @@ describe('memory chip above the composer', () => {
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-x'), SWITCH_CHAIN_WAIT)
     // The switch was abandoned, so its replacement must not linger.
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b', undefined), SWITCH_CHAIN_WAIT)
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a', undefined)
+    // slot-a stays the session: no hand-over is left recorded.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 
   it('keeps the failure notice when the switch to the replacement is rejected', async () => {
@@ -464,10 +477,11 @@ describe('memory chip above the composer', () => {
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('replacement unreachable'), SWITCH_CHAIN_WAIT)
     expect(store.getState().chat.activeSlot).toBe('slot-a')
     // The unused replacement is dropped rather than left as a stray empty session.
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b', undefined), SWITCH_CHAIN_WAIT)
     expect(screen.getByTestId('action-error')).toBeInTheDocument()
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a', undefined)
     expect(screen.getByLabelText('Message input')).not.toHaveAttribute('aria-disabled')
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 
   it('keeps the replacement the user typed in when the switch rejects after the timeout', async () => {
@@ -507,8 +521,8 @@ describe('memory chip above the composer', () => {
     await waitFor(() => expect(settledSwitches).toContain('slot-b'), SWITCH_CHAIN_WAIT)
     // The rejection is reported; the cleanup it skipped would have run in the same branch.
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('replacement unreachable'), SWITCH_CHAIN_WAIT)
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-b')
-    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-b', undefined)
+    expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a', undefined)
   })
 
   it('keeps the composer locked while the switch loads, then unlocks it in the replacement with the draft', async () => {
@@ -534,7 +548,7 @@ describe('memory chip above the composer', () => {
     await act(async () => { releaseDetail() })
     await waitFor(() => expect(settledSwitches).toContain('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(composer()).not.toHaveAttribute('aria-disabled'), SWITCH_CHAIN_WAIT)
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
     expect(composer().value).toBe('carried')
   })
 
@@ -565,7 +579,7 @@ describe('memory chip above the composer', () => {
     await act(async () => { finishUpload() })
     await act(async () => { releaseDetail() })
 
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/during-switch.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)
   })
 
@@ -617,7 +631,7 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
 
     expect(isComposerSendHeld('slot-b')).toBe(true)
     await act(async () => { finishUpload() })
@@ -708,7 +722,7 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
-    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
+    await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a', undefined), SWITCH_CHAIN_WAIT)
 
     await act(async () => { finishUpload() })
     await waitFor(() => expect(screen.getByRole('group', { name: '/uploads/after-switch.png' })).toBeInTheDocument(), SWITCH_CHAIN_WAIT)

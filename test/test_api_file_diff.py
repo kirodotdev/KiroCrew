@@ -284,7 +284,11 @@ async def test_git_output_is_decoded_as_utf8(tmp_path):
     original_run = subprocess.run
 
     def spy_run(cmd, **kwargs):
-        calls.append(kwargs)
+        # The repo-config preflight reads BYTES on purpose (raw stdout, see
+        # update_governance._git_probe), and bytes have no code page to pick; the
+        # text-mode calls whose output the handler returns are this test's subject.
+        if "text" in kwargs or "encoding" in kwargs or "universal_newlines" in kwargs:
+            calls.append(kwargs)
         return original_run(cmd, **kwargs)
 
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \

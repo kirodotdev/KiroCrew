@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, overload
 
 from kiro_crew import platform_compat, windows_acl
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.execution_context import (
     MEMBER_ON_GLOBAL_REASON,
@@ -37,6 +38,8 @@ class WorkflowAllocatorError(WorkflowMemoryError):
 
 _RUN_ID_MAX = (1 << 64) - 1
 _RUN_ID_ENABLED = b"1"
+#: The template a caller with no carrier of its own runs: the default agent.
+_FLOOR_TEMPLATE = AGENT_FILENAME[: -len(".json")]
 
 logger = logging.getLogger(__name__)
 
@@ -255,11 +258,59 @@ def capture_execution(*session_keys: str) -> ExecutionContext:
     items = [capture_session_execution(key) for key in dict.fromkeys(session_keys) if key]
     contexts = [item for item in items if item is not None]
     if not contexts:
-        return ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew")
+        return ExecutionContext(None, MemoryStoreRef("default"), "template", _FLOOR_TEMPLATE)
     selected = contexts[0]
     if any(item.store != selected.store for item in contexts):
         raise WorkflowMemoryError("Workflow caller and delivery memory must match")
     return selected.with_mode(stricter_memory_mode(*(item.memory_mode for item in contexts)))
+
+
+def inherited_step_agent(execution: ExecutionContext | None) -> str:
+    """The agent a run's steps run when the run names none: its caller's template.
+
+    A run freezes the carrier of the chat that started it, and a chat on a custom
+    agent binds a ``template`` carrier naming that agent, so its background steps
+    get the same MCP servers, tools, hooks and prompt the chat has. ``""`` (the
+    configured default agent) for no carrier, for the default-agent floor (so a
+    default chat keeps the warm pool's agent), and for any carrier bound to a
+    member: a member's or crewmate worker's steps need the crew routing (the
+    member claim, the worker's backend) that the step session openers do not
+    carry. ``""`` too for an app's own agent: its chat runs the app's registered
+    spec through a launch copy (``apps.agent_launch``) the step openers do not
+    carry either, and its bare name would let a checkout's same-named spec run.
+    ``""`` as well for a template with no user-level spec (one only a checkout's
+    ``.kiro/agents`` declares, or one two specs claim with no pin; a spec linked
+    into the agents directory counts, as it does for a session's own spec read):
+    a step session opens on the run's own working directory, where that name may
+    resolve to nothing, so the run keeps the default agent rather than fail to
+    start.
+    Blocking file I/O when a template is named; call it off the event loop.
+    """
+    if getattr(execution, "selection_kind", "") != "template" or getattr(
+        execution, "member_id", None
+    ):
+        return ""
+    template = str(getattr(execution, "template_id", "") or "")
+    if not template or template == _FLOOR_TEMPLATE:
+        return ""
+    from kiro_crew.agent import session_agent_spec_path
+    from kiro_crew.apps.manager import owning_app_for_agent
+
+    if owning_app_for_agent(template) is not None:
+        return ""
+    # The user-level lookup a session's own spec read makes
+    # (``acp.session_mcp._user_agent_spec``): the file, else a linked one.
+    from kiro_crew.member_essential_context import linked_global_template_spec
+
+    try:
+        if session_agent_spec_path(template) is not None:
+            return template
+        linked = linked_global_template_spec(
+            template, operation="inherited_step_agent", source="unknown"
+        )
+    except ValueError:
+        return ""
+    return template if linked is not None else ""
 
 
 async def capture_admission_execution(
@@ -358,8 +409,21 @@ class WorkflowScope:
             modes[key] = stricter_memory_mode(execution.memory_mode, modes.get(key, "persistent"))
         return self.store
 
-    async def prompt(self, context, key, text, *, is_new, agent, cwd, provider, resumed=False):
+    async def prompt(
+        self,
+        context,
+        key,
+        text,
+        *,
+        is_new,
+        agent,
+        cwd,
+        provider,
+        resumed=False,
+        skill_trigger_text: str | None = None,
+    ):
         await self.prepare(context, key)
+        from kiro_crew.context_assembly.budget import window_for_provider_client
         from kiro_crew.executors import run_in_embed_pool
 
         if context is None:
@@ -382,14 +446,18 @@ class WorkflowScope:
             text,
             is_new,
             key,
+            # Workflow workers run headless: no user reads their turns live.
+            interactive=False,
             agent=agent,
             project=cwd,
             memory_store=self.store,
+            model_window=window_for_provider_client(provider),
             execution_context=self.execution_context,
             runtime_source="workflow",
             blocks_reads=self.memory_mode == "temporary",
             context_provider=provider,
             resumed=resumed,
+            skill_trigger_text=skill_trigger_text,
         )
         return full
 
@@ -445,8 +513,8 @@ _GENERIC_MEMORY_REFUSAL = "Workflow memory is unavailable; no Global fallback wa
 _WORKFLOW_HEADLINE_REFUSAL = "Workflow memory is unavailable; Global was not used"
 _MEMBER_BINDING_REASONS = frozenset({MEMBER_ON_GLOBAL_REASON, MEMBER_WITHOUT_IDENTITY_REASON})
 _MEMBER_BINDING_REMEDY = (
-    "To run workflows here, start a chat with no mate picked, or pick a mate "
-    "that has its own memory (every new mate gets one)."
+    "To run workflows here, start a chat with no Bot picked, or pick a Bot "
+    "that has its own memory (every new Bot gets one)."
 )
 
 

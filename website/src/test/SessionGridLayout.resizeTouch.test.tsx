@@ -8,7 +8,9 @@
  *  (1) each divider is a role="separator" with the correct aria-orientation and
  *      touch-action:none (so a touch drag resizes instead of scrolling);
  *  (2) a pointer drag reports the fractional delta to onResize for the right
- *      split id + divider index — a col split tracks clientX, a row split clientY.
+ *      split id + divider index — a col split tracks clientX, a row split clientY;
+ *  (3) the divider carries a pressed style, which is what makes Chromium treat
+ *      it as a touch target (jsdom cannot hit-test, so this pins the class).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, fireEvent, act } from '@testing-library/react'
@@ -63,5 +65,11 @@ describe('SessionGridLayout — pointer/touch divider resize', () => {
     act(() => { fireEvent.pointerUp(divider, { clientX: 10, clientY: 130, pointerId: 1 }) })
     // extent = 200 (stubbed height); moved +30px → +0.15 fraction.
     expect(onResize).toHaveBeenCalledWith('root', 0, 30 / 200)
+  })
+
+  it('a divider carries a pressed style, so a touch on it stays on it', () => {
+    const { divider } = renderSplit('col')
+    expect(divider.className).toContain('group/div')
+    expect(divider.querySelector('[class*="group-active/div:"]')).not.toBeNull()
   })
 })

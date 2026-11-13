@@ -32,6 +32,7 @@ RULE = ROOT / "semgrep" / "mock-pid-allocatable.yaml"
 FIXTURE = ROOT / "semgrep-tests" / "mock-pid-allocatable.py"
 SEMGREPIGNORE = ROOT / ".semgrepignore"
 CODE_REVIEW = ROOT / ".github" / "workflows" / "code-review.yml"
+HISTORY_SCRIPT = ROOT / ".github" / "scripts" / "code-review-history.sh"
 UNALLOCATABLE_PID_SUITE = ROOT / "test" / "test_update_provider.py"
 
 RULE_ID = "kirocrew.mock-pid-allocatable"
@@ -135,9 +136,15 @@ class TestTheScanStaysDiffScoped:
 
     def test_the_diff_base_is_the_merge_base(self) -> None:
         """A base-branch tip would read sibling commits as this branch's own work."""
-        resolvers = [run for run in _sast_run_steps() if "MERGE_BASE" in run]
+        steps = yaml.safe_load(CODE_REVIEW.read_text(encoding="utf-8"))["jobs"]["sast"]["steps"]
+        resolvers = [step for step in steps if step.get("id") == "diffbase"]
         assert len(resolvers) == 1, f"expected one diff-base step, found {len(resolvers)}"
-        assert "git merge-base" in resolvers[0]
+        assert resolvers[0]["run"].strip() == f"bash {HISTORY_SCRIPT.relative_to(ROOT).as_posix()}"
+        script = HISTORY_SCRIPT.read_text(encoding="utf-8")
+        assert 'merge_base="$(git merge-base "$BASE_TIP" "$HEAD_SHA")"' in script
+        assert 'echo "sha=$merge_base" >> "$GITHUB_OUTPUT"' in script
+        (scan,) = [step for step in steps if "semgrep scan" in str(step.get("run"))]
+        assert scan["env"]["SEMGREP_BASELINE_REF"] == "${{ steps.diffbase.outputs.sha }}"
 
     def test_the_rule_tests_run_on_the_fixtures(self) -> None:
         harness = [run for run in _sast_run_steps() if "--test" in run]

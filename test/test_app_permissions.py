@@ -106,13 +106,10 @@ class TestCheckToolPermission:
 
 
 class TestManagedToolsToExclude:
-    """``permissions.mcpTools`` is enforced by excluding the managed tools an app
-    did NOT declare from its agents' ``managedToolPolicy``.
+    """``permissions.mcpTools`` excludes undeclared managed tools via ``managedToolPolicy``.
 
-    The set is "every host-managed tool that fails :func:`check_tool_permission`",
-    so the predicate the issue asked to wire up is the one that decides the
-    exclusion. An app's own server tools and base built-ins are never managed
-    tools, so they are never excluded; an empty declaration excludes nothing.
+    The set is "every host-managed tool that fails :func:`check_tool_permission`". An
+    app's own server tools and base built-ins are never managed, so never excluded.
     """
 
     def test_empty_declaration_excludes_nothing(self):

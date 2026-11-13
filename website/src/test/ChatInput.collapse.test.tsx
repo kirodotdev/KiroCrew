@@ -204,14 +204,12 @@ describe('composer collapse', () => {
     renderWithProviders(<ChatInput {...base} />)
     collapse()
     const bar = await screen.findByTestId('composer-collapsed-bar')
-    await new Promise(requestAnimationFrame)
     // Not `body`: a keyboard user must not be dropped to the top of the page.
-    expect(document.activeElement).toBe(bar)
+    await waitFor(() => expect(document.activeElement).toBe(bar))
 
     fireEvent.click(bar)
     const ta = await screen.findByLabelText('Message input')
-    await new Promise(requestAnimationFrame)
-    expect(document.activeElement).toBe(ta)
+    await waitFor(() => expect(document.activeElement).toBe(ta))
   })
 
   /**

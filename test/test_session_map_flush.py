@@ -1,23 +1,9 @@
 """SessionMap's deferred snapshot flush: off-loop writes that lose nothing.
 
-On the event loop a mutation marks the map dirty and a debounced
-flush task hands an ALREADY SERIALIZED snapshot to a worker thread; ``_data``
-never crosses the thread boundary and ``_MAP_LOCK`` is never held across the
-await (ratcheted in ``test_session_map_locking.py``). Off the loop, writes stay
-inline. Pinned here:
-
-1. a burst of loop-side mutations pays ZERO inline writes and coalesces to one
-   file write (this is the fails-before test: pre-deferral, every mutation
-   called ``os.replace`` synchronously on the loop);
-2. a mutation landing while a flush is in flight is still on disk after the
-   map settles — coalescing never drops the trailing write;
-3. the payload handed to the worker thread is an immutable snapshot, not
-   ``_data``;
-4. sync contexts (no running loop) keep writing immediately;
-5. ``get()``'s stale-entry prune returns ``None`` immediately and reaches disk
-   after the flush, not inline;
-6. ``flush()`` is deterministic, and a stale in-flight payload can never land
-   over a newer forced write.
+On the loop a debounced task hands an ALREADY SERIALIZED snapshot to a worker thread,
+so ``_data`` never crosses threads (lock rules: ``test_session_map_locking.py``). Off
+the loop, writes stay inline. A trailing write is never dropped, and a stale in-flight
+payload never lands over a newer forced ``flush()``.
 """
 
 from __future__ import annotations
@@ -269,11 +255,8 @@ class TestDeferredFlush:
     async def test_cancel_before_first_step_reowes_and_aflush_lands_it(self, session_map, tmp_path):
         """A task cancelled before EVER running must not strand pending state.
 
-        A cancelled-before-start coroutine body never executes, so nothing has
-        consumed the dirty mark: the state is still owed, the next mutation
-        would reschedule (the task is done), and the shutdown ``aflush`` lands
-        it. This is the loop-shutdown shape: create_task, then teardown
-        cancels everything before the debounce elapses.
+        Its body never runs, so the dirty mark stays and the shutdown ``aflush`` lands
+        it. This is loop shutdown: teardown cancels before the debounce elapses.
         """
         session_map.set("dashboard:early", "sid-early")
         task = session_map._flush_task
@@ -361,11 +344,8 @@ class TestDeferredFlush:
     async def test_flush_covers_a_claimed_but_unwritten_snapshot(self, session_map, tmp_path):
         """flush() during an in-flight claimed snapshot must still write.
 
-        The flush task consumes the dirty mark when it CLAIMS a snapshot, so a
-        dirty-only predicate would let flush() return while the worker thread
-        has not landed anything — a stale file behind a "deterministic
-        durability point". The file must be current before flush() returns,
-        with the gated task write still unreleased.
+        The task consumes the dirty mark when it CLAIMS a snapshot, so a dirty-only
+        check would let flush() return before the worker thread wrote anything.
         """
         entered = threading.Event()
         release = threading.Event()

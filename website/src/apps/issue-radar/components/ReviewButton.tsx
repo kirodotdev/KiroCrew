@@ -73,7 +73,7 @@ export default function ReviewButton({
       onOpenOlderSessions={openOlderSessions}
       startHint={
         recordQuery.isError
-          ? 'Could not check for an existing review session — retrying on refresh'
+          ? i18nT('apps.issueRadar.components.reviewButton.could_not_check_for_an_existing_review_session')
           : i18nT('apps.issueRadar.components.reviewButton.open_ai_code_review_session_for_this', { label: terms.changeRequestTitle })
       }
       resumeHint={i18nT('apps.issueRadar.components.reviewButton.resume_ai_code_review_session_for_this', { label: terms.changeRequestTitle })}

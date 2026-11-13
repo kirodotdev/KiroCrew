@@ -225,3 +225,7 @@ class TestConnectorErrors:
         client = _client(wire)
 
         asyncio.run(client.send_typing("conv-1", _SERVICE_URL))
+        # The refused request was a typing activity on the conversation's path.
+        (activity,) = [r for r in wire.requests if "/v3/conversations/" in r.path]
+        assert activity.path == "/teams/v3/conversations/conv-1/activities"
+        assert activity.json_body == {"type": "typing"}

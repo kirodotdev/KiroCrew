@@ -39,9 +39,7 @@ def _html() -> str:
     return _template_path().read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # flatten the contract
-# ---------------------------------------------------------------------------
 
 
 def _is_typed_dict(tp: Any) -> bool:
@@ -65,9 +63,7 @@ def contract_keys(td: Any, prefix: str = "") -> set[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # extract what the template reads
-# ---------------------------------------------------------------------------
 
 
 class ExtractionRefused(Exception):
@@ -135,9 +131,7 @@ def _js_object_keys(src: str, name: str) -> list[str]:
     return re.findall(r'"([^"]+)"\s*:', m.group(1))
 
 
-# ---------------------------------------------------------------------------
 # the extractor's own preconditions
-# ---------------------------------------------------------------------------
 
 
 def test_the_extractor_reads_the_shipped_template() -> None:
@@ -166,9 +160,7 @@ def test_the_contract_flattener_walks_the_task_list() -> None:
     assert "tasks" not in contract_keys(ConductorBoardPanel)
 
 
-# ---------------------------------------------------------------------------
 # the gate
-# ---------------------------------------------------------------------------
 
 
 def test_the_board_template_id_is_reachable_through_crew_selection() -> None:
@@ -209,9 +201,7 @@ def test_the_templates_steps_are_the_contracts_steps_in_order() -> None:
     assert _js_array(_script(_html()), "STEPS") == list(STEPS)
 
 
-# ---------------------------------------------------------------------------
 # rules for this template's behaviour
-# ---------------------------------------------------------------------------
 
 
 def test_all_motion_stops_under_reduced_motion() -> None:

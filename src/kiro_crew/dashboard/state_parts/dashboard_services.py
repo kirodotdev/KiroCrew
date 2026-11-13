@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.atomic_write import atomic_write
@@ -36,7 +37,7 @@ from kiro_crew.dashboard.notification_coordinator import (
     _serialized_bytes,
     native_notification_tag,
 )
-from kiro_crew.dashboard.slot_registry import SlotRegistry
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis
 from kiro_crew.dashboard.state_parts.notification_log import (
     _MAX_PERSISTED_NOTIFICATIONS,
     _notification_io_executor,
@@ -46,7 +47,9 @@ from kiro_crew.dashboard.state_parts.notification_log import (
     sweep_expired_notifications,
 )
 from kiro_crew.dashboard.state_parts.transcript_rows import _mark_permission_resolved
+from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.safety_override import safety_override
@@ -152,6 +155,12 @@ def _web_push_payload(note: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(tag, str) or not tag or _serialized_bytes(tag) > NATIVE_TAG_MAX_BYTES:
         tag = native_notification_tag(note)
     notification["tag"] = tag
+    key = note.get("key")
+    if isinstance(key, str) and key:
+        # A keyed note shares its tag with the earlier notes under its key, so a
+        # platform would swap a banner still on screen without alerting. Only a
+        # keyed note meant to announce reaches Web Push, so each one asks to.
+        notification["renotify"] = True
     return {"web_push": 8030, "notification": notification}
 
 
@@ -355,20 +364,21 @@ async def run_background_turn(self: DashboardState, slot: "_ChatSlot", coro: Any
         await asyncio.wait_for(sema.acquire(), timeout=self._BACKGROUND_QUEUE_WAIT_SECS)
     except asyncio.TimeoutError:
         coro.close()
+        mark_turn_unstarted(slot)
         self._log.warning(
             "background turn abandoned after waiting %ds for a permit: slot=%s cap=%d",
             self._BACKGROUND_QUEUE_WAIT_SECS,
             slot.key,
             self._bg_turn_cap,
         )
-        raise TimeoutError(
-            f"queued {self._BACKGROUND_QUEUE_WAIT_SECS}s behind the background-turn "
-            f"cap ({self._bg_turn_cap} concurrent) without a free slot"
-        ) from None
+        # Its own TimeoutError, so the dispatch reports a turn that never ran
+        # rather than one the turn ceiling stopped.
+        raise BackgroundTurnAbandoned(self._BACKGROUND_QUEUE_WAIT_SECS, self._bg_turn_cap) from None
     except BaseException:
         # Cancelled while queued: the turn never ran, so close its coroutine
         # rather than leaving an un-awaited coroutine warning behind.
         coro.close()
+        mark_turn_unstarted(slot)
         raise
     finally:
         if queued:
@@ -397,6 +407,27 @@ def is_yolo_active(self: DashboardState) -> bool:
     return safety_override().is_active()
 
 
+def yolo_reaches(self: DashboardState, slot: Any, *, channel_origin: bool = False) -> bool:
+    """Whether a live YOLO grant (``is_yolo_active``) reaches a dashboard turn in *slot*.
+
+    ``gateway --approval yolo``'s grant (``is_cli_launch``) is the dashboard's only: a
+    turn a channel message started or steered, or a slot linked to a channel, keeps
+    asking as it did before the flag armed a grant. Callers AND it with
+    ``is_yolo_active``.
+    """
+    if safety_override().is_cli_launch is not True:
+        return True
+    linked_key = getattr(slot, "linked_session_key", "") or ""
+    linked = is_channel_session_key(linked_key) or bool(getattr(slot, "_slack_channel", ""))
+    # The opener's provenance (``_turn_channel_origin``) holds for the whole turn,
+    # even if the slot is unlinked mid-turn, as does a channel steer's narrowing.
+    from_channel = channel_origin or any(
+        getattr(slot, name, False) is True
+        for name in ("_turn_channel_origin", "_turn_channel_narrowed")
+    )
+    return not (from_channel or linked)
+
+
 async def request_approval(
     self: DashboardState,
     approval_id: str,
@@ -407,8 +438,17 @@ async def request_approval(
     tool_purpose: str = "",
     slot: str = "",
     is_background: bool = False,
+    run_task_id: str = "",
+    task_index: int | None = None,
+    on_host_decision: Callable[[str], object] | None = None,
 ) -> bool:
-    """Request interactive approval and deny on timeout or cancellation."""
+    """Request interactive approval and deny on timeout or cancellation.
+
+    A task runner gate passes ``run_task_id`` and ``task_index``; the
+    record carries them so ``GET /api/approvals`` names the gate's run
+    and task. *on_host_decision* is for a caller that records who decided;
+    see ``ApprovalCoordinator.request``.
+    """
     return await _approvals_for(self).request(
         self,
         approval_id,
@@ -420,6 +460,9 @@ async def request_approval(
         is_background=is_background,
         redact_url=redact_exfiltration_urls,
         redact_secret=redact_credentials,
+        run_task_id=run_task_id,
+        task_index=task_index,
+        on_host_decision=on_host_decision,
     )
 
 
@@ -437,7 +480,14 @@ def linked_session_busy(self: DashboardState, session_key: str) -> bool:
     if not session_key or not callable(is_busy):
         return False
     try:
-        return is_busy(session_key) is True
+        if is_busy(session_key) is True:
+            return True
+        # Mid-reprojection the live session is popped, so ``is_busy`` reads
+        # False; the key is still held in a replay gap and a turn is about to
+        # re-claim it. Read as running so a dashboard Stop routes through
+        # ``stop_turn`` (which records it) instead of returning idle.
+        gap_probe = getattr(sessions, "has_open_replay_gap", None)
+        return bool(callable(gap_probe) and gap_probe(session_key) is True)
     except Exception:
         logger.debug("linked_session_busy: probe failed for %s", session_key, exc_info=True)
         return False
@@ -472,8 +522,17 @@ def _audit_and_broadcast_approval(
     approval_id: str,
     approved: bool,
     decision: str = "",
+    *,
+    origin: str = "",
+    instance: str = "",
+    mid: str = "",
 ) -> None:
-    """Audit and broadcast one approval decision."""
+    """Audit and broadcast one approval decision.
+
+    *origin* (``coordinator`` or ``native``) names the registry that held
+    the request; the frame carries it so a client settles only that
+    registry's rows.
+    """
     _approvals_for(self).audit_and_broadcast(
         self,
         session_key,
@@ -481,6 +540,9 @@ def _audit_and_broadcast_approval(
         approved,
         decision,
         audit_provider=sel,
+        origin=origin,
+        instance=instance,
+        mid=mid,
     )
 
 
@@ -505,7 +567,13 @@ def resolve_approval(
     *,
     rejected_once: bool = False,
 ) -> bool:
-    """Resolve one state- or slot-level approval without widening authority."""
+    """Resolve one state- or slot-level approval without widening authority.
+
+    By bare id, for callers that hold their own link to the request (a
+    channel button, a bulk sweep). A dashboard control decides through an
+    owner-bound target instead (the decide route's coordinator target, or
+    a native target on the slot approve route).
+    """
     return _approvals_for(self).resolve(
         self,
         approval_id,
@@ -653,14 +721,25 @@ async def request_question(
 
 
 def resolve_question(
-    self: DashboardState, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+    self: DashboardState,
+    ask_id: str,
+    answers: dict[str, str] | None,
+    *,
+    reason: str | None = None,
+    responder: Any = None,
+    response_id: str = "",
 ) -> bool:
     """Resolve one blocking question future if it is still pending.
 
     ``reason`` says why a ``None`` answer ended the wait (``dismissed``,
     ``composer``, ...); only a blocking MCP ask reports it back to the agent.
+    ``responder`` is the verified Shared Crew principal answering through the
+    dashboard; with it the resolution goes through the shared decision
+    registry (first valid response wins once).
     """
-    return _questions_for(self).resolve(self, ask_id, answers, reason=reason)
+    return _questions_for(self).resolve(
+        self, ask_id, answers, reason=reason, responder=responder, response_id=response_id
+    )
 
 
 async def open_agent_ask(
@@ -695,8 +774,10 @@ async def _flush_loop(self: DashboardState) -> None:
     await _persistence_for(self)._flush_loop(self)
 
 
-def flush_slot_now(self: DashboardState, slot: _ChatSlot) -> None:
-    _persistence_for(self).flush_slot_now(self, slot)
+def flush_slot_now(
+    self: DashboardState, slot: _ChatSlot, takeover_basis: TakeoverBasis | None = None
+) -> None:
+    _persistence_for(self).flush_slot_now(self, slot, takeover_basis=takeover_basis)
 
 
 def _flush_dirty_slots(self: DashboardState) -> None:
@@ -719,6 +800,7 @@ def notify(
     channel: str | None = None,
     member: dict[str, str] | None = None,
     publisher_session: str | None = None,
+    i18n: dict[str, Any] | None = None,
 ) -> None:
     """Validate and deliver a legacy notification without raising.
 
@@ -726,6 +808,7 @@ def notify(
     :func:`payload_from_legacy`); ``kind`` still reaches the frontend.
     ``member`` attributes the note to the crewmate that published it.
     ``publisher_session`` is the attested session publishing it; its mute applies.
+    ``i18n`` names the dashboard copy the bell renders in the reader's language.
     """
     _notifications_for(self).notify(
         self,
@@ -738,6 +821,7 @@ def notify(
         channel=channel,
         member=member,
         publisher_session=publisher_session,
+        i18n=i18n,
     )
 
 
@@ -754,7 +838,10 @@ def _fan_out_web_push(self: DashboardState, note: dict[str, Any]) -> None:
     """
     running = self._running_loop()
     if running is not None:
-        running.create_task(self._send_web_push_all(note))
+        # Held until done: the loop keeps only a weak reference to a task.
+        task = running.create_task(self._send_web_push_all(note))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return
     loop = self.serving_loop
     if loop is None or loop.is_closed():
@@ -806,6 +893,52 @@ def _deliver_note(self: DashboardState, note: dict[str, Any]) -> None:
     _notifications_for(self).deliver(self, note)
 
 
+#: The note fields (merged flat from ``meta``) that name the session a note is about.
+_BRIDGE_SESSION_FIELDS = ("session_key", "slot", "history_key")
+
+
+def bridge_subjects(
+    self: DashboardState, note: Mapping[str, Any], publisher: str
+) -> tuple[str, ...]:
+    """The session keys the notification bridge vets *note* for, besides the host.
+
+    Every field that names a session counts, and producers spell them differently:
+    the publisher may be a session key or a bare slot key (a dead-turn alert
+    publishes under ``slot.key``); a note that offers choices carries no publisher
+    but keeps its ``slot`` and ``history_key`` link; a turn-ceiling or abandoned
+    consolidation notice carries only ``session_key``. Each is resolved to the session its slot's turns run on
+    (``effective_session_key``), which is what governance classifies a surface by. A
+    session key no slot matches is vetted as written; a bare slot key no slot holds
+    raises ``LookupError``, and the bridge then sends nothing. Every name is kept,
+    so a forged or stale one can only add a denial, never remove one.
+    """
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+    from kiro_crew.dashboard.session_control import caller_slot_key
+
+    keys: list[str] = []
+    names = [publisher] + [note.get(field) for field in _BRIDGE_SESSION_FIELDS]
+    for name in names:
+        if not isinstance(name, str) or not name:
+            continue
+        slot = self.get_slot(caller_slot_key(self, name) or name)
+        if slot is not None:
+            keys.append(effective_session_key(slot))
+        elif ":" in name:
+            keys.append(name)
+        else:
+            # A bare slot key no slot holds any more (closed while its note was in
+            # flight): governance would read it as some other surface, so refuse.
+            raise LookupError(f"no slot for {name!r}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _bridge_note(self: DashboardState, note: dict[str, Any], publisher: str = "") -> None:
+    """Hand a locally delivered note, and who published it, to the notification bridge."""
+    bridge = getattr(self, "notification_bridge", None)
+    if bridge is not None:
+        bridge.schedule(note, serving_loop=getattr(self, "serving_loop", None), publisher=publisher)
+
+
 def register_sse(self: DashboardState) -> asyncio.Queue[dict[str, Any]]:
     """Register a new SSE client and return its dedicated queue."""
     return _notifications_for(self).register_sse(self)
@@ -816,14 +949,22 @@ def unregister_sse(self: DashboardState, q: asyncio.Queue[dict[str, Any]]) -> No
     _notifications_for(self).unregister_sse(self, q)
 
 
-async def _rewrite_notifications_async(self: DashboardState) -> None:
-    """Rewrite notification storage after earlier FIFO append jobs."""
-    await _notifications_for(self).rewrite(self)
+async def _rewrite_notifications_async(self: DashboardState) -> bool:
+    """Rewrite notification storage after earlier FIFO append jobs.
+
+    Returns whether the file was written.
+    """
+    return await _notifications_for(self).rewrite(self)
 
 
 async def delete_notification(self: DashboardState, ts: str) -> bool:
     """Remove a single notification by timestamp and persist to disk."""
     return await _notifications_for(self).delete(self, ts)
+
+
+async def dismiss_notification(self: DashboardState, *, source: str, key: str) -> tuple[bool, bool]:
+    """Remove the note *source* published under *key*; ``(removed, persisted)``."""
+    return await _notifications_for(self).dismiss(self, source=source, key=key)
 
 
 async def ack_notification(self: DashboardState, ts: str) -> bool:

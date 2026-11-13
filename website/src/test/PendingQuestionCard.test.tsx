@@ -39,6 +39,8 @@ vi.mock('framer-motion', async () => {
   }
 })
 
+// The raised-by label reads the Shared Crew decisions; this file is about the card's own answers.
+vi.mock('../pages/chat/shared-crew/useRaisedBy', () => ({ useRaisedBy: () => '' }))
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import { createTestStore } from './helpers'
 import { ApiError } from '../api/client'
@@ -143,7 +145,7 @@ describe('PendingQuestionCard — round 6 findings', () => {
     // While ask-OLD's response is in flight, a newer ask replaces it in the very
     // same slot. Clearing by slot would wipe ask-NEW and leave it blocked with
     // no card until its own timeout.
-    realDispatch(setQuestionCard({ slot: 'chat-1', ask_id: 'ask-NEW', questions: QUESTIONS }) as never)
+    act(() => { realDispatch(setQuestionCard({ slot: 'chat-1', ask_id: 'ask-NEW', questions: QUESTIONS }) as never) })
     release({ ok: true })
 
     await waitFor(() => expect(dispatched).toContain('chat/resolveQuestionCard'))
@@ -285,15 +287,18 @@ describe('PendingQuestionCard — round 6 findings', () => {
     expect(pendingOf(store)).toBeUndefined()
   })
 
-  it('does not touch the status route when dismissing a BLOCKING card', () => {
+  it('does not touch the status route when dismissing a BLOCKING card', async () => {
     // The answer endpoint owns that lifecycle: the status retires when the wait
     // resolves. Calling the stateless route here would report the session as
     // unblocked while its tool call is still parked.
     vi.spyOn(api, 'answerQuestion').mockResolvedValue({ ok: true } as never)
     const dismissStatus = vi.spyOn(api, 'dismissQuestionCard')
-    renderCard(withCard('ask-1'))
+    const store = withCard('ask-1')
+    renderCard(store)
 
     fireEvent.click(screen.getByLabelText('Dismiss question without answering'))
+    // The resolved wait retires the card; only then has the whole dismissal run.
+    await waitFor(() => expect(pendingOf(store)).toBeUndefined())
 
     expect(dismissStatus).not.toHaveBeenCalled()
   })

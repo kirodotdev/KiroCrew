@@ -42,7 +42,7 @@ through two channels of very different reliability:
    `config/prompt-orchestrator.md:5`) and the `_CRITICAL_RULES` block
    (`context.py:963`) order the model to hand-write a ```` ```diff ```` code
    block after ANY file change, "No exceptions". The frontend then re-parses
-   that prose: the block assembler classifies it (`useBlockAssembler.ts:103`),
+   that prose: the block assembler classifies it (`useBlockAssembler.ts::isDiffContent`),
    `DiffBlock.tsx` regex-extracts the file path from `+++`/`---` headers
    (`extractFilePath`, line 72), and when the model omits headers a heuristic
    scrapes "Created /path"-style lines out of the preceding prose
@@ -57,7 +57,7 @@ The prose channel is the *prominent* one, and it is the weaker one:
   format compliance in long sessions, and the renderer's path extraction
   degrades to heuristics when they do.
 - **It is display-only sugar.** No backend consumer parses model-authored diff
-  fences (verified: `voice_reply.py:159` and `preview_text.py:5` only *strip*
+  fences (verified: `voice_reply.py::strip_markdown._code_block` and `preview_text.py:5` only *strip*
   them; history compression, artifacts, and session summaries never extract
   them). The Activity panel's Files tab reads `GET /api/file-diff` (live
   `git diff HEAD`), and file-change chips read the `file_changes` snapshot
@@ -75,7 +75,7 @@ structured data; it only fails to give it first-class display.
 
 Slack, Discord, and Telegram renderers never see `tool_input`. The unified
 transport copies only `{tool_call_id, title, tool_kind, tool_purpose}` onto
-`OutputEvent` (`messaging/driver.py:373-386`); the Slack native path reads the
+`OutputEvent` (`messaging/driver.py::TurnDriver.run`); the Slack native path reads the
 same four fields (`_AnswerStream.on_tool_call` in `slack/handler_runtime/stream.py`); Discord/Telegram show only a
 transient "🔧 tool…" footer on the live bubble. **On those surfaces the
 model-authored diff block is the ONLY way a user sees what changed.**

@@ -477,10 +477,8 @@ class TestNoRotationAppendOnly:
     """The per-member log is append-only: never rotated, never truncated for
     retention, so no record is ever dropped.
 
-    Replaces the former ``activity.jsonl`` byte-cap rotation suite: durability
-    now comes from one fsynced append per record into a single ``log.jsonl``
-    (header line + one envelope per event), and read_activity pages that one
-    log rather than spanning generations.
+    Each record is one fsynced append to a single ``log.jsonl`` (header plus one
+    envelope per event), and read_activity pages that one log.
     """
 
     def test_many_records_stay_in_one_log(self):
@@ -523,20 +521,11 @@ class TestNoRotationAppendOnly:
 
 
 class TestLogCorruptionContract:
-    """The append-only log's damage contract, now that the log is a crew log.
+    """The append-only crew log's damage contract.
 
-    A torn TRAILING line (partial write, no newline) is repaired by truncation on
-    load, and the next record_activity appends with a contiguous seq. A damaged
-    line INSIDE the committed region costs a reader that line and nothing else.
-    An unreadable HEADER is the fatal case -- without it nothing in the file is
-    attributable -- and it raises LogCorrupt in the log layer, which
-    record_activity reports as False and read_activity as [] rather than raising.
-
-    The service caches a loaded MemberLog per slug, so a file mutated behind
-    its back is only observed after the singleton is dropped — these tests
-    ``set_service(None)`` to force the next call to reload from disk, which is
-    exactly the cold-start / other-process path the damage contract exists
-    for (a live process never tears its own committed region).
+    A torn trailing line is truncated on load; a damaged committed line costs only that
+    line; an unreadable HEADER raises LogCorrupt, reported as False / [] by the callers.
+    The service caches a MemberLog per slug, so tests ``set_service(None)`` to reload.
     """
 
     @staticmethod
@@ -567,11 +556,8 @@ class TestLogCorruptionContract:
     def test_a_damaged_committed_line_costs_that_line_and_nothing_else(self):
         """A damaged line inside the committed region is skipped, not fatal.
 
-        This changed with the move into the crew log store and the new answer is
-        the better one for a record whose purpose is to survive damage: refusing
-        the file turns one bad line into a member whose entire history is
-        unreadable, and the bad line is unrecoverable either way. So the reads
-        keep working and the next append still lands.
+        Refusing the file would make the whole history unreadable over one line that is
+        lost either way, so reads keep working and the next append still lands.
         """
         assert record_activity("M", "s1", "persistent")
         log = _log_path("m")
@@ -619,13 +605,9 @@ class TestLogCorruptionContract:
 class TestRefusedActivityIsReported:
     """A refused append is REPORTED; an ordinary fault is not promoted to a report.
 
-    ``crew_log.lease`` takes write ownership non-blocking, so two processes
-    appending to one member at the same instant do not serialize -- the second is
-    refused with ``already_owned`` and writes nothing. That is a lost entry, and
-    the lease module states the caller's duty for it: report the loss rather than
-    retry it. Both halves are pinned here, because a handler that reported EVERY
-    failure would satisfy the first test while telling a reader nothing about
-    which case they have.
+    ``crew_log.lease`` is non-blocking, so a concurrent second writer gets
+    ``already_owned``; the caller reports that loss rather than retry. Both halves are
+    pinned, since reporting every failure would pass the first alone.
     """
 
     @staticmethod
@@ -674,12 +656,8 @@ class TestRefusedActivityIsReported:
 class TestNamelessWriterKeepsTheMemberIdentity:
     """A writer with no name in hand must not rename the log it appends to.
 
-    ``eventlog_hooks.emit`` passes ``name or slug``, so a nameless writer reaches
-    ``ensure`` with the slug. The header is written once and is the authority on
-    who the log belongs to, so on an existing log the argument is only whatever
-    that writer held. Taking it would set the scoping owner to the slug, and the
-    member's own records -- stored under their real name -- would then be scoped
-    out of their own drawer.
+    ``eventlog_hooks.emit`` passes ``name or slug``; taking the slug on an existing log
+    would scope the member's own records (stored under their name) out of their drawer.
     """
 
     @staticmethod

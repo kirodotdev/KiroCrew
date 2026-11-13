@@ -294,13 +294,13 @@ class TestAcpProviderReinjectDeclaration:
         assert not self._acp(SimpleNamespace(mcp_config_wire_reinject=MagicMock()))
 
     def test_the_mark_is_handed_to_the_inner_provider(self) -> None:
+        from test_kas_mcp_live_reinject import _provider, _runtime
+
         from kiro_crew.providers.acp import AcpProvider
 
-        mark = MagicMock()
-        AcpProvider.mark_mcp_config_changed(
-            SimpleNamespace(_client=SimpleNamespace(mark_mcp_config_changed=mark))
-        )
-        mark.assert_called_once_with()
+        inner = _provider(_runtime())
+        AcpProvider.mark_mcp_config_changed(SimpleNamespace(_client=inner))
+        assert inner._mcp_reinject_pending is True
         # The placeholder has no mark to hand it to; nothing raises.
         AcpProvider.mark_mcp_config_changed(SimpleNamespace(_client=SimpleNamespace()))
 

@@ -35,8 +35,16 @@ const confidence = (p: number) => fmtNumber(p, { minimumFractionDigits: 2, maxim
  */
 const SteerDecisionLine = memo(function SteerDecisionLine({
   record,
+  ownMessage,
 }: {
   record: SteerDecisionRecord
+  /** No running turn took this row as a steer: the text runs as its own message.
+   *  `short` when the row already shows the requeued lifecycle line ("runs as its
+   *  own message"), so the receipt only says who chose and the row does not say
+   *  the outcome twice. `full` on a row with no such line: the row the drain
+   *  writes for a requeued steer, or the queued row of a steer that was
+   *  unavailable. Read only for a steer choice. */
+  ownMessage?: 'short' | 'full'
 }) {
   // memo() bails out of the provider-level repaint; subscribe so a language
   // switch repaints this row's strings.
@@ -47,9 +55,20 @@ const SteerDecisionLine = memo(function SteerDecisionLine({
   // falls through to the queue, and a line reading "steered the running turn" over
   // a queued message would report the opposite of what happened. The row's own
   // steer badge and queue card are what describe the delivery.
+  // One exception: on a row that runs as its own message, "interrupt this turn"
+  // reads as a decision about the NEW turn. That row says Jev chose to
+  // interrupt, as an intent, and leaves the outcome to the lifecycle line, or
+  // states it when the row has none. It does not say "not applied": a steer
+  // whose RPC died after the write is requeued too, and may have been read. A
+  // queue choice already names what happened, so it keeps its sentence.
+  const ownTurn = !!ownMessage && record.choice !== 'queue'
   const choice = record.choice === 'queue'
     ? i18nT('pages.chat.decisionStrip.steer_chose_queue')
-    : i18nT('pages.chat.decisionStrip.steer_chose_steer')
+    : ownTurn
+      ? ownMessage === 'short'
+        ? i18nT('pages.chat.decisionStrip.steer_chose_steer_requeued')
+        : i18nT('pages.chat.decisionStrip.steer_chose_steer_own_message')
+      : i18nT('pages.chat.decisionStrip.steer_chose_steer')
   const latency = record.latencyMs > 0
     ? i18nT('pages.chat.decisionStrip.latency_value', { ms: fmtNumber(record.latencyMs) })
     : null
@@ -75,14 +94,20 @@ const SteerDecisionLine = memo(function SteerDecisionLine({
 
   return (
     <div
-      className="inline-flex items-center gap-1.5 text-[12px] leading-5 text-muted mb-1 pr-1 min-w-0"
+      // The own-message row wraps too, so on a very narrow pane the score and
+      // thumbs move below the sentence instead of squeezing it to a word a line.
+      className={`inline-flex items-center gap-1.5 text-[12px] leading-5 text-muted mb-1 pr-1 min-w-0${ownTurn ? ' flex-wrap' : ''}`}
       data-testid="steer-decision-line"
       data-choice={record.choice}
+      data-ran-as-own-turn={ownTurn ? 'true' : undefined}
     >
       {/* The same icon the steer lifecycle indicators use, so the decision reads
           as part of that family rather than as an unrelated badge. */}
       <Target size={12} className="shrink-0" aria-hidden="true" />
-      <span className="truncate min-w-0">{choice}</span>
+      {/* The own-message sentence wraps instead of truncating: its last clause is
+          the correction, and on a narrow pane the score and thumbs would cut it
+          off and leave "interrupt the turn" as the visible claim. */}
+      <span className={ownTurn ? 'min-w-0 break-words' : 'truncate min-w-0'} data-testid="steer-decision-choice">{choice}</span>
       {scores.length > 0 && (
         <span className="shrink-0 tabular-nums" title={scoresTitle} data-testid="steer-decision-scores">
           ({fmtList(scores, { type: 'unit' })})

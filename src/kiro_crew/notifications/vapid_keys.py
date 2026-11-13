@@ -37,6 +37,10 @@ _lock = threading.Lock()
 _cached: dict[str, Any] | None = None
 
 
+class VapidKeysUnreadable(RuntimeError):
+    """The keypair file exists but could not be read; it is kept, not replaced."""
+
+
 def _keys_path():
     return config_dir() / WEB_PUSH_DIR_LEAF / _KEYS_FILENAME
 
@@ -96,8 +100,23 @@ def _get_keys() -> dict[str, Any]:
         path = _keys_path()
         keys: dict[str, Any] | None = None
         try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
+            # utf-8-sig: a file saved with a byte-order mark reads as its JSON.
+            text: str | None = path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            text = None
+        except (OSError, UnicodeDecodeError) as exc:
+            # The file is there but could not be read. It may hold the live key
+            # every subscription is bound to, so it is kept and nothing is
+            # generated over it; the next call reads it again.
+            logger.warning(
+                "Could not read %s (%s); keeping it, and no push is sent until it reads",
+                path,
+                exc,
+            )
+            raise VapidKeysUnreadable(f"could not read {path.name}: {exc}") from exc
+        if text is not None:
+            try:
+                data = json.loads(text)
                 if (
                     isinstance(data, dict)
                     and isinstance(data.get("private_pem"), str)
@@ -110,9 +129,9 @@ def _get_keys() -> dict[str, Any]:
                         "private_pem": data["private_pem"],
                         "public_b64url": data["public_b64url"],
                     }
-        except Exception:
-            logger.warning("Failed to load %s; regenerating VAPID keys", path, exc_info=True)
-            keys = None
+            except Exception:
+                logger.warning("Failed to load %s; regenerating VAPID keys", path, exc_info=True)
+                keys = None
         if keys is None:
             keys = _generate()
             # Owner-only: the file holds the VAPID EC private key. Same posture

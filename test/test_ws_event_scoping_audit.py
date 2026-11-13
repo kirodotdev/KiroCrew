@@ -311,7 +311,7 @@ class TestDirectSendGrantsAreAudited:
 
         fake_ws = self._fake_ws()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
@@ -397,7 +397,7 @@ class TestDirectSendGrantsAreAudited:
 
         fake_ws = LoopWs()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
@@ -407,19 +407,31 @@ class TestDirectSendGrantsAreAudited:
         events = [c.args[1] for c in audit.call_args_list]
         assert "subscribe_logs" in events, "a granted log subscription must leave an SEL record"
 
-    def test_audit_helper_records_the_grant(self):
+    def test_audit_helper_records_the_grant(self, monkeypatch):
         from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard import ws_event_scope as _wes
 
-        with patch.object(dashboard_ws, "_audit_allow") as allow:
+        monkeypatch.setattr(_wes, "_sel_last_audit", {})
+        with (
+            patch.object(dashboard_ws, "_audit_allow", wraps=dashboard_ws._audit_allow) as allow,
+            patch("kiro_crew.sel.sel"),
+        ):
             dashboard_ws._audit_grant_quietly("mochi-pet", "dashboard")
         allow.assert_called_once_with("mochi-pet", "dashboard")
+        assert list(_wes._sel_last_audit) == [("mochi-pet", "dashboard", "granted")]
 
-    def test_audit_helper_names_an_unknown_app_rather_than_sending_empty(self):
+    def test_audit_helper_names_an_unknown_app_rather_than_sending_empty(self, monkeypatch):
         from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard import ws_event_scope as _wes
 
-        with patch.object(dashboard_ws, "_audit_allow") as allow:
+        monkeypatch.setattr(_wes, "_sel_last_audit", {})
+        with (
+            patch.object(dashboard_ws, "_audit_allow", wraps=dashboard_ws._audit_allow) as allow,
+            patch("kiro_crew.sel.sel"),
+        ):
             dashboard_ws._audit_grant_quietly("", "dashboard")
         allow.assert_called_once_with("<unknown>", "dashboard")
+        assert list(_wes._sel_last_audit) == [("<unknown>", "dashboard", "granted")]
 
     def test_a_failing_audit_sink_never_breaks_delivery(self):
         """The swallow is the load-bearing part of the helper.
@@ -456,7 +468,7 @@ class TestDirectSendGrantsAreAudited:
         ).read_text(encoding="utf-8")
         # The app-token narrowing block inside _push_status: it strips the
         # owner-only fields, and the grant must be recorded in the same branch.
-        marker = 'for _owner_only in ("branch", "commit"):'
+        marker = 'for _owner_only in ("branch", "commit", "update_policy_file"):'
         assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
         region = " ".join(src[src.index(marker) :].split())
         # Look only as far as the send that ends the block.
@@ -597,6 +609,7 @@ class TestDashboardUserGrantsAreAudited:
         state._yolo = True
         state._folders = []
         state.folders_generation.return_value = 1
+        state.tags_generation.return_value = 1
         return state
 
     def _dashboard_request(self, state):
@@ -613,7 +626,7 @@ class TestDashboardUserGrantsAreAudited:
         from kiro_crew.dashboard.handlers import source_providers
 
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 
@@ -675,16 +688,24 @@ class TestDashboardUserGrantsAreAudited:
         grant that admits the owner to it was gated out of the record.
         """
         from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard import ws_event_scope as _wes
         from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
 
         state = self._dashboard_state()
-        with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
+        monkeypatch.setattr(_wes, "_sel_last_audit", {})
+        with (
+            patch.object(
+                dashboard_ws, "_audit_grant_quietly", wraps=dashboard_ws._audit_grant_quietly
+            ) as audit,
+            patch("kiro_crew.sel.sel"),
+        ):
             fake_ws = self._drive_one_message(monkeypatch, state, {"type": "subscribe_logs"})
 
         state.subscribe_logs.assert_called_once_with(fake_ws)
         assert (DASHBOARD_USER_AUDITEE, "subscribe_logs") in [
             tuple(c.args) for c in audit.call_args_list
         ]
+        assert (DASHBOARD_USER_AUDITEE, "subscribe_logs", "granted") in _wes._sel_last_audit
 
     def test_reconnect_replay_to_the_dashboard_user_takes_the_chokepoint(self, monkeypatch):
         """The subagent reconnect replay writes to the socket directly but
@@ -730,7 +751,7 @@ class TestDashboardUserGrantsAreAudited:
         src = (
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "ws.py"
         ).read_text(encoding="utf-8")
-        marker = 'for _owner_only in ("branch", "commit"):'
+        marker = 'for _owner_only in ("branch", "commit", "update_policy_file"):'
         assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
         # Start at the beginning of the marker's LINE so its indentation is kept.
         start = src.rfind("\n", 0, src.index(marker)) + 1

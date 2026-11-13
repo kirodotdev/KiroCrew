@@ -14,7 +14,10 @@ The gateway process has no such wall: it is the process the sandbox launcher is 
 CHILD of, so it holds the host namespace and the host bus. These routes are the
 gateway doing the systemd part on the agent's behalf. The agent reaches them the
 way it reaches every other tool -- an MCP call over the stdio pipe, then loopback
-HTTP to the gateway -- and no D-Bus passthrough into the sandbox is needed.
+HTTP to the gateway -- and no D-Bus passthrough into the sandbox is needed. The pod
+tools this app declares in ``app.json`` run each verb's ``pod_*_response`` through
+the one gateway route ``agent_tools.py`` registers; the routes below serve the same
+verbs over HTTP.
 
 WHY THESE ROUTES AND NOT THE APP BACKEND'S EXISTING ONES
 --------------------------------------------------------
@@ -25,7 +28,7 @@ holds neither (cookies are httpOnly, the gateway mints its internal secret
 in-process and never puts it in an agent's env, and ``.local_secret`` is on the
 sensitive-path denylist). Admitting an
 internal-secret caller to that proxy would have opened the app's WHOLE backend
-surface to anything holding the secret, so instead these four routes are named
+surface to anything holding the secret, so instead these five routes are named
 one by one in ``server._STRICT_INTERNAL_API_PATHS`` -- the same shape
 ``/api/apps/issue-radar/investigation`` and the Ops Mission Control agent surface
 already use, and for the same reason.
@@ -67,7 +70,8 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew import platform_compat
+from kiro_crew.apps.host_exec_grants import host_exec_granted
 from kiro_crew.sel import sel
 
 APP_NAME = "dev-fleet"
@@ -131,29 +135,47 @@ def _machine_only(
 def _require_enabled(
     handler: Callable[[web.Request], Awaitable[web.Response]],
 ) -> Callable[[web.Request], Awaitable[web.Response]]:
-    """Deny when Dev Fleet is disabled (deny-by-default).
+    """Deny unless Dev Fleet holds a gateway-written host-exec grant (deny-by-default).
 
-    ``is_app_enabled`` reads ``installed.json`` synchronously, so it runs off the
-    event loop -- same as the Issue Radar gate this mirrors.
+    The gate reads ``host_exec_granted`` -- a marker the gateway writes under the
+    sealed, un-rename-around-able ``host-exec-grants/`` crew-home directory on an
+    owner-authenticated enable -- NOT ``is_app_enabled``. ``is_app_enabled`` reads
+    ``apps/dev-fleet/installed.json``, which sits under the agent-writable, renamable
+    ``apps/dev-fleet`` directory: a sandboxed shell can rename that directory aside
+    and plant a forged ``enabled: true`` at the original path, and starting a pod on
+    that would run its code outside the sandbox. The grant cannot be forged (the
+    directory is sealed read-only and only the gateway's enable path writes it), so a
+    pod starts only on a real owner enable. A ``to_thread`` for the blocking stat,
+    matching the former check.
     """
 
     @wraps(handler)
     async def _wrapped(request: web.Request) -> web.Response:
-        if not await asyncio.to_thread(is_app_enabled, APP_NAME):
-            return web.json_response(
-                {
-                    "ok": False,
-                    "code": "app_not_enabled",
-                    "error": (
-                        "dev-fleet is not enabled. Turn the Dev Fleet app on in the "
-                        "dashboard App Store before using the pod tools."
-                    ),
-                },
-                status=403,
-            )
+        refusal = await enabled_refusal()
+        if refusal is not None:
+            return refusal
         return await handler(request)
 
     return _wrapped
+
+
+async def enabled_refusal() -> web.Response | None:
+    """The 403 :func:`_require_enabled` answers without a host-exec grant, or None."""
+    if await asyncio.to_thread(host_exec_granted, APP_NAME):
+        return None
+    return web.json_response(
+        {
+            "ok": False,
+            "code": "app_not_enabled",
+            "error": (
+                "dev-fleet is not enabled. Turn the Dev Fleet app on in the "
+                "dashboard App Store before using the pod tools. (If it was "
+                "enabled before this version, re-enable it once so the "
+                "host-exec grant is recorded.)"
+            ),
+        },
+        status=403,
+    )
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
@@ -196,6 +218,55 @@ def _clean_name(raw: Any) -> tuple[str, web.Response | None]:
             status=400,
         )
     return name, None
+
+
+# Bound on a ``memory`` / ``cpu`` value. ``kirocrew pod up`` is the validator
+# (syntax, floor and host cap); this only stops an unbounded string reaching argv.
+_MAX_LIMIT_LEN = 16
+
+
+def _clean_limits(body: dict[str, Any]) -> tuple[dict[str, str], web.Response | None]:
+    """Optional ``memory`` / ``cpu`` strings from a body, or a 400."""
+    out: dict[str, str] = {}
+    for key in ("memory", "cpu"):
+        raw = body.get(key)
+        if raw is None or raw == "":
+            continue
+        if not isinstance(raw, str) or len(raw) > _MAX_LIMIT_LEN or raw.strip().startswith("-"):
+            return {}, web.json_response(
+                {
+                    "ok": False,
+                    "code": "invalid_limit",
+                    "error": (
+                        f"'{key}' must be a string of at most {_MAX_LIMIT_LEN} "
+                        "characters, such as '16G' or '800%'"
+                    ),
+                },
+                status=400,
+            )
+        out[key] = raw.strip()
+    return out, None
+
+
+def _clean_env(body: dict[str, Any]) -> tuple[dict[str, str], web.Response | None]:
+    """The optional ``env`` overrides (``KEY=VALUE`` strings) from a body, or a 400.
+
+    Checked here with the CLI's own allowlist so a refused key never reaches
+    argv; ``kirocrew pod up --env`` checks the same rules again.
+    """
+    from kiro_crew.pod import env_overrides
+
+    raw = body.get("env")
+    if raw is None or raw == []:
+        return {}, None
+    try:
+        if not isinstance(raw, list):
+            raise env_overrides.EnvOverrideError("'env' must be a list of KEY=VALUE strings")
+        return env_overrides.parse_assignments(raw), None
+    except env_overrides.EnvOverrideError as exc:
+        return {}, web.json_response(
+            {"ok": False, "code": "invalid_env", "error": str(exc)}, status=400
+        )
 
 
 async def _body(request: web.Request) -> tuple[dict[str, Any], web.Response | None]:
@@ -309,10 +380,25 @@ async def handle_pod_up(request: web.Request) -> web.Response:
     body, err = await _body(request)
     if err is not None:
         return err
+    return await pod_up_response(body)
+
+
+async def pod_up_response(body: dict[str, Any]) -> web.Response:
+    """What ``POST pod/up`` answers for *body*, past its caller and enablement gates."""
     name, err = _clean_name(body.get("worktree"))
     if err is not None:
         return err
-    result = await _run_op(functools.partial(_ops()._pod_up, name))
+    limits, err = _clean_limits(body)
+    if err is not None:
+        return err
+    env, err = _clean_env(body)
+    if err is not None:
+        return err
+    if env:
+        limits_and_env: dict[str, Any] = {**limits, "env": env}
+    else:
+        limits_and_env = dict(limits)
+    result = await _run_op(functools.partial(_ops()._pod_up, name, **limits_and_env))
     refusal = _repo_refusal(result)
     if refusal is not None:
         return refusal
@@ -331,11 +417,73 @@ async def handle_pod_up(request: web.Request) -> web.Response:
 
 @_machine_only
 @_require_enabled
+async def handle_pod_restart(request: web.Request) -> web.Response:
+    """POST /api/apps/dev-fleet/pod/restart -- restart a pod and KEEP its home.
+
+    The agent's way to apply a new ``memory`` / ``cpu`` ceiling, or to revive a
+    crashed pod, without the ``pod_down`` that deletes sessions, config, apps and
+    models. Answers with the same handle as ``pod/up``, token minted here.
+    """
+    body, err = await _body(request)
+    if err is not None:
+        return err
+    return await pod_restart_response(body)
+
+
+async def pod_restart_response(body: dict[str, Any]) -> web.Response:
+    """What ``POST pod/restart`` answers for *body*, past its caller and enablement gates."""
+    name, err = _clean_name(body.get("worktree"))
+    if err is not None:
+        return err
+    limits, err = _clean_limits(body)
+    if err is not None:
+        return err
+    if platform_compat.IS_WINDOWS:
+        # `pod restart` cannot keep a Windows pod's home, and the only Windows
+        # restart there is (the dashboard button's down-then-up) deletes it. This
+        # tool promises the home is kept, so it refuses before any pod work.
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "pod_restart_unsupported",
+                "error": (
+                    "pod_restart is not supported on Windows: a Windows pod cannot "
+                    "restart and keep its data directory. Nothing was stopped. Use "
+                    "pod_down then pod_up to restart it with a fresh one."
+                ),
+            },
+            status=409,
+        )
+    result = await _run_op(functools.partial(_ops()._pod_restart, name, **limits))
+    refusal = _repo_refusal(result)
+    if refusal is not None:
+        return refusal
+    _audit(
+        "pod_restart",
+        name,
+        "granted" if result.get("ok") else "failed",
+        error=str(result.get("error") or ""),
+    )
+    if not result.get("ok"):
+        return web.json_response(
+            {"ok": False, "code": "pod_restart_failed", "error": _error_text(result)},
+            status=409,
+        )
+    return web.json_response(result)
+
+
+@_machine_only
+@_require_enabled
 async def handle_pod_down(request: web.Request) -> web.Response:
     """POST /api/apps/dev-fleet/pod/down -- stop a pod and reclaim its HOME."""
     body, err = await _body(request)
     if err is not None:
         return err
+    return await pod_down_response(body)
+
+
+async def pod_down_response(body: dict[str, Any]) -> web.Response:
+    """What ``POST pod/down`` answers for *body*, past its caller and enablement gates."""
     name, err = _clean_name(body.get("worktree"))
     if err is not None:
         return err
@@ -360,7 +508,12 @@ async def handle_pod_down(request: web.Request) -> web.Response:
 @_require_enabled
 async def handle_pod_status(request: web.Request) -> web.Response:
     """GET /api/apps/dev-fleet/pod/status?worktree=<name> -- one pod's state."""
-    name, err = _clean_name(request.query.get("worktree"))
+    return await pod_status_response(request.query.get("worktree"))
+
+
+async def pod_status_response(worktree: Any) -> web.Response:
+    """What ``GET pod/status`` answers for *worktree*, past its caller and enablement gates."""
+    name, err = _clean_name(worktree)
     if err is not None:
         return err
     result = await _run_op(functools.partial(_ops()._pod_status, name))
@@ -378,6 +531,11 @@ async def handle_pod_status(request: web.Request) -> web.Response:
 @_require_enabled
 async def handle_pod_list(request: web.Request) -> web.Response:
     """GET /api/apps/dev-fleet/pod/list -- every pod active on this host."""
+    return await pod_list_response()
+
+
+async def pod_list_response() -> web.Response:
+    """What ``GET pod/list`` answers, past its caller and enablement gates."""
     result = await _run_op(_ops()._pod_ls)
     refusal = _repo_refusal(result)
     if refusal is not None:
@@ -401,6 +559,7 @@ def register_routes(app: web.Application) -> None:
     than inherit the internal-secret grant by sitting in the same directory.
     """
     app.router.add_post("/api/apps/dev-fleet/pod/up", handle_pod_up)
+    app.router.add_post("/api/apps/dev-fleet/pod/restart", handle_pod_restart)
     app.router.add_post("/api/apps/dev-fleet/pod/down", handle_pod_down)
     app.router.add_get("/api/apps/dev-fleet/pod/status", handle_pod_status)
     app.router.add_get("/api/apps/dev-fleet/pod/list", handle_pod_list)

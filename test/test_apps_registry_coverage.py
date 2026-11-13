@@ -1,10 +1,4 @@
-"""Behaviour coverage for the un-exercised helpers of ``kiro_crew.apps.registry``.
-
-The registry module's install path is the interesting half (git clone, build,
-identity gates) but most of its surface is small, deterministic helpers that had
-no direct test: manifest merge/enrich, cache read/write, sandbox-mode and
-trusted-host gates, the stale-checkout sweep, the git-provenance reader, the
-build-command chooser, and the post-rejection un-poison routine.
+"""Behaviour coverage for the small helpers of ``kiro_crew.apps.registry``.
 
 Every subprocess is faked at this module's own chokepoints
 (``wrap_argv`` / ``cgroup_scope_argv`` / ``create_subprocess_limited``), matching
@@ -36,9 +30,7 @@ from conftest import requires_symlinks
 from kiro_crew.apps import registry
 from kiro_crew.apps.manifest import AppManifest
 
-# ---------------------------------------------------------------------------
 # Build step selection + execution
-# ---------------------------------------------------------------------------
 
 
 class TestRunAppBuild:
@@ -135,19 +127,10 @@ class TestRunAppBuild:
 
     @pytest.mark.asyncio
     async def test_desktop_bundled_interpreter_never_runs_pip(self, tmp_path, monkeypatch):
-        """pip must never write into the desktop app's signed bundle — and the
-        refusal must be LOUD.
+        """pip never writes into the desktop app's signed bundle, and the build fails loudly.
 
-        The desktop build ships a python-build-standalone runtime under
-        ``Resources/backend-dist/``; on macOS the bundle is code-signed, so a pip
-        install into its site-packages invalidates the signature and breaks the
-        next launch/update. Reporting a skipped build as ok would recreate the
-        silent-broken-install failure this function exists to prevent, so the
-        build fails with an explicit error instead.
-
-        Detection routes through ``platform_compat.is_bundled_interpreter()``;
-        the tests in ``test_platform_compat_pinned_tools.py`` pin its sentinel to the
-        packaging layer so a bundler rename cannot silently un-match this guard.
+        On macOS a pip install into ``Resources/backend-dist/`` breaks the code signature;
+        reporting the skipped build as ok would leave a silently broken install.
         """
         (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         bundled = tmp_path / "App.app" / "Contents" / "Resources" / "backend-dist"
@@ -165,14 +148,10 @@ class TestRunAppBuild:
     async def test_backend_entry_point_requirements_pass_the_bundled_gate(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """A root requirements.txt for an OUT-OF-PROCESS backend is not a
-        gateway-import dependency, so the desktop gate must let it through.
+        """A root requirements.txt for an out-of-process backend passes the desktop gate.
 
-        ``apps/backend_runtime/provisioning.py::provision_app_deps`` installs exactly this file with
-        ``pip install --target`` into the app's own deps dir at backend start,
-        which works on the bundled interpreter. Refusing it here blocked an app
-        class the runtime serves. Nothing is pip-installed AT INSTALL TIME — the
-        runtime owns it — so no build command may be planned either.
+        ``provision_app_deps`` installs it with ``pip install --target`` at backend start,
+        so no build command may be planned at install time.
         """
         (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
         log: list[str] = []
@@ -225,15 +204,10 @@ class TestRunAppBuild:
     async def test_a_shell_or_node_entry_point_with_requirements_keeps_the_refusal(
         self, tmp_path, monkeypatch, bundled_interpreter, entry
     ):
-        """The backend spawn runs ``provision_app_deps`` for ANY file-style entry,
-        so the file is pip-installed at spawn for a shell or node entry too -- but
-        the spawn hands the tree to a Python child only (the ``deps_boot`` shim on
-        the gateway interpreter, the shim under an ABI-matched shebang, or
-        ``PYTHONPATH`` on an ABI match); a shell or node child gets none of the
-        three. Waiving here would install an app whose declared dependencies land
-        beside a process that can never import them -- the silent-broken shape
-        the refusal exists to prevent -- so the gate counts such an entry as no
-        consumer and keeps the refusal, with the desktop code."""
+        """A shell or node entry is no consumer of requirements.txt, so the refusal stays.
+
+        The spawn installs the deps tree for any file entry but hands it only to a Python
+        child; a shell or node child could never import those dependencies."""
         (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
         (tmp_path / entry).write_text("", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
@@ -358,12 +332,8 @@ class TestRunAppBuild:
     ):
         """``backend.hooks`` runs INSIDE the gateway process.
 
-        A manifest may declare both an entry point and hooks, and the deps tree
-        the backend runner provisions never joins the gateway's import path
-        (module_loader loads a hook straight into this process). Waiving the
-        refusal on the entry point alone would install such an app "successfully"
-        with its hook imports broken and its routes degraded — the silent-broken
-        install the loud refusal exists to prevent.
+        The provisioned deps tree never joins the gateway's import path, so waiving on
+        the entry point would install an app whose hook imports are broken.
         """
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         for hook in ("routes", "on_startup", "on_shutdown"):
@@ -383,13 +353,10 @@ class TestRunAppBuild:
     async def test_blank_hook_fields_are_not_a_declared_hook(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """``hooks: {}`` — and an EMPTY field — declares no in-gateway code, so
-        the waiver still applies: the check is on a declared hook, not on the key.
+        """``hooks: {}`` or an EMPTY field declares no in-gateway code, so the waiver applies.
 
-        A whitespace-only field is the other way round and is refused: the typed
-        view keeps it, so ``lifecycle.py`` would take it as a hook path, fail to
-        resolve it and mark the app degraded. That app has in-gateway Python as
-        far as the runtime is concerned, so the gate must not waive for it.
+        A whitespace-only field is refused: the typed view keeps it, so ``lifecycle.py``
+        would treat it as a hook path.
         """
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
@@ -416,14 +383,8 @@ class TestRunAppBuild:
     ):
         """A hooks value the manifest view drops is a hook that never loads.
 
-        ``manager_lookup.py`` hands the hook loaders
-        ``AppManifest.from_json_file(...).to_dict()``, and
-        ``BackendConfig.from_dict`` drops a non-object ``hooks`` — so for a
-        manifest like this one NOTHING is imported into the gateway, and the gate
-        must agree with that rather than refuse an app the runtime would run
-        hookless. Pinned because the opposite reading (refuse whatever looks
-        unreadable in the raw bytes) is the tempting one, and it would disagree
-        with the only view that decides.
+        The hook loaders read ``AppManifest.from_json_file(...).to_dict()``, which drops a
+        non-object ``hooks``; the gate must agree with that view, not the raw bytes.
         """
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         manifest = _asgi_backend(hooks="backend.hooks:fn")
@@ -439,11 +400,8 @@ class TestRunAppBuild:
     ):
         """The waiver is the runtime's OWN condition, not the entry point.
 
-        ``bridges_mcp.py::_maybe_provision_backendless_deps`` provisions a root
-        requirements.txt for an app whose only Python is a stdio ``mcpServers``
-        entry — the same ``pip install --target`` into the app's deps dir, so the
-        same out-of-process consumer. Refusing it while waiving the entry-point
-        shape would be a point patch on the reported symptom.
+        ``_maybe_provision_backendless_deps`` installs requirements.txt for a stdio
+        ``mcpServers`` entry, so that entry is an out-of-process consumer too.
         """
         (tmp_path / "requirements.txt").write_text("mcp\n", encoding="utf-8")
         manifest = AppManifest.from_dict(
@@ -500,14 +458,8 @@ class TestRunAppBuild:
     ):
         """Neither provisioner installs requirements.txt for a MODULE-style entry.
 
-        A dotted, extensionless ``backend.entryPoint`` with no file of that name
-        runs as ``python -m`` from trusted package code; ``backend.py`` skips
-        ``provision_app_deps`` for it and ``bridges_mcp.py`` returns before provisioning
-        (trust boundary: an app-dir requirements file must never load ahead of a
-        trusted module). Waiving on the entry point's mere presence would report a
-        successful install whose dependencies land nowhere -- the same silent-broken
-        install as a pass with no consumer at all -- so the shape the provisioners
-        refuse is refused here, by the predicate they share.
+        A dotted, extensionless entry runs as ``python -m`` from trusted package code, and
+        an app-dir requirements file must never load ahead of a trusted module.
         """
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
@@ -529,15 +481,9 @@ class TestRunAppBuild:
     ):
         """Neither provisioner runs for a self-managed app, whatever it declares.
 
-        A registry entry with ``resources: "app"`` is registered from its manifest
-        alone: ``install_from_registry`` copies no source into the app directory,
-        ``bridges_register.py`` skips every registration for it, and the app launches
-        itself. On a source install the build step's ``pip install -r`` was the
-        only thing that installed its requirements.txt, and that step is what the
-        bundled interpreter cannot run -- so the very manifest that waives for a
-        gateway-managed entry (``test_backend_entry_point_requirements_pass_the_bundled_gate``)
-        refuses here. Ownership is a registry fact the manifest does not carry,
-        which is why it is a separate, required input to the verdict.
+        An entry with ``resources: "app"`` launches itself, so only the build step's
+        ``pip install -r`` would install its requirements.txt. Ownership is a registry
+        fact the manifest does not carry, hence the separate ``self_managed`` input.
         """
         (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
@@ -554,11 +500,10 @@ class TestRunAppBuild:
     async def test_a_refusal_the_manifest_decides_takes_no_preview_copy(
         self, tmp_path, monkeypatch, bundled_interpreter, decided_by
     ):
-        """A self-managed entry and a declared `backend.hooks` are refused by the
-        manifest and the registry entry alone, in both passes; nothing of theirs
-        reads the tree, so the gate answers before it copies it -- otherwise every
-        such install would run two full copies (build pass and final pass) that no
-        predicate ever looked at."""
+        """A refusal decided by the manifest alone answers before the preview copy.
+
+        Self-managed entries and declared `backend.hooks` need no tree, so copying it
+        in both passes would be wasted work."""
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         copies: list[Path] = []
 
@@ -585,14 +530,10 @@ class TestRunAppBuild:
     async def test_a_requirements_symlink_escaping_the_app_root_keeps_the_refusal(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """The runtime refuses to READ a requirements.txt that resolves outside the
-        app root (``provision_app_deps``: "out-of-root symlinked requirements are
-        not installed") and the backend spawns without its deps -- so the waiver,
-        which exists because the runtime provisions the file, must not apply to a
-        link the runtime will refuse. ``install_app`` copies with ``symlinks=True``,
-        so the link in the checkout is the link in the app directory. Waiving would
-        report a successful install with nothing installed, and let the gate
-        treat bytes outside the app directory as the app's own.
+        """A requirements.txt linking outside the app root keeps the refusal.
+
+        ``provision_app_deps`` will not read such a link, and ``install_app`` copies with
+        ``symlinks=True``, so the link in the checkout is the link in the app directory.
         """
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -641,12 +582,10 @@ class TestRunAppBuild:
     async def test_a_link_into_a_tree_the_install_does_not_carry_over_keeps_the_refusal(
         self, tmp_path, monkeypatch, bundled_interpreter, target_dir
     ):
-        """The provisioner reads requirements.txt in the APP DIRECTORY. The copy
-        keeps the link as a link but drops the build-input dirs at every depth
-        and, on an update, replaces ``data/`` with the preserved previous one --
-        so a link that resolves in this checkout dangles there, the provisioner
-        refuses it, and the install would already have reported success. The
-        copy itself decides: the gate judges a real copy of the checkout."""
+        """A link that dangles in the APP DIRECTORY keeps the refusal.
+
+        The copy drops build-input dirs at every depth and, on an update, replaces
+        ``data/``, so the gate judges a real copy of the checkout."""
         monkeypatch.setattr(registry, "preserved_data_awaits", lambda name: True)  # an update
         target = tmp_path / target_dir / "requirements.txt"
         target.parent.mkdir(parents=True)
@@ -693,14 +632,10 @@ class TestRunAppBuild:
     async def test_a_dangling_requirements_link_passes_the_build_pass_and_fails_the_final_one(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """``provision_app_deps`` treats a present-but-unreadable requirements.txt
-        (a dangling link) as a provisioning FAILURE; the backend then spawns
-        without its deps and dies on import, so the waiver -- granted because the
-        runtime provisions the file -- must not pass an app that cannot run. But
-        the link's target may be what ``setup.onInstall`` generates, so the build
-        pass lets a dangling link through and the final pass, on the post-script
-        checkout, is the one that refuses. Presence is the provisioner's
-        ``lexists``, not the build detector's ``is_file``, in both."""
+        """A dangling link is a provisioning failure, but only the final pass refuses it.
+
+        ``setup.onInstall`` may create the target, so the build pass lets it through.
+        Presence is the provisioner's ``lexists``, not the build detector's ``is_file``."""
         (tmp_path / "requirements.txt").symlink_to(tmp_path / "gone.txt")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         result = await registry._run_app_build(
@@ -756,14 +691,10 @@ class TestRunAppBuild:
     async def test_a_merely_absent_entry_point_passes_the_build_pass_pending_the_final_one(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """The build pass runs BEFORE ``setup.onInstall``, whose documented window
-        ("after clone/build, before the installed copy is created") is exactly
-        where an app may generate its entry file. Refusing the declared name here
-        would refuse that app before its script ever ran, while a gateway host
-        installs it -- so absence is let through now, nothing pip-installed either
-        way, and the final pass (``final=True``, on the post-script checkout)
-        refuses if the file never appeared: see the end-to-end cases in
-        ``test_apps_registry_desktop_layout.py``.
+        """An absent entry passes the build pass; ``final=True`` refuses it if still absent.
+
+        The build pass runs BEFORE ``setup.onInstall``, which may generate the entry file.
+        End-to-end cases are in ``test_apps_registry_desktop_layout.py``.
         """
         (tmp_path / "server.py").unlink()  # the fixture's entry file: this case is about its absence
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
@@ -1058,22 +989,12 @@ class TestRunAppBuild:
     async def test_a_self_pointing_directory_link_under_a_deep_declared_path_is_judged_in_bounded_time(
         self, tmp_path, monkeypatch, bundled_interpreter, depth
     ):
-        """A registry app controls both the tree and the declared path: `B -> .`
-        plus ``backend.entryPoint: "B/B/.../B/server.py"``. The verdict is
-        derived from the install's own copy, which keeps `B` as one link and never
-        walks through it, and from the runtime's own file check, which the
-        kernel resolves in one pass -- so the judgment is linear in the path's
-        components, and on every host it comes back within the bound as one of
-        the verdicts each judge owns, never as an exception or an ordinary
-        install error. The final gate derives its verdict from the runtime's own
-        file check (`_requirements_owned_by_the_runtime` asks
-        `file_entry_point_refusal` of the install's preview copy), so on every
-        host the two agree: what the runtime accepts the final pass waives, what
-        it refuses the final pass refuses. WHICH way a 60-link path goes belongs
-        to the host -- the POSIX symlink budget refuses it (pinned by the
-        sibling below), and on Windows the shared path screen, which reads the
-        link chain hop by hop before anything follows it, refuses a chain past
-        its own hop budget -- so no single verdict is asserted here."""
+        """`B -> .` under ``backend.entryPoint: "B/B/.../B/server.py"`` is judged in bounded time.
+
+        The install copy keeps `B` as one link, so the judgment is linear in the path,
+        and the final pass agrees with the runtime's `file_entry_point_refusal`. Which
+        way a 60-link path goes belongs to the host (POSIX symlink budget, Windows hop
+        budget), so no single verdict is asserted."""
         runtime_refusal, result, final, elapsed = await self._judge_a_deep_self_link(
             tmp_path, monkeypatch, depth
         )
@@ -1154,13 +1075,12 @@ class TestRunAppBuild:
     async def test_a_root_data_file_is_refused_by_the_preview_with_the_install_s_own_refusal(
         self, tmp_path, monkeypatch, bundled_interpreter
     ):
-        """A first-install preview kept the source's root `data` whatever it was, so
-        a registry app shipping a FILE of that name passed the waiver; `install_app`
-        then wrote its record and raised at `app_data_dir()`, leaving a partial
-        installed record. The preview now asks the install's own question of the
-        copy and raises the install's own refusal -- in both passes, without the
-        desktop code (a browser install refuses it too) -- and the holder is gone.
-        An UPDATE puts the preserved directory back over the file: nothing to refuse."""
+        """A root `data` FILE gets the install's own refusal from the preview, in both passes.
+
+        Waiving it would let `install_app` write its record and then raise at
+        `app_data_dir()`, leaving a partial record. The refusal carries no desktop code,
+        since a browser install refuses it too. An UPDATE puts the preserved directory
+        back over the file, so there is nothing to refuse."""
         from kiro_crew.apps.manager import InstalledTreeRefused
 
         home = tmp_path / "home"
@@ -1382,16 +1302,9 @@ class TestRunAppBuild:
     async def test_a_requirements_link_to_a_root_entry_the_gateway_owns_keeps_the_refusal(
         self, tmp_path, monkeypatch, bundled_interpreter, owned
     ):
-        """Three owners meet in the installed directory: the INSTALLER copies the
-        source tree, the RUNTIME provisions its artifacts afterwards, and the
-        GATEWAY writes a few root entries of its own -- ``data``, which an update
-        replaces with the preserved previous directory (and a source FILE so
-        named fails ``app_data_dir`` before an install completes), and
-        ``.app_secret``, written after the copy and preserved over it. A
-        ``requirements.txt`` linked at one of those resolves to a real file HERE
-        and to the gateway's own entry, or to nothing, in the app directory, where
-        the provisioner reads it -- so the copy rule answers "not carried" and the
-        gate refuses instead of waiving an install whose provisioning then fails.
+        """A requirements.txt linked at a root entry the gateway writes keeps the refusal.
+
+        In the app directory the link resolves to the gateway's own entry, not this file.
         ``data`` is the gateway's once a preserved directory awaits (an update);
         ``.app_secret`` on every install."""
         monkeypatch.setattr(registry, "preserved_data_awaits", lambda name: True)

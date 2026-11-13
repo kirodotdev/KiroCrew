@@ -1,6 +1,6 @@
 """Every restart that closes the sessions waits for the dashboard turns it cut.
 
-The update restart (``_restart_after_update_claimed``), the dashboard restart
+The dashboard restart
 (``_restart_gateway``) and the Slack ``/kirocrew restart`` (``_handle_restart``)
 save every chat slot, then ``close_all()`` the sessions, then exec or exit. A
 dashboard turn that was mid-reply when its session closed saves the text its user
@@ -24,8 +24,6 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard import chat as dashboard_chat
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.slack import events
-from kiro_crew.slack import gateway as slack_gateway
-from kiro_crew.slack.gateway import GatewayOrchestrator
 
 
 class _CutTurn(asyncio.Future):
@@ -71,23 +69,6 @@ class _Restart:
         return lambda *_a, **_k: self.order.append(label)
 
 
-def _update_restart(restart: _Restart, monkeypatch) -> Awaitable[object]:
-    monkeypatch.setattr(slack_gateway, "flush_breadcrumb_writes", Mock())
-    monkeypatch.setattr(platform_compat, "reexec_python_module", restart.end("exec"))
-    orch = SimpleNamespace(
-        _pending_update_respawn=None,
-        _update_apply_deferred=False,
-        _UPDATE_DRAIN_TIMEOUT_SECS=GatewayOrchestrator._UPDATE_DRAIN_TIMEOUT_SECS,
-        dashboard_state=restart.state,
-        sessions=SimpleNamespace(
-            close_all=restart.close_all, fence_update_restart=Mock(return_value=True)
-        ),
-        _drain_update_callback_work=AsyncMock(return_value=True),
-        _stop_mcp_broker=AsyncMock(),
-    )
-    return GatewayOrchestrator._restart_after_update_claimed(orch, None, "/python")
-
-
 def _dashboard_restart(restart: _Restart, monkeypatch) -> Awaitable[object]:
     monkeypatch.setattr(updates, "resolve_restart_launcher", lambda: None)
     monkeypatch.setattr(platform_compat, "execv_target_available", lambda _exe: True)
@@ -109,7 +90,6 @@ def _slack_restart(restart: _Restart, monkeypatch) -> Awaitable[object]:
 _RESTARTS = pytest.mark.parametrize(
     "run, ends_with",
     [
-        pytest.param(_update_restart, "exec", id="update"),
         pytest.param(_dashboard_restart, "exec", id="dashboard"),
         pytest.param(_slack_restart, "exit", id="slack"),
     ],
@@ -153,6 +133,31 @@ async def test_a_restart_waits_for_the_turn_it_cut_before_it_ends(
         await asyncio.wait_for(
             asyncio.gather(waited_on, restarting, return_exceptions=True), timeout=30
         )
+
+
+@_RESTARTS
+@pytest.mark.asyncio
+async def test_a_planned_restart_records_the_chats_it_cuts_before_close_all(
+    run, ends_with, monkeypatch, _first_save_skipped
+):
+    """Only the slot with a turn in flight; the idle one is left to its owner."""
+    from kiro_crew.dashboard import restart_resume
+
+    monkeypatch.setattr(
+        "kiro_crew.gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS", 0.2, raising=False
+    )
+    restart = _Restart()
+    restart.state._slots["s1"]._turn_in_flight_generation = 3
+    restart.state._slots["idle"] = SimpleNamespace(task=None, _turn_in_flight_generation=0)
+    monkeypatch.setattr(
+        restart_resume, "write_intent", lambda names: restart.order.append(f"record {names}")
+    )
+    try:
+        await asyncio.wait_for(run(restart, monkeypatch), timeout=30)
+        assert restart.order[:2] == ["record ['s1']", "close_all"], restart.order
+        assert restart.order[-1] == ends_with, restart.order
+    finally:
+        restart.turn.cancel()
 
 
 @_RESTARTS

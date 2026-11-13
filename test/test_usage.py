@@ -17,6 +17,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.dashboard.handlers.usage as usage_mod
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.usage import (
     _cached_parse_sessions,
     _parse_sessions,
@@ -30,8 +31,14 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
+
+
+def _files_validate_as(answer):
+    """A ``validate_file_path`` stand-in that passes directories and answers *answer* for files."""
+    return lambda p: p if os.path.isdir(p) else answer
 
 
 def _write_session(path, lines, mtime=None):
@@ -64,18 +71,18 @@ class TestParseSessions:
             # dropped, so the did-not-load total is a present zero rather than
             # an absent key. Omitting it would make "complete" and
             # "unknown" indistinguishable on the wire -- the adapter's
-            # ``s.refused_transcripts ?? 0`` would synthesise the promise of
-            # completeness the payload never made.
+            # ``?? 0`` defaults would synthesise a promise the payload never made.
             "refused_transcripts": 0,
+            "unreadable_session_dirs": 0,
         }
         assert sessions_dir.exists() == directory_exists
 
-    def test_iterdir_oserror(self, tmp_path):
+    def test_listing_oserror(self, tmp_path):
         d = tmp_path / "cli"
         d.mkdir()
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch("pathlib.Path.iterdir", side_effect=OSError("boom")),
+            patch("kiro_crew.platform_compat.PinnedDirectory.names", side_effect=OSError("boom")),
         ):
             result = _parse_sessions()
             assert "error" in result
@@ -85,7 +92,7 @@ class TestParseSessions:
             assert result["error"] == "cannot read sessions directory"
             assert result["code"] == "sessions_dir_unreadable"
 
-    def test_iterdir_oserror_keeps_the_whole_statistics_shape(self, tmp_path):
+    def test_listing_oserror_keeps_the_whole_statistics_shape(self, tmp_path):
         """An unreadable directory reports the reason WITHOUT changing the shape.
 
         Consumers read the period keys unconditionally --
@@ -106,9 +113,18 @@ class TestParseSessions:
 
         d = tmp_path / "cli"
         d.mkdir()
+        real_names = platform_compat.PinnedDirectory.names
+
+        def names(self):
+            # The cli directory alone fails. An unlistable KAS root would add an
+            # unreadable-directory count that the baseline lacks.
+            if os.path.realpath(self.path) == os.path.realpath(d):
+                raise OSError("boom")
+            return real_names(self)
+
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch("pathlib.Path.iterdir", side_effect=OSError("boom")),
+            patch.object(platform_compat.PinnedDirectory, "names", names),
         ):
             result = _parse_sessions()
 
@@ -135,7 +151,7 @@ class TestParseSessions:
         _write_session(d / "s1.jsonl", [{"kind": "Prompt"}])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=None),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(None)),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 0
@@ -155,7 +171,7 @@ class TestParseSessions:
         _write_session(d / "s2.jsonl", [{"kind": "Prompt"}])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=None),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(None)),
             caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"),
         ):
             r = _parse_sessions()
@@ -176,7 +192,7 @@ class TestParseSessions:
         _write_session(f, [{"kind": "Prompt"}])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
             caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"),
         ):
             r = _parse_sessions()
@@ -198,7 +214,7 @@ class TestParseSessions:
 
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
             patch.object(Path, "stat", stat_side_effect),
         ):
             r = _parse_sessions()
@@ -268,7 +284,7 @@ class TestParseSessions:
         _write_session(f, [{"kind": "Prompt"}], mtime=old_mtime)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
         assert r["all_time_sessions"] == 1
@@ -282,7 +298,7 @@ class TestParseSessions:
         _write_session(f, [{"kind": "Prompt"}], mtime=old_mtime)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["all_time_sessions"] == 1
@@ -302,7 +318,7 @@ class TestParseSessions:
         _write_session(f, lines)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -320,7 +336,7 @@ class TestParseSessions:
         f.write_text('{"kind":"Prompt"}\nNOT_JSON\n{"kind":"ToolResults"}\n')
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["total_messages"] == 1
@@ -333,7 +349,7 @@ class TestParseSessions:
         f.write_text('"just a string"\n42\nnull\n[1,2]\n{"kind":"Prompt"}\n')
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["total_messages"] == 1
@@ -352,11 +368,14 @@ class TestParseSessions:
 
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
             patch.object(Path, "open", open_raises),
         ):
             r = _parse_sessions()
-            assert r["all_time_sessions"] == 1
+            # An unreadable transcript counts only as did-not-load, never also
+            # as a session.
+            assert r["all_time_sessions"] == 0
+            assert r["refused_transcripts"] == 1
             assert r["total_sessions"] == 0  # not counted when file read fails
             assert r["total_messages"] == 0
 
@@ -368,7 +387,7 @@ class TestParseSessions:
         _write_session(f, [{"kind": "Prompt"}, {"kind": "ToolResults"}], mtime=now)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["today"]["sessions"] == 1
@@ -389,7 +408,7 @@ class TestParseSessions:
         _write_session(f, lines)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -408,7 +427,7 @@ class TestParseSessions:
         _write_session(f, lines)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -427,7 +446,7 @@ class TestParseSessions:
         _write_session(f, lines)
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -492,7 +511,9 @@ async def _get_settled_usage(client: TestClient) -> tuple[int, dict]:
 
 class TestApiKiroUsage:
     @pytest.fixture(autouse=True)
-    def _reset_cache(self):
+    def _reset_cache(self, _floor_monkeypatch, tmp_path):
+        # The route also reads Codex's rollout logs; keep it off the host's own.
+        _floor_monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
         usage_mod._CACHE = {}
         usage_mod._CACHE_TS = 0.0
         usage_mod._SESSIONS_CACHE = None
@@ -525,7 +546,7 @@ class TestApiKiroUsage:
         _write_session(f, [{"kind": "Prompt"}])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
             patch.object(
                 usage_mod,
                 "get_usage_cache",
@@ -549,6 +570,26 @@ class TestApiKiroUsage:
                 assert data["billing"]["credits_used"] == 10
                 assert data["sessions"]["total_sessions"] == 1
                 assert data["refreshing"] is False
+
+    @pytest.mark.asyncio
+    async def test_carries_the_token_history_of_the_usage_shards(self):
+        """The tokens and dollar cost a harness without a credit plan reports."""
+        history = {"total_input": 7, "cost_usd": 2.5, "daily_history": [{"date": "2026-11-10"}]}
+        with (
+            patch.object(
+                usage_mod, "_cached_parse_sessions", return_value=usage_mod._empty_session_summary()
+            ),
+            patch.object(usage_mod, "_parse_token_history", return_value=history),
+            patch.object(usage_mod, "get_usage_cache", return_value={}),
+        ):
+            app = web.Application()
+            app.router.add_get("/api/usage/kiro", api_kiro_usage)
+            async with TestClient(TestServer(app)) as client:
+                status, data = await _get_settled_usage(client)
+        assert status == 200
+        assert data["tokens"] == history
+        # The gateway's own local day, the key the token history files days under.
+        assert len(data["local_day"]) == 10 and data["local_day"][4] == "-"
 
     @pytest.mark.asyncio
     async def test_slow_session_scan_returns_billing_then_refreshes(self):
@@ -602,7 +643,9 @@ class TestApiKiroUsage:
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", sessions_dir),
             patch.object(usage_mod, "get_usage_cache", return_value=billing),
-            patch.object(usage_mod, "validate_file_path", return_value=str(session_file)),
+            patch.object(
+                usage_mod, "validate_file_path", side_effect=_files_validate_as(str(session_file))
+            ),
         ):
             app = web.Application()
             app.router.add_get("/api/usage/kiro", api_kiro_usage)
@@ -693,7 +736,7 @@ class TestApiKiroUsage:
         _write_session(f, [{"kind": "Prompt"}])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
             patch.object(usage_mod, "get_usage_cache", return_value={"available": False}),
         ):
             app = web.Application()
@@ -851,9 +894,6 @@ class TestParseTokenHistory:
         )
         result = _parse_token_history()
         assert result["total_input"] == 9
-
-
-# ── _persist_token_record ────────────────────────────────────────────────
 
 
 class TestPersistTokenRecord:
@@ -1114,6 +1154,9 @@ class TestCachedParseSessions:
             return {"total_sessions": calls["n"], "daily_history": []}
 
         monkeypatch.setattr(usage_mod, "_cached_parse_sessions", _fake_cached_parse)
+        # This test asserts the refreshed answer, so a stalled loop must not run out the
+        # route's short session wait and hand back the refreshing placeholder instead.
+        monkeypatch.setattr(usage_mod, "_USAGE_SESSION_WAIT_SECONDS", FALLBACK_TIMEOUT_SECS)
         first = usage_mod.asyncio.create_task(_fake_cached_parse())
         assert await first == {"total_sessions": 1, "daily_history": []}
         usage_mod._USAGE_SESSION_REFRESH_TASK = first

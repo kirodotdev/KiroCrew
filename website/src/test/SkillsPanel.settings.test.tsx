@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import React from 'react'
@@ -103,8 +103,8 @@ describe('SkillsPanel – extra skill paths', () => {
     const field = await loadedField('/opt/a\n~/b')
     const row = field.closest(`[data-setting-key="${EXTRA_PATH}"]`)
     expect(row).not.toBeNull()
-    expect(row).toHaveTextContent(/one path per line/i)
-    expect(row).toHaveTextContent(/blank lines are ignored/i)
+    expect(row).toHaveTextContent(/one folder path per line/i)
+    expect(within(row as HTMLElement).getByTitle(/blank lines are ignored/i)).toBeInTheDocument()
     expect(field).toHaveAttribute('placeholder', 'One folder per line')
   })
 

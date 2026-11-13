@@ -149,17 +149,7 @@ class TestTccWalkPruning:
         self._as_macos(monkeypatch, str(tmp_path))
         root = str(tmp_path)
         kept = pc.tcc_prune_walk_dirs(root, root, ["Downloads", "Desktop", "Library", "code"])
-        # Library survives so the walk can descend to the cloud mounts below it.
-        assert kept == ["Library", "code"]
-
-    def test_library_position_keeps_only_the_cloud_mounts(self, monkeypatch, tmp_path):
-        self._as_macos(monkeypatch, str(tmp_path))
-        root = str(tmp_path)
-        library = os.path.join(root, "Library")
-        kept = pc.tcc_prune_walk_dirs(
-            root, library, ["Mail", "Safari", "CloudStorage", "Mobile Documents"]
-        )
-        assert sorted(kept) == ["CloudStorage", "Mobile Documents"]
+        assert kept == ["code"]
 
     def test_deeper_positions_are_untouched(self, monkeypatch, tmp_path):
         # A project's own Documents/ deeper in the tree is not TCC-gated.
@@ -204,6 +194,42 @@ class TestEnsureUtf8Console:
         assert sys.stdout is before
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
+
+    @pytest.mark.parametrize("errors", ["strict", "surrogateescape"])
+    def test_posix_ascii_stream_replaces_glyphs_instead_of_raising(self, monkeypatch, errors):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        raw = io.BytesIO()
+        out = io.TextIOWrapper(raw, encoding="ascii", errors=errors)
+        monkeypatch.setattr(pc.sys, "stdout", out)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+
+        pc.ensure_utf8_console()
+
+        assert sys.stdout is out
+        assert out.encoding == "ascii"
+        print("\u2705 installed \U0001f47b", file=out)
+        out.flush()
+        assert raw.getvalue() == b"? installed ?\n"
+
+    def test_posix_unicode_or_lenient_streams_are_left_alone(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        utf8 = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        lenient = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="backslashreplace")
+        monkeypatch.setattr(pc.sys, "stdout", utf8)
+        monkeypatch.setattr(pc.sys, "stderr", lenient)
+
+        pc.ensure_utf8_console()
+
+        assert utf8.errors == "strict"
+        assert lenient.errors == "backslashreplace"
+
+    def test_posix_stream_that_refuses_reconfigure_is_skipped(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        out = types.SimpleNamespace(encoding="ascii", errors="strict")
+        monkeypatch.setattr(pc.sys, "stdout", out)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+        pc.ensure_utf8_console()  # no reconfigure attribute; must not raise
+        assert sys.stdout is out
 
     def test_reconfigure_in_place_is_preferred(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
@@ -971,11 +997,6 @@ class TestProcessHandles:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
         assert pc.process_handle_active(9) is False
-
-    def test_close_handle_swallows_a_failure(self, monkeypatch):
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
-        pc.close_process_handle(9)  # suppressed, must not raise
 
 
 class TestWindowsImageNameMatching:

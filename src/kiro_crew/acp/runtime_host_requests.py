@@ -9,9 +9,10 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_logged``,
-``_mcp_reattempts``, ``_mcp_sign_in``.
+``_kas_host_auth_failure_logged``,
+``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_ended_hooks``.
 
-Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``,
+Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``, ``_fold_mcp_frame``,
 ``_max_answer_tasks``, ``_pid``, ``_session_queues``, ``_subagent_owner``.
 """
 
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import redact_text
@@ -54,10 +55,11 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 
 
 # How long an MCP sign-in may hold its slot. The engine answers the reset when
-# its connect attempt ends, which the server's connect timeout bounds: 60 s by
-# default and at most 600 s. This only frees the slot if no answer ever comes,
-# so it sits past the longest attempt: a slot freed while the engine can still
-# send that attempt's link would hand the link to the next sign-in.
+# its connect attempt ends or 60 s in, whichever is first; the attempt itself
+# runs to the server's connect timeout, at most 600 s. This only frees the slot
+# if no answer ever comes, so it sits past the longest attempt: a slot freed
+# while the engine can still send that attempt's link would hand the link to
+# the next sign-in.
 _MCP_SIGN_IN_TIMEOUT = 630.0
 # How long a credential re-attempt (a reset without startOAuth) may hold off a
 # sign-in. It opens no consent URL, so the slot does not have to outlast the
@@ -171,6 +173,9 @@ async def _spawn_answer_task(
     At capacity the shared admission wait either observes progress or
     marks the runtime dead so the requester cannot remain unanswered.
     """
+    # Asked before the capacity wait, so the host answers from its state at
+    # the moment the frame arrived.
+    answer = self._harness.unroutable_permission(self, msg, session_id, reason=reason)
     if not await self._wait_for_answer_capacity(
         msg,
         request_kind="permission",
@@ -178,7 +183,7 @@ async def _spawn_answer_task(
         audit_reason="answer_task_cap_runtime_dead",
     ):
         return
-    _t = asyncio.ensure_future(self._answer_unroutable_permission(msg, session_id, reason=reason))
+    _t = asyncio.ensure_future(answer())
     self._answer_tasks.add(_t)
     _t.add_done_callback(self._answer_tasks.discard)
 
@@ -382,8 +387,18 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
     try:
         result = await self._harness.answer_request(method)
     except HostAuthCallbackError as exc:
-        # str(exc) is token-free by construction (see kas_host_auth).
-        logger.warning("KAS auth callback failed: %s", exc)
+        # str(exc) is token-free by construction (see kas_host_auth). WARNING
+        # once per reason: the engine re-asks about twice a second while signed
+        # out, and every repeat of the same reason goes to DEBUG.
+        reason = str(exc)
+        if self._kas_host_auth_failure_logged != reason:
+            self._kas_host_auth_failure_logged = reason
+            logger.warning(
+                "KAS auth callback failed: %s (repeats of this reason are logged at DEBUG)",
+                exc,
+            )
+        else:
+            logger.debug("KAS auth callback failed again: %s", exc)
         try:
             await self.send_error(request_id, KAS_AUTH_CALLBACK_ERROR_CODE, str(exc))
         except AcpRuntimeDead:
@@ -394,6 +409,8 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
     except AcpRuntimeDead:
         # Process gone before the answer could be written; nothing to do.
         return
+    # A served callback ends the failure run, so the next failure warns again.
+    self._kas_host_auth_failure_logged = None
     if not self._kas_host_auth_logged:
         self._kas_host_auth_logged = True
         logger.info(
@@ -418,9 +435,10 @@ def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bo
     """Start an explicit OAuth sign-in for one MCP server of one session.
 
     Sends ``_kiro/mcp/resetServer`` with ``startOAuth`` in the background: the
-    engine answers only when the connect attempt ends, which is after the user
-    signs in or after the server's connect timeout. The consent URL arrives
-    meanwhile as ``_kiro/openExternalUrl`` and is delivered to *session_id*.
+    engine answers when the connect attempt ends (the user signs in, or the
+    server's connect timeout passes) or 60 s in, whichever is first. The consent
+    URL arrives meanwhile as ``_kiro/openExternalUrl`` and is delivered to
+    *session_id*.
 
     Returns False, starting nothing, when the host sends no consent URL, the
     session is not registered, or another sign-in is in flight: the URL
@@ -448,15 +466,25 @@ def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bo
 
 
 async def _run_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> None:
-    """Hold the sign-in slot until the engine's reset answer arrives."""
+    """Hold the sign-in slot until the engine's reset answer arrives.
+
+    An attempt the engine answers ``success: false``, refuses with an error, or
+    never answers is then reported to the session's ended-attempt hook
+    (``set_mcp_sign_in_ended_hook``): the engine has closed that attempt's
+    callback listener, so the link it showed is dead. Any other answer reports
+    nothing, and a process that died is left to the dashboard's dead-child gate.
+    """
     entry = (session_id, server_name)
+    ended_unconnected = False
     try:
-        await self._send_and_await(
+        answer = await self._send_and_await(
             METHOD_KAS_MCP_RESET_SERVER,
             {"sessionId": session_id, "serverName": server_name, "startOAuth": True},
             timeout=_MCP_SIGN_IN_TIMEOUT,
         )
+        ended_unconnected = isinstance(answer, dict) and answer.get("success") is False
     except Exception as exc:  # noqa: BLE001 -- the next offer retries
+        ended_unconnected = not isinstance(exc, AcpRuntimeDead)
         logger.info(
             "MCP sign-in for %s ended without an answer: %s",
             sanitize_sink_text(server_name, NAME_CAP),
@@ -465,6 +493,23 @@ async def _run_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) 
     finally:
         if self._mcp_sign_in == entry:
             self._mcp_sign_in = None
+    hook = self._mcp_sign_in_ended_hooks.get(session_id) if ended_unconnected else None
+    if hook is not None:
+        try:
+            hook(server_name)
+        except Exception:  # noqa: BLE001 -- a display hook never breaks the runtime
+            logger.warning("MCP sign-in ended hook failed", exc_info=True)
+
+
+def set_mcp_sign_in_ended_hook(
+    self: AcpRuntime, session_id: str, hook: Callable[[str], None]
+) -> None:
+    """Install the hook told the server name when *session_id*'s sign-in ends unconnected.
+
+    It runs whether or not a turn is reading the session, so an idle chat still
+    withdraws the dead link. ``unregister_session`` removes it.
+    """
+    self._mcp_sign_in_ended_hooks[session_id] = hook
 
 
 def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> bool:
@@ -540,12 +585,13 @@ async def _answer_open_external_url(self: AcpRuntime, request_id: int | str, par
         refusal = "the consent URL is not an http(s) URL"
     else:
         session_id, server_name = entry
-        await queue.put(
-            JsonRpcMessage(
-                method=METHOD_MCP_OAUTH_REQUEST,
-                params={"sessionId": session_id, "serverName": server_name, "oauthUrl": url},
-            )
+        consent = JsonRpcMessage(
+            method=METHOD_MCP_OAUTH_REQUEST,
+            params={"sessionId": session_id, "serverName": server_name, "oauthUrl": url},
         )
+        # Made here, so the reader never saw it: folded as the reader folds one.
+        self._fold_mcp_frame(session_id, consent)
+        await queue.put(consent)
     try:
         if refusal:
             logger.info("MCP consent URL not opened: %s", refusal)

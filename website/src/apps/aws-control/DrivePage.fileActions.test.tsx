@@ -4,7 +4,7 @@
  * suites split from it; shared fixtures are in src/test/DrivePageTestUtils.tsx.
  */
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
@@ -436,6 +436,37 @@ describe('DrivePage sections: drag and drop', () => {
     const strip = await screen.findByTestId('drive-upload-error')
     expect(strip.textContent).toContain('doomed.md')
   })
+
+  it('keeps focus on the rename Save while the move runs and refuses a second press', async () => {
+    // Native `disabled` on the rename Save while the move is out drops a
+    // keyboard user's focus to the page body. The button announces unavailable
+    // with `aria-disabled`, stays in the tab order, keeps focus, and the commit
+    // guard refuses a second press (one move, not two).
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    let finish: (v: { moved: boolean }) => void = () => {}
+    vi.mocked(awsControlApi.driveMove).mockReturnValue(
+      new Promise((resolve) => { finish = resolve }) as ReturnType<typeof awsControlApi.driveMove>,
+    )
+    await renderDrive('drive')
+
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-rename')
+    const input = await screen.findByTestId('drive-rename-input')
+    fireEvent.change(input, { target: { value: 'renamed.pdf' } })
+
+    const save = screen.getByTestId('drive-rename-save')
+    save.focus()
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    await act(async () => finish({ moved: true }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('drive-rename-input')).not.toBeInTheDocument(),
+    )
+    expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('DrivePage sections: move without a pointer', () => {
@@ -504,6 +535,67 @@ describe('DrivePage sections: move without a pointer', () => {
     expect(screen.queryByTestId('move-options')).toBeNull()
   })
 
+  it('the empty picker offers New folder, which closes it and opens the folder-name field', async () => {
+    // "Create one first" names the fix; the button is the way to do it. It
+    // hands over to the toolbar's own field, so focus lands there and not
+    // back on the row menu.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: listing.files, folders: [] })
+    await renderDrive('drive')
+
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-move')
+    const dialog = await screen.findByTestId('move-dialog')
+    fireEvent.click(within(dialog).getByTestId('move-new-folder'))
+
+    await waitFor(() => expect(screen.queryByTestId('move-dialog')).toBeNull())
+    const field = await screen.findByTestId('drive-folder-name')
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    expect(awsControlApi.driveMove).not.toHaveBeenCalled()
+  })
+
+  it('New folder in the empty picker focuses the folder-name field even when it was already open', async () => {
+    // A typed name keeps the field open across a blur, so it does not remount
+    // and its autoFocus cannot run again; focus must still land there, not on
+    // the document body.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: listing.files, folders: [] })
+    await renderDrive('drive')
+
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
+    const field = await screen.findByTestId('drive-folder-name')
+    fireEvent.change(field, { target: { value: 'invoices' } })
+    fireEvent.blur(field)
+
+    await chooseFromMenu(screen.getByTestId('drive-more'), 'drive-move')
+    const dialog = await screen.findByTestId('move-dialog')
+    fireEvent.click(within(dialog).getByTestId('move-new-folder'))
+
+    await waitFor(() => expect(screen.queryByTestId('move-dialog')).toBeNull())
+    expect(screen.getByTestId('drive-folder-name')).toBe(field)
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    expect((field as HTMLInputElement).value).toBe('invoices')
+  })
+
+  it('a name clash in the picker names the next step and stacks a scoped hand-off under it', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockRejectedValue(new AwsControlError('destination_exists', 409))
+    await renderDrive('drive')
+
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-move')
+    fireEvent.click((await screen.findAllByTestId('move-folder'))[0])
+
+    const notice = await screen.findByTestId('move-error')
+    // The sentence itself offers a way out, so the hand-off is not the only one.
+    expect(notice).toHaveTextContent('Pick another folder, or rename the file first.')
+    // The hand-off says which problem it is about, and sits in the message's
+    // own column (under the sentence), not in a side column of a narrow picker.
+    const handOff = within(notice).getByRole('button', {
+      name: i18nT('apps.awsControl.console.move_ask_agent'),
+    })
+    const column = notice.querySelector('div.flex-1')
+    expect(column).not.toBeNull()
+    expect(column).toContainElement(handOff)
+    expect(column).toHaveTextContent(i18nT('apps.awsControl.console.move_conflict'))
+  })
+
   it('the source row dims and reports busy while its move is in flight, and only then', async () => {
     vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
     let finish: (v: { moved: boolean }) => void = () => {}
@@ -519,7 +611,11 @@ describe('DrivePage sections: move without a pointer', () => {
 
     await waitFor(() => expect(screen.getByTestId('drive-file').getAttribute('aria-busy')).toBe('true'))
     expect(screen.getByTestId('drive-file').className).toContain('opacity-50')
-    expect(screen.getByTestId('move-pending')).toBeTruthy()
+    // The picker's own progress line says that closing it leaves the move
+    // running, which is exactly what the Escape below relies on.
+    expect(screen.getByTestId('move-pending')).toHaveTextContent(
+      i18nT('apps.awsControl.console.move_moving_picker'),
+    )
     // Escape mid-move dismisses the picker without cancelling anything: a slow
     // or hung copy must never trap the reader in a modal. The row stays busy
     // until the move lands, so the outcome is still visible on the page.
@@ -552,6 +648,11 @@ describe('DrivePage sections: move without a pointer', () => {
     await renderDrive('drive')
     const rows = await screen.findAllByTestId('drive-file')
     expect(rows[1].getAttribute('draggable')).toBe('true')
+    // With no move running the item carries no reason line.
+    fireEvent.keyDown(within(rows[1]).getByTestId('drive-more'), { key: 'Enter' })
+    expect(within(await screen.findByTestId('drive-move')).queryByTestId('move-to-busy')).toBeNull()
+    fireEvent.keyDown(document.activeElement ?? document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('drive-move')).toBeNull())
 
     await chooseFromMenu(within(rows[0]).getByTestId('drive-more'), 'drive-move')
     fireEvent.click((await screen.findAllByTestId('move-folder'))[0])
@@ -564,6 +665,11 @@ describe('DrivePage sections: move without a pointer', () => {
     fireEvent.keyDown(within(screen.getAllByTestId('drive-file')[1]).getByTestId('drive-more'), { key: 'Enter' })
     const item = await screen.findByTestId('drive-move')
     expect(item.getAttribute('data-disabled')).not.toBeNull()
+    // The disabled item says why, in words: a tooltip would never show, since a
+    // disabled Radix item takes no pointer events.
+    expect(within(item).getByTestId('move-to-busy')).toHaveTextContent(
+      i18nT('apps.awsControl.console.move_to_busy'),
+    )
     fireEvent.click(item)
     expect(screen.queryByTestId('move-dialog')).toBeNull()
     expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1)

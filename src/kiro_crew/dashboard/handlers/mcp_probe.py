@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew import mcp_quarantine
-from kiro_crew.agent import kiro_agents_dir_path
+from kiro_crew.agent import gateway_routed_names, kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config.loader import KiroCrewConfig
@@ -160,6 +160,60 @@ def _probe_currency() -> dict[str, bool]:
     return {s.name: cached_probe_is_current(s) for s in list_servers()}
 
 
+def _probe_view() -> tuple[dict[str, bool], frozenset[str]]:
+    """``_probe_currency``, plus the names a measure pass can probe. BLOCKING.
+
+    One ``list_servers()`` read for both. A row gets the handshake its verdict
+    needs only from a probe of its exact name, and a pass never probes a row that
+    is switched off, has no command, is left out by ``probe_all`` after repeated
+    failures (a pre-flight does not fill the probe cache), or names a
+    ``secret://`` value in its env (``probe_server`` refuses that one every time).
+    """
+    from kiro_crew.mcp_discovery import _spawn_excluded, list_servers
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    servers = list_servers()
+    held = _spawn_excluded()
+    probeable = frozenset(
+        s.name
+        for s in servers
+        if not s.disabled and s.command and s.name not in held and not secret_reference_keys(s.env)
+    )
+    return {s.name: cached_probe_is_current(s) for s in servers}, probeable
+
+
+def _recheck_routed(rows: list[dict[str, Any]], servers: list[McpServerInfo]) -> None:
+    """Re-ask the gateway routing for every ``routed`` row; blocking.
+
+    A ``routed`` row reaches this table from ``_mcp_probe_cache``, which holds
+    for ``_MCP_PROBE_CACHE_SECS``, while routing can be turned off at any time
+    and nothing re-probes on that. So the answer is read again here, once per
+    request and only when a row reads ``routed``: a server the gateway does not
+    serve at read time goes back to the not-probed row (``outdated`` with its
+    reason), the same row the probe gives it. Reads config and the overlay,
+    never a secret.
+    """
+    from kiro_crew.mcp_discovery_probe import secret_reference_refusal
+    from kiro_crew.mcp_gateway.secret_uri import (
+        routed_for_secret_reference,
+        secret_reference_keys,
+    )
+
+    try:
+        routed = gateway_routed_names()
+    except Exception:  # noqa: BLE001 -- cannot tell means not routed
+        logger.debug("Could not read MCP gateway routing", exc_info=True)
+        routed = frozenset()
+    env_by_name = {s.name: s.env for s in servers}
+    for d in rows:
+        name = str(d.get("name") or "")
+        if d.get("status") != "routed" or routed_for_secret_reference(name, routed):
+            continue
+        keys = secret_reference_keys(env_by_name.get(name))
+        d["status"] = "outdated" if keys else "unknown"
+        d["error"] = secret_reference_refusal(keys) if keys else ""
+
+
 def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
     """Stamp ``probeFailures`` / ``probeFailing`` onto rows that have a record.
 
@@ -186,6 +240,27 @@ def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
         if state:
             row["probeFailures"] = state["fails"]
             row["probeFailing"] = state["failing"]
+
+
+def _annotate_agent_drops(rows: list[dict[str, Any]]) -> None:
+    """Stamp ``agentDropped`` onto rows the latest default-agent rebuild left out.
+
+    Recorded keys may be raw spec names while rows use canonical aliases.
+    Exact-name matches win over aliases; cached notes are refreshed each time.
+    """
+    from kiro_crew.mcp_dropped_servers import load_dropped
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    drops = load_dropped()
+    aliased_drops = {mcp_server_alias(key): drop for key, drop in drops.items()}
+    for row in rows:
+        row.pop("agentDropped", None)
+        name = row.get("name")
+        if not isinstance(name, str):
+            continue
+        drop = drops.get(name) or aliased_drops.get(mcp_server_alias(name))
+        if drop is not None:
+            row["agentDropped"] = drop
 
 
 def _record_probe_verdicts(rows: list[dict[str, Any]]) -> None:
@@ -216,11 +291,20 @@ def _read_global_mcps() -> Any:
     Blocking file I/O: the probe and the listing handlers call it through
     ``asyncio.to_thread``, so a slow home directory stalls only a worker
     thread. A missing or unparsable file reads as ``{}``.
+
+    The read retries the Windows window in which a writer's ``os.replace``
+    makes the open fail with ``PermissionError``. A ``PermissionError`` that
+    outlasts the retry propagates: the listing routes answer it with a
+    retryable 503, because folding it into ``{}`` would show every server as
+    enabled mid-write.
     """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+
     try:
-        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
+        raw = read_bytes_with_retry(_GLOBAL_MCP_JSON).decode("utf-8")
+        data = loads_mcp_config(raw, jsonc=True)
         return data.get("mcpServers", {})
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
@@ -470,7 +554,13 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # here. See the block above the return.
 
     # Read global mcp.json for disabled state
-    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    try:
+        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    except PermissionError:
+        logger.warning("GET /api/mcp: mcp.json stayed unreadable after retries", exc_info=True)
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
     # Kiro Crew-scope entries: disabled state (consent-disabled installs and
     # custom adds live only here) + which rows the JSON editor can manage.
     # Off the loop, like the probe and probe-cache sites: the helper is blocking
@@ -511,6 +601,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             err = redact(err)
             d["error"] = err
         result.append(d)
+    if any(d.get("status") == "routed" for d in result):
+        await asyncio.to_thread(_recheck_routed, result, servers)
     # Annotated HERE too, not only on the probe endpoints. This is the endpoint
     # the MCP table loads from, so without it a quarantined server rendered as a
     # plain failing row until the user happened to press Probe -- the badge
@@ -519,6 +611,8 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await _annotate_kas_chat_sign_in(result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
 
     # Decide AND arm the re-probe here, at the very end, all synchronously.
     #
@@ -544,11 +638,17 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
 
 
 def _agent_mcp_server_names(agent: str) -> list[str] | None:
-    """The sorted ``mcpServers`` names of the user-level spec declaring *agent*.
+    """The sorted names of the servers kiro-cli mounts for the user-level spec *agent*.
 
-    ``None`` when no spec declares that name. A thread-side read: it walks the
-    agents directory and parses specs (both forms) until the first match.
+    The spec's own ``mcpServers``, and the enabled servers of the global
+    ``mcp.json`` that its ``includeMcpJson`` opt-in mounts beside them
+    (``agent_sdk.mcp_json_reach``). ``None`` when no spec declares that name. A
+    thread-side read: it walks the agents directory and parses specs (both forms)
+    until the first match, then reads the global file when the spec opts in.
     """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+    from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
+
     for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
         spec = _read_agent_spec(
             f,
@@ -561,7 +661,8 @@ def _agent_mcp_server_names(agent: str) -> list[str] | None:
             # ``mcpServers: null`` (or any non-mapping) declares no servers; it
             # must answer an empty list, not a 500 from ``sorted(None)``.
             servers = spec.get("mcpServers")
-            return sorted(servers) if isinstance(servers, dict) else []
+            names = set(servers) if isinstance(servers, dict) else set()
+            return sorted(names.union(mcp_json_server_names(spec, ACP_BACKEND_KIRO)))
     return None
 
 
@@ -569,9 +670,10 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     """GET /api/mcp/active — return MCP servers for the current agent.
 
     For non-kirocrew agents, reads ``mcpServers`` from the agent's config
-    in ``~/.kiro/agents/`` — these are the only servers kiro-cli loads
-    when ``--agent <name>`` is passed.  For kirocrew (or no agent),
-    reads from global ``~/.kiro/settings/mcp.json`` as before.
+    in ``~/.kiro/agents/``, plus the global ``~/.kiro/settings/mcp.json``
+    servers when that config opts in with ``includeMcpJson``: the servers
+    kiro-cli loads when ``--agent <name>`` is passed. For kirocrew (or no
+    agent), reads every scope through the one launch predicate.
     """
     agent = request.query.get("agent", "")
 
@@ -599,7 +701,15 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     # Kiro Crew / default: every scope, through the one launch predicate.
     from kiro_crew.mcp_discovery import list_servers  # noqa: F811
 
-    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    try:
+        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    except PermissionError:
+        logger.warning(
+            "GET /api/mcp/active: mcp.json stayed unreadable after retries", exc_info=True
+        )
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     servers = list_servers()
     result: list[dict] = []
@@ -656,7 +766,15 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     except Exception:
         logger.debug("shareability evaluation failed; probe result unaffected", exc_info=True)
     # Read global mcp.json for enabled/disabledTools state
-    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    try:
+        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    except PermissionError:
+        logger.warning(
+            "POST /api/mcp/probe: mcp.json stayed unreadable after retries", exc_info=True
+        )
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
     result: list[dict[str, Any]] = []
     for s in servers:
@@ -671,6 +789,8 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await _annotate_kas_chat_sign_in(result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -823,6 +943,8 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await _annotate_kas_chat_sign_in(result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
     edited = _edited_since_probe(servers)
@@ -929,3 +1051,40 @@ def _annotate_owner_sign_in(rows: list[dict]) -> None:
             and is_signable_name(name)
             and is_owner_server(config, name, {"url": url})
         )
+
+
+async def _annotate_kas_chat_sign_in(rows: list[dict]) -> None:
+    """Stamp ``kasChatSignIn`` on each sign-in row whose sign-in a KAS chat does not use.
+
+    Only while ordinary chats run on KAS, and only on a row that asked for OAuth
+    and whose sign-in Crew does not hold. ``"chat"``: a sign-in from the row runs on
+    kiro-cli (:func:`kiro_crew.connections.mint_kas.kas_sign_in_routes`), whose cache
+    no KAS chat reads. ``"again"``: it would run on the KAS engine, but the grant the
+    row reads as Signed in is one the KAS grant vault does not hold. Every other row
+    carries no key, so a row served from a cache never keeps a stale one.
+    """
+    for row in rows:
+        row.pop("kasChatSignIn", None)
+    candidates = [
+        row
+        for row in rows
+        if row.get("authChallenge") is True
+        and not row.get("authCrewHeld")
+        and isinstance(row.get("name"), str)
+        and isinstance(row.get("url"), str)
+    ]
+    if not candidates:
+        return
+    from kiro_crew.connections import mint_kas
+    from kiro_crew.mcp_grant_kas import kas_grant_observed
+
+    routes = await asyncio.to_thread(
+        mint_kas.kas_sign_in_routes, [row["name"] for row in candidates]
+    )
+    if routes is None:
+        return
+    for row in candidates:
+        if not routes.get(row["name"]):
+            row["kasChatSignIn"] = mint_kas.KAS_CHAT_SIGN_IN_CHAT
+        elif row.get("authGrantPresent") is True and await kas_grant_observed(row["url"]) is False:
+            row["kasChatSignIn"] = mint_kas.KAS_CHAT_SIGN_IN_AGAIN

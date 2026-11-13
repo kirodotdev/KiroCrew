@@ -6,6 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 
 import { i18nT } from '../../i18n/t'
+import { fmtBytes, fmtDateTime, fmtList } from '../../i18n/format'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
@@ -189,7 +190,7 @@ export function skippedChats(header: string | null): number {
 
 /** A bounded list of names, with the left-out count as "N more". */
 function joinWithMore(names: string[], more: number): string {
-  return [...names, ...(more ? [i18nT('app.n_more', { count: more })] : [])].join(', ')
+  return fmtList([...names, ...(more ? [i18nT('app.n_more', { count: more })] : [])])
 }
 
 /** Strings only, empty ones and repeats dropped, in first-seen order. */
@@ -317,7 +318,7 @@ export default function PortabilityTab() {
   const [importMemoryOnly, setImportMemoryOnly] = useState(false)
   const [chatLines, setChatLines] = useState<string[]>(carried?.chats ?? [])
   const fileRef = useRef<HTMLInputElement>(null)
-  const { confirm: confirmShare, confirmDialog } = useConfirm()
+  const { confirm, confirmDialog } = useConfirm()
   // A memory bundle carries nothing else, so it only ever imports with Merge.
   const previewMemoryOnly = isMemoryOnlyManifest(preview)
   const memoryImport = importMemoryOnly || previewMemoryOnly
@@ -331,7 +332,7 @@ export default function PortabilityTab() {
     // A memory-only export exists to be handed to someone else, and nothing in it
     // is redacted: the user sees what it holds and says yes before it is built.
     if (memoryOnly) {
-      const ok = await confirmShare({
+      const ok = await confirm({
         title: i18nT('pages.overview.portabilityTab.share_memory_title'),
         body: (
           <span data-testid="portability-share-memory-body">
@@ -416,7 +417,14 @@ export default function PortabilityTab() {
   const handleImport = async () => {
     const file = fileRef.current?.files?.[0]
     if (!file) return
-    if (effectiveMode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
+    if (effectiveMode === 'replace') {
+      const ok = await confirm({
+        title: i18nT('pages.overview.portabilityTab.import'),
+        body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin')}</p>,
+        confirmLabel: i18nT('pages.overview.portabilityTab.import'),
+      })
+      if (!ok) return
+    }
 
     setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
     setImportWarnings([])
@@ -444,12 +452,11 @@ export default function PortabilityTab() {
           ? summary.agent_templates_installed.filter((n: unknown): n is string => typeof n === 'string')
           : []
         const templateLines = installedTemplates.length
-          ? [i18nT('pages.overview.portabilityTab.import_agent_templates_installed', { names: installedTemplates.join(', ') })]
+          ? [i18nT('pages.overview.portabilityTab.import_agent_templates_installed', { names: fmtList(installedTemplates) })]
           : []
         const skippedTemplates = skippedTemplateRows(summary.agent_templates_skipped)
-        const describeSkipped = (rows: { name: string; reason: TemplateSkipReason }[]) => rows
-          .map(row => `${row.name} (${i18nT(SKIP_REASON_KEYS[row.reason])})`)
-          .join(', ')
+        const describeSkipped = (rows: { name: string; reason: TemplateSkipReason }[]) => fmtList(rows
+          .map(row => `${row.name} (${i18nT(SKIP_REASON_KEYS[row.reason])})`))
         // A template this install could not write is a failure, so it joins the
         // errors below; every other skip is a caveat.
         const failedTemplates = skippedTemplates.filter(row => row.reason === 'unwritable')
@@ -475,7 +482,7 @@ export default function PortabilityTab() {
         }
         const keptFiles = keptSettingsFiles(summary.settings_kept)
         if (keptFiles.length) {
-          warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: keptFiles.map(settingsFileLabel).join(', ') }))
+          warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: fmtList(keptFiles.map(settingsFileLabel)) }))
         }
         const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
         const chats = [...templateLines, ...chatImportLines(summary)]
@@ -699,9 +706,9 @@ export default function PortabilityTab() {
           return (
           <div className="mt-3 p-3 rounded-lg bg-bg-elevated border border-border text-[12px] font-mono space-y-1">
             <div className="font-semibold text-text mb-1">{i18nT('pages.overview.portabilityTab.archive_contents')}</div>
-            {preview.contents['config.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.config')} {(preview.contents['config.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}{skipped}</div>}
-            {preview.contents['memory.db'] != null && <div>{i18nT('pages.overview.portabilityTab.memory_db')} {(preview.contents['memory.db'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
-            {preview.contents['crons.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.crons')} {(preview.contents['crons.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}{skipped}</div>}
+            {preview.contents['config.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.config')} {fmtBytes(preview.contents['config.json'])}{skipped}</div>}
+            {preview.contents['memory.db'] != null && <div>{i18nT('pages.overview.portabilityTab.memory_db')} {fmtBytes(preview.contents['memory.db'])}</div>}
+            {preview.contents['crons.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.crons')} {fmtBytes(preview.contents['crons.json'])}{skipped}</div>}
             {preview.contents.workspace_files != null && (
               <div>
                 {previewMemoryOnly
@@ -747,7 +754,7 @@ export default function PortabilityTab() {
               </fieldset>
             )}
             <div className="pt-1 border-t border-border mt-1 text-muted">
-              {i18nT('pages.overview.portabilityTab.created')} {preview.created_at} {i18nT('pages.overview.portabilityTab.from')} {preview.user}@{preview.hostname}
+              {i18nT('pages.overview.portabilityTab.created_from', { date: fmtDateTime(preview.created_at), origin: `${preview.user}@${preview.hostname}` })}
             </div>
           </div>
           )

@@ -17,8 +17,11 @@ Three ways a value reaches the page, and the page chooses per element
    draw from. :data:`WINDOW_GLOBAL` also carries ``agentic`` (the names the
    crewmate wrote rather than the gateway folded), ``seq`` (the fold watermark),
    and ``missing`` (the cells whose value this read did not produce).
-3. ``window.kirocrew.subscribe(name, cb)``: ``cb(value, name)`` on first load and
-   again on every push that carries that field, returning a disposer. For a page
+3. ``window.kirocrew.subscribe(name, cb)``: ``cb(value, name, meta)`` on first load
+   and again on every push that changes that field, returning a disposer. ``meta`` is
+   ``{missing}``; when a field the page drew stops resolving the
+   callback is called again with the value it already drew and ``missing: true``, so
+   a chart can mark it rather than freeze on it at full strength. For a page
    that DRAWS -- a tree, a chart, a scene -- where (2) is a value read once and the
    generic :data:`PAGE_EVENT` only says that something landed, leaving the page to
    diff a whole read to find out what.
@@ -44,7 +47,8 @@ a channel is an exfiltration path with a data source attached.
 Unresolved fields and the agentic marker
 ----------------------------------------
 A field whose source did not resolve is named in ``missing``, not guessed at. The
-cell keeps the last value that did resolve and is dimmed, and the host draws NO
+cell keeps the last value that did resolve, is dimmed and carries a "not current"
+label in the reader's language (:data:`_MISSING_LABELS`), and the host draws NO
 band about it: a field that does not resolve is the crewmate's page or binding to
 fix, so the gateway tells the crewmate in its ``[DASHBOARD]`` turn block
 (``dashboard_agentic.turn_block``) rather than telling the person something they
@@ -52,14 +56,25 @@ cannot act on. Agentic values are marked for
 the same reason at a smaller scale: a number the crewmate asserted and a number the
 log recorded are different kinds of claim, and a reader deciding whether to act on
 one is entitled to know which it is looking at.
+
+Out-of-date agentic fields (preview ``dashboard_stale_fields``)
+--------------------------------------------------------------
+With the preview on, the read also carries ``stale_after``: when each written agentic
+cell stops being current, from the log's write time plus the field's
+``stale_after_s``. The bootstrap marks each bound element past that time with a
+"may be out of date" label (:data:`_STALE_LABELS`) and re-checks once a minute while
+one is still due, and the crewmate's turn block names the same fields
+(``dashboard_agentic.stale_line``), so the person is told and the writer is asked.
 """
 
 from __future__ import annotations
 
+import decimal
 import json
 import logging
+import math
 import re
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Callable, Final, Mapping, cast
 
 logger = logging.getLogger(__name__)
 
@@ -594,6 +609,86 @@ _INIT_GUARD_JS: Final[str] = f"""
 #: a refill reaches? Set by the probe below, and by ``subscribe`` in the bootstrap.
 _REFILL_FLAG: Final[str] = "__kirocrewPageRefills"
 
+#: The words a cell named in ``missing`` carries beside the value it still shows,
+#: one per shipped UI catalog (``context_assembly.output_contract``'s set).
+#:
+#: Dimming alone read as a real number: a reader who does not know the convention
+#: sees a pale cell and takes its value as current. The marker SAYS it, as text the
+#: host CSS draws after the value and a screen reader reads, so it reaches a reader
+#: who cannot see opacity either. Worded "not current" rather than "older value"
+#: because a cell that never resolved still shows the template's own placeholder,
+#: and calling that an older value would be a claim this read cannot make.
+_MISSING_LABELS: Final[Mapping[str, str]] = {
+    "en": "not current",
+    "zh-CN": "非最新",
+    "hi": "नवीनतम नहीं",
+    "es": "no actualizado",
+    "fr": "pas à jour",
+    "bn": "হালনাগাদ নয়",
+    "pt": "desatualizado",
+    "ru": "не актуально",
+    "de": "nicht aktuell",
+    "ja": "最新ではありません",
+    "ko": "최신 아님",
+    "it": "non aggiornato",
+}
+
+#: The words an agentic cell past its ``stale_after`` carries beside its value, one per
+#: shipped UI catalog, as :data:`_MISSING_LABELS` (preview ``dashboard_stale_fields``).
+#:
+#: Each says how old the value is and what happens next, because a bare "out of date"
+#: leaves the reader with nothing to do: ``aged`` takes ``{age}``, the browser's own
+#: ``Intl.RelativeTimeFormat`` text for the write time ("2 days ago"), and ``plain`` is
+#: for a browser that cannot format one. The cell is not dimmed the way a missing one
+#: is: the value was right when the Bot wrote it and only nobody has checked it since.
+_STALE_LABELS: Final[Mapping[str, Mapping[str, str]]] = {
+    "en": {
+        "aged": "updated {age} · the Bot is asked to update it",
+        "plain": "may be out of date · the Bot is asked to update it",
+    },
+    "zh-CN": {"aged": "更新于{age} · 已提醒 Bot 更新", "plain": "可能已过期 · 已提醒 Bot 更新"},
+    "hi": {
+        "aged": "अपडेट: {age} · Bot से इसे अपडेट करने को कहा गया है",
+        "plain": "पुराना हो सकता है · Bot से इसे अपडेट करने को कहा गया है",
+    },
+    "es": {
+        "aged": "actualizado {age} · se pidió al Bot que lo actualice",
+        "plain": "puede estar desactualizado · se pidió al Bot que lo actualice",
+    },
+    "fr": {
+        "aged": "mis à jour {age} · le Bot est invité à le mettre à jour",
+        "plain": "peut-être obsolète · le Bot est invité à le mettre à jour",
+    },
+    "bn": {
+        "aged": "আপডেট: {age} · Bot-কে এটি আপডেট করতে বলা হয়েছে",
+        "plain": "পুরোনো হতে পারে · Bot-কে এটি আপডেট করতে বলা হয়েছে",
+    },
+    "pt": {
+        "aged": "atualizado {age} · o Bot foi avisado para atualizar",
+        "plain": "pode estar desatualizado · o Bot foi avisado para atualizar",
+    },
+    "ru": {
+        "aged": "обновлено {age} · Bot попросили обновить",
+        "plain": "может быть устаревшим · Bot попросили обновить",
+    },
+    "de": {
+        "aged": "aktualisiert {age} · der Bot wird gebeten, es zu aktualisieren",
+        "plain": "möglicherweise veraltet · der Bot wird gebeten, es zu aktualisieren",
+    },
+    "ja": {
+        "aged": "{age}に更新 · Bot に更新を依頼済み",
+        "plain": "古い可能性あり · Bot に更新を依頼済み",
+    },
+    "ko": {
+        "aged": "{age} 업데이트됨 · Bot에 업데이트를 요청함",
+        "plain": "오래되었을 수 있음 · Bot에 업데이트를 요청함",
+    },
+    "it": {
+        "aged": "aggiornato {age} · al Bot è chiesto di aggiornarlo",
+        "plain": "potrebbe non essere aggiornato · al Bot è chiesto di aggiornarlo",
+    },
+}
+
 _BOOTSTRAP_JS: Final[str] = f"""
 (function () {{
   var el = document.getElementById({_DATA_ELEMENT_ID!r});
@@ -613,17 +708,102 @@ _BOOTSTRAP_JS: Final[str] = f"""
   // and keeps drawing across every push: a registry living on the published object
   // would be discarded with it and every callback would silently stop.
   var subscribers = [];
-  function deliver(entry, source) {{
+  function own(object, key) {{
+    return !!object && typeof object === 'object' &&
+      Object.prototype.hasOwnProperty.call(object, key);
+  }}
+  function same(a, b) {{
+    return JSON.stringify(a) === JSON.stringify(b);
+  }}
+  function sameMap(a, b) {{
+    a = a || {{}};
+    b = b || {{}};
+    var keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (var key of keys) if (!own(b, key) || !same(a[key], b[key])) return false;
+    return true;
+  }}
+  // When agentic field `name` goes stale (`read.stale_after`, an ISO stamp the host
+  // derived from the log's own write time), as epoch ms; NaN when it has none.
+  function staleDue(name) {{
+    var at = read.stale_after;
+    if (!own(at, name) || typeof at[name] !== 'string') return NaN;
+    return Date.parse(at[name]);
+  }}
+  // How long ago agentic field `name` was written, in the reader's words
+  // ("2 days ago", "2天前") from the browser's own Intl, or '' when it cannot say.
+  function writtenAgo(name, now) {{
+    var stamps = read.written_at;
+    if (!own(stamps, name) || typeof stamps[name] !== 'string') return '';
+    var at = Date.parse(stamps[name]);
+    if (!(at === at)) return '';
+    var mins = Math.max(0, Math.floor((now - at) / 60000));
+    var unit = 'minute', n = mins;
+    if (mins >= 1440) {{ unit = 'day'; n = Math.floor(mins / 1440); }}
+    else if (mins >= 60) {{ unit = 'hour'; n = Math.floor(mins / 60); }}
+    try {{
+      return new Intl.RelativeTimeFormat(read.locale || 'en', {{ numeric: 'auto' }})
+        .format(-n, unit);
+    }} catch (err) {{
+      return '';
+    }}
+  }}
+  // Whether two reads show the same page: every key a page can draw from, leaving
+  // out only the push bookkeeping (and `subscribe`, which `publish` adds).
+  function sameRead(a, b) {{
+    var skip = {{ version: 1, seq: 1, generation: 1, subscribe: 1 }};
+    for (var key of Object.keys(a).concat(Object.keys(b))) {{
+      if (skip[key] === 1) continue;
+      var map = key === 'fields' || key === 'written_at' || key === 'stale_after';
+      if (map ? !sameMap(a[key], b[key]) : !same(a[key], b[key])) return false;
+    }}
+    return true;
+  }}
+  function deliver(entry, source, whole) {{
     if (!entry.live) return;
     var fields = source && source.fields;
     if (!fields || typeof fields !== 'object') return;
+    var name = entry.name;
     // PRESENCE, not truthiness. A field is ABSENT when its fold path did not
     // resolve, and `0`, `''` and `false` are values a fold legitimately holds --
     // reading them as absent would stop a counter's subscriber at exactly the
     // moment the counter reached zero.
-    if (!Object.prototype.hasOwnProperty.call(fields, entry.name)) return;
+    var has = own(fields, name);
+    // `missing` WINS over presence, exactly as in `fill`: a read can still carry
+    // the older value of a field it names missing.
+    var gone = Array.isArray(source.missing) && source.missing.indexOf(name) !== -1;
+    var value;
+    if (gone) {{
+      // A FIELD THAT STOPPED RESOLVING IS TOLD, not left frozen. Without this a
+      // chart drawn from a subscriber kept its last value at full strength while
+      // the bound cells beside it dimmed, and nothing on the chart said so. The
+      // value handed back is the one the page already drew -- never a new one --
+      // so a two-argument callback redraws what it had, and a page that reads
+      // the third argument dims it. A field the page never held stays silent:
+      // there is no older value to mark, and `undefined` is not a value.
+      if (has) value = fields[name];
+      else if (entry.held && !entry.stale) value = entry.last;
+      else return;
+    }} else if (has) {{
+      value = fields[name];
+    }} else if (entry.stale && own(whole && whole.fields, name)) {{
+      // RESOLVED AGAIN, unmoved: a patch omits a field that did not change, so a
+      // field leaving `missing` with its old value arrives only in the merge.
+      value = whole.fields[name];
+    }} else {{
+      return;
+    }}
+    // UNMOVED, so silent: a full read carries every field, and redrawing a field
+    // for the value it already drew is what made the page feel reloaded.
+    if (!gone && entry.held && !entry.stale && same(entry.last, value)) return;
+    entry.held = true;
+    entry.last = value;
+    entry.stale = gone;
+    // `missing` ONLY. The agentic marks and `written_at` are already on
+    // `window.kirocrew`, published before this runs.
+    var meta = Object.freeze({{ missing: gone }});
     try {{
-      entry.cb(fields[entry.name], entry.name);
+      entry.cb(value, name, meta);
     }} catch (err) {{
       // ONE SUBSCRIBER'S THROW COSTS ONLY ITSELF. Two blocks on one page redraw
       // from one push, and letting the first one's error abort the loop leaves the
@@ -631,15 +811,15 @@ _BOOTSTRAP_JS: Final[str] = f"""
       // different ages with nothing on it saying so.
     }}
   }}
-  function notify(source) {{
+  function notify(source, whole) {{
     // A COPY of the list, because a callback may subscribe or dispose during
     // delivery and mutating the array under the loop would skip its neighbour.
     var current = subscribers.slice();
-    for (var i = 0; i < current.length; i++) deliver(current[i], source);
+    for (var i = 0; i < current.length; i++) deliver(current[i], source, whole);
   }}
   function subscribe(name, cb) {{
     if (typeof name !== 'string' || typeof cb !== 'function') return function () {{}};
-    var entry = {{ name: name, cb: cb, live: true }};
+    var entry = {{ name: name, cb: cb, live: true, held: false, last: undefined, stale: false }};
     subscribers.push(entry);
     // A PAGE THAT SUBSCRIBES IS ONE A REFILL REACHES: `notify` runs on every push,
     // so the callback redraws the page without a reload. The probe below watches
@@ -653,7 +833,7 @@ _BOOTSTRAP_JS: Final[str] = f"""
     // fired on a push would draw nothing on first paint -- over a log that has the
     // numbers in it. This is what makes the callback a page's one entry point
     // rather than something it needs a binding beside.
-    deliver(entry, read);
+    deliver(entry, read, read);
     return function () {{ entry.live = false; }};
   }}
   // The push version the page HOLDS, taken from the ISLAND rather than started at
@@ -661,6 +841,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
   // page that began at zero would accept the first patch whatever its version and
   // apply a frame computed against a read it never saw.
   var held = typeof read.version === 'number' ? read.version : 0;
+  // When the page event last fired; first paint counts as one.
+  var lastEvent = Date.now();
   // WHOSE COUNTER `held` BELONGS TO. Versions are only comparable inside one armed
   // page: a page the host re-arms starts its counter again, so a lower number can
   // belong to a newer read. The generation says which counter a number came from, and
@@ -678,7 +860,7 @@ _BOOTSTRAP_JS: Final[str] = f"""
     for (key of Object.keys(from)) fields[key] = from[key];
     var moved = patch.fields || {{}};
     for (key of Object.keys(moved)) fields[key] = moved[key];
-    return {{
+    var merged = {{
       fields: fields,
       // The REST of the read is the patch's, not merged: `missing` and the
       // agentic marks are statements about the read as a whole, and a merge of two
@@ -692,7 +874,16 @@ _BOOTSTRAP_JS: Final[str] = f"""
       version: typeof patch.version === 'number' ? patch.version : 0,
       generation:
         typeof patch.generation === 'string' ? patch.generation : (base || {{}}).generation,
+      // KEPT FROM THE HELD READ, never the patch's: the host builds a patch with the
+      // builder's defaults for these two (`subject: 'crewmate'`, `last_user_at: ''`),
+      // so taking them would blank the stamp and mislabel a session page.
+      subject: (base || {{}}).subject,
+      last_user_at: (base || {{}}).last_user_at,
     }};
+    // The patch's, like `written_at`, and only when it carries one: with the
+    // preview off the host sends none and the read keeps exactly today's keys.
+    if (own(patch, 'stale_after')) merged.stale_after = patch.stale_after || {{}};
+    return merged;
   }}
   function publish(value) {{
     // `subscribe` travels ON the published object, because the object is replaced
@@ -732,6 +923,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
     var gone = Object.create(null);
     var missing = Array.isArray(read.missing) ? read.missing : [];
     for (var m = 0; m < missing.length; m++) gone[missing[m]] = true;
+    var labels = {json.dumps(_MISSING_LABELS)};
+    var missingLabel = own(labels, read.locale) ? labels[read.locale] : labels.en;
     var nodes = document.querySelectorAll('[{BINDING_ATTRIBUTE}]');
     for (var n = 0; n < nodes.length; n++) {{
       var node = nodes[n];
@@ -741,9 +934,13 @@ _BOOTSTRAP_JS: Final[str] = f"""
         // page last showed, which on a refill is the last value that DID resolve.
         // Blanking it would turn one unresolved path into a page of em dashes.
         node.setAttribute('data-dashboard-missing', 'true');
+        // The marker the host CSS draws after the value, in the reader's words.
+        // See _MISSING_LABELS in dashboard_frame.py.
+        node.setAttribute('data-dashboard-missing-label', missingLabel);
         continue;
       }}
       node.removeAttribute('data-dashboard-missing');
+      node.removeAttribute('data-dashboard-missing-label');
       // Text, never markup. See _BOOTSTRAP_JS's own note in dashboard_frame.py.
       node.textContent = text(read.fields[name]);
       if (agentic[name]) node.setAttribute('data-dashboard-agentic', 'true');
@@ -753,6 +950,51 @@ _BOOTSTRAP_JS: Final[str] = f"""
     // language is set here too, from the same read the page picks its words by.
     if (typeof read.locale === 'string' && read.locale) {{
       document.documentElement.lang = read.locale;
+    }}
+    markStale();
+  }}
+  // THE OUT-OF-DATE MARK, per bound ELEMENT (each `{BINDING_ATTRIBUTE}` node), never
+  // per card or block, so it holds whatever groups the page draws its fields in.
+  // Only a field the host gave a `stale_after` (preview on, agentic, written) can be
+  // marked, and `missing` wins: a cell already saying "not current" says enough.
+  // Re-run every minute while a mark is still due, so a page left open turns stale
+  // on time with no push from the host; with nothing due, no timer runs.
+  var staleTimer = 0;
+  var staleMarked = false;
+  function markStale() {{
+    // Preview off and nothing ever marked: no `stale_after`, so nothing to touch.
+    if (!own(read, 'stale_after') && !staleMarked) return;
+    var labels = {json.dumps(_STALE_LABELS)};
+    var words = own(labels, read.locale) ? labels[read.locale] : labels.en;
+    var now = Date.now();
+    var due = false;
+    var shown = false;
+    var nodes = document.querySelectorAll('[{BINDING_ATTRIBUTE}]');
+    for (var n = 0; n < nodes.length; n++) {{
+      var node = nodes[n];
+      var at = staleDue(node.getAttribute({BINDING_ATTRIBUTE!r}));
+      if (now < at) due = true;
+      if (now >= at && node.getAttribute('data-dashboard-missing') !== 'true') {{
+        // How old it is and what happens next, never a bare "out of date": the Bot's
+        // turn names the field, so the label can say the Bot is asked to update it.
+        var ago = writtenAgo(node.getAttribute({BINDING_ATTRIBUTE!r}), now);
+        node.setAttribute('data-dashboard-out-of-date', 'true');
+        node.setAttribute(
+          'data-dashboard-out-of-date-label',
+          ago ? words.aged.replace('{{age}}', ago) : words.plain
+        );
+        staleMarked = true;
+        shown = true;
+      }} else {{
+        node.removeAttribute('data-dashboard-out-of-date');
+        node.removeAttribute('data-dashboard-out-of-date-label');
+      }}
+    }}
+    // Kept while a mark is due OR shown: a shown label carries an age that grows.
+    if ((due || shown) && !staleTimer) staleTimer = setInterval(markStale, 60000);
+    else if (!due && !shown && staleTimer) {{
+      clearInterval(staleTimer);
+      staleTimer = 0;
     }}
   }}
   // THE REFILL, which is what makes this a live dashboard rather than a snapshot.
@@ -814,11 +1056,27 @@ _BOOTSTRAP_JS: Final[str] = f"""
     }}
     held = version;
     generation = arrivedGeneration;
+    var moved = !sameRead(read, arrived);
     // The FROZEN global is replaced wholesale rather than mutated, for the reason
     // it is frozen: a page holding a reference to the old object keeps reading
     // consistent numbers from it, and nothing half-updates.
     read = arrived;
     publish(read);
+    // NOTHING MOVED, so nothing redraws. Most reads repeat what the page shows (a
+    // reconnect, the fallback, a full read after a patch), and refilling, calling
+    // back and firing the event for them rebuilt the page as if it had reloaded.
+    // THE CLOCK STILL TICKS: a page that draws "idle for 20 min" from `Date.now()`
+    // redraws on this event, so an unchanged read still fires it once a minute.
+    // Filled first, because a page's redraw may reformat the text the fill wrote
+    // (a shortened timestamp) and must start again from the recorded value.
+    if (!moved) {{
+      if (Date.now() - lastEvent < 60000) return;
+      lastEvent = Date.now();
+      fill();
+      window.dispatchEvent(new Event({'"kirocrew-dashboard"'}));
+      return;
+    }}
+    lastEvent = Date.now();
     fill();
     // AFTER the fill, so a callback that reads its own bound element finds the text
     // the host wrote for this push rather than the previous one's. Before the
@@ -827,7 +1085,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
     // Notified with WHAT ARRIVED, never with the merged read: `deliver` fires on the
     // presence of a field, so handing it the merge would fire every subscriber on
     // every push and make the callback another spelling of the generic event.
-    notify(data.read);
+    // The merge rides beside it only so a field leaving `missing` unmoved is told.
+    notify(data.read, read);
     window.dispatchEvent(new Event({'"kirocrew-dashboard"'}));
   }});
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', fill);
@@ -924,6 +1183,17 @@ body { margin: 0; padding: 12px; font: 13px/1.5 var(--font-sans);
   background: var(--bg, light-dark(#ffffff, #12141a)); }
 [data-dashboard-agentic='true'] { border-bottom: 1px dotted var(--muted, #8b8b8b); }
 [data-dashboard-missing='true'] { opacity: 0.55; }
+[data-dashboard-missing='true']::after { content: attr(data-dashboard-missing-label);
+  display: inline-block; margin-inline-start: 0.4em; padding: 0 0.35em;
+  border: 1px dashed currentColor; border-radius: 3px; font-size: 0.8em;
+  line-height: 1.4; white-space: nowrap; vertical-align: baseline; }
+[data-dashboard-out-of-date='true']::after {
+  content: attr(data-dashboard-out-of-date-label);
+  display: inline-block; margin-inline-start: 0.4em; padding: 0 0.35em;
+  border: 1px dashed currentColor; border-radius: 3px; font-size: 11px;
+  font-weight: normal; line-height: 1.4; white-space: normal; max-width: 100%;
+  box-sizing: border-box; vertical-align: middle;
+  color: light-dark(#9a6700, #d29922); }
 """
 
 #: The language a page renders its own words in when the host names none it ships.
@@ -952,6 +1222,7 @@ def read_payload(
     locale: object = DEFAULT_LOCALE,
     subject: str = "crewmate",
     last_user_at: object = "",
+    stale_after: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The object the page sees as ``window.kirocrew``.
 
@@ -984,8 +1255,14 @@ def read_payload(
     written, which nothing else on the page can see: those messages never pass
     through the page. ``""`` when the host has no stamp to give,
     for the reason ``written_at`` is an empty map rather than an absent key.
+
+    ``stale_after`` is when each written agentic cell goes out of date
+    (``dashboard_agentic.stale_after_map``), the ``custom.latest`` row's spelling. The
+    bootstrap marks a bound element whose time has passed "may be out of date"
+    (:data:`_STALE_LABELS`). ``None`` -- the ``dashboard_stale_fields`` preview off --
+    leaves the key out, so the page gets exactly the read it got before the preview.
     """
-    return {
+    payload: dict[str, Any] = {
         "fields": dict(fields),
         "agentic": sorted(agentic),
         "seq": int(seq),
@@ -995,6 +1272,9 @@ def read_payload(
         "subject": "session" if subject == "session" else "crewmate",
         "last_user_at": last_user_at if isinstance(last_user_at, str) else "",
     }
+    if stale_after is not None:
+        payload["stale_after"] = dict(stale_after)
+    return payload
 
 
 def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
@@ -1116,19 +1396,72 @@ _SIMPLE_BINDING_CELL = re.compile(
 )
 
 
+def _js_number(value: float) -> str:
+    """*value* spelled as JS ``String(number)`` spells it (ECMAScript ``Number::toString``).
+
+    The bootstrap reads the island as JSON, so ``3.0`` arrives as the number 3 and shows
+    ``3``, and ``1e-05`` shows ``0.00001``. Python's ``repr`` already gives the shortest
+    round-trip digits JS uses; only the placement of the point and exponent differs.
+    """
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "Infinity" if value > 0 else "-Infinity"
+    if value == 0:
+        return "0"
+    sign, digits, raw_exponent = decimal.Decimal(repr(value)).as_tuple()
+    # NaN and the infinities returned above, so the exponent is an int here.
+    exponent = cast(int, raw_exponent)
+    text = "".join(map(str, digits)).rstrip("0")
+    exponent += len(digits) - len(text)
+    k = len(text)
+    n = exponent + k
+    if k <= n <= 21:
+        out = text + "0" * (n - k)
+    elif 0 < n <= 21:
+        out = text[:n] + "." + text[n:]
+    elif -6 < n <= 0:
+        out = "0." + "0" * -n + text
+    else:
+        mantissa = text if k == 1 else text[0] + "." + text[1:]
+        out = f"{mantissa}e{'+' if n - 1 >= 0 else '-'}{abs(n - 1)}"
+    return "-" + out if sign else out
+
+
+def _js_json(value: Any) -> str:
+    """*value* as JS ``JSON.stringify`` spells it after the bootstrap's JSON read."""
+    if isinstance(value, float):
+        return _js_number(value) if math.isfinite(value) else "null"
+    if isinstance(value, Mapping):
+        # A key is spelled as the island spells it: json turns 1 or True into "1"/"true".
+        items = (
+            json.dumps(next(iter(json.loads(json.dumps({key: None})))), ensure_ascii=False)
+            + ":"
+            + _js_json(item)
+            for key, item in value.items()
+        )
+        return "{" + ",".join(items) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_js_json(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _as_text(value: Any) -> str:
     """A value as the page would show it, matching the bootstrap's own ``text()``.
 
     Spelled twice because the two run in different languages on the same contract; a
     test pins them to the same three rules so a page filled here and a page filled by
-    the script cannot disagree about one value.
+    the script cannot disagree about one value. A number is spelled the way JS spells
+    the number the bootstrap parsed, so ``3.0`` reads ``3`` on both pages.
     """
     if value is None:
         return "\u2014"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float):
+        return _js_number(value)
     if isinstance(value, (Mapping, list, tuple)):
-        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        return _js_json(value)
     return str(value)
 
 
@@ -1146,17 +1479,76 @@ def fill_bindings_as_text(html: str, read: Mapping[str, Any]) -> str:
     Only a cell with NO nested markup is filled. A binding is a text cell by
     definition, so an element holding tags was never one, and rewriting it would be
     this function guessing at a structure the contract does not describe.
+
+    A cell whose field the read names in ``missing`` keeps its own text and is marked
+    the way the bootstrap marks it (``data-dashboard-missing`` and the "not current"
+    label in the reader's language), so the host CSS dims it here too. As in the
+    bootstrap, ``missing`` wins over a value ``fields`` still carries.
     """
     fields = read.get("fields") if isinstance(read, Mapping) else None
     values = fields if isinstance(fields, Mapping) else {}
+    listed = read.get("missing") if isinstance(read, Mapping) else None
+    missing = {n for n in listed if isinstance(n, str)} if isinstance(listed, list) else set()
+    locale = read.get("locale") if isinstance(read, Mapping) else None
+    label = _MISSING_LABELS.get(locale if isinstance(locale, str) else "", _MISSING_LABELS["en"])
+    marker = (
+        ' data-dashboard-missing="true" data-dashboard-missing-label="'
+        + _escape_html_text(label).replace('"', "&quot;")
+        + '"'
+    )
+
+    # The out-of-date label the bootstrap's `markStale` would draw (preview
+    # `dashboard_stale_fields`, so only when the read carries `stale_after`), decided at
+    # serve time: a page with no script has no timer, so a reload is what re-checks it.
+    # The age-free words, because the server has no `Intl` to phrase an age in the
+    # reader's language; the attribute value is escaped like any other.
+    out_of_date = _out_of_date_now(read)
+    words = _STALE_LABELS.get(page_locale(read.get("locale")), _STALE_LABELS["en"])
+    mark = (
+        ' data-dashboard-out-of-date="true" data-dashboard-out-of-date-label="'
+        + _escape_html_text(words["plain"]).replace('"', "&quot;")
+        + '"'
+    )
 
     def _fill(m: "re.Match[str]") -> str:
         name = m.group("dq") or m.group("sq") or m.group("bare") or ""
+        if name in missing:
+            return m.group(1)[:-1] + marker + ">" + m.group("body") + m.group("close")
         if name not in values:
             return m.group(0)
-        return m.group(1) + _escape_html_text(_as_text(values[name])) + m.group("close")
+        opening = m.group(1)
+        if name in out_of_date:
+            opening = opening[:-1] + mark + ">"
+        return opening + _escape_html_text(_as_text(values[name])) + m.group("close")
 
     return _SIMPLE_BINDING_CELL.sub(_fill, html)
+
+
+def _out_of_date_now(read: Mapping[str, Any]) -> frozenset[str]:
+    """The fields of *read* whose ``stale_after`` has passed, on this host's clock.
+
+    Empty when the read carries no ``stale_after`` (the preview is off). A field named in
+    ``missing`` is left out: its cell already says it is not current. TOTAL.
+    """
+    import time
+    from datetime import datetime
+
+    stale_after = read.get("stale_after")
+    if not isinstance(stale_after, Mapping):
+        return frozenset()
+    missing = set(read.get("missing") or ())
+    now = time.time()
+    out = set()
+    for name, stamp in stale_after.items():
+        if name in missing or not isinstance(stamp, str):
+            continue
+        try:
+            when = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if when.tzinfo is not None and now >= when.timestamp():
+            out.add(str(name))
+    return frozenset(out)
 
 
 def compose_body(html: str, read: Mapping[str, Any]) -> str:

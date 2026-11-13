@@ -12,10 +12,13 @@ by the gateway. What the caller may say is the record's TYPE and DATA; who wrote
 for whom, and the envelope ``src`` are the gateway's to say and are never read from
 the body.
 
-WHO MAY WRITE is decided in one place, :func:`_resolve_record_writer`, and today the
-answer is a script cron bound to a member and nothing else. An app-token caller is
-turned away by the same ``_deny_app_caller`` every member route uses; an installed
-app's own grant is a separate decision and is not made here.
+WHO MAY WRITE through THIS route is decided in one place, :func:`_resolve_record_writer`,
+and the answer is a script cron bound to a member and nothing else. An app-token caller
+is turned away by the same ``_deny_app_caller`` every member route uses: an installed
+app writes through its own door, ``POST /api/member-records/{slug}``
+(:mod:`kiro_crew.dashboard.handlers.agent_panel_record_app`), which resolves the app as
+the writer and then hands the record to the same :func:`record_through_door` this route
+uses -- one append, one fold, two resolvers.
 
 :mod:`kiro_crew.dashboard.handlers.agent_panel` is this module's facade: callers and
 tests import and patch every name through it (:mod:`kiro_crew._facade_mirror`). This
@@ -40,11 +43,16 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.entry_types import (
     CUSTOM_ENTRY_TYPE,
+    CUSTOM_ERROR_LIMIT,
+    CUSTOM_FAILED_ENTRY_TYPE,
+    CUSTOM_MAX_AGE_MAX_S,
+    CUSTOM_MAX_AGE_MIN_S,
     CUSTOM_RECORD_BYTES,
     CUSTOM_RECORD_DEPTH,
     CUSTOM_TYPE_NAME_LIMIT,
 )
 from kiro_crew.crew_log.projection_dashboard import (
+    custom_max_age_ok,
     custom_record_depth,
     custom_record_fits,
     custom_type_name_ok,
@@ -54,11 +62,7 @@ from kiro_crew.dashboard.handlers.agent_panel_read import _panel_slot
 from kiro_crew.dashboard.handlers.members import _deny_app_caller
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.members import MemberSlugError
-from kiro_crew.security import (
-    REDACTED_CREDENTIAL_TAG,
-    redact_credentials,
-    redact_exfiltration_urls,
-)
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
 
@@ -99,11 +103,19 @@ class RecordWriter(NamedTuple):
     slot: str
 
 
-def _refuse(request: web.Request, sk: str, code: str, error: str, status: int) -> web.Response:
+def _refuse(
+    request: web.Request,
+    sk: str,
+    code: str,
+    error: str,
+    status: int,
+    *,
+    operation: str = _OPERATION,
+) -> web.Response:
     """One refusal, audited the way the publish gate audits its own."""
     sel().log_api_access(
         caller=sk,
-        operation=_OPERATION,
+        operation=operation,
         outcome="denied",
         source="dashboard",
         resources=request.path,
@@ -146,7 +158,7 @@ async def _resolve_record_writer(
             request,
             sk,
             "caller_not_cron",
-            "only a script cron bound to a crewmate can append a record; this caller is "
+            "only a script cron bound to a Bot can append a record; this caller is "
             "not an attested cron job",
             403,
         )
@@ -156,23 +168,14 @@ async def _resolve_record_writer(
             request,
             sk,
             "cron_not_member_bound",
-            "this cron job is bound to no crewmate, so it has no crew log to append to; "
-            "bind the job to a crewmate (its `member`) and run it again",
+            "this cron job is bound to no Bot, so it has no crew log to append to; "
+            "bind the job to a Bot (its `member`) and run it again",
             403,
         )
     job_id = session.removeprefix("cron:").split(":")[0]
 
-    def _resolve() -> RecordWriter:
-        from kiro_crew.execution_context import member_config_for_id
-
-        cfg = KiroCrewConfig.load()
-        crew_name, _member = member_config_for_id(cfg, str(member_id))
-        slug = members_mod.member_slug(crew_name, cfg)
-        members_mod.validate_slug(slug)
-        return RecordWriter(f"cron:{job_id}", crew_name, slug, _panel_slot(cfg, crew_name, slug))
-
     try:
-        return await asyncio.to_thread(_resolve), None
+        return await asyncio.to_thread(_cron_writer, job_id, str(member_id)), None
     except MemberSlugError:
         return None, _refuse(
             request, sk, "bad_crew_slug", "this crew's name has no addressable slug", 400
@@ -187,9 +190,65 @@ async def _resolve_record_writer(
             request,
             sk,
             "member_identity_unavailable",
-            "the crewmate this cron job is bound to could not be resolved",
+            "the Bot this cron job is bound to could not be resolved",
             409,
         )
+
+
+def _cron_writer(job_id: str, member_id: str) -> RecordWriter:
+    """The writer cron *job_id* bound to *member_id* is, with its crewmate's slot.
+
+    Shared by the record door and :func:`record_cron_failure`, so a record and a
+    failure of one job name the same writer and land in the same slot. Blocking IO;
+    raises what ``member_config_for_id`` and ``validate_slug`` raise.
+    """
+    from kiro_crew.execution_context import member_config_for_id
+
+    cfg = KiroCrewConfig.load()
+    crew_name, _member = member_config_for_id(cfg, member_id)
+    slug = members_mod.member_slug(crew_name, cfg)
+    members_mod.validate_slug(slug)
+    return RecordWriter(f"cron:{job_id}", crew_name, slug, _panel_slot(cfg, crew_name, slug))
+
+
+def record_cron_failure(job_id: str, member_id: str, error: str) -> bool:
+    """Append a ``dashboard/custom_failed`` entry for a bound script cron's failed run.
+
+    Called by the scheduler, never by a route: the job id and member come from the
+    scheduler's own record of the job, so no script can write or forge one. Without it
+    a failed run writes nothing, and a page bound to the job's record keeps showing the
+    last good value as if it were current.
+
+    BEST-EFFORT and TOTAL: the run has already failed, so a crewmate with no crew log
+    yet, the crew panel off, or an append that does not land answers ``False`` and
+    changes nothing else. The error is scrubbed like a record and cut to
+    :data:`CUSTOM_ERROR_LIMIT`. Blocking IO.
+    """
+    if not job_id or not member_id:
+        return False
+    try:
+        if not crew_log_emit.enabled() or not members_mod.crew_panel_enabled():
+            return False
+        resolved = _cron_writer(job_id, member_id)
+        from kiro_crew.dashboard.handlers.member_dashboard import _newest_unit
+
+        unit = _newest_unit(resolved.slot)
+        if not unit:
+            return False
+        entry: dict[str, Any] = {
+            "writer": resolved.writer,
+            "error": _scrubbed(str(error or ""))[:CUSTOM_ERROR_LIMIT],
+            "member": resolved.slug,
+            "crew_key": agent_panel.crew_key(resolved.crew_name),
+        }
+        if not crew_log_emit.dashboard_entry_fits(CUSTOM_FAILED_ENTRY_TYPE, entry):
+            return False
+        return bool(
+            crew_log_emit.on_dashboard_custom_failed(unit, entry, timeout=_APPEND_FLUSH_SECONDS)
+        )
+    except Exception:
+        logger.debug("dashboard record: cron %s's failure was not recorded", job_id, exc_info=True)
+        return False
 
 
 def _over_quota(writer: str, now: float | None = None) -> bool:
@@ -298,19 +357,38 @@ def _unique_key(out: Mapping[Any, Any], key: Any, suffixes: dict[Any, int]) -> A
 def _record_body_refusal(body: Any) -> tuple[str, str] | None:
     """``(code, error)`` for a body the door refuses, or ``None`` for one it takes.
 
-    Only ``type`` and ``data`` are read. Anything else in the body is ignored rather
-    than refused, so a client that adds a field later is not broken by an older
-    gateway -- but no other key is ever read, which is what keeps ``writer``,
-    ``member`` and ``crew_key`` the gateway's alone.
+    Only ``type``, ``data`` and the optional ``max_age_s`` are read. Anything else in
+    the body is ignored rather than refused, so a client that adds a field later is not
+    broken by an older gateway -- but no other key is ever read, which is what keeps
+    ``writer``, ``member`` and ``crew_key`` the gateway's alone.
     """
     if not isinstance(body, dict):
         return "invalid_body", "body must be a JSON object"
+    if body.get("max_age_s") is not None and not custom_max_age_ok(body.get("max_age_s")):
+        # Refused rather than dropped: a script that asked for staleness and got none
+        # would draw a record that never reads as stale, the failure this field exists
+        # to prevent.
+        return (
+            "bad_max_age",
+            f"max_age_s must be a whole number of seconds from {CUSTOM_MAX_AGE_MIN_S} to "
+            f"{CUSTOM_MAX_AGE_MAX_S}",
+        )
     name = body.get("type")
     if not isinstance(name, str) or not custom_type_name_ok(name):
         return (
             "bad_record_type",
             "type must be one name of letters, digits and underscores only, at most "
             f"{CUSTOM_TYPE_NAME_LIMIT} characters, so a page can bind custom.latest.<type>",
+        )
+    if "__" in name:
+        # RESERVED for an installed app's key, ``<app>__<type>``
+        # (``agent_panel_record_app.app_record_type``). Refused for every caller, the
+        # app's own raw type included: a type that may hold the separator is a type
+        # that can spell another writer's key, and the fold keys on the name alone.
+        return (
+            "bad_record_type",
+            "type must not contain two underscores in a row; '__' is reserved for an "
+            "installed app's record key",
         )
     if _scrubbed(name) != name:
         # The grammar admits a token-shaped string (a forty-character PAT is letters,
@@ -396,11 +474,41 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     if bad is not None:
         code, error = bad
         return web.json_response({"error": error, "code": code}, status=400)
+    return await record_through_door(
+        request, resolved, body["type"], body["data"], max_age_s=body.get("max_age_s")
+    )
+
+
+async def record_through_door(
+    request: web.Request,
+    resolved: RecordWriter,
+    record_type: str,
+    data: dict[str, Any],
+    *,
+    caller: str = "",
+    operation: str = _OPERATION,
+    max_age_s: int | None = None,
+) -> web.Response:
+    """Steps 3b and 4 of the door, for a caller the route has ALREADY resolved,
+    counted against its quota, and whose record has passed :func:`_record_body_refusal`:
+    the scrub, the scrubbed size, the append, the answer.
+
+    THE ONE APPEND every record caller shares. The cron route above and the installed
+    app's route (:mod:`kiro_crew.dashboard.handlers.agent_panel_record_app`) each decide
+    WHO is writing in their own resolver and count their own quota, then hand the writer
+    here; nothing below this line reads the request body, so the provenance on the entry
+    is whatever the resolver stamped and nothing the caller sent. *record_type* and
+    *data* are the caller's (for an app, the type already keyed by the app route). The
+    redaction and the size judgement live HERE rather than in each route, so a second
+    caller cannot land an unscrubbed record. *caller* is the SEL caller label; it
+    defaults to the cron's session key header, which is what the cron route audits as.
+    """
+    sk = caller or request.headers.get("X-Session-Key", "")
     # SCRUBBED AT THE DOOR, after the shape, depth and raw-size checks bound the walk,
     # and OFF the event loop: the scrub is a regex pass per string over a record the
     # caller sized, and the loop serves every other route meanwhile. The scrubbed form
     # is measured again, so what lands and what is measured are the same bytes.
-    record = await asyncio.to_thread(_redacted_record, body["data"])
+    record = await asyncio.to_thread(_redacted_record, data)
     bad = _record_size_refusal(record)
     if bad is not None:
         code, error = bad
@@ -422,12 +530,14 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     # on the entry is the gateway's reading of who called, and the body is not consulted
     # for any of it.
     entry: dict[str, Any] = {
-        "type": body["type"],
+        "type": record_type,
         "data": record,
         "writer": resolved.writer,
         "member": resolved.slug,
         "crew_key": agent_panel.crew_key(resolved.crew_name),
     }
+    if max_age_s is not None:
+        entry["max_age_s"] = int(max_age_s)
 
     def _append() -> str:
         # The crewmate's LIVE DM unit, the one its page reads. Imported here, not at
@@ -452,9 +562,10 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
             request,
             sk,
             outcome,
-            "this crewmate's thread has no crew log yet; open its chat once so its "
-            "session starts, then run the job again",
+            "this Bot's thread has no crew log yet; open its chat once so its "
+            "session starts, then send the record again",
             409,
+            operation=operation,
         )
     if outcome == "record_too_large":
         return web.json_response(
@@ -468,7 +579,7 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "error": (
-                    "the record could not be written to this crewmate's crew log; "
+                    "the record could not be written to this Bot's crew log; "
                     "send it again on the next run"
                 ),
                 "code": outcome,
@@ -477,10 +588,10 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
         )
     sel().log_api_access(
         caller=sk,
-        operation=_OPERATION,
+        operation=operation,
         outcome="allowed",
         source="dashboard",
-        resources=f"{resolved.slug}:{body['type']}",
+        resources=f"{resolved.slug}:{record_type}",
     )
     # The fold's own bus event drives an open page's refill; this frame is for a client
     # watching the panel surface, and it carries the SLUG only, like the write route's.
@@ -489,6 +600,6 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "recorded": {"type": body["type"], "writer": resolved.writer, "member": resolved.slug},
+            "recorded": {"type": record_type, "writer": resolved.writer, "member": resolved.slug},
         }
     )

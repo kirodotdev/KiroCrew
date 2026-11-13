@@ -126,7 +126,17 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
               if (queryKey.length !== 2 || typeof queryKey[1] !== 'string') continue
               const slotKey = dashboardAutomationSlotKey(queryKey[1])
               const cachedUpdates = queryClient.getQueryState(queryKey)?.dataUpdateCount
-              if (cachedUpdates !== cacheUpdatesAtStart.get(slotKey)) {
+              // Protect only a per-slot read that has actually RESOLVED (a record
+              // or a `null` tombstone), never one still in flight. A pending read
+              // has no data to be fresher than this snapshot, yet its mere
+              // fetch-state change used to protect its slot — which dropped the
+              // slot's authoritative list record from `records` AND left the
+              // carry-across below nothing to carry (`cached` is undefined). The
+              // open session hits this every connect: its composer re-reads the
+              // per-slot key, so its armed loop fell out of the Redux set the
+              // sidebar reads while the composer above still showed it (#30331).
+              if (queryClient.getQueryData(queryKey) !== undefined
+                && cachedUpdates !== cacheUpdatesAtStart.get(slotKey)) {
                 protectedSlotSet.add(slotKey)
               }
             }

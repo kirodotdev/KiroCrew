@@ -1,12 +1,7 @@
-"""Tests for the vector memory store module.
+"""Tests for the vector memory store core: CRUD, write gates, conflicts, events, lockdown.
 
-They pin the store core: semantic and episodic CRUD; the key, allowlist, confidence, value
-and injection gates and their audited rejections; conflict resolution; the event log; schema
-init and the owner-only lockdown of the store's files; context blocks and stats. Recall
-ranking, the embedding lifecycle, the ``_db_lock`` stress runs and guards, config plumbing
-and event-loop offload live in ``test_vector_memory_recall_ranking.py``,
-``test_vector_memory_embedding_lifecycle.py``, ``test_vector_memory_lock_discipline.py``,
-``test_vector_memory_config_plumbing.py`` and ``test_vector_memory_event_loop_offload.py``.
+Ranking, embeddings, lock discipline, config plumbing and loop offload have their own
+``test_vector_memory_*.py`` files.
 """
 
 from __future__ import annotations
@@ -366,14 +361,18 @@ class TestValidateSemantic:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "user_explicit")
         assert mock_log.called
         # The documented contrast is VALUE_EMPTY auditable where VALUE_SIZE is not, so pin both
         # here rather than leaving the refusal half to a sibling test on another code.
-        with patch.object(store, "_log_event") as mock_log_size:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log_size:
             store.log_reject_event(SemanticRejectCode.VALUE_SIZE, "pref.os", None, "user_explicit")
         assert not mock_log_size.called
+        assert [(e["event_type"], e["memory_key"]) for e in store.get_events()] == [
+            ("value_empty", "pref.os")
+        ]
+        assert store.get_rejection_stats() == {"value_empty": 1}
 
 
 class TestLogRejectEvent:
@@ -382,27 +381,37 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.ALLOWLIST, "bad.key", "v", "user_explicit")
             mock_log.assert_called_once_with(
                 "allowlist_reject", "semantic", "bad.key", None, "v", "user_explicit"
             )
+        [event] = store.get_events()
+        assert (
+            event["event_type"],
+            event["memory_type"],
+            event["memory_key"],
+            event["old_value"],
+            event["new_value"],
+            event["source"],
+        ) == ("allowlist_reject", "semantic", "bad.key", None, "v", "user_explicit")
 
     def test_non_auditable_code_skipped(self, tmp_path: Path, opened) -> None:
         from unittest.mock import patch
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.KEY_FORMAT, "x", "v", "user_explicit")
             mock_log.assert_not_called()
+        assert store.get_events() == []
 
     def test_value_json_preferred_over_str(self, tmp_path: Path, opened) -> None:
         from unittest.mock import patch
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(
                 SemanticRejectCode.INJECTION,
                 "pref.x",
@@ -413,6 +422,12 @@ class TestLogRejectEvent:
             mock_log.assert_called_once_with(
                 "injection_blocked", "semantic", "pref.x", None, '{"k": "v"}', "user_explicit"
             )
+        [event] = store.get_events()
+        assert (event["event_type"], event["memory_key"], event["new_value"]) == (
+            "injection_blocked",
+            "pref.x",
+            '{"k": "v"}',
+        )
 
     def test_repeated_non_security_reject_audits_once_per_cause(
         self, tmp_path: Path, opened
@@ -422,7 +437,7 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             for _ in range(3):
                 store.log_reject_event(
                     SemanticRejectCode.VALUE_EMPTY, "pref.general", None, "promotion"
@@ -430,9 +445,10 @@ class TestLogRejectEvent:
         assert mock_log.call_count == 1, "the repeating refusal audited once per pass"
         # A different cause on the same key is a different defect and must still be audited,
         # which is what keeps the dedupe from hiding real findings.
-        with patch.object(store, "_log_event") as mock_other_cause:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_other_cause:
             store.log_reject_event(SemanticRejectCode.ALLOWLIST, "pref.general", "v", "promotion")
         assert mock_other_cause.call_count == 1, "a second cause on the same key was suppressed"
+        assert store.get_rejection_stats() == {"value_empty": 1, "allowlist_reject": 1}
 
     def test_repeated_preexisting_reject_audits_every_attempt(self, tmp_path: Path, opened) -> None:
         """The dedupe must not reach ALLOWLIST or CONFIDENCE: get_rejection_stats counts them
@@ -442,10 +458,11 @@ class TestLogRejectEvent:
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         for code in (SemanticRejectCode.ALLOWLIST, SemanticRejectCode.CONFIDENCE):
-            with patch.object(store, "_log_event") as mock_log:
+            with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
                 for _ in range(3):
                     store.log_reject_event(code, "pref.general", "v", "promotion")
             assert mock_log.call_count == 3, f"{code.value} was deduped and lost per-attempt counts"
+        assert store.get_rejection_stats() == {"allowlist_reject": 3, "low_confidence": 3}
 
     def test_repeated_security_reject_audits_every_attempt(self, tmp_path: Path, opened) -> None:
         """Negative control on the dedupe's scope: the security trail must keep every attempt."""
@@ -453,12 +470,13 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             for _ in range(3):
                 store.log_reject_event(
                     SemanticRejectCode.INJECTION, "pref.x", "payload", "consolidation:s"
                 )
         assert mock_log.call_count == 3, "deduping reached a security code and lost audit rows"
+        assert store.get_rejection_stats() == {"injection_blocked": 3}
 
     def test_audited_reject_set_is_bounded(self, tmp_path: Path, opened) -> None:
         """Bounded oldest-first, so an evicted pair audits again rather than the set growing."""
@@ -467,10 +485,11 @@ class TestLogRejectEvent:
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         with patch("kiro_crew.vector_memory._MAX_AUDITED_REJECTS", 0):
-            with patch.object(store, "_log_event") as mock_log:
+            with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
                 store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "promotion")
                 store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "promotion")
         assert mock_log.call_count == 2
+        assert store.get_rejection_stats() == {"value_empty": 2}
 
 
 class TestConflictResolution:
@@ -1064,13 +1083,8 @@ class TestSchemaInit:
     ) -> None:
         """Locking the .db file alone does not protect the memories.
 
-        ``journal_mode=WAL`` makes SQLite create ``memory.db-wal`` and
-        ``memory.db-shm``, and a COMMITTED row lives in the ``-wal`` until a
-        checkpoint moves it. SQLite creates and destroys those files throughout the
-        DB's life, at moments no caller can hook, so the directory they inherit
-        access from is the only place it can be settled once. Without this, a
-        readable parent directory leaves committed memories readable on Windows even
-        though the .db file itself is locked down.
+        Committed rows live in ``memory.db-wal``, which SQLite creates at moments no
+        caller can hook, so only the parent directory's access can cover it on Windows.
         """
         from kiro_crew import vector_memory as vm
 
@@ -1133,11 +1147,8 @@ class TestSchemaInit:
     ) -> None:
         """The embedding index carries the same secrets as the DB.
 
-        And the owner-only directory does not cover it on Windows: Bypass Traverse
-        Checking is granted to Everyone by default, so a permissive DACL on a file
-        that already exists stays reachable inside a tightened directory. An install
-        whose FAISS index predates the lockdown is therefore only fixed by naming the
-        file.
+        On Windows, Bypass Traverse Checking keeps an existing file with a permissive DACL
+        reachable inside a tightened directory, so the FAISS index is named explicitly.
         """
         from kiro_crew import vector_memory as vm
 
@@ -1199,13 +1210,18 @@ class TestSchemaInit:
         store = VectorMemoryStore(db_path=db_path)
         try:
             store.init()
+            # Read before close: on a driver without setconfig the close opens a
+            # read-only connection of its own (sqlite_wal.close_keeping_wal).
+            opened_by_init = list(events)
         finally:
             store.close()
 
-        assert events.count("probe_readonly") == 1, events
-        assert events.count("connect") == 1, events
-        restricted_db_before = events.index("restrict:mem.db") < events.index("connect")
-        assert restricted_db_before, events
+        assert opened_by_init.count("probe_readonly") == 1, opened_by_init
+        assert opened_by_init.count("connect") == 1, opened_by_init
+        restricted_db_before = opened_by_init.index("restrict:mem.db") < opened_by_init.index(
+            "connect"
+        )
+        assert restricted_db_before, opened_by_init
 
     def test_relaxed_mode_is_retightened_on_reopen(self, tmp_path: Path, opened) -> None:
         """A DB whose mode was widened after creation is locked down again.
@@ -1231,13 +1247,9 @@ class TestSchemaInit:
     ) -> None:
         """A file that does not exist is skipped by a check, not by catching.
 
-        On Windows ``restrict_to_owner``'s DACL write raises plain ``OSError``
-        for a missing path rather than ``FileNotFoundError`` -- which only ever
-        comes from the POSIX ``os.chmod``. Catching alone therefore paid a futile
-        lockdown attempt per absent file and logged a false "may be readable by
-        other users" warning for each, twice per init. Asserting on what reaches the
-        helper pins the check itself, which is observable on both platforms; a mode or
-        DACL assertion could not distinguish the two implementations.
+        On Windows ``restrict_to_owner`` raises plain ``OSError`` for a missing path, so
+        catching would log a false "may be readable" warning. Asserting on what reaches the
+        helper works on both platforms.
         """
         from kiro_crew import vector_memory as vm
 

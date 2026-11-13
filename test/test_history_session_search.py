@@ -1,11 +1,7 @@
 """Tests for content search over conversation history.
 
-Covers ``ConversationLog.search_sessions``: matching, ranking with its title
-boost, length normalisation and bounded recency weighting, snippets, and the
-query parse shared by the matcher and the snippet builders (``history_search``):
-needle bounds, CJK segmentation, the single-text gate, and the saturation the parse
-applies to short reference needles. The reference spellings themselves (digit
-boundaries, ranking hints, the expansion budget and the provider seam) are in
+Covers ``ConversationLog.search_sessions`` (matching, ranking, snippets) and the
+query parse in ``history_search``. Reference spellings are in
 ``test_history_forge_refs.py``.
 """
 
@@ -13,12 +9,17 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 import pytest
+from session_search_rank_helpers import (
+    RARE_WORD_QUERY,
+    write_rare_word_corpus,
+    write_session,
+)
 
-from kiro_crew import history
+from kiro_crew import history, history_search
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestSearchSessions:
@@ -87,13 +88,8 @@ class TestSearchSessions:
     def test_case_insensitive_unicode(self, tmp_path):
         """Non-ASCII case folding — ``Über`` in the file must match ``über``.
 
-        NOTE: this test writes the JSONL file directly instead of using
-        :meth:`ConversationLog.append` because Python's ``json.dumps``
-        defaults to ``ensure_ascii=True`` and would escape ``Ü`` as
-        ``\\u00dc``.  That would bypass the Unicode case-folding code path
-        we want to exercise.  Writing raw UTF-8 simulates future storage
-        formats or externally-pasted content that may contain non-ASCII
-        bytes verbatim.
+        Writes the JSONL directly: :meth:`ConversationLog.append` would escape
+        ``Ü`` as ``\\u00dc`` (``ensure_ascii=True``) and skip the case-folding path.
         """
         (tmp_path / "alpha.jsonl").write_text(
             '{"key": "alpha", "title": "alpha", "created": "2025-01-01T00:00:00"}\n'
@@ -287,15 +283,9 @@ class TestSearchSessions:
     def test_short_needle_digit_noise_does_not_bury_a_title_phrase_match(self, tmp_path):
         """A titled ``case 5`` session outranks a long transcript dense in digit 5s.
 
-        ``5`` is a one-character substring needle, and agent transcripts are
-        dense in digits (timestamps, account ids, commit hashes), so on raw
-        frequency a long session that merely CONTAINS thousands of 5s out-scores
-        the session whose TITLE is the query. This pins the fix at realistic scale
-        (~10,000 digit-5 hits in a ~45 KB transcript): the body hit count of a
-        short needle is saturated, so digit noise cannot beat a
-        ``_TITLE_BOOST``-weighted whole-phrase title hit. The noisy session is
-        written NEWER so recency alone would rank it
-        first — only the ranking change can flip it.
+        A short needle's body hit count is saturated, so ~10,000 digit-5 hits cannot
+        beat a ``_TITLE_BOOST``-weighted title hit. The noisy session is written
+        NEWER, so recency alone would rank it first.
         """
         # ~10,000 digit-5 hits spread over a realistic transcript: ISO timestamps
         # and account ids on every line, plus a handful of real "case 5" mentions.
@@ -373,11 +363,8 @@ class TestSearchSessions:
     def test_short_needle_saturation_keeps_substantive_long_session_ahead(self, tmp_path):
         """Saturation must not invert body-only order for a short token.
 
-        Query ``s3``: a long session that discusses S3 two hundred times must
-        still outrank a short session with one incidental ``s3`` mention. The
-        saturated count is the length-NORMALIZED one, so the length norm is
-        applied once; saturating the raw count and then dividing by the norm
-        compounds two penalties on the long session and flips this order.
+        The length-normalized count is the one saturated; saturating the raw count
+        and then normalizing penalizes the long session twice and flips the order.
         The short session is written NEWER so recency favors it.
         """
         long_lines = [
@@ -455,18 +442,9 @@ class TestSearchSessions:
     def test_substring_scan_reads_the_file_and_leaves_msg_cache_alone(self, tmp_path):
         """search_sessions sources content from the file, never ``_msg_cache``.
 
-        Both halves of a query read the session file directly: the fold that
-        counts matches, and the snippet built for each returned row. Neither goes
-        through ``_read_messages``, for two reasons.
-
-        Memory: ``_read_messages`` memoizes the PARSED message dicts, and a scan
-        touches every session in the window — so sourcing content through it makes
-        searching pin the whole corpus's parsed form in RSS.
-
-        Correctness: ``_msg_cache`` is populated by callers that hold no write
-        lock, so an entry can be a pre-rewrite parse stored under a restored
-        (unchanged) mtime. Folding from it would launder that staleness into the
-        search cache, where the mtime guard cannot detect it.
+        Going through ``_read_messages`` would pin every scanned session's parse in
+        RSS, and a ``_msg_cache`` entry can be a stale parse under a restored mtime
+        that the search cache's mtime guard cannot detect.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("a", "user", "apollo deployment rollback notes")
@@ -489,11 +467,8 @@ class TestSearchSessions:
     def test_multi_word_query_matches_scattered_tokens(self, tmp_path):
         """A multi-word query matches when its words appear APART, not adjacent.
 
-        Regression: the query was matched as one whole-phrase substring, so a
-        natural query like "ack contention hypotheses" silently returned nothing
-        even though the session discussed all three — the exact phrase never
-        occurs. Silent zero results are the worst failure mode for search: the
-        caller cannot tell "not in history" from "phrased it wrong".
+        A whole-phrase match would return nothing for "ack contention hypotheses",
+        and the caller cannot tell "not in history" from "phrased it wrong".
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("hit", "user", "the ack path shows contention under load")
@@ -521,14 +496,9 @@ class TestSearchSessions:
     def test_exact_phrase_outranks_same_words_apart(self, tmp_path):
         """At comparable token frequency, words appearing TOGETHER rank first.
 
-        This is what ``_PHRASE_BOOST`` buys, and all it buys: adjacency wins the
-        tie. It is not an override of term frequency — a session repeating one
-        token far more often still ranks higher on raw count, which is the
-        behaviour this ranker already had for single-token queries.
-
-        Titles are written explicitly because ``list_sessions`` otherwise
-        derives a title from the first message, which would hand a
-        content-heavy session a ``_TITLE_BOOST`` and mask what is being tested.
+        ``_PHRASE_BOOST`` only breaks ties; it does not override term frequency.
+        Titles are explicit: a title derived from the first message would add a
+        ``_TITLE_BOOST`` and mask the effect.
         """
         (tmp_path / "apart.jsonl").write_text(
             '{"_type": "metadata", "title": "session one"}\n'
@@ -563,14 +533,31 @@ class TestSearchSessions:
         assert results[0]["snippet"], "expected a non-empty snippet"
         assert "contention" in results[0]["snippet"].casefold()
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self, tmp_path):
+        """``ai`` sits inside ``maintain``; the snippet comes from the message about the query."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "please maintain the release notes")
+        log.append("hit", "assistant", "we started tracking ai usage per team")
+
+        snippet = log.search_sessions("ai usage tracking")[0]["snippet"].casefold()
+
+        assert "tracking" in snippet
+        assert "maintain" not in snippet
+
+    def test_a_query_of_short_terms_alone_still_snips_its_first_hit(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the s3 bucket for ai models")
+        log.append("hit", "assistant", "s3 ai")
+
+        snippet = log.search_sessions("s3 ai")[0]["snippet"].casefold()
+
+        assert "bucket" in snippet
+
     def test_whitespace_only_query_matches_nothing_and_reads_no_file(self, tmp_path):
         """A whitespace-only query returns [] *and* reads no session file.
 
-        It tokenizes to an empty list. Asserting only on the empty result would
-        pass with or without the early return, because a tokenless loop scores
-        nothing anyway — so this pins the I/O too: without the guard every
-        session in the scan window still gets read and folded to reach a
-        foregone conclusion.
+        The empty result alone would pass without the early return, since a
+        tokenless loop scores nothing, so this also pins the I/O.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("alpha", "user", "some content here")
@@ -735,13 +722,10 @@ class TestCjkSearch:
         assert log.search_sessions("内存泄漏") == []
 
     def test_long_query_bigram_truncation_waives_the_adjacency_floor(self, tmp_path):
-        """A 14+-char CJK query truncates its bigram set; the floor must not
-        turn that cost cap into a hidden gate.
+        """A 14+-char CJK query truncates its bigrams; the floor must not gate on them.
 
-        Regression (Design review): a session whose only adjacency hit was a
-        DROPPED bigram would be excluded by the floor — hiding results for
-        exactly the long spaceless queries the segmentation exists to serve,
-        and breaking the "truncation only loosens" safety rationale.
+        A session whose only adjacency hit is a DROPPED bigram must still match:
+        truncation may only loosen the match.
         """
         # 15 distinct chars -> 14 bigrams > _SEARCH_MAX_SCORING_EXTRAS (12).
         query = "".join(chr(0x4E00 + i) for i in range(15))
@@ -813,15 +797,9 @@ class TestParseSearchQuery:
     def test_short_ascii_terms_saturate_body_only(self):
         """``5`` and ``s3`` keep full title weight and full gate strength.
 
-        Only their CONTENT hit count is saturated (``saturate_body``): a one-
-        or two-character substring matches incidental text (timestamps, ids,
-        hashes) so often that its raw body frequency is noise, not relevance.
-        Length is the whole test, digits included: incidental frequency falls
-        roughly 10x per extra character, so ``4411`` keeps raw frequency
-        alongside longer words -- saturating it would cap the specific term of
-        a query like ``timeout 50051`` while its ordinary co-term stays
-        linear, inverting which term drives body-only ranking. ``555`` and
-        ``pod`` pin the boundary at exactly three characters.
+        Only their body hit count is saturated (``saturate_body``). Length alone
+        decides, digits included: ``4411`` keeps raw frequency, and ``555`` and
+        ``pod`` pin the boundary at three characters.
         """
         needles, _, _ = history.parse_search_query("case 5 s3 555 pod 4411 deploy")
 
@@ -930,6 +908,15 @@ class TestParseSearchQuery:
 
         assert needles == ["beta alphabet gamma", "beta", "alphabet", "gamma"]
 
+    def test_short_ascii_terms_anchor_a_snippet_last(self):
+        assert history_search.snippet_needle_tiers("ai usage tracking") == [
+            ["ai usage tracking", "usage", "tracking"],
+            ["ai"],
+        ]
+
+    def test_a_query_of_short_terms_alone_keeps_one_snippet_tier(self):
+        assert history_search.snippet_needle_tiers("s3 ai") == [["s3 ai", "s3", "ai"]]
+
 
 class TestNeedlesMatchText:
     """Single-text gate shared with title-only fallbacks (Discord resume)."""
@@ -962,13 +949,20 @@ class TestNeedlesMatchText:
 class TestRecencyBoost:
     """Bounded multiplicative recency weighting in search_sessions ranking."""
 
+    @pytest.fixture
+    def clock(self, monkeypatch) -> ManualClock:
+        # The recency read in history_search is the clock the ranking ages sessions
+        # against. Freezing it here lets _set_age backdate from the same instant.
+        manual = ManualClock()
+        manual.install(monkeypatch, history_search)
+        return manual
+
     @staticmethod
-    def _set_age(tmp_path, key: str, days: float) -> None:
-        # flake-ok: pre-existing real-clock backdating of the session file's mtime, moved verbatim; tracked for a de-flake pass
-        t = time.time() - days * 86400
+    def _set_age(tmp_path, clock: ManualClock, key: str, days: float) -> None:
+        t = clock.time() - days * 86400
         os.utime(tmp_path / f"{key}.jsonl", (t, t))
 
-    def test_recent_session_outranks_stale_equal_match(self, tmp_path):
+    def test_recent_session_outranks_stale_equal_match(self, tmp_path, clock):
         """At equal relevance the newer session must come first.
 
         Regression: scoring was pure term frequency, so a year-old session
@@ -977,14 +971,14 @@ class TestRecencyBoost:
         log = ConversationLog(base_dir=tmp_path)
         log.append("stale", "user", "apollo deployment notes")
         log.append("fresh", "user", "apollo deployment notes")
-        self._set_age(tmp_path, "stale", 365)
-        self._set_age(tmp_path, "fresh", 0)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
 
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["fresh", "stale"]
 
-    def test_stale_double_mention_loses_to_fresh_single_mention(self, tmp_path):
+    def test_stale_double_mention_loses_to_fresh_single_mention(self, tmp_path, clock):
         """The canonical complaint, verbatim: a year-old session matching TWICE
         must not outrank today's session matching once. This is what sizes
         _RECENCY_MAX_BOOST — a ceiling of 1.0 left exactly this case unfixed.
@@ -992,21 +986,292 @@ class TestRecencyBoost:
         log = ConversationLog(base_dir=tmp_path)
         log.append("stale", "user", "apollo apollo deployment notes here")
         log.append("fresh", "user", "apollo filler deployment notes here")
-        self._set_age(tmp_path, "stale", 365)
-        self._set_age(tmp_path, "fresh", 0)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
 
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["fresh", "stale"]
 
-    def test_decisively_better_old_match_still_wins(self, tmp_path):
+    def test_decisively_better_old_match_still_wins(self, tmp_path, clock):
         """The boost is bounded, so it reorders near-ties, not clear wins."""
         log = ConversationLog(base_dir=tmp_path)
         log.append("stale", "user", "apollo apollo apollo apollo apollo notes")
         log.append("fresh", "user", "apollo filler filler filler filler notes")
-        self._set_age(tmp_path, "stale", 365)
-        self._set_age(tmp_path, "fresh", 0)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
 
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["stale", "fresh"]
+
+    def test_a_year_old_content_only_match_with_three_hits_still_wins(self, tmp_path, clock):
+        """Both titles are ``notes``, so only the content's hit count can win."""
+        log = ConversationLog(base_dir=tmp_path)
+        now = int(clock.time())
+        write_session(tmp_path, "stale", "apollo apollo apollo deployment notes", mtime=now)
+        write_session(tmp_path, "fresh", "apollo filler filler deployment notes", mtime=now)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
+
+        results = log.search_sessions("apollo")
+
+        assert [s["key"] for s in results] == ["stale", "fresh"]
+
+
+class TestRareWordWeighting:
+    """A word few sessions hold outweighs one every session holds, however often repeated."""
+
+    def test_the_rare_word_decides_over_the_repeated_common_one(self, tmp_path):
+        write_rare_word_corpus(tmp_path)
+
+        results = ConversationLog(base_dir=tmp_path).search_sessions(RARE_WORD_QUERY)
+
+        assert [s["key"] for s in results] == ["focused", "chatty"]
+
+    def test_private_sessions_do_not_weigh_the_words(self, tmp_path):
+        """Private sessions holding the rare word would make it common and flip the order."""
+        write_rare_word_corpus(tmp_path, private_sessions=6)
+
+        results = ConversationLog(base_dir=tmp_path).search_sessions(RARE_WORD_QUERY)
+
+        assert [s["key"] for s in results][:2] == ["focused", "chatty"]
+
+    def test_repeating_a_word_still_ranks_above_saying_it_once(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        write_session(tmp_path, "once", "the uploader timeout notes", mtime=1_700_000_000)
+        write_session(
+            tmp_path, "thrice", "the uploader timeout uploader uploader", mtime=1_700_000_000
+        )
+
+        assert [s["key"] for s in log.search_sessions("uploader")] == ["thrice", "once"]
+
+
+class TestRankingWeights:
+    def test_idf_falls_as_more_sessions_hold_the_needle_and_stays_positive(self):
+        weights = [history_search.inverse_document_frequency(n, 100) for n in (1, 10, 50, 100)]
+
+        assert weights == sorted(weights, reverse=True)
+        assert weights[-1] > 0
+
+    def test_saturated_frequency_rises_with_hits_and_levels_off(self):
+        factors = [history_search.saturated_frequency(n, 4000, 4000.0) for n in (0, 1, 3, 1000)]
+
+        assert factors[0] == 0.0
+        assert factors == sorted(factors)
+        assert factors[-1] < history_search._BM25_K1 + 1
+
+    def test_a_longer_session_needs_more_hits_for_the_same_factor(self):
+        short = history_search.saturated_frequency(2, 2000, 8000.0)
+        long = history_search.saturated_frequency(2, 32000, 8000.0)
+
+        assert short > long
+
+
+def _keys(results: list[dict]) -> list[str]:
+    return sorted(row["key"] for row in results)
+
+
+class TestQueryOperators:
+    """``"exact phrase"`` must appear as typed; ``-term`` leaves a session out."""
+
+    def test_a_quoted_phrase_needs_its_words_together_and_in_order(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("together", "user", "the tabs are not loading again")
+        log.append("apart", "user", "loading is slow, are the tabs not cached")
+
+        assert _keys(log.search_sessions('"tabs are not loading"')) == ["together"]
+        assert _keys(log.search_sessions("tabs are not loading")) == ["apart", "together"]
+
+    def test_a_quoted_reference_stays_exact_when_repeated_bare(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("bare", "user", "issue 4411 needs review")
+        log.append("quoted", "user", "issue #4411 needs review")
+
+        assert _keys(log.search_sessions('"#4411" issue 4411')) == ["quoted"]
+
+    def test_a_quoted_reference_keeps_the_bounded_forge_needle(self):
+        needles, _phrase, _floor = history_search.parse_search_query('"#4411" issue 4411')
+        required = [needle for needle in needles if needle.required]
+
+        assert [(needle.text, needle.quoted) for needle in required] == [
+            ("#4411", True),
+            ("#4411", False),
+        ]
+        assert required[1].digit_bounded
+        assert required[1].alts
+
+    def test_a_quoted_reference_rejects_a_longer_reference_number(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("longer", "user", "issue #44110 needs review")
+        log.append("exact", "user", "issue #4411 needs review")
+
+        assert _keys(log.search_sessions('"#4411" issue 4411')) == ["exact"]
+
+    def test_a_plain_duplicate_of_a_quoted_phrase_stays_deduplicated(self):
+        needles, _phrase, _floor = history_search.parse_search_query('"deploy" deploy')
+
+        assert [(needle.text, needle.quoted) for needle in needles if needle.required] == [
+            ("deploy", True)
+        ]
+
+    def test_a_quoted_phrase_does_not_span_two_messages(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("split", "user", "the tabs are")
+        log.append("split", "assistant", "not loading")
+
+        assert log.search_sessions('"tabs are not loading"') == []
+
+    def test_an_excluded_word_leaves_out_a_session_holding_it(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("plain", "user", "deploy the gateway")
+        log.append("vinod", "user", "deploy the gateway for vinod")
+
+        assert _keys(log.search_sessions("deploy -vinod")) == ["plain"]
+
+    def test_an_excluded_word_in_the_title_leaves_the_session_out(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("titled", "user", "deploy the gateway")
+        log.update_metadata("titled", {"title": "Vinod rollout"})
+        log.append("plain", "user", "deploy the gateway")
+
+        assert _keys(log.search_sessions("deploy -vinod")) == ["plain"]
+
+    def test_an_excluded_phrase_leaves_out_only_sessions_holding_it_whole(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("dry", "user", "deploy as a dry run first")
+        log.append("both", "user", "deploy, then run it dry")
+
+        assert _keys(log.search_sessions('deploy -"dry run"')) == ["both"]
+
+    def test_a_flag_and_a_negative_number_stay_literal_text(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("flag", "user", "git push --force failed with -32603")
+        log.append("other", "user", "git push failed")
+
+        assert _keys(log.search_sessions("push --force -32603")) == ["flag"]
+
+    def test_a_short_command_flag_is_searched_not_excluded(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("ran", "user", "ran pytest -k flaky on the suite")
+        log.append("other", "user", "the build is green")
+
+        assert _keys(log.search_sessions("pytest -k flaky")) == ["ran"]
+
+    def test_a_half_typed_exclusion_still_excludes(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("dry", "user", "deploy as a dry run first")
+        log.append("plain", "user", "deploy now")
+
+        assert _keys(log.search_sessions('deploy -"dry run')) == ["plain"]
+
+    def test_a_quoted_long_flag_is_searched_as_text(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("find", "user", "find . -name '*.py'")
+        log.append("other", "user", "find the file")
+
+        assert _keys(log.search_sessions('find "-name"')) == ["find"]
+        assert _keys(log.search_sessions("find -name")) == ["other"]
+
+    def test_a_query_of_exclusions_alone_matches_nothing(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("one", "user", "anything at all")
+
+        assert log.search_sessions("-vinod") == []
+
+    def test_a_half_typed_phrase_searches_its_words(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the tabs are not loading")
+
+        assert _keys(log.search_sessions('"tabs are')) == ["hit"]
+
+    def test_a_phrase_ends_a_plain_word_run_before_a_number(self):
+        needles, _phrase, _floor = history_search.parse_search_query(
+            'issue "connection reset" 50051'
+        )
+        required = [needle for needle in needles if needle.required]
+
+        assert [needle.text for needle in required] == ["connection reset", "issue", "50051"]
+        assert not any(needle.digit_bounded and needle.required for needle in required)
+
+    def test_a_phrase_between_a_reference_word_and_number_preserves_both_terms(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("no-issue", "user", "connection reset on port 50051")
+        log.append("issue", "user", "issue: connection reset, run 150051")
+
+        assert _keys(log.search_sessions('issue "connection reset" 50051')) == ["issue"]
+
+    def test_an_exclusion_ends_a_plain_word_run_before_a_number(self):
+        needles, _phrase, _floor = history_search.parse_search_query("issue -vinod 42")
+        required = [needle for needle in needles if needle.required]
+
+        assert [needle.text for needle in required] == ["issue", "42"]
+        assert not any(needle.digit_bounded and needle.required for needle in required)
+
+    def test_an_operator_after_a_reference_does_not_break_its_lead_in(self):
+        needles, _phrase, _floor = history_search.parse_search_query('issue 42 "connection reset"')
+        required = [needle for needle in needles if needle.required]
+
+        assert [(needle.text, needle.quoted) for needle in required] == [
+            ("connection reset", True),
+            ("#42", False),
+        ]
+        assert required[1].digit_bounded
+
+    def test_the_snippet_centres_on_the_quoted_phrase(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "loading screens appear for a while")
+        log.append("hit", "assistant", "yes, the tabs are not loading at all")
+
+        snippet = log.search_sessions('"tabs are not loading" loading')[0]["snippet"]
+
+        assert "tabs are not loading" in snippet.casefold()
+
+
+class TestSplitQueryOperators:
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "ack contention hypotheses",
+            "member-vinod-builder",
+            "pr 4411",
+            "a  b\tc",
+            "--force -5 -",
+            "rm -rf build -k",
+        ],
+    )
+    def test_a_query_without_operators_splits_on_whitespace_alone(self, query):
+        operators = history_search.split_query_operators(query)
+
+        assert operators.words == tuple(query.split())
+        assert operators.phrases == operators.excluded == ()
+        assert operators.word_run_starts == ()
+
+    def test_phrases_and_exclusions_are_separated_in_typed_order(self):
+        operators = history_search.split_query_operators('deploy "dry  run" -vinod -"big bang" now')
+
+        assert operators.words == ("deploy", "now")
+        assert operators.phrases == ("dry run",)
+        assert operators.excluded == ("vinod", "big bang")
+        assert operators.positive == ("deploy", "dry run", "now")
+
+    def test_phrases_and_exclusions_start_new_plain_word_runs(self):
+        operators = history_search.split_query_operators('issue "connection reset" 50051 -vinod 42')
+
+        assert operators.words == ("issue", "50051", "42")
+        assert operators.word_run_starts == (1, 2)
+
+    def test_excluded_needles_neither_gate_nor_anchor_a_snippet(self):
+        needles, _phrase, _floor = history_search.parse_search_query("deploy -vinod")
+
+        assert [(n.text, n.required, n.excluded) for n in needles] == [
+            ("deploy", True, False),
+            ("vinod", False, True),
+        ]
+        assert history_search.snippet_needle_tiers("deploy -vinod") == [["deploy"]]
+
+    def test_needles_match_text_rejects_an_excluded_term(self):
+        needles, _phrase, floor = history_search.parse_search_query("deploy -vinod")
+
+        assert history_search.needles_match_text(needles, "deploy plan", floor)
+        assert not history_search.needles_match_text(needles, "deploy for vinod", floor)

@@ -37,6 +37,8 @@ without pulling the runtime).
 
 from __future__ import annotations
 
+from typing import Any
+
 #: kiro-cli built-in tool name -> the KAS built-in tool ids that do the same work.
 #:
 #: Per kiro-cli name, the KAS built-ins that do what that name does on kiro-cli
@@ -108,11 +110,32 @@ def kas_verified_releases() -> str:
     return ", ".join(".".join(str(p) for p in v) for v in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI)
 
 
+#: ``web_search`` is the one family member KAS does not register as a local
+#: built-in: the engine serves web search through its remote tool wrapper, which
+#: prefixes the tool's name (``idPrefix = "remote_"``), so the id an allowlist must
+#: spell is ``remote_web_search`` (the fixture's ``remote`` list). Without the row
+#: a spec's ``web_search`` matched no KAS id and the tool was never mounted.
+#:
+#: ``use_subagent`` is kiro-cli's sub-agent tool; KAS registers the same tool as
+#: ``invoke_sub_agent`` (capability ``subagent``). Without the row a spec that
+#: lists ``use_subagent`` got no sub-agent tool on KAS, so it could not delegate
+#: to the agents its ``toolsSettings.subagent.availableAgents`` names.
+#:
+#: ``execute_bash`` is a KAS id too, but KAS splits kiro-cli's shell in two: the
+#: command runner and a separate tool that starts, reads and stops a long-running
+#: command (``control_bash_process``, or ``control_pwsh_process`` on a Windows
+#: shell; the fixture's ``process_control`` list). Without the row a spec that
+#: names ``execute_bash`` -- every Bot worker -- could run a command on KAS but
+#: never keep a dev server up while it works. Both ids are listed because the
+#: engine picks one by the session's shell; the gate reads both as the shell.
 KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("control_bash_process", "control_pwsh_process"),
     "fs_read": ("read_file", "list_directory"),
     "glob": ("file_search",),
     "grep": ("grep_search",),
     "fs_write": ("str_replace", "fs_append"),
+    "web_search": ("remote_web_search",),
+    "use_subagent": ("invoke_sub_agent",),
 }
 
 #: KAS built-in tool id -> the kiro-cli name a policy about it is written under.
@@ -134,14 +157,22 @@ KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
 #:
 #: Names the two engines share (``fs_write``, ``execute_bash``, ``web_fetch``,
 #: ``code``) need no entry: they already ARE the policy spelling.
+#:
+#: A ``remote_<name>`` key here also exempts that id from the KAS identity
+#: disagreement refusal when KAS's remote tool wrapper serves it
+#: (``permission_requests._is_kas_remote_builtin``), so adding one widens
+#: that check too.
 KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
+    # First, so the derived ``execute_bash`` row (``kas_tool_rows``) still leads
+    # with the shell's own id: a PostToolUse call that stated no id falls back to
+    # that row's first entry (``spec_hooks``), and it must stay ``run_command``.
+    "run_command": "execute_bash",
     **{
         kas_id: kiro_cli_name
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items()
         for kas_id in family
     },
     "delete_file": "fs_write",
-    "run_command": "execute_bash",
 }
 
 #: KAS ids whose policy alias may DENY the call but never ADMIT it.
@@ -155,7 +186,15 @@ KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
 #: the same line -- an allow-mode ``tools: ["fs_write"]`` written for kiro-cli
 #: must not become a deletion grant on KAS. A deny under ``fs_write`` still
 #: reaches it, because an operator who denied writes denied deletes.
-POLICY_ALIAS_DENY_ONLY_IDS: frozenset[str] = frozenset({"delete_file"})
+#:
+#: The process-control tools are deny-only for a different reason: they are
+#: mounted beside ``execute_bash``, but their ``start`` runs a command the
+#: shell's command checks (``allowedCommands``, the recovered-command row) do not
+#: read. So a deny under ``execute_bash`` reaches them, and an ``execute_bash``
+#: grant leaves them at the prompt, as it did before they were mounted.
+POLICY_ALIAS_DENY_ONLY_IDS: frozenset[str] = frozenset(
+    {"delete_file", "control_bash_process", "control_pwsh_process"}
+)
 
 #: kiro-cli's short spelling of a built-in -> the name a spec or a rule is written in.
 #:
@@ -172,6 +211,115 @@ KIRO_TOOL_ALIASES: dict[str, str] = {
     "read": "fs_read",
     "write": "fs_write",
 }
+
+
+#: kiro-cli's other names for a built-in -> the name Crew's tables are keyed on.
+#: kiro-cli parses each of these as the same built-in in ``tools``,
+#: ``allowedTools`` and ``excludedTools`` (``BuiltInToolName``'s strum
+#: spellings, ``crates/agent/src/agent/tools/mod.rs``); read as written, KAS would
+#: mount, grant and exclude nothing for them. Folded before the governance ceiling
+#: is asked, so the ceiling judges the one Crew name and an alias cannot carry a
+#: grant past it. ``shell``, ``read`` and ``write`` are not here: KAS reads them
+#: itself, as tool tags, and folding ``read`` to ``fs_read`` would mount less.
+KIRO_CLI_TOOL_SPELLINGS: dict[str, str] = {
+    "subagent": "use_subagent",
+    "agent_crew": "use_subagent",
+    "fsRead": "fs_read",
+    "fsWrite": "fs_write",
+    "executeCmd": "execute_bash",
+    "execute_cmd": "execute_bash",
+}
+
+#: The names kiro-cli accepts after ``@builtin/``: each built-in's runtime
+#: aliases (``BuiltInToolTrait::aliases``), the only ``@builtin/<name>`` forms its
+#: permission check trusts. Limited to built-ins Crew can place on KAS.
+_BUILTIN_REF_NAMES: frozenset[str] = frozenset(
+    {
+        "fs_read",
+        "read",
+        "fs_write",
+        "write",
+        "execute_bash",
+        "execute_cmd",
+        "shell",
+        "grep",
+        "glob",
+        "code",
+        "web_fetch",
+        "web_search",
+        "agent_crew",
+    }
+)
+
+_BUILTIN_REF_PREFIX = "@builtin/"
+
+#: What ``@builtin`` (and ``*``) grants in an ``allowedTools`` list: every
+#: kiro-cli built-in some Crew reader can place on KAS, under Crew's name for it.
+#: Each still meets the governance ceiling one by one, and the shell and
+#: filesystem ones are answered by Crew's gate, never by a KAS allow rule.
+ALLOWED_TOOLS_BUILTINS: tuple[str, ...] = (
+    "fs_read",
+    "fs_write",
+    "execute_bash",
+    "grep",
+    "glob",
+    "code",
+    "web_fetch",
+    "web_search",
+    "use_subagent",
+)
+
+#: kiro-cli's ``allowedTools`` forms for "every built-in" (``permissions.rs``
+#: ``evaluate_tool_permission``).
+_ALL_BUILTINS_REFS: frozenset[str] = frozenset({"@builtin", "@builtin/", "@builtin/*"})
+
+
+def canonical_kiro_cli_tool_name(entry: str) -> str:
+    """*entry* under the name Crew's tables use (:data:`KIRO_CLI_TOOL_SPELLINGS`).
+
+    ``@builtin/<name>`` is read as the built-in ``<name>`` names when ``<name>`` is
+    one kiro-cli accepts there (:data:`_BUILTIN_REF_NAMES`), short spellings
+    included (``@builtin/write`` is ``fs_write``, never KAS's wider ``write`` tag);
+    any other ``@builtin/`` entry is returned as written.
+    """
+    if entry.startswith(_BUILTIN_REF_PREFIX):
+        name = entry[len(_BUILTIN_REF_PREFIX) :]
+        if name in _BUILTIN_REF_NAMES:
+            entry = KIRO_TOOL_ALIASES.get(name, name)
+    return KIRO_CLI_TOOL_SPELLINGS.get(entry, entry)
+
+
+def expand_kiro_cli_allowed_tools(entries: list[Any], mcp_servers: Any) -> list[str]:
+    """An ``allowedTools`` list under Crew's names, with kiro-cli's wide forms spelled out.
+
+    ``@builtin`` / ``@builtin/`` / ``@builtin/*`` become :data:`ALLOWED_TOOLS_BUILTINS`;
+    ``*`` becomes those plus ``@<server>`` for each server in *mcp_servers* (the
+    spec's own ``mcpServers``). Every other entry is folded by
+    :func:`canonical_kiro_cli_tool_name`. Non-string and blank entries are dropped;
+    order-preserving and duplicate-free.
+
+    shortcut: ``*`` covers only the spec's own servers, not ones KAS adds later
+    (``mcp.json`` under ``includeMcpJson``); those keep prompting. Extend when a
+    projection-time list of every mounted server exists.
+    """
+    servers = (
+        [s for s in mcp_servers if isinstance(s, str) and s]
+        if isinstance(mcp_servers, dict)
+        else []
+    )
+    out: list[str] = []
+    for raw in entries:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        entry = raw.strip()
+        if entry == "*":
+            names: list[str] = [*ALLOWED_TOOLS_BUILTINS, *(f"@{s}" for s in servers)]
+        elif entry in _ALL_BUILTINS_REFS:
+            names = list(ALLOWED_TOOLS_BUILTINS)
+        else:
+            names = [canonical_kiro_cli_tool_name(entry)]
+        out.extend(n for n in names if n not in out)
+    return out
 
 
 def expand_kiro_cli_tool_names(entries: list[str]) -> list[str]:
@@ -207,7 +355,8 @@ def expand_kiro_cli_tool_exclusions(entries: list[str]) -> list[str]:
 def _expand(entries: list[str], table: dict[str, tuple[str, ...]]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for entry in entries:
+    for raw in entries:
+        entry = canonical_kiro_cli_tool_name(raw)
         for name in (entry, *table.get(entry, ())):
             if name not in seen:
                 seen.add(name)

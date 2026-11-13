@@ -128,7 +128,7 @@ describe('ChatSidebar – issue chips', () => {
 
   // The RULE that a GitLab issue is `#8` and only a merge request is `!8` now
   // lives in the serializer (`source_ref_label`, pinned by
-  // test_source_providers.py::TestSourceRefLabel). What is left to check here is
+  // test_source_providers_issues.py::TestSourceRefLabel). What is left to check here is
   // that the chip renders the label it was handed verbatim and adds no
   // punctuation of its own — which is the property that lets a provider this
   // build has never heard of still label itself correctly.

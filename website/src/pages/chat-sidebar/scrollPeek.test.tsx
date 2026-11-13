@@ -1,7 +1,7 @@
 import { act, render } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ScrollPeekLayer from './ScrollPeekLayer'
+import ScrollPeekLayer, { PEEK_FADE_MS } from './ScrollPeekLayer'
 import {
   PEEK_COLLAPSE_DELAY_MS,
   PEEK_IDLE_MAX_MS,
@@ -84,6 +84,61 @@ describe('measureClippedTitles', () => {
     lane.remove()
     expect(got.map(t => t.text)).toEqual(['title clipped'])
     expect(got[0]).toMatchObject({ left: 20, top: 40, height: 20, width: 250, maxWidth: 1000 - 20 - 12 })
+  })
+
+  it('peeks a title cut off after its last clamped line, which overflows only vertically', () => {
+    const lane = document.createElement('div')
+    stubLane(lane)
+    const mk = (scrollHeight: number, top: number, key: string, whiteSpace = '') => {
+      const row = document.createElement('div')
+      row.dataset.sessionRow = key
+      const t = document.createElement('div')
+      t.setAttribute('data-session-title', '')
+      t.textContent = `title ${key}`
+      t.style.whiteSpace = whiteSpace
+      stubTitle(t, 0, top)
+      Object.defineProperty(t, 'clientHeight', { configurable: true, value: 40 })
+      Object.defineProperty(t, 'scrollHeight', { configurable: true, value: scrollHeight })
+      row.appendChild(t)
+      lane.appendChild(row)
+    }
+    mk(60, 40, 'clamped')
+    mk(40, 80, 'fits')
+    mk(60, 120, 'one-line', 'nowrap')
+    document.body.appendChild(lane)
+    const got = measureClippedTitles(lane, 1000)
+    lane.remove()
+    expect(got.map(t => t.text)).toEqual(['title clamped'])
+    expect(got[0]).toMatchObject({ left: 20, top: 40, height: 20, maxWidth: 1000 - 20 - 12 })
+    expect(got[0].width).toBeGreaterThan(0)
+  })
+
+  it('sizes a clamped title chip to its first line, or the whole title when line-height is normal', () => {
+    const lane = document.createElement('div')
+    stubLane(lane)
+    const mk = (top: number, key: string, lineHeight: string) => {
+      const row = document.createElement('div')
+      row.dataset.sessionRow = key
+      const t = document.createElement('div')
+      t.setAttribute('data-session-title', '')
+      t.textContent = `title ${key}`
+      t.style.lineHeight = lineHeight
+      stubTitle(t, 0, top)
+      t.getBoundingClientRect = () => rect(top, top + 60, 20, 170)
+      Object.defineProperty(t, 'clientHeight', { configurable: true, value: 60 })
+      Object.defineProperty(t, 'scrollHeight', { configurable: true, value: 80 })
+      row.appendChild(t)
+      lane.appendChild(row)
+    }
+    mk(20, 'three-lines', '20px')
+    mk(100, 'normal', 'normal')
+    document.body.appendChild(lane)
+    const got = measureClippedTitles(lane, 1000)
+    lane.remove()
+    expect(got.map(t => [t.text, t.top, t.height])).toEqual([
+      ['title three-lines', 20, 20],
+      ['title normal', 100, 60],
+    ])
   })
 
   it('skips a title behind a stuck folder header and the row under the pointer', () => {
@@ -411,12 +466,62 @@ describe('ScrollPeekLayer', () => {
     r.unmount()
   })
 
-  it('removes the layer on the render the peek ends', () => {
+  describe('fade', () => {
     const t: PeekTitle = { key: 'a', text: 'Full title', left: 20, top: 40, height: 20, width: 600, maxWidth: 300 }
-    const r = render(<ScrollPeekLayer titles={[t]} />)
-    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).not.toBeNull()
-    r.rerender(<ScrollPeekLayer titles={[]} />)
-    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).toBeNull()
-    r.unmount()
+    const layer = () => document.querySelector<HTMLElement>('[data-testid="scroll-peek-layer"]')
+    const mockReducedMotion = (reduce: boolean) => vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: reduce && q.includes('prefers-reduced-motion'), media: q,
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    }))
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+    it('fades each chip in and the layer out with opacity transitions', () => {
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      const chip = document.querySelector<HTMLElement>('[data-scroll-peek-title]')
+      expect(chip?.className).toMatch(/\banimate-in\b/)
+      expect(chip?.className).toMatch(/\bfade-in-0\b/)
+      expect(layer()?.className).toMatch(/\btransition-opacity\b/)
+      expect(layer()?.className).toContain(`duration-[${PEEK_FADE_MS}ms]`)
+      expect(layer()?.className).toMatch(/\bopacity-100\b/)
+      r.unmount()
+    })
+
+    it('keeps the last chips at opacity 0 for one fade after the peek ends, then removes the layer', () => {
+      mockReducedMotion(false)
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      r.rerender(<ScrollPeekLayer titles={[]} />)
+      expect(layer()).not.toBeNull()
+      expect(layer()?.className).toMatch(/\bopacity-0\b/)
+      expect(layer()?.className).toContain('pointer-events-none')
+      expect(layer()?.querySelector('[data-scroll-peek-title]')?.textContent).toBe('Full title')
+      act(() => { vi.advanceTimersByTime(PEEK_FADE_MS - 1) })
+      expect(layer()).not.toBeNull()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(layer()).toBeNull()
+      r.unmount()
+    })
+
+    it('takes the layer back at once when a peek starts during the fade', () => {
+      mockReducedMotion(false)
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      r.rerender(<ScrollPeekLayer titles={[]} />)
+      act(() => { vi.advanceTimersByTime(PEEK_FADE_MS / 2) })
+      r.rerender(<ScrollPeekLayer titles={[{ ...t, top: 60 }]} />)
+      expect(layer()?.className).toMatch(/\bopacity-100\b/)
+      act(() => { vi.advanceTimersByTime(PEEK_FADE_MS * 2) })
+      expect(layer()).not.toBeNull()
+      expect(layer()?.querySelector<HTMLElement>('[data-scroll-peek-title]')?.style.top).toBe('60px')
+      r.unmount()
+    })
+
+    it('removes the layer on the render the peek ends under reduced motion', () => {
+      mockReducedMotion(true)
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      expect(layer()).not.toBeNull()
+      r.rerender(<ScrollPeekLayer titles={[]} />)
+      expect(layer()).toBeNull()
+      r.unmount()
+    })
   })
 })

@@ -87,7 +87,11 @@ def target_url() -> str:
     if url:
         return url
     out = subprocess.run(
-        ["kirocrew", "pod", "url", POD], capture_output=True, text=True, check=True
+        ["kirocrew", "pod", "url", POD],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     )
     lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
     base = lines[-1] if lines else ""

@@ -332,20 +332,11 @@ class TestKillProcessTree:
             )
             grandchild_reaped = True
         finally:
-            # `connect._kill_process_tree` is the ONLY reaper in the body above and
-            # it is the code under test, so every failing exit — the pidfile wait
-            # failing, either assertion, a real regression in the tree kill —
-            # abandons a live `time.sleep(30)`
-            # wrapper AND its grandchild for 30s past the test. Both sit in their
-            # own session thanks to start_new_session=True, i.e. in a group no
-            # run-level sweep of the xdist worker's group can reach. Reap through
-            # `platform_compat` (`killpg` on POSIX, `taskkill /T /F` on Windows) —
-            # an implementation independent of `ssm.kill_port_forward`, so the
-            # broken subject cannot also break its own cleanup. Group first, then
-            # the grandchild by pid, and ONLY when the body did not already prove it
-            # dead: once the wrapper has been reaped, getpgid(proc.pid) fails and the
-            # reparented grandchild is reachable only by its own pid — which is
-            # exactly the regression this test is written to catch.
+            # The only reaper above is the code under test, and both processes sit in
+            # their own session, out of reach of any worker-group sweep. Reap through
+            # `platform_compat`, independent of `ssm.kill_port_forward`: group first,
+            # then the grandchild by pid unless already proved dead, since a reparented
+            # grandchild is reachable only by its own pid.
             with contextlib.suppress(ProcessLookupError, OSError):
                 pc.kill_process_tree(proc.pid, pc.SIGKILL)
             # Revalidate identity immediately before the pid-scoped signal: between
@@ -369,11 +360,8 @@ class TestKillProcessTree:
     def test_windows_uses_a_tree_kill_not_a_parent_only_terminate(self, monkeypatch):
         """On Windows the group signal can never work, so the tree kill must run.
 
-        ``os.killpg``/``os.getpgid`` do not exist on Windows, so the POSIX path
-        falls through to ``proc.terminate()`` -- which kills only the wrapper and
-        leaves the plugin holding the forwarded port, the exact failure
-        ``kill_port_forward`` exists to prevent. Exercised on any platform by
-        forcing ``os.name``.
+        ``proc.terminate()`` kills only the wrapper and leaves the plugin holding the
+        forwarded port. Runs on any platform by forcing ``os.name``.
         """
         from kiro_crew.cloud import ssm as ssm_mod
 
@@ -424,13 +412,9 @@ class TestKillProcessTree:
         assert not FakeProc.terminated, "parent-only terminate must not be the Windows path"
 
     def test_windows_tree_kill_tolerates_a_process_object_without_a_pid(self, monkeypatch) -> None:
-        """A Popen-LIKE stand-in must not raise on the Windows branch.
+        """A Popen-like stand-in with no `pid` must not raise on the Windows branch.
 
-        `kill_port_forward` accepts any object with poll/terminate/wait -- the
-        POSIX branch already tolerates one with no `pid` (its group signal catches
-        AttributeError and falls back). The Windows branch read `proc.pid`
-        directly, so the same caller worked on Linux and raised AttributeError on
-        Windows.
+        `kill_port_forward` accepts any object with poll/terminate/wait, on both platforms.
         """
         from kiro_crew.cloud import ssm as ssm_mod
 
@@ -463,12 +447,8 @@ class TestKillProcessTree:
 def _pid_alive(pid: int) -> bool:
     """Liveness probe that is correct on both platforms.
 
-    NOT ``os.kill(pid, 0)``: signal 0 is ``signal.CTRL_C_EVENT`` on Windows, so
-    CPython routes it to ``GenerateConsoleCtrlEvent`` — a console-group signal
-    whose return value is unrelated to whether ``pid`` exists. It reports "alive"
-    for every already-dead pid, so a teardown assertion built on it can never
-    observe the reap. ``platform_compat.pid_exists`` uses ``OpenProcess`` +
-    ``GetExitCodeProcess`` there and ``os.kill(pid, 0)`` on POSIX.
+    Not ``os.kill(pid, 0)``: on Windows signal 0 is ``signal.CTRL_C_EVENT``, routed to
+    ``GenerateConsoleCtrlEvent``, which reports every dead pid as alive.
     """
     return pc.pid_exists(pid)
 
@@ -641,11 +621,8 @@ class TestRegistryIntegration:
     def test_register_instance_carries_the_callers_provisioner_id(self, monkeypatch, tmp_path):
         """A non-EC2 lane must be able to stamp its own id, on BOTH writes.
 
-        The registry record's ``provisioner_id`` is what resolves an engine and
-        the lifecycle guidance shown for the box, so a Fargate task left with the
-        EC2 default is handed to the EC2 engine. The update path is asserted too:
-        a re-launch that reset the id to the default would reintroduce the same
-        mislabelling on exactly the boxes that had been registered correctly.
+        ``provisioner_id`` resolves the engine, so a Fargate task left with the EC2
+        default goes to the EC2 engine; a re-launch must not reset it either.
         """
         from kiro_crew.instances.registry import InstancesRegistry
 
@@ -850,11 +827,7 @@ class TestTaskExecReadiness:
     def test_a_task_without_the_channel_says_relaunch_rather_than_retry(self, monkeypatch):
         """ECS cannot enable it on a running task, so the message must not invite a retry.
 
-        Asserted on the MESSAGE, because that is the only thing anything acts on: no
-        caller branches on a structured flag, so a field carrying this distinction
-        would assert a guarantee nothing delivers. Both halves are pinned here, the
-        remedy named and the word that would send someone round the loop again
-        absent.
+        Asserted on the message because no caller branches on a structured flag.
         """
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "False\tNone", ""))
         result = ssm.task_exec_readiness("crews", _TASK)
@@ -886,8 +859,7 @@ class TestTaskExecReadiness:
         result = ssm.task_exec_readiness("crews", _TASK)
         assert result.ready is False
         assert "ssmmessages" in result.reason
-        # The counterpart to the terminal case above: this one DOES invite a retry,
-        # which is the whole distinction the deleted flag was carrying.
+        # Unlike the terminal case above, this one DOES invite a retry.
         assert "retry" in result.reason.lower()
 
     def test_a_missing_task_is_reported_rather_than_read_as_ready(self, monkeypatch):
@@ -960,12 +932,8 @@ def test_the_printed_paths_match_the_containers_own_constants():
 class TestPortForwardError:
     """_port_forward_error names a failed tunnel's cause from a classified notice.
 
-    The sibling of the instances-layer forward: both pipe and drain the plugin's
-    stdout, and both run that captured stdout through the same close-notice
-    classifier. The service-supplied reason text is a classification signal only
-    — this path composes its own wording from the recognised shape and never
-    quotes the raw notice. Without capture, or on an unrecognised shape, the exit
-    shape alone drives the reason.
+    The service's reason text only classifies: the wording is composed here and the
+    raw notice is never quoted. Without capture or a known shape, the exit shape decides.
     """
 
     # Real plugin close-notice fixtures (see test_fargate_closed_forward_remedy).

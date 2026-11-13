@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import EnvironmentHealthCard from './EnvironmentHealthCard'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { useTranslation } from 'react-i18next'
 import { Check, Cloud, Laptop, Loader2, Lock } from 'lucide-react'
-import { CoderIcon } from './BrandIcon'
+import { BoxdIcon, CoderIcon, FlyIcon } from './BrandIcon'
 import { api, type SlotEnvironment } from '../api/client'
 import { ApiError, apiErrorCode } from '../api/apiError'
 import ErrorNotice from './ErrorNotice'
@@ -21,6 +23,81 @@ import {
 /** Radix radio values are strings; this one stands for "no profile". */
 const LOCAL_VALUE = '__local__'
 
+/** Hover-to-open delays: long enough that crossing the shelf does not flash
+ *  the card, short enough to feel like a tooltip. */
+const HOVER_OPEN_MS = 250
+const HOVER_CLOSE_MS = 200
+
+/** The `reason` a `choice_refused` body names (e.g. `private_chat`), or `''`. */
+const refusalReason = (error: unknown): string => {
+  if (!(error instanceof ApiError)) return ''
+  try {
+    const reason = (JSON.parse(error.body) as { reason?: unknown } | null)?.reason
+    return typeof reason === 'string' ? reason : ''
+  } catch {
+    return ''
+  }
+}
+
+function LockedRemoteChip({ slot, name, provider, title, children }: {
+  slot: string; name: string; provider?: string; title: string; children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // A hover preview must not move focus (the owner may be typing in the
+  // composer); a click or keyboard open moves it into the card so Tab reaches
+  // the card's own controls.
+  const viaHover = useRef(false)
+  const later = (next: boolean, ms: number) => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setOpen(next), ms)
+  }
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-testid="composer-environment-chip"
+          title={title}
+          aria-label={title}
+          aria-haspopup="dialog"
+          onMouseEnter={() => {
+            if (!open) viaHover.current = true
+            later(true, HOVER_OPEN_MS)
+          }}
+          onMouseLeave={() => later(false, HOVER_CLOSE_MS)}
+          onClick={(e) => {
+            // A click shows the card; with hover having opened it already, the
+            // trigger's toggle would close it under the pointer, so keep it open.
+            if (timer.current) clearTimeout(timer.current)
+            viaHover.current = false
+            if (open) e.preventDefault()
+          }}
+          className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer text-muted"
+        >
+          {children}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        className="w-auto"
+        onMouseEnter={() => later(true, 0)}
+        onMouseLeave={() => later(false, HOVER_CLOSE_MS)}
+        onOpenAutoFocus={(e: Event) => { if (viaHover.current) e.preventDefault() }}
+        onCloseAutoFocus={(e: Event) => {
+          if (viaHover.current) e.preventDefault()
+          viaHover.current = false
+        }}
+      >
+        <EnvironmentHealthCard slot={slot} name={name} icon={<ProviderGlyph provider={provider} size={14} />} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+
 interface Props {
   slot: string
   /** A running turn keeps its environment: switching applies at the next start. */
@@ -34,10 +111,14 @@ interface Props {
  *  exist (or on an app caller's 403). */
 /** The provider's decorative brand mark; an unknown provider keeps the generic cloud. */
 function ProviderGlyph({ provider, size }: { provider?: string; size: number }) {
-  if (provider !== 'coder') return <Cloud size={size} className="shrink-0 opacity-80" aria-hidden />
+  const mark = provider === 'coder' ? <CoderIcon size={Math.round(size * 0.8)} />
+    : provider === 'sprites' ? <FlyIcon size={size} />
+      : provider === 'boxd' ? <BoxdIcon size={size} />
+        : null
+  if (!mark) return <Cloud size={size} className="shrink-0 opacity-80" aria-hidden />
   return (
     <span data-testid={`provider-mark-${provider}`} className="inline-flex shrink-0 items-center" aria-hidden="true">
-      <CoderIcon size={Math.round(size * 0.8)} />
+      {mark}
     </span>
   )
 }
@@ -75,7 +156,7 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
       // would land the old choice over this one: cancel it, publish, re-read.
       await queryClient.cancelQueries({ queryKey: key })
       queryClient.setQueryData<SlotEnvironment>(key, (old) =>
-        old ? { ...old, profile: result.profile } : old,
+        old ? { ...old, profile: result.profile, provider: result.profile ? old.profiles.find(p => p.id === result.profile)?.provider : null } : old,
       )
       void queryClient.invalidateQueries({ queryKey: key })
     },
@@ -92,6 +173,7 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
     if (code === 'choices_unreadable') return t('sessionEnvironments.picker.choicesUnreadable')
     if (code === 'unknown_profile') return t('sessionEnvironments.picker.unknownProfile')
     if (code === 'environment_locked') return t('sessionEnvironments.picker.environmentLocked')
+    if (code === 'choice_refused' && refusalReason(error) === 'private_chat') return t('sessionEnvironments.picker.privateChat')
     return agentSwitchFailureMessage(error)
   }
   const chooseError = choose.isError
@@ -112,7 +194,9 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
   if (!data || !Array.isArray(data.profiles) || (data.profiles.length === 0 && data.profile == null)) return null
 
   const pending = choose.isPending ? choose.variables : undefined
-  const selected = pending !== undefined ? pending : data.profile
+  // Once locked, a pick still in flight is refused: the chip names the bound
+  // environment, never the target of a switch that will not happen.
+  const selected = pending !== undefined && !data.locked ? pending : data.profile
   const profile = data.profiles.find((p) => p.id === selected)
   // A removed profile still binds (fails closed at start): show its id.
   const name = profile?.name ?? selected ?? t('sessionEnvironments.picker.thisMachine')
@@ -153,7 +237,13 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
   )
   const announce = <span className="sr-only" role="status" aria-live="polite">{stageLabel}</span>
 
-  if (locked) {
+  // Which locked status follows where the chat is BOUND, not a pick still in
+  // flight: a switch the lock overtook never ran, so it gets no health card.
+  // A Kiro Cloud sandbox has no machine metrics Kiro Crew can read (only its own
+  // agent reaches it), so its fixed chip is the plain status, with no health card.
+  const bound = data.profiles.find((p) => p.id === data.profile)
+  const cloudSandbox = (data.provider ?? bound?.provider) === 'kiro_cloud'
+  if (locked && (data.profile == null || cloudSandbox)) {
     // A muted status with a lock, so it does not read as the picker.
     return (
       <div className="flex items-center min-w-0 shrink-0 pr-2 border-r border-border">
@@ -169,6 +259,22 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
           {!compact && <span aria-hidden className="text-[11px]">{t('sessionEnvironments.picker.fixedLabel')}</span>}
         </span>
         {/* A switch refused because the chat locked meanwhile still says why. */}
+        {chooseError}
+        {announce}
+      </div>
+    )
+  }
+  if (locked) {
+    // A fixed REMOTE environment: muted with a lock like the local status, so it
+    // does not read as the picker; hover (or focus and click) shows its live
+    // state and machine metrics.
+    return (
+      <div className="flex items-center min-w-0 shrink-0 pr-2 border-r border-border">
+        <LockedRemoteChip slot={slot} name={name} provider={profile?.provider} title={title}>
+          {content}
+          <Lock size={11} className="shrink-0 opacity-70" aria-hidden />
+          {!compact && <span aria-hidden className="text-[11px]">{t('sessionEnvironments.picker.fixedLabel')}</span>}
+        </LockedRemoteChip>
         {chooseError}
         {announce}
       </div>
@@ -216,8 +322,13 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
                 <ProviderGlyph provider={p.provider} size={14} />
                 <span className="flex flex-col min-w-0 flex-1">
                   <span className="truncate">{p.name}</span>
-                  {/* Profiles often share a folder; the template tells them apart. */}
-                  <span className="truncate text-[12px] text-muted font-mono">{p.template || p.workdir}</span>
+                  {/* Profiles often share a folder; the template tells them apart. A Kiro
+                      Cloud profile has no directory Kiro Crew can see: its repositories. */}
+                  <span className="truncate text-[12px] text-muted font-mono">
+                    {p.provider === 'kiro_cloud'
+                      ? (p.repositories?.join(', ') || t('sessionEnvironments.kiroCloud.emptyWorkspace'))
+                      : (p.template || p.workdir)}
+                  </span>
                 </span>
                 {mark(p.id)}
               </DropdownMenuRadioItem>

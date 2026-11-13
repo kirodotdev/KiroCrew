@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { markdownToCleanHtml } from '../components/markdown/richTextClipboard'
+import { markdownToCleanHtml, rangeToCleanHtml } from '../components/markdown/richTextClipboard'
 import { copyRichToClipboard } from '../utils/clipboard'
+import { holdVisibleCodeText } from '../utils/visibleText'
+import { setHtml } from './domFixture'
 
 describe('markdownToCleanHtml', () => {
   it('keeps headings, lists, emphasis, code, quotes and links as semantic tags', () => {
@@ -84,6 +86,105 @@ describe('markdownToCleanHtml', () => {
     const html = markdownToCleanHtml('- [x] done\n- [ ] todo')
     expect(html).toContain('<input type="checkbox" checked disabled>')
     expect(html).not.toMatch(/class=/)
+  })
+})
+
+describe('rangeToCleanHtml', () => {
+  let root: HTMLElement
+  beforeEach(() => { root = document.createElement('div'); document.body.append(root) })
+  afterEach(() => root.remove())
+
+  const between = (start: Node, startOffset: number, end: Node, endOffset: number) => {
+    const range = document.createRange()
+    range.setStart(start, startOffset)
+    range.setEnd(end, endOffset)
+    return range
+  }
+  const text = (selector: string, last = false) => {
+    const el = root.querySelector(selector)!
+    return (last ? el.lastChild : el.firstChild)!
+  }
+
+  it('writes only the selected part, with the structure a selection across blocks needs', () => {
+    setHtml(root, '<p class="mb-2">Intro with <strong class="font-bold">bold</strong> and <a class="chip" href="https://example.com/docs">docs</a>.</p><ul><li>first item</li><li>second item</li></ul>')
+    const html = rangeToCleanHtml(root, between(text('p'), 6, text('li:last-child'), 6))
+    expect(html).toBe('<p>with <strong>bold</strong> and <a href="https://example.com/docs">docs</a>.</p><ul><li>first item</li><li>second</li></ul>')
+  })
+
+  it('keeps an empty table cell, so the cells after it stay in their columns', () => {
+    setHtml(root, '<table><thead><tr><th></th><th>Option A</th></tr></thead><tbody><tr><td>Cost</td><td>low</td></tr></tbody></table>')
+    expect(rangeToCleanHtml(root, between(root, 0, text('td:last-child'), 3)))
+      .toBe('<table><thead><tr><th></th><th>Option A</th></tr></thead><tbody><tr><td>Cost</td><td>low</td></tr></tbody></table>')
+  })
+
+  it('drops a filled table cell the selection only touches at its edge', () => {
+    setHtml(root, '<p>Intro</p><table><tbody><tr><td>Cost</td><td>low</td></tr></tbody></table>')
+    const firstCell = root.querySelector('td')!
+    expect(rangeToCleanHtml(root, between(text('p'), 0, firstCell, 0))).toBe('Intro')
+    expect(rangeToCleanHtml(root, between(text('td'), 0, root.querySelector('td:last-child')!, 0))).toBe('Cost')
+  })
+
+  it('keeps a blank cell for each column before a selection that starts mid-row, so the selected cells stay under their headers', () => {
+    setHtml(root, '<table><thead><tr><th>Item</th><th>Price</th></tr></thead><tbody><tr><td>Book</td><td>10</td></tr></tbody></table>')
+    expect(rangeToCleanHtml(root, between(text('th:last-child'), 0, text('td:last-child'), 2)))
+      .toBe('<table><thead><tr><th></th><th>Price</th></tr></thead><tbody><tr><td>Book</td><td>10</td></tr></tbody></table>')
+  })
+
+  it('a selection inside a later cell of one row pastes as its inline content', () => {
+    setHtml(root, '<table><tbody><tr><td>Book</td><td>ten dollars</td></tr></tbody></table>')
+    expect(rangeToCleanHtml(root, between(text('td:last-child'), 0, text('td:last-child'), 3))).toBe('ten')
+  })
+
+  it('copies an unfurled link card as its URL, never its fetched title and description', () => {
+    setHtml(root, '<p>See <a href="https://example.com/a" data-unfurl-url="https://example.com/a"><span class="block">Title</span><span class="block">Desc</span></a> now</p>')
+    expect(rangeToCleanHtml(root, between(text('p'), 0, text('p', true), 4)))
+      .toBe('See <a href="https://example.com/a">https://example.com/a</a> now')
+    expect(rangeToCleanHtml(root, between(text('span'), 1, text('span'), 3)))
+      .toBe('<a href="https://example.com/a">https://example.com/a</a>')
+  })
+
+  it('keeps the numbers the reader saw when the selection starts past the first list item', () => {
+    setHtml(root, '<ol><li>one</li><li>two</li><li>three</li></ol><ol start="4"><li>four</li><li>five</li></ol>')
+    expect(rangeToCleanHtml(root, between(text('li:nth-child(2)'), 0, text('li:nth-child(3)'), 5)))
+      .toBe('<ol start="2"><li>two</li><li>three</li></ol>')
+    expect(rangeToCleanHtml(root, between(text('ol:last-child li:last-child'), 0, text('ol:last-child li:last-child'), 4)))
+      .toBe('five')
+    expect(rangeToCleanHtml(root, between(text('li:nth-child(3)'), 0, text('ol:last-child li:last-child'), 4)))
+      .toBe('<ol start="3"><li>three</li></ol><ol start="4"><li>four</li><li>five</li></ol>')
+  })
+
+  it('keeps cell spans, also on a blank cell kept for alignment', () => {
+    setHtml(root, '<table><tbody><tr><td rowspan="2">Region A</td><td>10</td></tr><tr><td colspan="2">20</td></tr></tbody></table>')
+    expect(rangeToCleanHtml(root, between(text('td:nth-child(2)'), 0, text('tr:last-child td'), 2)))
+      .toBe('<table><tbody><tr><td rowspan="2"></td><td>10</td></tr><tr><td colspan="2">20</td></tr></tbody></table>')
+  })
+
+  it('a selection inside one block pastes as its inline content', () => {
+    setHtml(root, '<ul><li><p>Use <code>npm test</code> to check</p></li></ul>')
+    expect(rangeToCleanHtml(root, between(text('p'), 0, text('p', true), 3))).toBe('Use <code>npm test</code> to')
+  })
+
+  it('reads the selection as the reader sees it: no hidden text or buttons, a code block its code, a formula its TeX, a closed details its summary', () => {
+    setHtml(root, '<p>Run<span class="sr-only"> secretly</span> this<button>Copy</button>:</p>'
+      + '<div class="code-block"><span>sh</span><pre>highlighted</pre></div>'
+      + '<details><summary>Steps</summary>folded body</details>'
+      + '<p>then <span class="katex"><span class="katex-mathml"><math><semantics><mi>x</mi><annotation encoding="application/x-tex">x^2</annotation></semantics></math></span><span class="katex-html" aria-hidden="true">x2</span></span> ends</p>')
+    const release = holdVisibleCodeText(root.querySelector('.code-block')!, 'npm test')
+    try {
+      expect(rangeToCleanHtml(root, between(text('p'), 0, text('p:last-child', true), 5))).toBe('<p>Run this:</p><pre><code>npm test</code></pre>Steps<p>then x^2 ends</p>')
+    } finally {
+      release()
+    }
+  })
+
+  it('writes nothing when the selection starts or ends inside a code block, whose drawn code it cannot read', () => {
+    setHtml(root, '<p>Before</p><div class="code-block"><span>sh</span><div class="pierre-surface"></div></div>')
+    const release = holdVisibleCodeText(root.querySelector('.code-block')!, 'npm test')
+    try {
+      expect(rangeToCleanHtml(root, between(text('p'), 2, root.querySelector('.pierre-surface')!, 0))).toBe('')
+    } finally {
+      release()
+    }
   })
 })
 

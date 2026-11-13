@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
@@ -23,7 +23,7 @@ import type { RootState } from '../store'
 // reference (which is the standard Redux Toolkit pattern).
 //
 // Silenced and passive rows are excluded, matching the backend's own
-// `_unread_count` and the rule the bell sheet's badge applies. This sum reaches
+// `notification_coordinator.unread_count` and the rule the bell sheet's badge applies. This sum reaches
 // the user as the browser-tab attention number, and a muted note counted here is
 // a `(n)` in the title that no surface the user can open accounts for: the bell
 // omits it and the feed keeps silenced rows behind the muted disclosure, so
@@ -54,15 +54,6 @@ registerBuiltinSurface({
 // claims the `member-<slug>` slots this page's threads live in, so their
 // unread counts ride this rail item instead of leaking into Sessions
 // (`isChatPageSurface` deliberately does not admit 'member').
-//
-// `previewFlag` (`PREVIEW_CREW`, in `surfaceData.ts`) because crew is not
-// released yet: it is not advertised until the operator opts in at Settings >
-// Developer > Feature Previews. The rail and Search Everywhere both read
-// `getAdvertisedSurfaces()`, and the browser-tab attention count applies the
-// gate inside `selectAllSurfacesAttention`. A guide that points at the page
-// names that switch as its prerequisite (`PREVIEW_FLAG_ENABLERS`). The sidebar
-// create menu's "Crewmates" entry reads PREVIEW_CREW only to decide whether it
-// lands on `/members` or on the Settings card that turns the page on.
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.members,
   icon: <CrewMemberMark />,
@@ -192,7 +183,7 @@ registerBuiltinSurface({
 const CAPABILITY_SUB_ITEM_ICONS: Record<string, ReactElement> = {
   crews: <Bot size={16} />,
   skills: <BookOpen size={16} />,
-  mcp: <Link2 size={16} />,
+  'mcp-servers': <Server size={16} />,
   knowledge: <Library size={16} />,
   prompts: <MessageSquareText size={16} />,
   steering: <ScrollText size={16} />,
@@ -207,7 +198,7 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 // ── Bottom ─────────────────────────────────────────────────────────────────
 // Agents + Capabilities merged into one bottom-pinned "Customize"
 // destination. The /capabilities secondary panel hosts Crewmates (bindings),
-// Custom agents, Connections, Skills, Hooks, and Prompts;
+// Custom agents, Skills, Hooks, and Prompts;
 // /agents redirects there (see App.tsx routes).
 //
 // Icon: the Kiro ghost brand mark (not a Lucide glyph) — this row is the

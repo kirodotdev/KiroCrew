@@ -50,16 +50,11 @@ class TestProjectScopeSatisfied:
         assert project_scope_satisfied("marker", repo) is True
 
     def test_a_non_repository_project_answers_only_for_itself(self, tmp_path, monkeypatch):
-        # No .git anywhere: there is no repository boundary to confirm against, so
-        # only the project dir itself is offered rather than an unbounded walk.
+        # No .git anywhere, so only the project dir itself is offered.
         #
-        # "Anywhere" includes the ancestors of tmp_path, which a test cannot
-        # author: a temp root under a checkout (a developer's `TMPDIR=./tmp`)
-        # puts a real `.git` above the fixture and the walk would stop THERE,
-        # offering `tmp_path/src/pkg` for `deep` and turning this fail-closed
-        # case into the descendant case. The seam the walk reads is the `.git`
-        # existence probe, so it is pinned to "absent" for exactly those
-        # ancestors; probes inside the fixture, and every other path, stay real.
+        # A temp root under a checkout (`TMPDIR=./tmp`) would put a real `.git` above
+        # the fixture, so the `.git` probe is pinned to "absent" for tmp_path's
+        # ancestors only; every other path stays real.
         real_exists = Path.exists
         above = set(tmp_path.resolve().parents)
 
@@ -77,9 +72,8 @@ class TestProjectScopeSatisfied:
         assert project_scope_satisfied("src/pkg", deep) is False
 
     def test_absolute_fragment_refused(self, tmp_path):
-        # An absolute path is not a fragment. Reducing "/etc/passwd" to
-        # "etc/passwd" and matching it against an ancestor is what let a
-        # repo-scoped entry apply to every project on the host.
+        # An absolute path is not a fragment. Reducing "/etc/passwd" to "etc/passwd"
+        # and matching an ancestor would apply a repo-scoped entry to every project.
         (tmp_path / ".git").mkdir()
         (tmp_path / "src").mkdir()
         assert project_scope_satisfied("/src", tmp_path) is False
@@ -127,9 +121,8 @@ class TestProjectScopeSatisfied:
         assert project_scope_satisfied("src//pkg", tmp_path) is False
 
     def test_the_schema_refuses_a_scope_the_gate_cannot_satisfy(self):
-        # Storing "." reported success and then applied nowhere -- the same
-        # silent-success shape this feature exists to end. The write surface now
-        # refuses it instead of persisting an inert lesson.
+        # Storing "." would report success and then apply nowhere, so the write
+        # surface refuses it instead of persisting an inert lesson.
         from kiro_crew.validation import LEARN_ADD_SCHEMA, ValidationError, validate_tool_args
 
         base = {"rule": "r", "category": "tool"}
@@ -228,9 +221,8 @@ class TestProjectScopeSatisfied:
         assert project_scope_satisfied("/", tmp_path) is False
 
     def test_a_leading_slash_is_no_longer_tolerated(self, tmp_path):
-        # Earlier this reduced "/src/pkg" to "src/pkg" and matched. That tolerance
-        # is what made "/etc/passwd" reachable as "etc/passwd" from the "/" ancestor,
-        # so an absolute fragment is now refused outright.
+        # Reducing "/src/pkg" to "src/pkg" would make "/etc/passwd" reachable as
+        # "etc/passwd" from the "/" ancestor, so an absolute fragment is refused.
         (tmp_path / ".git").mkdir()
         (tmp_path / "src" / "pkg").mkdir(parents=True)
         assert project_scope_satisfied("/src/pkg/", tmp_path) is False
@@ -239,11 +231,8 @@ class TestProjectScopeSatisfied:
     def test_a_relative_project_is_refused_not_resolved_against_the_cwd(
         self, tmp_path, monkeypatch
     ):
-        # The gate promises never to consult the process working directory, but
-        # ``Path.resolve()`` anchors a RELATIVE path to exactly that. Standing the
-        # process inside a tree that DOES hold the fragment is what makes the
-        # difference observable: resolving "." would find "src/pkg" here and admit
-        # the entry, which is the fail-open this gate exists to prevent.
+        # ``Path.resolve()`` anchors a RELATIVE path to the cwd, which the gate must
+        # never consult. The cwd holds the fragment, so resolving "." would admit it.
         (tmp_path / ".git").mkdir()
         (tmp_path / "src" / "pkg").mkdir(parents=True)
         monkeypatch.chdir(tmp_path)
@@ -259,15 +248,8 @@ class TestProjectScopeSatisfied:
     def test_a_relative_project_cannot_borrow_the_cwd_of_an_unrelated_tree(
         self, tmp_path, monkeypatch
     ):
-        # The sharper shape of the same fault: the SESSION's project is one tree
-        # and the gateway's cwd is another, so anchoring to cwd answers about the
-        # wrong repository entirely -- admitting an entry scoped to the checkout
-        # the gateway happens to sit in, for a session working somewhere else.
-        #
-        # The fixture is built so cwd is the ONLY way to reach a True: the
-        # fragment "pkg" exists in the gateway checkout and nowhere in the
-        # session's tree, and the relative project "src" lands inside the gateway
-        # checkout when resolved against its cwd.
+        # The session's project and the gateway's cwd are different trees. "pkg"
+        # exists only in the gateway checkout, so cwd is the ONLY way to reach True.
         gateway = tmp_path / "gateway-checkout"
         (gateway / ".git").mkdir(parents=True)
         (gateway / "src" / "pkg").mkdir(parents=True)
@@ -400,9 +382,7 @@ class TestLessonStoreScope:
 
     def test_an_unscoped_save_does_not_claim_a_scoped_row(self, tmp_path):
         # Strict identity, matching the vector store: (rule, None) and (rule, "a")
-        # are two lessons. My earlier guard treated an omitted scope as "no
-        # conflict", so a genuine save-this-globally request bound to the scoped row
-        # and reported success without ever creating the global lesson.
+        # are two lessons, so a global save must not bind to the scoped row.
         store = self._store(tmp_path)
         store.save_or_enrich(Lesson(ts="t", rule="r", category="tool", repo_scope="a"))
         assert store.save_or_enrich(Lesson(ts="t", rule="r", category="tool")) == "inserted"
@@ -455,9 +435,8 @@ class TestLessonStoreRemoveScope:
         return store
 
     def test_no_selector_removes_every_scope_as_before(self, tmp_path):
-        # The historical caller passes no scope; both the global and the scoped row
-        # match the substring and both go. This is the behaviour existing callers
-        # and test_learn's test_remove_matching rely on -- unchanged.
+        # With no scope, both rows match the substring and both go, as
+        # test_learn's test_remove_matching relies on.
         store = self._two_rows(tmp_path)
         assert store.remove("run the gate")
         assert store.load_all() == []
@@ -511,12 +490,9 @@ class TestLessonStoreRemoveScope:
         assert len(store.load_all()) == 2
 
     def test_a_broken_stored_scope_is_not_claimed_by_the_global_selector(self, tmp_path):
-        # The write path canonicalises a scope before storing it, so a stored
-        # "/" can only arrive from an imported or hand-edited file -- seeded
-        # here as a raw JSONL line. That row is scoped-but-broken, not global:
-        # the injection gate withholds it, so the explicit-global selector
-        # must not fold it to None and tombstone it. Only the unselective
-        # (absent) path reaches it.
+        # A stored "/" can only come from an imported or hand-edited file, so it is
+        # seeded as a raw line. It is scoped-but-broken, not global: only the absent
+        # selector may remove it.
         store = self._store(tmp_path)
         store.save(Lesson(ts="t", rule="run the gate", category="tool"))
         with store._path.open("a") as fh:
@@ -536,9 +512,7 @@ class TestLessonStoreRemoveScope:
 class TestVectorStoreLessonScope:
     """The vector store is the PRIMARY injection path, so the gate must hold here.
 
-    Filtering only the JSONL fallback would leave the scope key inert in
-    production -- advertised and enforced nowhere, which is the failure this
-    whole mechanism exists to end.
+    Filtering only the JSONL fallback would leave the scope key inert in production.
     """
 
     def _store(self, tmp_path):
@@ -610,10 +584,8 @@ class TestVectorStoreLessonScope:
             store.close()
 
     def test_the_contradiction_sweep_is_scope_local(self, tmp_path):
-        # Superseding resolves a contradiction by DELETING the loser, so a scoped
-        # exception must not put a global rule up for deletion: it contradicts that
-        # rule only inside its own tree. A global rule retired on the strength of
-        # one repository's exception is gone for every other repository.
+        # Superseding DELETES the loser, and a scoped exception contradicts a global
+        # rule only inside its own tree, so it must not put that rule up for deletion.
         store = self._store(tmp_path)
         try:
             # Without an embedder the scan returns early, so the loop under test
@@ -727,8 +699,8 @@ class TestVectorStoreLessonScope:
 
     def test_a_trailing_slash_is_the_same_scope_in_both_stores(self, tmp_path):
         # The gate strips separators before matching, so these two spellings behave
-        # identically. Storing them raw made two rows that were both injected and
-        # neither deduped the other.
+        # identically. Stored raw they would be two rows, both injected, neither
+        # deduping the other.
         store = self._store(tmp_path)
         try:
             assert store.write_lesson("r", "tool", repo_scope="src/pkg").wrote is True
@@ -738,10 +710,8 @@ class TestVectorStoreLessonScope:
             store.close()
 
     def test_a_near_limit_multibyte_scoped_lesson_is_still_accepted(self, tmp_path):
-        # Adding repo_scope to the mapping must not drop the lesson out of the size
-        # exemption: the envelope would then be measured and a rule that the bare
-        # form always allowed would be refused, while a caller with a JSONL fallback
-        # reported it saved.
+        # repo_scope in the mapping must not drop the lesson out of the size
+        # exemption, or a rule the bare form allows would be refused.
         store = self._store(tmp_path)
         try:
             rule = "\u4e00" * 500
@@ -755,11 +725,9 @@ class TestVectorStoreLessonScope:
             store.close()
 
     def test_an_inadmissible_scope_is_refused_not_laundered(self, tmp_path):
-        # Two of this change's own rules disagreed on "/src/pkg": the canonicaliser
-        # strips the leading slash (making it admissible) while the gate refuses it.
-        # The write surface must not resolve that by normalising -- that ACTIVATES
-        # the lesson in every repository holding src/pkg -- nor by dropping the
-        # scope, which stores it globally. It refuses.
+        # The canonicaliser would strip the leading slash of "/src/pkg" while the gate
+        # refuses it. Normalising would ACTIVATE the lesson in every repository with
+        # src/pkg, and dropping the scope would store it globally, so it is refused.
         store = self._store(tmp_path)
         try:
             assert store.write_lesson("r", "tool", repo_scope="/src/pkg").wrote is False
@@ -773,11 +741,7 @@ class TestVectorStoreLessonScope:
 
     def test_no_caller_can_launder_an_inadmissible_scope(self, tmp_path, monkeypatch):
         # The write surface is the single chokepoint, so the migration is covered by
-        # it rather than by its own guard -- verified by probe: reverting the
-        # migration's condition alone does NOT reopen this. That is the point. The
-        # migration's condition is kept so its own skip COUNT is right for the right
-        # reason, but the property below holds for every caller, including ones this
-        # PR never touched.
+        # it rather than by its own guard (which keeps only its skip COUNT right).
         from kiro_crew import vector_memory as vm
 
         home = tmp_path / "home"
@@ -797,10 +761,8 @@ class TestVectorStoreLessonScope:
             store.close()
 
     def test_a_stale_client_legacy_scope_is_refused_not_globalised(self):
-        # The fail direction matters more than the refusal: before this change the
-        # workspace tier was inert, so converting it to a global lesson would inject
-        # a one-workspace correction into every session -- worse than the dead tier
-        # it replaced.
+        # Converting a workspace scope to a global lesson would inject a
+        # one-workspace correction into every session.
         from kiro_crew.mcp_tools import learn as mcp_learn
 
         out = mcp_learn.learn_add("learn_add", {"rule": "r", "scope": "workspace"})
@@ -811,11 +773,8 @@ class TestVectorStoreLessonScope:
             assert not mcp_learn.learn_add("learn_add", args).startswith("Error: scope=")
 
     def test_a_gate_invalid_string_scope_does_not_count_as_population(self, tmp_path):
-        # "." is a non-blank string, so judging by shape called it usable while the
-        # gate refuses it. The row then rendered nothing yet still counted as stored
-        # knowledge, which silenced the JSONL store and lost the saved lessons.
-        # "/etc" is the same hole reached differently: an imported row skips the
-        # write surface, so it keeps a leading slash the gate refuses.
+        # "." is a non-blank string the gate refuses; counting it would silence the
+        # JSONL store. "/etc" comes from an imported row that skipped the write surface.
         for bad in (".", "..", "/etc", "  "):
             store = self._store(tmp_path / f"s{abs(hash(bad))}")
             try:
@@ -973,12 +932,9 @@ class TestVectorStoreDeleteScope:
             store.close()
 
     def test_a_broken_stored_scope_is_not_claimed_by_the_global_selector(self, tmp_path):
-        # set_semantic validates size, not scope admissibility, so a lesson
-        # row can carry a stored scope the gate refuses ("/"). That row is
-        # scoped-but-broken, not global: the injection gate withholds it
-        # (_lesson_scope_unusable), so the explicit-global selector must not
-        # fold it to None and tombstone it. The unselective (absent) path is
-        # what removes it.
+        # set_semantic does not check scope admissibility, so a row can store "/".
+        # It is scoped-but-broken, not global (_lesson_scope_unusable withholds it):
+        # only the absent selector may remove it.
         store = self._store(tmp_path)
         try:
             assert store.write_lesson("run the gate", "tool")

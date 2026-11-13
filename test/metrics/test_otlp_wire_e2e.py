@@ -41,6 +41,7 @@ import threading
 from unittest.mock import patch
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.metrics import inventory_gauges as ig
 from kiro_crew.metrics import process_gauges as pg
@@ -481,7 +482,7 @@ class _Receiver:
     def __init__(self):
         # 127.0.0.1 explicitly: this listens for our own export and must never be
         # reachable off the machine.
-        self._server = http.server.HTTPServer(("127.0.0.1", 0), _CollectingHandler)
+        self._server = LoopbackHTTPServer(("127.0.0.1", 0), _CollectingHandler)
         self._server.received = []  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 

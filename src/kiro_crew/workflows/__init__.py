@@ -50,6 +50,16 @@ class BudgetExceeded(Exception):  # noqa: N818 (frozen-contract name; see module
     """
 
 
+class WorkflowStepInterrupted(Exception):
+    """An agent step whose turn was stopped from outside before it finished.
+
+    An executor raises it; ``ctx.agent()`` still resolves the step to ``None``, and
+    the runner then ends the run ``run_failed`` (``where="interrupted"``) instead of
+    ``run_finished``. Lives in the package root so the engine can name it without
+    importing an executor.
+    """
+
+
 @runtime_checkable
 class Budget(Protocol):
     """Token budget for a run. ``total`` is a HARD ceiling, not advisory."""
@@ -140,9 +150,11 @@ class WorkflowContext(Protocol):
         cwd: Optional[str] = None,
         session: Optional[str] = None,
         nudge: Optional[dict] = None,
+        backend: Optional[str] = None,
     ) -> AgentResult:
         """Run one agent. Subagent by default; ``session=`` for in-session.
 
+        ``backend=`` names the harness the step runs on (default: the gateway's).
         With ``schema`` returns a validated dict (else free text). Returns
         ``None`` if skipped or the agent died; raises only ``BudgetExceeded``.
         """
@@ -183,6 +195,25 @@ class WorkflowContext(Protocol):
 
     async def send_message(self, channel: str, text: str) -> None:
         """Deliver a message to a dashboard/session channel."""
+
+    # --- dashboard sessions, acting as the session that launched the run ---
+    async def open_session(
+        self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = ""
+    ) -> str:
+        """Open a persistent dashboard session; return its slot key.
+
+        Counts against the run's agent cap. Refused for a run with no launching
+        session (system- or cron-started).
+        """
+
+    async def send_to_session(self, slot: str, message: str) -> dict:
+        """Deliver *message* to *slot* as its next turn; return the receipt."""
+
+    async def set_session_mode(self, slot: str, mode: str) -> dict:
+        """Set *slot*'s approval mode (``normal``/``trust_reads``/``trust``).
+
+        The mode may match or lower the launching session's, never raise it.
+        """
 
 
 # --- Run event stream (JSON only — NEVER pickle: deserializing an event stream

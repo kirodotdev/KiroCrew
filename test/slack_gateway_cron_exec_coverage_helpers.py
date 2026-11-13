@@ -108,24 +108,9 @@ async def _cron_cb(
 ) -> AsyncIterator[Any]:
     """Run ``_init_cron`` with every collaborator patched and yield ``on_job``.
 
-    The callback resolves ``sel`` / ``vet_job_at_fire_time`` / the sandbox
-    runners from module globals at CALL time, so it must be invoked while these
-    patches are still active — hence a context manager rather than a plain
-    factory.
-
-    ``gate_reason`` may be a plain string (a fixed verdict, the common case) or
-    a ``job -> str`` callable, for the cases where the verdict must CHANGE
-    between the fire-time gate and a later re-vet — a script body edited on
-    disk, or a policy tightened, while the call sat in the pool queue.
-
-    ``queue_hook`` models that queue wait. When given, the execution dispatch
-    (``run_in_cron_pool``) is replaced by a double that runs the hook and only
-    THEN invokes whatever callable production code submitted. That is the
-    window the queue wait opens: it is deliberately not charged to the job's
-    deadline, so the world can change inside it. Note it patches only the
-    EXECUTION dispatch — the fire-time gate goes through
-    ``run_in_cron_gate_pool`` and still runs for real, keeping the two seams
-    distinct.
+    Collaborators resolve from module globals at call time, so call it inside the patches.
+    ``gate_reason`` may be a ``job -> str`` callable for a verdict that changes before the
+    re-vet; ``queue_hook`` runs in the ``run_in_cron_pool`` double before the job does.
     """
     service = svc if svc is not None else _cron_service_double()
     captured: dict[str, Any] = {}
@@ -185,17 +170,9 @@ async def _cron_message_cb(
 ) -> AsyncIterator[Any]:
     """Yield ``on_job`` with the ``message`` arm's LLM turn stubbed out.
 
-    Everything between session acquisition and the delivery fan-out is replaced:
-    the point of these tests is which SURFACE a finished result reaches, so the
-    turn itself is a constant. ``_cron_stream_with_posttoken_resume`` is the one
-    seam that has to be patched by name — the arm resolves it from module
-    globals at call time, which is why this nests inside ``_cron_cb`` rather
-    than wrapping it.
-
-    ``error`` drives the FAILURE fan-out instead of the success one by making the
-    stubbed turn raise, which is the only way into the arm's ``except`` branch.
-    It must NOT look like a transient backend error, or the arm retries the whole
-    callback rather than alerting.
+    ``_cron_stream_with_posttoken_resume`` is resolved from module globals at call
+    time, so this nests inside ``_cron_cb``. ``error`` makes the turn raise to drive
+    the failure fan-out; it must not look transient, or the arm retries instead.
     """
     orch.ctx_builder = MagicMock()
     orch.ctx_builder.hooks = MagicMock()

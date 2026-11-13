@@ -158,11 +158,11 @@ def test_a_credential_setting_never_carries_a_guide() -> None:
     assert "guide_ref" not in hit
 
 
-def test_crewmates_page_names_its_preview_switch() -> None:
-    d = ui_index.find_ui("mates", "en")
+def test_mates_page_has_no_preview_prerequisite() -> None:
+    d = ui_index.find_ui("bots", "en")
     page = next(r for r in d["results"] if r["id"] == "page.members")
     requires = page["placements"][0]["requires"]
-    assert any(r["kind"] == "preview_flag" for r in requires)
+    assert not any(r["kind"] == "preview_flag" for r in requires)
 
 
 def test_channel_settings_hang_under_their_channel_without_a_label_suffix() -> None:
@@ -204,7 +204,7 @@ def test_surface_keeps_only_that_surface() -> None:
 
 
 def test_ties_are_ordered_by_id_and_flagged_ambiguous() -> None:
-    d = ui_index.find_ui("mates", "en")
+    d = ui_index.find_ui("bots", "en")
     exact = [r["id"] for r in d["results"] if r["match"] == "exact_label"]
     assert exact == sorted(exact) and len(exact) > 1
     assert d["ambiguous"] is True
@@ -296,7 +296,7 @@ def test_newcomer_words_find_their_target(query: str, lang: str, target: str) ->
         ("where do I make a schedule", "en", {"schedule.add-job", "schedule.create-first"}),
         ("where can I create a reminder", "en", {"schedule.add-job", "schedule.create-first"}),
         ("在哪里新建提醒", "zh-CN", {"schedule.add-job", "schedule.create-first"}),
-        # MCP: both ways to add one, under the MCP Servers sub-tab.
+        # MCP: both ways to add one, on Customize's MCP Servers tab.
         ("add an MCP server", "en", {"mcp.add-custom", "mcp.add-server"}),
         ("添加 MCP", "zh-CN", {"mcp.add-custom", "mcp.add-server"}),
         ("添加MCP服务器", "zh-CN", {"mcp.add-custom", "mcp.add-server"}),
@@ -333,15 +333,15 @@ def test_schedule_creation_names_the_state_each_host_is_drawn_in() -> None:
         assert r["placements"][0]["route"] == "/schedule"
 
 
-def test_add_mcp_server_walks_through_the_mcp_servers_sub_tab_in_both_languages() -> None:
+def test_add_mcp_server_walks_through_the_mcp_servers_page_in_both_languages() -> None:
     en = {r["id"]: r for r in ui_index.find_ui("add an MCP server", "en")["results"]}
     assert _path(en["mcp.add-custom"]["placements"][0]) == [
         "Customize",
-        "Connections",
         "MCP Servers",
+        "Servers",
         "Add Custom",
     ]
-    assert en["mcp.add-server"]["placements"][0]["route"] == "/capabilities?tab=mcp"
+    assert en["mcp.add-server"]["placements"][0]["route"] == "/capabilities?tab=mcp-servers"
     assert en["mcp.add-custom"]["guide_ref"] == {"action_id": "mcp.open_add"}
     # No action of its own: the generic pointer covers it.
     assert en["mcp.add-server"]["guide_ref"] == {
@@ -349,7 +349,12 @@ def test_add_mcp_server_walks_through_the_mcp_servers_sub_tab_in_both_languages(
         "params": {"location_id": "mcp.add-server"},
     }
     zh = {r["id"]: r for r in ui_index.find_ui("添加 MCP", "zh-CN")["results"]}
-    assert _path(zh["mcp.add-server"]["placements"][0])[-2:] == ["MCP 服务器", "添加服务器"]
+    assert _path(zh["mcp.add-server"]["placements"][0]) == [
+        "自定义",
+        "MCP 服务器",
+        "服务器",
+        "添加服务器",
+    ]
 
 
 def test_new_chat_in_chinese_is_labelled_in_chinese_and_reached_like_the_sidebar() -> None:
@@ -382,6 +387,7 @@ def test_a_shell_control_is_on_every_page_and_survives_a_surface_filter() -> Non
     assert [r.get("id") or r.get("value") for r in p["requires"]] == [
         "desktop",
         "search_bar_unclaimed",
+        "topbar_search_shown",
     ]
     # Drawn on every page, so a page filter keeps it; an unknown surface is still refused.
     assert "shell.search" in _by_id(ui_index.find_ui("command palette", "en", "schedule"))
@@ -1118,16 +1124,16 @@ def test_find_setting_rows_carry_the_dashboard_label() -> None:
     from kiro_crew.dashboard.change_cards import localize_setting_rows
 
     rows = [
-        {"setting_id": "developer.developer-mode", "label": "Developer Mode"},
+        {"setting_id": "developer.webhooks", "label": "Webhooks"},
         {"setting_id": "not.a-setting", "label": "Kept"},
     ]
-    shown = ui_index.setting_labels(["developer.developer-mode"], "zh-CN")
+    shown = ui_index.setting_labels(["developer.webhooks"], "zh-CN")
     out = localize_setting_rows(rows, "zh-CN")
-    assert out[0]["label"] == shown["developer.developer-mode"]["label"] != "Developer Mode"
-    assert out[0]["path"] == shown["developer.developer-mode"]["path"]
+    assert out[0]["label"] == shown["developer.webhooks"]["label"] != "Webhooks"
+    assert out[0]["path"] == shown["developer.webhooks"]["path"]
     assert out[0]["label_locale"] == "zh-CN"
     assert out[1] == rows[1]
-    assert localize_setting_rows(rows, "")[0]["label"] == "Developer Mode"
+    assert localize_setting_rows(rows, "")[0]["label"] == "Webhooks"
 
 
 # ── where-is questions whose first answer must carry a guide ──

@@ -19,16 +19,11 @@ from kiro_crew.acp.types import JsonRpcMessage
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_counts_discarded_frames_without_logging_content(caplog):
-    """The pre-turn drain destroys leftover frames; it must SAY how many, and
-    nothing else.
+    """The pre-turn drain logs how many leftover frames it dropped, and nothing else.
 
-    A dropped frame is invisible to every layer above: the abandoned turn's
-    output vanishes with nothing to show it existed, and a turn that loses its
-    terminal this way reaches the dashboard as an empty response with no
-    attributable cause. So the drain reports a COUNT — and only a count. Frame
-    text, tool arguments, tool results and even frame SIZE are all excluded:
-    a size leaks response length, and the kiro-cli data dir this material comes
-    from is fenced precisely because it holds credentials.
+    A dropped frame is invisible above, so the count is the only trace. No text,
+    arguments, results or size: size leaks response length, and the source data
+    dir is fenced because it holds credentials.
     """
     import contextlib
     import logging
@@ -90,14 +85,10 @@ async def _drain_warning_lines(handle, caplog):
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_names_a_discarded_terminal(caplog):
-    """A discarded response carrying a non-empty stopReason IS the abandoned
-    turn's terminal, and the warning must SAY so instead of hedging.
+    """A discarded response with a non-empty stopReason is named as the terminal.
 
-    The structural fact: a JSON-RPC response has ``method is None``, so a
-    leftover prompt response can never reach the drain's permission branch —
-    it always lands in the discard arm. Whether the terminal was among the
-    discards is therefore decidable, and "possibly including that turn's
-    terminal" was speculation about data already in hand.
+    A JSON-RPC response has ``method is None``, so it always lands in the discard
+    arm and the warning can say for certain whether the terminal was dropped.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -137,14 +128,10 @@ async def test_pre_turn_drain_names_a_discarded_terminal(caplog):
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_states_the_zero_terminal_case(caplog):
-    """When NO discarded frame was a terminal the warning says '0 of them' —
-    the reassuring reading an operator could not get from the old hedge.
+    """When no discarded frame was a terminal the warning says '0 of them'.
 
-    The set here also pins the classification guards: a response with an empty
-    result dict, a response whose result is not a dict, and a REQUEST that
-    (malformed) carries a result with a stopReason must all count as zero —
-    only a response (``method is None``, ``id`` set) with a non-empty
-    ``stopReason`` is a terminal.
+    Only a response (``method is None``, ``id`` set) with a non-empty ``stopReason``
+    counts; empty or non-dict results and a malformed request do not.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -250,16 +237,11 @@ async def test_pre_turn_drain_classifies_alongside_an_answered_permission_reques
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_survives_a_non_string_stop_reason(caplog):
-    """A JSON-valid response whose stopReason is not a string must neither
-    crash the drain nor count as a terminal.
+    """A non-string stopReason neither crashes the drain nor counts as a terminal.
 
-    The hazard is structural: the drain runs AFTER ``_turn_done.clear()`` and
-    BEFORE the BaseException guard that restores it, so an exception escaping
-    here leaves the handle permanently turn-active — every later prompt on it
-    is rejected. A truthy non-str stopReason (``[]``/``{}``) fed to a frozenset
-    membership test raises ``TypeError: unhashable type``; the classification
-    must type-guard the leaf exactly as ``_dispatch.py``'s wire-stopReason
-    reader does.
+    The drain runs after ``_turn_done.clear()`` and before the guard that restores
+    it, so a ``TypeError: unhashable type`` here would leave the handle turn-active
+    for good. The leaf is type-guarded as in ``_dispatch.py``.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -285,15 +267,10 @@ async def test_pre_turn_drain_survives_a_non_string_stop_reason(caplog):
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_counts_an_error_response_terminal(caplog):
-    """An abandoned turn that ended in an ERROR response was still terminated —
-    ``_run_turn`` treats an error response as the turn's terminal — so the
-    tally must count it, or the warning positively asserts none of the
-    discards was terminal-shaped where the old text only hedged. An error
-    terminal has no stopReason to name, the error payload must never leak,
-    and the warning must NOT attribute the frame to "that turn": a late error
-    response to a concurrently timed-out command call (send_command / compact /
-    set_config_option, re-injected by _wait_for_response's finally) is
-    indistinguishable here, so the line states the shape, not the owner."""
+    """An error response counts as a terminal, as ``_run_turn`` treats it.
+
+    The payload never leaks, and the line names the shape, not "that turn": a late
+    error to a timed-out command call looks the same here."""
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
@@ -320,24 +297,12 @@ async def test_pre_turn_drain_counts_an_error_response_terminal(caplog):
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_keeps_a_response_a_live_waiter_is_owed(caplog):
-    """A response whose req_id is STILL registered in ``_awaited_responses``
-    has a live consumer inside ``_wait_for_response``, so the drain must hand
-    it back rather than destroy it.
+    """A response still registered in ``_awaited_responses`` is handed back, not dropped.
 
-    The abandoned TURN's own frames are owed to nobody: ``_run_turn`` refuses
-    to start while ``_turn_done`` is clear, and ``_turn_done`` is set in its
-    own ``finally``, so by the time the drain runs that turn's generator has
-    already exited. Discarding those is correct. A command/config call
-    (``send_command`` / ``compact`` / ``set_config_option``) is different: it
-    does not touch ``_turn_done``, so its ``_wait_for_response`` can be in
-    flight when the next turn starts — and for a oneshot the response IS the
-    terminal. Dropping it strands that caller until its own timeout (60s for
-    ``send_command``), which then reports failure for a call the backend
-    answered.
-
-    ``_awaited_responses`` is the discriminator that tells the two apart, and
-    the dispatch loop already routes on exactly it; the drain was the one queue
-    consumer that did not.
+    The abandoned turn's frames are owed to nobody, but a command call
+    (``send_command`` / ``compact`` / ``set_config_option``) does not touch
+    ``_turn_done`` and can still be waiting; dropping its answer strands it until
+    its timeout (60s for ``send_command``).
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -371,11 +336,8 @@ async def test_pre_turn_drain_keeps_a_response_a_live_waiter_is_owed(caplog):
 async def test_pre_turn_drain_drops_a_response_no_waiter_is_owed(caplog):
     """The retention is scoped to a REGISTERED waiter, not to every response.
 
-    A command call that already timed out has discarded its req_id in
-    ``_wait_for_response``'s ``finally``, so its late answer is owed to nobody
-    and must still drain — otherwise the retention leaks a stray frame into
-    every following turn. This is the mutant that would survive a bare
-    "keep all responses" rule.
+    A timed-out command call has dropped its req_id, so its late answer must
+    drain or it leaks into every following turn.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -396,15 +358,10 @@ async def test_pre_turn_drain_drops_a_response_no_waiter_is_owed(caplog):
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_answers_a_permission_request_whose_id_collides():
-    """The retention must not swallow a server→client REQUEST that happens to
-    carry the same integer id as an awaited response.
+    """A server→client request sharing an awaited response's id is still answered.
 
-    The two id spaces are independent: our client→server ids come from
-    ``AcpRuntime._next_id`` (starts at 1) and the backend mints its own request
-    ids, so a numeric collision is ordinary rather than exotic. A retained
-    permission request is never answered, which strands the backend's oneshot —
-    the exact hang the drain exists to prevent. ``method is None`` is what keeps
-    the retention to responses only.
+    The id spaces are independent (``AcpRuntime._next_id`` vs the backend's), so
+    collisions are ordinary; ``method is None`` limits retention to responses.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -431,17 +388,10 @@ async def test_pre_turn_drain_answers_a_permission_request_whose_id_collides():
 
 @pytest.mark.asyncio
 async def test_pre_turn_drain_keeps_an_owed_frame_when_cancelled_mid_drain():
-    """A cancellation part-way through the drain must not lose a response
-    already collected for a live waiter.
+    """A cancellation mid-drain still returns a response collected for a live waiter.
 
-    The permission arm re-raises ``CancelledError`` so the prompt aborts, which
-    is exactly when a retained frame is easiest to lose: everything read before
-    the cancellation point is held in a local list, and a re-injection reached
-    only on the loop's normal exit would never run. The frames go back from a
-    ``finally``, so the abort still pays the waiter what it is owed.
-
-    The queue order is the point: the owed response is read FIRST, so it is
-    already collected when the stranded permission request triggers the abort.
+    Frames go back from a ``finally``. The owed response is queued first, so it is
+    already collected when the permission request triggers the abort.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -471,14 +421,8 @@ async def test_pre_turn_drain_keeps_an_owed_frame_when_cancelled_mid_drain():
 async def test_pre_turn_drain_hands_back_an_owed_frame_before_awaiting_a_reject():
     """A retained frame is never held across an await.
 
-    ``reject_tool`` writes to the child's stdin and that write is not bounded
-    short: a backend that already delivered a command response but has stopped
-    reading its own stdin applies backpressure that blocks it. An owed waiter
-    carries a 60s deadline, so a frame parked in the retain list for the length
-    of that write can expire and the call reports "" for a response the backend
-    delivered. The await is also the yield point at which the waiting
-    ``_wait_for_response`` gets scheduled, so handing the frame back BEFORE it
-    is what actually pays the waiter.
+    ``reject_tool``'s stdin write can block on backpressure past the waiter's 60s
+    deadline, and the await is where ``_wait_for_response`` gets scheduled.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")

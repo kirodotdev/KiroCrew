@@ -116,7 +116,7 @@ def extractor_resource_limit_preexec() -> "Callable[[], None] | None":
         _EXTRACTOR_PREEXEC = apply_resource_limits(
             {
                 "resource_limits": {
-                    "max_memory_mb": _EXTRACTOR_MAX_AS_BYTES // (1024 * 1024),
+                    "max_address_space_mb": _EXTRACTOR_MAX_AS_BYTES // (1024 * 1024),
                     "max_cpu_seconds": _EXTRACTOR_MAX_CPU_SECS,
                     "max_open_files": _EXTRACTOR_MAX_NOFILE,
                 }
@@ -286,9 +286,9 @@ RLIMIT_PROFILE_BUILD = "build"
 RLIMIT_PROFILE_SESSION_HOST = "session_host"
 # A first-party document parser fed untrusted bytes (``pdf_extract_child``). Its
 # ceiling is FIXED, not read from ``resource_limits``: the ``tool`` profile only
-# applies RLIMIT_AS when an operator sets ``max_memory_mb`` (default 0), and a
-# parser whose allocation precedes any length check needs a memory bound that
-# is on by default. RLIMIT_AS caps VIRTUAL address space, which is why ``tool``
+# applies RLIMIT_AS when an operator sets ``max_address_space_mb`` (default 0),
+# and a parser whose allocation precedes any length check needs a memory bound
+# that is on by default. RLIMIT_AS caps VIRTUAL address space, which is why ``tool``
 # leaves it opt-in (Node/V8 reserves far more than it touches); this child is
 # pure CPython plus ``pdfplumber``, measured at ~270 MB VmPeak on a one-page
 # document, so 1 GiB is headroom for a large document and a hard stop for a
@@ -863,13 +863,26 @@ def run_limited(
     :func:`popen_limited`: this wrapper never hands back a handle, so no
     cancellation registry can be keyed on the child and the lost-cancel hazard
     that hook exists to close cannot arise. Add one when a caller needs it.
+
+    On Windows the spawn goes through
+    :func:`kiro_crew.platform_compat.run_killing_tree_on_timeout`, so a ``timeout``
+    also ends the child's descendants and the call returns at about the timeout
+    instead of when the last process holding its pipes exits.
     """
     cmd, preexec = _prepare_limited_spawn(argv, profile, kwargs, "run_limited")
     reported = list(argv)
+    # Windows only: the stdlib's timeout arm kills just the child and then waits
+    # for every descendant holding its pipes. POSIX keeps subprocess.run.
+    tree_timeout = platform_compat.IS_WINDOWS
     try:
         for delay in _INTERPRETER_ENOENT_DELAYS:
             try:
-                result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+                if tree_timeout:
+                    result = platform_compat.run_killing_tree_on_timeout(
+                        cmd, preexec_fn=preexec, **kwargs
+                    )
+                else:
+                    result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
                 break
             except FileNotFoundError as exc:
                 if not _retry_interpreter_enoent(exc, cmd, delay):
@@ -880,7 +893,12 @@ def run_limited(
             # popen_limited: whatever this raises reaches the caller unchanged,
             # so a genuinely broken install still reports the error it reports
             # today -- just ~4s later.
-            result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+            if tree_timeout:
+                result = platform_compat.run_killing_tree_on_timeout(
+                    cmd, preexec_fn=preexec, **kwargs
+                )
+            else:
+                result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         exc.cmd = reported
         raise

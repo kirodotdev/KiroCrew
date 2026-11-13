@@ -112,6 +112,20 @@ def _inheritance_preference(
     return inherited, source, True
 
 
+#: What a Kiro ``cli.json`` that is present but cannot be read raises from
+#: :func:`_settings`: a refused or failed read, a malformed or non-object
+#: document, an oversized file, a symlink loop (``RuntimeError`` before Python
+#: 3.13). Every reader in this package treats these the same way: no projection
+#: decision is taken from the file and nothing is written to it.
+_UNREADABLE_SETTINGS_ERRORS: tuple[type[BaseException], ...] = (
+    OSError,
+    ValueError,
+    RuntimeError,
+    RecursionError,
+    FileTooLargeError,
+)
+
+
 def inherits_default_resources(work_dir: str | os.PathLike[str] | None) -> bool:
     """Whether a custom agent started in *work_dir* inherits kiro-cli's default resources.
 
@@ -129,8 +143,7 @@ def inherits_default_resources(work_dir: str | os.PathLike[str] | None) -> bool:
             if work_dir is not None
             else {}
         )
-    # RuntimeError: Path.resolve() reports a symlink loop that way before Python 3.13.
-    except (OSError, ValueError, RuntimeError, RecursionError, FileTooLargeError):
+    except _UNREADABLE_SETTINGS_ERRORS:
         logger.warning(
             "skill projection: Kiro settings unreadable; keeping inherited resources",
             exc_info=True,

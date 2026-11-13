@@ -79,6 +79,15 @@ class TestTranscriptReadsSkipNonObjectRows:
         recent = log.recent_from_source(KEY.split("-")[0], max_messages=10)
         assert [m["content"] for m in recent] == ["m1", "m2"]
 
+    def test_recent_survives_an_object_row_missing_role_or_content(self, tmp_path: Path) -> None:
+        # A dict is a message row (transcript_count.message_row), so a row with
+        # no `role` or no `content` reaches the formatter and must not raise.
+        for index, row in enumerate(['{"role": "user"}', "{}", '{"content": "x"}']):
+            for roles in (None, {"user", "assistant"}):
+                log = _seed(tmp_path / f"row{index}-{roles is None}", row)
+                contents = [m["content"] for m in log.recent(KEY, max_messages=10, roles=roles)]
+                assert contents[0] == "m1" and contents[-1] == "m2", (row, roles)
+
 
 class TestMetadataWritesRefuseANonObjectFirstLine:
     """Line 0 is the metadata row. When it will not parse, both writers below

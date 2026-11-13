@@ -38,16 +38,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-# ``pytest`` is an OPTIONAL runtime dependency. ``kiro_crew.testing`` ships in
-# the runtime wheel (not ``dev_requirements``) so downstream consumers can do
-# ``pip install kirocrew`` and use ``seeded_home`` from any test harness
-# (unittest, nose, hand-rolled scripts). A hard ``import pytest`` at module
-# level would break that contract — ``seeded_home`` itself needs no pytest,
-# only ``seeded_home_fixture`` does. Lazy-import with a ``None`` sentinel,
-# then guard the ``@pytest.fixture`` decorator so ``seeded_home_fixture``
-# only exists when pytest is available. Pytest users get the decorator;
-# non-pytest users just never see it (and ``__all__`` filters it out of the
-# star-import list).
+# ``pytest`` is OPTIONAL: ``kiro_crew.testing`` ships in the runtime wheel so any
+# test harness can use ``seeded_home``. Only ``seeded_home_fixture`` needs pytest,
+# so it (and its ``__all__`` entry) exists only when pytest imports.
 try:
     import pytest
 except ImportError:  # pragma: no cover — covered indirectly by import tests.
@@ -70,16 +63,12 @@ def _retry_readonly_removal(func: object, path: str, _exc_info: object) -> None:
 def seeded_home(fixture_name: str) -> Iterator[Path]:
     """Context manager yielding a populated ``$KIROCREW_HOME`` tempdir.
 
-    On enter: creates a fresh temp directory, points ``KIROCREW_HOME`` at
-    it, and runs ``seed(fixture_name)`` to populate the tree. On exit:
-    restores the previous ``KIROCREW_HOME`` (or unsets if it wasn't set)
+    Points ``KIROCREW_HOME`` at a fresh temp directory and runs
+    ``seed(fixture_name)``; on exit restores the previous value (or unsets it)
     and removes the tempdir.
 
-    Propagates ``SeedError`` from ``seed()`` — guardrails still apply (the
-    helper does NOT pass ``--seed-replace`` since the tempdir is fresh
-    and empty, so the non-empty guardrail cannot fire). ``fixture_name`` is
-    still validated (unknown fixture, path traversal) so callers cannot
-    use this helper to bypass the seed-side guardrails.
+    Propagates ``SeedError``: ``fixture_name`` is still validated (unknown
+    fixture, path traversal), so this helper cannot bypass the seed guardrails.
 
     Example:
         with seeded_home("minimal") as home:
@@ -89,26 +78,20 @@ def seeded_home(fixture_name: str) -> Iterator[Path]:
     previous = os.environ.get("KIROCREW_HOME")
     tmpdir = Path(tempfile.mkdtemp(prefix="kirocrew-seeded-home-"))
     try:
-        # ``seed()`` itself will create files inside tmpdir but not
-        # re-create tmpdir. ``mkdtemp`` returns an empty dir, so the
-        # non-empty guardrail won't fire; the empty-dir branch in ``seed()``
-        # will ``rmdir`` it and let ``copytree`` recreate.
+        # ``mkdtemp`` returns an empty dir, so seed's non-empty guardrail
+        # cannot fire; seed rmdirs it and lets ``copytree`` recreate it.
         os.environ["KIROCREW_HOME"] = str(tmpdir)
         seed(fixture_name)
         yield tmpdir
     finally:
-        # Restore env var first so a cleanup failure still unblocks
-        # follow-up tests. ``tmpdir`` may have been removed already
-        # (e.g. test swapped it out) — ignore missing.
+        # Restore the env var first so a cleanup failure still unblocks
+        # later tests. The test may already have removed ``tmpdir``.
         if previous is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = previous
         if tmpdir.exists():
-            # Use shutil.rmtree — tmpdir holds the seeded tree, not a
-            # symlink we need to preserve. The seed-side SYMLINK guardrails
-            # don't apply here because we created tmpdir ourselves via
-            # ``mkdtemp`` which never returns a symlink.
+            # Plain rmtree is safe: ``mkdtemp`` never returns a symlink.
             shutil.rmtree(tmpdir, onerror=_retry_readonly_removal)
 
 
@@ -118,12 +101,8 @@ if pytest is not None:
     def seeded_home_fixture(request: "pytest.FixtureRequest") -> Iterator[Path]:
         """Pytest fixture wrapping :func:`seeded_home` (scope=function).
 
-        Defined only when pytest is importable — ``kiro_crew.testing`` is in
-        the runtime wheel and must stay importable without pytest installed.
-        Non-pytest consumers see no ``seeded_home_fixture`` symbol and use
-        :func:`seeded_home` directly.
-
-        Parameterise via ``indirect=["seeded_home_fixture"]``:
+        Defined only when pytest is importable. Parameterise via
+        ``indirect=["seeded_home_fixture"]``:
 
             @pytest.mark.parametrize(
                 "seeded_home_fixture", ["minimal", "rich"], indirect=True
@@ -131,11 +110,8 @@ if pytest is not None:
             def test_something(seeded_home_fixture: Path) -> None:
                 ...
 
-        Defaults to the ``empty`` fixture when called without a parameter.
-        The param is read from ``request.param`` so a direct invocation
-        without ``indirect`` falls back to ``"empty"``. Scope is the
-        pytest default (``function``) so the seeded tempdir is created
-        fresh for every test that depends on it — no cross-test state.
+        Without ``indirect`` it seeds ``"empty"``. Function scope gives every
+        test a fresh tempdir, so no state crosses tests.
         """
         fixture_name = getattr(request, "param", "empty")
         with seeded_home(fixture_name) as home:
@@ -145,25 +121,20 @@ if pytest is not None:
     def one_pool_thread(event_loop: asyncio.AbstractEventLoop) -> None:
         """Run the test on a loop whose default executor has ONE thread.
 
-        For a test whose code under test runs its writes on the default executor.
-        A test that waits for one of them by parking its own wait on that executor
-        (``asyncio.to_thread(event.wait, N)``) takes the only thread the write
-        needs, so the write can only run once the wait gives up. With one thread
-        that is certain rather than load-dependent: the test passes only if its
-        wait holds no pool thread, which ``kiro_crew.testing.wait``'s
-        ``async_wait_until`` and ``await_until`` never do.
+        For code under test that writes on the default executor. A wait parked
+        on that executor (``asyncio.to_thread(event.wait, N)``) takes the only
+        thread the write needs, so with one thread such a test fails every time
+        instead of under load. ``kiro_crew.testing.wait``'s ``async_wait_until``
+        and ``await_until`` hold no pool thread.
 
-        Do not use it on a test that holds a pool thread on purpose (a patched
-        write blocked on a ``threading.Event`` while the test drives another
-        executor call): that test needs a second thread and would wait out the
-        lost-run bound.
+        Not for a test that holds a pool thread on purpose (a patched write
+        blocked on a ``threading.Event``): it needs a second thread.
 
         Needs pytest-asyncio's ``event_loop``; the executor is shut down with the
         loop. Use it by name (``@pytest.mark.usefixtures("one_pool_thread")``)
         after importing it into the test module or a conftest.
         """
-        # Imported here, not at module level, so a bare ``import kiro_crew.testing``
-        # stays as light as it was.
+        # Imported here so a bare ``import kiro_crew.testing`` stays light.
         from concurrent.futures import ThreadPoolExecutor
 
         event_loop.set_default_executor(ThreadPoolExecutor(max_workers=1))

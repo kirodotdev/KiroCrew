@@ -1,10 +1,10 @@
 """docs-lint's fact checks: is this sentence still TRUE of the code?
 
 ``path-exists``, ``line-ref``, ``fenced-path``, ``table-row-merge``,
-``code-coupled-completeness`` and ``dead-identifier`` each report ``FactFinding``
-triples, and the shrink-only baseline in ``.github/docs-lint-baseline.txt`` admits the
-ones already recorded. This module holds the six checks, the identifiers, shapes and
-scope they share, the four helpers only they use, and the baseline's read, write and
+``code-coupled-completeness``, ``dead-identifier`` and ``anchor-exists`` each report
+``FactFinding`` triples, and the shrink-only baseline in ``.github/docs-lint-baseline.txt``
+admits the ones already recorded. This module holds the seven checks, the identifiers,
+shapes and scope they share, the helpers only they use, and the baseline's read, write and
 filter. ``scripts/docs_lint.py`` runs the checks, reports them and owns the CLI: it
 imports this module and re-exports every name in it, and this module takes the scanned
 trees' vocabulary, the finding shapes and the walk helpers from there. That module's
@@ -13,9 +13,12 @@ docstring says why the family needs a baseline. Stdlib only, like the gate.
 
 from __future__ import annotations
 
+import html
 import os
 import re
+import unicodedata
 from pathlib import Path
+from urllib.parse import unquote
 
 from docs_lint import (
     _FENCE_RE,
@@ -26,9 +29,11 @@ from docs_lint import (
     FactFinding,
     Findings,
     _is_regular_file,
+    _iter_links,
     _prune,
     _read,
     _rel,
+    _resolve_link,
     _resolve_source_cite,
     _strip_fences,
 )
@@ -45,6 +50,27 @@ CHECK_FENCED_PATH = "fenced-path"
 CHECK_TABLE_ROW_MERGE = "table-row-merge"
 CHECK_COUPLING_COMPLETENESS = "code-coupled-completeness"
 CHECK_DEAD_IDENTIFIER = "dead-identifier"
+CHECK_ANCHOR_EXISTS = "anchor-exists"
+
+# The tree whose links the anchor check reads. Links written elsewhere are still
+# file-checked; their fragments are not judged yet.
+_ANCHOR_SCOPE_PREFIX = "docs/"
+# An ATX heading: up to three spaces, one to six `#`, then text; a closing `#` run
+# (preceded by a space) is markup, not text.
+_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+# A setext underline: a run of `=` or of `-`, nothing else on the line.
+_SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+# An `id` or `name` attribute on any HTML tag, quoted either way.
+_EXPLICIT_ANCHOR_RE = re.compile(
+    r"""<[A-Za-z][A-Za-z0-9-]*\b[^>]*?\s(?:id|name)\s*=\s*["']([^"']+)["']""", re.I
+)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+# A link or image keeps only its text when GitHub renders the heading.
+_MD_LINK_TEXT_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+# An underscore emphasis PAIR: a run that opens a word and the same run closing
+# it. Group 2 is what it wraps. A lone underscore (`_bg`) or one inside a word
+# (`snake_case`) is text, so it matches nothing here.
+_EMPHASIS_UNDERSCORE_RE = re.compile(r"(?<![A-Za-z0-9_])(_+)(?=\S)(.+?)(?<=\S)\1(?![A-Za-z0-9_])")
 
 # Doc genres that name files and symbols BECAUSE they do not exist yet. Same
 # judgement as ``_PATH_CITE_DOC_PREFIXES``, applied to the fact checks whose
@@ -544,6 +570,173 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
                     if token in live:
                         continue
                     findings.advisories.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token))
+
+
+# ── In-page anchors ────────────────────────────────────────────────────────────
+
+
+def _github_slug(heading: str) -> str:
+    """The id GitHub gives a heading, from its markdown source.
+
+    GitHub slugs the heading's RENDERED text, so the source is rendered first.
+    A code span renders its content verbatim, so it is split out before anything
+    else and left alone: ``<slot>``, ``&amp;`` and ``_private`` inside backticks
+    are all text. Outside code spans an HTML tag renders to nothing, an entity
+    renders to its character, a link or image to its text, and an emphasis pair
+    to what it wraps; an UNPAIRED underscore is text (``_bg runtime`` keeps it).
+    The rule itself is github-slugger's: lowercase, keep letters, marks, numbers,
+    connector punctuation (``_``), spaces and hyphens, drop everything else, then
+    turn each space into a hyphen. Nothing collapses, which is why
+    ``a / b`` slugs to ``a--b``: the slash goes, both spaces stay.
+    """
+    parts = _INLINE_CODE_SPAN_RE.split(heading)
+    text = "".join(part if index % 2 else _render_prose(part) for index, part in enumerate(parts))
+    kept = "".join(
+        ch
+        for ch in text.strip().lower()
+        if ch in " -" or unicodedata.category(ch)[0] in "LMN" or unicodedata.category(ch) == "Pc"
+    )
+    return kept.replace(" ", "-")
+
+
+def _render_prose(text: str) -> str:
+    """The text a heading's non-code markdown renders to, for slugging."""
+    text = _HTML_TAG_RE.sub("", text)
+    text = _MD_LINK_TEXT_RE.sub(r"\1", text)
+    text = html.unescape(text)
+    # Innermost pair first, until none is left, so `__a _b_ c__` unwraps fully.
+    while True:
+        unwrapped = _EMPHASIS_UNDERSCORE_RE.sub(r"\2", text)
+        if unwrapped == text:
+            return text
+        text = unwrapped
+
+
+class _Slugger:
+    """github-slugger's numbering: the first use of a slug is bare, a repeat
+    takes the next ``-N`` that no earlier heading already holds.
+
+    The check is against every slug handed out so far, not only repeats of the
+    same base, so ``Notes``, ``Notes-1``, ``Notes`` numbers the last one
+    ``notes-2`` exactly as GitHub does.
+    """
+
+    def __init__(self) -> None:
+        self._occurrences: dict[str, int] = {}
+
+    def slug(self, heading: str) -> str:
+        base = _github_slug(heading)
+        result = base
+        while result in self._occurrences:
+            self._occurrences[base] += 1
+            result = f"{base}-{self._occurrences[base]}"
+        self._occurrences[result] = 0
+        return result
+
+
+def _anchors(path: Path, cache: dict[Path, frozenset[str]]) -> frozenset[str]:
+    """Every fragment a link may name in ``path``: heading slugs and explicit ids.
+
+    A repeated slug gets ``-1``, ``-2``... in document order, as GitHub numbers
+    them. An explicit ``id``/``name`` attribute on an HTML tag is an anchor too,
+    which is how a bullet or a table row is made linkable. Fenced blocks hold
+    neither. Both ATX (``## x``) and setext (a line underlined with ``=`` or
+    ``-``) headings count. ``cache`` is the caller's, one per run, so a file read
+    once answers every link into it and no answer outlives the run.
+    """
+    cached = cache.get(path)
+    if cached is not None:
+        return cached
+    slugger = _Slugger()
+    out: set[str] = set()
+
+    def add(heading: str) -> None:
+        out.add(slugger.slug(heading))
+
+    try:
+        lines = _strip_fences(_read(path)).splitlines()
+    except OSError:
+        lines = []
+    previous = ""
+    for line in lines:
+        # A tag written inside a code span is an example, not an element.
+        prose = _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), line)
+        out.update(m.lower() for m in _EXPLICIT_ANCHOR_RE.findall(prose))
+        atx = _ATX_HEADING_RE.match(line)
+        if atx:
+            add(atx.group(1))
+        elif _SETEXT_UNDERLINE_RE.match(line) and _is_setext_text(previous):
+            add(previous)
+        previous = line
+    result = frozenset(out)
+    cache[path] = result
+    return result
+
+
+def _is_setext_text(line: str) -> bool:
+    """A line a setext underline turns into a heading: plain paragraph text.
+
+    A blank line, a list item, a quote, a table row or a heading of its own is not
+    one, so a ``---`` under any of those stays a rule (or a table delimiter).
+    """
+    stripped = line.strip()
+    if not stripped or line.startswith(("    ", "\t")):
+        return False
+    return not stripped.startswith(("#", ">", "|", "- ", "* ", "+ ", "<")) and not re.match(
+        r"\d+[.)]\s", stripped
+    )
+
+
+def check_anchors(root: Path, docs: list[Path], findings: Findings) -> None:
+    """A link whose ``#fragment`` names no anchor in its target (``anchor-exists``).
+
+    The file half of a link is the broken-link check's; this one asks whether the
+    section it names is still there. A section link that no heading produces sends
+    the reader to the top of the page, which in a spec of several thousand lines
+    reads as a working link while landing nowhere near the rule it promised.
+
+    Scoped to links written in ``docs/``, to a target that is a markdown file in
+    this tree. A fragment is compared percent-decoded and lowercased, because
+    GitHub matches it that way. The token is the link exactly as written, so a
+    reader can find it with a search.
+    """
+    cache: dict[Path, frozenset[str]] = {}
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        if not rel_doc.startswith(_ANCHOR_SCOPE_PREFIX):
+            continue
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        for lineno, target in _iter_links(text):
+            if "#" not in target:
+                continue
+            file_part, fragment = target.split("#", 1)
+            if not fragment or _is_anchor_exempt(file_part, target):
+                continue
+            if file_part:
+                resolved = _resolve_link(doc, file_part, root)
+                if resolved is None or resolved.suffix != ".md" or not _is_regular_file(resolved):
+                    continue
+                try:
+                    resolved.relative_to(root.resolve())
+                except ValueError:
+                    continue
+            else:
+                resolved = doc
+            if unquote(fragment).lower() in _anchors(resolved, cache):
+                continue
+            findings.facts.append(
+                FactFinding(CHECK_ANCHOR_EXISTS, rel_doc, target, f"line {lineno}: no such section")
+            )
+
+
+def _is_anchor_exempt(file_part: str, target: str) -> bool:
+    """A link whose fragment this check cannot judge: external, or a template."""
+    if file_part.lower().startswith(("http://", "https://", "mailto:", "//")):
+        return True
+    return "{" in target or "$" in target
 
 
 # ── Baseline ───────────────────────────────────────────────────────────────────

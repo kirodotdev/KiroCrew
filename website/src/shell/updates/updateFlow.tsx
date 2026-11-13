@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Package, X, CheckCircle } from 'lucide-react'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import { useAppSelector } from '../../store'
 import { api } from '../../api/client'
 import { updateAffordance } from '../../utils/updateAffordance'
@@ -7,6 +8,8 @@ import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease 
 import { safeSetItem } from '../../utils/safeStorage'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError, type ErrorReport } from '../../utils/errorReport'
 import { InAppUpdateFlow } from '../../pages/settings/AboutPanel'
 import WhatsNewAutoUpdateToggle from '../../components/WhatsNewAutoUpdateToggle'
 import { i18nT } from '../../i18n/t'
@@ -45,16 +48,12 @@ export function useUpdateFlow() {
   // yet; '' otherwise. Drives the notice above the notes.
   const [staleNotesFrom, setStaleNotesFrom] = useState('')
   const [showChangelog, setShowChangelog] = useState(false)
-  // Has the changelog effect below reached a verdict for this launch? It decides
-  // asynchronously, so "no changelog is showing" is not the same claim as "no
-  // changelog is going to show" — the startup-video gate needs the second one.
-  const [changelogDecided, setChangelogDecided] = useState(false)
   const [fullChangelog, setFullChangelog] = useState('')
   const [showFull, setShowFull] = useState(false)
   const [updateError, setUpdateError] = useState('')
   // Close update modal when progress clears (simulation complete or cancelled)
   useEffect(() => {
-    if (!updateProgress && (updating || showUpdateModal)) {
+    if ((!updateProgress || updateProgress.step === 'done') && (updating || showUpdateModal)) {
       setUpdating(false)
       setShowUpdateModal(false)
     }
@@ -64,9 +63,9 @@ export function useUpdateFlow() {
   useEffect(() => {
     if (!version || version === '—') return
     const lastSeen = localStorage.getItem('mc-last-version')
-    if (lastSeen === version) { setChangelogDecided(true); return }
+    if (lastSeen === version) return
     // First visit — no baseline to diff, just record current version
-    if (!lastSeen) { safeSetItem('mc-last-version', version); setChangelogDecided(true); return }
+    if (!lastSeen) { safeSetItem('mc-last-version', version); return }
     // Version changed — show the sections in `lastSeen < v <= version`, and
     // nothing else. Both bounds are load-bearing, and the missing UPPER one is
     // the reported bug: `main` is bumped a minor ahead of the released line and a
@@ -114,13 +113,9 @@ export function useUpdateFlow() {
       // release notes for good -- there is no second chance once the baseline says
       // the user has seen them.
       safeSetItem('mc-last-version', version)
-      setChangelogDecided(true)
     }).catch(() => {
       // A failure is not an answer. The notes may still be waiting, so leave the
-      // baseline alone for the next launch to retry, and do NOT mark the changelog
-      // decided: the startup video yields this launch rather than opening on a
-      // guess about what the user was owed.
-      setChangelogDecided(false)
+      // baseline alone for the next launch to retry.
     })
   }, [version])  
   const handleUpdate = useCallback(async () => {
@@ -128,7 +123,9 @@ export function useUpdateFlow() {
     setUpdateError('')
     setUpdating(true)
     try {
+      // Arms the update for the next start: nothing installs or restarts now.
       await api.applyUpdate()
+      setUpdating(false)
     } catch (err: unknown) {
       setUpdating(false)
       let msg = i18nT('app.update_failed_2')
@@ -142,22 +139,71 @@ export function useUpdateFlow() {
   }, [])
   return {
     updating, setUpdating, showUpdateModal, setShowUpdateModal, changes, staleNotesFrom, showChangelog, setShowChangelog,
-    changelogDecided, fullChangelog,
+    fullChangelog,
     setFullChangelog, showFull, setShowFull, updateError, setUpdateError, handleUpdate, version, affordance,
     updateCommand, updateTargetVersion,
   }
 }
 
+/**
+ * Keep keystrokes inside an update dialog away from the page's global
+ * shortcuts (the command palette, session jumps), as `Modal` does: one of those
+ * would open a second overlay that this dialog's capture-phase trap then fights
+ * for focus. Escape is left to travel; the trap owns it in the capture phase.
+ */
+function isolateKeys(e: KeyboardEvent) {
+  if (e.key !== 'Escape') e.stopPropagation()
+}
+
 /** The changelog dialog a version change opens, with the update offer beneath the notes. */
 export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typeof useUpdateFlow>; updateAvailable: boolean }) {
+  if (!(flow.showChangelog && !flow.updating)) return null
+  return <ChangelogDialog flow={flow} updateAvailable={updateAvailable} />
+}
+
+/** The open changelog dialog. Mounted only while open, so the focus trap's
+ *  focus-in and focus-restore run on the dialog's own open and close. */
+function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof useUpdateFlow>; updateAvailable: boolean }) {
   const {
-    updating, changes, staleNotesFrom, showChangelog, setShowChangelog,
+    changes, staleNotesFrom, setShowChangelog,
     fullChangelog, setFullChangelog, showFull, setShowFull, handleUpdate, version, affordance, updateCommand,
     updateTargetVersion,
   } = flow
-  if (!(showChangelog && !updating)) return null
+  const close = useCallback(() => { setShowChangelog(false); setShowFull(false) }, [setShowChangelog, setShowFull])
+  // Escape closes like the X button; Tab stays inside; focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, close)
+  // One full-changelog fetch at a time: a second click while it is in flight
+  // starts none, so no later answer can reopen what the user hid. An answer
+  // that lands after the dialog closed is dropped too.
+  const fetchingFull = useRef(false)
+  const mounted = useRef(true)
+  const [fullError, setFullError] = useState<{ message: string; report?: ErrorReport } | null>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const toggleFull = async () => {
+    if (showFull) { setShowFull(false); return }
+    if (fullChangelog) { setShowFull(true); return }
+    if (fetchingFull.current) return
+    fetchingFull.current = true
+    setFullError(null)
+    try {
+      const d = await api.changelog()
+      if (!mounted.current) return
+      setFullChangelog(d.content || '')
+      setShowFull(true)
+    } catch (e) {
+      // The toggle itself is the retry. The report carries the request's
+      // details to the agent hand-off.
+      if (mounted.current) setFullError({ message: i18nT('app.couldn_t_load_full_changelog'), report: reportForError(e) })
+    } finally {
+      fetchingFull.current = false
+    }
+  }
   return (
-    <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
+    <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe" onClick={e => { if (e && e.target === e.currentTarget) close() }}>
       {/* Sized for a real release, not a patch note: a minor's section runs
           to hundreds of lines, and the old max-w-md / max-h-56 box showed a
           dozen of them. The dialog is bounded by the viewport and laid out as
@@ -166,10 +212,11 @@ export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typ
           One width for both states, so "view full changelog" does not make
           the dialog jump; opening it pins the notes to a shorter box and
           gives the full changelog the rest of the dialog's height. */}
-      <div role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" className="bg-card border border-border rounded-xl p-6 w-full mx-4 max-w-3xl max-h-[85vh] overflow-y-auto flex flex-col shadow-xl">
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach */}
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" onKeyDown={isolateKeys} className="bg-card border border-border rounded-xl p-6 w-full mx-4 max-w-3xl max-h-[85vh] overflow-y-auto flex flex-col shadow-xl">
         <div className="flex justify-between items-center mb-4 shrink-0">
           <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
-          <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={() => { setShowChangelog(false); setShowFull(false) }}><X className="lucide-inline" /></button>
+          <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={close}><X className="lucide-inline" /></button>
         </div>
         {/* The notes are this modal's PAYLOAD, not a garnish on an update
             offer, so they are no longer gated on `updateAvailable`. The
@@ -202,7 +249,7 @@ export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typ
         {updateAvailable ? (
           affordance === 'apply' ? (
             <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
-              {i18nT('app.update_now')}
+              {i18nT('app.update_when_i_restart')}
             </button>
           ) : affordance === 'arm' ? (
             <InAppUpdateFlow
@@ -230,9 +277,10 @@ export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typ
             of it, and the dialog then scrolls rather than collapsing this
             box to zero height. */}
         <div className={`mt-3 pt-3 border-t border-border flex flex-col flex-1 ${showFull ? 'min-h-[10rem]' : 'min-h-0'}`}>
-          <button className="self-start shrink-0 text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
-            if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }
-          }}>{showFull ? i18nT('app.hide_full_changelog') : i18nT('app.view_full_changelog')}</button>
+          <button className="self-start shrink-0 text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={toggleFull}>{showFull ? i18nT('app.hide_full_changelog') : i18nT('app.view_full_changelog')}</button>
+          {fullError && (
+            <ErrorNotice variant="inline" className="mt-2" message={fullError.message} report={fullError.report} askAgent onHandoff={close} testId="changelog-full-error" />
+          )}
           {showFull && fullChangelog && (
             <div className="mt-2 bg-bg rounded-lg border border-border flex-1 min-h-0 flex flex-col" data-testid="changelog-full">
               <div className="p-3 pb-6 min-h-0 overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%-1.5rem),transparent)]" data-testid="changelog-full-scroll">
@@ -243,5 +291,23 @@ export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typ
         </div>
       </div>
     </Clickable>
+  )
+}
+
+/**
+ * The overlay and dialog root of the update-failed dialog App.tsx draws. App
+ * mounts it only while there is an error, so the focus trap's focus-in and
+ * focus-restore run on the dialog's own open and close.
+ */
+export function UpdateErrorDialogFrame({ setError, children }: { setError: (msg: string) => void; children: ReactNode }) {
+  const dismiss = useCallback(() => setError(''), [setError])
+  // Escape dismisses like the Dismiss button; Tab stays inside; focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, dismiss)
+  return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')} onKeyDown={isolateKeys}>
+      {children}
+    </div>
   )
 }

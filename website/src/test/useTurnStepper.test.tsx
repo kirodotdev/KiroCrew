@@ -201,8 +201,8 @@ describe('the shortcuts reference', () => {
   it('lists the prompt steps under chat navigation with their Alt+arrow chords', () => {
     renderWithProviders(<ShortcutsModal onClose={() => {}} />)
     // jsdom is non-Mac. The label is a block div (an i18n run boundary), so the row is its parent.
-    const prev = screen.getByText('Previous prompt in this chat').parentElement!
-    const next = screen.getByText('Next prompt in this chat').parentElement!
+    const prev = screen.getByText('Previous prompt in this chat (outside text fields)').parentElement!
+    const next = screen.getByText('Next prompt in this chat (outside text fields)').parentElement!
     expect(prev).toHaveTextContent('Alt')
     expect(prev).toHaveTextContent('\u2191')
     expect(next).toHaveTextContent('Alt')

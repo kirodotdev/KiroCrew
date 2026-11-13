@@ -377,6 +377,20 @@ describe('useWebSocket frame router', () => {
     expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'A complete final answer.', expect.objectContaining({ request_id: expect.any(String) }))
   })
 
+  it('does not read an earlier reply again when the newest Sessions turn said nothing', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true })
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'An earlier answer.', ts: '1' }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'user', content: 'And now?', ts: '2' }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'error', content: 'Sign in again to continue.', ts: '3' }))
+    })
+
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    expect(api.voiceSynthesize).not.toHaveBeenCalled()
+  })
+
   it('re-reads the auto-speak preference when the finished turn had it off', async () => {
     const { ws } = mount()
     ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockClear()

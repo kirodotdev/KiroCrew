@@ -4,23 +4,26 @@
 what they use of these by name: ``FakeWorker``, an in-memory worker;
 ``_make_pool_with_fake_workers``, a pool pre-loaded with them and marked started;
 ``_zero_tool_client``, an ``AcpClient`` double whose agent spec answers the zero-tool check;
+``_real_client_without_io``, which lets a worker build a real ``AcpClient`` that never spawns;
 and the autouse ``_config_dir_tracks_patched_home``, which points ``llm_pool.config_dir()``
 at ``<patched home>/.kirocrew`` and which every test module of the family imports.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from kiro_crew.acp.client import AcpClient
 from kiro_crew.knowledge.llm_pool import LLMPool, Worker
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim and no module of the family calls monkeypatch.undo()
-def _config_dir_tracks_patched_home(monkeypatch):
+def _config_dir_tracks_patched_home(_floor_monkeypatch):
     """Keep ``llm_pool.config_dir()`` pointed at ``<patched home>/.kirocrew``.
 
     The data home moved from ``~/.kirocrew`` to ``~/.kiro/crew`` (``config_dir()``),
@@ -34,7 +37,7 @@ def _config_dir_tracks_patched_home(monkeypatch):
     whatever ``Path.home()`` each test patches), preserving the existing
     ``.kirocrew/config.json`` layout the tests build.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.knowledge.llm_pool.config_dir", lambda: Path.home() / ".kirocrew"
     )
 
@@ -52,6 +55,23 @@ def _zero_tool_client(*, spec_declares_zero_tools: bool = True) -> AsyncMock:
     client.effective_spec_declares_zero_tools = MagicMock(return_value=spec_declares_zero_tools)
     client.authored_spec_declares_zero_tools = MagicMock(return_value=spec_declares_zero_tools)
     return client
+
+
+@contextmanager
+def _real_client_without_io() -> Iterator[None]:
+    """Let ``AcpWorker`` build a real ``AcpClient`` whose process and spec reads are stubbed.
+
+    The worker's choices (backend, sandbox mode, model pin) land on the client it
+    built, so a test reads them there instead of from the constructor's call record.
+    """
+    with (
+        patch.object(AcpClient, "ensure_ready", AsyncMock()),
+        patch.object(AcpClient, "shutdown", AsyncMock()),
+        patch.object(AcpClient, "authored_spec_declares_zero_tools", return_value=True),
+        patch.object(AcpClient, "effective_spec_declares_zero_tools", return_value=True),
+        patch.object(AcpClient, "spec_zero_tools", new_callable=PropertyMock, return_value=True),
+    ):
+        yield
 
 
 class FakeWorker(Worker):

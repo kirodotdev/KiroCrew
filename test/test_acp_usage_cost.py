@@ -19,6 +19,7 @@ import pytest
 from kiro_crew.acp._dispatch import parse_prompt_token_usage, parse_usage_cost
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import AcpPromptStats, TurnUsage
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT
 
 # ── parse_usage_cost ─────────────────────────────────────────────────────
 
@@ -318,6 +319,25 @@ class TestClientTracking:
         u = client.last_prompt_stats.to_turn_usage()
         assert (u.input_tokens, u.output_tokens) == (100, 50)
         assert (u.cache_read_tokens, u.cache_creation_tokens) == (30, 20)
+
+    def test_copilot_prompt_usage_keeps_cache_out_of_input(self):
+        # Copilot CLI's inputTokens already holds its cache reads and writes (a
+        # recorded turn: 12690 = 12629 read + 58 written + 3 uncached), while the
+        # four counts a turn records are disjoint, as claude-agent-acp sends them.
+        client = _bare_client()
+        client._acp_backend = ACP_BACKEND_COPILOT
+        client._track_prompt_usage(
+            {
+                "stopReason": "end_turn",
+                "inputTokens": 12690,
+                "outputTokens": 6,
+                "cachedReadTokens": 12629,
+                "cachedWriteTokens": 58,
+            }
+        )
+        u = client.last_prompt_stats.to_turn_usage()
+        assert (u.input_tokens, u.output_tokens) == (3, 6)
+        assert (u.cache_read_tokens, u.cache_creation_tokens) == (12629, 58)
 
     def test_prompt_usage_kiro_response_is_noop(self):
         client = _bare_client()

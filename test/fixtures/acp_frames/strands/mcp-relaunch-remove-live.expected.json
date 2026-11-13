@@ -1,0 +1,191 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-2",
+        "text": "tools=alpha_codeword,retrieve_context,skills,todo_write earlier_messages=0"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "tools=alpha_codeword,retrieve_context,skills,todo_write earlier_messages=0",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "alpha_codeword",
+        "tool_call_id": "tooluse_k8_call",
+        "tool_kind": "other",
+        "wire_title": "alpha_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_k8_call",
+        "tool_final": true,
+        "tool_output": "tangerine-42",
+        "tool_output_bytes": 12,
+        "tool_output_digest": "97f42a964cc23ac07aa1f3e17d127e3e69a6baeb9c04d55a6a4be384ed66d960",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-4",
+        "text": "result=tangerine-42 tools=alpha_codeword,retrieve_context,skills,todo_write earlier_messages=4"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "result=tangerine-42 tools=alpha_codeword,retrieve_context,skills,todo_write earlier_messages=4",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-6",
+        "text": "tools=alpha_codeword,beta_codeword,retrieve_context,skills,todo_write earlier_messages=6"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "tools=alpha_codeword,beta_codeword,retrieve_context,skills,todo_write earlier_messages=6",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "beta_codeword",
+        "tool_call_id": "tooluse_k8_call",
+        "tool_kind": "other",
+        "wire_title": "beta_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_k8_call",
+        "tool_final": true,
+        "tool_output": "plum-17",
+        "tool_output_bytes": 7,
+        "tool_output_digest": "3826e946a049076e621cd65012f6c32bf0679da60bb98d27f11286e200b72a7a",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-8",
+        "text": "result=plum-17 tools=alpha_codeword,beta_codeword,retrieve_context,skills,todo_write earlier_messages=10"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "result=plum-17 tools=alpha_codeword,beta_codeword,retrieve_context,skills,todo_write earlier_messages=10",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 2
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "tools=beta_codeword,retrieve_context,skills,todo_write earlier_messages=12"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "tools=beta_codeword,retrieve_context,skills,todo_write earlier_messages=12",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

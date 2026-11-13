@@ -90,7 +90,7 @@ _RECORDS: dict[str, dict[str, Any]] = {}
 
 # Which owner token, if any, is CURRENTLY seeding each path in this process.
 # Adoption is for orphans, and only a record with no live holder is one: two
-# keyless sessions share the default work_dir (``config_dir() / "workspace"``),
+# keyless sessions share the default work_dir (``config_dir() / KEYLESS_WORK_DIR_NAME``),
 # so without this a second session would recognize the FIRST session's live seed
 # as an orphan, re-seed it with its own ``permissions.defaultMode``, and unlink it
 # on its own reset -- out from under a session still running against it. This dict
@@ -367,7 +367,7 @@ def _cross_process_lock() -> Iterator[None]:
     outcome a failed write already gives, never a silent lost record.
     """
     lock_file = config_dir() / _LOCK_FILENAME
-    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_file), os.O_RDWR, 0o600)
     try:
         platform_compat.acquire_lock(fd, exclusive=True)
         yield

@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { useAppApi, useAppEvents, useAppInfo, useNavigate, useNotify } from '../../app-sdk'
 import { i18nT } from '../../i18n/t'
+import { installHardExit } from '../../utils/errorReport'
 import IncidentChat, {
   INCIDENT_CHAT_BOX_HEIGHT_PX,
   INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX,
@@ -134,6 +135,21 @@ describe('IncidentChat', () => {
     render(<IncidentChat incidentId="zzq-42" />)
     fireEvent.click(screen.getByTestId('zzq-nav'))
     expect(window.location.pathname).toBe('/zzq-elsewhere')
+  })
+
+  it('hands the exit to the installed hard exit (an app pop-out) instead of loading a page', () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {})
+    const sink = vi.fn()
+    installHardExit(sink)
+    try {
+      render(<IncidentChat incidentId="zzq-42" />)
+      fireEvent.click(screen.getByTestId('zzq-nav'))
+      expect(sink).toHaveBeenCalledWith('/zzq-elsewhere')
+      expect(assign).not.toHaveBeenCalled()
+    } finally {
+      installHardExit(null)
+      assign.mockRestore()
+    }
   })
 
   it('routes notify to the host toast bus', () => {

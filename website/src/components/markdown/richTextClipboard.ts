@@ -21,6 +21,11 @@
  * the user approves it, and an editor (and every recipient of the email) would
  * fetch it on paste with no such approval. An image becomes a link to it, or
  * its alt text when its URL is not one worth pasting.
+ *
+ * A SELECTION has no Markdown source of its own, so `rangeToCleanHtml` reads
+ * the selected part of the rendered reply instead, as `visibleText` reads it
+ * (no hidden text, buttons or images; a code block's code, a formula's TeX),
+ * and puts it through the same cleaning.
  */
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
@@ -29,6 +34,7 @@ import { toHtml } from 'hast-util-to-html'
 import type { Element, ElementContent, Properties, Root as HastRoot, RootContent } from 'hast'
 import type { Nodes as MdastNodes, Parent as MdastParent, Root as MdastRoot } from 'mdast'
 import { capWhitespaceRuns } from '../../utils/markdownDepthBound'
+import { visibleHast } from '../../utils/visibleText'
 import { REMARK_BASE_PLUGINS } from './remarkBase'
 
 /** Tags kept as themselves. Anything else is unwrapped to its children. */
@@ -44,8 +50,8 @@ const KEEP_TAGS = new Set([
 const KEEP_PROPS: Record<string, readonly string[]> = {
   a: ['href', 'id'],
   ol: ['start'],
-  th: ['align'],
-  td: ['align'],
+  th: ['align', 'colspan', 'rowspan'],
+  td: ['align', 'colspan', 'rowspan'],
   li: ['id'],
   sup: [],
   input: ['type', 'checked', 'disabled'],
@@ -144,4 +150,30 @@ export function markdownToCleanHtml(markdown: string): string {
   const hast = toHast(mdast) as HastRoot
   const root: HastRoot = { type: 'root', children: cleanChildren(hast.children) }
   return toHtml(root)
+}
+
+const BLOCK_TAGS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'table', 'thead', 'tbody', 'tr', 'th', 'td'])
+
+const isBlock = (n: ElementContent): n is Element => n.type === 'element' && BLOCK_TAGS.has(n.tagName)
+
+function soleBlock(nodes: ElementContent[]): Element | null {
+  const kids = nodes.filter(n => n.type !== 'text' || n.value.trim())
+  return kids.length === 1 && isBlock(kids[0]) ? kids[0] : null
+}
+
+/** A selection inside one paragraph, heading, list item or cell pastes as that
+ *  block's inline content, the way a browser copies it, so a phrase lands
+ *  mid-sentence rather than as a paragraph of its own. One spanning two blocks
+ *  keeps the whole structure around them. */
+function inlineIfInsideOneBlock(nodes: ElementContent[]): ElementContent[] {
+  let inner = nodes
+  for (let only = soleBlock(inner); only; only = soleBlock(inner)) inner = only.children
+  return inner.some(isBlock) ? nodes : inner
+}
+
+/** The part of a rendered reply inside `range` as the same clean HTML: read as
+ *  the reader sees it (`visibleHast`), then kept to the semantic tags above.
+ *  Empty when there is nothing to write as rich text. */
+export function rangeToCleanHtml(root: HTMLElement, range: Range): string {
+  return toHtml({ type: 'root', children: inlineIfInsideOneBlock(cleanChildren(visibleHast(root, range))) })
 }

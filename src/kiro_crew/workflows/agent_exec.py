@@ -19,10 +19,8 @@ Structured output (``schema=``) is handled upstream by the runner via
 so this module only needs to return the model's text.
 
 Kept out of the hot import path: ``SessionManager`` etc. are passed IN (the
-gateway wires them at startup), so this module imports only ``llm_helpers`` types
-and has no side effects on import. It is NOT in the F1 engine layering graph
-(``dsl→context→runner``); it's an optional production adapter the gateway supplies
-as ``agent_fn``.
+gateway wires them at startup), so importing this module has no side effects.
+It is an optional adapter the gateway supplies as ``agent_fn``, not an engine layer.
 """
 
 from __future__ import annotations
@@ -33,8 +31,17 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from kiro_crew.acp_backends import (
+    backend_from_stored,
+    selectable_backends,
+    selectable_stored_backend_values,
+)
+from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCEL_UNACKED, STOP_REASON_CANCELLED
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
+from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
+from kiro_crew.workflows import WorkflowStepInterrupted
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +52,125 @@ AgentFn = Callable[[str, dict], Any]
 # but prevents infinite tool loops from prompt injection.
 _MAX_TURNS_PER_STEP = 200
 
+#: Stop reasons of a turn something outside the step ended: a session cancel
+#: (the gateway stopping, a session reset) or a cancel the backend never acked.
+#: A workflow never cancels its own step's turn -- a run cancel or a per-task
+#: timeout cancels the awaiting task instead -- so text collected before one of
+#: these is a cut-off answer, not the step's result.
+_INTERRUPTED_STOP_REASONS = frozenset({STOP_REASON_CANCELLED, STOP_REASON_CANCEL_UNACKED})
+
+
+class StepStopWatch:
+    """Records a step turn's stop reason; pass :meth:`on_complete` to ``stream_and_collect``.
+
+    Shared by both executors. :meth:`raise_if_interrupted` raises
+    :class:`WorkflowStepInterrupted` for an ``_INTERRUPTED_STOP_REASONS`` stop, so
+    the step fails instead of recording the cut-off text as its result.
+    """
+
+    def __init__(self) -> None:
+        self.stop_reason = ""
+
+    def on_complete(self, event: Any) -> None:
+        self.stop_reason = str(getattr(event, "stop_reason", "") or "")
+
+    def raise_if_interrupted(self) -> None:
+        if self.stop_reason in _INTERRUPTED_STOP_REASONS:
+            raise WorkflowStepInterrupted(
+                f"agent turn was stopped before it finished ({self.stop_reason})"
+            )
+
+
+def step_text(refusals: list[str], text: str, *, has_schema: bool) -> str:
+    """A step's text, led by its directive refusals unless the step has a ``schema=``.
+
+    A ``schema=`` step's text is parsed as JSON, and a refusal line ahead of a
+    scalar reply would fail that parse and spend the step's re-asks. There the
+    refusal stays in its SEL ``denied`` row and the step's log line only.
+    """
+    if not refusals:
+        return text
+    if has_schema:
+        logger.info("workflow step: refused %d person-only directive(s)", len(refusals))
+        return text
+    return "\n\n".join([*refusals, text])
+
 
 class WorkflowSpawnRefused(Exception):
-    """A ``ctx.agent()`` step the spawn policy or the cwd allowlist refuses."""
+    """A ``ctx.agent()`` step the spawn policy, the cwd allowlist or its backend refuses."""
+
+
+class WorkflowEffortInvalid(ValueError):
+    """A ``ctx.agent(effort=...)`` value that is not a reasoning-effort level."""
+
+
+def step_effort_kwargs(opts: dict) -> dict[str, str]:
+    """The ``get_or_create`` kwargs that carry a step's ``effort=``, or ``{}``.
+
+    An unset effort adds nothing, so the session resolves its effort exactly as
+    a step that never named one. A set one must be a level from the shared
+    vocabulary: anything else raises :class:`WorkflowEffortInvalid` and fails the
+    step before a session is allocated, instead of running it at a default the
+    script did not ask for.
+    """
+    effort = opts.get("effort")
+    if effort is None or effort == "":
+        return {}
+    if not is_valid_effort(effort):
+        raise WorkflowEffortInvalid(
+            f"invalid effort {str(effort)[:64]!r}: expected one of {', '.join(EFFORT_LEVELS)}"
+        )
+    return {"reasoning_effort_override": effort}
+
+
+def step_backend_kwargs(opts: dict) -> dict[str, str]:
+    """The ``get_or_create`` kwargs that carry a step's ``backend=``, or ``{}``.
+
+    Named as ``spawn_run(backend=)`` and ``config.json`` name a backend (``"kiro"``
+    is Kiro CLI). Unset (``None`` or ``""``) adds nothing. A name this build cannot
+    select (unknown, or denied by policy) raises :class:`WorkflowSpawnRefused`
+    before a session is allocated: the provider factory would quietly move it to
+    the floor backend instead.
+    """
+    name = opts.get("backend")
+    backend = backend_from_stored(name)
+    if backend is None:
+        return {}
+    if not isinstance(backend, str) or backend not in selectable_backends():
+        raise WorkflowSpawnRefused(
+            f"backend {name!r} is not available; choose one of "
+            f"{selectable_stored_backend_values()}"
+        )
+    return {"backend_override": backend}
+
+
+def step_session_name(opts: dict) -> Optional[str]:
+    """The step's ``session=`` name, scoped to its ``backend=`` when it names one.
+
+    A live session cannot change harness, so the same name on two backends must be
+    two sessions. A step that names no backend keeps its name, and so its key.
+    """
+    session, backend = opts.get("session"), opts.get("backend")
+    return f"{session}@{backend}" if session is not None and backend else session
+
+
+async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
+    """Push ``level`` onto a live session through ``provider.change_effort``.
+
+    ``get_or_create`` applies ``reasoning_effort_override`` only when it starts a
+    session, so a session that is already live needs the step's effort pushed.
+    Nothing is pushed for an unset level or a provider without ``change_effort``.
+    A level the session does not advertise (``accepts_effort_level`` returns
+    False) is skipped, as a cold start drops it. A raise from ``change_effort``
+    propagates to the caller.
+    """
+    change_effort = getattr(provider, "change_effort", None)
+    if not level or change_effort is None:
+        return
+    accepts = getattr(provider, "accepts_effort_level", None)
+    if accepts is not None and not accepts(level):
+        return
+    await change_effort(level)
 
 
 async def vet_step_spawn(
@@ -90,15 +213,11 @@ async def vet_step_spawn(
     The cwd leg IS offloaded -- a config load plus ``realpath``/``isdir``, the same
     work ``spawn_warm`` offloads -- and only when a directory was actually named.
     """
-    # Function-local, deliberately, against the ``top-level-imports`` rule
-    # (advisory). Two measured reasons, so a later reader can re-judge it rather
-    # than guess: importing ``kiro_crew.subagent`` here adds 133 modules and
-    # ~104ms to importing this module, which is the "kept out of the hot import
-    # path" contract at the top of this file; and this module sits UNDER
-    # ``workflows/service.py``, which ``slack/gateway.py`` imports, while
-    # ``kiro_crew.subagent`` imports ``kiro_crew.slack.format`` -- that chain is
-    # acyclic only while ``slack/__init__`` stays lazy, so a module-scope import
-    # would make this file depend on that staying true.
+    # Function-local despite the advisory ``top-level-imports`` rule: importing
+    # ``kiro_crew.subagent`` adds 133 modules and ~104ms to this module's import,
+    # and ``kiro_crew.subagent`` imports ``kiro_crew.slack.format`` while
+    # ``slack/gateway.py`` imports ``workflows/service.py`` (which imports this
+    # module); that chain is acyclic only while ``slack/__init__`` stays lazy.
     from kiro_crew.subagent import _vet_spawn_governance, validate_cwd
 
     denial = _vet_spawn_governance(session_key, agent or "", app=app)
@@ -124,6 +243,65 @@ async def vet_step_spawn(
         logger.warning("workflow agent step refused: invalid cwd")
         raise WorkflowSpawnRefused(f"spawn refused: {cwd_err}")
     return resolved
+
+
+async def persist_step_usage_row(
+    *,
+    slot_key: str,
+    model: str,
+    provider: Any,
+    agent: str,
+    elapsed_ms: int,
+) -> None:
+    """Write ONE per-turn workflow usage row through the existing usage writer.
+
+    Shared by both executors (``build_agent_fn`` and ``agent_pool``'s pooled and
+    overflow legs). ``slot_key`` is the step session's real key (``wf:``,
+    ``wf-pool:`` or ``wf-unpooled:``). ``provider`` doubles as ``model_source`` so
+    the writer can name the model that ran when the caller resolved none.
+
+    Best-effort: it never breaks the run, but each guard is narrow so one failing
+    read cannot silently drop the whole row. The import is function-local because
+    kiro_crew.dashboard.handlers.usage pulls in the slack handler chain and can
+    raise ImportError under some import orders; that is a wiring bug, so it warns.
+    """
+    try:
+        from kiro_crew.dashboard.handlers.usage import (
+            persist_token_record_async,
+            read_context_tokens,
+            read_effective_agent,
+        )
+    except ImportError:
+        logger.warning(
+            "workflow usage row skipped: usage handlers unimportable",
+            exc_info=True,
+        )
+        return
+    # Context occupancy is enrichment only. Guard it on its OWN so a
+    # read failure degrades to (0, 0) instead of taking the row down.
+    try:
+        _used, _window = read_context_tokens(provider)
+    except Exception:
+        logger.debug("workflow context-token read failed", exc_info=True)
+        _used, _window = 0, 0
+    # Only the persist stays in a best-effort try: a write failure
+    # must not break the workflow run, but nothing else hides here.
+    try:
+        await persist_token_record_async(
+            slot_key,
+            model,
+            provider_last_turn_usage(provider),
+            provider="acp",
+            surface="workflow",
+            agent=read_effective_agent(provider) or agent,
+            context_used=_used,
+            context_window=_window,
+            elapsed_ms=elapsed_ms,
+            model_source=provider,
+            trigger="workflow",
+        )
+    except Exception:
+        logger.debug("workflow usage row persist failed", exc_info=True)
 
 
 def build_agent_fn(
@@ -156,8 +334,10 @@ def build_agent_fn(
     counter = itertools.count()
 
     async def agent_fn(prompt: str, opts: dict) -> Any:
-        # Spawn gates FIRST: a refused step must allocate no session, touch no
-        # memory scope and consume no session index.
+        # Effort and spawn gates FIRST: a refused step must allocate no session,
+        # touch no memory scope and consume no session index.
+        effort_kwargs = step_effort_kwargs(opts)
+        backend_kwargs = step_backend_kwargs(opts)
         step_cwd = await vet_step_spawn(
             session_key=session_key,
             agent=opts.get("agent") or default_agent,
@@ -165,7 +345,7 @@ def build_agent_fn(
             app=app,
         )
         # Per-call isolated session by default; caller-named session when session=.
-        session = opts.get("session")
+        session = step_session_name(opts)
         ephemeral = session is None
         key = session or f"wf:{run_id}:{next(counter)}"
         if memory_scope is not None:
@@ -179,13 +359,23 @@ def build_agent_fn(
             model=opts.get("model") or default_model,
             cwd=step_cwd or cwd,
             extra_env=extra_env,
+            **effort_kwargs,
+            **backend_kwargs,
         )
-        # Wall clock for THIS agent turn only (not the whole workflow run):
-        # acp leaves TurnUsage.duration_ms at 0, so without this the row's
-        # duration_ms is a literal 0. Started after get_or_create so session
-        # setup is not charged to the turn.
-        _turn_t0 = time.monotonic()
         try:
+            if is_new:
+                # Nobody can reconnect a slow MCP server for a step, so its first
+                # prompt waits (bounded) for the agent spec's servers to report.
+                await wait_for_declared_mcp(provider, UNATTENDED_MCP_WAIT_SECS)
+            elif session is not None:
+                # A live named session keeps the effort it started with; push
+                # this step's effort onto it before the turn is sent.
+                await apply_step_effort(provider, effort_kwargs.get("reasoning_effort_override"))
+            # Wall clock for THIS agent turn only (not the whole workflow run):
+            # acp leaves TurnUsage.duration_ms at 0, so without this the row's
+            # duration_ms is a literal 0. Started after the session is ready and
+            # the effort push so session setup is not charged to the turn.
+            _turn_t0 = time.monotonic()
             from kiro_crew.messaging.identity import publish_turn_identity
 
             await publish_turn_identity(sessions, key)
@@ -200,66 +390,35 @@ def build_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=step_cwd or cwd,
                 )
+            # A step is never a person's turn and no session applier reads its
+            # stream, so a person-only directive it calls is refused out loud.
+            from kiro_crew.dashboard.session_directive_apply import (
+                person_only_directive_refuser,
+            )
+
+            stop = StepStopWatch()
+            refusals: list[str] = []
             text = await stream_and_collect(
                 provider,
                 prompt,
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
+                on_complete=stop.on_complete,
+                on_event=person_only_directive_refuser(key, refusals),
             )
+            text = step_text(refusals, text, has_schema=opts.get("schema") is not None)
             # ── Per-turn usage row: attribute workflow spend. ──
-            # Best-effort analytics that must never break the workflow run — but
-            # the guards are deliberately NARROW. A single wide try around the
-            # import + context read + persist would swallow ANY of them at
-            # debug, so one import failure or a context-read failure would
-            # silently drop the ENTIRE row (the workflow surface writing zero
-            # rows).
-            #
-            # The import stays function-local on purpose: kiro_crew.dashboard.
-            # handlers.usage pulls in the slack handler chain, so a module-scope
-            # import can raise ImportError under some import orders. A genuine
-            # failure here is a real wiring bug, so surface it (warning) instead
-            # of hiding it — while still not aborting the run.
-            try:
-                from kiro_crew.dashboard.handlers.usage import (
-                    persist_token_record_async,
-                    read_context_tokens,
-                    read_effective_agent,
-                )
-            except ImportError:
-                logger.warning(
-                    "workflow usage row skipped: usage handlers unimportable",
-                    exc_info=True,
-                )
-            else:
-                # Context occupancy is enrichment only. Guard it on its OWN so a
-                # read failure degrades to (0, 0) instead of taking the row down.
-                try:
-                    _used, _window = read_context_tokens(provider)
-                except Exception:
-                    logger.debug("workflow context-token read failed", exc_info=True)
-                    _used, _window = 0, 0
-                # Only the persist stays in a best-effort try: a write failure
-                # must not break the workflow run, but nothing else hides here.
-                try:
-                    await persist_token_record_async(
-                        key,
-                        opts.get("model") or default_model or "",
-                        provider_last_turn_usage(provider),
-                        provider="acp",
-                        surface="workflow",
-                        agent=(
-                            read_effective_agent(provider)
-                            or opts.get("agent")
-                            or default_agent
-                            or ""
-                        ),
-                        context_used=_used,
-                        context_window=_window,
-                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                        model_source=provider,
-                    )
-                except Exception:
-                    logger.debug("workflow usage row persist failed", exc_info=True)
+            # One shared writer for both executors (see persist_step_usage_row).
+            # Written before the stop check: a turn cut off from outside still
+            # spent what it spent.
+            await persist_step_usage_row(
+                slot_key=key,
+                model=opts.get("model") or default_model or "",
+                provider=provider,
+                agent=opts.get("agent") or default_agent or "",
+                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+            )
+            stop.raise_if_interrupted()
             # Apply canonical output redaction to prevent credential or
             # exfiltration-URL leakage into workflow results stored in history
             # or injected into parent chat.

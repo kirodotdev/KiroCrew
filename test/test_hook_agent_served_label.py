@@ -174,3 +174,10 @@ def test_a_kiro_cli_hook_turn_still_lists_the_inherited_tree(unmapped_custom):
     builder, project = unmapped_custom
     prompt = _hook_turn(builder, _ServedProvider(PROVIDER_ACP, project))
     assert SKILL in prompt
+
+
+def test_a_hook_turn_carries_no_options_guidance(unmapped_custom):
+    """A webhook turn is unattended, so the chat-only [OPTIONS:] reminder stays out."""
+    builder, project = unmapped_custom
+    prompt = _hook_turn(builder, _ServedProvider(PROVIDER_ACP, project))
+    assert "(If presenting choices, end with [OPTIONS:" not in prompt

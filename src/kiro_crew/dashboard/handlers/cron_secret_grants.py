@@ -56,6 +56,28 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.cron")
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
+def _expected_ts_value(raw: int | float) -> float | None:
+    """*raw* as a float, or ``None`` when no float can hold it.
+
+    A JSON integer has no width limit, and ``float()`` of a 400-digit one raises
+    ``OverflowError``; such a value names no request timestamp.
+    """
+    try:
+        return float(raw)
+    except OverflowError:
+        return None
+
+
+def _unrepresentable_ts_response() -> web.Response:
+    return web.json_response(
+        {
+            "error": "expected_ts is not a timestamp: it is too large to hold as a number",
+            "code": "invalid_secret_env",
+        },
+        status=400,
+    )
+
+
 def _is_str_mapping(value: object) -> bool:
     """True when ``value`` is a dict whose keys AND values are all ``str``.
 
@@ -307,6 +329,10 @@ async def _promote_pending_grant(
             # the request (compensating write), so the re-approve path
             # survives without that window.
             secret_env_pending={},
+            # A new approval ends the denial the resurfacing marker records:
+            # the next stale revision is asked about even when its code
+            # matches one an earlier marker covered.
+            secret_env_resurfaced_pin="",
             # Locked compare-and-swap: everything above ran against a snapshot
             # the agent could have replaced in the meantime; the store refuses
             # the swap unless the record STILL carries exactly that snapshot.
@@ -571,6 +597,25 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
             )
         deny_expected = body.get("expected_secret_env")
         deny_expected_ts = body.get("expected_ts")
+        deny_ts: float | None = None
+        if isinstance(deny_expected_ts, bool):
+            # A JSON bool is not a timestamp. Without this guard it is compared
+            # as ``float(True)==1.0`` / ``float(False)==0.0``, which matches or
+            # misses a stored timestamp by accident -- a misleading 409, or a
+            # silent deny when it happens to equal the stored value. The approve
+            # path rejects a bool here too. No real client sends one: the UI
+            # sends the numeric ``secret_env_pending_ts`` or omits the field.
+            return web.json_response(
+                {
+                    "error": "expected_ts must be a number, not a boolean",
+                    "code": "invalid_secret_env",
+                },
+                status=400,
+            )
+        if isinstance(deny_expected_ts, (int, float)):
+            deny_ts = _expected_ts_value(deny_expected_ts)
+            if deny_ts is None:
+                return _unrepresentable_ts_response()
         # AUDIT-OR-DENY, same as approval: the intent record lands before the
         # request is discarded, synchronously, or the denial is refused.
         try:
@@ -599,9 +644,7 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
                 expect_secret_env_pending=(
                     deny_expected if isinstance(deny_expected, dict) else None
                 ),
-                expect_secret_env_pending_ts=(
-                    float(deny_expected_ts) if isinstance(deny_expected_ts, (int, float)) else None
-                ),
+                expect_secret_env_pending_ts=deny_ts,
             )
         except CronPendingMismatch:
             return web.json_response(
@@ -624,6 +667,14 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
         except CronStoreUnreadable as exc:
             return _cron_unreadable_response(exc)
         state.push_refresh("crons")
+        if not updated:
+            # The job was removed between the pending read and this write, so
+            # there was nothing left to deny. Main answered ``ok`` here, so keep
+            # the 200 (a 404 would newly fail a call that succeeds today) but
+            # name it in a warning: the denial is a no-op, the job is gone.
+            return web.json_response(
+                {"ok": True, "id": job_id, "warnings": ["job_not_found: the job was removed"]}
+            )
         return web.json_response({"ok": True, "id": job_id})
     if body.get("approve_pending") is True:
         # The approval must restate the request the approver saw (409
@@ -671,12 +722,15 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+        approve_ts = _expected_ts_value(expected_ts)
+        if approve_ts is None:
+            return _unrepresentable_ts_response()
         return await _promote_pending_grant(
             state,
             job_id,
             expected_source_sha256=expected_source,
             expected_env=expected_env,
-            expected_ts=float(expected_ts),
+            expected_ts=approve_ts,
         )
     secret_env = body.get("secret_env")
     if not isinstance(secret_env, dict) or not all(

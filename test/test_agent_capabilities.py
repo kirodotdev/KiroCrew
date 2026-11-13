@@ -19,6 +19,7 @@ from agent_capabilities_helpers import _accepting_kiro_cli  # noqa: F401
 from agent_capabilities_helpers import capability_app_fixture  # noqa: F401
 from agent_capabilities_helpers import editor_fixture, save, spec_for
 
+from conftest import requires_symlinks
 from kiro_crew import agent, agent_state
 from kiro_crew.agent_capabilities import (
     CapabilityError,
@@ -157,12 +158,8 @@ def test_stale_preview_parent_and_request_rejected(editor):
 def test_a_non_ascii_preview_token_is_refused_not_raised(editor, codepoint):
     """A non-ASCII token must be refused like any other stale one.
 
-    ``hmac.compare_digest`` rejects a ``str`` holding a non-ASCII character by
-    raising ``TypeError``. The token travels in the request body, and the
-    handler catches only ``CapabilityError`` and ``(OSError, ValueError)``, so a
-    raise escapes as a 500 instead of the ``stale_preview`` refusal that a wrong
-    ASCII token produces. Code points are built rather than written literally
-    because ``0xDCFF`` is a lone surrogate, which cannot appear in source.
+    ``hmac.compare_digest`` raises ``TypeError`` on a non-ASCII ``str``, which the
+    handler does not catch. Code points are built because ``0xDCFF`` cannot be in source.
     """
     service, home, specs, parent = editor
     body = {"revision": service.get("A")["revision"], "enroll": True}
@@ -518,6 +515,24 @@ def test_transport_types_are_validated_before_any_write(editor):
         service.preview("A", body)
     assert not (home / "agent_model_state.json").exists()
     assert len(list(specs.glob("*.json"))) == 1
+
+
+def test_stdio_row_with_empty_url_can_still_be_pinned(editor):
+    """The editor accepts a stdio row with an empty ``url`` on a pin, so a
+    row the Capabilities API loads can also be saved.
+    """
+    service, home, specs, parent = editor
+    parent["mcpServers"]["search"].pop("env")
+    parent["mcpServers"]["search"]["url"] = ""
+    (specs / "parent.json").write_text(json.dumps(parent))
+    row = next(r for r in service.get("A")["rows"] if r["section"] == "mcpServers")
+    assert row["value"]["url"] == ""
+    save(
+        service,
+        [{"section": "mcpServers", "id": "search", "action": "set", "value": row["value"]}],
+        enroll=True,
+    )
+    assert spec_for(home, specs)["mcpServers"]["search"]["command"] == row["value"]["command"]
 
 
 @pytest.mark.asyncio
@@ -878,6 +893,61 @@ def test_global_parent_starts_from_any_project_that_does_not_shadow_it(
     assert prepare_member_capabilities("A", None)["revision"] == saved["revision"]
 
 
+@pytest.mark.parametrize("saved_in_project", [True, False])
+def test_global_parent_stays_editable_after_the_member_project_changes(
+    editor, tmp_path, monkeypatch, saved_in_project
+):
+    """A changed member project is not a changed global Parent.
+
+    The chat start already ignores the project a global Parent was resolved
+    from. The editor must too, or a drifted copy dead-ends: the chat says
+    review and save the change, and the editor refuses the save.
+    """
+    service, home, specs, parent = editor
+    if saved_in_project:
+        before = tmp_path / "before"
+        before.mkdir()
+        _use_workspace_project(home, monkeypatch, before)
+    save(service, enroll=True)
+    after = tmp_path / "after"
+    after.mkdir()
+    _use_workspace_project(home, monkeypatch, after)
+    spec = spec_for(home, specs)
+    spec["prompt"] = "edited outside the editor"
+    (specs / (spec["name"] + ".json")).write_text(json.dumps(spec))
+    with pytest.raises(CapabilityError, match="^materialization_changed$"):
+        prepare_member_capabilities("A", after)
+
+    view = service.get("A")
+    assert view["template"]["available"] is True
+    assert "error_code" not in view["template"]
+    save(service, [{"section": "prompt", "id": "prompt", "action": "inherit"}])
+    assert spec_for(home, specs)["prompt"] == "original"
+    assert prepare_member_capabilities("A", after)["revision"]
+
+
+@requires_symlinks
+def test_project_parent_stays_pinned_when_another_project_links_its_agents(
+    editor, tmp_path, monkeypatch
+):
+    """Same file through a linked folder: the editor still refuses, as chat start does."""
+    service, home, specs, parent = editor
+    first = tmp_path / "first"
+    (first / ".kiro" / "agents").mkdir(parents=True)
+    (first / ".kiro" / "agents" / "parent.json").write_text(json.dumps(parent))
+    _use_workspace_project(home, monkeypatch, first)
+    save(service, enroll=True)
+    second = tmp_path / "second"
+    (second / ".kiro").mkdir(parents=True)
+    (second / ".kiro" / "agents").symlink_to(first / ".kiro" / "agents")
+    _use_workspace_project(home, monkeypatch, second)
+    assert service.get("A")["template"]["error_code"] == "parent_identity_changed"
+    with pytest.raises(CapabilityError, match="^parent_identity_changed$"):
+        save(service)
+    with pytest.raises(CapabilityError, match="^project_identity_changed$"):
+        prepare_member_capabilities("A", second)
+
+
 def test_project_that_shadows_a_global_parent_refuses_the_start(editor, tmp_path, monkeypatch):
     service, home, specs, parent = editor
     workspace = tmp_path / "workspace"
@@ -1133,6 +1203,31 @@ def test_shared_enrollment_keeps_implicit_global_scope_unchanged(editor):
     }
     with pytest.raises(CapabilityError, match="global_mcp_exclusion_unrepresentable"):
         save(service, [{"section": "tools", "id": "read", "action": "remove"}])
+
+
+@pytest.mark.parametrize("existing", [[], ["@global/read_page"]])
+def test_adding_a_grant_keeps_refs_to_servers_from_the_global_mcp_json(editor, existing):
+    """An ``@server`` grant whose server only the global mcp.json declares survives an add."""
+    service, home, specs, parent = editor
+    parent.pop("includeMcpJson")
+    parent["allowedTools"] = list(existing)
+    (specs / "parent.json").write_text(json.dumps(parent))
+    save(service, enroll=True)
+    save(
+        service,
+        [{"section": "allowedTools", "id": "@global/search", "action": "set", "value": True}],
+    )
+    assert spec_for(home, specs)["allowedTools"] == [*existing, "@global/search"]
+
+
+def test_pinned_off_mcp_json_still_drops_refs_to_undeclared_servers(editor):
+    service, home, specs, _ = editor
+    save(service, enroll=True)
+    save(
+        service,
+        [{"section": "allowedTools", "id": "@global/search", "action": "set", "value": True}],
+    )
+    assert spec_for(home, specs)["allowedTools"] == []
 
 
 def test_preview_and_publication_use_identical_governance_without_preview_audit(

@@ -1,17 +1,10 @@
 """`kirocrew memory search` must embed the query, not keyword-match it.
 
-``VectorMemoryStore.search_episodic`` falls back to FTS5 whenever
-``query_embedding`` is None and does not auto-embed (only ``get_episodic_context``
-does), and nothing repairs an un-embedded QUERY the way the gateway's boot sweep
-repairs an un-embedded row. The CLI therefore has to produce its own query
-vector, or ``--layer all`` prints two labelled sections that are both keyword
-hits over different corpora — while the two are documented as answering
-different questions ("where did I write this word" versus "what does this mean
-like").
+``VectorMemoryStore.search_episodic`` falls back to FTS5 when ``query_embedding`` is
+None and does not auto-embed, so without its own query vector ``--layer all`` prints
+two keyword sections.
 
-Every test here drives ``_memory_cmd`` directly with an ``argparse.Namespace``,
-the style of ``test_cli_commands_coverage.py``, and stands in for the embedding
-backend rather than loading the 610MB GGUF.
+Tests drive ``_memory_cmd`` directly and fake the embedding backend (no 610MB GGUF).
 """
 
 from __future__ import annotations
@@ -23,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import cli_commands as cc
+from kiro_crew import embeddings as emb
 from kiro_crew.config.loader import KiroCrewConfig
 
 _QUERY_VECTOR = [0.25, 0.5, 0.75, 1.0]
@@ -98,6 +92,7 @@ class _Harness:
         model_present: bool = True,
         stale_space: bool = False,
         embedder: _ReadyEmbedder | None = None,
+        ollama: bool = False,
     ) -> None:
         self.store = _RecordingStore()
         self.embedder = embedder if embedder is not None else _ReadyEmbedder()
@@ -107,6 +102,7 @@ class _Harness:
             patch.object(cc, "declared_store", lambda *a, **k: self.store),
             patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),
             patch.object(cc, "model_file_present", lambda *a, **k: model_present),
+            patch.object(emb, "ollama_backend_selected", lambda *a, **k: ollama),
             patch.object(cc, "store_embedding_space_is_stale", lambda _s: stale_space),
             patch.object(cc, "get_shared_embedder", self._get_embedder),
             patch.object(cc, "make_sync_embed_fn", self._make_embed_fn),
@@ -161,6 +157,12 @@ class TestMemorySearchQueryEmbedding:
         assert h.embedder_lookups == 0 and h.embed_fn_builds == 0
         assert cc._SEARCH_KEYWORD_ONLY_NO_MODEL in capsys.readouterr().err
 
+    def test_an_ollama_server_embeds_without_a_model_file(self) -> None:
+        """With ``memory.embedding_provider = "ollama_http"`` no GGUF is ever on disk."""
+        with _Harness(model_present=False, ollama=True) as h:
+            cc._memory_cmd(_search_args())
+        assert h.store.kwargs["query_embedding"] == _QUERY_VECTOR
+
     def test_stale_vector_space_degrades_to_keyword(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -195,12 +197,9 @@ class TestMemorySearchQueryEmbedding:
 class TestUnembeddedCorpusStillReachable:
     """A NULL-embedding episodic row must stay reachable from the CLI.
 
-    ``write_episodic(defer_embedding=True)`` bulk writers, `memory import` and
-    `memory migrate` (this store binds no ``embed_fn`` on those paths), and rows
-    cleared by ``reconcile_embedding_space`` all leave rows that neither vector
-    leg can see — both filter on ``embedding IS NOT NULL`` — until the gateway's
-    boot-only, paced backfill sweep reaches them. An empty semantic result over
-    such a corpus is not "no such memory", so the keyword leg is retried once.
+    Deferred writes, `memory import`/`migrate` and ``reconcile_embedding_space`` leave
+    rows no vector leg sees until the boot backfill, so an empty semantic result
+    retries the keyword leg once.
     """
 
     def test_empty_vector_pass_retries_the_keyword_leg(

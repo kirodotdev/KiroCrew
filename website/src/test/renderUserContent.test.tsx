@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
-import { restoreUnreferencedImages } from '../utils/fileTokens'
+import { restoreUnreferencedImages, splitLeadingImageBlock } from '../utils/fileTokens'
+import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 
 const noop = () => {}
 
@@ -272,5 +273,92 @@ describe('renderUserContent — multiple images in one message (issue #22401)', 
     const src = img!.getAttribute('src') || ''
     const pathParam = decodeURIComponent(src.replace(/^.*[?&]path=([^&]*).*$/, '$1'))
     expect(pathParam).toBe(p)
+  })
+})
+
+describe('renderUserContent — image plus a collapsed paste (issue #22401)', () => {
+  // A 3+ line paste collapses to a `[ Paste #N ]` chip, which routes the
+  // bubble through the inline paste path. The producer's leading image block
+  // (`[imgMd, body].join('\n\n')`) must still draw as <img>, not raw markdown.
+  const block: PasteBlock = { id: 'p1', seq: 1, lines: 3, content: 'zzq-a\nzzq-b\nzzq-c' }
+
+  it('draws the image and the chip, never the raw ![image] source', () => {
+    const content = `![image](/home/user/uploads/a_pasted-image-1.png)\n\nlook\n${formatToken(block)}\nthanks`
+    const { container } = render(<>{renderUserContent({ content, meta: { pastes: [block] }, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(container.textContent).not.toContain('![image]')
+    expect(container.querySelector('[data-paste-seq="1"]')).toBeInTheDocument()
+    expect(container).toHaveTextContent('look')
+    expect(container).toHaveTextContent('thanks')
+  })
+
+  it('draws every image when several lead a body that is only the chip', () => {
+    const content = [
+      '![image](/home/user/uploads/a_pasted-image-1.png)',
+      '![image](/home/user/uploads/b_pasted-image-2.png)',
+      '',
+      formatToken(block),
+    ].join('\n')
+    const { container } = render(<>{renderUserContent({ content, meta: { pastes: [block] }, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(2)
+    expect(container.textContent).not.toContain('![image]')
+    expect(container.querySelector('[data-paste-seq="1"]')).toBeInTheDocument()
+  })
+
+  it('re-collapses an expanded history row and still draws its image', () => {
+    // History replays the EXPANDED text; recollapsePastes restores the chip.
+    const content = `![image](/home/user/uploads/a_pasted-image-1.png)\n\nlook\n${block.content}\nthanks`
+    const { container } = render(<>{renderUserContent({ content, meta: { pastes: [block] }, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(container.textContent).not.toContain('![image]')
+  })
+
+  it('keeps a replayed paste that itself opens with an image line as one chip', () => {
+    // Pasted text (no upload) whose first line is `![image](...)`, replayed
+    // expanded: the re-collapse must match the whole paste before any image
+    // block is split off, or the chip is lost and the paste renders as markdown.
+    const pasted: PasteBlock = { id: 'p2', seq: 1, lines: 4, content: '![image](/home/user/diagram.png)\n\nREADME paragraph\nmore readme' }
+    const { container } = render(<>{renderUserContent({ content: pasted.content, meta: { pastes: [pasted] }, onFileOpen: noop })}</>)
+    expect(container.querySelector('[data-paste-seq="1"]')).toBeInTheDocument()
+    expect(container.querySelector('img')).not.toBeInTheDocument()
+  })
+
+  it('leaves an image woven into a sentence beside a chip as text (not producer output)', () => {
+    const content = `see ![image](/home/user/x.png) here\n${formatToken(block)}`
+    const { container } = render(<>{renderUserContent({ content, meta: { pastes: [block] }, onFileOpen: noop })}</>)
+    expect(container.querySelector('img')).not.toBeInTheDocument()
+  })
+})
+
+describe('renderUserContent — image plus an inline mention (issue #22401 sibling)', () => {
+  // An inline @file or @folder/ mention routes the caption through the same
+  // plain-span flow as a paste chip, so the leading image block needs the same
+  // treatment there.
+  it('draws the image beside an inline file mention', () => {
+    const content = '![image](/home/user/uploads/a.png)\n\nsee @src/foo.ts please'
+    const { container } = render(<>{renderUserContent({ content, meta: { files: ['/home/user/uploads/a.png', '/home/user/proj/src/foo.ts'] }, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(container.textContent).not.toContain('![image]')
+    expect(container).toHaveTextContent('please')
+  })
+
+  it('draws the image beside an inline folder mention', () => {
+    const content = '![image](/home/user/uploads/a.png)\n\nlook in @src/pages/ please'
+    const { container } = render(<>{renderUserContent({ content, meta: { files: ['/home/user/uploads/a.png'], dirs: ['/repo/src/pages'] }, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(container.textContent).not.toContain('![image]')
+    expect(container).toHaveTextContent('@src/pages/')
+  })
+})
+
+describe('splitLeadingImageBlock', () => {
+  it('peels the producer image block and keeps the body byte-exact', () => {
+    expect(splitLeadingImageBlock('![image](/a.png)\n![image](/b.png)\n\n\nbody')).toEqual({ images: '![image](/a.png)\n![image](/b.png)', body: '\nbody' })
+  })
+  it('returns an empty image part when the content does not lead with one', () => {
+    expect(splitLeadingImageBlock('hi ![image](/a.png)')).toEqual({ images: '', body: 'hi ![image](/a.png)' })
+  })
+  it('handles an images-only message', () => {
+    expect(splitLeadingImageBlock('![image](/a.png)')).toEqual({ images: '![image](/a.png)', body: '' })
   })
 })

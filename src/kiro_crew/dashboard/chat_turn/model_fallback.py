@@ -74,6 +74,49 @@ def _app_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
     return {"app_name": app_name} if isinstance(app_name, str) and app_name else {}
 
 
+def _slot_backend_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
+    """``{"backend_override": <runtime id>}`` for a slot created on a harness, else ``{}``.
+
+    The pick ``session_create(backend=...)`` stored (``slot.backend``), handed to
+    ``get_or_create`` so the one selection gate starts the session on it and the
+    warm pool is bypassed, as for ``spawn_run(backend=...)``. Empty for every other
+    slot, so their allocation call is unchanged.
+    """
+    from kiro_crew.agent_sdk.backends import backend_from_stored
+
+    backend = backend_from_stored(getattr(slot, "backend", "") or None)
+    return {"backend_override": backend} if isinstance(backend, str) else {}
+
+
+def _live_session_off_slot_backend(state: Any, slot: "_ChatSlot") -> bool:
+    """Whether *slot* was created on a harness and its live session runs another.
+
+    A hard Stop's respawn starts the key with no identity, so on the default
+    harness; the turn then resets it onto the pick. Compared with what the
+    selection gate resolves the pick to, so a pick governance has since degraded
+    does not reset on every turn. A live provider naming no backend is left alone.
+    """
+    from kiro_crew.agent_sdk.backends import resolve_selected_backend
+    from kiro_crew.agent_sdk.capabilities import SessionCapabilities
+
+    picked = _slot_backend_allocation_kwargs(slot).get("backend_override")
+    if picked is None:
+        return False
+    provider = state.sessions.get_provider(effective_session_key(slot))
+    caps = getattr(provider, "capabilities", None)
+    if not isinstance(caps, SessionCapabilities) or caps.backend is None:
+        return False
+    if caps.backend == resolve_selected_backend(picked):
+        return False
+    logger.info(
+        "Slot %s was created on %r but its live session runs %r; resetting it",
+        slot.key,
+        picked,
+        caps.backend,
+    )
+    return True
+
+
 async def _inherited_default_model(
     sessions: Any,
     slot: "_ChatSlot",
@@ -112,6 +155,9 @@ async def _inherited_default_model(
         crew_agent=crew_agent,
         app_name=app_name if isinstance(app_name, str) else "",
         session_key=session_key,
+        # The slot's created-on harness, as the allocation passes it: the
+        # default is resolved for that harness, not the configured one.
+        **_slot_backend_allocation_kwargs(slot),
     )
     return resolved or ""
 
@@ -382,6 +428,31 @@ def _resolve_refusal_fallback_target(refusal: "RefusalInfo | None") -> str:
     if cfg == "auto":
         return (refusal.recommended_model or "").strip() if refusal else ""
     return cfg
+
+
+def _refusal_fallback_is_same_model(client: Any, refusal: "RefusalInfo | None") -> bool:
+    """True when a refusal fallback IS configured but resolves to the model
+    that just refused — the case :func:`_refusal_fallback_swap` skips.
+
+    When ``agent.refusal_fallback_model`` equals ``agent.model`` the retry is
+    silently disabled even though a fallback looks set. It reads disabled, not
+    misconfigured, so a separate ``notice`` row (the
+    ``refusal_fallback_same_model`` gateway-notice token) can explain WHY no
+    retry ran and what to change. The equality mirrors the
+    swap's own guard exactly (``strip().lower()`` on the resolved candidate
+    and the active/refusing model) so the card never claims a same-model skip
+    the swap would not have made. An unresolvable candidate (empty, or
+    ``auto`` with no recommendation) or an unknown active model is not this
+    case — those are handled by the ``fallback_off`` hint or by the swap's
+    own unprovable-primary branch.
+    """
+    cand = _resolve_refusal_fallback_target(refusal)
+    if not cand:
+        return False
+    primary = provider_active_model(client)
+    if not primary:
+        return False
+    return cand.strip().lower() == primary.strip().lower()
 
 
 async def _refusal_fallback_swap(
@@ -682,17 +753,15 @@ async def _settle_session_model(
     resumed: bool,
     _is_refusal_retry_turn: bool,
     _synthetic_recovery_turn: bool,
-    crew_model: str = "",
 ) -> bool:
     """Settle the model a turn's session runs on before anything model-dependent.
 
-    Restores a refusal fallback the previous turn left, backfills an unpinned slot
-    from the provider, records the pinned-model verdict a fresh or reloaded session
-    gives and the model it serves. True when the session withheld the slot's pin.
+    Restores a refusal fallback the previous turn left, records the pinned-model
+    verdict a fresh or reloaded session gives and the model it serves. True when
+    the session withheld the slot's pin.
 
-    ``crew_model`` is the crew's own pin for this turn. Only a slot that pins
-    nothing itself but has a crew pin is backfilled; a slot with neither pin
-    inherits the default, whatever it resolves to, and is never written.
+    A slot with no pick of its own is never written, whether it inherits the
+    default or its Bot's model: ``slot.model`` holds only a person's pick.
     """
     # ── Refusal-fallback restore (agent.refusal_fallback_model) ──
     # A refusal retry swapped the live session for ONE message; at the
@@ -714,47 +783,21 @@ async def _settle_session_model(
         and not _synthetic_recovery_turn
     ):
         await _restore_refusal_fallback(slot, client)
-    # Backfill slot.model from provider if user didn't explicitly set one.
-    # AcpProvider stores the resolved model on client._model. For claude_code
-    # that is a provider id; map it back to the canonical registry key so it
-    # matches the canonical-keyed dropdown rows (else the active row won't
-    # highlight and the header shows the raw provider id). Gated on the real
-    # provider so a kiro/acp dotted id (which collides with a claude_code
-    # alias spelling) is left as-is.
     withheld_pin = False
-    # None = no verdict this spawn: either nothing is pinned (the backfill
-    # branch below) or the pin is unjudgeable here (see
-    # `_pinned_model_verdict`). Bound before the branch so the backfill path
-    # cannot leave it undefined.
+    # None = no verdict this spawn: either nothing is pinned or the pin is
+    # unjudgeable here (see `_pinned_model_verdict`).
     verdict: bool | None = None
-    if not slot.model and not slot._active_fallback_model and not slot._refusal_fallback_primary:
-        # The fallback-active guard is load-bearing: while a throttle
-        # fallback is serving this session, the provider's resolved model
-        # IS the fallback candidate, and slot.model is PERSISTED — writing
-        # the candidate here would outlive the in-memory sticky state
-        # across a gateway restart and turn a temporary fallback into a
-        # permanent pin. The refusal-fallback record guards the same
-        # hazard on the replay turn (the restore above skips that turn by
-        # design, so the provider still reports the refusal candidate
-        # here). An unpinned slot simply stays unpinned for the
-        # fallback's duration; the next non-fallback turn applies the
-        # rule below.
-        #
-        # A slot that inherits (no crew pin either) is not written, whatever
-        # the default resolves to, Auto included: storing the served model
-        # would turn "inherit" into a pin, and the slot would stop following
-        # a later change to the default. The chip reads the served model
-        # through ``_sync_served_model`` instead.
-        #
-        # Nor while a deferred model pick is pending: a mid-turn Auto pick
-        # commits ``slot.model = ""`` and marks ``_deferred_model_switch_key``
-        # for the boundary. Backfilling the served (old) model here would
-        # overwrite that "" and the boundary would then apply the old model,
-        # silently undoing the pick — the same guard the completion backfill
-        # carries (``turn_stats``).
-        if crew_model and not slot._deferred_model_switch_key:
-            slot.model = _backfill_canonical_model(client, provider_name) or slot.model
-    elif is_new or resumed:
+    # A slot with no pick of its own is never written from the provider, Bot
+    # pin or not: `slot.model` is persisted and re-sent on every resume, so a
+    # stored served model would turn "inherit" into a pin. The slot would then
+    # stop following its Bot's model and the default, and take an engine
+    # fallback's promotion as if a person had picked it. The chip reads the
+    # served model through ``_sync_served_model`` instead. While Crew's own
+    # fallback serves the slot, the provider's model is the candidate, so no
+    # verdict is recorded for it either.
+    if (slot.model or slot._active_fallback_model or slot._refusal_fallback_primary) and (
+        is_new or resumed
+    ):
         # Record the verdict for BOTH answers, not only the withhold: it is
         # carried in the slots payload so the composer reads the
         # backend's own answer instead of inferring "usable?" from whether
@@ -770,10 +813,9 @@ async def _settle_session_model(
         verdict = _pinned_model_verdict(client, slot.model, provider_name)
         slot.record_model_withheld(verdict)
     if is_new or resumed:
-        # Record what this fresh/reloaded session actually RUNS on, for both
-        # branches above: the inheriting slot (no pin — the first branch,
-        # whose backfill leaves `slot.model` empty on purpose) is the one
-        # whose chip has nothing else to name, and a withheld pin runs on
+        # Record what this fresh/reloaded session actually RUNS on, pinned or
+        # not: the inheriting slot (no pick, so `slot.model` stays empty on
+        # purpose) is the one whose chip has nothing else to name, and a withheld pin runs on
         # the same served default. `client` here is the AcpProvider
         # wrapper (see _sync_served_model for why its PUBLIC accessor is
         # the only readable source).
@@ -812,6 +854,8 @@ async def _settle_session_model(
         # styling for the same reason the empty-response notices use it — a
         # plan change is not a crash. slot.append persists AND broadcasts one
         # chat_message, so it needs no companion broadcast_ws.
+        from kiro_crew.dashboard import gateway_notice as gn
+
         slot.append(
             "notice",
             f"{slot.model} isn't offered right now — "
@@ -819,6 +863,7 @@ async def _settle_session_model(
             f"from the composer, or leave it: your model choice is kept and "
             f"will be used automatically once it's offered again.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_MODEL_UNAVAILABLE, model=str(slot.model)),
         )
     return withheld_pin
 
@@ -1079,6 +1124,10 @@ async def _refusal_fallback_retry(turn) -> bool:
         kind=SYNTHETIC_RECOVERY_KIND,
         payload=_replay_payload,
         extra_meta=_replay_extra,
+        # The refused turn landed and consumed its merge cards, so the
+        # frames ride the replay: this is their one delivery to the
+        # fallback model.
+        keep_merge_cards=True,
     )
     # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
     # purges the replay when either counter moved (a Stop landed while
@@ -1141,8 +1190,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
     _attachment_meta = turn._attachment_meta
     _attachments = turn._attachments
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     client = turn.client
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     # ── Reactive model-access-denial fallback ──
@@ -1197,6 +1246,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
             slot.key,
             _rejected_id,
         )
+        # Stays English: the row's text is the provider's own entitlement
+        # exception (redacted), carried verbatim with no fixed frame of ours.
         _entitle_text = redact(str(exc))
         slot.purge_chunks()
         slot.append(
@@ -1252,6 +1303,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                     _access_fb_candidate,
                     exc_info=True,
                 )
+                # Stays English: the provider's own entitlement exception
+                # (redacted), carried verbatim with no fixed frame of ours.
                 _entitle_text = redact(str(exc))
                 slot.purge_chunks()
                 slot.append(
@@ -1282,6 +1335,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                         _access_fb_candidate,
                         _raw_after,
                     )
+                    # Stays English: the provider's own entitlement exception
+                    # (redacted), carried verbatim with no fixed frame of ours.
                     _entitle_text = redact(str(exc))
                     slot.purge_chunks()
                     slot.append(
@@ -1341,11 +1396,18 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                     # user, forced the model change, so it must be said out
                     # loud and survive a reload the way the throttle notice
                     # does).
+                    from kiro_crew.dashboard import gateway_notice as gn
+
                     slot.append(
                         "notice",
                         f"⚠️ Your account cannot use model '{_rejected_safe}' — "
                         f"running on '{_cand_safe}' instead.",
                         "msg msg-info",
+                        meta=gn.gateway_notice_meta(
+                            gn.GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK,
+                            rejected=_rejected_safe,
+                            model=_cand_safe,
+                        ),
                     )
                     logger.warning(
                         "model access fallback: slot %s model %r not entitled; "
@@ -1417,7 +1479,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                         _ma_replay_qid = _queue_recovery(
                             turn,
                             0,
-                            message,
+                            _message_without_merge_cards,
                             kind=SYNTHETIC_RECOVERY_KIND,
                             # Verbatim replay, same rule as the
                             # transient/throttle retries.

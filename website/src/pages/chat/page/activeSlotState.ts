@@ -1,12 +1,12 @@
 import type { NavigateFunction } from 'react-router-dom'
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { toolDisclosureKey } from '../transcriptRenderers'
-import { useAppSelector } from '../../../store'
-import { selectComposerBusy, selectProjectChipLocked, selectSlotSubagentsActive, pendingQuestionFor, type FollowupItem } from '../../../store/chatSlice'
+import { useAppSelector, type RootState } from '../../../store'
+import { selectComposerBusy, selectProjectChipLocked, selectSlotPendingApproval, selectSlotSubagentsActive, pendingQuestionFor, type FollowupItem } from '../../../store/chatSlice'
 import type { TurnItem } from '../types'
 import { messageRowKey } from '../ChatPageMessageContent'
 import { devWatchMessages, inspectorOn, devLog } from '../../../dev/scrollInspector'
-import { type PromptHistoryItem, promptHistoryFromMessages, samePromptHistory } from '../../../components/composerPromptHistory'
+import { useSentPromptHistory } from '../../../components/useSentPromptHistory'
 import { countCompletedTurns } from '../../../lib/completedTurns'
 import { runBelongsToSlot } from '../../../apps/workflows/runModel'
 import { useTipTrigger } from '../../../components/TipCard'
@@ -14,11 +14,45 @@ import { useKnowledgeFetch } from '../useKnowledgeFetch'
 import { closeCrewWindow, useCrewWindow } from '../crew-window/crewWindowStore'
 import { useGuideRevealScope } from '../../../guide/GuideRevealScope'
 import { slotRowByKey } from '../../../store/slotIndex'
+import { crewRootOf } from '../../../lib/crewMode'
 import { useEnvironmentStartLabel } from '../../../components/sessionEnvironmentHooks'
 
 // Stable identity for the "no follow-up cards" case: returning a fresh {} from
 // the selector would make it a new reference on every store update.
 const EMPTY_FOLLOWUPS: Record<string, { items: FollowupItem[]; ts: number }> = {}
+
+/** Whether a functional surface of the active session owns the band around the
+ *  composer, so the ambient tip yields to it. */
+export const selectTipYieldsToComposerSurface = (s: RootState): boolean =>
+  s.chat.messages.some(m => m.role === 'queued') ||
+  // The approval bar fuses to the top of the composer, directly under the
+  // tip's band: a tip left above it reads as the thing being approved, with
+  // the bar's Allow / Trust / Reject as its buttons. Slot-aware like the bar
+  // itself, so a request waiting in another session does not hide tips here.
+  !!selectSlotPendingApproval(s, s.chat.activeSlot) ||
+  // Question card only renders for its OWNING slot (see the render-site
+  // slot check in ChatPage) -- suppression must match, or a question pending in
+  // another running slot suppresses tips here forever.
+  !!pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot) ||
+  // The follow-up card occupies the same above-composer band. Cards are
+  // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
+  // another session must not suppress tips here.
+  (!!s.chat.activeSlot && !!s.chat.followups?.[s.chat.activeSlot]) ||
+  // The folder-suggestion card takes the same slot inside the composer box the
+  // tip does, and it can land on the FIRST turn — exactly when a tip is most
+  // likely to be offered. It is actionable and one-shot where the tip is
+  // ambient and re-offered, so the tip yields. Slot-keyed like the follow-up
+  // card, so a card parked in another session must not suppress tips here.
+  (!!s.chat.activeSlot && !!s.chat.folderSuggestions?.[s.chat.activeSlot]) ||
+  // Active subagents render the progress bar in the same above-composer
+  // zone the floating tip occupies — the tip always yields: never crowd
+  // the queue/subagent surfaces.
+  (!!s.chat.activeSlot && selectSlotSubagentsActive(s, s.chat.activeSlot)) ||
+  // Workflow runs render WorkflowProgressBar in the same band — but only
+  // runs belonging to THIS slot show a bar here, so filter by ownership or
+  // a terminal run parked in another slot would suppress tips everywhere
+  // forever.
+  Object.values(s.chat.workflowRuns ?? {}).some(r => runBelongsToSlot(r.sessionKey, s.chat.activeSlot) && (r.status === 'running' || r.status === 'finished' || r.status === 'failed' || r.status === 'cancelled'))
 
 interface ActiveSlotStateOptions {
   embedded?: boolean
@@ -64,13 +98,6 @@ export function useActiveSlotState({
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
-  // User-sent messages (oldest → newest) for ↑/↓ prompt history in the input.
-  // Deduplicate consecutive identical prompts to match shell/REPL behavior.
-  // `messages` gets a new reference on every streaming chunk; preserve the
-  // previous array when user-message content is unchanged so `sentMessages`
-  // stays referentially stable and doesn't re-run downstream effects.
-  const sentMessagesRef = useRef<PromptHistoryItem[]>([])
-  const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
   // force-kill. A force press (second click while soft_pending) arriving
   // within FORCE_KILL_ARMING_MS of that slot's soft stop is treated as an
@@ -78,23 +105,10 @@ export function useActiveSlotState({
   // mashing Stop. Keyed by slot so switching slots can't measure one slot's
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
-  const sentMessages = useMemo(() => {
-    const out = promptHistoryFromMessages(messages)
-    // Reset the cached reference when switching slots — otherwise two
-    // conversations with matching length+tail would share the prior array.
-    if (sentMessagesSlotRef.current !== activeSlot) {
-      sentMessagesSlotRef.current = activeSlot ?? null
-      sentMessagesRef.current = out
-      return out
-    }
-    // Append-only within a slot — full element-wise compare (array is small).
-    const prev = sentMessagesRef.current
-    if (samePromptHistory(prev, out)) {
-      return prev
-    }
-    sentMessagesRef.current = out
-    return out
-  }, [messages, activeSlot])
+  // User-sent prompts (oldest → newest) for ↑/↓ prompt history in the input,
+  // consecutive duplicates collapsed, plus any submitted prompt the transcript
+  // lost; referentially stable while unchanged.
+  const sentMessages = useSentPromptHistory(messages, activeSlot)
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
   // Live mirror for `autoFollowAllowed`, a stable callback several effects
   // depend on: taking `slotRunning` as a dependency would re-attach those
@@ -152,33 +166,8 @@ export function useActiveSlotState({
   const pendingFollowup = useAppSelector(s => (s.chat.activeSlot ? s.chat.followups?.[s.chat.activeSlot] : undefined))
   const folderSuggestion = useAppSelector(s => (s.chat.activeSlot ? s.chat.folderSuggestions?.[s.chat.activeSlot] : undefined))
   const followupTsBySlot = useAppSelector(s => s.chat.followups) ?? EMPTY_FOLLOWUPS
-  // The ambient tip yields to functional surfaces that own the above-composer band
-  const tipSuppressed = useAppSelector(s =>
-    s.chat.messages.some(m => m.role === 'queued') ||
-    // Question card only renders for its OWNING slot (see the render-site
-    // slot check in ChatPage) -- suppression must match, or a question pending in
-    // another running slot suppresses tips here forever.
-    !!pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot) ||
-    // The follow-up card occupies the same above-composer band. Cards are
-    // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
-    // another session must not suppress tips here.
-    (!!s.chat.activeSlot && !!s.chat.followups?.[s.chat.activeSlot]) ||
-    // The folder-suggestion card takes the same slot inside the composer box the
-    // tip does, and it can land on the FIRST turn — exactly when a tip is most
-    // likely to be offered. It is actionable and one-shot where the tip is
-    // ambient and re-offered, so the tip yields. Slot-keyed like the follow-up
-    // card, so a card parked in another session must not suppress tips here.
-    (!!s.chat.activeSlot && !!s.chat.folderSuggestions?.[s.chat.activeSlot]) ||
-    // Active subagents render the progress bar in the same above-composer
-    // zone the floating tip occupies — the tip always yields: never crowd
-    // the queue/subagent surfaces.
-    (!!s.chat.activeSlot && selectSlotSubagentsActive(s, s.chat.activeSlot)) ||
-    // Workflow runs render WorkflowProgressBar in the same band — but only
-    // runs belonging to THIS slot show a bar here, so filter by ownership or
-    // a terminal run parked in another slot would suppress tips everywhere
-    // forever.
-    Object.values(s.chat.workflowRuns ?? {}).some(r => runBelongsToSlot(r.sessionKey, s.chat.activeSlot) && (r.status === 'running' || r.status === 'finished' || r.status === 'failed' || r.status === 'cancelled'))
-  ) || knowledgeFetch.loading || knowledgeFetch.results.length > 0
+  const tipSuppressed = useAppSelector(selectTipYieldsToComposerSurface)
+    || knowledgeFetch.loading || knowledgeFetch.results.length > 0
   // Split View state is declared up here (not at its usage site) because the
   // tip hook below must know about it: in split mode SessionGridView replaces
   // the composer, TipCard never renders, and an unblocked hook would fetch a
@@ -195,6 +184,41 @@ export function useActiveSlotState({
    * Keep every prop handed to ChatSidebar referentially stable.
    */
   const clearSplitOnSelect = useCallback(() => { setSplitMode(false); closeCrewWindow() }, [])
+  // A create that activated its new session leaves Split View, the rule the
+  // sidebar's New already follows through `onSelectSlot` (#21935). The grid
+  // seeds from the active slot only when empty, so the new chat would
+  // otherwise show nowhere. Keyed on the store's record of the activation, so
+  // the creates that never call `onSelectSlot` (the new-chat shortcut, the
+  // command palette, the command bar, the collapsed sidebar's flyout) follow
+  // it too. A background create or one the user switched away from records no
+  // activation, so it keeps the split. The value present at mount is not a
+  // new activation: Split View starts off, and an auto-enter must not be undone.
+  const lastCreatedActivation = useAppSelector(s => s.chat.lastCreatedActivation)
+  const seenActivationRef = useRef(lastCreatedActivation)
+  useEffect(() => {
+    if (lastCreatedActivation === seenActivationRef.current) return
+    seenActivationRef.current = lastCreatedActivation
+    if (lastCreatedActivation) setSplitMode(false)
+  }, [lastCreatedActivation])
+  // A resume whose caller asked for it (the reopen-closed-session shortcut)
+  // leaves Split View on the same rule, once it has taken the view: the grid
+  // would otherwise keep showing its own panes and the reopened chat nowhere.
+  const lastResumeActivation = useAppSelector(s => s.chat.lastResumeActivation)
+  const seenResumeRef = useRef(lastResumeActivation)
+  useEffect(() => {
+    if (lastResumeActivation === seenResumeRef.current) return
+    seenResumeRef.current = lastResumeActivation
+    if (lastResumeActivation?.leaveSplit) setSplitMode(false)
+  }, [lastResumeActivation])
+  // A slot switch can ask to replace Split View with the requested session.
+  // The value present at mount is not a request for this page instance.
+  const leaveSplitSeq = useAppSelector(s => s.chat.leaveSplitSeq)
+  const seenLeaveSplitRef = useRef(leaveSplitSeq)
+  useEffect(() => {
+    if (leaveSplitSeq === seenLeaveSplitRef.current) return
+    seenLeaveSplitRef.current = leaveSplitSeq
+    setSplitMode(false)
+  }, [leaveSplitSeq])
   // A crew session opens as a window over the pane (see CrewChatWindow); a
   // local session taking focus closes it. Only a MOVE between two local
   // sessions counts, so the reload restore (none -> restored) keeps it open.
@@ -217,6 +241,10 @@ export function useActiveSlotState({
     if (prevActiveSlotRef.current && activeSlot !== prevActiveSlotRef.current) closeCrewWindow()
     prevActiveSlotRef.current = activeSlot
   }, [activeSlot])
+  // A Crew Mode worker opened from its root's Workers panel leaves Split View, as
+  // a sidebar pick does: the grid never shows a worker, so it would hide it.
+  const activeIsCrewWorker = useAppSelector(s => !!crewRootOf(s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)))
+  useEffect(() => { if (activeIsCrewWorker) setSplitMode(false) }, [activeIsCrewWorker, activeSlot])
   /** Same contract as `clearSplitOnSelect`, for the `embedMode === 'sessions'`
    *  frame where the sidebar IS the whole page. */
   const navigateToEmbeddedSlot = useCallback((key: string) => navigate(`/embed/chat/${key}`), [navigate])
@@ -227,7 +255,9 @@ export function useActiveSlotState({
   const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
   const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
   const slotState = useAppSelector(s => s.chat.slotState)
-  const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
+  // Undefined until the slot has a reading: the meter renders that as unknown,
+  // not as a measured 0%.
+  const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''])
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
   // Length only. The two arrays themselves are mutated per streamed sub-agent /
   // tool chunk, and their only consumer is the Activity panel (SidePanel), which

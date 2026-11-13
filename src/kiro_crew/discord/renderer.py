@@ -128,6 +128,8 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.split import (
     bounded_for_delivery,
+    fence_line_safe_offset,
+    rebalance_fenced_cuts,
     split_markdown_safe,
     split_markdown_safe_with_tier,
 )
@@ -323,7 +325,7 @@ class DiscordRenderer(Renderer):
             else None
         )
         sealed = bool(self._segment_text().strip()) or components is not None
-        await self._seal_current(components=components)
+        await self._seal_rotated_part(components=components, extract_uploads=True)
         clean_summary = _neutralize_md(summary)
         if clean_summary:
             chip: str | None = "> ↪️ " + clean_summary
@@ -387,11 +389,19 @@ class DiscordRenderer(Renderer):
                     offset = await asyncio.to_thread(
                         safe_split_offset, rest, limit, _redact_all, _delivered_form
                     )
+                    offset = fence_line_safe_offset(rest, offset)
                     if not offset:
                         return
                     graded.append(rest[:offset])
                     rest = rest[offset:]
-                chunks = [*graded, rest]
+                # A piece cut inside an open fence is closed and the next reopened;
+                # the repaired pieces are what the whole-sequence grade below reads.
+                chunks = rebalance_fenced_cuts([*graded, rest])
+                if any(len(chunk) > limit for chunk in chunks):
+                    return
+                # As on the source path: these boundaries are not the ones any
+                # tier analysis read, so nothing of this segment is uploaded.
+                self._segment_uploads_safe = False
                 # The per-step grades are pairwise, and the whole-sequence reading
                 # -- every piece redacted alone, then joined -- is not implied by
                 # them: canonicalising DROPS a link target, so markup spanning a
@@ -498,9 +508,20 @@ class DiscordRenderer(Renderer):
             # answer is one this caller can take -- grading raw and re-checking after
             # would deadlock the segment, since a deterministic search returns the
             # same rejected answer every rotation.
-            offset = await asyncio.to_thread(
-                safe_split_offset, split_source, limit, _redact_all, _delivered_form
-            )
+            #
+            # A cut inside an open fence is closed on the head and reopened on the
+            # tail, the same repair the splitter makes; the budget shrinks by what
+            # that repair adds so the sealed head still fits.
+            budget = limit
+            while True:
+                offset = await asyncio.to_thread(
+                    safe_split_offset, split_source, budget, _redact_all, _delivered_form
+                )
+                offset = fence_line_safe_offset(split_source, offset)
+                head_len = len(rebalance_fenced_cuts([split_source[:offset], "x"])[0])
+                if not offset or head_len <= limit or budget <= 1:
+                    break
+                budget -= head_len - limit
             # The search grades pairs of ``split_source`` alone, but what ships is
             # ``split_source[offset:]`` with the HELD remainder glued on -- the image
             # reference this rotation keeps out of the splitter. So its answer is a
@@ -512,8 +533,12 @@ class DiscordRenderer(Renderer):
             # a longer source the pair it graded ends at ``split_source``, not at the
             # held tail. Re-grade what is actually delivered and withhold when it
             # still severs, exactly as the presentation branch does.
-            candidate_sealed = [split_source[:offset]]
-            candidate_tail = split_source[offset:] + raw[len(split_source) :]
+            candidate_head, candidate_tail = rebalance_fenced_cuts(
+                [split_source[:offset], split_source[offset:] + raw[len(split_source) :]]
+            )
+            candidate_sealed = [candidate_head]
+            if offset and len(candidate_sealed[0]) > limit:
+                offset = 0
             if offset and await asyncio.to_thread(
                 severs_a_credential,
                 [*candidate_sealed, candidate_tail],
@@ -529,6 +554,10 @@ class DiscordRenderer(Renderer):
                 return
             sealed = candidate_sealed
             tail = candidate_tail
+            # The tier analysis that set ``_segment_uploads_safe`` read the
+            # splitter's boundary, not this one: a fenced reference the cut now
+            # crosses can read as real in the tail. Extract nothing from it.
+            self._segment_uploads_safe = False
         for ch in sealed:
             self._buf = [ch]
             self._delivery_text = None
@@ -537,20 +566,24 @@ class DiscordRenderer(Renderer):
         self._buf = [tail + protocol_suffix]
         self._delivery_text = None
 
-    async def _seal_rotated_part(self) -> None:
-        """Seal one length-rotation part, and mark its place when it never landed.
+    async def _seal_rotated_part(
+        self, *, components: list[dict] | None = None, extract_uploads: bool = False
+    ) -> None:
+        """Seal one part whose text is dropped next, and mark its place when it never landed.
 
-        A rotation drops the part's text once it is sealed and moves on, so a part
-        whose every send failed is gone for good while the parts after it still go
-        out. Without a mark the reader sees the parts on either side of the gap as
-        one continuous answer. A part with nothing to send attempts nothing and
-        gets no mark; a part whose fallback send landed is delivered and gets none.
+        A length rotation and a steer boundary both drop the part's text once it is
+        sealed and move on, so a part whose every send failed is gone for good while
+        the parts after it still go out. Without a mark the reader sees the parts on
+        either side of the gap as one continuous answer. A part with nothing to send
+        attempts nothing and gets no mark; a part whose fallback send landed is
+        delivered and gets none. ``components`` and ``extract_uploads`` pass through
+        to :meth:`_seal_current`; a steer seal is semantic, so it extracts.
 
         The notice is not counted as a delivery: ``delivery_failed`` stays about
         whether any of the reply reached the reader.
         """
         attempted = self._seals_attempted
-        if await self._seal_current(extract_uploads=False):
+        if await self._seal_current(components=components, extract_uploads=extract_uploads):
             return
         if self._seals_attempted == attempted:
             return
@@ -1109,12 +1142,14 @@ class DiscordRenderer(Renderer):
         note = _as_subtext(f"💭 {body}")
         try:
             posted = await self._client.send_message(self._channel_id, note)
-            self._tally_redactions(body)
         except Exception:
             logger.debug("discord: thinking note send failed", exc_info=True)
             return
         if posted is None:
             return
+        # Counted only once the note landed: the turn's redaction notice must not
+        # report a redaction in text the reader never received.
+        self._tally_redactions(body)
         # Record the note as the seam predecessor ONLY when the next thing shown
         # will land BELOW it -- i.e. no live bubble is still open above it
         # (``_stream_mid is None``). Then the note is genuinely the last message on
@@ -1221,9 +1256,8 @@ class DiscordRenderer(Renderer):
             # The prompt never reached the channel, so nothing can be pressed and
             # no wait will run the ``finally`` that normally closes this window.
             # Retire it here instead of leaving a live nonce and reservation for a
-            # prompt nobody saw. Raised on, because a caller that swallowed this
-            # would leave the driver waiting out the whole window on an invisible
-            # prompt and then call that elapsed wait a decision.
+            # prompt nobody saw. Raised on, so the turn fails with the send's own
+            # error.
             DiscordApprovalDecider.retire(key)
             raise
 
@@ -1328,18 +1362,20 @@ class DiscordRenderer(Renderer):
             # failed to send report as delivered, which is the exact
             # succeeded-with-no-reply case `delivery_failed` exists to catch.
             self._seals_attempted += 1
-            if self._stream_mid is not None:
-                if await self._client.edit_message(
-                    self._channel_id,
-                    self._stream_mid,
-                    placeholder,
-                    components=components,
-                ):
-                    self._seals_landed += 1
-                    self._tally_redactions(placeholder)
-            elif await self._client.send_message(
+            landed = self._stream_mid is not None and await self._client.edit_message(
+                self._channel_id,
+                self._stream_mid,
+                placeholder,
+                components=components,
+            )
+            # An edit that did not land falls through to a fresh send, as
+            # `_land_sealed` does: otherwise the live "🔧 tool…" frame is the
+            # turn's last word and the notice or option buttons never appear.
+            if not landed and await self._client.send_message(
                 self._channel_id, placeholder, components=components
             ):
+                landed = True
+            if landed:
                 self._seals_landed += 1
                 self._tally_redactions(placeholder)
             await self._maybe_send_redaction_notice()
@@ -1459,11 +1495,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.discord.renderer_components import (  # noqa: F401
         _BUTTON_LABEL_CHARS,
         _BUTTONS_PER_ROW,
+        _FULL_CHOICE_MAX_CHARS,
+        _FULL_CHOICES,
+        _FULL_CHOICES_LOCK,
+        _FULL_CHOICES_MAX,
         _MAX_ACTION_ROWS,
         _MAX_BUTTONS,
         _STYLE_PRIMARY,
         _STYLE_SECONDARY,
+        _choice_ref,
+        _remember_full_choice,
         build_model_components,
+        full_choice_text,
     )
     from kiro_crew.discord.renderer_status import (  # noqa: F401
         _TYPING_REFRESH_S,
@@ -1475,5 +1518,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.discord.renderer_text import (  # noqa: F401
         _STEER_MARKER_RE,
         _STEER_SUMMARY_RE,
+        _redact_steer,
         _transform_buries_refs,
     )

@@ -50,25 +50,50 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
     """
     reconciler_started = False
     state.arm_slot_list_rebuild_deadline()
+    from kiro_crew.shared_crew.wiring import prepare_gateway
+
+    await prepare_gateway(state)
     try:
+        from kiro_crew.dashboard import chat_trust_restart
+
+        # The chats that held an approval mode when the previous process stopped,
+        # read before the restore rebuilds them without it (``chat_trust_restart``).
+        held_modes = await asyncio.to_thread(chat_trust_restart.arm, state)
         # Session restores spawn a kiro-cli process per restored tab — the last
         # large group of the startup battery, so it too gets a cautious-boot window.
         await cautious_boot.pause_before("session restore")
-        with state.suspend_slots_push():
-            await chat.restore_open_slots_async(state)
-            restored = await chat.restore_recent_sessions_async(
-                state,
-                cfg.dashboard.restore_window_minutes if cfg.dashboard.restore_sessions else 0,
-                folders_only=not cfg.dashboard.restore_sessions,
-            )
-            if restored:
-                logger.info("Restored %d session(s)", restored)
+        from kiro_crew.shared_crew.host_hooks import mark_sessions_restored
 
-            # Both restore paths above rehydrate tabs under their original
-            # "chat-<N>-<ts>" keys but leave _slot_counter at its boot value of 0.
-            # Reseed it past the highest restored index so the next new chat can't
-            # re-mint a colliding low index (which scrambles the tab -> session map).
-            state.reseed_slot_counter()
+        try:
+            with state.suspend_slots_push():
+                await chat.restore_open_slots_async(state)
+                restored = await chat.restore_recent_sessions_async(
+                    state,
+                    cfg.dashboard.restore_window_minutes if cfg.dashboard.restore_sessions else 0,
+                    folders_only=not cfg.dashboard.restore_sessions,
+                )
+                if restored:
+                    logger.info("Restored %d session(s)", restored)
+
+                # Both restore paths above rehydrate tabs under their original
+                # "chat-<N>-<ts>" keys but leave _slot_counter at its boot value of 0.
+                # Reseed it past the highest restored index so the next new chat can't
+                # re-mint a colliding low index (which scrambles the tab -> session map).
+                state.reseed_slot_counter()
+        finally:
+            # Restart notes reconciliation owes a session land only once the slots
+            # the restore builds exist (``shared_crew.host_hooks``).
+            mark_sessions_restored(state)
+
+        # Tell the owner which of them came back without it.
+        await chat_trust_restart.report(state, held_modes)
+
+        from kiro_crew.dashboard.member_slot_retry import schedule_member_slot_retry
+        from kiro_crew.dashboard.slot_queue_repository import drain_restored_parked_sends
+
+        # A crewmate thread the restore deferred is built once more after boot.
+        schedule_member_slot_retry(state)
+        await drain_restored_parked_sends(state)
 
         if state._dynamic_cards is not None:
             state._dynamic_cards.seed_open_sessions()
@@ -96,6 +121,9 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
             state._channel_slot_reconciler = _chan_reconciler  # prevent GC
             reconciler_started = True
     finally:
+        # Every pass that can rebuild an owed tab has run (or the restore raised).
+        state.restoring_open_slot_keys = frozenset()
+        state.owed_slot_keys_known.set()
         if not reconciler_started:
             state.replace_channel_slot_holds((), hold_channels=False)
             state.finish_slot_list_rebuild()

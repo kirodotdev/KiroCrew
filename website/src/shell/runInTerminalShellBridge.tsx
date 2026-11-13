@@ -58,7 +58,7 @@ export function useRunInTerminalShellBridge(cwd: string | undefined, hasDock: bo
 export function RunInTerminalShellNotice({ error, onDismiss }: { error: string; onDismiss: () => void }) {
   if (!error) return null
   return (
-    <div className="fixed left-1/2 top-safe-offset-3 z-[80] w-[min(640px,calc(100vw-1.5rem))] -translate-x-1/2 rounded-lg bg-card shadow-xl">
+    <div className="fixed left-1/2 top-safe-offset-3 z-[80] w-[min(640px,calc(100vw-max(1.5rem,var(--safe-area-x)+var(--safe-area-x))))] -translate-x-1/2 rounded-lg bg-card shadow-xl">
       {/* No hand-off: Ask Agent navigates to /chat, and this notice can sit
           over /artifacts/<slug> while its document editor holds unsaved edits
           (ArtifactDetailPage's `dirty` edit buffer, which navigating away

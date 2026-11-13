@@ -11,7 +11,7 @@
  *    TEXT, not merely leave the URL alone;
  *  - clicking the tab already shown never asks, because nothing unmounts (a
  *    confirm the user did not earn teaches them to click through the one that
- *    matters);
+ *    matters), unless the click drops that tab's drill-in;
  *  - the guard is re-read on every invocation, so a draft typed after the
  *    registering render is visible to it — registering the closure itself would
  *    pin the first render's empty draft and silently lose exactly the text this
@@ -22,7 +22,7 @@
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, useLocation, useSearchParams } from 'react-router-dom'
 import SidePanelLayout, { useSidePanelLeaveGuard, type SidePanelTab } from '../components/SidePanelLayout'
 
 let mobile = false
@@ -46,6 +46,12 @@ function DraftPane() {
       onChange={e => setDraft((e.target as HTMLInputElement).value)}
     />
   )
+}
+
+/** A pane whose draft lives in a drill-in (`?view=`), as Overview's Memory view does. */
+function DrillInPane() {
+  const [params] = useSearchParams()
+  return params.get('view') ? <DraftPane /> : <div data-testid="plain">root</div>
 }
 
 function LocationProbe() {
@@ -115,6 +121,23 @@ describe('SidePanelLayout leave guard', () => {
     clickTab('Drafts')
     expect(confirmSpy).not.toHaveBeenCalled()
     expect(draftValue()).toBe('half-written prompt')
+  })
+
+  it('asks before re-clicking the shown tab drops its drill-in', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(
+      <MemoryRouter initialEntries={['/capabilities?view=edit']}>
+        <SidePanelLayout title="Capabilities" tabs={[{ ...TABS[0], drillInParams: ['view'] }, ...TABS.slice(1)]}>
+          {() => <DrillInPane />}
+        </SidePanelLayout>
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    typeDraft('half-written prompt')
+    clickTab('Drafts')
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(draftValue()).toBe('half-written prompt')
+    expect(loc()).toBe('/capabilities?view=edit')
   })
 
   it('reads the current draft, not the one from the registering render', () => {

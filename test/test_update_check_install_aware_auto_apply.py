@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,17 @@ from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_provider
 from kiro_crew.platform.update_capability import AutoUpdateEffect
 from kiro_crew.platform.update_provider import CommandProvider, UpdateCheckResult
+
+_GATEWAY_LOGGER = "kiro_crew.slack.gateway"
+_BUILDING = "Auto-update enabled for managed install — building beside it"
+_SHUTTING_DOWN = "Auto-update not started: the gateway is shutting down"
+
+
+@pytest.fixture
+def gateway_logs(caplog):
+    """The update coordinator's own log lines, read after the run."""
+    caplog.set_level(logging.INFO, logger=_GATEWAY_LOGGER)
+    return lambda: [r.getMessage() for r in caplog.records if r.name == _GATEWAY_LOGGER]
 
 
 class TestAutoApplyGuard:
@@ -109,7 +121,7 @@ class TestAutoApplyGuard:
             handlers._update_info.update(original)
         return orch
 
-    def test_managed_install_auto_applies_without_consulting_the_build_stamp(self):
+    def test_managed_install_auto_applies_without_consulting_the_build_stamp(self, gateway_logs):
         info = {
             "update_available": True,
             "can_apply": False,
@@ -137,6 +149,7 @@ class TestAutoApplyGuard:
         # The new tree builds beside the live one with admission open; only the
         # restart into it (inside the apply) pauses admission.
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert _BUILDING in gateway_logs()
 
     _MANAGED_UPDATE = {
         "update_available": True,
@@ -149,37 +162,43 @@ class TestAutoApplyGuard:
         },
     }
 
-    def test_no_apply_starts_once_shutdown_is_signalled(self):
+    def test_no_apply_starts_once_shutdown_is_signalled(self, gateway_logs):
         # The first coordinator cycle runs while boot is still inside the MCP
         # probe, so a SIGTERM there reaches it before ``_shutdown`` does. An
         # installer admitted now would be stopped mid-write moments later.
+        # The effect is pinned so the managed-venv route, and its shutdown gate,
+        # is reached on every platform.
         with patch("kiro_crew.slack.gateway.shutdown_event", SimpleNamespace(is_set=lambda: True)):
-            orch = self._run(dict(self._MANAGED_UPDATE), auto_update=True, managed_venv=True)
+            orch = self._run(
+                dict(self._MANAGED_UPDATE),
+                auto_update=True,
+                managed_venv=True,
+                effect=AutoUpdateEffect("install", "wheel"),
+            )
         orch._auto_apply_wheel_update.assert_not_awaited()
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
-
-    def test_a_busy_retry_after_shutdown_is_signalled_starts_nothing(self):
-        orch = self._orchestrator()
-        orch._pending_update_respawn = MagicMock()
-        orch._restart_after_update = AsyncMock()
-        orch._finish_auto_update_apply = AsyncMock()
-        with patch("kiro_crew.slack.gateway.shutdown_event", SimpleNamespace(is_set=lambda: True)):
-            asyncio.run(orch._retry_pending_update_restart())
-        orch._restart_after_update.assert_not_awaited()
-        orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert _SHUTTING_DOWN in gateway_logs()
 
     def test_finishing_while_the_pause_is_kept_schedules_no_replay(self):
         # During a shutdown the resume keeps the pause and reports it; a replay
         # then would tell senders to resend while the gateway is stopping.
+        from kiro_crew.slack.gateway import GatewayOrchestrator
+
         orch = self._orchestrator()
         orch.sessions.resume_turn_admission_after_update = AsyncMock(return_value=False)
+        # The real scheduler behind the mock, so a replay would leave its task behind.
+        orch._inbound_replay_task = None
+        orch._schedule_inbound_replay = MagicMock(
+            wraps=lambda: GatewayOrchestrator._schedule_inbound_replay(orch)
+        )
 
         asyncio.run(orch._finish_auto_update_apply())
 
+        assert orch._inbound_replay_task is None
         orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
         orch._schedule_inbound_replay.assert_not_called()
 
-    def test_busy_managed_install_still_builds_with_admission_open(self):
+    def test_busy_managed_install_still_builds_with_admission_open(self, gateway_logs):
         """In-flight turns delay only the restart, never the build."""
         orch = self._run(
             {
@@ -201,70 +220,9 @@ class TestAutoApplyGuard:
         )
         orch._auto_apply_wheel_update.assert_awaited_once_with("stable", "9.9.9")
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert _BUILDING in gateway_logs()
 
-    def test_mandatory_busy_update_keeps_deferring_after_the_grace_limit(self):
-        orch = self._orchestrator()
-        orch._mandatory_update_deferred_at = 0.0
-        orch._mandatory_update_deferred_key = "floor:9.9.9"
-        orch._in_flight_work_counts = MagicMock(return_value=(1, 0))
-
-        prepared = asyncio.run(
-            orch._prepare_auto_update_apply(
-                mandatory=True,
-                mandatory_key="floor:9.9.9",
-            )
-        )
-
-        assert prepared is False
-        orch.sessions.pause_turn_admission_for_update.assert_awaited_once()
-        orch.sessions.drain_active_turns.assert_not_awaited()
-        orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
-        assert orch._update_apply_deferred is True
-        assert orch._mandatory_update_deferred_at == 0.0
-        assert orch._mandatory_update_deferred_key == "floor:9.9.9"
-
-    def test_mandatory_update_does_not_drain_through_background_work(self):
-        orch = self._orchestrator()
-        orch._mandatory_update_deferred_at = 0.0
-        orch._mandatory_update_deferred_key = "floor:9.9.9"
-        # The active provider turn may belong to the TaskRunner represented by
-        # the background count. Cancelling it would lose work while apply still
-        # remains deferred.
-        orch._in_flight_work_counts = MagicMock(return_value=(1, 1))
-
-        prepared = asyncio.run(
-            orch._prepare_auto_update_apply(
-                mandatory=True,
-                mandatory_key="floor:9.9.9",
-            )
-        )
-
-        assert prepared is False
-        orch.sessions.drain_active_turns.assert_not_awaited()
-        orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
-        orch._schedule_inbound_replay.assert_called_once()
-        assert orch._update_apply_deferred is True
-
-    def test_new_mandatory_target_gets_a_fresh_deferral_window(self):
-        orch = self._orchestrator()
-        orch._mandatory_update_deferred_at = 0.0
-        orch._mandatory_update_deferred_key = "old-floor:1.0.0"
-        orch._in_flight_work_counts = MagicMock(return_value=(1, 0))
-
-        prepared = asyncio.run(
-            orch._prepare_auto_update_apply(
-                mandatory=True,
-                mandatory_key="new-floor:2.0.0",
-            )
-        )
-
-        assert prepared is False
-        orch.sessions.drain_active_turns.assert_not_awaited()
-        orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
-        assert orch._mandatory_update_deferred_at is not None
-        assert orch._mandatory_update_deferred_key == "new-floor:2.0.0"
-
-    def test_foreign_environment_never_takes_the_shadow_apply(self):
+    def test_foreign_environment_never_takes_the_shadow_apply(self, gateway_logs):
         orch = self._run(
             {
                 "update_available": True,
@@ -281,28 +239,30 @@ class TestAutoApplyGuard:
         )
         orch._auto_apply_update.assert_not_awaited()
         orch._auto_apply_wheel_update.assert_not_awaited()
+        notified = [m for m in gateway_logs() if "cannot apply it unattended" in m]
+        assert notified and "this install (kirocrew)" in notified[0]
+        assert _BUILDING not in gateway_logs()
 
-    def test_git_checkout_auto_applies_when_the_version_moved(self):
-        """The git apply needs `version_newer`, not just `available`.
+    def test_git_checkout_is_announced_not_applied_when_the_version_moved(self, gateway_logs):
+        """A git reset rewrites the tree the running gateway serves from.
 
-        `available` is true on commit distance alone for a checkout, and this
-        path applies `git reset --hard`. Requiring the version to have moved
-        keeps it firing no more often than while the verdict was version-only
-        (see `TestCheckForUpdates` in `test_slack_gateway_update_apply.py` for the negative).
+        `available` is true on commit distance alone for a checkout, and the apply is
+        `git reset --hard`; the unattended loop never runs it, whatever the
+        version did (see `TestCheckForUpdates` in `test_slack_gateway_update_apply.py`).
         """
         orch = self._run(
             {
                 "update_available": True,
                 "can_apply": True,
                 "managed_by": "git",
-                # The git auto-apply guard requires the version to have moved too,
-                # not just commit distance.
                 "version_newer": True,
             },
             auto_update=True,
             effect=AutoUpdateEffect("install", "git"),
         )
-        orch._auto_apply_update.assert_awaited_once()
+        orch._auto_apply_update.assert_not_awaited()
+        assert not [m for m in gateway_logs() if "applying update" in m]
+        orch.dashboard_state.push_refresh.assert_called_with("update_available")
 
     def test_a_failed_check_does_not_claim_up_to_date(self, capsys):
         orch = self._run(
@@ -487,8 +447,12 @@ def _pin_install_shape(
     floor: bool = False,
     platform: str = "linux",
     shell: bool = True,
+    manual: bool = False,
 ):
-    """Pin every input ``auto_update_effect`` reads, at the seams it reads them."""
+    """Pin every input ``auto_update_effect`` reads, at the seams it reads them.
+
+    ``manual`` is a policy with ``updates.unattended_apply: false``.
+    """
     from kiro_crew.platform import (
         update_capability,
         update_governance,
@@ -516,6 +480,7 @@ def _pin_install_shape(
     monkeypatch.setattr(update_governance, "resolve_remote_url", lambda *_a, **_k: "https://x")
     monkeypatch.setattr(update_governance, "update_blocked_reason", lambda _url: blocked)
     monkeypatch.setattr(update_governance, "update_required", lambda _v: floor)
+    monkeypatch.setattr(update_governance, "unattended_apply_allowed", lambda: not manual)
     monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: managed_venv)
     monkeypatch.setattr(update_layout, "cdn_bases_are_safe", lambda: cdn_safe)
     monkeypatch.setattr(update_layout, "cdn_bases", lambda: ("https://a", "https://b"))
@@ -537,7 +502,9 @@ def _provider(*, can_apply: bool):
 
 
 _SHAPES = [
-    pytest.param({"managed_by": "git"}, "install", "git", id="git-primary-branch"),
+    # A git reset rewrites the tree the gateway serves from, so the loop only notifies
+    # and keeps the route for a person's Update.
+    pytest.param({"managed_by": "git"}, "notify", "git", id="git-primary-branch"),
     pytest.param({"managed_by": "git", "branch": "feature/x"}, "notify", None, id="git-feature"),
     pytest.param({"managed_by": "git", "branch": "HEAD"}, "notify", None, id="git-detached"),
     pytest.param({"managed_by": "git", "tracks": False}, "notify", None, id="git-untracked"),
@@ -575,7 +542,7 @@ _SHAPES = [
     pytest.param({"managed_by": "electron"}, "notify", None, id="desktop-bundle"),
     pytest.param({"managed_by": "container", "floor": True}, "notify", None, id="container-floor"),
     pytest.param(
-        {"managed_by": "kirocrew", "provider": "apply"}, "install", "provider", id="provider-apply"
+        {"managed_by": "kirocrew", "provider": "apply"}, "notify", "provider", id="provider-apply"
     ),
     pytest.param(
         {"managed_by": "kirocrew", "provider": "check-only"}, "notify", None, id="provider-no-apply"
@@ -591,6 +558,36 @@ _SHAPES = [
         "mandatory",
         "provider",
         id="provider-apply-below-floor",
+    ),
+    # `updates.unattended_apply: false`: a route that can install only notifies,
+    # and keeps its route for a person's Update; the floor still installs.
+    pytest.param(
+        {"managed_by": "kirocrew", "provider": "apply", "manual": True},
+        "notify",
+        "provider",
+        id="provider-apply-manual-only",
+    ),
+    pytest.param(
+        {"managed_by": "kirocrew", "provider": "apply", "manual": True, "floor": True},
+        "mandatory",
+        "provider",
+        id="provider-apply-manual-only-below-floor",
+    ),
+    pytest.param({"managed_by": "git", "manual": True}, "notify", "git", id="git-manual-only"),
+    pytest.param(
+        {"managed_by": "git", "manual": True, "floor": True},
+        "mandatory",
+        "git",
+        id="git-manual-only-below-floor",
+    ),
+    pytest.param(
+        {"managed_by": "kirocrew", "manual": True}, "notify", "wheel", id="managed-venv-manual-only"
+    ),
+    pytest.param(
+        {"managed_by": "kirocrew", "provider": "check-only", "manual": True},
+        "notify",
+        None,
+        id="provider-no-apply-manual-only",
     ),
 ]
 
@@ -614,25 +611,80 @@ class TestAutoUpdateEffect:
         answer = auto_update_effect(running_version="1.0.0")
 
         assert (answer.effect, answer.route) == (effect, route)
-        # A shape that cannot install says why, for the log line it ends in.
-        assert bool(answer.reason) is (route is None)
+        # A shape the loop does not install on says why, for the log line it ends
+        # in -- including one whose route is kept for a person's Update.
+        assert bool(answer.reason) is (effect == "notify")
         # Only the source pin refuses every path, the manual ones included.
         assert answer.blocked is bool(shape.get("blocked"))
 
     @pytest.mark.parametrize("shape, effect, route", _SHAPES)
     def test_the_update_loop_acts_on_that_effect(self, monkeypatch, shape, effect, route):
-        """``install`` applies with the switch on; ``mandatory`` applies with it off;
-        ``notify`` never pauses admission, even with the switch on."""
+        """``install`` stages with the switch on; ``mandatory`` stages with it off (the
+        managed venv only); ``notify`` never pauses admission, even with the switch on."""
+        provider = self._shape(monkeypatch, shape)
+        orch, published = self._run_one_cycle(shape, auto_update=effect != "mandatory")
+
+        applied = {
+            "git": orch._auto_apply_update.await_count,
+            "wheel": orch._auto_apply_wheel_update.await_count,
+            "provider": provider.apply.await_count if provider is not None else 0,
+        }
+        if effect == "notify" or route in ("git", "provider"):
+            # A route that rewrites the running tree in place is only ever announced,
+            # a policy floor included; the managed venv is the one route that stages.
+            orch._prepare_auto_update_apply.assert_not_awaited()
+            orch._restart_after_update.assert_not_awaited()
+            assert set(applied.values()) == {0}
+        if effect == "notify" and provider is not None:
+            # Notify really notifies: the provider's verdict reaches the badge.
+            assert published["update_available"] is True
+            # And keeps the Update button wherever a person's Update applies.
+            assert published["can_apply"] is (route == "provider")
+        if route == "wheel" and effect != "notify":
+            # The shadow apply builds with admission open and never restarts.
+            orch._prepare_auto_update_apply.assert_not_awaited()
+            assert applied["wheel"] == 1
+            assert sum(applied.values()) == 1
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            pytest.param({"managed_by": "git", "manual": True}, id="git"),
+            pytest.param({"managed_by": "kirocrew", "manual": True}, id="managed-venv"),
+            pytest.param(
+                {"managed_by": "kirocrew", "provider": "apply", "manual": True}, id="provider"
+            ),
+        ],
+    )
+    def test_a_policy_that_turns_unattended_installs_off_logs_at_info(
+        self, monkeypatch, caplog, shape
+    ):
+        """The operator chose it, so the loop's notify line is INFO on every route."""
+        caplog.set_level(logging.INFO, logger=_GATEWAY_LOGGER)
+        self._shape(monkeypatch, shape)
+        self._run_one_cycle(shape, auto_update=True)
+
+        lines = [
+            r
+            for r in caplog.records
+            if r.name == _GATEWAY_LOGGER and "notifying instead" in r.getMessage()
+        ]
+        assert [r.levelno for r in lines] == [logging.INFO]
+        assert "the security policy turns off unattended installs" in lines[0].getMessage()
+
+    @staticmethod
+    def _run_one_cycle(shape, *, auto_update):
+        """One ``_check_for_updates`` with an update available; the orchestrator and the
+        published verdict."""
         import kiro_crew.dashboard.handlers as handlers
         from kiro_crew.platform.governance import UpdatePins
 
-        provider = self._shape(monkeypatch, shape)
         orch = TestAutoApplyGuard._orchestrator()
         orch._prepare_auto_update_apply = AsyncMock(return_value=True)
         orch._finish_auto_update_apply = AsyncMock()
         orch._restart_after_update = AsyncMock()
         cfg = MagicMock()
-        cfg.auto_update = effect != "mandatory"
+        cfg.auto_update = auto_update
 
         original = dict(handlers._update_info)
         try:
@@ -658,27 +710,7 @@ class TestAutoUpdateEffect:
         finally:
             handlers._update_info.clear()
             handlers._update_info.update(original)
-
-        applied = {
-            "git": orch._auto_apply_update.await_count,
-            "wheel": orch._auto_apply_wheel_update.await_count,
-            "provider": provider.apply.await_count if provider is not None else 0,
-        }
-        if route is None:
-            orch._prepare_auto_update_apply.assert_not_awaited()
-            assert set(applied.values()) == {0}
-            if provider is not None:
-                # Notify really notifies: the provider's verdict reaches the badge.
-                assert published["update_available"] is True
-        else:
-            if route == "wheel":
-                # The shadow apply builds with admission open and pauses it only
-                # for its own restart, inside the apply.
-                orch._prepare_auto_update_apply.assert_not_awaited()
-            else:
-                orch._prepare_auto_update_apply.assert_awaited_once()
-            assert applied[route] == 1
-            assert sum(applied.values()) == 1
+        return orch, published
 
 
 def test_a_provider_the_check_resolves_stops_the_built_in_routes(monkeypatch):
@@ -760,75 +792,15 @@ def test_a_wheel_route_without_an_installer_command_does_not_pause_admission(mon
     orch._auto_apply_wheel_update.assert_not_awaited()
 
 
-def test_every_unattended_apply_consults_the_effect_first():
-    """A ``_prepare_auto_update_apply`` call follows an ``_auto_update_effect`` read.
-
-    Read from the source: a new apply branch that skips the derivation would
-    pause admission for an update the status surface says this install will not
-    apply. ``_retry_pending_update_restart`` is the one exception: it retries the
-    restart of an update already applied, and decides nothing about installing.
-    """
-    import ast
-    import inspect
-    from pathlib import Path
-
-    from kiro_crew.slack import gateway
-
-    cls = next(
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(gateway)))
-        if isinstance(node, ast.ClassDef) and node.name == "GatewayOrchestrator"
-    )
-    # The orchestrator's methods are its class body plus the ``self``-taking
-    # functions its composed owners define (``gateway_runtime/*.py``).
-    owners = sorted((Path(gateway.__file__).parent / "gateway_runtime").glob("*.py"))
-    owner_methods = [
-        node
-        for path in owners
-        for node in ast.parse(path.read_text(encoding="utf-8")).body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.args.args
-        and node.args.args[0].arg == "self"
-    ]
-
-    def _calls(fn, name):
-        return [
-            node.lineno
-            for node in ast.walk(fn)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == name
-        ]
-
-    callers = {}
-    for fn in [*cls.body, *owner_methods]:
-        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            prepares = _calls(fn, "_prepare_auto_update_apply")
-            if prepares:
-                callers[fn.name] = (prepares, _calls(fn, "_auto_update_effect"))
-
-    assert set(callers) == {
-        "_check_for_updates_legacy",
-        "_check_for_updates_via_provider",
-        "_retry_pending_update_restart",
-    }
-    # Non-vacuity: the owner walk is what reaches all three callers today.
-    assert set(callers) <= {fn.name for fn in owner_methods}
-    for name, (prepares, effects) in callers.items():
-        if name == "_retry_pending_update_restart":
-            continue
-        assert effects and min(effects) < min(prepares), name
-
-
-def test_a_provider_without_can_apply_still_installs(monkeypatch):
-    """A provider predating ``can_apply`` keeps applying when asked, as before."""
+def test_a_provider_without_can_apply_keeps_its_route_for_a_persons_update(monkeypatch):
+    """A provider predating ``can_apply`` applies when asked; the loop only notifies."""
     from kiro_crew.platform.update_capability import auto_update_effect
 
     legacy = MagicMock(spec=["check", "apply"])
     _pin_install_shape(monkeypatch, managed_by="kirocrew", provider=legacy)
 
     answer = auto_update_effect(running_version="1.0.0")
-    assert (answer.effect, answer.route) == ("install", "provider")
+    assert (answer.effect, answer.route) == ("notify", "provider")
 
 
 def test_a_source_pinned_install_below_the_floor_is_not_told_to_run_kirocrew_update(
@@ -872,6 +844,7 @@ def test_a_source_pinned_install_below_the_floor_is_not_told_to_run_kirocrew_upd
 # DERIVED from the helpers it calls, so a newly added gate fails here until the
 # route reads it too — or until it is declared dynamic below, with its reason.
 _GATE_HELPER_MODULES = (
+    "kiro_crew.platform.update_fetch",
     "kiro_crew.platform.update_governance",
     "kiro_crew.platform.update_layout",
     "kiro_crew.platform.wheel_engine",
@@ -887,6 +860,7 @@ _DYNAMIC_GATES = {
     "commits_ahead": "measured against the commit this apply just fetched",
     "hidden_worktree_edits": "the working tree's state at apply time",
     "resolve_remote_url": "an input to update_blocked_reason, not a gate itself",
+    "fetch_and_pin_upstream": "performs the isolated fetch, not a precondition the route gates on",
     "git_command_env": "builds the environment, decides nothing",
     "loggable_path": "formats a path for a log line",
     "cdn_bases": "an input to update_blocked_reason, not a gate itself",
@@ -895,6 +869,7 @@ _DYNAMIC_GATES = {
     "running_from_managed_venv": "read by the route; the apply trusts the route",
     "min_version": "the floor's value, already folded into the effect",
     "update_required": "the floor verdict, already folded into the effect",
+    "unattended_apply_allowed": "folded into the effect, and read again: a policy can land mid-cycle",
     "check_release_version": "reads the version this cycle's check reported, never the install",
     "WheelUpdateError": "the exception class a refusal raises, not a gate",
 }
@@ -918,47 +893,6 @@ def _gate_helper_names() -> set[str]:
     return names
 
 
-@pytest.mark.parametrize("apply_name, route_name", _APPLY_ROUTES)
-def test_the_derivation_reads_every_static_gate_its_apply_path_reads(apply_name, route_name):
-    import ast
-    import importlib
-    import inspect
-
-    from kiro_crew.platform import update_capability
-
-    def _names(module, name: str) -> set[str]:
-        fn = next(
-            node
-            for node in ast.walk(ast.parse(inspect.getsource(module)))
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
-        )
-        return {
-            node.attr if isinstance(node, ast.Attribute) else node.id
-            for node in ast.walk(fn)
-            if isinstance(node, (ast.Attribute, ast.Name))
-        }
-
-    # platform_compat's two update gates: a trusted git, and a trusted system
-    # binary. Named rather than derived, because that module's surface is every
-    # POSIX call the product makes.
-    helpers = _gate_helper_names() | {"trusted_git_bin", "trusted_system_bin"}
-    applied = _names(importlib.import_module(_APPLY_OWNER), apply_name)
-    if "preflight_bases" in applied:
-        # The managed-venv apply runs its gates through the shared preflight.
-        from kiro_crew.platform import wheel_apply
-
-        applied |= _names(wheel_apply, "preflight_bases")
-    static_gates = (applied & helpers) - set(_DYNAMIC_GATES)
-    assert static_gates, "no gate helper found in the apply path — is the parse right?"
-    missing = static_gates - _names(update_capability, route_name)
-    assert not missing, (
-        f"{apply_name} re-checks {sorted(missing)}, which {route_name} never reads: the "
-        "derivation would answer 'install' for an install the apply then refuses, after "
-        "admission is already paused. Read it in the route, or declare it in "
-        "_DYNAMIC_GATES with its reason."
-    )
-
-
 class TestTheStatusFrameAnswersBeforeAnyCheck:
     """A frame served before the loop's first derivation still reports the truth.
 
@@ -968,13 +902,12 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture, moved verbatim; no test in its module calls monkeypatch.undo()
-    def _no_derivation_yet(self, monkeypatch):
+    def _no_derivation_yet(self, _floor_monkeypatch):
         from kiro_crew.dashboard.handlers import updates
 
-        monkeypatch.setattr(updates, "_auto_effect", None)
-        monkeypatch.setattr(updates, "_auto_effect_task", None)
-        monkeypatch.setattr(updates, "_shape_effect", None)
+        _floor_monkeypatch.setattr(updates, "_auto_effect", None)
+        _floor_monkeypatch.setattr(updates, "_auto_effect_task", None)
+        _floor_monkeypatch.setattr(updates, "_shape_effect", None)
         return updates
 
     @staticmethod
@@ -983,6 +916,8 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
             raise AssertionError("the status frame must not shell out to git")
 
         monkeypatch.setattr("kiro_crew.platform.update_governance._git_probe", _boom)
+        # update_fetch imports the probe by name, so its binding is patched too.
+        monkeypatch.setattr("kiro_crew.platform.update_fetch._git_probe", _boom)
         monkeypatch.setattr("kiro_crew.platform.update_capability.subprocess.run", _boom)
 
     def test_a_desktop_bundle_reports_notify(self, monkeypatch, _no_derivation_yet):
@@ -992,7 +927,19 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
 
         assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "notify"
 
-    def test_a_managed_venv_reports_install(self, monkeypatch, _no_derivation_yet):
+    @pytest.mark.parametrize(
+        ("unattended", "effect", "manual_only"),
+        [
+            pytest.param(True, "install", False, id="installs"),
+            # `updates.unattended_apply: false`. A managed venv's Update is the arm
+            # and approve flow, so `update_can_apply` cannot say it still installs;
+            # this field does.
+            pytest.param(False, "notify", True, id="policy-turns-unattended-off"),
+        ],
+    )
+    def test_a_managed_venv_reports_its_effect(
+        self, monkeypatch, _no_derivation_yet, unattended, effect, manual_only
+    ):
         self._no_git(monkeypatch)
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
         monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: None)
@@ -1016,12 +963,17 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_required", lambda _v: False
         )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: unattended
+        )
 
-        assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "install"
+        fields = status_fields_of(_no_derivation_yet)
+        assert fields["update_auto_effect"] == effect
+        assert fields["update_auto_manual_only"] is manual_only
 
     @pytest.mark.parametrize(
         "can_apply, floor, expected",
-        [(True, False, "install"), (True, True, "mandatory"), (False, False, "notify")],
+        [(True, False, "notify"), (True, True, "mandatory"), (False, False, "notify")],
     )
     def test_a_policy_provider_is_answered_from_the_pins(
         self, monkeypatch, _no_derivation_yet, can_apply, floor, expected
@@ -1141,8 +1093,10 @@ class TestTheProviderPathPublishesItsOwnCanApply:
             handlers._update_info.update(original)
 
         assert fields["update_can_apply"] is can_apply
-        assert fields["update_auto_effect"] == ("install" if can_apply else "notify")
-        assert provider.apply.await_count == (1 if can_apply else 0)
+        # A provider rewrites the install in place, so the loop only announces: the
+        # command runs on a person's Update, never from the loop.
+        assert fields["update_auto_effect"] == "notify"
+        assert provider.apply.await_count == 0
 
 
 def test_a_pipx_install_answers_notify_without_git(monkeypatch):
@@ -1153,6 +1107,7 @@ def test_a_pipx_install_answers_notify_without_git(monkeypatch):
         raise AssertionError("the status frame must not shell out to git")
 
     monkeypatch.setattr("kiro_crew.platform.update_governance._git_probe", _boom)
+    monkeypatch.setattr("kiro_crew.platform.update_fetch._git_probe", _boom)
     monkeypatch.setattr(updates, "_auto_effect", None)
     monkeypatch.setattr(updates, "_shape_effect", None)
     monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
@@ -1237,7 +1192,7 @@ def test_only_a_desktop_bundle_reports_itself_bundled_by_the_app(dist, bundled):
 
 @pytest.mark.parametrize(
     "provider_kind, effect",
-    [(None, "notify"), ("apply", "install"), ("check-only", "notify")],
+    [(None, "notify"), ("apply", "notify"), ("check-only", "notify")],
 )
 def test_a_bundled_gateway_with_a_policy_provider_says_both_facts(
     monkeypatch, provider_kind, effect

@@ -122,6 +122,13 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 AUTOCOMPACT_PCT_MIN = 5.0
 AUTOCOMPACT_PCT_MAX = 90.0
 
+# session.idle_compaction_min_context_pct: the context use below which an idle
+# chat is never compacted. The floor is kiro's first-request break-even: below
+# about 40% the cold request a compaction saves is cheaper than the compaction
+# itself, so a hand-edited lower value loads as 40.
+IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN = 40.0
+IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX = 90.0
+
 
 class AutocompactPctError(ValueError):
     """A per-session threshold refused by :func:`parse_autocompact_pct`.
@@ -203,6 +210,9 @@ MCP_PROBE_TIMEOUT_MAX = 120
 # value is at least MIN, so a typo of 1 cannot spend an LLM call on every turn.
 TITLE_REFRESH_EVERY_TURNS_MIN = 4
 TITLE_REFRESH_EVERY_TURNS_MAX = 1000
+# ``dashboard.privacy_ack_version``: the privacy notice version a user last
+# acknowledged. A small integer that only ever moves up by one per notice change.
+PRIVACY_ACK_VERSION_MAX = 1000
 RECENT_TINT_COUNT_MIN = 0
 RECENT_TINT_COUNT_MAX = 10
 # The sidebar's folder sort modes, spelled once for the same reason as the bounds
@@ -250,11 +260,25 @@ EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative
 # value reads as 0, and any larger count is a real choice.
 FILE_CHANGES_KEEP_TURNS_MIN = 0
+# ``session.kas_delete_delay_secs``: 0 deletes at once, and a hand-edited delay is
+# capped at one day. The cap bounds the delay asked for, not when the delete runs.
+KAS_DELETE_DELAY_SECS_MIN = 0
+KAS_DELETE_DELAY_SECS_MAX = 86400
+# Also load-only. ``session.search_scan_window`` (default
+# ``DEFAULT_SEARCH_SCAN_WINDOW``): the ceiling keeps a hand-edited value from making
+# every search read a whole very large store.
+SEARCH_SCAN_WINDOW_MIN = 100
+SEARCH_SCAN_WINDOW_MAX = 100_000
 # A hand-edited ``session.idle_exempt_keys`` can be any size, and every idle sweep copies it.
 # Each listed key can also keep a whole kiro-cli process and its MCP servers running, the
 # per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.
 IDLE_EXEMPT_KEYS_MAX = POOL_SIZE_MAX
 IDLE_EXEMPT_KEY_MAX_CHARS = 512
+# Load-only bounds on ``session.harness_background_hold_secs``. The floor keeps a
+# hand-edited 0 from turning the hold off; the ceiling of one day bounds how long one
+# launch can keep a session past its idle timeout. The RSS hard ceiling still applies.
+HARNESS_BACKGROUND_HOLD_SECS_MIN = 300
+HARNESS_BACKGROUND_HOLD_SECS_MAX = 86400
 # Ceiling on ``session.reconcile_max_kills``, equal to the arm's own shipped budget
 # (``runtime_reconcile.DEFAULT_MAX_KILLS``, pinned equal by
 # ``test_the_configured_ceiling_cannot_exceed_the_shipped_budget``). Equal rather
@@ -265,6 +289,16 @@ IDLE_EXEMPT_KEY_MAX_CHARS = 512
 # 0 is meaningful (observe-only) and is the floor, so a negative clamps DOWN to it
 # and disables the arm rather than enabling it.
 RECONCILE_MAX_KILLS_MAX = 5
+# ``session.max_per_creator`` (default ``DEFAULT_MAX_PER_CREATOR``): how many live
+# sessions one creator may hold. Shared by the Settings write gate, the
+# ``_SECURITY_BOUNDED_FIELDS`` sweep and the read at each session create
+# (``dashboard.state.max_slots_per_creator``). The floor keeps a decomposed goal's
+# sessions startable. The ceiling is the live-session ceiling
+# (``dashboard.state.MAX_LIVE_SLOTS``, 500) minus a reserve of 50, so a creator at
+# the highest setting still leaves 50 sessions to everyone else. This module
+# cannot import the dashboard, so ``test_slot_cap_config.py`` pins that relation.
+MAX_PER_CREATOR_MIN = 10
+MAX_PER_CREATOR_MAX = 450
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which
@@ -365,8 +399,8 @@ def _limit_int(value: object, key: str, *, lo: int, hi: int | None = None) -> in
 class ResourceLimitsConfig:
     """Kernel confinement ceilings for spawned agent processes.
 
-    THREE mechanisms read this one block, and a key shared between two of them
-    does NOT mean the same thing on both. That is the whole reason this section
+    THREE mechanisms read this one block, and ``0`` does NOT mean the same
+    thing on each of them. That is the whole reason this section
     has a schema: without it every consumer parses the raw dict itself, leaving
     the incompatible domains written down nowhere and free to drift apart.
 
@@ -405,12 +439,26 @@ class ResourceLimitsConfig:
         default=None,
         metadata=_meta(
             "Max processes",
-            "READ BY TWO MECHANISMS with different meanings for 0. As "
-            "RLIMIT_NPROC it caps processes for the child's real UID, and 0 "
-            "leaves the inherited limit unchanged (the default -- see the "
-            "per-UID caveat in security._RLIMIT_DEFAULTS). As the cgroup "
-            "TasksMax it counts TASKS (threads) in the scope, where 0 is "
-            "rejected by systemd, so 0 or unset means the module default.",
+            "Per-scope TASK budget: the cgroup TasksMax on Linux, which counts "
+            "TASKS (threads), and the Job object ActiveProcessLimit on Windows. "
+            "0 is rejected by systemd, so 0 or unset means the module default. "
+            "It sets no POSIX rlimit; the per-user process cap is the separate "
+            "max_user_processes.",
+            nullable=True,
+        ),
+    )
+    max_user_processes: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Max user processes",
+            "RLIMIT_NPROC on the tool and build processes the gateway spawns, "
+            "opt-in; the ACP session host and what it starts keep the "
+            "inherited limit. The kernel counts every process and thread of "
+            "the gateway's user, not one spawn's tree, so a cap below what "
+            "that user already runs stops those spawns from forking. 0 or "
+            "unset leaves the inherited limit unchanged (the default). Set it "
+            "only when the gateway runs as its own dedicated user. Not used by "
+            "the cgroup path.",
             nullable=True,
         ),
     )
@@ -418,12 +466,24 @@ class ResourceLimitsConfig:
         default=None,
         metadata=_meta(
             "Max memory (MB)",
-            "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_AS "
-            "it caps virtual address space, and 0 leaves the inherited limit "
-            "unchanged (the default -- Node/V8 reserve huge VSZ, see the caveat "
-            "in security._RLIMIT_DEFAULTS). As the cgroup MemoryMax it is the "
-            "per-scope resident ceiling, where 0 is rejected by systemd, so 0 "
-            "or unset means the host-proportional module default.",
+            "Per-scope RESIDENT memory ceiling: the cgroup MemoryMax on Linux "
+            "and the Job object JobMemoryLimit on Windows. 0 is rejected by "
+            "systemd, so 0 or unset means the host-proportional module "
+            "default. It sets no POSIX rlimit; the virtual address-space cap "
+            "is the separate max_address_space_mb.",
+            nullable=True,
+        ),
+    )
+    max_address_space_mb: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Max address space (MB)",
+            "RLIMIT_AS: VIRTUAL address space per spawned process, opt-in. 0 "
+            "or unset leaves the inherited limit unchanged (the default). "
+            "Node/V8 (kiro-cli, npx MCP servers) and GraalVM native binaries "
+            "reserve far more address space than they touch and can fail to "
+            "start below about 64 GiB, so use max_memory_mb to cap resident "
+            "memory. Not used by the cgroup path.",
             nullable=True,
         ),
     )
@@ -475,8 +535,13 @@ class ResourceLimitsConfig:
         metadata=_meta(
             "Max total processes",
             "cgroup TasksMax for the whole agents SLICE, counting tasks "
-            "(threads) across every agent tree. 0 or unset uses the module "
-            "default; the aggregate ceiling is never left unset where a "
+            "(threads) across every agent tree. 0 or unset sizes it from the "
+            "host: 512 tasks for every 512 MB of the slice's memory ceiling "
+            "plus one scope ceiling, so legitimate load reaches max_total_memory_mb "
+            "first. Capped at half the tightest of kernel.pid_max, "
+            "kernel.threads-max and the user slice's TasksMax, but never below "
+            "32768 unless that tightest limit is itself lower; kirocrew doctor "
+            "shows the value and its inputs. The aggregate ceiling is never left unset where a "
             "systemd user manager is available (Linux); not enforced on "
             "Windows/macOS.",
             nullable=True,
@@ -491,6 +556,20 @@ class ResourceLimitsConfig:
             "its own page cache and is throttled alone, before the shared "
             "slice ceiling slows every runtime. Unset or out of range (1-100) "
             "uses the default (90); 0 emits no MemoryHigh at all. Linux only.",
+            nullable=True,
+        ),
+    )
+    slice_reclaim_trigger_pct: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Slice page-cache reclaim trigger (%)",
+            "The gateway writes the agents SLICE's memory.reclaim once "
+            "memory.current reaches this percent of the slice memory.high and "
+            "clean page cache is at least half of it, so cached files alone do "
+            "not hold the slice at its ceiling and throttle every agent. Unset "
+            "uses 95, 0 turns it off for this gateway only (the slice is shared "
+            "by every gateway of the user), 50-99 is accepted and anything else "
+            "uses 95. Never runs inside a pod. Linux with cgroup v2 only.",
             nullable=True,
         ),
     )
@@ -521,7 +600,13 @@ class ResourceLimitsConfig:
         return cls(
             max_open_files=_limit_int(section.get("max_open_files"), "max_open_files", lo=0),
             max_processes=_limit_int(section.get("max_processes"), "max_processes", lo=0),
+            max_user_processes=_limit_int(
+                section.get("max_user_processes"), "max_user_processes", lo=0
+            ),
             max_memory_mb=_limit_int(section.get("max_memory_mb"), "max_memory_mb", lo=0),
+            max_address_space_mb=_limit_int(
+                section.get("max_address_space_mb"), "max_address_space_mb", lo=0
+            ),
             max_cpu_seconds=_limit_int(section.get("max_cpu_seconds"), "max_cpu_seconds", lo=0),
             cpu_weight=_limit_int(section.get("cpu_weight"), "cpu_weight", lo=1, hi=10000),
             max_cpu_percent=_limit_int(section.get("max_cpu_percent"), "max_cpu_percent", lo=0),
@@ -533,6 +618,9 @@ class ResourceLimitsConfig:
             ),
             scope_memory_high_pct=_limit_int(
                 section.get("scope_memory_high_pct"), "scope_memory_high_pct", lo=0, hi=100
+            ),
+            slice_reclaim_trigger_pct=_limit_int(
+                section.get("slice_reclaim_trigger_pct"), "slice_reclaim_trigger_pct", lo=0, hi=99
             ),
             xdist_auto_cap=_limit_int(section.get("xdist_auto_cap"), "xdist_auto_cap", lo=-1),
         )

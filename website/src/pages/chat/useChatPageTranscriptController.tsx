@@ -5,6 +5,7 @@ import { usePinnedPrompt } from './usePinnedPrompt'
 import { jumpAnchorIdx } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent, glideOnceStep, pollRowSettled } from '../../utils/searchScroll'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
+import { releaseReadingPosition } from '../../utils/panelSlide'
 
 export interface UseChatPageTranscriptEarlyControllerOptions {
   activeTip: unknown
@@ -304,6 +305,8 @@ export function useChatPageTranscriptEarlyController({
     const reduced = typeof window.matchMedia === 'function'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     let cancelled = false
+    // This jump owns the position from here (utils/panelSlide).
+    releaseReadingPosition(sc0)
     let detach = attachUserScrollIntent(sc0, () => { cancelled = true; navPollCancelRef.current?.() })
     const startGlide = () => {
       const first = goal()

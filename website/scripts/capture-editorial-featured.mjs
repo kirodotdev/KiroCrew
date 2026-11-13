@@ -163,12 +163,8 @@ async function shoot(browser, base, sections, file, label, mode = 'dark', full =
       if (path === '/api/apps/registries') return json(route, { registries: [] }), true
       return false
     },
+    localStorageEntries: { 'mc-onboarded': '1', 'mc-theme-mode': mode },
   })
-
-  await page.addInitScript(m => {
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-theme-mode', m)
-  }, mode)
 
   await page.goto(`${base}/apps`, { waitUntil: 'domcontentloaded' })
   // Assert a card rendered before capturing: a harness that screenshots an empty

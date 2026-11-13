@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { TAB_ID } from '../api/tabId'
 import { store } from '../store'
-import { sideClose, sideOptimisticAppend, sseSideQueue, sseSideResult } from '../store/chatSlice'
+import { recordSideSteerSubmittedText, sideClose, sideOptimisticAppend, sseSideQueue, sseSideResult } from '../store/chatSlice'
 import { clearSideChatDrafts, readSideChatDraft, writeSideChatDraft } from '../chat-core/composer/sideChatDrafts'
 
 vi.mock('../api/client', () => ({
@@ -182,5 +182,59 @@ describe('useWebSocket chat.side_closed', () => {
 
     expect(readSideChatDraft(SLOT)).toBe('cancelled question\n\nstill queued')
     expect(store.getState().chat.slotSide[SLOT]).toBeUndefined()
+  })
+
+  it('marks a conversation another tab closed, so its panel can say why it emptied', () => {
+    const ws = connect()
+    act(() => { ws.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT, origin_client: 'another-tab' } }) })
+
+    expect(store.getState().chat.slotSideClosedElsewhere?.[SLOT]).toBe(true)
+  })
+
+  it('marks a close that hands back a steer this tab sent, though the panel showed nothing', () => {
+    act(() => { store.dispatch(sideClose(SLOT)) })
+    recordSideSteerSubmittedText(SLOT, 'steer-1', 'my steer')
+    const ws = connect()
+    act(() => {
+      ws.simulateMessage({
+        type: 'chat.side_closed',
+        data: { kind: 'side', slot: SLOT, origin_client: 'another-tab', dropped: [{ queue_id: 'q-steer', steer_id: 'steer-1' }] },
+      })
+    })
+
+    expect(readSideChatDraft(SLOT)).toBe('my steer')
+    expect(store.getState().chat.slotSideClosedElsewhere?.[SLOT]).toBe(true)
+  })
+
+  it('marks nothing when this tab showed no conversation and got nothing back', () => {
+    act(() => { store.dispatch(sideClose(SLOT)) })
+    const ws = connect()
+    act(() => { ws.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT, origin_client: 'another-tab' } }) })
+
+    expect(store.getState().chat.slotSideClosed[SLOT]).toBe(true)
+    expect(store.getState().chat.slotSideClosedElsewhere?.[SLOT]).toBeUndefined()
+  })
+
+  it('marks nothing for its own close, even when the echo clears gateway state', () => {
+    const ws = connect()
+    act(() => {
+      store.dispatch(sideClose(SLOT))
+      ws.simulateMessage({
+        type: 'chat.side_result',
+        data: { slot: SLOT, run_id: 'r2', role: 'user', content: 'question in the closing conversation', message_id: 'u2' },
+      })
+    })
+    act(() => { ws.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT, origin_client: TAB_ID } }) })
+
+    expect(store.getState().chat.slotSide[SLOT]).toBeUndefined()
+    expect(store.getState().chat.slotSideClosedElsewhere?.[SLOT]).toBeUndefined()
+  })
+
+  it('marks nothing when the close names no tab, since the notice names another tab', () => {
+    const ws = connect()
+    act(() => { ws.simulateMessage({ type: 'chat.side_closed', data: { kind: 'side', slot: SLOT } }) })
+
+    expect(store.getState().chat.slotSide[SLOT]).toBeUndefined()
+    expect(store.getState().chat.slotSideClosedElsewhere?.[SLOT]).toBeUndefined()
   })
 })

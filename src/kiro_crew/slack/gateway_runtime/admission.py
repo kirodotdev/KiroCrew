@@ -38,7 +38,14 @@ async def _start_subagent_dispatch_after_memory_ready(self: GatewayOrchestrator)
         raise RuntimeError(
             "Subagent queue dispatch cannot start before memory preparation completes"
         )
-    self.subagent_mgr.release_queue_dispatch()
+    # Fair admission reconciles first, so a recovered child lands in its person's
+    # slice; a failed reconcile keeps the queue held and retries in the background.
+    from kiro_crew.shared_crew.admission_link import release_after_reconcile
+
+    retry = await release_after_reconcile(self.subagent_mgr.release_queue_dispatch)
+    if retry is not None:
+        self._background_tasks.add(retry)
+        retry.add_done_callback(self._background_tasks.discard)
 
 
 def _register_child_liveness(self: GatewayOrchestrator) -> None:
@@ -140,6 +147,21 @@ def _start_adaptive_controller(
     if cfg is None:
         return
     cfg_gw = cfg.mcp_gateway
+
+    def _active_sessions() -> int:
+        sessions = self.sessions
+        if sessions is None:
+            return -1
+        try:
+            return len(sessions.active_providers())
+        except Exception:
+            return -1
+
+    def _cron_queue() -> int:
+        from kiro_crew.executors import cron_queue_depth
+
+        return cron_queue_depth()
+
     try:
         controller = AdaptiveController(
             self.subagent_mgr,
@@ -147,6 +169,8 @@ def _start_adaptive_controller(
             set_gate_capacity=_set_gate,
             read_gate_stats=_gate_stats,
             read_runner_lane=_runner_lane_stats,
+            read_active_sessions=_active_sessions,
+            read_cron_queue=_cron_queue,
             gate_initial=int(getattr(cfg_gw, "spawn_concurrency_initial", 4)),
             gate_floor=int(getattr(cfg_gw, "spawn_concurrency_min", 1)),
             # Derived from config exactly as mcp_broker launches the daemon, so
@@ -424,3 +448,35 @@ def _start_dashboard_workers_after_memory_ready(self: GatewayOrchestrator) -> No
     self.dashboard_state.resume_channel_agents = None
     if resume_channel_agents is not None:
         resume_channel_agents()
+    # Slack code channels a restart interrupted: past the memory barrier here, and
+    # the pass waits (bounded) for Slack to connect before it continues or posts.
+    state = self.dashboard_state
+    import asyncio
+
+    tasks = getattr(self, "_background_tasks", None)
+    try:
+        from kiro_crew.slack.code_channels import dispatch_record
+
+        # On every start, Slack or not: take out the turn openers the last process
+        # recorded (so none outlives this start), then record this process's own.
+        started = asyncio.get_running_loop().create_task(dispatch_record.start())
+    except Exception:  # pragma: no cover - best-effort at start-up
+        logger.warning("code channel turn records not started", exc_info=True)
+    else:
+        if isinstance(tasks, set):
+            tasks.add(started)
+            started.add_done_callback(tasks.discard)
+    if getattr(self, "slack", None) is None:
+        return
+    try:
+        from kiro_crew.slack.code_channels.resume import resume_when_ready
+
+        task = asyncio.get_running_loop().create_task(
+            resume_when_ready(state, lambda: bool(getattr(state, "slack_socket_connected", False)))
+        )
+    except Exception:  # pragma: no cover - resume is best-effort at start-up
+        logger.warning("code channel resume not scheduled", exc_info=True)
+        return
+    if isinstance(tasks, set):
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)

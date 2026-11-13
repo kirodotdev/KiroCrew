@@ -6,6 +6,8 @@ from unittest import mock
 
 import pytest
 
+from conftest import assert_rejected_without_backtracking
+from kiro_crew import security
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 
 _OPEN = "<<<UNTRUSTED_CALENDAR_EVENT"
@@ -14,7 +16,8 @@ _CLOSE = ">>>END_UNTRUSTED_CALENDAR_EVENT"
 
 @pytest.fixture
 def audit():
-    with mock.patch.object(sess, "audit_injection_dropped", create=True) as spy:
+    # The App Kit's untrusted-text SDK records the drop through the core's audit.
+    with mock.patch.object(security, "audit_injection_dropped") as spy:
         yield spy
 
 
@@ -243,13 +246,17 @@ def test_system_prompt_topic_titles_survive(audit, title: str) -> None:
 
 
 def test_long_topic_like_title_is_withheld_quickly() -> None:
-    import time
+    def build_pump(n: int) -> str:
+        return "Q1 " * n + "system prompt review " + "x " * n
 
-    payload = "Q1 " * 3000 + "system prompt review " + "x " * 3000
-    start = time.perf_counter()
-    flagged = sess._meeting_field_flagged(payload, topic_title=True)
-    assert time.perf_counter() - start < 0.5
-    assert flagged is True
+    # The verdict on the long title, read once; the ramp below times the matcher
+    # on every size, where a short title can legitimately survive.
+    assert sess._meeting_field_flagged(build_pump(3000), topic_title=True) is True
+
+    def reject(text: str) -> None:
+        assert isinstance(sess._meeting_field_flagged(text, topic_title=True), bool)
+
+    assert_rejected_without_backtracking(reject, build_pump, budget_seconds=0.5)
 
 
 def test_field_newlines_are_collapsed(audit) -> None:

@@ -1,15 +1,8 @@
-"""Regression tests for the unlocked ``_msg_cache`` fill's generation guard.
+"""Tests for the unlocked ``_msg_cache`` fill's generation guard.
 
-The mtime guard cannot protect a cache FILL against housekeeping rewrites that
-restore the pre-write mtime (``_restore_mtime``): a fill spanning one would
-park pre-rewrite messages under an mtime the file still has, undetectably. The
-locked fill path orders itself against writers via ``_file_lock``; the UNLOCKED
-fallback — taken exactly while a writer holds that lock — instead publishes
-through a per-key invalidation generation, snapshotted before the fill's stat
-and verified around the publish. An invalidation-free fill is kept (sparing the
-next reader a full re-parse), while one racing a preserved-mtime rewrite is
-discarded so the next read re-parses the file and returns the post-rewrite
-messages.
+A rewrite that restores the pre-write mtime (``_restore_mtime``) defeats the mtime
+guard, so the unlocked fill checks a per-key invalidation generation, snapshotted
+before its stat and verified around the publish, and discards a fill that raced one.
 """
 
 from __future__ import annotations
@@ -50,11 +43,8 @@ def _preserved_mtime_rewrite(log: ConversationLog, key: str, content: str) -> No
 class _RewriteOnFirstStore:
     """``_msg_cache`` stand-in that runs *hook* once, just before the first store.
 
-    Deterministically lands a rewrite inside the fill's read → publish window:
-    by the time the store reaches this wrapper the fill has already read the
-    pre-rewrite bytes and passed its generation pre-check, so the caller's
-    post-store re-check is the only thing left that can catch the invalidation
-    the hook performs.
+    The fill has already passed its generation pre-check here, so only the
+    post-store re-check can catch the hook's invalidation.
     """
 
     def __init__(self, inner: Any, hook: Callable[[], None]) -> None:
@@ -97,12 +87,8 @@ def _hold_writer_lock(log: ConversationLog, key: str) -> tuple[threading.Thread,
     """Hold the FULL writer lock (``_locked``: RLock + cross-process flock)
     from a foreign thread until the returned event is set.
 
-    Models a real local writer mid-mutation: readers degrade to the unlocked
-    fill (the RLock is busy) while the flock-hold witness proves external
-    processes are locked out — the state in which the unlocked fill is allowed
-    to publish. A bare RLock hold (``_hold_lock``) models the OTHER state, a
-    local writer still waiting on an external process's flock, in which the
-    fill must refuse to publish.
+    In this state the unlocked fill may publish. A bare RLock hold (``_hold_lock``)
+    models a writer still waiting on another process's flock, where it must not.
     """
     acquired, release = threading.Event(), threading.Event()
 
@@ -653,11 +639,8 @@ class TestPreservedMtimeFillRace:
     def test_stem_keyed_meta_entry_invalidated_by_logical_key_write(self, tmp_path: Path) -> None:
         """No race needed: a plain stem-keyed entry must not survive a rewrite.
 
-        ``list_sessions`` caches metadata under the sanitized ``path.stem``;
-        a later mtime-restoring edit invalidates under the logical key. If the
-        invalidation does not also drop the stem spelling, the stale entry
-        keeps its matching mtime and ``list_sessions`` serves the old title
-        for the life of the process.
+        ``list_sessions`` caches under the sanitized ``path.stem`` but edits
+        invalidate under the logical key, so the stem spelling must be dropped too.
         """
         log = ConversationLog(base_dir=tmp_path)
         key = "slack:123.456"
@@ -674,12 +657,8 @@ class TestPreservedMtimeFillRace:
     ) -> None:
         """Rotation on a legacy bare-``thread_ts`` file must reach canonical readers.
 
-        ``_maybe_rotate`` invalidates under the key ITS caller holds, and for a
-        pre-migration Slack transcript that is the bare ``thread_ts`` — a
-        different spelling from the canonical ``slack:<ts>`` key readers pass.
-        The identity closure must be bidirectional: the legacy-keyed writer has
-        to move the canonical reader's generation, or a racing ``recent()``
-        fill permanently serves the pre-rotation window.
+        A writer keyed by the bare ``thread_ts`` must move the generation of readers
+        keyed ``slack:<ts>``, or a racing ``recent()`` fill keeps the old window.
         """
         log = ConversationLog(base_dir=tmp_path)
         bare = "123.456"
@@ -714,13 +693,8 @@ class TestPreservedMtimeFillRace:
     ) -> None:
         """Rotation must invalidate under the caller's logical key, not the stem.
 
-        Cache entries live under the spelling the caller used, and the
-        sanitized stem is lossy (``slack:<ts>`` cannot be recovered from
-        ``slack_<ts>``), so a rotation that invalidates by file stem can never
-        pop logically-keyed entries. Rotation restores the pre-write mtime, so
-        a surviving entry keeps matching the file and serves the pre-rotation
-        window indefinitely — this is the interleaving arm whose safety rests
-        entirely on the invalidation's pop reaching the entry.
+        The stem is lossy (``slack_<ts>`` cannot give back ``slack:<ts>``), and
+        rotation restores the mtime, so only the pop can remove the stale entry.
         """
         log = ConversationLog(base_dir=tmp_path)
         key = "slack:999.888"
@@ -792,11 +766,8 @@ class TestPreservedMtimeFillRace:
     def test_snippet_fill_discarded_after_racing_session_rewrite(self, tmp_path: Path) -> None:
         """The snippet memo (filled by the same fold) must not outlive a rewrite.
 
-        A stale surviving entry here shows the user a preview line quoting text
-        the transcript does not contain. The snippet store happens inside
-        ``_build_folded`` BEFORE the folded store, so the proxy injects the
-        rewrite at the snippet publish — strictly inside the fold's
-        stat → read → publish window.
+        The snippet store runs inside ``_build_folded`` BEFORE the folded store, so
+        the proxy injects the rewrite there, inside the fold's read → publish window.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "preview of the old text")
@@ -816,12 +787,8 @@ class TestPreservedMtimeFillRace:
     def test_folded_and_snippet_hits_require_matching_generation(self, tmp_path: Path) -> None:
         """A warm fold/snippet entry must miss when only the generation moved.
 
-        Models the cross-instance preserved-mtime rewrite: the writer's
-        ``_invalidate_cache`` pops ITS instance's caches, so all this reader
-        ever observes is the generation bump — the entry is still present and
-        its stored mtime still matches the file. An mtime-only hit check
-        serves the stale fold forever; the generation clause must force the
-        re-fold.
+        A writer in another instance pops only its own caches, so this reader sees
+        just the generation bump while the entry's mtime still matches.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "needle in the haystack")
@@ -865,15 +832,8 @@ class TestPreservedMtimeFillRace:
     ) -> None:
         """The end-to-end scenario, no injection required.
 
-        A long-lived reader instance holds warm fold/snippet memos; a
-        short-lived instance over the same directory performs a
-        preserved-mtime rewrite. The writer's ``_invalidate_cache`` pops only
-        its own instance's caches, and ``_restore_mtime`` keeps the file's
-        mtime matching the reader's entries — so before the generation clause
-        the reader served pre-rewrite search results and previews for the life
-        of the process. The process-wide generation table is what carries the
-        writer's bump across instances; the per-entry clause is what acts on
-        it.
+        A second instance over the same directory does a preserved-mtime rewrite.
+        The process-wide generation table carries its bump to the warm reader.
         """
         reader = ConversationLog(base_dir=tmp_path)
         writer = ConversationLog(base_dir=tmp_path)

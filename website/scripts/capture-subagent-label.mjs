@@ -78,12 +78,12 @@ async function openChat(page, base) {
       await json(route, hit[1]())
       return true
     },
+    localStorageEntries: { 'mc-active-slot': SLOT },
   })
   // After the shared stub: the route registered last answers the socket.
   let bound
   const socket = new Promise(resolve => { bound = resolve })
   await page.routeWebSocket(/\/api\/ws/, ws => bound(ws))
-  await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   const ws = await Promise.race([socket, page.waitForTimeout(10_000).then(() => null)])
   if (!ws) throw new Error('websocket route never bound')

@@ -19,7 +19,7 @@ from kiro_crew.dashboard.handlers.prompts_paths import _plain_stem_ok
 from kiro_crew.dashboard.handlers.prompts_skill_edits import _SKILL_WRITE_LOCK
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
-from kiro_crew.skills import PendingApprovalRefused
+from kiro_crew.skills import PendingApprovalRefused, PendingDismissRefused
 
 from ._shared import _get_skills
 
@@ -39,6 +39,7 @@ _CODE_PENDING_APPROVAL_REFUSED = "pending_approval_refused"
 # The candidate on disk is not the one the reviewer read.
 _CODE_PENDING_SKILL_CHANGED = "pending_skill_changed"
 _CODE_CONTENT_SHA256_REQUIRED = "content_sha256_required"
+_CODE_PENDING_DISMISS_REFUSED = "pending_dismiss_refused"
 
 
 # ── Auto-skill pending-approval queue (v2) ──
@@ -335,9 +336,44 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
             metadata={"slug": slug, "reason": "invalid_slug"},
         )
         return web.json_response({"error": "invalid slug"}, status=400)
+    # Optional: the detail read's ``content_sha256``. When sent, the candidate is
+    # dismissed only if it is still the bytes the reviewer read. No body, or a body
+    # without the field, dismisses the candidate as found.
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    raw_sha = body.get("content_sha256") if isinstance(body, dict) else None
+    seen_sha = raw_sha if isinstance(raw_sha, str) and raw_sha else None
     try:
         ok = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), skills.dismiss_pending_skill, slug
+            discovery_executor(), skills.dismiss_pending_skill, slug, seen_sha
+        )
+    except PendingDismissRefused as e:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_dismiss",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"slug": slug, "reason": e.reason},
+        )
+        if e.reason == "content_changed":
+            return web.json_response(
+                {
+                    "error": "the candidate changed after it was read; read it again",
+                    "code": _CODE_PENDING_SKILL_CHANGED,
+                },
+                status=409,
+            )
+        return web.json_response(
+            {
+                "error": f"dismiss refused: {e.reason}",
+                "code": _CODE_PENDING_DISMISS_REFUSED,
+                "reason": e.reason,
+            },
+            status=409,
         )
     except Exception:
         _sel().log_tool_invocation(

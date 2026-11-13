@@ -32,6 +32,7 @@ from kiro_crew.sandbox import (
     resource_limit_supervisor_argv,
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
+    wrapped_by_crew_sandbox,
 )
 
 logger = logging.getLogger("kiro_crew.kiro_prerequisite")
@@ -45,6 +46,8 @@ _WINDOWS_DESCENDANT_POLL_SECS = 0.05
 
 
 _UNVERIFIED_SANDBOX_MODE = "strict"
+
+_NOT_IN_CREW_SANDBOX_ERROR = "not run: the spawn would not be inside Kiro Crew's own sandbox"
 
 
 _PROCESS_GROUP_SUPERVISOR = str(Path(__file__).with_name("_process_group_supervisor.py"))
@@ -155,6 +158,10 @@ class ProcessResult:
     # state leaves this None, so an unrelated failure can never be misreported
     # as a sandbox problem, and a child cannot print its way into one.
     sandbox_failure: tuple[str, str, str] | None = None
+    # True when the Windows descendant tracker failed, so the run was ended before
+    # its tree could be certified. ``output`` and ``returncode`` are then what was
+    # seen up to that point, not the child's whole answer.
+    tree_unverified: bool = False
 
 
 ProcessRunner = Callable[..., Awaitable[ProcessResult]]
@@ -329,6 +336,16 @@ async def _track_windows_descendants(
                     if initial_snapshot is not None and not initial_snapshot.done():
                         initial_snapshot.set_result(None)
             await asyncio.sleep(_WINDOWS_DESCENDANT_POLL_SECS)
+    except Exception as exc:
+        # The tracker's own failure goes to the snapshot the run is waiting on (it
+        # awaits the first, then the terminal one), so the run fails with this error.
+        # Left to ``finally``, that waiter would be cancelled instead, and the run
+        # would read its tracker failing as a cancellation of the run itself.
+        for waiter in (initial_snapshot, primary_terminal_snapshot):
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(exc)
+                break
+        raise
     finally:
         if initial_snapshot is not None and not initial_snapshot.done():
             initial_snapshot.cancel()
@@ -356,6 +373,7 @@ async def _prepare_sandboxed_spawn(
     env: dict[str, str],
     extra_hidden_dirs: tuple[str, ...],
     extra_visible_dirs: tuple[str, ...],
+    first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], dict[str, str], str | None]:
     """Prepare filesystem-heavy sandbox state on a worker thread.
 
@@ -374,6 +392,7 @@ async def _prepare_sandboxed_spawn(
             strip_python_env=True,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
+            first_party_fixed_argv=first_party_fixed_argv,
         )
     )
 
@@ -399,9 +418,12 @@ async def _run_on_private_loop(
     coroutine FUNCTION, so the worker thread would only build a coroutine object
     and hand it back unawaited -- no child is spawned there at all, and awaiting
     the result on the gateway loop performs the identical on-loop
-    ``CreateProcess``. Nothing narrower works either: asyncio offers no way to
-    adopt an already-spawned ``Popen`` into a subprocess transport, so the only
-    place the spawn can happen off the gateway loop is on another loop.
+    ``CreateProcess``. Streaming spawns on the gateway loop now take a narrower
+    path (``platform_compat_offloop_spawn``: build the ``Popen`` on a worker,
+    bind it to the calling loop with the stock transport ``_start``). This
+    one-shot run keeps its private loop because it needs no loop-bound
+    ``Process``, and the private loop keeps the drain and timeout off the
+    gateway loop as well.
 
     A private loop rather than a rewrite to blocking ``Popen`` keeps the Windows
     retained-tree guarantee byte-for-byte: the descendant tracker, the exact-handle
@@ -447,21 +469,41 @@ async def _run_process(
     sandbox_mode: str = _UNVERIFIED_SANDBOX_MODE,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    first_party_fixed_argv: bool = False,
+    reap_survivors: bool = False,
+    require_crew_sandbox: bool = False,
     _on_private_loop: bool = False,
 ) -> ProcessResult:
     """Run one fixed argv with bounded output, always inside the OS sandbox.
 
     There is no opt-out: every spawn this module makes is a probe or a Kiro auth
-    call, and all of them are sandboxed. Nothing here may run a child
-    unsandboxed.
+    call, and all of them go through the sandbox chokepoint. The one way a
+    child runs unconfined is that chokepoint's own first-party carve-out, which
+    only the LTS sign-in check claims (see *first_party_fixed_argv*).
+
+    *require_crew_sandbox* (default off) refuses the spawn, with no child started,
+    unless the chokepoint put it in Kiro Crew's OWN sandbox layer
+    (``wrapped_by_crew_sandbox``). The chokepoint can hand back an unconfined argv
+    (an operator's unsandboxed-exec opt-in, a caller already inside a sandbox, and
+    Windows, where this function skips the wrap), which a readiness probe accepts
+    and a caller that may run the file nowhere else does not.
 
     On Windows this re-enters itself once, on a private event loop owned by a
     pooled worker thread, because the spawn below reaches ``CreateProcess``
     synchronously on whatever loop asks for the child -- see
-    :func:`_run_on_private_loop` for why that is the narrowest offload available
+    :func:`_run_on_private_loop` for why a one-shot run keeps that offload
     and why the POSIX path needs none. ``_on_private_loop`` is that re-entry's
     own marker and is private: nothing outside this function may set it, and a
     caller that did would put the spawn back on its own loop.
+
+    *first_party_fixed_argv* is threaded to the sandbox chokepoint, where it is
+    ``wrap_argv``'s first-party carve-out (a reviewed property: every passing
+    site is listed in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``).
+    *reap_survivors* (default off) has the supervisor end whatever the command
+    left in its process group once it exits, as ``spawn_supervised_oneshot``
+    does, so a credential helper a launcher leaves behind cannot hold the call
+    open until the timeout. It matters where no sandbox PID namespace would end
+    that helper, which is where the carve-out runs.
     """
 
     if platform_compat.IS_WINDOWS and not _on_private_loop:
@@ -475,6 +517,9 @@ async def _run_process(
                 sandbox_mode=sandbox_mode,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
+                first_party_fixed_argv=first_party_fixed_argv,
+                reap_survivors=reap_survivors,
+                require_crew_sandbox=require_crew_sandbox,
                 _on_private_loop=True,
             )
         )
@@ -503,6 +548,7 @@ async def _run_process(
                 env=env,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
+                first_party_fixed_argv=first_party_fixed_argv,
             )
             if spawn_argv and not os.path.isabs(spawn_argv[0]):
                 # Off the loop: a miss walks the whole ``PATH`` once per name to
@@ -515,6 +561,9 @@ async def _run_process(
                 if not resolved_wrapper:
                     raise OSError(f"sandbox wrapper is unavailable: {spawn_argv[0]}")
                 spawn_argv[0] = resolved_wrapper
+        if require_crew_sandbox and not wrapped_by_crew_sandbox(spawn_argv):
+            await _unlink_off_loop(cleanup_path)
+            return ProcessResult(ok=False, error=_NOT_IN_CREW_SANDBOX_ERROR)
         if platform_compat.IS_POSIX:
             # The immutable, gateway-captured supervisor is the outermost
             # process. Putting it inside the Linux namespace launcher makes the
@@ -535,6 +584,7 @@ async def _run_process(
                 "-c",
                 _PROCESS_GROUP_SUPERVISOR_CODE,
                 *resource_limit_supervisor_argv(),
+                *(["--reap-survivors"] if reap_survivors and _host_can_reap() else []),
                 *spawn_argv,
             ]
         proc = await asyncio.create_subprocess_exec(
@@ -625,6 +675,19 @@ async def _run_process(
         else:
             await asyncio.gather(*completion_tasks)
 
+    def _tracker_failure() -> Exception | None:
+        """The descendant tracker's own error, once it has failed.
+
+        Never a cancellation: the tracker hands its error to the snapshot the run
+        awaits, so a ``CancelledError`` below came from outside this run.
+        """
+        for source in (initial_snapshot, primary_terminal_snapshot, descendant_task):
+            if source is not None and source.done() and not source.cancelled():
+                error = source.exception()
+                if isinstance(error, Exception):
+                    return error
+        return None
+
     try:
         await asyncio.wait_for(
             _wait_for_completion(),
@@ -661,11 +724,20 @@ async def _run_process(
             output=output,
             returncode=proc.returncode,
             error=str(exc),
+            tree_unverified=_tracker_failure() is not None,
         )
     finally:
         if descendant_task is not None:
             descendant_task.cancel()
             await asyncio.gather(descendant_task, return_exceptions=True)
+        tracker_error = _tracker_failure()
+        if tracker_error is not None:
+            logger.warning(
+                "The Windows descendant tracker failed during a kiro-cli run (%s: %s); "
+                "the run ended its retained process tree without certifying it",
+                type(tracker_error).__name__,
+                tracker_error,
+            )
         for handle in windows_descendants.values():
             platform_compat.close_process_handle(handle)
         if windows_root_handle is not None:

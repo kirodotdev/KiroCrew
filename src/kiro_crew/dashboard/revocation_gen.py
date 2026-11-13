@@ -22,9 +22,10 @@ visible to every subsequent validation in-process.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from pathlib import Path
+
+from kiro_crew.atomic_write import replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ def bump_revocation_gen() -> int:
             # new complete value.
             tmp = p.with_suffix(p.suffix + ".tmp")
             tmp.write_text(str(new_gen), encoding="utf-8")
-            os.replace(tmp, p)
+            replace_with_retry(tmp, p)
         except OSError:
             logger.warning("could not persist token revocation counter", exc_info=True)
             raise

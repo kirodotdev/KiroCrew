@@ -30,6 +30,7 @@ import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { focusComposerNow } from '../pages/chat/composerFocus'
+import { isQuickSearchToggleEvent } from '../lib/quickSearchShortcut'
 /**
  * Search Everywhere command palette.
  *
@@ -127,7 +128,11 @@ export default function CommandPalette({
   const vv = useVisualViewport()
   // P0 providers. Each is memoized inside its hook, so identities are stable.
   const all = useAllAggregator()
-  const sessions = useSessionsProvider({ openInSplit })
+  const slots = useAppSelector(selectSlotsWithLiveLastTs)
+  // The sessions open right now, as a stable string. The server marks which hits
+  // they own, so a change here must not reuse a cached search reply.
+  const openSessionsKey = useMemo(() => slots.map(slot => slot.key).sort().join('\u0000'), [slots])
+  const sessions = useSessionsProvider({ openInSplit, openSessionsKey })
   const pages = usePagesProvider()
   const actions = useActionsProvider({ openShortcuts: openShortcuts ?? NOOP })
 
@@ -362,8 +367,8 @@ export default function CommandPalette({
   // unread / pin / recency), but React Query only re-invokes search() on a KEY
   // change — a re-memoized provider identity alone does nothing. Fold a
   // fingerprint of that live state into the key so status dots and MRU order
-  // update while the palette is open instead of freezing at open-time.
-  const slots = useAppSelector(selectSlotsWithLiveLastTs)
+  // update while the palette is open instead of freezing at open-time. `slots`
+  // is read at the top of the component.
   const unreadSlots = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
   // Rows render a tool status through toolStatusLabel, so the purpose-vs-raw-title
@@ -389,8 +394,11 @@ export default function CommandPalette({
         : '',
     [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
   )
+  // The Sessions and All tabs rank open tabs first from the server's `open`
+  // flag, so a tab opening or closing must re-run their search too.
+  const openTabsKey = activeProvider.id === 'sessions' || activeProvider.id === 'all' ? openSessionsKey : ''
   const { data: results = [], isLoading: loading, isError, refetch } = useQuery({
-    queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint],
+    queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint, openTabsKey, activeProvider.scope ?? ''],
     queryFn: () => Promise.resolve(activeProvider.search(debouncedQuery)),
     enabled: open,
     placeholderData: (prev) => prev ?? [],
@@ -586,11 +594,18 @@ export default function CommandPalette({
       role="dialog"
       aria-modal="true"
       aria-label={i18nT('components.commandPalette.search_everywhere')}
-      onMouseDown={onClose}
+      // The press's own default action would clear the focus this close gives back.
+      onMouseDown={e => { e.preventDefault(); onClose() }}
     >
-      {/* Containment only: the panel's onMouseDown performs no action, it just
-          keeps a press inside the panel from reaching the backdrop's dismiss.
-          Every control in here is a real input or button. */}
+      {/* Containment only: the panel's handlers perform no action. onMouseDown
+          keeps a press inside the panel from reaching the backdrop's dismiss;
+          onKeyDown keeps a key pressed inside it from reaching the page's
+          global shortcuts (bubble-phase `document` listeners such as the
+          Settings chord), as the shared `Modal` does for its panel. The
+          palette's own keys are handled by capture-phase listeners before they
+          bubble here. The one key let through is the quick-search gesture,
+          whose `window` listener toggles the palette shut. Every control in
+          here is a real input or button. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given */}
       <div
         className="w-full max-w-xl mx-4 bg-card border border-border rounded-xl shadow-xl overflow-hidden flex flex-col"
@@ -602,6 +617,9 @@ export default function CommandPalette({
         // so the at-rest panel is unchanged.
         style={{ marginTop: Math.round(vv.height * 0.12), maxHeight: Math.round(vv.height * 0.70) }}
         onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (!isQuickSearchToggleEvent(e.nativeEvent)) e.stopPropagation()
+        }}
       >
         {/* Search input */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
@@ -770,8 +788,8 @@ export default function CommandPalette({
                               r.statusStyle === 'pill' ? (
                                 <div className="text-[12px] leading-snug truncate mt-0.5 flex items-center gap-1.5 min-w-0">
                                   <span
-                                    className="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                                    style={{ backgroundColor: `var(${r.statusColorVar})` }}
+                                    className="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                                    style={{ backgroundColor: `var(${r.statusColorVar})`, color: `var(${r.statusColorVar}-fg)` }}
                                   >
                                     {r.statusLabel}
                                   </span>

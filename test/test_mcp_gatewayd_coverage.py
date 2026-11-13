@@ -43,6 +43,7 @@ from mcp_gatewayd_coverage_helpers import (  # noqa: F401 -- the autouse fixture
 )
 from named_cases_helpers import named_cases
 
+from kiro_crew.config.loader_locations import workspace_root
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway.hashing import hash_effective_env
@@ -105,7 +106,7 @@ class TestIdleSweeper:
         stop.set()
         await await_until(task)
         assert pool.evict_idle.await_count >= 1
-        pool.evict_idle.assert_awaited_with(300)
+        pool.evict_idle.assert_awaited_with(300, keep_alive_servers=frozenset())
 
     @pytest.mark.asyncio
     async def test_prefired_stop_event_never_sweeps(self):
@@ -927,7 +928,8 @@ class TestEnvTargetResolver:
         command, args, env, work_dir = resolved
         assert (command, args) == ("legacy-bin", ["--stdio"])
         assert isinstance(env, dict)
-        assert work_dir == key.work_dir
+        # The daemon's own default work dir, never the register frame's.
+        assert work_dir == str(workspace_root(create=False) / "_default")
 
     def test_python_namespace_is_stripped_from_managed_spawn_env(self, monkeypatch):
         """Control-plane resolution and the token fence share a closed namespace rule.
@@ -939,6 +941,8 @@ class TestEnvTargetResolver:
         spawn-site tests.
         """
         key = _pool_key(server="kirocrew-core")
+        # A control-plane target is resolved only once its gateway announced a port.
+        monkeypatch.setattr(gw, "_OWNER_PORT", 47211)
         monkeypatch.delenv("KIROCREW_MCP_TARGET_KIROCREW_CORE", raising=False)
         monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_CORE", "kirocrew mcp-core")
         python_env = {
@@ -1390,11 +1394,23 @@ class TestMain:
 
 class TestMetricEmitters:
     def test_backend_acquire_metric_carries_the_warm_attribute(self, monkeypatch):
-        rec = MagicMock()
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+        from kiro_crew.metrics.recorder import MetricsRecorder
+
+        reader = InMemoryMetricReader()
+        rec = MetricsRecorder(MeterProvider(metric_readers=[reader]).get_meter("test"))
         monkeypatch.setattr(gw, "get_recorder", lambda: rec)
         gw._emit_backend_acquire_metric(12.5, warm=True)
-        assert rec.histogram.call_args.args[0] == "kirocrew.mcp.backend.acquire.duration"
-        assert rec.histogram.call_args.kwargs["attrs"] == {"warm": True}
+        points = [
+            (metric.name, dict(dp.attributes), dp.sum)
+            for rm in reader.get_metrics_data().resource_metrics
+            for sm in rm.scope_metrics
+            for metric in sm.metrics
+            for dp in metric.data.data_points
+        ]
+        assert points == [("kirocrew.mcp.backend.acquire.duration", {"warm": True}, 12.5)]
 
     def test_lazy_load_metrics_also_emit_the_acquire_histogram(self, monkeypatch):
         rec = MagicMock()

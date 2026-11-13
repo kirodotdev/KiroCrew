@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -37,6 +38,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -216,9 +218,22 @@ def _project_skills_enabled() -> bool:
     Independent of any grant: with this false, project skills are impossible
     even for a directory that carries one. Fails closed -- an unreadable config
     disables the feature rather than enabling it.
+
+    Every skill-catalog read asks this, several times per turn, and a full
+    ``KiroCrewConfig.load`` rebuilds every section with the GIL held. The answer
+    is reused while the config files are unchanged (``config.load_memo``); a
+    failed read is never remembered, so it fails closed again on the next ask.
     """
+    from kiro_crew.config import load_memo
+
     try:
-        return bool(KiroCrewConfig.load().skills.project_skills_enabled)
+        return bool(
+            load_memo.memoized(
+                "skills.project_skills_enabled",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.skills.project_skills_enabled,
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - unreadable policy must fail closed
         logger.error(
             "skills.project_skills_enabled unreadable (%s); " "refusing every project-skills grant",
@@ -443,7 +458,7 @@ def _locked_store(*, exclusive: bool = True) -> Iterator[None]:
     # contract is explicitly to degrade rather than break a settings page.
     try:
         lock_path = _trust_dir() / (_STORE_FILENAME + ".lock")
-        lock_path.touch(exist_ok=True)
+        lock_path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
         # "r+" not "r": Windows msvcrt.locking needs write access on the fd, and a
         # read-only handle degrades the lock to a silent no-op.
         handle = open(lock_path, "r+")
@@ -695,12 +710,12 @@ def _as_epoch(value: Any) -> int:
         return 0
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
-        return int(value)
     try:
-        return int(float(str(value)))
+        number = value if isinstance(value, float) else float(str(value))
     except (TypeError, ValueError):
         return 0
+    # json.load accepts NaN and Infinity, and int() raises on both.
+    return int(number) if math.isfinite(number) else 0
 
 
 def list_trusted_projects() -> list[dict[str, Any]]:

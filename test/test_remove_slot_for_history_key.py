@@ -668,16 +668,11 @@ class TestPermanentDeleteReleasesCronOwnership:
 
 
 class TestReleaseIsOwnerConditioned:
-    """The release must clear the owner it was told about, not whoever owns the
-    job by the time the write lands.
+    """The release clears the owner it was told about, not whoever owns the job now.
 
-    Releasing by iterating a snapshot and calling ``adopt_job(id, "")``
-    unconditionally is a lost-update race: another surface (the CLI's
-    ``cron adopt``, a cron-injected slot stamping its own key) can hand the job
-    to a DIFFERENT session in the gap, and the unconditional write then unbinds
-    a job from a session that legitimately owns it. The store's
-    ``release_jobs_owned_by`` selects AFTER its in-lock reload, making the
-    release a compare-and-clear.
+    Another surface (CLI ``cron adopt``, a cron-injected slot) can re-own the job in the
+    gap, so an unconditional ``adopt_job(id, "")`` would unbind a legitimate owner.
+    ``release_jobs_owned_by`` selects after its in-lock reload: a compare-and-clear.
     """
 
     class _StaleRow:
@@ -742,13 +737,9 @@ class TestReleaseIsOwnerConditioned:
 class TestAFailedRemovalDoesNotLeakIntoTheNextSave:
     """A removal whose ``_save`` failed must not be persisted by a later one.
 
-    The removal filters the row out of ``self._jobs`` BEFORE persisting, so a
-    failed write leaves the cache missing a row that is still on disk. Rolling the
-    children's ownership back is not enough: while the fingerprint still says the
-    cache agrees with disk, the next ``_sync`` skips its reload and the next
-    ``_save`` serializes that cache -- writing out the removal the caller was told
-    had failed, and completing the parent's removal while the children keep the
-    ownership just restored.
+    The removal filters ``self._jobs`` before persisting, so a failed write leaves the
+    cache short a row still on disk. While the fingerprint matches, the next ``_sync``
+    skips its reload and the next ``_save`` would write out the failed removal.
     """
 
     @staticmethod
@@ -871,11 +862,9 @@ class TestALiveCronPrincipalKeepsItsJobs:
     async def test_a_cron_the_cli_deleted_is_dead_even_while_the_cache_lists_it(self, tmp_path):
         """Liveness must be read from the store, not from the cache.
 
-        ``list_jobs`` is cache-only with up to one timer-poll interval of
-        cross-process staleness. A CLI ``cron remove`` inside that window leaves
-        this service still listing the job, so a cached liveness check calls the
-        dead principal live and skips releasing its children — and nothing re-runs
-        the delete funnel, so they strand with no warning.
+        ``list_jobs`` can be one timer-poll stale across processes, so after a CLI
+        ``cron remove`` a cached check would call the dead principal live and strand its
+        children, with nothing re-running the delete funnel.
         """
         crons = CronService(base_dir=tmp_path)
         owner = crons.add_job("nightly", "check the queue", every_secs=3600)
@@ -1052,10 +1041,8 @@ class TestOwnerSpellingsOfOneCronPrincipal:
 class TestRemovingACronReleasesItsChildren:
     """Removing a cron retires its principal, so its children must be released.
 
-    The history-delete funnel deliberately SKIPS a live cron owner, so a
-    transcript deleted BEFORE the cron is removed leaves nothing behind to notice
-    later — the removal itself is the only place that can close the gap. Without
-    the cascade the child keeps firing under a key no session can present:
+    The history-delete funnel skips a live cron owner, so the removal is the only place
+    that can release them. Otherwise the child fires under a key no session can present:
     `cron_list` omits it, `cron_update` / `cron_remove` answer "job not found".
     """
 
@@ -1161,13 +1148,10 @@ class TestRemovingACronReleasesItsChildren:
     def test_a_failed_save_rolls_the_deferred_drain_back(self, tmp_path, monkeypatch):
         """The drain's rollback must cover a BARE OSError, not only unreadable.
 
-        ``_save`` raises ``CronStoreUnreadable`` for a store it refuses to write
-        over, but plain ``OSError`` for a store it cannot write AT ALL (ENOSPC,
-        EROFS, EIO out of ``atomic_write``). A narrow ``except CronStoreUnreadable``
-        skipped the rollback for that second class entirely: memory said
-        "ownerless" while disk still named the owner, the queue stayed empty, and
-        the fingerprint still matched the untouched file so nothing reloaded the
-        truth back -- until the next successful save persisted the release.
+        ``_save`` raises ``CronStoreUnreadable`` for a store it refuses to write over,
+        but plain ``OSError`` (ENOSPC, EROFS, EIO) for one it cannot write at all. The
+        fingerprint still matches the untouched file, so without the rollback memory
+        would say "ownerless" until the next successful save persisted the release.
         """
         crons, parent, child = self._parent_and_child(tmp_path)
         crons.defer_removal(parent.id)
@@ -1218,12 +1202,9 @@ class TestRemovingACronReleasesItsChildren:
 class TestOnlyASTABLELiveKeyRetainsOwnership:
     """Existence of the parent row is not enough to keep a child owned.
 
-    A stateless job mints ``cron:<job id>:<uuid4>`` fresh per fire, so the key its
-    last run stamped on a child is ALREADY unpresentable while the parent is still
-    scheduled. Retaining that ownership strands the child exactly as a removed
-    parent would, and the shape of the key cannot tell you which case you are in:
-    a durable sequential-agent key and an ephemeral per-run key are both three
-    segments.
+    A stateless job mints ``cron:<job id>:<uuid4>`` per fire, so the key on a child is
+    unpresentable while the parent is still scheduled. Key shape cannot tell: durable
+    and per-run keys both have three segments.
     """
 
     @pytest.mark.asyncio
@@ -1414,13 +1395,10 @@ class TestAChildCannotBeBornUnderADeadParent:
     def test_add_accepts_a_falsy_owner_without_parsing_it(self, tmp_path, owner):
         """A FALSY owner is ownerless, not a malformed cron key.
 
-        ``session_key`` is an optional caller-supplied field, so the create path's
-        falsy-skip persists ``None`` on the row (``cron_add`` from the CLI, the
-        onboarding importer, an explicit ``session_key=None``). The guard runs on
-        every add, so parsing that value unconditionally makes the store's own
-        ownerless case raise ``AttributeError: 'NoneType' has no attribute
-        'startswith'`` -- which is what
-        ``test_cron_string_field_validation.py::TestFalsySkipSemantics`` caught.
+        ``session_key`` is optional, so rows from the CLI, the onboarding importer or an
+        explicit ``session_key=None`` carry ``None``. The guard runs on every add, so
+        parsing that value would raise ``AttributeError``
+        (see ``test_cron_string_field_validation.py::TestFalsySkipSemantics``).
         """
         crons = CronService(base_dir=tmp_path)
 

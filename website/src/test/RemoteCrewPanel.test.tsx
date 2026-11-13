@@ -204,7 +204,7 @@ describe('RemoteCrewPanel', () => {
 
     // A fresh mount: nothing was launched in this component's lifetime.
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     expect(await screen.findByText(/WXYZ-1234/)).toBeInTheDocument()
     expect(document.querySelector('a[href="https://device.sso/verify"]')).not.toBeNull()
@@ -300,12 +300,12 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     // The stamped caption agrees with the EC2 badge hint on the same row —
-    // it was launched by the EC2 launcher — not the hedging "cannot verify" copy.
+    // it was launched by the EC2 launcher — not the hedging "cannot tell" copy.
     expect(
       await screen.findByText(/Launched by the EC2 launcher\. Its instance may still be running and billing/i),
     ).toBeInTheDocument()
     expect(
-      screen.queryByText(/cannot verify whether this crew has AWS resources/i),
+      screen.queryByText(/cannot tell from here whether it launched this crew/i),
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/Added by you/i)).not.toBeInTheDocument()
 
@@ -363,7 +363,7 @@ describe('RemoteCrewPanel', () => {
     // A fargate row IS an AWS resource, so its caption states that plainly and
     // never hedges the way an unidentified SSM row does.
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot tell from here whether it launched this crew/)).not.toBeInTheDocument()
   })
 
   it('shows a failed turn URL copy and clears it after a successful retry', async () => {
@@ -446,7 +446,7 @@ describe('RemoteCrewPanel', () => {
     const row = name.closest('[data-crew-id="f3"]') as HTMLElement
     expect(row).not.toBeNull()
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot tell from here whether it launched this crew/)).not.toBeInTheDocument()
   })
 
   it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {
@@ -631,7 +631,7 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     expect(await screen.findByText(/sudo dnf install -y/)).toBeInTheDocument()
     expect(screen.queryByText(/brew install/)).not.toBeInTheDocument()
@@ -647,10 +647,10 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     // The localized "not installed" line still explains the gap…
-    expect(await screen.findByText(/Session Manager plugin/i)).toBeInTheDocument()
+    expect(await screen.findByText('Session Manager plugin')).toBeInTheDocument()
     // …but no Copy button appears with nothing to copy.
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
@@ -667,7 +667,7 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     expect(
       await screen.findByText(/^Give sso-cred-helper its full path in the credential_process line.*could not find it on the gateway’s PATH/s),
@@ -684,10 +684,10 @@ describe('RemoteCrewPanel', () => {
     const raw = within(notice).getByText("aws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'")
     expect(raw).not.toBe(lead)
     expect(raw.className).toMatch(/\bfont-mono\b/)
-    // The row's warning circle is the only triangle.
+    // The row's error circle is the only failure mark: it blocks Launch.
     const row = notice.closest('li') as HTMLElement
-    expect(row.querySelectorAll('.lucide-triangle-alert')).toHaveLength(1)
-    expect(notice.querySelector('.lucide-triangle-alert')).toBeNull()
+    expect(row.querySelectorAll('.lucide-x')).toHaveLength(1)
+    expect(notice.querySelector('.lucide-x, .lucide-triangle-alert')).toBeNull()
     // The plugin's install link belongs to the plugin row only.
     expect(within(row).queryByRole('link', { name: /install page/ })).toBeNull()
   })
@@ -704,7 +704,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     // The field is repopulated…
     expect(await screen.findByLabelText(/AWS profile/i)).toHaveValue('Admin')
@@ -729,7 +729,7 @@ describe('RemoteCrewPanel', () => {
       )
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     const recheck = (await screen.findAllByRole('button', { name: /Re-check/i }))[0]
     await u.click(recheck)
@@ -754,15 +754,15 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, account: '1234•••7890' })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     const profileInput = await screen.findByLabelText(/AWS profile/i)
-    const credsRow = await screen.findByText(/Credentials/i)
+    const credsRow = await screen.findByText('AWS credentials')
     // compareDocumentPosition: 4 = FOLLOWING — the row comes after the input.
     expect(profileInput.compareDocumentPosition(credsRow) & 4).toBeTruthy()
-
-    // And the probed identity is stated, not left implicit.
-    expect(await screen.findByText(/Checked against profile .* in us-east-1/i)).toBeInTheDocument()
+    // And the probed identity is stated in plain words, never as a profile named "none set".
+    expect(await screen.findByText('Checked with your default AWS credentials in us-east-1.')).toBeInTheDocument()
+    expect(screen.getByText('Using your default AWS credentials → account 1234•••7890.')).toBeInTheDocument()
   })
 
   it('promises only what the gateway actually delivers while a launch runs', async () => {
@@ -780,7 +780,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudLaunchStatus).mockResolvedValue(SIGNIN_JOB)
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     const card = (await screen.findByText(/WXYZ-1234/)).closest('div')?.parentElement
     expect(card).toBeTruthy()
@@ -813,7 +813,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudLaunchStatus).mockResolvedValue(job as never)
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     expect(await screen.findByText(/WXYZ-9876/)).toBeInTheDocument()
     expect(screen.getByText(/could not confirm the sign-in/i)).toBeInTheDocument()
@@ -876,14 +876,14 @@ describe('RemoteCrewPanel', () => {
 
     // While loading: a spinner, no tabs, no form.
     expect(screen.getByText(/Loading/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Set up a new one/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Your crews/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Set up a new one/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
 
     // After the 403 resolves: transitions directly to the disabled card.
     rejectInstances(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Your crews/i })).not.toBeInTheDocument()
   })
 
   it('distinguishes cloud crews from hand-added machines, and shows an in-progress launch', async () => {
@@ -911,12 +911,12 @@ describe('RemoteCrewPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     // Prereq checklist rendered; a missing plugin blocks Launch.
     expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-    expect(screen.getByText(/Session Manager plugin/i)).toBeInTheDocument()
+    expect(screen.getByText('Session Manager plugin')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled())
-    expect(screen.getByText(/Finish the AWS setup above/i)).toBeInTheDocument()
+    expect(screen.getByText('Fix “Session Manager plugin” above to enable this.')).toBeInTheDocument()
   })
 
   it('renders each size card headlined by its interpolated sub-agent count', async () => {
@@ -926,7 +926,7 @@ describe('RemoteCrewPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     // The sub-agent count is the headline the size choice turns on, so it must be
     // the real number: a var-name mismatch renders the raw `{{n}}` placeholder.
     expect(await screen.findByText(/~3 parallel sub-agents/)).toBeInTheDocument()
@@ -981,7 +981,7 @@ describe('RemoteCrewPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     // Collapsed: the arm64 ladder only.
     expect(screen.queryByText(/m7i\.2xlarge/)).not.toBeInTheDocument()
 
@@ -1007,7 +1007,7 @@ describe('RemoteCrewPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     const launch = await screen.findByRole('button', { name: /^Launch$/ })
     await waitFor(() => expect(launch).not.toBeDisabled())
     await u.click(launch)
@@ -1026,7 +1026,7 @@ describe('RemoteCrewPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     await u.type(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' }), ' subnet-0123abcd ')
     const launch = await screen.findByRole('button', { name: /^Launch$/ })
     await waitFor(() => expect(launch).not.toBeDisabled())
@@ -1048,7 +1048,7 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     // The organization's portal is preselected and named; the form asks only for the region.
     const idc = await screen.findByRole('radio', { name: /Company SSO/i })
@@ -1084,7 +1084,7 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
     await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
     await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-gov-west-1')
@@ -1112,7 +1112,7 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     await waitFor(() => expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked())
     await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
     const launch = screen.getByRole('button', { name: /^Launch$/ })
@@ -1133,7 +1133,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudIdentity).mockReturnValue(new Promise((r) => { resolveIdentity = r }))
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     // Prerequisites are satisfied, but the identity read is pending: the
     // Builder ID default is a placeholder, so Launch must NOT be clickable —
     // a click here would send no target and ignore the preselection that
@@ -1161,7 +1161,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudIdentity).mockReturnValue(new Promise(() => {})) // never resolves
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     const launch = screen.getByRole('button', { name: /^Launch$/ })
     expect(launch).toBeDisabled()
     await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
@@ -1181,7 +1181,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudIdentity).mockRejectedValue(new Error('kiro-cli whoami timed out'))
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     // The failure is shown as a short human cause (never the raw exception
     // text) and offers the agent hand-off: the form keeps what the user typed,
     // so the navigation loses nothing.
@@ -1219,7 +1219,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: null, suggested_target: null, discovery: 'unknown' })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     await screen.findByText(/kiro-cli whoami did not answer/i)
     const launch = screen.getByRole('button', { name: /^Launch$/ })
     expect(launch).toBeDisabled()
@@ -1251,7 +1251,7 @@ describe('RemoteCrewPanel', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     const notice = await screen.findByText(/signed in through Identity Center, but its portal address could not be read/i)
     expect(notice.textContent).not.toMatch(/did not answer/)
     expect(screen.getByRole('radio', { name: /^Builder ID$/i })).not.toBeChecked()
@@ -1580,7 +1580,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       // The built-in prerequisites card and size ladder, unchanged.
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
@@ -1603,7 +1603,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       // Every renderable row is offered by its SERVER-authored label; two rows may
       // share one kind, so the selector is per row, not per renderer.
@@ -1652,7 +1652,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
       await u.click(await screen.findByRole('button', { name: 'Amazon DevSpace (PDX)' }))
       await u.click(await screen.findByRole('button', { name: /Pick Ireland and claim/i }))
 
@@ -1680,7 +1680,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       expect(await screen.findByText('Pool: devspace_pdx')).toBeInTheDocument()
       await waitFor(() => expect(api.cloudProvisioners).toHaveBeenCalled())
@@ -1700,7 +1700,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       // The built-in row is first, so that is what shows.
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
@@ -1727,7 +1727,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
       await u.click(await screen.findByRole('button', { name: 'AWS EC2 (GovCloud account)' }))
 
       // Same built-in prerequisites and size form, different lane.
@@ -1753,7 +1753,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
       expect(screen.queryByRole('status')).not.toBeInTheDocument()
@@ -1775,7 +1775,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       expect(await screen.findByText(/no way to create a crew that this dashboard can draw/i)).toBeInTheDocument()
       expect(screen.queryByText(/Before you start/i)).not.toBeInTheDocument()
@@ -1820,7 +1820,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       // One renderable row is left, so there is no selector and no unpickable card.
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
@@ -1839,7 +1839,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
       expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
@@ -1870,7 +1870,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       const first = renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
       // The x86 tiers live behind a disclosure; open it and pick one. Several cards
       // match, so address the list rather than expecting a unique name.
       await u.click(await screen.findByRole('button', { name: /Smaller and x86_64 sizes/i }))
@@ -1881,7 +1881,7 @@ describe('RemoteCrewPanel', () => {
       first.unmount()
 
       renderWithProviders(<RemoteCrewPanel />)
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
       // Visible WITHOUT touching the disclosure: a remembered size whose card is
       // hidden would drive the launch with nothing on screen saying so.
       const back = await screen.findAllByRole('button', { name: /· x86_64/i })
@@ -1899,7 +1899,7 @@ describe('RemoteCrewPanel', () => {
       const u = userEvent.setup()
       renderWithProviders(<RemoteCrewPanel />)
 
-      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
       const arm = await screen.findAllByRole('button', { name: /· arm64/i })
       expect(arm.some(c => c.getAttribute('aria-pressed') === 'true')).toBe(true)
     })

@@ -16,7 +16,10 @@ Two halves, split the way the guide and the change cards are:
   - ``POST /api/member/self/update`` writes the presentation fields a crewmate
     owns (:data:`kiro_crew.members.SELF_EDITABLE_FIELDS`) at once, records the
     change for undo (:mod:`member_self_changes`) and draws one row with an Undo
-    in the crewmate's chat (:mod:`chat_cards`, surface ``self``).
+    in the crewmate's chat (:mod:`chat_cards`, surface ``self``). A display name
+    that moved also renames the crewmate's home folder
+    (:func:`mate_folders.follow_display_name`), the way the crew editor's own
+    save does, and so does taking that change back.
   - ``POST /api/member/self/propose`` turns a named request (a model, an
     approval mode, a tools draft) into the existing change card for the
     caller's own member: the crewmate names what it wants, the card engine
@@ -127,7 +130,7 @@ def _not_writable(sk: str, operation: str) -> web.Response:
     # The crewmate's row cannot be published from here, e.g. one declared only
     # in ``config.local.json``: a refusal the model can say, never a 500.
     _audit(sk, operation, "denied", "member_not_writable")
-    return _deny(409, "member_not_writable", "this mate's settings cannot be changed from the chat")
+    return _deny(409, "member_not_writable", "this Bot's settings cannot be changed from the chat")
 
 
 async def api_member_self_update(request: web.Request) -> web.Response:
@@ -152,8 +155,8 @@ async def api_member_self_update(request: web.Request) -> web.Response:
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, OP_UPDATE_SELF, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, can change itself")
+        _audit(sk, OP_UPDATE_SELF, "denied", "not a Bot thread")
+        return _deny(403, "not_a_crewmate", "only a Bot, in its own chat, can change itself")
     member, thread_store = who
     fields = body.get("fields")
     if not isinstance(fields, dict) or not fields:
@@ -201,6 +204,16 @@ async def api_member_self_update(request: web.Request) -> web.Response:
         chat_cards.record_self_change(state, rec)
         answer["change_id"] = rec["id"]
         answer["undoable"] = rec["undoable"]
+    if "display_name" in result["changed"]:
+        # The crewmate's home folder carries its display name, so a rename from
+        # its own chat renames the folder, exactly as the crew editor's save
+        # does (``agent_admin.crew_update``). Without this the sidebar keeps the
+        # old label until the next chat this crewmate opens renames the folder
+        # anyway (``mate_folders.ensure_mate_home``), and until then the folder
+        # disagrees with the Bots page and the thread title.
+        from kiro_crew.dashboard.mate_folders import follow_display_name
+
+        await follow_display_name(request.app.get("state"), thread_store, result["name"])
     _audit(sk, OP_UPDATE_SELF, "ok", ",".join(result["changed"]))
     return web.json_response(answer)
 
@@ -224,8 +237,8 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, OP_PROPOSE_SELF, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, can ask this")
+        _audit(sk, OP_PROPOSE_SELF, "denied", "not a Bot thread")
+        return _deny(403, "not_a_crewmate", "only a Bot, in its own chat, can ask this")
     member, _store = who
     name = body.get("request")
     if not isinstance(name, str) or name not in SELF_PROPOSALS:
@@ -624,11 +637,17 @@ async def api_member_self_undo(request: web.Request) -> web.Response:
         status = 403 if exc.code == "not_a_crewmate" else 409
         return _deny(status, exc.code, str(exc))
     except (UnknownMemoryStore, MemberAlreadyExists, MemberApprovalConflict):
-        return _deny(409, "member_not_writable", "this mate's settings cannot be changed here")
+        return _deny(409, "member_not_writable", "this Bot's settings cannot be changed here")
     undone = member_self_changes.mark_undone(change_id) or {**rec, "status": "undone"}
     state = request.app["state"]
     await chat_cards.load_conversation_window(state, undone)
     chat_cards.record_self_change_status(state, undone)
+    if "display_name" in result["changed"]:
+        # Taking a rename back is a rename: the folder follows the restored
+        # name the same way it follows the new one.
+        from kiro_crew.dashboard.mate_folders import follow_display_name
+
+        await follow_display_name(request.app.get("state"), rec["memory_store"], result["name"])
     return web.json_response(
         {"ok": True, "member": rec["member"], "changed": result["changed"], "status": "undone"}
     )

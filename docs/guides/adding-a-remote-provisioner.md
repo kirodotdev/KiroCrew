@@ -97,6 +97,7 @@ A descriptor says which lanes exist and how to draw each one. It never says how 
 | `begin_signin(instance_id, profile, region, login_target=None)` | Reads `already_logged_in`, `error`, `url`, `code`, `ports`; calls `wait(cancel)` then `close()`; on a **cancelled** sign-in calls `abort()` first | Return a `SigninHandle` — **do not raise for a sign-in that merely did not complete.** Honor the requested identity or declare an unsupported non-default target so preflight fails before provisioning. Set `already_logged_in` when there is nothing to do; leave `url` empty to skip without blocking. `abort()` must answer whether the login on the box is confirmed stopped; see *The sign-in handle* below |
 | `register(instance_id, tag, profile, region)` | Nothing — it is the last step | **Raise loudly if the registry write fails.** `register_instance` is best-effort by contract and returns `None` on failure; swallowing that marks the launch done while the user pays for an invisible machine. Raise `launch_job.RegistrationUnavailable` instead, and only instead, when your lane can say the launch itself is sound and only the row is missing: the launcher then reports the resource as launched with the reason on the connect step. Any other exception fails the launch |
 | `teardown(tag, profile, region)` | `True` is reported to the user as removed | Return `True` only when the resource is **confirmed** gone. An accepted delete request that later fails is not a `True`. Note it receives `tag`, never `provision`'s return. If your `register` writes an Instances record, remove it here too: `register` is the last step, so a cancel observed just after it unwinds through `teardown` with the row already written, and a stopped resource that keeps its row leaves a crew entry addressing nothing |
+| `resource_exists(tag, profile, region)` (optional) | Read before a failed provision's `teardown`: `False` turns a confirmed delete into "was never created" | Return whether a resource for `tag` exists; raise when you cannot tell. Without it, or when it raises, a confirmed rollback is reported as removed. `teardown` runs either way |
 
 ### The four step keys are fixed
 
@@ -133,7 +134,7 @@ Two adjacent pieces of work are easy to mistake for a provisioner lane, so state
 
 ### Lifecycle routes are not part of the seam
 
-The stop, start and delete routes under `/api/cloud/{tag}/...` are EC2-specific — they take a CloudFormation stack tag and talk to EC2. Fargate has the read-only `GET /api/cloud/launch/{id}/task` route, resolved by engine capability rather than by a hard-coded provider id. A lane that needs other lifecycle actions contributes its own routes through the `dashboard` seam's `contribute_routes`.
+The stop, start and delete routes under `/api/cloud/{tag}/...` are EC2-specific — they take a CloudFormation stack tag and talk to EC2. Fargate has the read-only `GET /api/cloud/launch/{id}/task` route, resolved by engine capability rather than by a hard-coded provider id. A lane that needs other lifecycle actions contributes its own routes through the `dashboard` seam's `contribute_routes`, and can draw them on its crews' rows through `registerCrewRowActions` (step 6).
 
 There is also **no** `capabilities.remote_provisioners` governance scope today. The existing lanes carry none, and the spec names a row mirroring `capabilities.mobile_connect` as the natural follow-up for narrowing provisioners independently. If your lane needs to be governable, that scope is work you are adding, not work you are inheriting.
 
@@ -216,6 +217,8 @@ Call `registerRemoteProvisionerRenderer` from `website/src/components/remoteProv
 ### 6. Contribute lifecycle routes if you need them
 
 Mount them through `contribute_routes` on the `dashboard` seam. Do not extend `/api/cloud/{tag}/...`; those are EC2's.
+
+To put those actions on the crew's own row in "Your crews", call `registerCrewRowActions` from `website/src/components/remoteCrewRowActions.tsx` during composition, keyed on the `provisioner_id` your `register` stamps on the record. It takes up to two components, each handed the row (`inst`) and a `disabled` flag that is set while the row is busy with a core action: `menuItems` renders `DropdownMenuItem`s in the row's overflow menu between Edit and Remove, and `detail` renders under the row header, for the machine's own state or an action in progress. The registry refuses `aws_ec2`, whose lifecycle the core already draws, and never applies to a chained row, whose stamp the announcing pane chose. It only draws: every action still goes through your own routes, which must authorize the caller.
 
 ### 7. Test it
 

@@ -213,9 +213,8 @@ async function main() {
   async function shoot(theme, slot, title, name) {
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra })
+    await stubDashboardApi(page, { slots, theme, extra, localStorageEntries: { 'mc-active-slot': slot } })
     await page.routeWebSocket(/\/api\/ws/, () => {})
-    await page.addInitScript(s => localStorage.setItem('mc-active-slot', s), slot)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[aria-label="Chat messages"]', { timeout: 20_000 })
     // Click the target session row by its title so the correct transcript is

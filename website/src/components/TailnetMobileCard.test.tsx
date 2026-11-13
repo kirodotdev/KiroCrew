@@ -284,14 +284,34 @@ describe('TailnetMobileCard — the daemon detail line', () => {
 })
 
 describe('TailnetMobileCard — occupied', () => {
-  it('renders the manual command its copy tells the operator to run', async () => {
-    // Without this the body ("Publish it yourself if you are sure it is safe to
-    // overwrite") is an instruction with no means to follow it.
-    await mount(data({ step: 'occupied' }))
-    expect(screen.getByText('kirocrew tailnet up')).toBeInTheDocument()
+  it('renders the serve_command as the "replace it" remedy', async () => {
+    // The remedy must be the real `tailscale serve` publish, not `kirocrew
+    // tailnet up`, which re-runs the publish path that just refused.
+    await mount(
+      data({
+        step: 'occupied',
+        serve_command: 'tailscale serve --bg --https=443 http://127.0.0.1:7788',
+      }),
+    )
+    const cmd = 'tailscale serve --bg --https=443 http://127.0.0.1:7788'
+    expect(
+      screen.getByText((_, el) => el?.tagName === 'CODE' && el.textContent === cmd),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('kirocrew tailnet up')).toBeNull()
+    expect(screen.getByText(/If it is safe to replace, run/)).toBeInTheDocument()
+    expect(screen.getByText('tailscale serve --set-path')).toBeInTheDocument()
     // And no publish button: publishing here would replace whatever Tailscale is
     // already serving, which is exactly what this step exists to avoid.
     expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
+  })
+
+  it('drops the "replace it" line when the server sends no command', async () => {
+    // The server sends no serve_command when it does not know its port. The
+    // card must not then tell the operator to run a command it cannot show.
+    await mount(data({ step: 'occupied', serve_command: '' }))
+    expect(screen.queryByText(/If it is safe to replace, run/)).toBeNull()
+    expect(screen.queryByText(/command below/)).toBeNull()
+    expect(screen.getByText('tailscale serve --set-path')).toBeInTheDocument()
   })
 })
 
@@ -702,6 +722,14 @@ describe('TailnetMobileCard — terminal steps', () => {
     await mount(data({ step: 'pinned' }))
     expect(screen.getByText('Blocked by policy')).toBeInTheDocument()
     // Nothing here is the operator's to change, so no button pretends otherwise.
+    expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
+  })
+
+  it('says tailnet is off by policy and offers no action', async () => {
+    await mount(data({ step: 'policy_off' }))
+    expect(screen.getByText('Off by policy')).toBeInTheDocument()
+    expect(screen.getByText(/Tailnet is off by policy/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
   })

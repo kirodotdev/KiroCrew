@@ -22,6 +22,7 @@ from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.session_control_parts.app_reach import prewarm_app_reach
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     SessionControlError,
     _audit,
@@ -30,6 +31,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     prewarm_enabled_check,
 )
 from kiro_crew.dashboard.session_control_parts.delivery_containment import (
+    SESSION_SEND_QUEUED_META,
     containment_meta,
     containment_snapshot,
     newly_held_constraints,
@@ -295,8 +297,10 @@ async def send_to_target(
     the caller is told it queued rather than steered.
 
     The turn is NOT charged against the background-turn cap, and deliberately so:
-    that cap only binds unattended (app-owned) slots, and every target this
-    function can authorize is attended — see the comment at the delivery call.
+    that cap bounds an app's own automation on unattended (app-owned) slots. The
+    one unattended target this function can authorize is an app's session that
+    the app opened to the owner's chats, and that turn is the owner's chat's
+    work — see the comment at the delivery call.
     """
     # A broadcast passes its own instance so the timeout handler can read facts
     # this delivery recorded before cancellation erased its stack. A plain send
@@ -315,6 +319,7 @@ async def send_to_target(
         await asyncio.to_thread(sel)
     except Exception:  # noqa: BLE001 - a prewarm failure must not fail the send
         logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_app_reach(state)
     await prewarm_enabled_check()
 
     body = message.strip()
@@ -377,9 +382,26 @@ async def send_to_target(
     # reach that surface. The length gate above deliberately measures the RAW body:
     # redaction can only shrink the text, so validating the raw form is the honest
     # limit and keeps the error keyed to what the caller actually sent.
-    prompt = _SEND_PROVENANCE.format(
-        caller=caller_key or "unknown", via=via or "session_send"
-    ) + _neutralize_send_provenance(sanitize_outbound(body))
+    envelope = _SEND_PROVENANCE.format(caller=caller_key or "unknown", via=via or "session_send")
+    prompt = envelope + _neutralize_send_provenance(sanitize_outbound(body))
+
+    # The structured cross-session sender, stamped by the gateway onto the row the
+    # delivery appends (``meta.relay``). The receiver's transcript draws the
+    # incoming session-message card from THIS, not by parsing the ``[sent by
+    # session …]`` prefix — a peer cannot forge it the way it could type the
+    # envelope into its own composer, because only this path writes it. Carries the
+    # sender's key and the verb; the sender's display title is resolved client-side
+    # from the live roster, so no name is pinned here. ``envelope`` says where the
+    # provenance line sits in the delivered text (``relay_spans``), so the bubble
+    # drops it by position. Imported here, not at module level, so the facade
+    # serves no new name.
+    from kiro_crew.dashboard import relay_spans
+
+    relay_meta = {
+        "senderKey": caller_key or "unknown",
+        "via": via or "session_send",
+        relay_spans.ENVELOPE_KEY: relay_spans.leading_span(envelope),
+    }
 
     steered = False
     requeued = False
@@ -438,7 +460,12 @@ async def send_to_target(
         # peer must not inherit the composer's exemption from the LINKED drop.
         async def _steer_delivery() -> str:
             return await session_deliver.deliver(
-                state, slot, prompt, session_deliver.peer(steer=True), admission=admission
+                state,
+                slot,
+                prompt,
+                session_deliver.peer(steer=True),
+                admission=admission,
+                relay_meta=relay_meta,
             )
 
         delivery_progress.steer_await_entered = True
@@ -450,10 +477,10 @@ async def send_to_target(
         # directly, the cancellation unwinds THROUGH the RPC and skips that
         # coroutine's single reconciliation tail, while the bytes may already have
         # reached kiro-cli: the turn then runs text no `slot.append` recorded, and
-        # `_steer_delivery_ids` / `_steer_send_ids` / `_steer_user_origin` /
-        # `_steer_admissions` are never popped. Nothing else pops them --
-        # `_settle_consumed_steers` clears only the attachment and decision-strip
-        # maps, and `_requeue_unconsumed_steers` returns early once settling emptied
+        # `_steer_delivery_ids` / `_steer_send_ids` are never popped. Nothing else
+        # pops them -- `_settle_consumed_steers` releases the steer's provenance,
+        # attachment and decision-strip records but neither id map, and
+        # `_requeue_unconsumed_steers` returns early once settling emptied
         # `_pending_steers`. The surviving `_steer_delivery_ids` entry then refuses
         # this exact text on that slot forever (the one-per-text guard reads that
         # dict) and `retained_steer_count` never falls back below
@@ -477,6 +504,7 @@ async def send_to_target(
         # re-assert: a snapshot taken now must not certify a link the authorization
         # never saw.
         async def _queue_after_orphaned_unavailable() -> None:
+            await prewarm_app_reach(state)
             await prewarm_enabled_check()
             regated = authorize_target(
                 state,
@@ -501,7 +529,8 @@ async def send_to_target(
                 slot,
                 prompt,
                 session_deliver.peer(steer=False),
-                queue_meta=send_origin_meta(state, caller_key),
+                queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
+                relay_meta=relay_meta,
             )
             logger.info(
                 "session_send: orphaned steer to %s came back unavailable and was "
@@ -643,6 +672,7 @@ async def send_to_target(
             # again here is what `prewarm_enabled_check`'s own docstring prescribes for
             # a gate that sits after an await.
             async def _prewarm_regate() -> None:
+                await prewarm_app_reach(state)
                 await prewarm_enabled_check()
 
             await _await_authorized_delivery(_prewarm_regate())
@@ -672,14 +702,16 @@ async def send_to_target(
         started = False
     else:
         # `deliver` passes `_run_chat` straight through, NOT wrapped in
-        # `state.run_background_turn`: that cap is structurally unreachable here.
-        # `run_background_turn` returns the coroutine untouched for an attended slot
-        # (`state_parts/dashboard_services.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
-        # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
-        # every `_app` target above (`app_scoped_target`) — so no target this
-        # function can reach is ever unattended, and a wrapper would only add a
-        # never-taken timeout arm. The composer's own queued path does the same
-        # (`server.py` passes `_run_chat` directly).
+        # `state.run_background_turn`. The one unattended target this function can
+        # reach is an app's session whose app lets the owner's chats send to it
+        # (`app_reach`): `_ChatSlot.unattended` is `bool(self._app) and not
+        # self._human_seen`, and a peer send sets no `_human_seen`. That turn is
+        # the owner's chat's work, not the app's automation the cap bounds, so it
+        # runs uncapped like a send to any of the owner's sessions. Wrapping it
+        # would also need `spawn_guarded_turn`'s queue hand-off, which the run arm
+        # below does not have: a turn that gave up waiting for a permit would leave
+        # the slot's queue stranded behind it. The composer's own queued path does
+        # the same (`server.py` passes `_run_chat` directly).
         # No suspension inside: the non-steer peer arm is the synchronous
         # queue-or-run call, so no cancellation can enter this await.
         started = (
@@ -691,8 +723,10 @@ async def send_to_target(
                 # Only the QUEUE arm keeps it (the run arm has no entry): a
                 # delivery that waits is the one a later drain can drop, and this
                 # stamp is what lets that drop be reported back to us instead of
-                # ending at the target's own transcript.
-                queue_meta=send_origin_meta(state, caller_key),
+                # ending at the target's own transcript. The marker is what
+                # `session_queue` reads as "yours"; no steer requeue writes it.
+                queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
+                relay_meta=relay_meta,
             )
             == session_deliver.DELIVERED_TURN
         )
@@ -831,6 +865,7 @@ async def broadcast_to_targets(
     message: str,
     mode: str,
     targets: "list[str] | None" = None,
+    all_created: bool = False,
     caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to several sessions at once, one at a time.
@@ -842,10 +877,17 @@ async def broadcast_to_targets(
     the first; one telling them "stop, the issue was already fixed" wants the
     second, and the difference is worth eight turns of latency.
 
-    ``targets`` omitted means :func:`broadcast_audience` — the sessions this caller
-    created. Naming them explicitly is for the subset case, and every named target
-    goes through the same :func:`authorize_target` gate, so an explicit list can
-    only ever be as permissive as one send at a time.
+    A call selects its audience in exactly one of two ways. ``targets`` names the
+    sessions, or ``all_created=True`` means :func:`broadcast_audience` — every
+    session this caller created. ``targets`` that is absent, ``None`` or empty
+    selects nobody, so a call with neither is refused ``target_required`` and a call
+    with both is refused ``audience_conflict``; nothing is sent in either case.
+    The default is deliberately NOT the whole fleet: some clients drop an empty
+    list from a tool call, so ``targets=[]`` reaches this function as an omission,
+    and an omission that meant "everyone" would turn a caller's empty audience into
+    a fleet-wide send. Every named target goes through the same
+    :func:`authorize_target` gate, so an explicit list can only ever be as
+    permissive as one send at a time.
 
     PARTIAL DELIVERY IS THE NORMAL OUTCOME and the return shape says so per
     target. A target closed between the audience read and its own delivery, one
@@ -916,7 +958,23 @@ async def broadcast_to_targets(
         ownership_fenced=ownership_fenced,
     )
 
-    explicit = targets is not None
+    # An empty list and an absent one are the same thing here: the bytes a client
+    # that drops empty containers sends are identical for both, so the answer must
+    # not depend on telling them apart.
+    explicit = bool(targets)
+    if explicit and all_created:
+        raise SessionControlError(
+            "pass targets or all: true, not both",
+            code="audience_conflict",
+            status=400,
+        )
+    if not explicit and not all_created:
+        raise SessionControlError(
+            "no audience selected: name the sessions in targets, or pass "
+            "all: true to reach every session you created",
+            code="target_required",
+            status=400,
+        )
     if explicit:
         # THE CAP, CHECKED BEFORE ANYTHING RESOLVES. Below the resolution loop this
         # check is correct and useless: reaching it costs one `_resolve_slot` per
@@ -960,13 +1018,14 @@ async def broadcast_to_targets(
                 seen.add(identity)
                 audience.append(slot.key if slot is not None else name)
         if not audience:
-            # The caller named targets and not one of them is usable. Both silent
-            # answers are wrong here: falling back to the default audience turns a
-            # malformed argument into an accidental fleet-wide send, and reporting
-            # "delivered 0 of 0" hides a call that never had a chance of working.
+            # The caller named targets and not one of them is usable (every name was
+            # blank). Both silent answers are wrong here: falling back to the
+            # all-created audience turns a malformed argument into an accidental
+            # fleet-wide send, and reporting "delivered 0 of 0" hides a call that
+            # never had a chance of working.
             raise SessionControlError(
-                "targets was given but names no session; omit it to reach every "
-                "session you created",
+                "targets was given but names no session; name the sessions, or "
+                "pass all: true to reach every session you created",
                 code="target_required",
                 status=400,
             )
@@ -977,12 +1036,13 @@ async def broadcast_to_targets(
         # The DEFAULT audience's own bound. An explicit list was already refused
         # above, before resolution, and deduplication only ever shrinks it -- so
         # this now guards the fence-built audience, whose size the caller did not
-        # choose. It should be unreachable: ``broadcast_audience`` returns the live
-        # slots this caller created, which ``MAX_SLOTS_PER_CREATOR`` bounds at or
-        # below this cap (see ``MAX_BROADCAST_TARGETS``). Kept because "unreachable
-        # because two constants are ordered correctly" is a property a later edit
-        # can break, and truncating a fleet-wide send is the failure that must not
-        # be the fallback.
+        # choose. Unreachable at the default per-creator cap: ``broadcast_audience``
+        # returns the live slots this caller created, which
+        # ``MAX_SLOTS_PER_CREATOR`` bounds at or below this cap (see
+        # ``MAX_BROADCAST_TARGETS``). Reachable once the owner raises
+        # ``session.max_per_creator`` above it, and the refusal then tells the
+        # caller to send to a named subset: truncating a fleet-wide send is the
+        # failure that must not be the fallback.
         raise _too_many_targets(len(audience))
 
     results: list[dict[str, Any]] = []

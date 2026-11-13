@@ -116,6 +116,125 @@ async def test_dispatch_compaction_completed_resets_context_stats():
 
 
 @pytest.mark.asyncio
+async def test_ownerless_owed_terminal_drops_and_preserves_count_zero_behavior():
+    """An ownerless terminal pays this handle's debt only while debt exists."""
+    from kiro_crew.acp import stale_compaction
+    from kiro_crew.acp.types import (
+        EVENT_COMPACTION_STATUS,
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=75.0,
+        context_used_tokens=150_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+
+    stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+    completed = JsonRpcMessage(
+        method=METHOD_COMPACTION_STATUS,
+        params={"status": {"type": "completed"}},
+    )
+    completed.fanout_no_owner = True
+    q["sA"].put_nowait(completed)
+    q["sA"].put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
+
+    events = [event async for event in handle._dispatch_events(1, 1.0)]
+
+    assert EVENT_COMPACTION_STATUS not in [event.kind for event in events]
+    assert handle._unresolved_compaction_statuses is None
+    assert handle._compaction_failed_at is None
+    assert handle.last_prompt_stats.context_pct == 75.0
+    assert handle.last_prompt_stats.context_used_tokens == 150_000
+    assert handle.last_prompt_stats.context_tokens_from_usage is True
+
+    stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+    failed = JsonRpcMessage(
+        method=METHOD_COMPACTION_STATUS,
+        params={"status": {"type": "failed"}},
+    )
+    failed.fanout_no_owner = True
+    q["sA"].put_nowait(failed)
+    q["sA"].put_nowait(JsonRpcMessage(id=2, result={"stopReason": "end_turn"}))
+
+    events = [event async for event in handle._dispatch_events(2, 1.0)]
+
+    assert EVENT_COMPACTION_STATUS not in [event.kind for event in events]
+    assert handle._unresolved_compaction_statuses is None
+    assert handle._compaction_failed_at is None
+
+    visible = JsonRpcMessage(
+        method=METHOD_COMPACTION_STATUS,
+        params={"status": {"type": "completed"}},
+    )
+    visible.fanout_no_owner = True
+    q["sA"].put_nowait(visible)
+    q["sA"].put_nowait(JsonRpcMessage(id=3, result={"stopReason": "end_turn"}))
+
+    events = [event async for event in handle._dispatch_events(3, 1.0)]
+    status = next(event for event in events if event.kind == EVENT_COMPACTION_STATUS)
+    assert status.text == "completed"
+    assert status.runtime_global is True
+
+
+def test_owed_completed_resets_session_state_only_for_owned_frame():
+    """An ownerless completion cannot claim a session-local reset."""
+    from kiro_crew.acp import stale_compaction
+    from kiro_crew.acp.types import (
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._compaction_failed_at = 123.0
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=75.0,
+        context_used_tokens=150_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+    stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+    stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+
+    ownerless = JsonRpcMessage(
+        method=METHOD_COMPACTION_STATUS,
+        params={"status": {"type": "completed"}},
+    )
+    ownerless.fanout_no_owner = True
+
+    assert stale_compaction.consume_stale_compaction_status(handle, ownerless) is True
+    assert getattr(handle, "_unresolved_compaction_statuses", None) == 1
+    assert getattr(handle, "_stale_compaction_delivery_generation", 0) == 1
+    assert handle._compaction_failed_at == 123.0
+    assert handle.last_prompt_stats.context_pct == 75.0
+    assert handle.last_prompt_stats.context_used_tokens == 150_000
+    assert handle.last_prompt_stats.context_tokens_from_usage is True
+
+    owned = JsonRpcMessage(
+        method=METHOD_COMPACTION_STATUS,
+        params={"sessionId": "sA", "status": {"type": "completed"}},
+    )
+
+    assert stale_compaction.consume_stale_compaction_status(handle, owned) is True
+    assert getattr(handle, "_unresolved_compaction_statuses", None) is None
+    assert getattr(handle, "_stale_compaction_delivery_generation", 0) == 2
+    assert handle._compaction_failed_at is None
+    assert handle.last_prompt_stats.context_pct == 0.0
+    assert handle.last_prompt_stats.context_used_tokens == 0
+    assert handle.last_prompt_stats.context_tokens_from_usage is False
+    assert handle.last_prompt_stats.context_window_tokens == 200_000
+
+
+@pytest.mark.asyncio
 async def test_wait_for_compaction_drain_path_resets_context_stats():
     """The async-after-end_turn drain path in wait_for_compaction bypasses the
     prompt dispatch loop, so it must drop the stale counts itself."""
@@ -513,3 +632,44 @@ async def test_wait_for_compaction_timeout_restores_a_concurrent_frame():
     assert result == {"type": "timeout"}
     # The concurrent frame is back on the queue for the next reader, not dropped.
     assert q["sA"].get_nowait() is live_frame
+
+
+@pytest.mark.asyncio
+async def test_a_late_idle_compaction_status_is_dropped_by_the_next_turn():
+    """A shared-runtime turn drops the late status of an abandoned idle
+    ``/compact``: a ``failed`` there would arm the budget that ends the turn
+    with the compaction stop reason. The next terminal status is its own."""
+    from kiro_crew.acp.stale_compaction import discard_stale_compaction_status
+    from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, METHOD_COMPACTION_STATUS
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    discard_stale_compaction_status(handle, within_secs=300.0)
+    task = await _start_reader(rt)
+    try:
+        events = []
+        armed: list[object] = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+                armed.append(handle._compaction_failed_at)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        for status_type in ("failed", "completed"):
+            _feed(
+                reader,
+                {
+                    "method": METHOD_COMPACTION_STATUS,
+                    "params": {"sessionId": "sA", "status": {"type": status_type}},
+                },
+            )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await await_until(driver, what="the driver finishing its turn")
+        comp = [e.text for e in events if e.kind == EVENT_COMPACTION_STATUS]
+        assert comp == ["completed"]
+        assert all(a is None for a in armed)
+    finally:
+        await _stop_reader(task)

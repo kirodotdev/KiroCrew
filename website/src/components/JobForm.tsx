@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Zap } from 'lucide-react'
+import { Check, Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
@@ -10,16 +10,20 @@ import SegmentedControl from './SegmentedControl'
 import SimpleSelect from './SimpleSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
+import { isMateManaged } from '../utils/mateFolders'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
-import { browserTimeZone } from '../utils/tz'
+import { LOCAL_ZONE, isLocalZone } from '../utils/tz'
+import { cronZonesQuery } from '../api/cronZonesQuery'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtWeekday } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
+/** The picker's value while the default zone is unknown; Radix refuses an empty value. */
+const DEFAULT_ZONE_CHOICE = '__default__'
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
 /** Monday-first weekday labels. A function, not a module-level array: a const
  *  array of translated strings would freeze at the boot language. The index
@@ -72,7 +76,7 @@ export function jobKindOf(job?: CronJob): JobKind {
   return 'message'
 }
 
-/** Highest auto-pause limit the backend accepts (`_AUTO_PAUSE_MAX`). */
+/** Highest auto-pause and alert-after limit the backend accepts (`_AUTO_PAUSE_MAX`). */
 const AUTO_PAUSE_MAX = 10000
 
 /** A run's time limit when the job sets none: the cron service's own
@@ -88,7 +92,7 @@ export function runLimitMinutes(secs: number): number {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', onceAt: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -126,7 +130,11 @@ function parseJobDefaults(job?: CronJob) {
     !seg.split('-').some(tok => /^\d+$/.test(tok) && parseInt(tok, 10) > 7) && expandDow(seg).length > 0)
   const isWeekly = !isInterval && cronParts.length === 5 && cronParts[4] !== '*' && cronParts[2] === '*' && cronParts[3] === '*'
     && isPlainField(cronParts[0], 59) && isPlainField(cronParts[1], 23) && isRepresentableDow(cronParts[4])
-  const schedMode = isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
+  // A one-shot job carries neither a cron expression nor an interval, and the
+  // server renders its run time as "at …". The form has no editor for that time,
+  // so it shows the stored text and leaves the schedule out of the save (#25898).
+  const isOneShot = !isInterval && !cronRaw && /^at\s/.test(job.schedule || '')
+  const schedMode = isOneShot ? 'once' as const : isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
   // Read cron time and days directly (stored in job timezone, not UTC)
   let weekDays: number[] = []
   let weekTime = '09:00'
@@ -135,13 +143,13 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, onceAt: '', savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
 function buildBody(
   f: ReturnType<typeof parseJobDefaults>,
-  tz: string,
+  tz: string | null,
   setError: (e: string) => void,
   isEdit = false,
   prefill?: CronPrefill,
@@ -192,18 +200,27 @@ function buildBody(
   // that unchecking restores what was there, and a reader who checks the box,
   // saves, and unchecks it later would instead find the folder silently gone.
   body.chat_folder_id = isLlmless ? '' : f.chatFolderId
-  if (f.schedMode === 'interval') {
+  if (f.schedMode === 'once') {
+    // The PATCH keeps the stored run time and timezone when none is sent. A new
+    // one-shot sends its wall clock as `at_time`, read in the job's zone.
+    if (!isEdit) {
+      // The form shows its own hint (`onceHint`) before it calls this.
+      if (!f.onceAt) return null
+      body.at_time = f.onceAt
+      if (tz !== null) body.timezone = tz
+    }
+  } else if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
     if (f.weekDays.length === 0) { setError(i18nT('components.jobForm.select_at_least_one_day')); return null }
     const [h, m] = f.weekTime.split(':').map(Number)
     body.cron = `${m} ${h} * * ${f.weekDays.map(d => GRID_TO_CRON_DOW[d]).join(',')}`
-    body.timezone = tz
+    if (tz !== null) body.timezone = tz
   } else {
     const expr = f.cronExpr.trim()
     if (expr.split(/\s+/).length !== 5) { setError(i18nT('components.jobForm.enter_a_valid_5_field_cron_expression')); return null }
     body.cron = expr
-    body.timezone = tz
+    if (tz !== null) body.timezone = tz
   }
   // Provenance stamp, create-only: the template this job was seeded from, plus
   // the template's prompt AS IT WAS when picked (the snapshot the Schedule page
@@ -388,6 +405,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // stopped the save. Kept apart from `error` so it is never shown through
   // ErrorNotice (errors-use-error-notice).
   const [autoPauseHint, setAutoPauseHint] = useState('')
+  const showAlertAfter = !!job && typeof job.alert_after_failures === 'number'
+  const [initialAlertAfter] = useState(() => (showAlertAfter ? String(job?.alert_after_failures) : ''))
+  const [alertAfter, setAlertAfter] = useState(initialAlertAfter)
+  const [alertAfterHint, setAlertAfterHint] = useState('')
   // The limit the field was seeded from, held in state rather than read off
   // `defaults`: `job` is re-fetched while the form is open (another tab's save,
   // a window refocus), and comparing the stale field against the NEW stored
@@ -412,15 +433,26 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [intUnit, setIntUnit] = useState(init.intUnit)
   const [weekDays, setWeekDays] = useState(init.weekDays)
   const [weekTime, setWeekTime] = useState(init.weekTime)
-  const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : browserTimeZone())
+  // null = the picker was never touched on a job with no zone of its own: no
+  // `timezone` is sent, so a new job takes the default zone and an edit keeps
+  // the job's empty zone instead of pinning whatever the picker displayed.
+  const [initialTz] = useState<string | null>(() => job?.timezone || null)
+  const [tz, setTz] = useState(initialTz)
+  const { data: zones, error: zonesError } = useQuery(cronZonesQuery)
+  // Until the server names the default, an untouched picker says "Default zone"
+  // rather than guessing Local: a configured zone would make that guess wrong.
+  const shownTz = tz ?? zones?.defaultTz ?? DEFAULT_ZONE_CHOICE
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
+  const [onceAt, setOnceAt] = useState(init.onceAt)
+  // A validation hint, not an error, like `autoPauseHint`.
+  const [onceHint, setOnceHint] = useState('')
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
   // value typed and then typed back reads as untouched again — the same rule
-  // the crew editor's own dirtyPanes uses. tz is excluded: its initial value
-  // is the machine's zone, an environment fact rather than user work worth a
-  // discard confirm. Reported through an effect keyed on the recomputed
-  // boolean, so hosts only hear about EDGES, not every keystroke.
+  // the crew editor's own dirtyPanes uses. tz is the picked zone, never the
+  // default `shownTz` displays, so a default that loads late is not an edit.
+  // Reported through an effect keyed on the recomputed boolean, so hosts only
+  // hear about EDGES, not every keystroke.
   const dirty =
     name !== init.name || msg !== init.message ||
     agent !== defaults.agent || model !== defaults.model ||
@@ -429,10 +461,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     hideInChat !== defaults.hideInChat || schedMode !== init.schedMode ||
     minimalContext !== defaults.minimalContext ||
     chatFolderId !== defaults.chatFolderId ||
-    autoPause !== initialAutoPause ||
+    autoPause !== initialAutoPause || alertAfter !== initialAlertAfter || tz !== initialTz ||
     timeLimitMin !== runLimitMinutes(timeLimitBase) ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
-    weekTime !== init.weekTime || cronExpr !== init.cronExpr ||
+    weekTime !== init.weekTime || cronExpr !== init.cronExpr || onceAt !== init.onceAt ||
     weekDays.length !== init.weekDays.length || weekDays.some((d, i) => d !== init.weekDays[i])
   const dirtyChangeRef = useRef(onDirtyChange)
   dirtyChangeRef.current = onDirtyChange
@@ -505,12 +537,19 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  move-to-folder submenu and the launcher's folder rows, so this picker lists
    *  folders in the order and with the ancestry labels the reader already knows --
    *  and a fix to either (a cycle guard, a non-string name off disk) reaches all
-   *  of them at once. */
+   *  of them at once.
+   *
+   *  A mate's home and the folders inside it are left out: they hold only that
+   *  mate's sessions, so the save would be refused. The job's own saved folder
+   *  stays listed, so an existing value is still shown as it is. */
   const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
+  const savedChatFolderId = job?.chat_folder_id || ''
   const folderOptions = useMemo(() => {
-    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode)
+    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode).filter(
+      f => f.folder.id === savedChatFolderId || !isMateManaged(f.folder, chatFolders),
+    )
     return { values: ordered.map(f => f.folder.id), labels: ordered.map(f => f.path) }
-  }, [chatFolders, folderSortMode])
+  }, [chatFolders, folderSortMode, savedChatFolderId])
   /** `hide_in_chat` is the explicit "this job gets no tab" opt-out, and a run with
    *  no tab has nothing to file -- so with it on the picker cannot do anything.
    *  Saying that and refusing input beats accepting a setting whose only
@@ -584,7 +623,12 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, savedTimeoutSecs: timeLimitBase, timeLimitMin }
+    if (!job && schedMode === 'once' && !onceAt) {
+      setOnceHint(i18nT('components.jobForm.pick_a_run_time'))
+      setSaving(false)
+      return
+    }
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, onceAt, savedTimeoutSecs: timeLimitBase, timeLimitMin }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     // Sent only when changed, so an unrelated edit never rewrites the limit
@@ -597,6 +641,15 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         return
       }
       if (limit !== job?.auto_pause_after_failures) body.auto_pause_after_failures = limit
+    }
+    if (showAlertAfter && alertAfter.trim() !== initialAlertAfter) {
+      const limit = Number(alertAfter.trim())
+      if (alertAfter.trim() === '' || !Number.isInteger(limit) || limit < 1 || limit > AUTO_PAUSE_MAX) {
+        setAlertAfterHint(i18nT('components.jobForm.alert_after_failures_invalid'))
+        setSaving(false)
+        return
+      }
+      if (limit !== job?.alert_after_failures) body.alert_after_failures = limit
     }
     if (privateMember && !isLlmless) {
       // Keyed on `privateMember`, not on `boundMember`, and BOTH lines depend on
@@ -646,7 +699,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       // Reached only when the call threw past the inner handler. Same rule as
       // above: a 4xx is the server deciding, a 5xx or a transport failure is not.
       const decided = e instanceof ApiError && e.status >= 400 && e.status < 500
-      setError(msg); onSubmitError?.(msg, decided, f.name); setSaving(false)
+      // The host shows this after the form is gone, so it gets the server's reason.
+      setError(msg); onSubmitError?.(e instanceof Error ? e.message : msg, decided, f.name); setSaving(false)
     }
   }
 
@@ -698,21 +752,32 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     </div>
   ) : null
 
-  /** The job's timezone picker, rendered identically by the weekly and the
-   *  cron-expression branch (it was the same markup twice).
+  /** The job's timezone picker, rendered identically by the weekly, the
+   *  cron-expression and the new-job Once branch.
    *
    *  `TIMEZONES` is a curated 15-zone fast-pick list, not the IANA set, so this
    *  is a `SimpleSelect` — the searchable variant is for the full host list
-   *  (see `TimezoneSelect`). The stored zone is unioned in at the front so a
-   *  job saved with a zone outside the curated list keeps it. */
-  const tzOptions = Array.from(new Set([tz, ...TIMEZONES]))
+   *  (see `TimezoneSelect`). 'local' leads, named with the zone the computer
+   *  Kiro Crew runs on is in now; the shown zone follows it so a job saved with
+   *  a zone outside the curated list keeps it. */
+  const tzOptions = Array.from(new Set([
+    ...(shownTz === DEFAULT_ZONE_CHOICE ? [DEFAULT_ZONE_CHOICE] : []),
+    LOCAL_ZONE,
+    shownTz,
+    ...TIMEZONES,
+  ]))
+  const localLabel = zones?.hostTz
+    ? i18nT('components.jobForm.timezone_local', { zone: zones.hostTz.replace(/_/g, ' ') })
+    : i18nT('components.jobForm.timezone_local_undetected')
   const tzSelect = (
     <SimpleSelect
       aria-label={i18nT('components.jobForm.timezone')}
       options={tzOptions}
-      optionLabels={tzOptions.map(z => z.replace(/_/g, ' '))}
-      value={tz}
-      onChange={setTz}
+      optionLabels={tzOptions.map(z => (
+        z === DEFAULT_ZONE_CHOICE ? i18nT('components.jobForm.timezone_default')
+          : isLocalZone(z) ? localLabel : z.replace(/_/g, ' ')))}
+      value={shownTz}
+      onChange={z => setTz(z === DEFAULT_ZONE_CHOICE ? null : z)}
       // The vertical (Schedule sidebar) layout runs its row at 12px; without this
       // the trigger would sit at the shared `text-sm` default while every sibling
       // stayed 12px. The horizontal layout keeps the default and takes a fixed
@@ -746,8 +811,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         </div>
       </>) : (
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
-          <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.name')} placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.message')} placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : runsAsField ?? <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
@@ -759,7 +824,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             clearLabel={i18nT('components.jobForm.model_inherit')}
             aria-label={i18nT('components.jobForm.model')}
           />
-          <Input placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.channel_id')} placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.approval')}
             options={['auto']}
@@ -810,16 +875,20 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       {/* Schedule */}
       {vertical && <div className="flex flex-col gap-0.5"><span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.schedule')}</span><span className="text-[11px] text-muted/70">{i18nT('components.jobForm.how_often_this_job_runs')}</span></div>}
       <div className={`flex gap-2 items-center flex-wrap ${vertical ? '' : ''}`}>
+        {schedMode === 'once' && job ? (
+          <span className="text-[13px] text-text" data-testid="jobform-one-shot-schedule">{job.schedule}</span>
+        ) : (<>
+        {/* Once is offered only for a new job: the update route takes no run time. */}
         <SimpleSelect
-          options={['interval', 'weekly', 'cron']}
-          optionLabels={[i18nT('components.jobForm.every_interval'), i18nT('components.jobForm.weekly_schedule'), i18nT('components.jobForm.cron_expression')]}
+          options={['interval', 'weekly', 'cron', ...(job ? [] : ['once'])]}
+          optionLabels={[i18nT('components.jobForm.every_interval'), i18nT('components.jobForm.weekly_schedule'), i18nT('components.jobForm.cron_expression'), ...(job ? [] : [i18nT('components.jobForm.once')])]}
           value={schedMode}
-          onChange={v => setSchedMode(v as 'interval' | 'weekly' | 'cron')}
+          onChange={v => setSchedMode(v as 'interval' | 'weekly' | 'cron' | 'once')}
           aria-label={i18nT('components.jobForm.schedule')}
           {...uiLocation('schedule.edit-when')}
         />
         {schedMode === 'interval' ? (<>
-          <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
+          <Input type="number" min={1} aria-label={i18nT('components.jobForm.interval_count')} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.every_interval')}
             options={['minutes', 'hours', 'days']}
@@ -828,16 +897,42 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             onChange={v => setIntUnit(v as 'minutes' | 'hours' | 'days')}
           />
         </>) : schedMode === 'weekly' ? (<>
-          <div className="flex gap-1 flex-wrap">{dayNames().map((d, i) => (
-            <button key={d} type="button" onClick={() => toggleDay(i + 1)} className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${weekDays.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
-          ))}</div>
+          {/* Each day is a toggle: aria-pressed carries the state to assistive
+              tech, and the check mark carries it to a reader who cannot tell the
+              accent fill from the plain one. */}
+          <div role="group" aria-label={i18nT('components.jobForm.days_of_week')} className="flex gap-1 flex-wrap">{dayNames().map((d, i) => {
+            const on = weekDays.includes(i + 1)
+            return (
+              <button key={d} type="button" aria-pressed={on} onClick={() => toggleDay(i + 1)} className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${on ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{on && <Check aria-hidden="true" size={11} strokeWidth={3} />}{d}</button>
+            )
+          })}</div>
           <span className="text-muted text-[13px]">{i18nT('components.jobForm.at')}</span>
-          <Input type="time" style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
+          <Input type="time" aria-label={i18nT('components.jobForm.time_of_day')} style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
           {tzSelect}
+        </>) : schedMode === 'once' ? (<>
+          <Input
+            type="datetime-local"
+            aria-label={i18nT('components.jobForm.run_at')}
+            aria-describedby={onceHint ? 'jobform-once-hint' : undefined}
+            aria-invalid={onceHint ? true : undefined}
+            style={{ flex: '0 0 210px' }}
+            value={onceAt}
+            onChange={e => { setOnceAt(e.target.value); setOnceHint('') }}
+          />
+          {tzSelect}
+          {/* Plain text, not an ErrorNotice: see `onceHint`. */}
+          {onceHint && <span id="jobform-once-hint" className="text-[11px] text-text">{onceHint}</span>}
         </>) : (<>
-          <Input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
+          <Input aria-label={i18nT('components.jobForm.cron_expression')} value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
           {tzSelect}
         </>)}
+        </>)}
+        {/* No hand-off: the notice sits beside unsaved form input, which a hand-off
+            would discard. The picker says "Default zone" meanwhile, and an
+            untouched picker sends no zone, so the job still takes the default. */}
+        {zonesError && (schedMode === 'weekly' || schedMode === 'cron' || (schedMode === 'once' && !job)) && (
+          <ErrorNotice variant="inline" message={i18nT('components.jobForm.timezone_default_unavailable')} />
+        )}
         {!vertical && !externalSubmit && <SendBtn onClick={submit} disabled={saving}>{saving ? i18nT('components.jobForm.saving') : (job ? i18nT('components.jobForm.save') : i18nT('components.jobForm.add'))}</SendBtn>}
       </div>
 
@@ -1052,6 +1147,28 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             {/* Plain text, not an ErrorNotice: see `autoPauseHint`. */}
             {autoPauseHint && (
               <span id="jobform-auto-pause-hint" className="text-[11px] text-text">{autoPauseHint}</span>
+            )}
+          </div>
+        )}
+        {showAlertAfter && (
+          <div className="flex flex-col gap-1">
+            <label htmlFor="jobform-alert-after" className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.alert_after_failures')}</label>
+            <span id="jobform-alert-after-help" className="text-[11px] text-muted/70">{i18nT('components.jobForm.alert_after_failures_description')}</span>
+            <Input
+              id="jobform-alert-after"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={AUTO_PAUSE_MAX}
+              step={1}
+              aria-describedby={alertAfterHint ? 'jobform-alert-after-help jobform-alert-after-hint' : 'jobform-alert-after-help'}
+              aria-invalid={alertAfterHint ? true : undefined}
+              className="w-full sm:w-32 flex-none"
+              value={alertAfter}
+              onChange={e => { setAlertAfter(e.target.value); setAlertAfterHint('') }}
+            />
+            {alertAfterHint && (
+              <span id="jobform-alert-after-hint" className="text-[11px] text-text">{alertAfterHint}</span>
             )}
           </div>
         )}

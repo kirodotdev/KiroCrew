@@ -103,8 +103,15 @@ export function useScrollerElement(
   // would silently never attach (frozen isAtBottom, no follow, no window
   // recompute during scroll). `syncScrollerEl` below keeps this in step.
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null)
+  // The last element handed to setScrollerEl. syncScrollerEl runs after every
+  // host commit, so it compares here and schedules nothing when the element is
+  // unchanged: an updater that returns `prev` still makes React re-run the host
+  // body to find that out whenever the host has other work pending.
+  const scrollerElSentRef = useRef<HTMLDivElement | null>(null)
   const syncScrollerEl = useCallback(() => {
-    setScrollerEl((prev) => (prev === scrollerRef.current ? prev : scrollerRef.current))
+    if (scrollerElSentRef.current === scrollerRef.current) return
+    scrollerElSentRef.current = scrollerRef.current
+    setScrollerEl(scrollerRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

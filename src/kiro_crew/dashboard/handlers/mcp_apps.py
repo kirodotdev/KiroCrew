@@ -662,6 +662,8 @@ async def api_mcp_apps_message(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "session queue is full", "code": "queue_full"}, status=429
             )
+        if delivery == session_deliver.NOT_DELIVERED:
+            return web.json_response({"error": "session closed", "code": "slot_closed"}, status=409)
         _adm.commit()
         state.push_slots_update()
 

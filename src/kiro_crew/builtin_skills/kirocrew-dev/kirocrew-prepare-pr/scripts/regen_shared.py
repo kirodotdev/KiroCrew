@@ -32,11 +32,27 @@ Stdlib only; Python 3.10+.
 """
 
 import fnmatch
+import importlib.util
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies, from
+# _tool_argv.py beside this script, by path and without writing bytecode.
+_SPEC = importlib.util.spec_from_file_location(
+    "_prepare_pr_regen_tool_argv",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
+    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
+_tool_argv = importlib.util.module_from_spec(_SPEC)
+_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    _SPEC.loader.exec_module(_tool_argv)
+finally:
+    sys.dont_write_bytecode = _WRITES_BYTECODE
 
 # One entry per generator that exists today. ``files`` are the repo-relative paths it
 # writes (and the only ones it may write); ``requires`` are paths that must exist for
@@ -102,9 +118,12 @@ def err(msg):
 
 
 def run(args, cwd=None):
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
         p = subprocess.run(
-            args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:
@@ -236,6 +255,14 @@ def regen(root, base, entries):
     if _git_lines(root, "rev-parse", "--is-inside-work-tree") is None:
         return 2, ["ERROR: not inside a git repository (or git not found)."]
     if _git_lines(root, "rev-parse", "--verify", "--quiet", "origin/" + base) is None:
+        remote, _, branch = base.partition("/")
+        if branch and _git_lines(root, "rev-parse", "--verify", "--quiet", "refs/remotes/" + base):
+            # A remote ref (upstream/main from a fork clone): no fetch from origin brings it.
+            return 2, [
+                "ERROR: {0} is a ref of the remote {1}; pass the branch name instead: {2}. "
+                "The base is always read from origin/{2}, so in a fork clone sync your "
+                "fork's {2} with upstream first (CONTRIBUTING.md).".format(base, remote, branch)
+            ]
         return 2, ["ERROR: origin/{0} not found - run: git fetch origin {0}".format(base)]
     merge_base = _git_lines(root, "merge-base", "origin/" + base, "HEAD")
     if not merge_base:

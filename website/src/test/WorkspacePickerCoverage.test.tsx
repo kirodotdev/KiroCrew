@@ -216,7 +216,7 @@ describe('WorkspacePicker', () => {
       expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
 
       // The recovered listing drills as any other.
-      fireEvent.click(screen.getByText('alpha'))
+      await act(async () => { fireEvent.click(screen.getByText('alpha')) })
       expect(api.browseDirs).toHaveBeenLastCalledWith('/home/u/alpha')
     })
 
@@ -363,7 +363,7 @@ describe('WorkspacePicker', () => {
       expect(again).toBe(retry)
       expect(again).not.toHaveAttribute('aria-disabled')
       expect(again).toHaveFocus()
-      fireEvent.click(again)
+      await act(async () => { fireEvent.click(again) })
       expect(api.browseDirs).toHaveBeenCalledTimes(3)
     })
 

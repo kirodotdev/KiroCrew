@@ -24,7 +24,16 @@ def _make_bus() -> tuple[NotificationBus, list[dict]]:
 class TestPayloadValidation:
     def test_valid_minimal_payload(self):
         p = NotificationPayload(source="system", channel="system.cron", title="t", body="b")
-        p.validate()  # must not raise
+        bus, _ = _make_bus()
+        note = bus.push(p)
+        assert {k: note[k] for k in ("kind", "channel", "priority", "title", "body")} == {
+            "kind": "cron",
+            "channel": "system.cron",
+            "priority": SYSTEM_CHANNELS["system.cron"],
+            "title": "t",
+            "body": "b",
+        }
+        assert not {"actions", "url", "icon", "ttl", "group_key"} & set(note)
 
     @pytest.mark.parametrize("field_name", ["source", "channel", "title"])
     def test_missing_required_field_rejected(self, field_name):
@@ -100,7 +109,9 @@ class TestPayloadValidation:
             body="b",
             actions=[{"id": "view", "label": "View schedule", "url": "/schedule"}],
         )
-        p.validate()  # must not raise
+        bus, _ = _make_bus()
+        note = bus.push(p)
+        assert note["actions"] == [{"id": "view", "label": "View schedule", "url": "/schedule"}]
 
     def test_action_without_url_accepted(self):
         # URL-less actions are legal per the Phase 4 contract: they persist
@@ -112,7 +123,9 @@ class TestPayloadValidation:
             body="b",
             actions=[{"id": "ack", "label": "Acknowledge"}],
         )
-        p.validate()  # must not raise
+        bus, _ = _make_bus()
+        note = bus.push(p)
+        assert note["actions"] == [{"id": "ack", "label": "Acknowledge"}]
 
     @pytest.mark.parametrize(
         "bad_url",
@@ -168,7 +181,9 @@ class TestPayloadValidation:
         p = NotificationPayload(
             source="system", channel="system.cron", title="t", body="b", actions=actions
         )
-        p.validate()  # must not raise
+        bus, _ = _make_bus()
+        note = bus.push(p)
+        assert [a["id"] for a in note["actions"]] == ["a0", "a1", "a2", "a3"]
 
     @pytest.mark.parametrize(
         ("field", "action"),
@@ -200,7 +215,9 @@ class TestPayloadValidation:
         p = NotificationPayload(
             source="system", channel="system.cron", title="t", body="b", url="/schedule"
         )
-        p.validate()  # must not raise
+        bus, _ = _make_bus()
+        note = bus.push(p)
+        assert note["url"] == "/schedule"
 
     def test_protocol_relative_url_rejected(self):
         # "//evil.example.com" starts with "/" but resolves to an external

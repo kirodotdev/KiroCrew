@@ -11,16 +11,16 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_batch_progress``, ``_bot_token``, ``_cfg``, ``_channel_handles``,
 ``_channel_restart_gen``, ``_channel_restart_lock``, ``_channel_restart_tasks``,
 ``_channel_transports_started``, ``_config_subs``, ``_console_script_repair_task``,
-``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_dashboard_runner``,
+``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_cron_runs_holding``,
+``_dashboard_runner``,
 ``_feature_video_task``, ``_handler_tasks``, ``_inbound_replay_task``, ``_json_ready``,
-``_mandatory_update_deferred_at``, ``_mandatory_update_deferred_key``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
 ``_mcp_launch_approval_ready``, ``_mcp_resolve_home``, ``_mcp_resolve_prefetch``,
 ``_mcp_target_env``, ``_memory_repair_cursor``, ``_memory_repair_stop``,
 ``_memory_repair_task``, ``_memory_startup``, ``_memory_startup_task``,
 ``_model_download_task``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
-``_open_channels``, ``_owner_id``, ``_pending_queue``, ``_pending_update_mandatory``,
-``_pending_update_mandatory_key``, ``_pending_update_respawn``, ``_port_override``,
+``_open_channels``, ``_owner_id``, ``_pending_queue``,
+``_port_override``,
 ``_profile_watch_task``, ``_runner_admission``, ``_runner_admission_adopted``,
 ``_running_script_ids``, ``_session_environments_ready``, ``_session_tasks``, ``_sign_in_refresher_task``,
 ``_slack_enabled``, ``_socket_client``, ``_subagent_coalescer_inst``, ``_test_mode``,
@@ -156,6 +156,15 @@ def __init__(
     # Wave accounting for the completion digest (batch_id -> progress).
     self._batch_progress = {}
     self._cron_injecting = {}  # parent_key → pending injection count
+    # The tasks of message cron runs, each from before its first acquire to its
+    # end (cron_fire._cron_callback): the last sub-agent's cleanup leaves a
+    # session whose permit one of them holds to that run's finalizer
+    # (_reset_cron_parent_when_idle).
+    self._cron_runs_holding = set()
+    # Completions whose inline-returned members' turn still held the parent's
+    # permit, keyed by that holding; settled at its release (_settle_inline).
+    self._inline_parked = {}
+    self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission
@@ -169,6 +178,7 @@ def __init__(
     self.channel_history = None
     self.dashboard_state = None
     self._background_tasks = set()  # prevent GC of fire-and-forget tasks
+    self._skills_sync_task = None
     # Approval-state persistence is scheduled while the MCP broker starts,
     # but its task waits for the dashboard/API readiness boundary.
     self._mcp_launch_approval_ready = asyncio.Event()
@@ -190,13 +200,26 @@ def __init__(
     # write-after-clear race without any event-loop dependency.
     self._marker_clear_pending = threading.Event()
     self._dashboard_runner = None
-    # Enterprise build: the service whose boot probe saw the kiro login, handed
+    # LTS build: the service whose boot probe saw the kiro login, handed
     # to the dashboard so its gate starts open on that verdict. None in oss.
     self._boot_kiro_service = None
     self._handler_tasks = set()  # type: ignore[type-arg]
     self._session_tasks = {}  # type: ignore[type-arg]
     self._pending_queue = {}
     self._socket_client = None
+    # Slack reconnect state (kiro_crew.slack.reconnect): the boot SeenCache a
+    # rebuilt socket keeps using, the workspace published Slack clients belong
+    # to, whether work may already be bound to that workspace, the one
+    # in-flight attempt, whether that attempt is running now, whether a failed
+    # one retired a published client, and the pending give-up for held work.
+    self._slack_seen = None
+    self._slack_team_id = ""
+    self._slack_workspace_pinned = False
+    self._slack_pin_token = ""
+    self._slack_reconnect_task = None
+    self._slack_reconnecting = False
+    self._slack_client_lost = False
+    self._slack_give_up_task = None
     self._wecom_client = None  # set by maybe_start_wecom
     # Registry-owned live channel handles ({channel_type: client}). The
     # per-channel _<type>_client attributes are legacy mirrors kept in sync
@@ -217,14 +240,8 @@ def __init__(
     # distribution refresher, so no rebuild starts into a closing gateway.
     self._profile_watch_task = None
     self._update_apply_deferred = False
-    self._pending_update_respawn = None
-    # Whether the pending restart serves a policy floor, and its target key:
-    # kept beside the respawn so every retry runs under the same mandatory
-    # grace instead of restarting the clock.
-    self._pending_update_mandatory = False
-    self._pending_update_mandatory_key = ""
-    self._mandatory_update_deferred_at = None
-    self._mandatory_update_deferred_key = None
+    # Whose update pause admission is under: "dashboard_restart" or None.
+    self._update_pause_holder = None
     # Managed-venv notices already sent in this process, so each reaches the
     # operator once per release: the signed metadata excludes this host
     # (``incompatible:<version>``), or applying it would detach the

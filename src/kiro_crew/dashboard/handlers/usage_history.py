@@ -14,6 +14,7 @@ from collections import Counter
 from typing import Any
 
 from kiro_crew import model_registry
+from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
     _parse_row_day,
     _parse_row_ts,
@@ -110,7 +111,7 @@ def _parse_token_history() -> dict[str, Any]:
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -120,11 +121,14 @@ def _parse_token_history() -> dict[str, Any]:
                     day = _parse_row_day(obj.get("ts"))
                     if day is None:
                         continue
-                    inp = obj.get("input", 0)
-                    out = obj.get("output", 0)
-                    cc = obj.get("cache_create", 0)
-                    cr = obj.get("cache_read", 0)
-                    cost = obj.get("cost", 0.0)
+                    # A field that is not a finite number (a null, a string, an
+                    # int wider than a double) reads as 0, so one bad row cannot
+                    # fail the whole history and the page that serves it.
+                    inp, out, cc, cr = (
+                        int(_finite_number(obj.get(field)) or 0)
+                        for field in ("input", "output", "cache_create", "cache_read")
+                    )
+                    cost = _finite_number(obj.get("cost")) or 0.0
                     daily_input[day] += inp
                     daily_output[day] += out
                     daily_cache_create[day] += cc

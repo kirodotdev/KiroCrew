@@ -13,6 +13,91 @@ from kiro_crew.config.sections_defaults import SectionReader
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: Longest stored value for any ``slack.code_channel_defaults`` string. A folder
+#: path, agent name or model id is far shorter; the cap keeps a hand-edited
+#: config.json from carrying an unbounded string into every code-channel session.
+CODE_CHANNEL_DEFAULT_MAX = 256
+
+#: ``slack.code_channel_defaults.approval_mode`` values. ``ask`` is the default
+#: and today's behaviour (every tool call asks), so it is stored as unset;
+#: ``trust_reads`` and ``trust`` are the dashboard approval picker's Reads and
+#: Trust. ``yolo`` is absent on purpose: it is process-global, never a property
+#: of one session.
+CODE_CHANNEL_APPROVAL_ASK = "ask"
+CODE_CHANNEL_APPROVAL_MODES = (CODE_CHANNEL_APPROVAL_ASK, "trust_reads", "trust")
+
+
+@dataclass
+class CodeChannelDefaultsConfig:
+    """What a new Slack code-channel session starts with.
+
+    Every field is optional: ``None`` means "no default here, fall through to the
+    next source". Resolution for a new code-channel session (implemented once, in
+    :func:`kiro_crew.slack.features.resolve_code_channel_session`):
+
+    * agent / model / effort: the explicit value here, else the folder's own
+      ``default_agent``, else the agent Slack already uses;
+    * project: the folder's ``project_dir``, else the project bound to the thread
+      the channel was opened from, else none.
+    """
+
+    folder: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Folder",
+            "Sidebar folder (id, or a 'Parent/Child' path) new code-channel "
+            "sessions are filed in. The session inherits that folder's project "
+            "directory, default agent and steering. A folder deleted after it was "
+            "chosen is ignored: sessions are then unfiled and the other defaults "
+            "still apply.",
+            tags=["slack"],
+        ),
+    )
+    agent: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Agent",
+            "Agent new code-channel sessions run. Wins over the folder's default "
+            "agent. Empty uses the folder's agent, else the agent Slack already uses.",
+            tags=["slack"],
+        ),
+    )
+    model: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Model",
+            "Model id new code-channel sessions start on (as listed by the model "
+            "picker). Empty keeps the agent's own model.",
+            tags=["slack"],
+        ),
+    )
+    reasoning_effort: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Reasoning Effort",
+            "Reasoning effort new code-channel sessions start with: low, medium, "
+            "high, xhigh or max. Empty keeps the agent's own effort. Ignored on "
+            "models that do not support effort.",
+            tags=["slack"],
+        ),
+    )
+    approval_mode: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Approval Mode",
+            "Tool approval mode new code-channel sessions start in: ask (the "
+            "default: look-ups such as file reads, web searches and read-only shell "
+            "commands run on their own, everything else asks), trust_reads (also "
+            "searches of memory, past chats, skills and the knowledge library) or "
+            "trust (every tool runs without asking). Trust lets anyone allowed to "
+            "talk to the bot in the channel drive an agent whose tools run unprompted, "
+            "and sessions it spawns inherit that. The mode can still be changed on "
+            "the session afterwards.",
+            enum=list(CODE_CHANNEL_APPROVAL_MODES),
+            tags=["slack"],
+        ),
+    )
+
 
 @dataclass
 class SlackConfig:
@@ -93,8 +178,10 @@ class SlackConfig:
         default_factory=dict,
         metadata=_meta(
             "Reactions",
-            "Override phase reaction emojis. Valid keys: queued, thinking, coding, browsing, tool, done, error. "
-            "Set a value to null to suppress that phase entirely.",
+            "Override the status reaction emojis. Valid keys: queued (the ack shown while a turn "
+            "runs where Slack shows no native thread status; removed when the reply lands) and "
+            "error (a failed turn). Set a value to null to suppress it. Keys of the retired "
+            "per-phase trail (thinking, coding, browsing, tool, done) are accepted and ignored.",
             tags=["slack"],
         ),
     )
@@ -102,7 +189,8 @@ class SlackConfig:
         default=True,
         metadata=_meta(
             "Reactions Enabled",
-            "Show phase-aware emoji reactions on Slack messages during processing.",
+            "Ack a Slack message with a reaction while it is being answered (where Slack shows "
+            "no native thread status) and mark a failed turn with the error reaction.",
             tags=["slack"],
         ),
     )
@@ -187,6 +275,62 @@ class SlackConfig:
             "this way. The thread always opens in the owner's DM with the bot, "
             "which only the owner can read. Off by default. Takes effect on the "
             "next new session; no restart.",
+            tags=["slack"],
+        ),
+    )
+    agent_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Sessions",
+            "Run Slack threads as Slack agent sessions: threads show a live status "
+            "and title, and Slack's native Stop button cancels the turn. Adds the "
+            "agent view (features.agent_view), the assistant:write scope and the "
+            "agent-session events to the generated app manifest; an installed app "
+            "needs that manifest update and a reinstall before it takes effect, and "
+            "until then Slack behaves as before. Slack cannot switch an app back "
+            "from agent_view to assistant_view. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    code_channel_dispatch: bool = field(
+        default=False,
+        metadata=_meta(
+            "Code Channel Dispatch",
+            "Let a Slack code channel's own session hand work to worker sessions: "
+            "create them, bind them to its work ledger and follow their status. "
+            "Only on turns the owner started, only for workers it created itself, "
+            "one level deep, filed in the channel's folder, with the channel's own "
+            "approval mode and never more; channels shared beyond this workspace "
+            "are excluded. Needs slack.code_channels on as well; turning that on "
+            "does not turn this on. Off keeps the full channel containment: a "
+            "conductor in a code channel cannot hand off work. Off by default, and "
+            "a missing, unreadable or malformed value reads as off. Takes effect "
+            "on the next call; no restart.",
+            tags=["slack"],
+        ),
+    )
+    code_channels: bool = field(
+        default=False,
+        metadata=_meta(
+            "Code Channels",
+            "Let the agent open a Slack code channel for coding work: a channel "
+            "that is one session, with a context bar and a diff tab. Adds "
+            "features.code_channels and the code-channel scopes "
+            "(code_channels:manage, chat:write.customize, canvases:write, "
+            "channels:write.invites, groups:write.invites) to the generated app "
+            "manifest; an installed app needs that update and a reinstall, and the "
+            "workspace must have Slack code channels enabled. Until both hold, "
+            "Slack behaves as before. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    code_channel_defaults: CodeChannelDefaultsConfig = field(
+        default_factory=CodeChannelDefaultsConfig,
+        metadata=_meta(
+            "Code Channel Defaults",
+            "Folder, agent, model, reasoning effort and approval mode a new "
+            "code-channel session starts with. Takes effect on the next new code "
+            "channel; no restart.",
             tags=["slack"],
         ),
     )
@@ -283,5 +427,62 @@ def _validate_tracking_channels(raw: list) -> list[dict]:
             '"channel_id" field or bare channel ID strings starting with C/D/G). '
             "These entries were ignored.",
             rejected,
+        )
+    return result
+
+
+def _validate_allowed_users(raw: list) -> list[dict]:
+    """Validate and coerce ``slack.allowed_users`` entries to the canonical shape.
+
+    The canonical entry is ``{"slack_id": "U...", "name": "..."}`` — the key the
+    allowlist writer persists and every reader looks up.
+    ``slack/gateway_runtime/orchestrator_init.py`` builds a ``set`` of these ids, so a non-string ``slack_id`` (a list or dict from a
+    hand-edited config) would raise ``TypeError: unhashable type`` at gateway
+    startup; the id must therefore be a non-empty string to be kept.
+
+    A ``user_id`` key with no usable ``slack_id`` is the common near-miss spelling.
+    Its value moves under ``slack_id`` rather than being dropped: a dropped entry
+    makes ``config get slack.allowed_users`` read back ``[]`` while the write
+    succeeded, which reads as a failed save. Coercion emits one warning.
+
+    Accepted:
+    - ``{"slack_id": "U...", ...}`` with a non-empty string ``slack_id`` — passed
+      through (``name`` and any extra keys kept)
+    - ``{"user_id": "U...", ...}`` whose ``slack_id`` is absent or unusable and whose
+      ``user_id`` is a non-empty string — the ``user_id`` value becomes ``slack_id``,
+      with a warning; other keys except ``slack_id``/``user_id`` are kept
+
+    Any other entry is ignored.
+    """
+    if not raw:
+        return []
+
+    def _usable_id(value: object) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    result: list[dict] = []
+    coerced = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        if _usable_id(entry.get("slack_id")) is not None:
+            result.append(entry)
+            continue
+        user_id = _usable_id(entry.get("user_id"))
+        if user_id is not None:
+            # Move the near-miss ``user_id`` value under ``slack_id``. Build a new
+            # dict so the original is untouched and the key order reads ``slack_id``
+            # first; drop the source ``user_id`` and any unusable ``slack_id`` so
+            # neither clobbers the resolved id.
+            renamed = {"slack_id": user_id}
+            renamed.update({k: v for k, v in entry.items() if k not in ("user_id", "slack_id")})
+            result.append(renamed)
+            coerced += 1
+    if coerced:
+        logger.warning(
+            'Config: slack.allowed_users has %d entry(ies) with a "user_id" key — '
+            'auto-coerced to {"slack_id": "..."} format. '
+            'Prefer: [{"slack_id": "U...", "name": "..."}]',
+            coerced,
         )
     return result

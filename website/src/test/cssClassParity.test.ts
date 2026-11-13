@@ -26,9 +26,11 @@ import { fileURLToPath } from 'node:url'
 // path — resolve through fileURLToPath so this works regardless of cwd.
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
+// Tests are skipped wherever they live (`src/test/` or beside an app's code): a
+// `querySelector('.mc-x')` in one reads as a selector definition.
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
-    if (name === 'node_modules' || name === 'test') continue
+    if (name === 'node_modules' || name === 'test' || /\.test\.tsx?$/.test(name)) continue
     const full = join(dir, name)
     if (statSync(full).isDirectory()) walk(full, out)
     else out.push(full)

@@ -1,14 +1,9 @@
 """Tests for how the ``aws_control`` backup uses its own upload records.
 
-``TestRecordedVersionRecovery`` covers ``backup.restore_download`` making one
-pinned read of the version this install recorded when the current object fails
-its fingerprint, and accepting those bytes when the re-taken fingerprint matches.
-It also covers refusals, what is left staged, and cases that skip the pinned
-read, including a failing consent, app or identity check, a missing, ``null`` or
-option-shaped version id, a record with no fingerprint, and ``foreign_ok``.
-
-``TestRememberedArchives`` covers ``backup.remembered_archives``, the per-kind
-count of upload records, including where it reads lower or higher than the drive.
+``TestRecordedVersionRecovery`` covers ``backup.restore_download``'s one pinned read
+of the recorded version when the current object fails its fingerprint.
+``TestRememberedArchives`` covers ``backup.remembered_archives``, the per-kind count
+of upload records.
 """
 
 from __future__ import annotations
@@ -34,11 +29,8 @@ from kiro_crew.apps.builtins.aws_control.backend import backup
 def _tar_gz(payload: bytes = b"restored") -> bytes:
     """A real ``tar.gz``, so these tests read as the restore they describe.
 
-    ``ARCHIVE_BYTES`` is deliberately not one -- the tests that use it are about the
-    fingerprint, which does not care what the bytes are, and neither does the
-    recovery: the re-taken fingerprint is its whole test. Building a genuine
-    archive here rather than committing a binary keeps what is being asserted
-    visible, and makes the contrast with the malformed-archive case explicit.
+    ``ARCHIVE_BYTES`` is not one, since the fingerprint ignores content. Built here
+    rather than committed, to contrast with the malformed-archive case.
     """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -56,24 +48,15 @@ RECOVERED_FINGERPRINT = hashlib.md5(RECOVERED_BYTES).hexdigest()
 class TestRecordedVersionRecovery:
     """An overwrite at a recorded key does not hide this install's own archive.
 
-    One drive is reachable by every install pointed at the account, and versioning
-    is on for exactly that reason: when a co-writer overwrites a key this install
-    recorded, our bytes stay on the drive as a noncurrent version. A read that names
-    no version fetches whatever is current, so it fails the fingerprint and leaves
-    our archive present but unnamed.
-
-    The recovery makes ONE more read, of the version this install recorded writing,
-    and accepts it only on the same evidence the current-version read uses: the same
-    fingerprint, re-taken over the bytes that arrive on that read. Every other
-    outcome is the refusal the operator already gets, so nothing here can widen what
-    a restore accepts.
+    A co-writer's overwrite leaves our bytes as a noncurrent version. The recovery reads
+    the recorded version once and accepts it only on the same fingerprint, re-taken
+    over the bytes that arrive, so it cannot widen what a restore accepts.
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
-        monkeypatch.setattr(
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        _floor_monkeypatch.setattr(
             "kiro_crew.apps.builtins.aws_control.backend.backup.app_data_dir",
             lambda name: tmp_path / "appdata",
         )
@@ -83,14 +66,14 @@ class TestRecordedVersionRecovery:
         # every recovery here declines and the class would assert the gate rather than
         # the mechanism. Each gate test below revokes exactly one of the four, which
         # is what keeps them pinned individually rather than papered over.
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             "kiro_crew.deploy.engine._checked",
             lambda args, profile, *, action="", timeout=30, extra_visible_dirs=(): (
                 '{"Account": "%s"}' % ACCOUNT
             ),
         )
-        monkeypatch.setattr("kiro_crew.apps.manager.is_app_enabled", lambda name: True)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr("kiro_crew.apps.manager.is_app_enabled", lambda name: True)
+        _floor_monkeypatch.setattr(
             "kiro_crew.aws_consent.read_grant",
             lambda service: mock.Mock(profile="p", region="us-west-2", account=ACCOUNT),
         )
@@ -462,7 +445,7 @@ class TestRecordedVersionRecovery:
         # Reaching for the recorded version anyway would hand this caller DIFFERENT
         # bytes than it accepted, labelled a proven self archive instead of an
         # unverified one -- silently changing what the override means for exactly the
-        # key class this change is about. `by_version` is served here, so a recovery
+        # key class the recovery is for. `by_version` is served here, so a recovery
         # attempt would succeed and be visible: what is asserted is that it is never
         # made.
         key = self._recorded(RECOVERED_FINGERPRINT, "v-ours")
@@ -480,20 +463,14 @@ class TestRecordedVersionRecovery:
 class TestRememberedArchives:
     """The count that keeps a one-slot run record from reading as a one-archive drive.
 
-    ``runs`` holds one record per kind, so a second nightly overwrites the first
-    while both archives stay in the bucket. ``uploads`` keeps both, and
-    ``remembered_archives`` is what lets a surface say so without a paid listing.
-
-    It is a COUNT OF RECORDS and these cases pin that too: the record map is
-    bounded, it covers this install alone, and only a listing knows what the
-    drive holds.
+    ``runs`` holds one record per kind, while ``uploads`` keeps every archive. It is a
+    count of records: bounded, this install only, and not what the drive holds.
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
         self.state_file = tmp_path / "backup.json"
-        monkeypatch.setattr(backup, "_state_path", lambda: self.state_file)
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: self.state_file)
         yield
 
     def _on_disk(self) -> dict:

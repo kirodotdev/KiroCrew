@@ -13,7 +13,7 @@
  * is no em-dash flash before the first poll resolves.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { tunnelDisplay, TunnelStatus as TunnelStatusTile } from '../components/TunnelStatus'
 import type { TunnelStatus } from '../api/client'
@@ -41,6 +41,27 @@ describe('tunnelDisplay', () => {
   it('connected with no uptime → tooltip is just the url', () => {
     const d = tunnelDisplay({ ...base, state: 'connected', url: 'https://x.example.tunnels.dev', uptime: 0 })
     expect(d!.tooltip).toBe('https://x.example.tunnels.dev')
+  })
+
+  it('connected with a reported error → warn label, url in tooltip', () => {
+    const d = tunnelDisplay({ ...base, state: 'connected', url: 'https://x.example.tunnels.dev', uptime: 120, error: 'auth-expired' })
+    expect(d!.value).toBe('Connected with error')
+    expect(d!.colorClass).toBe('text-warn')
+    expect(d!.tooltip).toContain('https://x.example.tunnels.dev')
+  })
+
+  it('connected with an empty error → stays plain green Connected', () => {
+    const d = tunnelDisplay({ ...base, state: 'connected', url: 'https://x.example.tunnels.dev', error: '' })
+    expect(d!.value).toBe('Connected')
+    expect(d!.colorClass).toBe('text-accent')
+    expect(d!.tooltip).toBe('https://x.example.tunnels.dev')
+  })
+
+  it('reconnecting with an error → unchanged: warn, attempt + error in tooltip', () => {
+    const d = tunnelDisplay({ ...base, state: 'reconnecting', reconnect_attempt: 2, error: 'net-down' })
+    expect(d!.value).toBe('Reconnecting…')
+    expect(d!.colorClass).toBe('text-warn')
+    expect(d!.tooltip).toContain('net-down')
   })
 
   it('starting → warn color', () => {
@@ -90,6 +111,39 @@ describe('<TunnelStatus /> tile', () => {
     expect(screen.getByText('Tunnel')).toBeInTheDocument()
   })
 
+  it('renders a connected tunnel\'s reported error through ErrorNotice', async () => {
+    const { api } = await import('../api/client')
+    ;(api.tunnelStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: 'connected', url: 'https://x.example.tunnels.dev', error: 'auth-expired', uptime: 120, reconnect_attempt: 0,
+    })
+    render(<TunnelStatusTile />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByText('Connected with error')).toBeInTheDocument())
+    expect(screen.getByTestId('tunnel-status-error')).toHaveTextContent('auth-expired')
+  })
+
+  it.each([
+    ['error', 'Error'],
+    ['reconnecting', 'Reconnecting…'],
+  ] as const)('renders a %s tunnel\'s reported error through ErrorNotice', async (state, label) => {
+    const { api } = await import('../api/client')
+    ;(api.tunnelStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state, url: '', error: 'net-down', uptime: 0, reconnect_attempt: 1,
+    })
+    render(<TunnelStatusTile />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByText(label)).toBeInTheDocument())
+    expect(screen.getByTestId('tunnel-status-error')).toHaveTextContent('net-down')
+  })
+
+  it('shows no error notice for a connected tunnel without an error', async () => {
+    const { api } = await import('../api/client')
+    ;(api.tunnelStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: 'connected', url: 'https://x.example.tunnels.dev', error: '', uptime: 120, reconnect_attempt: 0,
+    })
+    render(<TunnelStatusTile />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument())
+    expect(screen.queryByTestId('tunnel-status-error')).not.toBeInTheDocument()
+  })
+
   it('renders nothing when the tunnel is disabled', async () => {
     const { api } = await import('../api/client')
     ;(api.tunnelStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -110,11 +164,11 @@ describe('<TunnelStatus /> tile', () => {
       })
       render(<TunnelStatusTile />, { wrapper: Wrapper })
       // Drain the initial fetch.
-      await vi.advanceTimersByTimeAsync(0)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
       const initialCalls = (api.tunnelStatus as ReturnType<typeof vi.fn>).mock.calls.length
       expect(initialCalls).toBeGreaterThan(0)
       // Well past several 15s intervals — a disabled tunnel must not re-poll.
-      await vi.advanceTimersByTimeAsync(15_000 * 5)
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000 * 5) })
       expect((api.tunnelStatus as ReturnType<typeof vi.fn>).mock.calls.length).toBe(initialCalls)
     } finally {
       vi.useRealTimers()

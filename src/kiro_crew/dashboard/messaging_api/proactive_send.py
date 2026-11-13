@@ -42,8 +42,11 @@ if TYPE_CHECKING:
         _is_slack_ts,
         _sel,
         _send_to_channel_target,
+        _vet_app_messaging,
+        body_not_object_error,
         build_options_blocks,
         dashboard_slot_key,
+        effective_request_app,
         format_overflow,
         generate_token,
         logger,
@@ -54,6 +57,7 @@ if TYPE_CHECKING:
         remember_slack_options,
         slack_options_owner_key,
         slot_history_key,
+        string_field_error,
     )
 
 
@@ -67,6 +71,56 @@ def _redact_all(value: str) -> str:
 
     value = redact(value)
     return value
+
+
+def _reserved_action_refusal(blocks: Any) -> "web.Response | None":
+    """400 when agent-supplied blocks wear a gateway-reserved action id.
+
+    The code-channel buttons (Archive, Turn on hand-off) act on the owner's click;
+    a button an agent posted -- or edited onto a gateway message -- with one of
+    those ids would turn that click into consent to text the agent wrote. Both
+    agent block paths (send and update) refuse it, as they refuse remote media,
+    on the raw blocks and again on the sanitized tree they publish.
+    """
+    from kiro_crew.slack.client import BLOCKS_RESERVED_ACTION_ERROR, blocks_use_reserved_action
+
+    if not isinstance(blocks, list) or not blocks_use_reserved_action(blocks):
+        return None
+    return web.json_response(
+        {
+            "error": (
+                "agent-supplied Block Kit cannot use an action_id or block_id "
+                "starting with kc_code_channel_: those belong to the gateway's own "
+                "code-channel buttons"
+            ),
+            "code": BLOCKS_RESERVED_ACTION_ERROR,
+        },
+        status=400,
+    )
+
+
+def _published_blocks_refusal(blocks: Any) -> "web.Response | None":
+    """400 when the SANITIZED tree an agent path is about to publish breaks a
+    Block Kit guard (remote media, reserved action ids).
+
+    Both agent block paths check the raw blocks first and then sanitize, and
+    sanitizing rewrites keys and values (ANSI stripped): a key the raw check read
+    as ``image_url\\x1b[0m`` or ``action_id\\x1b[0m`` is published as the real one.
+    So every guard also runs here, on what Slack would receive.
+    """
+    if isinstance(blocks, list) and _blocks_request_remote_media(blocks):
+        return web.json_response(
+            {
+                "error": (
+                    "agent-supplied Block Kit cannot contain image/video blocks "
+                    "or image_url/thumbnail_url/video_url fields because Slack "
+                    "fetches that media without a recipient click"
+                ),
+                "code": BLOCKS_REMOTE_MEDIA_ERROR,
+            },
+            status=400,
+        )
+    return _reserved_action_refusal(blocks)
 
 
 def _sanitize_blocks(
@@ -267,6 +321,7 @@ async def _resolve_session_link_url(
     # module's import path (it loads at gateway boot) and matches the file's
     # other deferred imports. The config read is paid only on this opt-in path.
     from kiro_crew.dashboard.chat_backfill import session_deep_link
+    from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
     from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
 
     try:
@@ -285,7 +340,7 @@ async def _resolve_session_link_url(
     # button to the OWNER DM only, so the token never rides a shared channel --
     # the same DM-only rule ``send_dashboard_link`` keeps. No owner id means no DM
     # to post to, so no token is minted (the button is not posted either).
-    token = generate_token(state.owner_id) if state.owner_id else ""
+    token = generate_token(state.owner_id, extra=owner_mint_extra()) if state.owner_id else ""
     return session_deep_link(cfg.dashboard.url, slot_key, tunnel_url=tunnel_url, token=token)
 
 
@@ -296,8 +351,16 @@ async def api_delete_message(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    channel = body.get("channel", "").strip()
-    ts = body.get("ts", "").strip()
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    channel = body.get("channel", "")
+    ts = body.get("ts", "")
+    for field, value in (("channel", channel), ("ts", ts)):
+        not_string = string_field_error(field, value)
+        if not_string is not None:
+            return not_string
+    channel, ts = channel.strip(), ts.strip()
     if not channel or not ts:
         return web.json_response({"error": "channel and ts required"}, status=400)
     slack = state.slack_client
@@ -346,6 +409,9 @@ async def api_update_message(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     channel = body.get("channel", "")
     if not isinstance(channel, str):
         return web.json_response(
@@ -391,9 +457,36 @@ async def api_update_message(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if (refused := _reserved_action_refusal(blocks)) is not None:
+        return refused
     if not text and not blocks:
         return web.json_response(
             {"error": "text or blocks required", "code": "content_required"}, status=400
+        )
+    # The calling app's own messaging grant, as every send_message egress leg asks
+    # it: an edit publishes new agent-authored text to the message's audience, so
+    # an app whose messaging is revoked must not reach Slack by editing a post it
+    # made earlier. Asked before the owner DM is resolved, because opening a DM is
+    # itself visible to the recipient.
+    app_refusal = await asyncio.to_thread(
+        _vet_app_messaging,
+        effective_request_app(state, request),
+        request.headers.get("X-Session-Key", ""),
+        tool_name="update_message",
+    )
+    if app_refusal:
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="update_message",
+            tool_kind="slack",
+            outcome="denied",
+            downstream_service="slack",
+            resources=f"channel={channel}",
+        )
+        return web.json_response(
+            {"error": f"slack edit refused: {app_refusal}", "code": "channel_not_permitted"},
+            status=403,
         )
     # A DM is authorized by IDENTITY, a room by the tracked-channel allowlist --
     # and a DM must be the CURRENT owner's, not merely D-prefixed. Passing every
@@ -448,6 +541,8 @@ async def api_update_message(request: web.Request) -> web.Response:
         blocks = _sanitize_blocks(
             blocks, redact_exfiltration_urls, redact_credentials, display_form=True
         )
+        if (refused := _published_blocks_refusal(blocks)) is not None:
+            return refused
     slack = state.slack_client
     if not slack:
         return web.json_response(
@@ -516,7 +611,14 @@ async def _read_send_message(
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    text = body.get("text", "").strip()
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    text = body.get("text", "")
+    not_string = string_field_error("text", text)
+    if not_string is not None:
+        return not_string
+    text = text.strip()
     if not text:
         return web.json_response({"error": "text required"}, status=400)
     title = body.get("title", "Agent Message")
@@ -535,6 +637,16 @@ async def _read_send_message(
             },
             status=400,
         )
+    # Opt-in rendering on the channel legs; everything else sends as it always
+    # has. An unknown value is refused, not read as plain, so a caller who
+    # misspells it learns why the markup arrived literally.
+    if (body.get("format") or "plain") not in ("plain", "markdown"):
+        return web.json_response(
+            {"error": 'format must be "plain" or "markdown"', "code": "format_unknown"},
+            status=400,
+        )
+    if (refused := _reserved_action_refusal(blocks)) is not None:
+        return refused
 
     # ── Channel-addressed leg ──
     # Handled before the Slack-shaped validation below, because a Webex room id is
@@ -601,11 +713,24 @@ async def _read_send_message(
         # send naming no session) degrades to the host sentinel inside the leg.
         addressed_caller = body.get("caller_session", "") if request.get("internal_auth") else ""
         return await _send_to_channel_target(
-            state, addressed_channel, target_id, text, caller_session=addressed_caller
+            state,
+            addressed_channel,
+            target_id,
+            text,
+            caller_session=addressed_caller,
+            # Off the attested token or the calling session's owner, never the
+            # body, so it is not gated on ``internal_auth`` like the key above.
+            request_app=effective_request_app(state, request),
+            markdown=body.get("format") == "markdown",
         )
 
-    target_channel = body.get("channel", "").strip()
-    target_user = body.get("user", "").strip()
+    target_channel = body.get("channel", "")
+    target_user = body.get("user", "")
+    for field, value in (("channel", target_channel), ("user", target_user)):
+        not_string = string_field_error(field, value)
+        if not_string is not None:
+            return not_string
+    target_channel, target_user = target_channel.strip(), target_user.strip()
     unfurl_links = body.get("unfurl_links")
     unfurl_media = body.get("unfurl_media")
     if (unfurl_links is not None and not isinstance(unfurl_links, bool)) or (
@@ -831,12 +956,17 @@ async def _deliver_send_message_fallback(
     attribution_session: str,
     is_cron_caller: bool,
     send_to_slack: bool,
+    request_app: str = "",
 ) -> None:
     """Deliver a send no origin session took: the bell, then a channel or Slack.
 
     Each leg records what it reached on *outcome* as it goes.
     """
+    # Function-local like ``redact`` below: the facade rebinds this function
+    # onto ``handlers.messaging``'s globals, where a module-level import here
+    # would not exist.
     from kiro_crew.security import redact
+    from kiro_crew.slack.mrkdwn_markdown import mrkdwn_to_markdown
 
     # Snapshot before the suffix below: that sentence describes the BELL's
     # delivery, and a channel post is a real delivery, not the
@@ -856,10 +986,29 @@ async def _deliver_send_message_fallback(
     publisher = None if options else attribution_session or None
     # The link back to the sender stays even then: a question is where it is needed most.
     session_meta = _publishing_session_meta(state, attribution_session)
+    # Two grammars, one call: a Slack-bound ``text`` is written in Slack mrkdwn,
+    # while the bell renders Markdown, so Slack links (``<url|label>``) and
+    # emphasis arrive broken in the bell. Convert the BELL's copy only — the
+    # legs below must deliver exactly what the caller wrote. ``send_to_slack``
+    # is the gate: false whenever a ``channel_target``/``channel_type`` send
+    # carries another channel's format, true when the send is Slack-routed.
+    # The cron owner-DM default keeps it true even on an install with no Slack
+    # client, where the body may already be Markdown — accepted, because the
+    # converter leaves Markdown constructs and URL-shaped spans untouched and
+    # only single-delimiter emphasis (``*x*``, mrkdwn bold) changes weight.
+    bell_text = text
+    if send_to_slack:
+        bell_text = mrkdwn_to_markdown(text)
+        # Conversion is a rendering step AFTER the route's display scan: it
+        # removes characters (the sentinel strip) and collapses sigils the
+        # scan may have read as a split inside a secret, so the converted
+        # copy is re-scanned in its own settled form before it is stored.
+        # The legs below still send the already-scanned original bytes.
+        bell_text, _ = redact_for_display(bell_text, _redact_all)
     state.notify(
         "agent",
         title,
-        text,
+        bell_text,
         meta=session_meta,
         member=member,
         publisher_session=publisher,
@@ -877,6 +1026,20 @@ async def _deliver_send_message_fallback(
     source_line = _proactive_source_line(
         state, caller_session, declared_session, is_cron_caller=is_cron_caller
     )
+    # The calling app's own messaging grant, asked once for whichever egress leg
+    # below would run (the route lets at most one of them take a send). A refusal
+    # sends on none of them, and answers 403 like a refused channel DM.
+    if channel_target or channel_type or (send_to_slack and state.slack_client):
+        app_refusal = await asyncio.to_thread(
+            _vet_app_messaging,
+            request_app,
+            caller_session if is_cron_caller else declared_session,
+        )
+        if app_refusal:
+            outcome.channel_code = "channel_not_permitted"
+            outcome.channel_detail = app_refusal
+            return
+    markdown = body.get("format") == "markdown"
     if channel_target:
         outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
             await _deliver_channel_dm(
@@ -904,14 +1067,18 @@ async def _deliver_send_message_fallback(
                 # operator send naming no session) still degrades to the host
                 # sentinel inside the leg, unchanged.
                 caller_session=caller_session if is_cron_caller else declared_session,
+                markdown=markdown,
             )
         )
     if channel_type:
-        outcome.sent_channel = await _deliver_to_channel(
-            state,
-            _channel_delivery_key(state, caller_session, declared_session),
-            _with_source_line(channel_text, source_line if is_cron_caller else ""),
-            channel_type=channel_type,
+        outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
+            await _deliver_to_channel(
+                state,
+                _channel_delivery_key(state, caller_session, declared_session),
+                _with_source_line(channel_text, source_line if is_cron_caller else ""),
+                channel_type=channel_type,
+                markdown=markdown,
+            )
         )
     # Opt-in "Open session" deep-link button: resolved (server-side) only
     # when the caller asked for it AND this send actually reaches Slack.
@@ -1252,7 +1419,10 @@ def _send_message_response(
 
     if outcome.channel_code:
         safe_detail = redact(outcome.channel_detail)
-        detail = f"{channel_target} delivery failed: {safe_detail}"
+        # The app-messaging refusal sets a code on the channel_type and Slack legs
+        # too, which carry no channel_target, so name whichever leg it was.
+        named_leg = channel_target or channel_type or "slack"
+        detail = f"{named_leg} delivery failed: {safe_detail}"
         # Both responses are spelled out inline, with a literal status and a
         # literal body, rather than sharing a hoisted dict or computing the
         # status. `test_error_code_contract` ratchets BOTH of those shapes for the

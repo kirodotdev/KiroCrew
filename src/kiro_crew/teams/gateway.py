@@ -2,11 +2,12 @@
 
 ``maybe_start_teams`` is the single guarded entry point. When the channel is
 enabled + credentialed it builds the :class:`TeamsDispatcher` +
-:class:`TeamsTransport` + the low-level :class:`TeamsClient`, wires the client's
-``on_activity`` as the late-bound handler for the pre-registered
-``POST /api/messaging/teams`` route (aiohttp freezes routes at startup, so the
-route lives in ``dashboard/server.py`` and dispatches through
-``state.teams_on_activity``), and primes the outbound app-credential token.
+:class:`TeamsTransport` + the low-level :class:`TeamsClient` and primes the
+outbound app-credential token. The client's ``on_activity`` becomes the
+late-bound handler for the pre-registered ``POST /api/messaging/teams`` route
+(aiohttp freezes routes at startup, so the route lives in ``dashboard/server.py``
+and dispatches through ``state.teams_on_activity``) only once the host accepts
+this client as the live handle -- see ``channel_lifecycle._publish_teams_webhook``.
 Failures are logged and swallowed so a Teams problem never takes down the
 gateway.
 
@@ -64,7 +65,8 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
 
     Returns the running client (so the gateway can ``close()`` it on shutdown)
     or None. The transport + dispatcher stay alive via the client's handler
-    references and ``state.teams_on_activity``.
+    references and, once the host accepts this client as the live handle,
+    ``state.teams_on_activity`` (see ``channel_lifecycle._publish_teams_webhook``).
     """
     if not getattr(orch, "_teams_enabled", False):
         return None
@@ -136,8 +138,15 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
 
         if orch.dashboard_state is not None:
             state = orch.dashboard_state
-            # Late-bind the webhook handler now that the client exists.
-            state.teams_on_activity = client.on_activity
+            # The webhook handler (``state.teams_on_activity``) is NOT bound here.
+            # This factory runs before the connect completes, and on a
+            # credential-triggered restart a newer close can supersede this start
+            # mid-connect; a handler bound now would let a webhook captured in that
+            # window be accepted by a client the host is about to discard. The host
+            # binds it only once this client is the accepted handle
+            # (``channel_lifecycle._publish_teams_webhook``); until then the route
+            # answers 503.
+            #
             # BEFORE registering: registration is what makes this transport
             # reachable from the proactive send ladder, whose recipient check is
             # synchronous and refuses an unread route store. Loading first means no

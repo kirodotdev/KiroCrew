@@ -10,14 +10,17 @@
  * that a run which finishes or fails with every agent accounted for renders
  * exactly as before.
  */
-import { screen, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import WorkflowRunTree from '../apps/workflows/WorkflowRunTree'
 import { i18next, initI18n } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 
 afterEach(async () => {
-  await i18next.changeLanguage('en')
+  // The switch re-renders any still-mounted tree, so it is an action the test causes.
+  await act(async () => {
+    await i18next.changeLanguage('en')
+  })
 })
 
 function ev(type: string, data: Record<string, unknown>, seq: number, ts = '2026-10-02T15:00:00.000Z') {

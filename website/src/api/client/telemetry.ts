@@ -53,6 +53,10 @@ export type UsageSeriesLayer = {
   members?: number
 }
 
+/** What the series stacks: each turn's credits (kiro-cli, KAS) or its dollar
+ *  cost (a harness that bills in dollars, such as Claude Code). */
+export type UsageSeriesMetric = 'credits' | 'cost'
+
 /** Dense local-day axis plus layers in stack order, bottom first. `truncated`
  *  says the window held more turns than the server retains; `dropped_rows` is
  *  how many of the oldest it left out and `complete_from` the first day it kept
@@ -60,6 +64,8 @@ export type UsageSeriesLayer = {
  *  shortened window as the whole one. */
 export type UsageSeriesPayload = {
   dates: string[]
+  /** The value stacked; a server that predates the field stacks credits. */
+  metric?: UsageSeriesMetric
   series: UsageSeriesLayer[]
   total: number
   truncated: boolean
@@ -67,8 +73,23 @@ export type UsageSeriesPayload = {
   complete_from: string | null
 }
 
+/** The agent-rendered controls a click can be reported for. Mirrors
+ *  `UI_CONTROL_VALUES` in `src/kiro_crew/metrics/feature_usage.py`; the server
+ *  counts any other value as `other`. */
+export type UiControl =
+  | 'option_chip'
+  | 'question_card_answer'
+  | 'question_card_freetext'
+  | 'followup_start_worktree'
+  | 'followup_start_chat'
+  | 'followup_add_session'
+  | 'followup_skip'
+
 export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const usageReadouts = {
+    /** Count one click on an agent-rendered control (POST
+     *  /api/telemetry/ui-control, 204). Only the control's kind is sent. */
+    reportUiControlClick: (control: UiControl) => post('/api/telemetry/ui-control', { control }),
     /** The five session folds of a crew log, keyed by name, in ONE request.
      *
      *  The batch route is what makes the answer coherent: it resolves the session
@@ -143,8 +164,8 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
     /** The Usage tab's stacked spend-over-time series: whole-install credits by
      *  one dimension; the same always-written row store as `usageTurns`, with no
      *  slot filter, which is why the route refuses app tokens. */
-    usageSeries: (by: UsageSeriesDimension) =>
-      get(`/api/usage/series?by=${encodeURIComponent(by)}`).then(j) as Promise<UsageSeriesPayload>,
+    usageSeries: (by: UsageSeriesDimension, metric: UsageSeriesMetric = 'credits') =>
+      get(`/api/usage/series?by=${encodeURIComponent(by)}${metric === 'credits' ? '' : `&metric=${metric}`}`).then(j) as Promise<UsageSeriesPayload>,
     /** WakaTime coding stats for a named range. Returns { configured: false }
      *  when the integration is off; a 502 body carries { code: 'upstream_unavailable' }. */
     wakatimeStats: (range: string) =>

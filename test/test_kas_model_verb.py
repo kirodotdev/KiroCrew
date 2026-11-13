@@ -103,3 +103,74 @@ class TestSharedBookkeeping:
         handle, runtime = _handle(backend)
         await handle.set_model("some-model-nobody-serves")
         assert runtime.send_request.await_args_list == []
+        # The session stays on its backend default and records no refusal.
+        assert handle._model == ""
+        assert handle._resolved_model_id == ""
+        assert handle.model_pin_refused == ""
+
+
+class TestKasModelSpelling:
+    """A pin stored as another backend's model id reaches KAS in its own spelling.
+
+    The claude_code id for Opus 5.5 is ``global.anthropic.claude-opus-5-5[1m]``;
+    KAS takes ``claude-opus-5.5``. KAS accepts the claude_code id on its
+    ``model`` option and then fails the turn, so the id has to be changed
+    before it is sent.
+    """
+
+    _BEDROCK = "global.anthropic.claude-opus-5-5[1m]"
+
+    @staticmethod
+    def _sent_value(runtime: MagicMock) -> str:
+        return next(
+            c.args[1]["value"]
+            for c in runtime.send_request.await_args_list
+            if c.args[0] == METHOD_SET_CONFIG_OPTION
+        )
+
+    @pytest.mark.asyncio
+    async def test_claude_code_id_is_sent_as_the_kiro_id_with_no_model_list(self):
+        handle, runtime = _handle(ACP_BACKEND_KAS)
+        handle._available_models = []
+        await handle.set_model(self._BEDROCK)
+        assert self._sent_value(runtime) == "claude-opus-5.5"
+        assert handle._model == "claude-opus-5.5"
+        assert handle._resolved_model_id == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_family_alias_is_sent_unchanged(self):
+        handle, runtime = _handle(ACP_BACKEND_KAS)
+        handle._available_models = []
+        await handle.set_model("opus")
+        assert self._sent_value(runtime) == "opus"
+
+    @pytest.mark.asyncio
+    async def test_claude_code_id_lands_on_an_advertised_kiro_id(self):
+        handle, runtime = _handle(ACP_BACKEND_KAS)
+        handle._available_models = [{"modelId": "claude-opus-5.5"}]
+        await handle.set_model(self._BEDROCK)
+        assert self._sent_value(runtime) == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_an_advertised_id_is_sent_unchanged(self):
+        handle, runtime = _handle(ACP_BACKEND_KAS)
+        handle._available_models = [{"modelId": self._BEDROCK}]
+        await handle.set_model(self._BEDROCK)
+        assert self._sent_value(runtime) == self._BEDROCK
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_id_is_sent_unchanged(self):
+        handle, runtime = _handle(ACP_BACKEND_KAS)
+        handle._available_models = []
+        await handle.set_model("us.anthropic.some-future-model")
+        assert self._sent_value(runtime) == "us.anthropic.some-future-model"
+
+    @pytest.mark.asyncio
+    async def test_kiro_is_not_changed(self):
+        handle, runtime = _handle(ACP_BACKEND_KIRO)
+        handle._available_models = []
+        await handle.set_model(self._BEDROCK)
+        params = next(
+            c.args[1] for c in runtime.send_request.await_args_list if c.args[0] == METHOD_SET_MODEL
+        )
+        assert params["modelId"] == self._BEDROCK

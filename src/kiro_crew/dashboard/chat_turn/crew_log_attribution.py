@@ -413,6 +413,8 @@ async def _turn_close_crew_log(turn: _ChatTurn) -> None:
     # session with no routed turn in flight, which is every session while
     # ``decisions.model_route_derive`` is off.
     _settle_jev_route(session_key, _jev_route_turn_ok(turn._crew_log_terminal))
+    if turn._crew_log_terminal is not None:
+        turn.turn_exit.stop_reason = str(turn._crew_log_terminal.get("stop_reason") or "")
     if turn._crew_log_terminal is not None or _crew_log_turn_open:
         # Ahead of the turn's closers, so the ``usage`` fold finds this turn's
         # composition row still at the tail and not yet sealed.

@@ -27,7 +27,6 @@ from typing import Any
 import pytest
 
 from kiro_crew.discord import commands as dcmd
-from kiro_crew.discord import transport_dispatch as dtd
 from kiro_crew.discord.session_resume import RoutingDecision
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
@@ -231,7 +230,7 @@ def permitted(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _permitted(_channel_type: str) -> bool:
         return True
 
-    monkeypatch.setattr(dtd, "channel_inbound_permitted", _permitted)
+    monkeypatch.setattr(D, "channel_inbound_permitted", _permitted)
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@
     "'Prune merged' refuses to delete a worktree with uncommitted or untracked work rather than discarding it",
     "Stream pod logs and mint pod access tokens from the UI",
     "Built for people developing Kiro Crew itself — not needed for everyday use",
-    "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live stages its pointer on every platform, and automatic restart needs a systemd --user unit or a macOS LaunchAgent; the fleet view, PR status, sync, rebase and prune work on any platform"
+    "Pods run on Linux (systemd --user), macOS (launchd) and Windows (Task Scheduler) — but the macOS pod has no enforced memory/CPU ceiling; Make Live stages its pointer on every platform, and automatic restart needs a systemd --user unit or a macOS LaunchAgent; the fleet view, PR status, sync, rebase and prune work on any platform"
   ],
   "defaultEnabled": false,
   "platform": {
@@ -47,10 +47,139 @@
     "skills/pod-e2e",
     "skills/feature-demo-recording"
   ],
+  "agentTools": {
+    "namespace": "pod",
+    "route": "agent-tools",
+    "tools": [
+      {
+        "name": "pod_up",
+        "description": "Boot a Kiro Crew POD -- a complete preview gateway for one git worktree, on its own port with its own data directory -- and get back the {base_url, token} handle for driving it. On a host whose sandbox denies this session the systemd user bus, this is the only way to start a pod: a pod is a systemd --user unit, and `kirocrew pod up` in your shell then fails with `Permission denied`. Check with `systemctl --user is-system-running` if you want to know which case you are in; either way this tool works, because the gateway holds the host bus and does the systemd part for you. Use it to test an unfinished change end to end without touching the live gateway. Blocking: it returns once the pod answers its own health check, a few seconds for a worktree that is already built. A worktree with no built dist is REFUSED with the CLI's own remedy in the message -- provisioning (venv + SPA build) is minutes of work and is not reachable from here; run it from the Dev Fleet page or `kirocrew pod provision <wt>`. Create the worktree under `<repo>/.worktrees/<name>`, never under `$KIROCREW_SCRATCH`: a session's scratch is private to it, so Dev Fleet cannot see a worktree there and refuses it. Requires the Dev Fleet app to be enabled. The returned token is scoped to that pod alone; it is not the live gateway's, and no secret of the host is exposed by it. It carries two limits, and the reply names both: the token itself is accepted only within a short link window (5 minutes), and the first request that carries it opens a pod session, kept in a cookie, that lasts 2h. Use the token straight away and drive the pod with that session; past the window the pod refuses the token as expired. Calling pod_up again on a running pod leaves it running and returns a fresh token. Release the pod with `pod_down` when done -- a pod holds a port and memory until it is stopped. `memory` and `cpu` set the pod's ceilings (default 4G and 200%); on a pod that is already running they are recorded and take effect with `pod_restart` (on Windows, with `pod_down` then `pod_up`).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree to bring up, named the way `pod_ls` and the Dev Fleet page name it -- its directory basename, e.g. 'kc-wt-10732'. NOT a path and NOT a branch",
+              "maxLength": 200
+            },
+            "memory": {
+              "type": "string",
+              "description": "Optional memory ceiling for the pod, e.g. '16G' (default 4G, capped at 80% of host RAM). Kept across restarts",
+              "maxLength": 16
+            },
+            "cpu": {
+              "type": "string",
+              "description": "Optional CPU ceiling, e.g. '800%' for eight cores (default 200%, capped at the host CPU count). Kept across restarts",
+              "maxLength": 16
+            },
+            "env": {
+              "type": "array",
+              "description": "Optional environment overrides for the pod's gateway, as KEY=VALUE strings, to point it at a test double. Only KIROCREW_KIRO_BIN is accepted: an absolute path to an executable, such as a fake kiro-cli that fails the way you want to see, e.g. ['KIROCREW_KIRO_BIN=/abs/path/fake-kiro-cli']. With it set, a kiro-cli that cannot start no longer stops the pod from booting, so the error shows in the pod's UI. Other keys are refused. Each pod_up replaces the overrides, so a pod_up without env clears them; pod_restart keeps them",
+              "items": {
+                "type": "string",
+                "maxLength": 1100
+              },
+              "maxItems": 4
+            }
+          },
+          "required": [
+            "worktree"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 210,
+        "result": "text"
+      },
+      {
+        "name": "pod_restart",
+        "description": "Restart a running pod in place and KEEP its data directory: its sessions, config, installed apps and downloaded models survive. Use it to apply a new `memory` / `cpu` ceiling, to pick up a rebuilt worktree, or to revive a pod that crashed. Unlike `pod_down` followed by `pod_up`, nothing is deleted. Works only for a pod that has been started before and not torn down with `pod_down`. Not available on Windows, where it is refused before anything is stopped. Blocking until the pod answers its health check; returns the same {base_url, token} handle as `pod_up`.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree whose pod should be restarted",
+              "maxLength": 200
+            },
+            "memory": {
+              "type": "string",
+              "description": "Optional memory ceiling for the pod, e.g. '16G' (default 4G, capped at 80% of host RAM). Kept across restarts",
+              "maxLength": 16
+            },
+            "cpu": {
+              "type": "string",
+              "description": "Optional CPU ceiling, e.g. '800%' for eight cores (default 200%, capped at the host CPU count). Kept across restarts",
+              "maxLength": 16
+            }
+          },
+          "required": [
+            "worktree"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 210,
+        "result": "text"
+      },
+      {
+        "name": "pod_down",
+        "description": "Stop a pod and reclaim its isolated data directory. Call this when you are finished with a pod you started: until then it holds its port, its memory and its unit. Same reason as `pod_up` for why this is a tool and not a shell command -- the systemd user bus is not reachable from this session. This DELETES that pod's data directory, which is by design (a pod is disposable) but is not undoable: anything you want to keep must be copied out of the pod first. It does not touch the worktree, its branch, or your commits.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree whose pod should be stopped",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "worktree"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 120,
+        "result": "text"
+      },
+      {
+        "name": "pod_status",
+        "description": "Whether one worktree's pod is up, on which port, and what its health probe answers. Use it to check a pod you started is still serving before driving it, and to tell 'my request failed' apart from 'the pod is not running'. A `health` of 200/401/403 means this pod is up; 0 means nothing answers on that port; -2 means another process answers on that port, so this pod is not up.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "worktree": {
+              "type": "string",
+              "description": "The worktree whose pod state you want",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "worktree"
+          ]
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 45,
+        "result": "text"
+      },
+      {
+        "name": "pod_ls",
+        "description": "Every pod currently ACTIVE on this host, with its port and health. Takes no arguments. Read this before starting a pod: it is what tells you a pod you need is already up (start nothing), or that someone else's run owns the port yours would derive. The list is deliberately not filtered to one repository -- a filtered list would hide exactly the pod that explains a refusal.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "maxResultChars": 60000,
+        "timeoutSeconds": 45,
+        "result": "text"
+      }
+    ]
+  },
   "backend": {
     "entryPoint": "kiro_crew.apps.builtins.dev_fleet.server",
     "port": "auto",
-    "healthCheck": "/health"
+    "healthCheck": "/health",
+    "hooks": {
+      "routes": "agent_tools:register_routes"
+    }
   },
   "iconUrl": "/app-assets/dev-fleet/icon.svg",
   "heroImage": "/app-assets/dev-fleet/hero-light.svg",
@@ -61,7 +190,7 @@
     "Operate Kiro Crew feature worktrees and isolated preview pods while keeping the live gateway untouched."
   ],
   "configuration": [
-    "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux or launchd on macOS and must be provisioned first."
+    "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux, launchd on macOS or Task Scheduler on Windows and must be provisioned first."
   ],
   "screenshots": [
     "/app-assets/dev-fleet/screenshot-main.png"

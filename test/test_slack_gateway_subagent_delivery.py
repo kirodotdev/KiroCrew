@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_session_manager import open_session, real_sessions
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _make_orchestrator,
@@ -21,6 +22,8 @@ from slack_gateway_helpers import (
     _mock_dashboard_state,
     _mock_sessions,
 )
+
+from kiro_crew.history import ConversationLog
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: Subagent Slack injection timeout
@@ -30,9 +33,9 @@ from slack_gateway_helpers import (
 class TestSubagentSlackInjection:
     """Subagent injection into Slack sessions."""
 
-    def _setup(self):
+    def _setup(self, sessions=None):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -98,7 +101,9 @@ class TestSubagentSlackInjection:
     @pytest.mark.asyncio
     async def test_cron_injection_timeout(self):
         """Cron injection timeout → notifies failure."""
-        orch, mock_sm = self._setup()
+        orch, mock_sm = self._setup(real_sessions())
+        # The cron run's live session: a completion continues it.
+        await open_session(orch.sessions, "cron:job1")
         on_done = mock_sm.call_args[1]["on_done"]
         orch.subagent_mgr.running = []
 
@@ -126,7 +131,7 @@ class TestSubagentSlackInjection:
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason=f"injection timed out after {int(INJECTION_TIMEOUT)}s"
         )
-        orch.sessions.reset.assert_any_await("cron:job1")
+        assert not orch.sessions.has_session("cron:job1")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -137,9 +142,9 @@ class TestSubagentSlackInjection:
 class TestInjectWithRetry:
     """_inject_with_retry error handling."""
 
-    def _setup(self):
+    def _setup(self, sessions=None):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -169,7 +174,8 @@ class TestInjectWithRetry:
         """AcpProcessDied during injection → resets session."""
         from kiro_crew.acp.client import AcpProcessDied
 
-        orch, mock_sm = self._setup()
+        orch, mock_sm = self._setup(real_sessions())
+        await open_session(orch.sessions, "C123:ts.1")
         on_done = mock_sm.call_args[1]["on_done"]
 
         info = MagicMock()
@@ -192,7 +198,7 @@ class TestInjectWithRetry:
             await on_done(info)
 
         mock_stream.assert_awaited_once()
-        orch.sessions.reset.assert_awaited_once_with(info.parent_session_key)
+        assert not orch.sessions.has_session(info.parent_session_key)
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason="ACP process died"
         )
@@ -203,7 +209,8 @@ class TestInjectWithRetry:
         """PromptBusyExhaustedError → resets session."""
         from kiro_crew.llm_helpers import PromptBusyExhaustedError
 
-        orch, mock_sm = self._setup()
+        orch, mock_sm = self._setup(real_sessions())
+        await open_session(orch.sessions, "C123:ts.2")
         on_done = mock_sm.call_args[1]["on_done"]
 
         info = MagicMock()
@@ -226,7 +233,7 @@ class TestInjectWithRetry:
             await on_done(info)
 
         mock_stream.assert_awaited_once()
-        orch.sessions.reset.assert_awaited_once_with(info.parent_session_key)
+        assert not orch.sessions.has_session(info.parent_session_key)
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason="provider dead after prompt-busy retries"
         )
@@ -241,9 +248,9 @@ class TestInjectWithRetry:
 class TestSlackSubagentCompletionPersistence:
     """Verify subagent completions injected into Slack sessions are persisted."""
 
-    def _setup(self):
+    def _setup(self, sessions=None):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -352,12 +359,13 @@ class TestSlackSubagentCompletionPersistence:
         ],
     )
     async def test_slack_subagent_skips_persistence_for_restricted_thread(
-        self, temporary, incognito
+        self, temporary, incognito, tmp_path
     ):
         """Temporary and incognito threads are delivered but never persisted."""
         orch, mock_sm = self._setup()
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info()
+        orch.conv_log = ConversationLog(base_dir=tmp_path)
 
         with (
             patch(
@@ -372,7 +380,7 @@ class TestSlackSubagentCompletionPersistence:
 
         mock_stream.assert_awaited_once()
         assert orch.slack.post_message.await_args.args[:2] == ("D_U1", "response")
-        orch.conv_log.append.assert_not_called()
+        assert orch.conv_log.read_messages(info.parent_session_key) == []
 
     @pytest.mark.asyncio
     async def test_slack_subagent_persistence_failure_does_not_break_flow(self):
@@ -414,12 +422,13 @@ class TestSlackSubagentCompletionPersistence:
         assert orch.slack.post_message.await_args.args[:2] == ("D_U1", "response")
 
     @pytest.mark.asyncio
-    async def test_slack_subagent_persists_even_when_slack_post_fails(self):
+    async def test_slack_subagent_persists_even_when_slack_post_fails(self, tmp_path):
         """Persistence is gated on ACP injection, not Slack delivery: a failed
         Slack post must NOT prevent the completion turn from being persisted."""
         orch, mock_sm = self._setup()
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info()
+        orch.conv_log = ConversationLog(base_dir=tmp_path)
         # Slack delivery fails (best-effort), but injection already succeeded.
         orch.slack.post_message = AsyncMock(side_effect=RuntimeError("slack down"))
 
@@ -435,16 +444,17 @@ class TestSlackSubagentCompletionPersistence:
             await on_done(info)
 
         orch.slack.post_message.assert_awaited()
-        assert orch.conv_log.append.call_count == 2
-        assert orch.conv_log.append.call_args_list[0][0][1] == "user"
-        assert orch.conv_log.append.call_args_list[1][0][1] == "assistant"
+        rows = orch.conv_log.read_messages(info.parent_session_key)
+        assert [r["role"] for r in rows] == ["user", "assistant"]
+        assert rows[1]["content"] == "synthesized response"
 
     @pytest.mark.asyncio
-    async def test_slack_subagent_persists_exactly_once_after_timeout_retry(self):
+    async def test_slack_subagent_persists_exactly_once_after_timeout_retry(self, tmp_path):
         """Unit guard: persistence fires once across a timeout-retry cycle."""
         orch, mock_sm = self._setup()
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info()
+        orch.conv_log = ConversationLog(base_dir=tmp_path)
 
         with (
             patch(
@@ -459,15 +469,18 @@ class TestSlackSubagentCompletionPersistence:
         ):
             await on_done(info)
 
-        # Exactly ONE completion persisted (2 appends: user + assistant), not 4.
-        assert orch.conv_log.append.call_count == 2
+        # Exactly ONE completion persisted (a user row and an assistant row), not two.
+        rows = orch.conv_log.read_messages(info.parent_session_key)
+        assert [r["role"] for r in rows] == ["user", "assistant"]
+        assert rows[1]["content"] == "response text"
 
     @pytest.mark.asyncio
-    async def test_taskrunner_parent_injects_without_slack_post(self):
+    async def test_taskrunner_parent_injects_without_slack_post(self, tmp_path):
         """A machine parent keeps the synthesized turn but is not a Slack thread."""
         orch, mock_sm = self._setup()
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info("taskrunner:TASK_example:review")
+        orch.conv_log = ConversationLog(base_dir=tmp_path)
 
         with (
             patch(
@@ -480,7 +493,9 @@ class TestSlackSubagentCompletionPersistence:
         ):
             await on_done(info)
 
-        assert orch.conv_log.append.call_count == 2
+        rows = orch.conv_log.read_messages(info.parent_session_key)
+        assert [r["role"] for r in rows] == ["user", "assistant"]
+        assert rows[1]["content"] == "synthesized response"
         orch.slack.open_dm.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
         orch.slack.post_blocks.assert_not_awaited()

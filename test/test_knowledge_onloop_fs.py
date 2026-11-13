@@ -42,7 +42,8 @@ from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.store import KnowledgeStore
 
 #: Threads a request-path filesystem call may run on: the dedicated probe pool,
-#: and ``security/paths.py``'s own bounded ``mc-pathres`` resolver pool.
+#: and the bounded ``mc-pathres`` resolver pool (``executors.path_resolve_executor``,
+#: reached through ``security/paths_resolver.py``).
 #: ``MainThread`` is the loop; ``asyncio_N`` is the shared default executor that
 #: one dead mount can starve. Both are violations.
 _BOUNDED_POOL_PREFIXES = ("mc-pathprobe", "mc-pathres")

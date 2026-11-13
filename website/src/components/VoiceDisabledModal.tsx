@@ -4,7 +4,7 @@ import SpeechProviderNotice from './SpeechProviderNotice'
 import type { SpeechProviderEntry } from '../lib/speechProviders'
 import { Btn } from './ui'
 import { CopyCommand } from './agentHarness/CopyCommand'
-import { modalUnavailableMessage } from '../lib/sttProviders'
+import { CODE_PROVIDER_OFF, modalUnavailableMessage } from '../lib/sttProviders'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -64,6 +64,9 @@ export default function VoiceDisabledModal({ open, reason = 'disabled', provider
   // Settings-panel-only codes). Everything else falls back to the generic
   // provider-named sentence, whose remedy is the "Open settings" button below.
   const codeReason = unavailable ? modalUnavailableMessage(code) : ''
+  // Provider Off: the reason already says to pick a provider, and there is
+  // nothing to install, so the "install the current one" nudge would be wrong.
+  const providerOff = unavailable && code === CODE_PROVIDER_OFF
 
   return (
     <Modal
@@ -112,7 +115,7 @@ export default function VoiceDisabledModal({ open, reason = 'disabled', provider
               fix to go hunt in settings instead. Hide it whenever a command is
               shown; the "Open settings" button stays either way. */}
           {unavailable
-            ? (installCommand ? null : (
+            ? (installCommand || providerOff ? null : (
                 <p className="text-muted">
                   {i18nT('components.voiceDisabledModal.pick_an_installed_provider_under_settings_voice')}
                 </p>

@@ -3,9 +3,9 @@
 A remote Kiro Crew GATEWAY is reached by embedding its own dashboard: the hub
 opens a tunnel, mints a dashboard token, and the iframe does the rest. A headless
 crew has no dashboard to embed. It serves one turn route -- the OpenAI-shaped
-``POST /v1/chat/completions`` of
-``apps/builtins/aws_control/crew/runtime/container/front`` -- and nothing else,
-so the hub has to be the client.
+``POST /v1/chat/completions`` of the crew container's front (``container/front``
+in the crew runtime an app provides through the ``crew_runtime`` seam of
+:mod:`kiro_crew.apps.seams`) -- and nothing else, so the hub has to be the client.
 
 That is what this module is: the hub's side of a conversation with a crew that
 cannot draw its own.
@@ -65,14 +65,6 @@ logger = logging.getLogger(__name__)
 #: test rather than copied by eye.
 CONTROL_SECRET_HEADER = "X-SMC-Control-Secret"
 
-#: The shape a per-crew control secret's name has, as the lane writes it: the
-#: path the lane's own launch spec builds (``MicroVmLaunchSpec.control_secret_name``)
-#: from the crew's launch tag, so the hub derives the name itself instead of
-#: being told a path by the caller. Used only to DERIVE an id when the lane
-#: recorded none; the recorded reference is always preferred, because it is what
-#: the launch actually minted.
-_SECRET_PATH = "{prefix}/{crew}/CONTROL_SECRET"
-
 
 #: The one lane this route serves.
 #:
@@ -103,27 +95,15 @@ def control_secret_id(inst: Any) -> str:
     Fargate lane's own label (``Kiro Crew Cloud (<tag>)``) is not a valid secret
     name at all.
 
-    Derives the name from the operator's configured prefix -- not the hardcoded
-    default, so a moved prefix is honoured -- only when the record was already
-    matched and simply carries no reference, where the tag used is the RECORD's
-    own. A row that owns no record gets ``""``, which the caller reports as a
-    crew it cannot authenticate to rather than guessing a name for it.
+    The recorded reference is the only source: ``MicroVmLaunchEngine.provision``
+    writes it into the record it creates. A row that owns no record, or a record
+    that carries no reference, gets ``""``, which the caller reports as a crew it
+    cannot authenticate to rather than guessing a name for it.
     """
-    try:
-        from kiro_crew.cloud.config import CloudConfig
-    except Exception:  # noqa: BLE001 - no lane, no reference
-        return ""
     record = _record_for(inst)
     if record is None:
         return ""
-    if record.control_secret_ref:
-        return record.control_secret_ref
-    # No reference stored, but the row IS this record's: the tag is the record's
-    # own, not a label the caller supplied, so deriving a path from it names this
-    # crew's secret and no other.
-    config = CloudConfig.load().microvm_config()
-    prefix = config.secret_path_prefix if config else "kirocrew/crew"
-    return _SECRET_PATH.format(prefix=prefix, crew=record.tag)
+    return record.control_secret_ref
 
 
 def _record_for(inst: Any) -> Any:
@@ -180,7 +160,7 @@ def _record_for(inst: Any) -> Any:
 
 
 def _tunnel_binds_record(status: dict, record: Any) -> bool:
-    """True when the LIVE tunnel was dialled on *record*'s own node and account.
+    """True when the LIVE tunnel was dialled on *record*'s node and account, to its front port.
 
     ``_record_for`` matches the registry row, and the row is agent-writable after
     the forward is built -- so matching it is not enough to prove the open tunnel
@@ -190,13 +170,20 @@ def _tunnel_binds_record(status: dict, record: Any) -> bool:
     identity (carried on its status) is what actually decides where the port
     goes. Bind the credential to THAT, not to the row.
 
-    Requires an ``ssm`` transport whose ``ssm_target`` is the record's ``mi_id``
-    and whose ``aws_profile``/``aws_region`` are the record's. A row relabelled
+    Requires an ``ssm`` transport whose ``ssm_target`` is the record's ``mi_id``,
+    whose ``aws_profile``/``aws_region`` are the record's, and whose
+    ``remote_port`` is ``GUEST_FRONT_PORT`` (the row's port is agent-writable too,
+    and could aim the forward at another listener in the guest). A row relabelled
     onto an already-open SSH peer, or onto an SSM peer dialled on another node or
     in another account, fails here even though ``_record_for`` matched it, so the
     secret is never read for it and never sent down that tunnel.
     """
+    # Lazy, like ``_record_for``'s: keeps the MicroVM lane off this module's import.
+    from kiro_crew.cloud.microvm.recipe import GUEST_FRONT_PORT
+
     if str(status.get("transport") or "") != "ssm":
+        return False
+    if status.get("remote_port") != GUEST_FRONT_PORT:
         return False
     if str(status.get("ssm_target") or "") != str(getattr(record, "mi_id", "") or ""):
         return False
@@ -216,7 +203,7 @@ def _forward_unchanged(before: dict, now: dict, record: Any, lane: str, target: 
     freed local port, and a URL resolved earlier would then reach a different
     peer. So the post goes out only when the tunnel is still connected on the
     same port, from the same connection (``connected_at``), to the same target,
-    and still dialled on the record's node and account.
+    and still dialled on the record's node and account, to the front port.
     """
     if now.get("state") != "connected":
         return False
@@ -473,7 +460,58 @@ def _turn_target(status: dict, provisioner_id: str = "") -> str:
 
 
 async def api_crew_turn(request: web.Request) -> web.StreamResponse:
-    """POST /api/instances/{id}/crew-turn — one turn against a headless crew.
+    """POST /api/instances/{id}/crew-turn, admitted by Shared Crew fair admission.
+
+    The route's own gates (the instances guard, owner-only) run first. The
+    forwarded turn is model work run on the caller's behalf, so it is then
+    charged to the caller like a chat send and holds a slot until the crew's
+    answer was forwarded. A refusal answers the dashboard's coded 429/503
+    envelope and sends nothing to the crew.
+    """
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers_instances import _guard
+    from kiro_crew.shared_crew.admission import OperationKind, ReasonCode, error_body, http_status
+    from kiro_crew.shared_crew.admission_gate import (
+        TASK_STORE_UNAVAILABLE_CODE,
+        Admission,
+        actor_budget,
+        coded_json_response,
+    )
+    from kiro_crew.shared_crew.turn_gate import capacity_note, run_admitted
+
+    denied = _guard(request, "crew_turn")
+    if denied is not None:
+        return denied
+    # Owner-only, the same bar as the proxy and the capability reads: this runs
+    # with the owner's AWS credentials and sends the crew's control secret, so an
+    # authenticated non-owner (a Slack-minted dashboard subject) must not reach it.
+    if not is_owner_dashboard_request(request):
+        _audit(_AUDIT_OP, "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew chat is owner-only")
+
+    refusal: list[ReasonCode | str | None] = []
+    response = await run_admitted(
+        _crew_turn(request),
+        session_key=f"remote:{request.match_info.get('id', '')}",
+        budget_key=actor_budget(request),
+        operation=OperationKind.REMOTE,
+        refused=refusal.append,
+    )
+    if response is not None:
+        return response
+    why = refusal[0] if refusal else None
+    if why == TASK_STORE_UNAVAILABLE_CODE:
+        unavailable = Admission(None, "rejected", store_unavailable=True)
+        return coded_json_response(unavailable.refusal_body(), status=unavailable.refusal_status())
+    reason = why if isinstance(why, ReasonCode) else ReasonCode.CREW_ACTIVE_LIMIT
+    return coded_json_response(
+        error_body(reason, capacity_note(reason)), status=http_status(reason)
+    )
+
+
+async def _crew_turn(request: web.Request) -> web.StreamResponse:
+    """One turn against a headless crew.
 
     Body: ``{"thread": "<id>", "message": "<text>", "stream": <bool>}``.
 
@@ -487,19 +525,7 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
     OpenAI-shaped chunks. The relay is deliberately thin -- it re-frames nothing
     and interprets nothing -- so a caller reads what the crew said.
     """
-    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-    from kiro_crew.dashboard.handlers_instances import _guard, _registry, _status_for
-
-    denied = _guard(request, "crew_turn")
-    if denied is not None:
-        return denied
-    # Owner-only, the same bar as the proxy and the capability reads: this runs
-    # with the owner's AWS credentials and sends the crew's control secret, so an
-    # authenticated non-owner (a Slack-minted dashboard subject) must not reach it.
-    if not is_owner_dashboard_request(request):
-        _audit(_AUDIT_OP, "denied", error="non-owner identity rejected")
-        return _owner_denial_response(request, "remote-crew chat is owner-only")
+    from kiro_crew.dashboard.handlers_instances import _registry, _status_for
 
     state: "DashboardState" = request.app["state"]
     instance_id = request.match_info.get("id", "")
@@ -567,7 +593,8 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
     # match points at one crew while the port reaches another, and sending that
     # crew's control secret here would hand it to the peer on the far end. Refuse
     # when the live tunnel's own dial identity does not equal the matched
-    # record's node and account, BEFORE the secret is read.
+    # record's node and account, or does not reach the guest's front port,
+    # BEFORE the secret is read.
     record = await asyncio.to_thread(_record_for, inst)
     if record is None or not _tunnel_binds_record(status, record):
         _audit(
@@ -578,9 +605,9 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
         )
         return _refuse(
             "crew_tunnel_mismatch",
-            "this crew's open connection does not match its recorded node and "
-            "account, so the gateway will not send its control secret down it. "
-            "Reconnect the crew.",
+            "this crew's open connection does not reach its recorded node and "
+            "account on the crew's front port, so the gateway will not send its "
+            "control secret down it. Reconnect the crew.",
             409,
         )
 

@@ -49,7 +49,7 @@ and do not delete them.
 |---|---|
 | `sso_status.py` | No-op stubs so the dashboard and the Slack handlers keep the same symbols. Reports `available: False`. |
 | `dashboard/handlers/sso_login.py` | Keeps the `api_sso_login_ws` symbol that `dashboard/routes/connections.py` routes at `/api/sso-login` when `DashboardContributor.sso_login_handler()` returns `None`; accepts the WebSocket, reports unavailable, closes. Spawns no subprocess. |
-| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. |
+| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. The one public provider is the Kiro relay client, composed in its place only when `tunnel.relay_enabled` is on (off by default); `DefaultTunnelProvider` itself stays a no-op. |
 | `website/src/rum.ts` | An inert no-op stub. Keep it inert; never add `aws-rum-web`. |
 
 ## OSS-flipped defaults
@@ -63,9 +63,14 @@ STT extras.
 
 - The **Channels** app is hidden from the App Store, and the **Board** app is removed.
   An upstream sync must not restore either.
-- **The built-in app set is closed.** The `no-new-builtin-apps` rule in `AUTOSDE.yaml`
-  blocks restoring those two and blocks any NEW built-in app: new apps ship as external
-  apps through the KiroCrewApps registry.
+- **The built-in app set is closed, and it is being emptied.** Kiro Crew accepts no
+  new built-in app: every app, first-party included, lives in a dedicated GitHub
+  repository listed in the official registry (`kirodotdev/KiroCrewApps`). The
+  built-ins that still ship move out one at a time without changing anything for the
+  people who already use them
+  ([decision](../decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md)).
+  The `no-new-builtin-apps` rule in `AUTOSDE.yaml` blocks restoring those two and
+  blocks any NEW built-in app, per-app core table row, or app-specific core MCP tool.
 
 ## Keep the generic security controls
 
@@ -113,6 +118,25 @@ Exit 1 means remove the marker from your change. Exit 2 means the gate could not
 reach a verdict — a broken ruleset, or a diff that was not intact. That is not
 your change's fault and not something to retry past. It fails the build on
 purpose: a scan that reaches no conclusion must never be read as a pass.
+
+### The built-artifact scan is a different check
+
+`scripts/verify_no_internal_host.py` runs in `build.yml` and `build-wheel.yml`
+against the BUILT wheel and website `dist/`, not against a diff. It answers a
+question the gate above cannot: does a file that ships to users name an internal
+host, whenever and however it got there.
+
+It keeps its denylist as sha256 digests of a few host and package names, not as
+a readable wordlist, so the rule above still holds: nothing in `scripts/` can be
+read off as a list of what to avoid writing. The digests are unsalted hashes of
+short names, so anyone who already suspects a name can confirm it by hashing;
+they keep the names out of the text, they do not make them secret. The private
+ruleset stays the authority for the diff gate.
+
+`EXCLUSIONS` there is not an exemption from the gate. It names only shipped
+files whose job is to DETECT internal hosts, each with a reason and the exact
+digests that file may contain; any other denied host in the same file still
+fails the build.
 
 ### What it replaced, and why that one did not work
 

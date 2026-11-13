@@ -31,6 +31,7 @@ def _render(
     *,
     slot: str | None = None,
     last_user_at: str = "",
+    state: Any = None,
 ) -> str | None:
     """The live page with its values filled in -- the frame's half of contract v3 part 5.
 
@@ -54,11 +55,13 @@ def _render(
     erroring.
     """
     try:
-        from kiro_crew import dashboard_frame
+        from kiro_crew import dashboard_agentic, dashboard_frame
         from kiro_crew.dashboard.handlers.member_dashboard import (
+            _dashboard_slot,
             _page_safe,
             _template_text_safe,
             _trusted_page,
+            page_safe_for,
             read_fields,
         )
         from kiro_crew.dashboard_templates.manifest import parse_manifest
@@ -82,11 +85,15 @@ def _render(
         if page is None:
             return None
         read = read_fields(slug, member, manifest, slot=slot)
+        # The slot the folds were read from, so each work item can say whether its
+        # main chat is still open; ``read_fields`` resolves a crewmate's the same way.
+        safe = page_safe_for(state, slot if slot is not None else _dashboard_slot(member, slug))
         payload = dashboard_frame.read_payload(
             # MASKED AND REDACTED on the way out, at the one step that hands fold
             # values to a page's own script. A snapshot is taken from what the page
             # holds, so it inherits this rather than needing its own pass.
-            {name: _page_safe(value) for name, value in read.fields.items()},
+            # *state* stamps each work item's worker facts before the key is masked.
+            {name: safe(value) for name, value in read.fields.items()},
             agentic=[name for name, spec in manifest.fields.items() if spec.agentic],
             seq=read.seq,
             missing=read.missing,
@@ -98,6 +105,8 @@ def _render(
             subject="crewmate" if slot is None else "session",
             # Through the same mask as the write times it is compared with.
             last_user_at=str(_page_safe(last_user_at)),
+            # Preview `dashboard_stale_fields` only; `None` leaves the key out.
+            stale_after=dashboard_agentic.page_stale_after(manifest, read.written_at),
         )
         # The catalog's page, redacted like the values that go into it. The scrub is
         # kept because this is the one step producing both the raw body and the

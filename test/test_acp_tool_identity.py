@@ -300,6 +300,8 @@ class TestProviderConversionPreservesIdentity:
             tool_name="monitor_start",
             mcp_server_name="kirocrew-core",
             is_shell=True,
+            kas_builtin_ids=True,
+            spec_granted_builtins=frozenset({"execute_bash"}),
         )
         out = AcpProvider._to_llm_event(src)
         dropped = [
@@ -354,7 +356,9 @@ class TestChatRunnerDirectiveSeam:
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("slack:C123.456")
         slot._titled = True
-        args = {"project": "/tmp/project", "clear": False}
+        project = tmp_path / "project"
+        project.mkdir()
+        args = {"project": str(project), "clear": False}
         marker = session_directive.encode("set_project", args, "switching")
         events = [
             AcpEvent(
@@ -380,6 +384,12 @@ class TestChatRunnerDirectiveSeam:
             monkeypatch,
             directive_user_origin=False,
         )
+        # The real applier, fed what the turn forwarded, leaves the slot's project alone.
+        from kiro_crew.dashboard.session_directive_apply import apply_session_directive_outcome
+
+        outcome = await apply_session_directive_outcome(*spy.call_args.args, **spy.call_args.kwargs)
+        assert "only works from a user-facing session" in outcome.text
+        assert (slot.project or "") == ""
         spy.assert_called_once()
         assert spy.call_args.args[2] == "dashboard:slack_C123.456"
         assert spy.call_args.kwargs["producer_is_user_facing"] is False

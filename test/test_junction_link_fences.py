@@ -123,14 +123,14 @@ class TestArtifactTrashDoesNotDeleteThroughALink:
         doomed.mkdir()
         (doomed / "held.txt").write_text("a locked store file", encoding="utf-8")
 
-        real_unlink = os.unlink
+        real_unlink = platform_compat.PinnedDirectory.unlink
 
-        def refuse_that_one(target, *a, **kw):  # type: ignore[no-untyped-def]
-            if os.path.basename(os.fspath(target)) == "held.txt":
+        def refuse_that_one(self, name):  # type: ignore[no-untyped-def]
+            if name == "held.txt":
                 raise PermissionError(32, "The process cannot access the file")
-            return real_unlink(target, *a, **kw)
+            return real_unlink(self, name)
 
-        with mock.patch.object(artifacts.os, "unlink", refuse_that_one):
+        with mock.patch.object(platform_compat.PinnedDirectory, "unlink", refuse_that_one):
             with pytest.raises(OSError):
                 artifacts.ArtifactStore._rmtree(doomed)
 
@@ -150,15 +150,15 @@ class TestArtifactTrashDoesNotDeleteThroughALink:
         (doomed / "nested").mkdir(parents=True)
         (doomed / "nested" / "held.txt").write_text("locked", encoding="utf-8")
 
-        real_unlink = os.unlink
+        real_unlink = platform_compat.PinnedDirectory.unlink
 
-        def refuse_that_one(target, *a, **kw):  # type: ignore[no-untyped-def]
-            if os.path.basename(os.fspath(target)) == "held.txt":
+        def refuse_that_one(self, name):  # type: ignore[no-untyped-def]
+            if name == "held.txt":
                 raise PermissionError(32, "The process cannot access the file")
-            return real_unlink(target, *a, **kw)
+            return real_unlink(self, name)
 
         with caplog.at_level("WARNING"):
-            with mock.patch.object(artifacts.os, "unlink", refuse_that_one):
+            with mock.patch.object(platform_compat.PinnedDirectory, "unlink", refuse_that_one):
                 with pytest.raises(OSError):
                     artifacts.ArtifactStore._rmtree(doomed)
 

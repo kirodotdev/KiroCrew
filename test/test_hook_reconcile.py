@@ -382,6 +382,9 @@ async def test_stop_final_drain_is_bounded(monkeypatch):
     hr.init_hook_reconciler()
     # stop must return well under the hung pass's 3600s despite the drain hanging.
     await await_until(asyncio.ensure_future(hr.stop_hook_reconciler()))
+    # The returned stop leaves the reconciler stopped, so a restart starts fresh.
+    assert hr._reconcile_task is None
+    assert hr._stopping is True
 
 
 @pytest.mark.asyncio
@@ -409,6 +412,8 @@ async def test_stop_does_not_reawait_a_hung_in_flight_pass(monkeypatch):
         # Two drain budgets (0.2s each) + a final drain; must be well under the
         # 3600s hang and under the 60s pass watchdog. 3.0s is generous headroom.
         await await_until(asyncio.ensure_future(hr.stop_hook_reconciler()))
+        assert hr._reconcile_task is None
+        assert hr._stopping is True
     finally:
         await hr.stop_hook_reconciler()
 
@@ -466,6 +471,40 @@ async def test_stop_runs_a_final_drain_pass_before_shutdown(monkeypatch):
     await hr.stop_hook_reconciler()
     # Exactly one final drain pass ran (the poll interval was too long to tick).
     assert passes == ["pass"], "stop must run exactly one final drain reconcile pass"
+
+
+def _task_on_a_closed_loop() -> Any:
+    """A pending reconcile whose loop is gone, so it never finishes or clears its slot."""
+    other = asyncio.new_event_loop()
+    try:
+        return other.create_future()
+    finally:
+        other.close()
+
+
+@pytest.mark.asyncio
+async def test_a_task_left_by_a_torn_down_loop_does_not_skip_the_app(_harness):
+    calls, (set_current, _, _) = _harness
+    app = _app_info("watchtower")
+    set_current(app)
+    hr._inflight_app_tasks["watchtower"] = _task_on_a_closed_loop()
+    await hr.reconcile_once([app])
+    assert calls == [("enable", "watchtower")]
+
+
+@pytest.mark.asyncio
+async def test_the_stop_drain_drops_a_task_left_by_a_torn_down_loop(monkeypatch):
+    async def quiet_reconcile_once(installed):
+        return None
+
+    monkeypatch.setattr(hr, "POLL_INTERVAL_SECS", 100.0)  # no natural tick during the test
+    monkeypatch.setattr(hr, "list_apps", lambda: [])
+    monkeypatch.setattr(hr, "reconcile_once", quiet_reconcile_once)
+
+    hr.init_hook_reconciler()
+    hr._inflight_app_tasks["gone"] = _task_on_a_closed_loop()
+    await hr.stop_hook_reconciler()
+    assert "gone" not in hr._inflight_app_tasks
 
 
 @pytest.mark.asyncio

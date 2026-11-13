@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -35,6 +36,7 @@ from kiro_crew.github_runner import GH_ENV_PASSTHROUGH as _GH_ENV_PASSTHROUGH
 from kiro_crew.github_runner import (
     PROVIDER_EXECUTABLE_CANDIDATES as _PROVIDER_EXECUTABLE_CANDIDATES,
 )
+from kiro_crew.github_runner import PROVIDER_WINGET_ID as _PROVIDER_WINGET_ID
 from kiro_crew.github_runner import STRICT_PROVIDER_BIN_ENV as _STRICT_PROVIDER_BIN_ENV
 from kiro_crew.github_runner import (
     apply_session_bus_address,
@@ -156,7 +158,28 @@ def _provider_setup_message(executable: str, override_name: str, last_error: str
     """User-facing guidance when no acceptable provider CLI was found."""
     provider = "GitHub" if executable == "gh" else "GitLab"
     detail = f"\nLast check reported: {last_error}.\n" if last_error else ""
+    windows = sys.platform == "win32"
+    winget_id = _PROVIDER_WINGET_ID[executable]
     if _strict_provider_bins():
+        if windows:
+            # Windows strict mode trusts a gh/glab owned by SYSTEM or the local
+            # Administrators group, which is what a machine-wide winget install
+            # under Program Files produces -- the POSIX root-owned copy ritual
+            # has no PowerShell/cmd equivalent.
+            return (
+                f"Can't load pull requests: {_STRICT_PROVIDER_BIN_ENV} is set, so "
+                f"this host only accepts a machine-wide {executable} under Program "
+                "Files.\n"
+                "\n"
+                f"  winget install --id {winget_id} --scope machine\n"
+                f"{detail}"
+                "\n"
+                f"You won't have to sign in again -- your existing "
+                f"`{executable} auth login` credentials are reused automatically.\n"
+                "\n"
+                f"Alternative: point {override_name} at an already-trusted, absolute "
+                f"{executable} path, or unset {_STRICT_PROVIDER_BIN_ENV}."
+            )
         managed_dir = os.path.dirname(_PROVIDER_EXECUTABLE_CANDIDATES[executable][0])
         return (
             f"Can't load pull requests: {_STRICT_PROVIDER_BIN_ENV} is set, so this "
@@ -173,6 +196,24 @@ def _provider_setup_message(executable: str, override_name: str, last_error: str
             "\n"
             f"Alternative: point {override_name} at an already-trusted, absolute "
             f"{executable} path, or unset {_STRICT_PROVIDER_BIN_ENV}."
+        )
+    if windows:
+        return (
+            f"Can't load pull requests: the {provider} CLI ({executable}) isn't "
+            "available to the Kiro Crew gateway.\n"
+            "\n"
+            "Install it and sign in, then click Retry:\n"
+            "\n"
+            f"  winget install --id {winget_id}\n"
+            f"  {executable} auth login\n"
+            f"{detail}"
+            "\n"
+            f"Already installed? The gateway searches Program Files and its own "
+            f"PATH and accepts your own {executable}. It still refuses one owned "
+            "by another user, one that is world-writable, and one inside your "
+            "project or workspace tree, since the agent can write there.\n"
+            "\n"
+            f"Alternative: point {override_name} at an absolute {executable} path."
         )
     return (
         f"Can't load pull requests: the {provider} CLI ({executable}) isn't "

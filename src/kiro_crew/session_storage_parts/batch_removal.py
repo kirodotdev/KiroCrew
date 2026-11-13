@@ -11,7 +11,6 @@ restore or a rolled-back move left holding nothing worth keeping.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 from kiro_crew import pinned_fs
@@ -23,6 +22,7 @@ from kiro_crew.session_storage_parts.batch_manifest import (
     _summarize_manifest,
 )
 from kiro_crew.session_storage_parts.crew_staging import (
+    _crew_staging,
     _discard_crew_staging,
     _unlisted_crew_staging,
 )
@@ -35,6 +35,7 @@ from kiro_crew.session_storage_parts.pinned_delete import (
     _rename_back,
     _scan_tree,
     _stage_batch_by_name,
+    _sweep_staged,
 )
 from kiro_crew.session_storage_parts.store_inventory import invalidate_scan_cache, list_trash
 from kiro_crew.session_storage_parts.store_layout import (
@@ -47,6 +48,7 @@ from kiro_crew.session_storage_parts.store_layout import (
     EmptyProgress,
     EmptySkip,
     SessionStorageError,
+    _tree_bytes,
     logger,
     trash_root,
 )
@@ -161,18 +163,9 @@ def _approve_emptied_batch(
         # offer a batch with no manifest either.
         logger.warning("keeping trash batch %r: it has no manifest to identify it", batch.name)
         return SKIP_UNREADABLE
-    try:
-        parsed = _read_manifest(batch, dir_fd=root_fd, expect_ino=scanned_ino)
-    except UnicodeDecodeError:
-        # `_read_manifest` reports an unreadable manifest as None, but it DECODES strictly,
-        # so bytes that are not UTF-8 raise instead - and a ValueError, which neither its own
-        # `except OSError` nor anything between here and the caller catches. Reached when the
-        # file is corrupted after the by-path pre-screen read it, which is the very race this
-        # pinned re-read exists for. A manifest that cannot be decoded cannot identify the
-        # batch, so it withholds the removal like any other unreadable one instead of
-        # aborting a restore that has already moved the user's files back.
-        logger.warning("keeping trash batch %r: its manifest is not valid UTF-8", batch.name)
-        return SKIP_UNREADABLE
+    # An undecodable manifest also reads as None here, so it withholds the removal like
+    # any unreadable one instead of aborting a restore that already moved files back.
+    parsed = _read_manifest(batch, dir_fd=root_fd, expect_ino=scanned_ino)
     if parsed is None:
         logger.warning(
             "keeping trash batch %r: its manifest is not readable as the file that was scanned",
@@ -280,7 +273,7 @@ def _remove_emptied_batch(batch: Path, what: str, *, expect: tuple[int, int] | N
             )
             return False
         try:
-            shutil.rmtree(staged)
+            _sweep_staged(staged)
         except OSError as exc:
             # Back under the name the user saw: a batch left under a staging name is one
             # `list_trash` does not offer, so it would be neither visible nor restorable.
@@ -360,6 +353,8 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
     given - would destroy session data the user was never shown. Pinning once and taking
     both from that descriptor makes the pair describe one object or nothing.
 
+    The size counts the manifest itself, because the delete frees it too.
+
     None means no identity, and a batch with no identity is dropped from the approved set
     rather than carried unchecked.
     """
@@ -381,6 +376,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
         # silently resolving through it.
         try:
             info = os.stat(path, follow_symlinks=False)
+            manifest_bytes = os.stat(path / MANIFEST_NAME, follow_symlinks=False).st_size
         except OSError:
             return None
         summary = _summarize_manifest(path)
@@ -392,7 +388,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
             BatchIdentity(
                 info.st_dev, info.st_ino, None, rels_digest=_rels_digest(_manifest_rels(path))
             ),
-            summary[2],
+            summary[2] + manifest_bytes,
         )
     try:
         parent_fd, batch_fd = _open_absolute_nofollow(resolved)
@@ -410,6 +406,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
         scanned = _scan_tree(batch_fd, device=info.st_dev)
         dirs, files, links = scanned.dirs, scanned.files, scanned.links
         summary = _summarize_manifest(path, dir_fd=batch_fd)
+        manifest_bytes = os.stat(MANIFEST_NAME, dir_fd=batch_fd, follow_symlinks=False).st_size
     except OSError:
         return None
     finally:
@@ -427,7 +424,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
             links,
             rels_digest=digest,
         ),
-        summary[2],
+        summary[2] + manifest_bytes,
     )
 
 
@@ -461,23 +458,15 @@ def staged_targets(
     refuses it as a skip; a named selection holding one raises here instead.
     """
     with _mutation_lock():
-        # Explicit ids go through the SAME resolver every other caller uses, before
-        # anything is filtered. Filtering alone silently dropped an id that is not a
-        # batch - a typo, or one already emptied - so the worker received an empty
-        # list and reported success for a delete the user asked for and did not get.
-        # This keeps the guard `empty_trash` has always applied through `_batch_dir`,
-        # which the filter had quietly taken over from.
+        # Explicit ids go through `_batch_dir`, the resolver `empty_trash` uses, before
+        # anything is filtered, so a malformed id raises instead of being dropped.
         for batch_id in batch_ids or []:
             _batch_dir(batch_id)
         wanted = None if batch_ids is None else set(batch_ids)
         chosen = [batch for batch in list_trash() if wanted is None or batch.batch_id in wanted]
         if wanted is not None:
-            # A well-formed id whose batch is not staged - already emptied, or never
-            # existed - passes `_batch_dir`, which does not require the directory to
-            # exist. Filtering it out silently turned "destroy this" into a zero-byte
-            # success. It is a refusal: the caller named something that is not there,
-            # and on the pre-snapshot path the batch would at least have reported an
-            # unreadable-batch skip once it reached the delete.
+            # A well-formed id with no staged batch passes `_batch_dir`; it is a refusal,
+            # not a zero-byte success.
             missing = wanted - {batch.batch_id for batch in chosen}
             if missing:
                 raise SessionStorageError(
@@ -508,7 +497,8 @@ def staged_targets(
             recorded, staged_bytes = approved
             identities[batch.batch_id] = recorded
             ids.append(batch.batch_id)
-            total += staged_bytes
+            # Plus its crew-log staging, freed with it; it lives outside the pinned batch.
+            total += staged_bytes + _tree_bytes(_crew_staging(batch.batch_id))
         if unapprovable and wanted is not None:
             # Only for a NAMED selection, which is exactly the asymmetry the missing-id rule
             # above draws. Raising on the sweep would let one batch damaged by a crash
@@ -537,10 +527,8 @@ def empty_trash(
     calling thread. They are advisory: a caller that passes neither gets exactly the
     behaviour it always had, and nothing here waits on or trusts a callback.
 
-    ``on_skip`` exists because keeping a batch is a REFUSAL a person needs told.
-    Returning only the bytes freed made a batch that was deliberately kept
-    indistinguishable from an empty one — "0 bytes freed, success" — with the reason
-    reaching a log the user cannot read.
+    ``on_skip`` exists because keeping a batch is a REFUSAL the user must be told; bytes
+    alone cannot tell a kept batch from an empty one.
 
     ``expect`` maps a batch id to the ``(st_dev, st_ino)`` :func:`staged_targets` saw
     under the lock. A batch whose opened descriptor does not match is kept, because the

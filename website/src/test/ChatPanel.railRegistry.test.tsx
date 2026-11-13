@@ -44,7 +44,9 @@ vi.mock('../api/client', () => ({
     voiceConfig: () => Promise.resolve({ enabled: false, voice: 'Ruth', engine: 'neural', rate: '100%', autoSpeak: false, aws_profile: '', region: '' }),
     sttConfig: () => Promise.resolve({ enabled: false, provider: '', model: '', available: false, streaming: false, transcribe_region: '', transcribe_profile: '', language_code: 'en-US', models: {}, language_codes: [] }),
     // user_role 'other': the Describe your role input renders only for it.
+    // autocompact_pct off the presets: the Exact Threshold field renders only for it.
     kirocrewConfig: () => Promise.resolve({
+      session: { autocompact_pct: 63.5 },
       agent: { completion_keep: 'head', completion_keep_chars: 3000, model: 'auto', reasoning_effort: '' },
       dashboard: { user_role: 'other', user_role_other: 'SRE', user_technical_level: 'expert' },
     }),
@@ -65,6 +67,7 @@ vi.mock('../api/client', () => ({
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
 import { createTestStore } from './helpers'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 const CHAT_ENTRIES = SETTINGS_REGISTRY.filter(e => e.tab === 'chat')
 const RAIL_KEYS = [...new Set(CHAT_ENTRIES.map(e => String(e.params?.sub)))].sort()
@@ -76,6 +79,8 @@ describe('ChatPanel — registry entries resolve on their tagged rail page', () 
   })
 
   it.each(RAIL_KEYS)('every entry tagged %s is on that page', async key => {
+    // Ultra Mode preview on: Start New Chats in Ultra Mode renders only under it.
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <MemoryRouter initialEntries={[`/settings/chat/${key}`]}>

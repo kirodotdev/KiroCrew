@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import BuiltinAppRoute from '../apps/BuiltinAppRoute'
 import { useAppIdentity, useTrustedAppId, type AppIdentity } from '../app-sdk/identity'
+import { withInstalledApps } from './installedAppsTestUtils'
 
 
 /**
@@ -52,6 +53,7 @@ function renderAtPath(path: string) {
         <Route path="/chat" element={<div data-testid="chat-page">Chat</div>} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: withInstalledApps() },
   )
 }
 

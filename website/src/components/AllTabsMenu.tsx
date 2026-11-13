@@ -14,6 +14,8 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu'
 import { IconButton } from './ui'
+import { keepRowInMenuView } from '../lib/menuRowReveal'
+import { offlineMenuRow } from '../utils/offline'
 
 export interface AllTabsRow {
   id: string
@@ -38,32 +40,15 @@ export interface AllTabsMenuProps {
   /** Called for every selection, including the current row. */
   onSelect: (id: string) => void
   label: string
+  /** Set while the gateway is unreachable, to what a pick would do. Refused picks keep the menu open: closing it would read as though they ran. */
+  offlineVerb?: string
 }
 
 export const ALL_TABS_SECONDARY_CLASS = 'truncate text-[11px] leading-4 text-muted'
 export const ALL_TABS_MARK_SLOT_CLASS = 'flex w-[13px] shrink-0 items-center justify-center'
 export const ALL_TABS_CURRENT_TITLE_CLASS = 'text-accent'
 
-/** Sets only `content.scrollTop`, by the minimum needed to show `row`. `scrollIntoView` could move ancestor scrollers. */
-function revealRowInContent(content: HTMLElement, row: HTMLElement): void {
-  const contentRect = content.getBoundingClientRect()
-  const rowRect = row.getBoundingClientRect()
-  // Rects are scaled while the menu's open animation runs, scrollTop is not, so convert.
-  const scale = content.offsetHeight > 0 && contentRect.height > 0 ? contentRect.height / content.offsetHeight : 1
-  const visibleTop = contentRect.top + content.clientTop * scale
-  const visibleBottom = content.clientHeight > 0
-    ? visibleTop + content.clientHeight * scale
-    : contentRect.bottom
-  if (rowRect.top < visibleTop) {
-    content.scrollTop = content.scrollTop - (visibleTop - rowRect.top) / scale
-  } else if (rowRect.bottom > visibleBottom) {
-    // A row taller than the viewport aligns its top, so its title stays visible.
-    const down = Math.min(rowRect.bottom - visibleBottom, rowRect.top - visibleTop) / scale
-    content.scrollTop = content.scrollTop + down
-  }
-}
-
-export function AllTabsMenu({ groups, currentId, onSelect, label }: AllTabsMenuProps): JSX.Element {
+export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb }: AllTabsMenuProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   // In state, not a ref: the portalled content mounts after `open` flips, and its arrival must re-run the scroll effect.
@@ -91,26 +76,10 @@ export function AllTabsMenu({ groups, currentId, onSelect, label }: AllTabsMenuP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups])
 
-  // Radix applies the menu's max-height over several layout passes after it opens, so the
-  // content only becomes scrollable once its height settles. Keep the current row in view
-  // across those passes, and stop at the first wheel, touch, key or press so a later
-  // resize never undoes the person's own scrolling.
+  // Keep the current row in view while the menu settles its height after it opens.
   useLayoutEffect(() => {
     if (!open || !contentEl || currentId == null) return
-    const reveal = () => {
-      const row = rowEls.current.get(currentId)
-      if (row) revealRowInContent(contentEl, row)
-    }
-    reveal()
-    const observer = new ResizeObserver(reveal)
-    observer.observe(contentEl)
-    const stop = () => observer.disconnect()
-    const takeovers = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
-    for (const type of takeovers) contentEl.addEventListener(type, stop, { passive: true })
-    return () => {
-      observer.disconnect()
-      for (const type of takeovers) contentEl.removeEventListener(type, stop)
-    }
+    return keepRowInMenuView(contentEl, () => rowEls.current.get(currentId))
   }, [open, currentId, contentEl])
 
   return (
@@ -136,6 +105,7 @@ export function AllTabsMenu({ groups, currentId, onSelect, label }: AllTabsMenuP
               separatorBefore={i > 0}
               currentId={currentId}
               onSelect={onSelect}
+              offlineVerb={offlineVerb}
               rowEls={rowEls.current}
               focusedIdRef={focusedIdRef}
               contentEl={contentEl}
@@ -147,11 +117,12 @@ export function AllTabsMenu({ groups, currentId, onSelect, label }: AllTabsMenuP
   )
 }
 
-function GroupRows({ group, separatorBefore, currentId, onSelect, rowEls, focusedIdRef, contentEl }: {
+function GroupRows({ group, separatorBefore, currentId, onSelect, offlineVerb, rowEls, focusedIdRef, contentEl }: {
   group: AllTabsGroup
   separatorBefore: boolean
   currentId: string | null
   onSelect: (id: string) => void
+  offlineVerb?: string
   rowEls: Map<string, HTMLElement>
   focusedIdRef: { current: string | null }
   contentEl: HTMLDivElement | null
@@ -161,13 +132,14 @@ function GroupRows({ group, separatorBefore, currentId, onSelect, rowEls, focuse
       {separatorBefore && <DropdownMenuSeparator />}
       {group.rows.map(row => {
         const current = row.id === currentId
+        const refused = offlineVerb != null && !current
         return (
           <DropdownMenuRadioItem
             key={row.id}
             value={row.id}
-            onSelect={() => onSelect(row.id)}
             data-row-id={row.id}
             title={row.tooltip}
+            {...offlineMenuRow(!refused, offlineVerb ?? '', row.tooltip ?? '', () => onSelect(row.id))}
             ref={(el: HTMLDivElement | null) => {
               if (el) rowEls.set(row.id, el)
               else rowEls.delete(row.id)

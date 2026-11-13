@@ -123,7 +123,7 @@ class TestPendingStrReplaceResolution:
         slot = _make_slot_with_assistant_message()
         self._snapshot(f, self.BEFORE, slot)
         entry = self._flush(slot, f, self.AFTER)
-        assert set(entry) == {"path", "before", "after"}
+        assert set(entry) == {"path", "before", "after", "before_fragment"}
 
     def test_append_style_edit_keeps_the_fragment(self, short_tmp_dir: Path):
         """oldStr ⊂ newStr (the mirror shape): here the POST-write disk state is
@@ -694,6 +694,8 @@ class TestLargeFileEditShapes:
         (entry,) = slot.messages[-1]["meta"]["file_changes"]
         assert not entry.get("truncated")
         assert _changed_lines(entry["before"], entry["after"]) == (1, 0)
+        # Settled on the whole texts, so the stored before is the whole file.
+        assert entry["before_fragment"] is False
 
     def test_whole_candidate_refused_after_a_shell(self, short_tmp_dir: Path):
         f = short_tmp_dir / "big.py"

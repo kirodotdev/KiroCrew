@@ -1,23 +1,11 @@
 """The controller for a package's page: only the model's fields, only what moved.
 
-Three claims, and each is the one a reader of a live dashboard depends on without ever
-being told it:
+The model is the allowlist, so an undeclared field never reaches the page; a fold that
+moved for an unread reason sends nothing; every patch steps the version by one and a
+full read keeps the counter (a reset would look like a gap forever).
 
-1. A field the model does not declare never reaches the page. The model is the
-   allowlist, so a fold carrying a value the owner did not ask for is a value the
-   browser never sees -- which is what lets a page bind one field of the work ledger
-   without being handed the whole ledger.
-2. A fold that advanced for a reason this page does not read sends nothing. A work
-   ledger moves on every worker report; a page binding one field of it must not redraw
-   on each one.
-3. Every patch steps the version by exactly one, and a full read keeps the counter.
-   The page refuses a patch it cannot place in order and asks for a whole read, so a
-   counter that reset would make the next patch look like a gap and the page would ask
-   again forever.
-
-The feed is driven here by publishing on the crew-log bus, not by calling the callback:
-the subscription, the baseline and the revision ordering are the half of this that is
-easy to get wrong, and a test that bypasses them proves the diff and nothing else.
+Driven by publishing on the crew-log bus, so the subscription, baseline and revision
+ordering are exercised, not only the diff.
 """
 
 from __future__ import annotations
@@ -163,11 +151,8 @@ class TestOnlyWhatMoved:
     ) -> None:
         """A FIELD THAT STOPPED RESOLVING IS NEWS, and it moves no value.
 
-        ``DashboardFeed.read`` DROPS a field whose fold path does not resolve, so its
-        last value stays in the sent table and nothing compares unequal. A comparison
-        of values alone therefore sends nothing, and the page keeps drawing that value
-        undimmed -- reporting a number as current at the moment the product cannot
-        read it.
+        ``DashboardFeed.read`` drops an unresolved field, so comparing values alone sends
+        nothing and the page keeps showing the stale value as current.
         """
         live, _first, sent = page
         publish("work", {"conductor": {"goal": "atlas"}, "omitted": 0}, revision=1)
@@ -221,17 +206,9 @@ class TestTheVersionAndTheRefetch:
     def test_a_refetch_answers_at_the_current_version_not_above_it(self, page: Any) -> None:
         """A PATCH NUMBER IS SPENT ON A PATCH, and a full read is not one.
 
-        A patch reaches every owner socket; a refetch answer reaches only the tab that
-        asked. Minting a number here spends one the other tabs never see, so each of
-        them reads the next push as a gap and refetches -- and each refetch puts the
-        others behind, re-reading the tree folds under the page lock every time.
-        Two tabs on one package, or one tab plus the fallback read that re-arms the
-        page, is enough to start it.
-
-        A full read REPLACES whatever the page holds rather than following it, so it
-        needs no number of its own: it carries the current one, and the next patch is
-        still the successor of what every tab last saw. The counter is never reset --
-        that would make the next patch look like a gap and the page would ask forever.
+        A refetch answer reaches only the asking tab, so minting a number would make every
+        other tab see a gap and refetch, in a loop. A full read replaces the page state,
+        so it carries the current number and the counter is never reset.
         """
         live, _first, sent = page
         publish("work", {"conductor": {"goal": "atlas"}, "omitted": 7}, revision=1)

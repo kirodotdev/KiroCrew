@@ -116,6 +116,13 @@ def test_non_string_keys_are_tolerated() -> None:
     assert extract_tool_purpose({42: "nope", "__purpose": "yes"}) == "yes"
 
 
+def test_a_deferred_call_reads_the_purpose_inside_its_envelope() -> None:
+    """A Tool Search deferred call (KAS) nests the tool's own arguments, purpose included."""
+    args = {"query": "r2 probe", "__tool_use_purpose": "Recall the probe"}
+    wrapped = {"tool_id": "kirocrew-core::memory_recall", "arguments": args}
+    assert extract_tool_purpose(wrapped) == "Recall the probe"
+
+
 # ── the purpose must survive the second-phase refinement ──
 
 

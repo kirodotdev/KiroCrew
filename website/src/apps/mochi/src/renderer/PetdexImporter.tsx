@@ -12,7 +12,7 @@
  *   2. Already installed — pets the `petdex` CLI put in `~/.codex/pets/`.
  *   3. A file you have — straight to the sprite importer.
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useId, useState } from 'react'
 
 import {
   petdexPrefill,
@@ -54,7 +54,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   btnAccent: {
     padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-    border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff',
+    border: '1px solid var(--accent)', background: 'var(--accent)', color: 'var(--accent-text)',
   },
   petRow: {
     display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
@@ -82,6 +82,7 @@ function measure(uri: string): Promise<{ width: number; height: number }> {
 export const PetdexImporter: React.FC<Props> = ({ onReady, onUseFile, onCancel }) => {
   const ime = useImeGuard()
   const [slug, setSlug] = useState('')
+  const byNameLabelId = useId()
   const [installed, setInstalled] = useState<PetdexInstalled[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -132,10 +133,11 @@ export const PetdexImporter: React.FC<Props> = ({ onReady, onUseFile, onCancel }
 
         {/* 1 — by name or link */}
         <div style={S.section}>
-          <div style={S.label}>{i18nT('apps.mochi.petdex.by_name')}</div>
+          <div id={byNameLabelId} style={S.label}>{i18nT('apps.mochi.petdex.by_name')}</div>
           <div style={S.inputRow}>
             <input
               style={S.input}
+              aria-labelledby={byNameLabelId}
               value={slug}
               placeholder={i18nT('apps.mochi.petdex.name_placeholder')}
               onChange={(e) => setSlug(e.target.value)}

@@ -208,22 +208,11 @@ MAX_TOOL_CHARS = 120
 
 #: Most characters of any ONE retained field -- a message's text, a tool call's input.
 #:
-#: The other caps here bound COUNTS: :data:`MAX_ROWS` rows, :data:`MAX_CALLS` calls. A
-#: count says nothing about size, so one pathological row -- a file read, a base64 blob --
-#: is held whole and then re-redacted by :func:`build_state` once per rung of the ladder.
-#: This is the bound on that, and it is what makes the transcript's memory finite:
-#: :data:`MAX_ROWS` rows of at most this each.
-#:
-#: 4 KB, which is a SMALL multiple of what any rung sends rather than a large one. Every
-#: rung clips a tool input to 1000 characters or less, so nothing is lost there at all; a
-#: conversation message longer than this reaches the wire as its first 4 KB, and a
-#: measurement of which TOOL CALLS to keep does not turn on the tail of a long message
-#: (conversation text is 6% of a measured transcript's characters, tool inputs 33%,
-#: results 53%). A bound generous enough to keep every message whole is a bound that does
-#: not close the crash it exists for.
-#:
-#: The LENGTHS are taken before the clip, so every tally and both character arms describe
-#: the transcript as it is rather than as it is retained.
+#: The other caps bound COUNTS, so without this one huge row (a file read, a base64 blob)
+#: is held whole and re-redacted once per rung. Every rung clips a tool input to 1000
+#: characters or less, so only a long message's tail is lost, and conversation text is
+#: 6% of a transcript's characters. Lengths are taken before the clip, so tallies and
+#: character arms describe the transcript as it is.
 MAX_FIELD_CHARS = 4096
 
 #: Questions one request carries. The state is at most
@@ -319,53 +308,31 @@ def wait_budget() -> float:
 def redacted(text: object, limit: int | None) -> str:
     """*text* with credentials and exfiltration URLs replaced, then clipped to *limit*.
 
-    ``limit=None`` redacts without clipping, which is what a conversation message
-    gets: the brief is that user and assistant text travels verbatim, and the stage's
-    own ``text_share`` is what cuts it afterwards. A NUMBER would have to be a guess
-    at how much a redactor lengthens the text -- a placeholder is longer than most
-    secrets -- so a message whose secret was replaced would lose real characters off
-    its end to a bound that was only ever meant to be "as long as it was".
+    ``limit=None`` redacts without clipping, for conversation messages: the stage's
+    ``text_share`` cuts them afterwards, and a numeric limit would have to guess how
+    much a placeholder lengthens the text.
 
-    Redaction, not the gate's refusal, and the difference is the same one
-    ``tool_risk.scrubbed`` states: the gate REFUSES a request carrying a credential,
-    which is right for text a caller chose to send, while a credential in a tool
-    argument is ORDINARY -- an ``aws`` command, a curl header -- so refusing on it
-    would mean the point never fires on the transcripts most worth measuring.
-    Replacing it keeps the state describable and leaves nothing to leak, and the
-    gate's own scan still runs over the result.
+    Redacts rather than letting the gate refuse: a credential in a tool argument (an
+    ``aws`` command, a curl header) is ordinary, so refusing would skip the transcripts
+    most worth measuring. The gate's own scan still runs over the result.
 
-    Through :func:`~kiro_crew.platform.context.redact_via_context`, the canonical
-    egress shim, and NOT through ``security.redact_credentials`` alone. That
-    baseline knows only the patterns this repository ships; a host that loaded a
-    companion has its own credential and cookie spellings, and a baseline-only pass
-    would send those verbatim to a third party. The shim routes through
-    ``current_context().credentials.redact`` so a companion's patterns apply, and a
-    standalone process gets byte-for-byte the baseline. Exfiltration URLs are
-    cleared by the shipped pass on top, because ``redact`` covers credentials.
+    Goes through :func:`~kiro_crew.platform.context.redact_via_context`, not
+    ``security.redact_credentials`` alone, so a loaded companion's credential patterns
+    apply too. Exfiltration URLs are cleared on top.
 
-    Clipped AFTER redaction, never before: a cut placed inside a secret leaves a
-    fragment neither pattern matches, and the fragment is what would go on the wire.
-    The clip is a HEAD, unlike ``message_steer.redacted``'s tail, because the
-    identifying part of a tool input is its beginning -- the command, the path --
-    not its end.
+    Clipped AFTER redaction: a cut inside a secret leaves a fragment no pattern matches.
+    The clip keeps the HEAD, because a tool input is identified by its start (the
+    command, the path).
 
-    Never raises, INCLUDING on a composition failure. The shim deliberately
-    re-raises ``PlatformCompositionError`` so a host that could not compose its
-    companion cannot silently downgrade to the baseline; here that is caught and the
-    FIELD IS DROPPED, which is the same direction the rest of this function fails in
-    -- a scan that did not complete cannot clear text for the wire, and the
-    alternative is sending bytes a companion would have redacted.
+    Never raises. A ``PlatformCompositionError`` from the shim drops the field, since a
+    scan that did not complete cannot clear text for the wire.
     """
     raw = as_text(text)
     if not raw or (limit is not None and limit <= 0):
         return ""
     try:
-        # Function-local, and inside the ``try`` on purpose rather than by habit. This
-        # module is imported from the compaction path, where a broken point must not cost
-        # a session its compaction, so an import that failed has to fail HERE -- where it
-        # drops one field -- rather than at module scope, where it would break importing
-        # the point at all. Not a circular-import workaround: both targets import cleanly
-        # on their own.
+        # Imported inside the ``try`` so a failed import drops one field here instead of
+        # breaking the point's import on the compaction path.
         from kiro_crew.platform.context import redact_via_context
         from kiro_crew.security import redact_exfiltration_urls
 
@@ -411,41 +378,22 @@ def result_placeholder(chars: int) -> str:
 def read_rows(session_key: str, before: str = "") -> list[dict[str, Any]]:
     """The slot transcript's rows for *session_key*, newest last. Blocking IO.
 
-    ``ConversationLog.read_messages`` rather than ``recent`` or the replay builder: those
-    two project each row down to ``role`` and ``content``, and the tool input and result
-    this point measures live in ``meta``. This is the same JSONL file the dashboard reads,
-    so the state describes what this machine actually kept.
+    ``ConversationLog.read_messages``, because ``recent`` and the replay builder drop
+    ``meta``, where the tool input and result live. Only the single file is read: a
+    forked parent's rows or the rotated archive are not what this compaction discards.
 
-    The SINGLE file rather than a chained or archive-inclusive read, and that is the
-    subject rather than an oversight: the measurement is about THIS compaction, so its
-    universe is the session as the compaction finds it. A chained read would pull in rows
-    from a forked parent and a full read the size-rotated archive -- rows the compaction is
-    not discarding, which would sit in the denominator and shrink a share that is about
-    what this compaction throws away.
+    *before* is the boundary captured when the compaction was decided. Scoring runs
+    beside the compaction, so rows the harness appended since (the summary, a recycle
+    notice) are dropped. A row is dropped only when ``history.transcript_sort_key``
+    shows it is newer; an unparseable (legacy) timestamp is kept.
 
-    *before* is the boundary the caller captured when the compaction was DECIDED, and
-    it is why this function filters at all. The scoring runs BESIDE the compaction, so
-    by the time this read happens the harness may already have appended rows -- the
-    summary the compaction produced, a recycle notice -- and scoring those would
-    describe a transcript the compaction was not about. Rows newer than the boundary
-    are dropped.
-
-    A row is dropped only when it can be SHOWN to be newer: comparison goes through
-    ``history.transcript_sort_key``, the canonical key every path that orders two
-    transcript streams uses, and a row whose timestamp that helper cannot parse is
-    KEPT. Such a row is a legacy naive value rather than something a compaction
-    appended a moment ago, and excluding it would silently shrink the measurement.
-
-    Bounded to the newest :data:`MAX_ROWS`, AFTER the boundary filter, so a burst of
-    appended rows cannot push real ones out of the window. Never raises: an unreadable
-    transcript yields no rows, which is a compaction that goes unmeasured.
+    Bounded to the newest :data:`MAX_ROWS` after that filter. Never raises: an
+    unreadable transcript yields no rows.
     """
     if not session_key:
         return []
     try:
-        # Function-local for the reason :func:`redacted` states: an import failure here
-        # yields no rows -- a compaction that goes unmeasured -- while the same failure at
-        # module scope would break importing the point on the compaction path.
+        # Function-local for the reason :func:`redacted` states; a failure yields no rows.
         from kiro_crew.history import ConversationLog
         from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
@@ -542,41 +490,20 @@ class Transcript:
     the card's percentage is taken over.
 
     ``chars_today_eligible`` is the subset today's recycle replay is ELIGIBLE to
-    keep: the rows whose role it admits (:func:`replay_roles`). It is an UPPER BOUND
-    on what the replay actually re-injects, not that amount, and the name says so
-    because the difference is real -- ``build_session_replay`` additionally applies
-    per-role row quotas and an 80 000-character budget scaled by the model window,
-    and a session past either of those is replayed with less than this. Measuring
-    the true figure is not a matter of calling one more function: the quota walk
-    takes a ``ConversationLog`` rather than a row list, and the budget is applied
-    inline while formatting, so the only thing to measure would be a rendered string
-    whose length carries ``Role:`` prefixes and separators -- formatting overhead
-    inside a content measurement, and large enough to break the invariant below.
-    Naming the bound is honest; re-deriving the selection here would be a second
-    implementation of it, free to disagree with the one that runs.
+    keep: the rows whose role it admits (:func:`replay_roles`). It is an UPPER BOUND,
+    because ``build_session_replay`` also applies per-role row quotas and a character
+    budget inline while formatting; re-deriving that here would be a second copy free
+    to disagree. ``chars_jev_eligible`` seeds from this arm and inherits the bound.
 
-    ``chars_jev_eligible`` inherits that bound, because it seeds from the arm above.
+    Invariant: ``chars_today_eligible <= chars_jev_eligible <= chars_all``, because the
+    card prints ``chars_jev_eligible / chars_all``. The replay admits ``inject`` rows,
+    which are not in :data:`STATE_ROLES`, so every row either arm counts is also counted
+    in ``chars_all`` or the share could exceed 100%.
 
-    The three are ONE character universe, and that is an invariant rather than a
-    coincidence: ``chars_today_eligible <= chars_jev_eligible <= chars_all`` must
-    hold, because the card prints ``chars_jev_eligible / chars_all``. The roles
-    differ on either side -- the replay admits ``inject`` rows, which carry no tool
-    call and are not part of the state -- so a denominator built only from
-    :data:`STATE_ROLES` would omit bytes the numerator counted and render a share
-    above 100%. Every row either side counts is counted in ``chars_all``.
-
-    ``calls_truncated`` is how many tool CALLS the walk dropped to fit
-    :data:`MAX_CALLS` -- the OLDEST ones, so the admitted set is the newest
-    ``MAX_CALLS`` and still chronological. Calls, not rows: one call appears as up to
-    three ``role="tool"`` rows sharing a ``tool_call_id``, and they are folded before
-    anything is counted. It is a count rather than a flag because
-    the surface states it: "23 of 61 (+140 not scored)" is a true sentence about a
-    capped session, where a bare "23 of 61" would be a wrong one -- 61 is the cap,
-    not the session's call count. Drawing nothing at all would be the other wrong
-    answer: it hides a measurement that is accurate about everything it covers.
-
-    The truncated calls' characters are in NEITHER arm, which keeps the two on one
-    universe; the count is what says the arms cover less than the session.
+    ``calls_truncated`` is how many tool CALLS (not rows: up to three rows share one
+    ``tool_call_id``) were dropped to fit :data:`MAX_CALLS`, oldest first. It is a count
+    so the card can say "23 of 61 (+140 not scored)". The dropped calls' characters are
+    in neither arm.
     """
 
     messages: list[dict[str, str]]
@@ -594,19 +521,14 @@ def build_transcript(rows: Sequence[Mapping[str, Any]]) -> Transcript:
     ``tool_call_id``, bounds the result at :data:`MAX_CALLS`, and never raises: an
     unreadable row is skipped.
 
-    Two passes, and the split is load-bearing. One logical tool call appears as up to
-    THREE ``role="tool"`` rows sharing one ``tool_call_id`` -- the dispatch row, and
-    the approval path's own approved/rejected row -- so a per-ROW count is not a count
-    of calls. Folding has to finish before the cap is applied, or the cap would
-    measure rows; and the characters have to be added after the fold, or a duplicated
-    row would count its input twice in the denominator.
+    Two passes: one call appears as up to THREE ``role="tool"`` rows sharing a
+    ``tool_call_id`` (dispatch plus approved/rejected), so folding must finish before
+    the cap applies and before characters are added, or rows would be counted as calls
+    and inputs counted twice.
 
-    Every retained string is REDACTED here as well as bounded, because the bound and the
-    redaction cannot be separated: clipping first cuts a credential spanning the bound into
-    a fragment neither redactor matches, and that fragment is what would travel. So the
-    admission bound goes through :func:`redacted`, which is redact-then-clip. The stage's
-    own further clip in :func:`build_state` then only ever sees redacted text. Lengths are
-    taken from the RAW value, so no tally and neither character arm moves.
+    Every retained string goes through :func:`redacted` (redact, then clip), since
+    clipping first could leave an unmatched credential fragment. Lengths come from the
+    raw value.
     """
     usable = [row for row in rows if isinstance(row, Mapping)]
     kept_roles = replay_roles()
@@ -913,14 +835,10 @@ def build_outcome(
 
 # ── The hand-off to the compaction card ──
 #
-# The record has to reach the notice row ``dashboard/state_parts/session_events.py`` appends when
-# the compaction finishes. ``decisions.outcomes`` is the wrong vehicle: its one slot per
-# session belongs to the next ASSISTANT reply, and claiming it here would take the
-# strip a ``skills.select`` turn had already published and attach it to a compaction
-# notice. So this module keeps its own store, on the same three bounds and for the
-# same reasons -- one entry per session, a TTL, and a ceiling -- because the reader
-# is allowed to never arrive: a compaction that finishes before the scoring does
-# takes no record, which is the documented "no card line".
+# The record reaches the notice row ``dashboard/state_parts/session_events.py`` appends when
+# the compaction finishes. Not ``decisions.outcomes``: its one slot per session belongs to
+# the next ASSISTANT reply. This store has the same bounds (one entry per session, a TTL,
+# a ceiling) because the reader may never arrive.
 
 #: How long a published record stays claimable. Short, unlike ``outcomes``' ten
 #: minutes: the consumer is the callback at the end of THIS compaction, seconds
@@ -937,19 +855,12 @@ MAX_PENDING_RECORDS = 200
 _pending: "OrderedDict[str, tuple[float, dict[str, Any]]]" = OrderedDict()
 
 #: ``session_key -> the newest attempt token minted for it``. A scoring run whose
-#: token is not the session's newest publishes NOTHING, which is what keeps a
-#: compaction whose scoring straggles past its own notice from having its record
-#: popped by the NEXT compaction on that key and shown as that one's measurement.
-#: One entry per session rather than a queue, because only the newest attempt has
-#: a notice still to be drawn.
+#: token is not the newest publishes NOTHING, so a straggling run's record is never
+#: shown on the NEXT compaction's notice.
 _attempts: dict[str, int] = {}
 
-#: The source of every token, PROCESS-WIDE and monotonic, so no token is ever handed
-#: out twice. A counter kept per session restarts at 1 once the cap evicts its entry,
-#: and a re-minted 1 is numerically equal to the 1 some straggler is still carrying --
-#: which is the one way an equality comparison can admit a record it should refuse.
-#: Advanced under ``_pending_lock`` like everything else here, though ``next`` on a
-#: ``count`` is itself atomic.
+#: The source of every token, PROCESS-WIDE and monotonic, so no token repeats. A
+#: per-session counter would restart at 1 after eviction and match a straggler's 1.
 _attempt_source = itertools.count(1)
 
 _pending_lock = threading.Lock()
@@ -958,22 +869,13 @@ _pending_lock = threading.Lock()
 def begin_attempt(session_key: str) -> int:
     """Mint this session's next compaction-attempt token. Never raises.
 
-    Called SYNCHRONOUSLY by the coordinator before the scoring task is created, so
-    the token exists before anything can publish against it and two compactions on
-    one key are ordered by the loop turn that started them rather than by which
-    scoring finished first.
+    Called SYNCHRONOUSLY by the coordinator before the scoring task is created, so two
+    compactions on one key are ordered by when they started, not by which scoring
+    finished first.
 
-    Minting also RETIRES whatever the previous attempt had pending: a record nobody
-    read belongs to a compaction whose notice has already been drawn, and leaving it
-    would let this attempt's ``take_record`` claim it. That is the same rule
-    ``outcomes.discard`` applies at the start of a turn, for the same reason.
-
-    The token comes from ONE process-wide counter, so a value handed out is never handed
-    out again. Per-session numbering restarts at 1 whenever the cap evicts that session's
-    entry, and a re-minted 1 equals the 1 a straggler minted before the eviction is still
-    carrying -- so the equality comparison in :func:`publish_record`, which may otherwise
-    only ever REFUSE, would admit a record belonging to a compaction whose notice is long
-    drawn. A monotonic source removes the collision instead of narrowing its odds.
+    Minting also drops the previous attempt's pending record, as ``outcomes.discard``
+    does at turn start: that record's notice is already drawn. Tokens come from
+    :data:`_attempt_source`, so none repeats.
     """
     if not session_key or not isinstance(session_key, str):
         return 0
@@ -982,11 +884,8 @@ def begin_attempt(session_key: str) -> int:
         _attempts[session_key] = token
         _pending.pop(session_key, None)
         while len(_attempts) > MAX_PENDING_RECORDS:
-            # Bounded on the same terms as the records: a gateway that compacted
-            # thousands of distinct sessions must not keep an entry per session
-            # forever. Dropping the OLDEST-inserted entry loses a session's token,
-            # which the subtractive comparison reads as a MISMATCH -- the safe
-            # direction -- and cannot resurrect a value, because no value repeats.
+            # Bounded like the records. A lost token reads as a MISMATCH, the safe
+            # direction.
             _attempts.pop(next(iter(_attempts)))
     return token
 
@@ -999,23 +898,16 @@ def publish_record(session_key: str, record: dict[str, Any], attempt: int = 0) -
     next keyless reader.
 
     *attempt* is the token :func:`begin_attempt` gave this run. A run whose token is
-    not the session's newest publishes nothing: its compaction's notice is already
-    drawn and the pending slot belongs to the compaction now in flight, so publishing
-    would show one compaction's measurement on another's notice.
-    ``0`` means "no token", which still stores: a caller with no attempt of its own
-    (a test, a future single-shot caller) is not trying to correlate.
+    not the session's newest publishes nothing, or one compaction's measurement would
+    show on another's notice. ``0`` means "no token" and still stores.
     """
     if not session_key or not isinstance(session_key, str) or not isinstance(record, dict):
         logger.debug("compaction.keep: record dropped (key=%r)", session_key)
         return
     now = time.monotonic()
     with _pending_lock:
-        # ``get`` with NO default, so an ABSENT counter compares unequal and the record
-        # is discarded. Defaulting to *attempt* made a missing counter compare EQUAL,
-        # which turned the token into something that could AUTHORIZE a publish -- on a
-        # key whose counter the cap had evicted, a straggler's record would have been
-        # admitted on the strength of a value nobody held. The token is subtractive:
-        # it may only ever refuse.
+        # ``get`` with NO default, so an ABSENT (evicted) counter compares unequal and
+        # the record is discarded. The token may only ever refuse, never authorize.
         if attempt and _attempts.get(session_key) != attempt:
             logger.debug("compaction.keep: a later compaction superseded this scoring")
             return
@@ -1084,26 +976,18 @@ async def score_compaction(
 ) -> dict[str, Any] | None:
     """Score one compaction in the shadow. Returns the published record, or ``None``.
 
-    The return value is for TESTS and for a caller that wants to log it. Nothing in
-    the product branches on it: the compaction has already been decided by the time
-    this is called, and this coroutine has no apply path. ``None`` covers the seam
-    being off, an unsampled session, an unconsented scope, an empty or unreadable
-    transcript, a state that never fits, a partial answer, a timeout and a refused
-    row -- every one of which means "no card line".
+    The return value is for tests and logging; nothing branches on it, since the
+    compaction is already decided and there is no apply path. ``None`` means "no card
+    line" for any reason (seam off, unsampled, unconsented, unreadable, too large,
+    partial, timeout, refused row).
 
-    *before* is the transcript boundary the caller captured when the compaction was
-    decided. It is passed in rather than taken here because this coroutine runs BESIDE
-    the compaction: a boundary read at this point would already be after whatever the
-    harness appended. See :func:`read_rows`.
+    *before* is the boundary captured when the compaction was decided; it is passed in
+    because this runs beside the compaction (see :func:`read_rows`).
 
-    *attempt* is the token :func:`begin_attempt` minted for this compaction. It
-    decides only whether the RECORD is published: a run that outlived its own
-    compaction's notice is not the newest attempt on the session, and its
-    measurement would land on the next compaction's notice. The rows are written
-    either way -- the observation happened, and the log is where it lives.
+    *attempt* is the token from :func:`begin_attempt`. It decides only whether the
+    RECORD is published; the rows are written either way.
 
-    Never raises except :class:`asyncio.CancelledError`, which the gate propagates:
-    cancellation is the gateway going away, not a measurement failure.
+    Never raises except :class:`asyncio.CancelledError` (the gateway going away).
     """
     started = time.monotonic()
     turn_id = uuid.uuid4().hex[:16]
@@ -1208,21 +1092,9 @@ async def _run(
         error=None if complete else ERROR_PARTIAL,
     )
     if row is None or not complete:
-        # Two reasons not to publish, both of them "the number would be wrong or
-        # unaccountable rather than merely absent":
-        #
-        # * a PARTIAL answer -- the line says "N of M tool calls", and M would
-        #   include calls nobody was asked about;
-        # * a row that was not written -- the thumbs on the line post that turn id,
-        #   and there would be no row for a verdict to be about.
-        #
-        # A TRUNCATED walk is NOT one of them: the line states the overflow itself
-        # ("+K not scored"), so it is a qualified true sentence rather than a wrong
-        # one, and withholding it would hide a measurement that is accurate about
-        # everything it covers.
-        #
-        # Both cases still WROTE the row: the observation happened and the log is
-        # where it lives.
+        # Not published when PARTIAL ("N of M" would count calls nobody was asked about)
+        # or when no row was written (the thumbs post that turn id). A TRUNCATED walk
+        # still publishes: the line states "+K not scored" itself.
         return None
     publish_record(session_key, row, attempt)
     return row

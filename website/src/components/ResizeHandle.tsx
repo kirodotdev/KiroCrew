@@ -10,11 +10,9 @@ const COARSE_STEP = 64
 /** The vertical drag grip on a resizable column's edge — one component so the
  * Sessions sidebar, the Crew Members roster and the workspace-style surfaces
  * (Issue Radar's rail and issue / PR lists, Task Runner's run rail, Projects)
- * all look and behave identically. The claim covers the surfaces that MOUNT
- * this component: Spec Builder's and Code Review Sage's column splitters still
- * draw their own flat strip and are tracked in #9580 to move onto it. Pair it
- * with `useColumnResize` (or any `usePointerDrag`) for `handleProps`, and
- * `onNudge` for the arrow keys.
+ * all look and behave identically, as do Spec Builder's and Code Review Sage's
+ * column splitters. Pair it with `useColumnResize` (or any `usePointerDrag`)
+ * for `handleProps`, and `onNudge` for the arrow keys.
  *
  * Visual contract: a 6px transparent hit strip carrying a 2px `rounded-full`
  * bar that stays invisible at rest, turns accent on hover and keyboard focus,
@@ -31,7 +29,7 @@ const COARSE_STEP = 64
  * them when you have them: without `aria-valuenow` a screen reader announces a
  * splitter with no position. */
 export default function ResizeHandle({
-  handleProps, label, onNudge, value, min, max, inset = 0, className,
+  handleProps, label, onNudge, value, min, max, inset = 0, className, title,
 }: {
   handleProps: ReturnType<typeof usePointerDrag>
   label: string
@@ -46,6 +44,9 @@ export default function ResizeHandle({
    *  card's border instead of the default in-flow flex sibling. Merged with
    *  tailwind-merge, so a `w-*` here replaces the default hit width. */
   className?: string
+  /** Hover tooltip. Defaults to the generic "drag to resize" copy; a surface
+   *  whose own wording names the keyboard too passes it here. */
+  title?: string
 }) {
   return (
     // ARIA gives `separator` two flavours and jsx-a11y only models the static
@@ -73,7 +74,7 @@ export default function ResizeHandle({
           onNudge(e.key === 'ArrowRight' ? step : -step)
         }
         : undefined}
-      title={i18nT('components.resizeHandle.drag_to_resize')}
+      title={title ?? i18nT('components.resizeHandle.drag_to_resize')}
       data-testid="resize-handle"
       className={cn(
         // 6px hit strip: wider than the 2px bar it shows so the grip is easy to

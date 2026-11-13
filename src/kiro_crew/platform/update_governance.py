@@ -18,12 +18,14 @@ against a local operator who could edit the checkout directly.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import os
 import re
 import subprocess
 import time
-from typing import Callable
+from typing import Callable, Iterator
 
 from kiro_crew import platform_compat
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
@@ -32,6 +34,10 @@ from kiro_crew.subprocess_utf8 import utf8_path_stdout, utf8_stdout
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT_SECS = 10
+
+#: A 40- or 64-hex object id, so a fetched tip read from ``FETCH_HEAD`` is a
+#: commit id before it is ever written into the checkout's tracking ref.
+_OID_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 
 
 #: The ONLY branch names an unattended update may reset a checkout to.
@@ -57,10 +63,10 @@ def is_primary_branch(branch: str) -> bool:
 
     Membership in :data:`PRIMARY_BRANCHES` is the entire test. That is a design
     constraint, not an omission: this gate gates the most privileged path in the
-    product — a boot-time ``git reset --hard`` + ``pip install`` + ``execv`` with
-    no auth and no click — and it is also the path the enterprise ``min_version``
-    floor drives (``_auto_apply_update`` is what a mandatory update calls on a
-    checkout). So the decision must not read any state a local process can write.
+    product: a ``git reset --hard`` + ``pip install`` + ``execv`` with no auth,
+    run at the start after a click armed it (``kiro_crew.update_boot_apply``),
+    and it is also the path the enterprise ``min_version`` floor reaches on a
+    checkout. So the decision must not read any state a local process can write.
 
     ``refs/remotes/<remote>/HEAD`` is exactly such state: one
     ``git remote set-head`` repoints it. Consulting it fails in BOTH directions,
@@ -88,6 +94,103 @@ def is_primary_branch(branch: str) -> bool:
     A detached HEAD is never primary: there is no branch to fast-forward.
     """
     return branch in PRIMARY_BRANCHES
+
+
+#: Git binary override for :func:`_git_probe`, set only by
+#: :func:`nested_repo_exec_driver_reason` for the duration of one probe.
+_PROBE_GIT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "update_governance_probe_git", default=None
+)
+
+
+#: Set only by :func:`nested_repo_exec_driver_reason`: count driver keys from
+#: EVERY scope git reads, not just the repository's. Its callers' host git reads
+#: global config, which an agent can write, and a nested repo's own
+#: ``.gitattributes`` can bind a driver declared there.
+_PROBE_ALL_SCOPES: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "update_governance_probe_all_scopes", default=False
+)
+
+
+#: Set only by :func:`nested_repo_exec_driver_reason`: a list each probe that
+#: TIMED OUT appends to. A timeout says nothing about whether the caller's own
+#: git can read the same repo, so that walk refuses rather than skipping it.
+_PROBE_TIMEOUTS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "update_governance_probe_timeouts", default=None
+)
+
+
+#: Global/system driver keys that an in-tree ``.gitattributes`` can bind by name.
+_USER_DRIVER_KEY_RE = re.compile(
+    r"^(?P<a>filter|diff)\.(?P<n>.*)\.(?:process|smudge|clean|textconv|command)$",
+    re.IGNORECASE,
+)
+
+
+def _driver_attr_and_name(key: str) -> tuple[str, str]:
+    """``("filter", "lfs")`` for ``filter.lfs.clean``; the attribute name lower-cased."""
+    match = _USER_DRIVER_KEY_RE.match(key)
+    assert match is not None
+    return match.group("a").lower(), match.group("n")
+
+
+def _bound_driver_names(proj: str) -> set[tuple[str, str]] | None:
+    """Every ``(filter|diff, <name>)`` the tracked files of *proj* are bound to.
+
+    ``check-attr`` reads attributes and runs no driver. ``None`` when git cannot
+    answer, which the caller treats as unreadable (a refusal).
+    """
+    listing = _git_probe(proj, "ls-files", "-z", decoder=utf8_path_stdout)
+    if listing is None:
+        return None
+    names = [n for n in listing.split("\0") if n]
+    if not names:
+        return set()
+    git = _PROBE_GIT.get() or platform_compat.trusted_git_bin()
+    if git is None:
+        return None
+    try:
+        done = subprocess.run(
+            [git, "check-attr", "-z", "--stdin", "filter", "diff"],
+            cwd=proj,
+            input=b"\0".join(os.fsencode(n) for n in names) + b"\0",
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_SECS,
+            env=_PROBE_ENV.get() or git_command_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    fields = utf8_stdout(done.stdout).split("\0")
+    bound: set[tuple[str, str]] = set()
+    # `-z` output: `<path>\0<attr>\0<value>\0` per path and attribute.
+    # Every reported value counts, `set` and the empty value included: git runs
+    # `filter.set.clean` for `filter=set` and `filter..clean` for `filter=`, and
+    # `check-attr` prints those exactly like a bare `filter` / an empty value.
+    for attr, value in zip(fields[1::3], fields[2::3]):
+        if value not in ("unspecified", "unset"):
+            bound.add((attr.lower(), value))
+    return bound
+
+
+#: Env override for :func:`_git_probe` calls that pass no ``env=``, set only by
+#: :func:`repo_exec_config_reason` with ``human_transport=True``.
+_PROBE_ENV: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "update_governance_probe_env", default=None
+)
+
+
+@contextlib.contextmanager
+def _probing_with(git: str, env: dict[str, str] | None = None) -> Iterator[None]:
+    """Run :func:`_git_probe` with *git* (``""``: the trusted git) and *env* inside the block."""
+    token = _PROBE_GIT.set(git or None)
+    env_token = _PROBE_ENV.set(env)
+    try:
+        yield
+    finally:
+        _PROBE_ENV.reset(env_token)
+        _PROBE_GIT.reset(token)
 
 
 def _git(proj: str, *args: str) -> str:
@@ -118,7 +221,10 @@ def _git_probe(
     shim on THIS path chooses what the process installs and re-executes. An
     unresolvable git returns ``None`` — a refusal, not a bare-name fallback.
     """
-    git = platform_compat.trusted_git_bin()
+    # A caller that runs its OWN git (not the trusted one) probes with that same
+    # binary, so "git could not answer" means its call cannot run either; see
+    # :func:`nested_repo_exec_driver_reason`. Everyone else gets the trusted git.
+    git = _PROBE_GIT.get() or platform_compat.trusted_git_bin()
     if git is None:
         # No trustworthy git. Answer "could not determine", which every caller
         # already treats as the unsafe direction — never fall back to a bare
@@ -135,8 +241,13 @@ def _git_probe(
             cwd=proj,
             capture_output=True,
             timeout=_GIT_TIMEOUT_SECS,
-            env=git_command_env() if env is None else env,
+            env=(_PROBE_ENV.get() or git_command_env()) if env is None else env,
         )
+    except subprocess.TimeoutExpired:
+        timeouts = _PROBE_TIMEOUTS.get()
+        if timeouts is not None:
+            timeouts.append(args[0] if args else "")
+        return None
     except (OSError, subprocess.SubprocessError):
         return None
     return decoder(done.stdout) if done.returncode == 0 else None
@@ -195,6 +306,44 @@ def resolve_remote_url(
     return "" if url == remote else url
 
 
+def upstream_remote_and_branch(proj: str) -> tuple[str, str] | None:
+    """``(remote, branch)`` the current branch of *proj* tracks, or ``None``.
+
+    The pair ``@{u}`` resolves to, read straight from config rather than from
+    the ``origin/<name>`` short form (which cannot be split back into a remote
+    and a ref when either contains a ``/``). ``None`` for a detached HEAD or a
+    branch with no upstream -- there is nothing to compare against, exactly the
+    case the old bare ``git fetch`` + ``rev-parse @{u}`` reported as a failed
+    check.
+    """
+    branch = _git(proj, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch or branch == "HEAD":
+        return None
+    remote = _git(proj, "config", "--get", f"branch.{branch}.remote")
+    merge = _git(proj, "config", "--get", f"branch.{branch}.merge")
+    if not remote or not merge.startswith("refs/heads/"):
+        return None
+    return remote, merge[len("refs/heads/") :]
+
+
+def _local_fetch_url(proj: str, url: str) -> str:
+    """A local path *url* made absolute against *proj*; a scheme/scp URL unchanged.
+
+    The fetch runs with ``cwd=proj`` but ``GIT_DIR`` elsewhere, so a bare local
+    path has to be absolute or it resolves against the wrong base. A leading
+    ``~`` is expanded, and a relative path (and a relative ``proj``) is resolved
+    against the checkout -- both are supported remote spellings. A scheme URL
+    (``https://``) or an scp-like ``host:path`` is left exactly as configured.
+    """
+    first = url.split("/", 1)[0]
+    if "://" in url or ":" in first:  # scheme URL or scp-like host:path
+        return url
+    expanded = os.path.expanduser(url)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.abspath(os.path.join(os.path.abspath(proj), expanded))
+
+
 #: Repo-scoped config keys whose VALUE git may execute as a program, and whose
 #: KEY NAME is fixed so ``-c``/``GIT_CONFIG_*`` can pin it back to a safe value.
 #:
@@ -236,6 +385,10 @@ _GIT_EXEC_NEUTRALIZERS: tuple[tuple[str, str], ...] = (
     ("sequence.editor", "true"),
     # Reached through signature verification, which is also forced off below.
     ("gpg.program", "true"),
+    # The SSH and X.509 verifiers are separate keys, reached the same way -- and
+    # also by `archive`'s `export-subst` expanding `%G?` on a signed HEAD.
+    ("gpg.ssh.program", "true"),
+    ("gpg.x509.program", "true"),
     # Signature VERIFICATION is the trigger here: a fetched commit carrying a
     # gpgsig header would invoke gpg.program. The update never verifies
     # signatures, so the only reason git would exec it is an attacker's.
@@ -243,12 +396,17 @@ _GIT_EXEC_NEUTRALIZERS: tuple[tuple[str, str], ...] = (
     ("pull.verifySignatures", "false"),
     # Local/file transports exec the config-named pack programs directly, and
     # GIT_ALLOW_PROTOCOL does not gate them (they are not a protocol). Every
-    # update fetch uses the literal remote `origin`, so pinning these restores
-    # git's own defaults over anything in .git/config.
+    # update fetch uses the literal remote `origin`. NOT enough on its own: git
+    # keeps the FIRST value of these keys, which is .git/config's, so a repo-set
+    # value is refused by `_REPO_REMOTE_PACK_RE` instead.
     ("remote.origin.uploadpack", "git-upload-pack"),
     ("remote.origin.receivepack", "git-receive-pack"),
     # `ext::` remote URLs run an arbitrary command as the transport.
     ("protocol.ext.allow", "never"),
+    # A fetch that moves a gitlink recurses "on-demand" into the submodule and
+    # fetches it with the submodule's OWN config, whose pack programs and
+    # transport keys no pin or probe here names. The update never needs it.
+    ("fetch.recurseSubmodules", "false"),
 )
 
 #: Keys in :data:`_GIT_EXEC_NEUTRALIZERS` whose VALUE is a program NAME rather
@@ -264,6 +422,13 @@ _GIT_EXEC_NEUTRALIZERS: tuple[tuple[str, str], ...] = (
 #: unreachable (pager/editor/gpg -- forced off or non-tty) or a transport helper
 #: whose absence should stop an unattended update rather than silently fall back
 #: to an untrusted one.
+#:
+#: ``remote.origin.uploadpack``/``receivepack`` are deliberately NOT here. Over
+#: ssh their value is sent to the SERVER as the remote command, and GitHub and
+#: GitLab accept only the bare ``git-upload-pack``: an absolute local path made
+#: every ssh fetch fail. For a local/file transport git resolves the bare name
+#: with its own exec-path prepended to ``PATH``, so the bare name reaches git's
+#: installed helper, not a planted one.
 _PROGRAM_VALUED_PINS = frozenset(
     {
         "core.sshcommand",
@@ -271,10 +436,21 @@ _PROGRAM_VALUED_PINS = frozenset(
         "core.editor",
         "sequence.editor",
         "gpg.program",
-        "remote.origin.uploadpack",
-        "remote.origin.receivepack",
+        "gpg.ssh.program",
+        "gpg.x509.program",
     }
 )
+
+#: Fixed-name transport keys an update a HUMAN started leaves UNPINNED, so git
+#: reads the operator's own global/system value exactly as it would at their
+#: terminal: includes, ``includeIf`` (``gitdir:``, ``hasconfig:remote.*.url:``),
+#: empty resets and per-URL ``credential.<url>.helper`` entries all keep working.
+#: The ``credential.helper=""`` pin clears git's WHOLE helper list, per-URL
+#: entries included, and re-creating the user's list from outside git kept
+#: missing a case. The repository's own value of these keys is REFUSED instead
+#: (:func:`repo_exec_config_reason` with ``human_transport=True``); the per-URL
+#: and arbitrary-named forms already are.
+_HUMAN_TRANSPORT_KEYS = frozenset({"credential.helper", "core.sshcommand"})
 
 
 #: Repo config that weakens or redirects TRANSPORT TRUST for the fetch.
@@ -308,7 +484,20 @@ _REPO_TRANSPORT_TRUST_RE = re.compile(
 #: The rewrite happens below the URL argument, so the only way to trust the URL
 #: that was validated is for no rewrite rule to exist.
 _REPO_URL_REWRITE_RE = re.compile(
-    r"^url\..+\.(?:insteadof|pushinsteadof)$",
+    r"^url\..*\.(?:insteadof|pushinsteadof)$",
+    re.IGNORECASE,
+)
+
+
+#: Per-remote pack programs a fetch (or push) execs for a local/ssh transport.
+#: REFUSED, not pinned: git honours the FIRST ``uploadpack`` it reads and only
+#: warns "more than one uploadpack given, using the first", and repo config is read
+#: before the command-scope ``GIT_CONFIG_*`` pin -- so the
+#: ``remote.origin.uploadpack`` pin in :data:`_GIT_EXEC_NEUTRALIZERS` loses to a
+#: repo value, the same silent loss as ``core.gitProxy`` (reproduced, git 2.55).
+#: Any remote name, because a bare ``git fetch`` follows the tracked remote.
+_REPO_REMOTE_PACK_RE = re.compile(
+    r"^remote\..*\.(?:uploadpack|receivepack)$",
     re.IGNORECASE,
 )
 
@@ -364,22 +553,25 @@ _REPO_UNPINNABLE_KEYS = frozenset({"core.gitproxy", "gc.recentobjectshook"})
 #: neutralized. Mirrors ``dashboard/handlers/worktree._FILTER_KEY_RE``, widened
 #: with the ``textconv`` cousin that ``git diff`` reaches;
 #: ``test_governance_updates`` asserts the two stay in agreement.
+#: Every repo-chosen NAME is matched with ``.*``, not ``.+``: git accepts an
+#: EMPTY subsection (``[filter ""]``, key ``filter..clean``) and binds it with
+#: ``filter=`` in ``.gitattributes`` (reproduced on git 2.47: the clean ran).
 _REPO_EXEC_DRIVER_RE = re.compile(
-    r"^(?:filter\.(?P<f>.+)\.(?:process|smudge|clean)"
+    r"^(?:filter\.(?P<f>.*)\.(?:process|smudge|clean)"
     # `textconv` converts a blob to text; `command` REPLACES the whole diff with
     # an external program. Both are repo-named and both are reached by the
     # `git diff` this path runs, so refusing only one left the other open.
-    r"|diff\.(?P<d>.+)\.(?:textconv|command)"
+    r"|diff\.(?P<d>.*)\.(?:textconv|command)"
     # `credential.<url>.helper` is per-URL and so repo-named: pinning the bare
     # `credential.helper` does not reach it.
-    r"|credential\.(?P<c>.+)\.helper"
+    r"|credential\.(?P<c>.*)\.helper"
     # `remote.<name>.vcs` names a TRANSPORT helper: git execs `git-remote-<value>`,
     # resolved through PATH, so the fetch itself runs a repo-chosen program.
     # Verified, and verified to be unpinnable in the useful sense: an empty pin
     # does suppress the repo's helper, but git then treats "" as a helper name and
     # every fetch dies with `remote helper '' aborted session` -- so pinning would
     # disable the update path instead of protecting it.
-    r"|remote\.(?P<r>.+)\.vcs"
+    r"|remote\.(?P<r>.*)\.vcs"
     # `hook.<name>.command` (git 2.54+) is a hook defined in config. The name is the
     # repository's choice and `core.hooksPath` does not reach it, so no pin covers it.
     # `fetch` and `reset` fire `reference-transaction` and `post-index-change`.
@@ -418,7 +610,7 @@ _GIT_LOCATION_VARS = frozenset(
 )
 
 
-def git_command_env() -> dict[str, str]:
+def git_command_env(*, human_transport: bool = False) -> dict[str, str]:
     """A complete environment for running git against a discovered checkout.
 
     The one env a caller should use. It is built rather than merged because the
@@ -430,10 +622,33 @@ def git_command_env() -> dict[str, str]:
     removal of every :data:`_GIT_LOCATION_VARS` entry, and with
     :func:`_git_home_config_isolation_env`, which stops git reading the user's
     global and system config and attributes files.
+
+    *human_transport* builds the env for the FETCH of an update a human started
+    (``kirocrew update``, the dashboard button). Those fetches read the operator's
+    global config on main (their credential helper, ssh command and proxy), so
+    the home-config isolation is not applied and :data:`_HUMAN_TRANSPORT_KEYS` are
+    left unpinned; every other repo-level pin still applies. Such a caller MUST
+    also probe with ``repo_exec_config_reason(..., human_transport=True)``, which
+    refuses the repository's own value of those keys, and pass this same env to
+    :func:`resolve_remote_url` so the URL judged is the URL fetched. Every other
+    git call of that update uses the default, isolated env.
     """
     env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
-    env.update(git_neutralizer_env())
-    env.update(_git_home_config_isolation_env(env))
+    env.update(git_neutralizer_env(skip=_HUMAN_TRANSPORT_KEYS if human_transport else frozenset()))
+    if not human_transport:
+        env.update(_git_home_config_isolation_env(env))
+        # A partial clone fetches a missing object on demand, through the
+        # checkout's own remote config, from inside any read (`show`, `diff`,
+        # `reset`). That is a fetch the isolated update fetch never sees, so a
+        # `remote.<name>.uploadpack` raced in after the preflight would run.
+        # Missing objects make the call fail instead (git 2.45+).
+        env["GIT_NO_LAZY_FETCH"] = "1"
+        # A `<helper>::<url>` remote runs an arbitrary program as the transport;
+        # only git's built-in transports may serve the call.
+        env["GIT_ALLOW_PROTOCOL"] = "file:git:ssh:http:https"
+        # `core.gitProxy` is multi-valued, so no `GIT_CONFIG_*` pin closes the
+        # repository's value; an empty `GIT_PROXY_COMMAND` is read instead.
+        env["GIT_PROXY_COMMAND"] = ""
     # A replace ref (`refs/replace/<oid>`) makes git serve DIFFERENT content for
     # a given object id, transparently and everywhere. That defeats the reason
     # the update path pins its reset target to an OID at all: "an OID cannot
@@ -448,7 +663,7 @@ def git_command_env() -> dict[str, str]:
     return env
 
 
-def git_neutralizer_env() -> dict[str, str]:
+def git_neutralizer_env(*, skip: frozenset[str] = frozenset()) -> dict[str, str]:
     """Environment pinning every fixed-key git exec vector to a safe value.
 
     ``GIT_CONFIG_COUNT``/``KEY``/``VALUE`` carry the same precedence as ``git
@@ -469,7 +684,11 @@ def git_neutralizer_env() -> dict[str, str]:
     Callers MUST merge this over ``os.environ`` rather than passing it alone: a
     bare env would drop ``PATH``/``HOME`` and git would not run.
     """
-    pins = _GIT_EXEC_NEUTRALIZERS + _GIT_BLAST_RADIUS_PINS
+    # *skip* (lower-cased key names) leaves those keys to git's normal reading;
+    # see :data:`_HUMAN_TRANSPORT_KEYS` for the one caller.
+    pins = tuple(
+        pin for pin in _GIT_EXEC_NEUTRALIZERS + _GIT_BLAST_RADIUS_PINS if pin[0].lower() not in skip
+    )
     env: dict[str, str] = {"GIT_CONFIG_COUNT": str(len(pins))}
     for index, (key, value) in enumerate(pins):
         env[f"GIT_CONFIG_KEY_{index}"] = key
@@ -629,7 +848,28 @@ def _same_dir(a: str, b: str) -> bool:
     return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
 
-def repo_exec_config_reason(proj: str) -> str:
+def repo_exec_config_reason(proj: str, *, git: str = "", human_transport: bool = False) -> str:
+    """Why *proj* must not be driven unattended, or ``""`` when it is clean.
+
+    *git* is the binary the caller's own git commands run (default: the trusted
+    git); the probe runs that same one, so a host whose git sits outside the
+    trusted directories gets an answer about the git it actually uses rather than
+    "unreadable". *human_transport* pairs with ``git_command_env(human_transport=
+    True)``: that env leaves :data:`_HUMAN_TRANSPORT_KEYS` unpinned, so the
+    repository's own value of those keys is refused here instead.
+
+    The rules are documented on :func:`_repo_exec_config_reason`.
+    """
+    # With *human_transport* the probe reads config under the FETCH's own view
+    # (global config visible). A repo-local `includeIf "hasconfig:remote.*.url:..."`
+    # can match only on a URL from global config, so an isolated probe would miss
+    # the keys it pulls in while the fetch loads them.
+    probe_env = git_command_env(human_transport=True) if human_transport else None
+    with _probing_with(git, probe_env):
+        return _repo_exec_config_reason(proj, human_transport=human_transport)
+
+
+def _repo_exec_config_reason(proj: str, *, human_transport: bool) -> str:
     """Why *proj* must not be driven unattended, or ``""`` when it is clean.
 
     :data:`_GIT_EXEC_NEUTRALIZERS` closes the keys whose NAME is fixed. A
@@ -652,7 +892,364 @@ def repo_exec_config_reason(proj: str) -> str:
     :func:`git_command_env` does not read them at all (see
     :func:`_git_home_config_isolation_env`); host git run without that env still
     does, and moving those callers onto it is the host-git sweep's job.
+
+    A ``commondir`` redirect is checked FIRST, because it moves the very scope
+    the listings below read: a ``commondir`` file inside a plain checkout's own
+    ``.git`` directory points git's COMMON git dir -- the source of ``--local``
+    config and of hooks -- at wherever it names. A sandboxed agent can CREATE
+    that file even under a bind seal (a seal only covers files that already
+    exist), so without this the scope reads below would be the attacker's own
+    config. A legitimate LINKED worktree also carries ``commondir``, but its
+    ``.git`` is a FILE pointing at the real git dir, never a directory, so the
+    redirect is exactly a ``commondir`` beside a ``.git`` DIRECTORY.
     """
+    git_dir = os.path.join(proj, ".git")
+    if os.path.isdir(git_dir):
+        # The file's mere presence is the tell, read structurally so the refusal
+        # does not depend on a git version honoring (or erroring on) it.
+        if os.path.exists(os.path.join(git_dir, "commondir")):
+            return "repository redirects its common git dir via .git/commondir"
+        # Belt and suspenders for a redirect reached another way: git's own
+        # resolved common dir must be this `.git`.
+        common = _git_probe(proj, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common is None:
+            return _EXEC_CONFIG_UNREADABLE
+        if not _same_dir(common.strip(), git_dir):
+            return f"common git dir is redirected to {common.strip()[:120]}"
+    try:
+        keys = _repo_scoped_config_keys(proj)
+    except _NestedRepoLimit:
+        return _NESTED_REPO_LIMIT
+    if keys is None:
+        return _EXEC_CONFIG_UNREADABLE
+    for key in keys:
+        driver = _exec_driver_key_reason(key)
+        if driver:
+            return driver
+        # A URL rewrite redirects the FETCH itself, and applies even when the
+        # URL is passed explicitly on the command line, so validating the
+        # remote's URL cannot survive one being configured.
+        if _REPO_URL_REWRITE_RE.match(key):
+            return f"repository rewrites remote URLs via {_shown_key(key)}"
+        # A pack program the fetch execs; the env pin does not win over it.
+        if _REPO_REMOTE_PACK_RE.match(key):
+            return f"repository declares {_shown_key(key)}"
+        # Left unpinned for a human-run update so the operator's own value
+        # applies; the repository's value is therefore refused here.
+        if human_transport and key.lower() in _HUMAN_TRANSPORT_KEYS:
+            return f"repository declares {_shown_key(key)}"
+        # Transport trust: weakening TLS verification or routing the fetch
+        # through a repo-supplied proxy makes a forged update look genuine.
+        if _REPO_TRANSPORT_TRUST_RE.match(key):
+            return f"repository overrides transport trust via {_shown_key(key)}"
+
+    # A redirected work tree executes nothing, so no exec-key pin touches it —
+    # but `git reset --hard` would overwrite matching files in the OTHER
+    # directory. Ask git where the tree actually resolves rather than parsing
+    # `core.worktree`: that catches a relative value, a worktree-scoped one, and
+    # one reached through `include.path` with a single probe. A legitimate linked
+    # worktree resolves to the directory being operated on, so it is unaffected.
+    toplevel = _git_probe(proj, "rev-parse", "--show-toplevel")
+    if toplevel is None:
+        return "cannot resolve the work tree"
+    if not _same_dir(toplevel.strip(), proj):
+        return f"work tree is redirected to {toplevel.strip()[:120]}"
+    return ""
+
+
+def repo_exec_driver_reason(proj: str, *, git: str = "") -> str:
+    """Why a READ-ONLY host-side git call in *proj* could run a repo-named program.
+
+    *git* is the binary the caller runs, as for :func:`repo_exec_config_reason`.
+    The rules are documented on :func:`_repo_exec_driver_reason`.
+    """
+    with _probing_with(git):
+        return _repo_exec_driver_reason(proj)
+
+
+def _repo_exec_driver_reason(proj: str) -> str:
+    """Why a READ-ONLY host-side git call in *proj* could run a repo-named program.
+
+    ``""`` when the repository's own config names no driver git could execute.
+    The narrow sibling of :func:`repo_exec_config_reason` for callers that only
+    READ a tree (a ``status``, a worktree ``diff``, an ``archive``) and never
+    fetch or reset it: the URL-rewrite, transport-trust and work-tree-redirect
+    refusals protect a fetch and a reset, and refusing a plain diff over them
+    would break repositories that legitimately carry a ``url.<base>.insteadOf``.
+
+    What it does refuse is exactly what :func:`git_command_env` cannot pin: a
+    driver whose key NAME the repository chooses (``filter.<name>.clean``,
+    ``diff.<name>.textconv``, ``hook.<name>.command``, ...) and the multi-valued
+    keys a pin does not override. Measured on git 2.47: with the env pins in
+    place, ``status``, a worktree ``diff`` and ``archive`` still execute a
+    planted ``filter.<name>.clean``/``smudge``.
+
+    *proj* may be any directory inside the work tree. An unreadable config is a
+    refusal, for the reason :func:`repo_exec_config_reason` gives.
+    """
+    try:
+        keys = _repo_scoped_config_keys(proj)
+    except _NestedRepoLimit:
+        return _NESTED_REPO_LIMIT
+    # The transport keys (`credential.<url>.helper`, `remote.<n>.vcs`,
+    # `core.gitProxy`) stay refused here too: in a partial clone a read-only
+    # `archive`/`diff`/`show` lazy-fetches a missing blob over the transport.
+    return _driver_reason_of(keys, unreadable=_EXEC_CONFIG_UNREADABLE)
+
+
+def nested_repo_exec_driver_reason(proj: str, *, git: str = "") -> str:
+    """As :func:`repo_exec_driver_reason`, for the NESTED repositories under *proj* only.
+
+    For a caller that already vets *proj*'s own config another way (the
+    auto-improvement clone's unsafe-key probe and its ``.git/info/attributes``
+    pin) and needs only what that cannot reach: the config of an initialized
+    nested repo the index records as a gitlink, whose drivers the child git that
+    ``add``/``status``/``diff`` start there will run.
+
+    *git* is the binary the CALLER runs (default: the trusted git). The probe runs
+    that same binary, which is what makes the next rule sound: a TOP-LEVEL index
+    git cannot read answers ``""`` here, unlike the sibling probes, because the
+    caller's own git reads the same index with the same binary, so it fails the
+    same way and starts no child at all. A NESTED repo that cannot be fully probed
+    refuses (an unreadable or deleted nested config does not stop the child git,
+    which still runs a global driver the nested attributes bind), as do a probe
+    that timed out and a walk past its bounds.
+    """
+    # Read under the view the CALLER's git has: git_safety's host calls do not
+    # isolate global config, so an include conditioned on it must be visible here.
+    scopes_token = _PROBE_ALL_SCOPES.set(True)
+    timeouts: list[str] = []
+    timeouts_token = _PROBE_TIMEOUTS.set(timeouts)
+    try:
+        # The global-visible view its callers have, with the attributes-file pin
+        # they also carry (`GIT_SAFE_CONFIG`), so a global attributes file binds
+        # nothing here that it cannot bind in the real call.
+        probe_env = git_command_env(human_transport=True)
+        count = int(probe_env.get("GIT_CONFIG_COUNT") or 0)
+        probe_env[f"GIT_CONFIG_KEY_{count}"] = "core.attributesFile"
+        probe_env[f"GIT_CONFIG_VALUE_{count}"] = os.devnull
+        probe_env["GIT_CONFIG_COUNT"] = str(count + 1)
+        with _probing_with(git, probe_env):
+            try:
+                keys = _nested_repo_config_keys(proj, _skip_unreadable=True)
+            except _NestedRepoLimit:
+                return _NESTED_REPO_LIMIT
+            except _NestedProbeIncomplete:
+                return _NESTED_REPO_INCOMPLETE
+    finally:
+        _PROBE_TIMEOUTS.reset(timeouts_token)
+        _PROBE_ALL_SCOPES.reset(scopes_token)
+    # A probe that timed out is not git failing to read the repo, which is the
+    # only failure the caller's own git is sure to share; refuse rather than skip.
+    if timeouts:
+        return _NESTED_REPO_INCOMPLETE
+    return _driver_reason_of(keys, unreadable="")
+
+
+def _driver_reason_of(keys: list[str] | None, *, unreadable: str) -> str:
+    """The first exec-driver refusal among *keys*; *unreadable* when ``None``."""
+    if keys is None:
+        return unreadable
+    for key in keys:
+        driver = _exec_driver_key_reason(key)
+        if driver:
+            return driver
+    return ""
+
+
+#: A URL's userinfo (`scheme://user:token@`) or query/fragment inside a config key's
+#: subsection; both can carry a credential.
+_KEY_URL_USERINFO_RE = re.compile(r"(?<=://)[^/\s]*@")
+_KEY_URL_QUERY_RE = re.compile(r"[?#][^\s]*?(?=\.[A-Za-z][A-Za-z0-9-]*$|$)")
+
+
+def _shown_key(key: str) -> str:
+    """*key* as a refusal reason may show it: URL credentials removed, then capped.
+
+    Reasons reach the gateway log and HTTP bodies, and a URL-bearing subsection
+    (`url.https://user:token@host/.insteadOf`, `credential.<url>.helper`,
+    `http.<url>.proxy`) can embed a credential. Redacted BEFORE truncating, so a
+    cut cannot leave half a token behind.
+    """
+    shown = _KEY_URL_USERINFO_RE.sub("<redacted>@", key)
+    shown = _KEY_URL_QUERY_RE.sub("?<redacted>", shown)
+    return shown[:120]
+
+
+def _exec_driver_key_reason(key: str) -> str:
+    """The refusal for one repo-scoped config *key* naming an exec driver, else ``""``.
+
+    ``remote.<n>.uploadpack``/``receivepack`` count too: in a partial clone a
+    read-only ``show``/``diff``/``archive`` lazy-fetches a missing blob from the
+    promisor remote, and git runs the FIRST uploadpack it reads -- the
+    repository's -- so no env pin covers it.
+    """
+    if (
+        _REPO_EXEC_DRIVER_RE.match(key)
+        or _REPO_REMOTE_PACK_RE.match(key)
+        or key.lower() in _REPO_UNPINNABLE_KEYS
+    ):
+        return f"repository declares {_shown_key(key)}"
+    return ""
+
+
+#: Bounds on the nested-repository walk in :func:`_repo_scoped_config_keys`. A tree
+#: past either is refused (:data:`_NESTED_REPO_LIMIT`), never answered as clean.
+_MAX_NESTED_REPO_DEPTH = 8
+_MAX_NESTED_REPOS = 256
+_NESTED_REPO_LIMIT = "too many nested git repositories to check"
+
+
+class _NestedRepoLimit(Exception):
+    """The nested-repository walk passed one of its bounds."""
+
+
+class _NestedProbeIncomplete(Exception):
+    """A skipping nested walk read a repo's config but could not finish probing it."""
+
+
+_NESTED_REPO_INCOMPLETE = "repository could not be fully checked for exec drivers"
+
+
+def _repo_scoped_config_keys(
+    proj: str,
+    *,
+    _depth: int = 0,
+    _walked: list[str] | None = None,
+    _skip_unreadable: bool = False,
+) -> list[str] | None:
+    """Every key name the repository's own config scopes declare, ``None`` if unreadable.
+
+    The ``--local`` scope always, and ``--worktree`` when
+    ``extensions.worktreeConfig`` is on; both with ``--includes``. The details
+    are documented on :func:`repo_exec_config_reason`, which this serves.
+
+    Also every INITIALIZED nested repository the index records as a gitlink,
+    recursively: ``status``, a worktree ``diff`` and ``reset`` start a child git
+    in each one, and that child reads the nested repository's OWN config, which
+    sits inside the work tree an agent writes. The ``GIT_CONFIG_*`` pins reach
+    the child; a repo-named driver declared there does not, and was measured to
+    run (git 2.47). An uninitialized gitlink has no work tree, so nothing
+    recurses into it.
+    """
+    keys = _own_scoped_config_keys(proj)
+    if keys is None:
+        return None
+    # A failure below would throw away keys already read; the nested-only walk
+    # refuses instead.
+    keys = _repo_scoped_config_keys_after_own(
+        proj, keys, _depth=_depth, _walked=_walked, _skip_unreadable=_skip_unreadable
+    )
+    if keys is None and _skip_unreadable:
+        raise _NestedProbeIncomplete
+    return keys
+
+
+def _repo_scoped_config_keys_after_own(
+    proj: str,
+    keys: list[str],
+    *,
+    _depth: int,
+    _walked: list[str] | None,
+    _skip_unreadable: bool,
+) -> list[str] | None:
+    """The rest of :func:`_repo_scoped_config_keys` once *proj*'s own *keys* are read."""
+    # The scope listings do not follow an `includeIf "hasconfig:remote.*.url:..."`,
+    # which can match on a URL from GLOBAL config. Git's own effective view,
+    # scope-tagged and read under the protected command's env (`_PROBE_ENV`), sees
+    # what that command will load; only the repository's own scopes are kept.
+    effective = _git_probe(
+        proj, "config", "--includes", "--show-scope", "--name-only", "-z", "--list"
+    )
+    if effective is None:
+        return None
+    # `-z --show-scope --name-only` prints `<scope>\0<key>\0` per entry.
+    fields = effective.split("\0")
+    user_drivers: list[str] = []
+    for scope, key in zip(fields[0::2], fields[1::2]):
+        if not key:
+            continue
+        if scope in ("local", "worktree"):
+            keys.append(key.strip())
+        elif _PROBE_ALL_SCOPES.get() and _USER_DRIVER_KEY_RE.match(key.strip()):
+            user_drivers.append(key.strip())
+    if user_drivers:
+        # A driver from the operator's global/system config (`git lfs install`
+        # writes one) counts only when THIS repo's attributes bind its name: that
+        # is what makes the child git run it here.
+        bound = _bound_driver_names(proj)
+        if bound is None:
+            return None
+        # A driver literally named `unset`/`unspecified` cannot be told apart from
+        # an absent attribute in `check-attr` output, so it always counts.
+        keys.extend(
+            k
+            for k in user_drivers
+            if _driver_attr_and_name(k) in bound
+            or _driver_attr_and_name(k)[1] in ("unset", "unspecified")
+        )
+    nested = _nested_repo_config_keys(
+        proj, _depth=_depth, _walked=_walked, _skip_unreadable=_skip_unreadable
+    )
+    if nested is None:
+        return None
+    return keys + nested
+
+
+def _nested_repo_config_keys(
+    proj: str,
+    *,
+    _depth: int = 0,
+    _walked: list[str] | None = None,
+    _skip_unreadable: bool = False,
+) -> list[str] | None:
+    """The config key names of every initialized nested repo under *proj*, recursively.
+
+    ``None`` when *proj*'s own index cannot be listed. With *_skip_unreadable* (the
+    nested-only probe), a nested repo that cannot be fully probed raises
+    :class:`_NestedProbeIncomplete` instead, so only *proj*'s own unreadable index
+    reads as ``None``.
+    """
+    walked = _walked if _walked is not None else []
+    keys: list[str] = []
+    # Joined onto git's EFFECTIVE work tree, not *proj*: a `core.worktree`
+    # redirect puts the nested repos git will descend into somewhere else, and a
+    # read-only caller does not refuse the redirect itself. `--full-name` makes
+    # the listed paths relative to that root. utf8_path_stdout: the names are
+    # joined onto a path and lstat'ed, so raw bytes must survive.
+    toplevel = _git_probe(proj, "rev-parse", "--show-toplevel", decoder=utf8_path_stdout)
+    if toplevel is None or not toplevel.rstrip("\n"):
+        return None
+    root = toplevel[:-1] if toplevel.endswith("\n") else toplevel
+    listing = _git_probe(proj, "ls-files", "-s", "-z", "--full-name", decoder=utf8_path_stdout)
+    if listing is None:
+        return None
+    for entry in listing.split("\0"):
+        meta, _, rel = entry.partition("\t")
+        if not meta.startswith("160000 ") or not rel:
+            continue
+        nested = os.path.join(root, rel)
+        if not os.path.lexists(os.path.join(nested, ".git")):
+            continue
+        walked.append(nested)
+        if _depth + 1 > _MAX_NESTED_REPO_DEPTH or len(walked) > _MAX_NESTED_REPOS:
+            raise _NestedRepoLimit
+        inner = _repo_scoped_config_keys(
+            nested, _depth=_depth + 1, _walked=walked, _skip_unreadable=_skip_unreadable
+        )
+        if inner is None:
+            # Not skipped even when skipping: a nested repo with its config
+            # deleted still gets a child git that runs a GLOBAL driver its
+            # attributes bind, so "cannot list it" is never "nothing runs there".
+            if _skip_unreadable:
+                raise _NestedProbeIncomplete
+            return None
+        keys.extend(inner)
+    return keys
+
+
+def _own_scoped_config_keys(proj: str) -> list[str] | None:
+    """The ``--local``/``--worktree`` key names of *proj* alone (no nested repos)."""
     scopes = ["--local"]
     # --bool folds every git-true spelling (yes/on/1/valueless) to "true"; a
     # raw-spelling allowlist misses the valueless boolean form, which git
@@ -672,6 +1269,7 @@ def repo_exec_config_reason(proj: str) -> str:
         == "true"
     ):
         scopes.append("--worktree")
+    keys: list[str] = []
     for scope in scopes:
         listing = _git_probe(proj, "config", scope, "--includes", "--name-only", "-z", "--list")
         if listing is None:
@@ -699,35 +1297,9 @@ def repo_exec_config_reason(proj: str) -> str:
                     gitdir_raw if gitdir_raw is not None else "", proj
                 ):
                     continue
-            return _EXEC_CONFIG_UNREADABLE
-        for key in listing.split("\0"):
-            key = key.strip()
-            if _REPO_EXEC_DRIVER_RE.match(key):
-                return f"repository declares {key[:120]}"
-            if key.lower() in _REPO_UNPINNABLE_KEYS:
-                return f"repository declares {key[:120]}"
-            # A URL rewrite redirects the FETCH itself, and applies even when the
-            # URL is passed explicitly on the command line, so validating the
-            # remote's URL cannot survive one being configured.
-            if _REPO_URL_REWRITE_RE.match(key):
-                return f"repository rewrites remote URLs via {key[:120]}"
-            # Transport trust: weakening TLS verification or routing the fetch
-            # through a repo-supplied proxy makes a forged update look genuine.
-            if _REPO_TRANSPORT_TRUST_RE.match(key):
-                return f"repository overrides transport trust via {key[:120]}"
-
-    # A redirected work tree executes nothing, so no exec-key pin touches it —
-    # but `git reset --hard` would overwrite matching files in the OTHER
-    # directory. Ask git where the tree actually resolves rather than parsing
-    # `core.worktree`: that catches a relative value, a worktree-scoped one, and
-    # one reached through `include.path` with a single probe. A legitimate linked
-    # worktree resolves to the directory being operated on, so it is unaffected.
-    toplevel = _git_probe(proj, "rev-parse", "--show-toplevel")
-    if toplevel is None:
-        return "cannot resolve the work tree"
-    if not _same_dir(toplevel.strip(), proj):
-        return f"work tree is redirected to {toplevel.strip()[:120]}"
-    return ""
+            return None
+        keys.extend(key.strip() for key in listing.split("\0") if key.strip())
+    return keys
 
 
 def hidden_worktree_edits(proj: str) -> list[str] | None:
@@ -923,6 +1495,33 @@ def min_version() -> str:
     return active_update_pins().min_version
 
 
+def unattended_apply_allowed() -> bool:
+    """Whether policy lets the gateway install an update without being asked.
+
+    ``updates.unattended_apply: false`` makes every route notify-only; a
+    person's Update still applies, and a build below the floor still takes its
+    mandatory update. True when ungoverned.
+
+    A governance read that fails answers False, where :func:`active_update_pins`
+    reads every other pin as unpinned. Unpinned keeps a host updatable; "on"
+    here would install unattended on a host whose policy may forbid it, while
+    "off" leaves a person's Update and ``kirocrew update`` working.
+    """
+    from kiro_crew.platform.governance import active_update_pins
+
+    try:
+        from kiro_crew.platform.context import current_context
+
+        current_context()
+    except Exception:
+        logger.warning(
+            "Security policy unreadable; treating unattended update installs as off",
+            exc_info=True,
+        )
+        return False
+    return active_update_pins().unattended_apply
+
+
 __all__ = [
     "PRIMARY_BRANCHES",
     "git_command_env",
@@ -931,8 +1530,12 @@ __all__ = [
     "commits_ahead",
     "min_version",
     "repo_exec_config_reason",
+    "nested_repo_exec_driver_reason",
+    "repo_exec_driver_reason",
     "resolve_remote_url",
     "tracks_upstream",
+    "unattended_apply_allowed",
     "update_blocked_reason",
     "update_required",
+    "upstream_remote_and_branch",
 ]

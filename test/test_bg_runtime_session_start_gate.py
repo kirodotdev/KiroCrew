@@ -50,6 +50,10 @@ def _fresh_gates(monkeypatch):
 
 def _make_runtime() -> AcpRuntime:
     rt = AcpRuntime(work_dir="/tmp")
+    # The over-ceiling check is a thread hop before the gate; these tests count the
+    # loop yields between a start and its wire request, so it answers at once here
+    # (test_acp_runtime_session_start covers the check itself).
+    rt._refuse_over_ceiling_start = AsyncMock()  # type: ignore[method-assign]
     proc = MagicMock()
     proc.stdout = asyncio.StreamReader()
     proc.stdin = MagicMock()

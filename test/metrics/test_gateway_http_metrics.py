@@ -15,6 +15,7 @@ label value, proven here against real OpenTelemetry data points.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -185,14 +186,18 @@ class TestBootToReady:
             record_boot_to_ready(None, server="dashboard")  # type: ignore[arg-type]
         assert rec.histograms == []
 
-    def test_recorder_failure_swallowed(self):
+    def test_recorder_failure_swallowed(self, caplog):
         boom = MagicMock()
         boom.histogram.side_effect = RuntimeError("telemetry down")
         with patch(
             "kiro_crew.metrics.http_metrics.get_recorder", return_value=boom
-        ):
+        ), caplog.at_level(logging.DEBUG, logger="kiro_crew.metrics.http_metrics"):
             # Must not raise.
             record_boot_to_ready(10.0, server="dashboard")
+        logged = [
+            r.getMessage() for r in caplog.records if r.name == "kiro_crew.metrics.http_metrics"
+        ]
+        assert logged == ["record_boot_to_ready failed"]
 
 
 # ---------------------------------------------------------------------------

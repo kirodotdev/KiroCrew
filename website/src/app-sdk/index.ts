@@ -15,6 +15,7 @@ import {
   useCallback,
   type ReactNode,
 } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 // The identity layer this module composes with its own scoped-API layer. Kept in
 // a separate file so a surface that needs identity WITHOUT a sandbox — every
 // builtin page — can mount it on its own, and so it stays off this barrel (see
@@ -27,7 +28,9 @@ import { AppIdentityProvider, useAppIdentity, type AppOrigin } from './identity'
 import { AppQueryClientProvider } from './appQueryClient'
 // The scoped-API layer, kept in its own module so it is NOT published on this
 // barrel -- see the header of ./scopedApi for why.
-import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo, type AppUpdate } from './scopedApi'
+import { useCtx, AppScopedApiProvider, type AppApi, type AppApiError, type AppInfo, type AppUpdate } from './scopedApi'
+import type { SlotPush } from './slotPush'
+import { chatLaunchMemoryMode, chatLaunchOpensDraft, type ChatLaunchMemoryMode } from './chatLaunch'
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
@@ -69,7 +72,7 @@ export function useAppApi(): AppApi {
 // ---------------------------------------------------------------------------
 
 /** Tier 0 — always delivered to every connected client. */
-const WS_TIER0_EVENTS = new Set(['dashboard', 'refresh', 'update_progress'])
+const WS_TIER0_EVENTS = new Set(['dashboard', 'refresh', 'update_progress', 'models_changed'])
 
 /**
  * Slot-scoped events — they carry a `slot` field. An app token receives these
@@ -122,6 +125,7 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   notification: 'notification',
   notification_ack: 'notification',
   notification_unack: 'notification',
+  notification_dismiss: 'notification',
   notifications_clear: 'notification',
   notification_channel_settings: 'notification',
   sessions_restarting: 'sessions',
@@ -131,6 +135,9 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   yolo_expired: 'yolo',
   artifact_update: 'artifacts',
   'skills.pending_changed': 'skills',
+  // The global lesson store changed: {action, source, count}, never the text.
+  // Re-read GET /api/lessons (a separate `permissions.api` grant) for the rows.
+  'lessons.changed': 'lessons',
   // Declared by its own literal name (already the correct per-event shape).
   workflow_run_event: 'workflow_run_event',
   // Same scope name the gateway declares in ws_event_scope.py, so an app author
@@ -145,7 +152,6 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   // route, which is owner-gated and re-applies that check.
   dashboard_instance_changed: 'panels',
   log: 'log',
-  browser_event: 'browser',
   // NOTE: `slots` is deliberately absent — the list re-push is always
   // delivered and filtered per app in the payload on the server
   // (state.py::_serialize_for_client), so it needs no declaration.
@@ -329,6 +335,84 @@ export function useNavBadge(): (count: number) => void {
   }, [info.name])
 }
 
+/** One of this app's own bell notifications, as the host stored it. */
+export interface AppNotification {
+  /** The note's id: what `ack` takes. */
+  ts: string
+  channel: string
+  title: string
+  body: string
+  url?: string
+  priority?: string
+  acked?: boolean
+}
+
+/** What `useAppNotifications()` returns. */
+export interface AppNotifications {
+  /** This app's notes, read and unread, in the bell's order. */
+  items: AppNotification[]
+  /** How many of them the sidebar badge counts. */
+  unread: number
+  /** `ready` once the host has answered. `items` is empty until then; a failed re-read keeps the last list. */
+  status: 'loading' | 'error' | 'ready'
+  /** Mark one note read; resolves once the host has stored it. */
+  ack: (ts: string) => Promise<void>
+  /** Mark every unread note this hook holds in `items` read, one `ack` at a time. */
+  ackAll: () => Promise<void>
+}
+
+const OWN_NOTIFICATIONS_PATH = '/api/notifications/own'
+const NO_NOTIFICATIONS: AppNotification[] = []
+
+/**
+ * This app's own bell notifications, the notes behind its sidebar badge, and a way
+ * to clear them. The host returns only the notes it stamped with this app's name.
+ * Needs `/api/notifications/own` in `permissions.api`. Read on mount, on window
+ * focus and after each ack; it does not follow the bell live.
+ */
+export function useAppNotifications(): AppNotifications {
+  const { api, info } = useCtx()
+  const queryClient = useQueryClient()
+  const app = info.name
+  const { data, status } = useQuery({
+    queryKey: ['app-sdk-notifications', app],
+    queryFn: () => api.get<{ notifications: AppNotification[]; unread: number }>(
+      `${OWN_NOTIFICATIONS_PATH}?app=${encodeURIComponent(app)}`,
+    ),
+    // The bell can ack these notes while the page is open, so never trust a cached read.
+    staleTime: 0,
+  })
+  const mark = useCallback(async (action: string, body: object) => {
+    try {
+      await api.post(`${OWN_NOTIFICATIONS_PATH}/${action}`, { app, ...body })
+    } finally {
+      // Re-read on a refusal too: a 404 means the note is already gone from the bell.
+      await queryClient.invalidateQueries({ queryKey: ['app-sdk-notifications', app] })
+    }
+  }, [api, app, queryClient])
+  const ack = useCallback((ts: string) => mark('ack', { ts }), [mark])
+  const ackAll = useCallback(async () => {
+    try {
+      for (const note of data?.notifications ?? NO_NOTIFICATIONS) {
+        if (note.acked) continue
+        // A 404 means the note is already gone from the bell: skip it, ack the rest.
+        await api.post(`${OWN_NOTIFICATIONS_PATH}/ack`, { app, ts: note.ts }).catch((err: unknown) => {
+          if ((err as Partial<AppApiError> | null)?.status !== 404) throw err
+        })
+      }
+    } finally {
+      await queryClient.invalidateQueries({ queryKey: ['app-sdk-notifications', app] })
+    }
+  }, [api, app, data, queryClient])
+  return {
+    items: data?.notifications ?? NO_NOTIFICATIONS,
+    unread: data?.unread ?? 0,
+    status: status === 'pending' ? 'loading' : status === 'error' ? 'error' : 'ready',
+    ack,
+    ackAll,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Chat Launcher
 // ---------------------------------------------------------------------------
@@ -342,7 +426,22 @@ export interface ChatLaunchOptions {
   slotKey?: string
   /** False seeds a draft only; the user must press Send. Defaults to true. */
   autoSend?: boolean
+  /**
+   * Memory mode of the NEW session, overriding the owner's default. Honoured
+   * only without `slotKey` (an existing session keeps its mode). Setting it
+   * opens a new draft session: `message` is staged in the composer and never
+   * sent automatically. An unknown value is ignored.
+   */
+  memoryMode?: ChatLaunchMemoryMode
+  /**
+   * `false` keeps the new session out of a per-chat session folder even when the
+   * owner turned that on, for a purpose-built chat. Honoured only without
+   * `slotKey`; like `memoryMode`, it opens a new draft session.
+   */
+  sessionFolder?: false
 }
+
+export type { ChatLaunchMemoryMode }
 
 /** Launch intent written to a global slot for the routed chat to claim. */
 interface ChatLaunchIntent extends ChatLaunchOptions {
@@ -362,16 +461,22 @@ export function useChatLauncher(): {
   const { navigate } = useCtx()
 
   const openChat = useCallback((opts: ChatLaunchOptions = {}) => {
+    // Session-shaping options describe a NEW session, so they are dropped for a
+    // targeted launch rather than applied to a session the user already has.
+    const memoryMode = opts.slotKey ? undefined : chatLaunchMemoryMode(opts.memoryMode)
+    const sessionFolder = !opts.slotKey && opts.sessionFolder === false ? false : undefined
     ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
       agent: opts.agent,
       message: opts.message,
       slotKey: opts.slotKey,
       autoSend: opts.autoSend,
+      ...(memoryMode ? { memoryMode } : {}),
+      ...(sessionFolder === false ? { sessionFolder } : {}),
       ts: Date.now(),
     }
     navigate(opts.slotKey
       ? `/chat?sid=${encodeURIComponent(opts.slotKey)}`
-      : opts.autoSend === false ? '/chat?new=1' : '/chat')
+      : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat')
   }, [navigate])
 
   return { openChat }
@@ -410,6 +515,7 @@ export function AppApiProvider({
   navigateFn,
   notifyFn,
   sessionKey,
+  slotPush,
   origin = 'external',
   children,
 }: {
@@ -445,6 +551,8 @@ export function AppApiProvider({
    * provide the real key so the backend's restricted-session guard can run.
    */
   sessionKey?: string
+  /** The host's per-slot change signal; forwarded to the scoped layer. */
+  slotPush?: SlotPush
   origin?: AppOrigin
   children: ReactNode
 }) {
@@ -461,6 +569,7 @@ export function AppApiProvider({
     navigateFn,
     notifyFn,
     sessionKey,
+    slotPush,
     children,
   })
   if (existing) return scoped
@@ -489,6 +598,16 @@ export { default as ChatEmbed } from './ChatEmbed'
 // The keys `ChatEmbed`'s `hide` prop accepts; any other string is a type error.
 export type { ChatEmbedHideKey } from './chatEmbedHide'
 export { default as ChatMessageList } from './ChatMessageList'
+// The dashboard's pull-request panel. An external app's panel reaches only the
+// source endpoints its `permissions.api` declares (see ./PullRequestPanel).
+export { default as PullRequestPanel } from './PullRequestPanel'
+export type { AppPullRequestPanelProps } from './PullRequestPanel'
+export type { PullRequestLink } from '../utils/pullRequestLinks'
+// Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
+// `/api/source/issues` (see ./issues/useIssues).
+export { useIssues, IssueList, IssueCard } from './issues'
+export type { UseIssuesOptions, UseIssuesResult, IssueCardProps, IssueListProps, IssueView } from './issues'
+export type { IssueSearchRequest, IssueSearchResponse, IssueSummary, IssuePerson, IssueLabel, IssueLinkedChange } from '../types'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {
@@ -509,5 +628,7 @@ export type { MessageRenderer, MessageRenderContext } from './messageRenderers'
 // Shared interaction and locale contracts; apps reuse the host implementations.
 export { useImeGuard } from '../hooks/useImeGuard'
 export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-export { activeLocale, fmtNumber, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
+export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
+// The App Kit seam level; an app feature-detects the seams above by it.
+export { APP_SDK_LEVEL } from './sdkLevel'

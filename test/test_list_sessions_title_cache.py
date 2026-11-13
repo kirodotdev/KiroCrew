@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import history_search
+from kiro_crew import history_listing_memo, history_search
 from kiro_crew.history import ConversationLog
 
 
@@ -61,7 +61,10 @@ def test_head_without_a_user_message_is_cached_as_untitled(
     assert len(opens) == first
 
 
-def test_a_changed_file_is_rescanned(tmp_path: Path) -> None:
+def test_a_changed_file_is_rescanned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A rewrite made outside the log moves no memo key, so only the listing
+    # memo's TTL bounds it; expire it at once to reach the per-file check.
+    monkeypatch.setattr(history_listing_memo, "TTL_SECS", 0.0)
     path = tmp_path / "c.jsonl"
     _write(path, {"role": "assistant", "content": "x"})
     log = ConversationLog(base_dir=tmp_path)

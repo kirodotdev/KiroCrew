@@ -11,6 +11,7 @@
  *   config through the dashboard client and needs the dashboard router.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { render, screen, act, fireEvent } from '@testing-library/react'
@@ -121,6 +122,8 @@ describe('ChatEmbed composer is store-free (static)', () => {
     'chat-core/composer/composerPastes.ts',
     'components/PasteHighlightLayer.tsx',
     'components/PasteHoverLayer.tsx',
+    'components/BusySendButton.tsx',
+    'components/chat-input/listContinuation.ts',
   ])('nothing %s imports reaches the Redux store', (entry) => {
     const g = importGraph(join(SRC, ...entry.split('/')))
     const storeFiles = g.files.filter(f => relative(SRC, f).startsWith('store/') || relative(SRC, f) === 'store.ts')
@@ -133,6 +136,9 @@ describe('ChatEmbed composer is store-free (static)', () => {
 describe('ChatEmbed composer is store-free (runtime)', () => {
   let queryClient: QueryClient
   beforeEach(() => {
+    // These tests are about the busy send that queues; the steer side is
+    // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+    setBusySendDefault('queue')
     vi.clearAllMocks()
     vi.useFakeTimers()
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })

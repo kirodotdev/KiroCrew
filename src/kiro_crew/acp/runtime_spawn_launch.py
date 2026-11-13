@@ -11,20 +11,21 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
-``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
+``_initialize_result``, ``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
 ``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
-``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
+``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_monotonic``,
+``_spawn_skill_projection``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
 
-Instance fields read: ``_acp_backend``, ``_extra_env``, ``_launch_agent``, ``_member_context``,
-``_model``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
+``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -40,7 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import agent_scratch, member_essential_context, platform_compat
-from kiro_crew.acp import kas_secret_storage
+from kiro_crew.acp import kas_cli_settings, kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -53,20 +54,28 @@ from kiro_crew.acp.client import (
     finish_suspended_spawn,
 )
 from kiro_crew.acp.harness import SpawnContext, SpawnPlan
+from kiro_crew.acp.harness._common import operator_mandatory_mcps
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _kill_escaped_children
 from kiro_crew.acp.runtime_tree_kill import _prune_dead_descendants
-from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeError, AcpRuntimeOverloaded
-from kiro_crew.acp.types import ACP_BACKEND_KIRO
+from kiro_crew.acp.session_handle import (
+    AcpRequestTimeout,
+    AcpRuntimeDead,
+    AcpRuntimeError,
+    AcpRuntimeOverloaded,
+)
+from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
+from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
+    job_tool_ids,
     kas_client_meta_settings,
     kas_never_defer_ids,
     spec_grants_tool_search,
     with_client_meta_settings,
 )
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.constants import (
     INITIALIZE_TIMEOUT_SECS,
@@ -132,18 +141,33 @@ _INITIALIZE_TIMEOUT = INITIALIZE_TIMEOUT_SECS
 _ACP_RUNTIME_RESPAWN_BACKOFF_S = 2.0
 
 
+def _allocate_private_state() -> Path | None:
+    """A scratch allocation for the host's private state, or ``None`` if none could be made.
+
+    Not the process's own scratch directory: when this process starts a session
+    tree, that directory is the tree's work directory, and every process spawned
+    for its sessions mounts it writable (``AcpRuntime.work_scratch_dir``). This
+    one is handed to this process alone and reclaimed once it is dead.
+    """
+    try:
+        return agent_scratch.allocate_scratch("private-state")
+    except (OSError, agent_scratch.ScratchBoundaryError):
+        logger.debug("agent-scratch: could not allocate a private-state dir", exc_info=True)
+        return None
+
+
 def _point_private_state_at_scratch(
     env: dict[str, str], env_var: str | None, scratch: Path | None
 ) -> None:
-    """Point the host's private-state variable at this process's scratch dir.
+    """Point the host's private-state variable at this process's private-state dir.
 
     *env_var* is :attr:`SpawnPlan.private_state_env`: ``None`` for a host whose
     state tolerates concurrent processes, so nothing is set. A non-empty value
     already in *env* is the caller's (the operator's environment, or a cron or
     workflow ``extra_env``): they chose that location, and it reaches the child
-    as set. Otherwise the variable names the per-process scratch directory: no
-    other process uses it, and it is reclaimed once this one is dead
-    (``agent_scratch.sweep_dead_scratch``). Without scratch the child gets the
+    as set. Otherwise the variable names the directory :func:`_allocate_private_state`
+    made: no other process is handed it, and it is reclaimed once this one is dead
+    (``agent_scratch.sweep_dead_scratch``). Without one the child gets the
     host's shared default and a warning says so: a shared database home is
     better than a refused spawn.
     """
@@ -151,8 +175,8 @@ def _point_private_state_at_scratch(
         return
     if scratch is None:
         logger.warning(
-            "AcpRuntime: no per-process scratch to point %s at; the child shares the "
-            "host's default, so concurrent processes may lock each other out",
+            "AcpRuntime: no private-state directory to point %s at; the child shares "
+            "the host's default, so concurrent processes may lock each other out",
             env_var,
         )
         return
@@ -197,6 +221,10 @@ async def _retrying_spawn_factory(
             return await factory(**kwargs)
         except OSError as exc:
             if attempt:
+                # Classified only after the retry: a spawn inside the update window
+                # can also fail with access denied, and the retry is what clears it.
+                if is_windows_spawn_blocked(exc):
+                    raise AcpSpawnBlocked(_spawn_binary(factory, exc)) from exc
                 raise
             logger.warning(
                 "ACP runtime subprocess creation failed (%s), retrying after "
@@ -205,6 +233,14 @@ async def _retrying_spawn_factory(
             )
             await asyncio.sleep(_ACP_RUNTIME_RESPAWN_BACKOFF_S)
     raise AssertionError("unreachable: the second attempt returns or re-raises")
+
+
+def _spawn_binary(factory: Any, exc: OSError) -> str:
+    """The program a failed spawn tried to start: the error's file, else argv[0]."""
+    if exc.filename:
+        return str(exc.filename)
+    args = getattr(factory, "args", ())
+    return str(args[0]) if args else ""
 
 
 def _launch_tools() -> LaunchTools:
@@ -227,8 +263,6 @@ def _launch_tools() -> LaunchTools:
         augmented_path=augmented_path,
         scrub_agent_subprocess_env=scrub_agent_subprocess_env,
         apply_pod_home_remap=_apply_pod_home_remap,
-        browser_session_env=browser_session_env,
-        browser_socket_env=browser_socket_env,
         inject_xdist_auto_cap=inject_xdist_auto_cap,
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,
@@ -309,6 +343,7 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
             home=Path.home(),
             sandbox_mode=self._sandbox_mode,
             member_context=self._member_context,
+            harness_pin=self._harness_pin,
         )
     )
     # The ONE derived-spec gate on this path, and the one host-level gate that is
@@ -396,6 +431,9 @@ async def _initialize_handshake(
             },
             timeout=timeout,
         )
+    except AcpRuntimeDead as exc:
+        await _name_initialize_death(self, exc)
+        raise
     except AcpRequestTimeout as exc:
         alive = self._process is not None and self._process.returncode is None
         if not alive or not (throttled_at_spawn or agents_slice_throttling()):
@@ -406,6 +444,63 @@ async def _initialize_handshake(
             "Free agent memory (close idle sessions, run fewer concurrent subagents) "
             "and retry."
         ) from exc
+
+
+async def _name_initialize_death(runtime: AcpRuntime, exc: AcpRuntimeDead) -> None:
+    """Add the exit status and the stderr tail to a death that ended ``initialize``.
+
+    The death reaches ``initialize`` through ``_mark_dead``, which fails the
+    pending request at stdout EOF. The stderr drain and the reap can still be
+    running then, so the reason names no code and the tail is often empty.
+    A start that dies here is not retried into anything better, and its
+    error text is all a user sees on the card, so both are waited for here:
+    the drain under ``settle_stderr``'s bound, the exit under
+    ``_KILL_REAP_TIMEOUT``. The tail is published only through
+    ``safe_stderr_tail``, the same gate the death summary uses, and a
+    restricted session retains none. The type is kept so every caller's
+    ``except`` and classifier still sees an ``AcpRuntimeDead``.
+    """
+    await runtime.settle_stderr()
+    process = runtime._process
+    if process is not None and process.returncode is None:
+        try:
+            await asyncio.wait_for(process.wait(), runtime._KILL_REAP_TIMEOUT)
+        except Exception:
+            logger.debug("AcpRuntime: exit status unread after initialize died", exc_info=True)
+    rc = runtime._returncode_label()
+    if runtime.recording_allowed:
+        from kiro_crew.acp.stderr_tail import safe_stderr_tail
+
+        tail = safe_stderr_tail(runtime._stderr_lines[-5:], " | ") or "<none>"
+    else:
+        tail = "<not retained>"
+    exc.args = (f"{exc} during initialize [returncode={rc}] stderr_tail: {tail}",)
+    # No PID: the death line ``_mark_dead`` logged just before names it.
+    logger.warning("AcpRuntime died during initialize: returncode=%s stderr_tail: %s", rc, tail)
+
+
+async def _refuse_over_ceiling_launch(self: AcpRuntime, launch_name: str | None) -> None:
+    """Refuse a kiro-cli spawn whose agent would carry grants the ceiling denies.
+
+    kiro-cli honours the grants of the spec it is handed before Crew's gate, and Crew
+    never rewrites a crew-bound spec it does not own. *launch_name* is the name the
+    spawn hands kiro-cli: a skill view, a Crew-owned copy the projection wrote with
+    the ceiling applied (``agent.govern_shared_template_view``), or, with no view, the
+    authored name, whose every claimant is checked. Judged after the projection,
+    because the plan is built before it and cannot know the name.
+    """
+    from kiro_crew import agent as agent_mod
+
+    try:
+        await asyncio.to_thread(
+            agent_mod.require_shared_template_within_ceiling,
+            self._agent,
+            ACP_BACKEND_KIRO,
+            launch_name=launch_name,
+            work_dir=getattr(self, "_work_dir", None),
+        )
+    except agent_mod.SharedTemplateOverCeiling as exc:
+        raise AcpRuntimeError(str(exc)) from exc
 
 
 async def _spawn_admitted(self: AcpRuntime) -> None:
@@ -450,12 +545,6 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             )
         except AppAgentLaunchError as exc:
             raise AcpRuntimeError(exc.detail) from exc
-    # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
-    # deny rules. Keep their workspace disjoint from the named voice-decoder
-    # runtime so verified executable bytes cannot be replaced before spawn.
-    if self._harness.internal_sandbox:
-        await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
-
     try:
         plan = await self._resolve_spawn_plan()
         self._max_rss_depth = plan.rss_depth
@@ -465,13 +554,20 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # on the identity; kiro-cli is handed the launch copy instead.
             argv = list(argv)
             argv[argv.index("--agent") + 1] = self._launch_agent
-        if self.acp_backend == ACP_BACKEND_KIRO:
+        # ``getattr``: a runtime built without ``__init__`` (test doubles) projects.
+        if self.acp_backend == ACP_BACKEND_KIRO and getattr(
+            self, "_native_skill_projection_enabled", True
+        ):
             from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
             async with self._skill_projection_lock():
                 generation = self._issue_skill_projection_generation()
+                # Only the launch agent's view is leased: every other session
+                # start re-prepares and leases its own agent's view first.
                 projection = await asyncio.to_thread(
-                    prepare_native_skill_projection, self._work_dir
+                    prepare_native_skill_projection,
+                    self._work_dir,
+                    lease_agents=(self._agent,),
                 )
                 # Issued and adopted under the lock, so nothing newer exists.
                 self._native_skill_projection = projection
@@ -480,7 +576,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # startup are ones it is guaranteed to have loaded, so later
             # projections keep translating them in inbound frames
             # (_activate_mode_bracketed), and holding the object keeps its
-            # lease -- and them -- out of the prune.
+            # lease -- the launch agent's view -- out of the prune.
             self._spawn_skill_projection = projection
             if projection is not None:
                 # Deliberately do NOT set spawn_agent_name here. The shared
@@ -583,6 +679,21 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                                     )
     except _KiroExecutableTrustError as exc:
         raise AcpRuntimeError(str(exc)) from exc
+    if self.acp_backend == ACP_BACKEND_KIRO:
+        await self._refuse_over_ceiling_launch(
+            argv[argv.index("--agent") + 1] if "--agent" in argv[:-1] else None
+        )
+    # Who confines this process, decided from the plan because the route is the
+    # plan's: KAS's relay runs kiro-cli and its internal sandbox, its bundle runs
+    # Node and does not. Every reader below takes this one answer.
+    internal_sandbox = spawn_delegates_to_internal_sandbox(
+        self._acp_backend, kiro_cli_internal_sandbox=plan.kiro_cli_internal_sandbox
+    )
+    # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
+    # deny rules. Keep their workspace disjoint from the named voice-decoder
+    # runtime so verified executable bytes cannot be replaced before spawn.
+    if internal_sandbox:
+        await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
     # The handshake declaration is the harness's constant. A host that takes
     # feature settings over the wire (``client_meta_settings``, a positive
     # membership answer) has its channel filled here -- BEFORE the process
@@ -590,8 +701,16 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # spec read is the generation the child will load. Every other host reads
     # its constant directly: no new await, no new step on that path.
     client_capabilities = self._harness.client_capabilities
+    # The frozen snapshot a chat-sharing placement keyed on, else set by the
+    # handshake below when it read agent.env; None lets launch read it.
+    self._spawn_agent_env = getattr(self, "_agent_env_override", None)
     if self._harness.client_meta_settings:
         client_capabilities = await self._handshake_client_capabilities()
+
+    # Before the launch builds the sandbox, which mounts it for this process alone.
+    private_state_dir = None
+    if plan.private_state_env is not None:
+        private_state_dir = await asyncio.to_thread(_allocate_private_state)
 
     # The launch tail both drivers share (``acp.launch.launch``): the pod bundle
     # swap and the delegation verdict, this runtime's scratch window, the sandbox
@@ -601,12 +720,13 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # is_kiro_cli drives the reviewed Kiro internal-sandbox delegation: on macOS
     # wrap_argv skips its seatbelt because the two cannot nest; on Windows the
     # official Kiro backend delegates by default because Crew has no native OS
-    # sandbox there. The verdict is membership in ACP_BACKENDS_INTERNAL_SANDBOX
-    # (harness-parity H7) — never "not KAS": that test fails OPEN, so a harness
-    # inheriting a negative test would have Crew's seatbelt skipped in favour of
-    # an internal sandbox that never starts. KAS is a Node process with no
-    # internal sandbox, so it takes Crew's seatbelt directly, and so does every
-    # harness added later.
+    # sandbox there. The verdict is ``spawn_delegates_to_internal_sandbox``
+    # (harness-parity H7), two positive memberships -- never "not KAS": that test
+    # fails OPEN, so a harness inheriting a negative test would have Crew's
+    # seatbelt skipped in favour of an internal sandbox that never starts. KAS
+    # delegates on its kiro-cli relay route only; its bundle route is a Node
+    # process with no internal sandbox and takes Crew's seatbelt directly, and so
+    # does every harness added later.
     #
     # The incarnation this spawn is. Minted BEFORE the launch because two things
     # carry it: the scope's unit name, and the child's own environment. One token
@@ -662,9 +782,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
-            # A host that keeps private state may prepare it in scratch before
-            # the child exists; one more blocking file copy, so it rides here.
-            _seed_private_state(env, plan, self._scratch_dir)
+            # A host that keeps private state may prepare it before the child
+            # exists; one more blocking file copy, so it rides here.
+            _seed_private_state(env, plan, private_state_dir)
 
         await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
         return env
@@ -694,8 +814,8 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
 
     def _env_after_scratch(env: dict[str, str]) -> None:
         # A host whose state cannot be shared between processes (codex's SQLite
-        # databases) keeps its own copy under this process's scratch directory.
-        _point_private_state_at_scratch(env, plan.private_state_env, self._scratch_dir)
+        # databases) keeps its own copy in this process's private-state directory.
+        _point_private_state_at_scratch(env, plan.private_state_env, private_state_dir)
 
     launched = await launch(
         self,
@@ -704,6 +824,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             backend=self._acp_backend,
             sandbox_mode=self._sandbox_mode,
             extra_env=self._extra_env,
+            agent_env=self._spawn_agent_env,
             scratch_label="runtime",
             env_before_scrub=_env_before_scrub,
             env_after_marker=_env_after_marker,
@@ -716,9 +837,11 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # credential homes.
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_expose_files=plan.extra_expose_files,
-            internal_sandbox=self._harness.internal_sandbox,
+            extra_private_dirs=(str(private_state_dir),) if private_state_dir is not None else (),
+            internal_sandbox=internal_sandbox,
             pod_home_remap=self._harness.pod_home_remap,
             guard_scratch_hops=True,
+            forward_ssh_auth_sock_override=getattr(self, "_forward_ssh_auth_sock_override", None),
         ),
         _launch_tools(),
     )
@@ -772,13 +895,15 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         )
         self._spawn_monotonic = time.monotonic()
         self._last_activity = time.monotonic()
-        if self._scratch_dir is not None:
+        for owned in (self._scratch_dir, private_state_dir):
+            if owned is None:
+                continue
             # Liveness anchor for the scratch sweeps: a dir whose recorded
             # owner is dead is reclaimable. Off-loop (file write), fail-open
             # (an unowned dir falls under the grace-window rule instead).
             owner_outcome = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),
-                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                functools.partial(agent_scratch.record_owner, owned, self._pid),
             )
             if owner_outcome == "refused":
                 # A LINK where this child's own marker belongs: the child
@@ -829,11 +954,12 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                 )
             if adopt_outcome != "recorded":
                 # "unwritable": the marker was discarded, so the tree is
-                # UNOWNED and never swept -- a leak a human can see rather
-                # than a deletion under a live runtime.
+                # UNOWNED: never deleted in place, and moved into the
+                # quarantine only after a week with no write.
                 logger.warning(
                     "agent-scratch: could not join the owner marker of %r (%s); the tree's "
-                    "work directory is left unowned and will not be swept",
+                    "work directory is left unowned and is moved into the quarantine only "
+                    "after a week with no write",
                     self._shared_scratch.name,
                     adopt_outcome,
                 )
@@ -972,6 +1098,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         # _INITIALIZE_TIMEOUT -- see _initialize_handshake. The capabilities
         # were resolved above, before the process existed.
         init_resp = await self._initialize_handshake(client_capabilities)
+        self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
         _agent_caps = init_resp.get("agentCapabilities", {})
         self._agent_capabilities = _agent_caps if isinstance(_agent_caps, dict) else {}
         self._can_load_session = bool(self._agent_capabilities.get("loadSession", False))
@@ -993,6 +1120,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         from kiro_crew.agent import require_unchanged_derived_spec
 
         await asyncio.to_thread(require_unchanged_derived_spec, self._derived_spec_snapshot)
+        await _switch_off_mcp_for_toolless_spawn(self)
         self._initialized = True
         # The scope unit name is logged beside the PID because it is the only
         # durable half of the join. An OOM report or ``systemctl`` listing
@@ -1017,6 +1145,10 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         # right answer to that, and it cannot fire for a merely FAILED scan:
         # _snapshot_descendants swallows every Exception itself, so only a
         # cancellation reaches this arm.
+        #
+        # The handshake a caller is waiting on ends here, so this never waits
+        # for a tree to appear: a scan that sees no descendant hands its one
+        # retry to a task of its own.
         await self._snapshot_descendants(retry_when_empty=True)
     except BaseException:
         # One task this frame only WAITS on, so a cancellation cannot cut the
@@ -1097,10 +1229,9 @@ async def _record_tree_before_failed_start_kill(self: AcpRuntime) -> dict[int, C
     runs it inside a shielded cleanup task, so the spawning task's
     cancellation never reaches it; a cancellation of the cleanup task itself
     (loop shutdown) is absorbed so the kill that follows still runs, leaving
-    the tree to the group kill alone.
+    the tree to the group kill alone. Where the walk cannot see a descendant
+    the scan is a no-op and this returns nothing.
     """
-    if platform_compat.IS_WINDOWS:
-        return {}
     try:
         await self._snapshot_descendants()
     except asyncio.CancelledError:
@@ -1157,7 +1288,11 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     payload lists every MCP tool that spec can call there
     (``kas_never_defer_ids``, expanding whole-server grants from
     :func:`_known_server_tool_names`) and ``enabled`` goes out as an explicit
-    false. A spec that grants the loader is sent no ``neverDefer``.
+    false. A spec that grants the loader is sent the spawn agent's declared job
+    tools (``job_tool_ids``), so the calls that agent's prompt makes its
+    procedure cost no load round trip, and nothing when it declares none. An
+    operator who set their own never-defer list (``operator_mandatory_mcps``)
+    has decided what stays direct: Crew adds no job tool beside it.
     The spec judged is the one the KAS projection will PUT ON THE
     WIRE at session/new -- the freshness gate's snapshot for a derived agent,
     else the spec ``resolve_projected_spec`` resolves nearest-first, the same
@@ -1168,6 +1303,25 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     """
     base = self._harness.client_capabilities
     base = await _with_mcp_sign_in_storage(self, base)
+    if self._harness.client_meta_settings:
+        # KAS takes the opt-out only at initialize. It is judged on the child's own
+        # environment, in launch's order: the gateway's, agent.env, then extra_env.
+        # The agent.env snapshot read here is the one launch applies.
+        override = getattr(self, "_agent_env_override", None)
+        self._spawn_agent_env = (
+            dict(override) if override is not None else await asyncio.to_thread(agent_env_overlay)
+        )
+        frozen_telemetry = getattr(self, "_kas_telemetry_override", None)
+        if frozen_telemetry is not None:
+            telemetry_on = bool(frozen_telemetry)
+        else:
+            telemetry_on = await asyncio.to_thread(
+                kas_cli_settings.kiro_cli_telemetry_enabled,
+                self._work_dir,
+                {**os.environ, **self._spawn_agent_env, **self._extra_env},
+            )
+        base = kas_cli_settings.with_telemetry_opt_out(base, telemetry_on)
+        self._kas_telemetry_sent = telemetry_on
     if self._tool_search is None:
         return base
     spec = await asyncio.to_thread(self._projected_spawn_spec)
@@ -1175,6 +1329,8 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     never_defer: list[str] = []
     if not loader_granted:
         never_defer = await asyncio.to_thread(kas_never_defer_ids, spec, _known_server_tool_names)
+    elif operator_mandatory_mcps() is None:
+        never_defer = job_tool_ids(self._agent, spec)
     settings = kas_client_meta_settings(
         self._tool_search, loader_granted=loader_granted, never_defer=never_defer
     )
@@ -1201,14 +1357,55 @@ def _known_server_tool_names(server: str) -> list[str] | None:
     sandboxed probe fills. ``None`` when the cache has no list -- the caller
     then leaves that server to KAS's own deferral.
     """
-    from kiro_crew.mcp_discovery import _get_cached
+    from kiro_crew.acp.kas_permissions import cached_mcp_tool_names
+
+    return cached_mcp_tool_names(server)
+
+
+#: KAS's extension notification that switches its whole MCP subsystem on or off
+#: for the process. Sent before the first ``session/new``, nothing is started.
+KAS_MCP_TOGGLE_METHOD = "_kiro/mcp/toggle"
+
+
+async def _switch_off_mcp_for_toolless_spawn(runtime: AcpRuntime) -> None:
+    """Tell a KAS process spawned for a tool-less agent to start no MCP server.
+
+    KAS starts every server in the user's and the workspace's ``mcp.json`` for
+    each process, whatever the agent says: ``includeMcpJson: false`` only hides
+    their tools. So each background one-liner and memory-consolidation run on
+    ``kirocrew-lite`` started a fresh copy of every such server, and a server that
+    keeps an OAuth sign-in in memory opened a browser sign-in each time.
+
+    Only when the spec this process will put on the wire mounts nothing
+    (:func:`~kiro_crew.acp.client_mcp_array.spec_is_toolless`); such an agent can
+    call no MCP tool, so nothing it could use is switched off. Any other agent, any
+    other backend, or a spec that cannot be read keeps today's behaviour. A failed
+    send is logged and left alone, as without this step.
+    """
+    if runtime._acp_backend == ACP_BACKEND_KAS:
+        await _send_mcp_off_if_toolless(runtime)
+
+
+async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
+    """The KAS half of :func:`_switch_off_mcp_for_toolless_spawn`."""
+    from kiro_crew.acp.client_mcp_array import spec_is_toolless
 
     try:
-        _status, tools, *_rest = _get_cached(server)
+        spec = await asyncio.to_thread(runtime._projected_spawn_spec)
     except Exception:
-        logger.debug("no tool list for MCP server %s at handshake", server, exc_info=True)
-        return None
-    return list(tools) if tools else None
+        logger.debug("AcpRuntime: spawn spec unreadable; MCP left on", exc_info=True)
+        return
+    if not spec_is_toolless(spec):
+        return
+    try:
+        await runtime.send_notification(KAS_MCP_TOGGLE_METHOD, {"enabled": False})
+    except Exception:
+        logger.warning("AcpRuntime: could not switch MCP off for a tool-less agent", exc_info=True)
+        return
+    logger.info(
+        "AcpRuntime: agent=%s mounts no tool; MCP servers are off for this process",
+        runtime._agent or "<none>",
+    )
 
 
 async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -> dict[str, Any]:

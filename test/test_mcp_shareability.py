@@ -59,21 +59,9 @@ class TestDisqualifiers:
     def test_rotating_secret_env_is_reported_even_without_a_probe(self) -> None:
         """A config fact stands whether or not the server could be started.
 
-        It is not a disqualification. A secret-prefixed key is never
-        forwarded into a SHARED backend at all -- ``_declared_non_secret_env``
-        drops it because ``ENV_SCRUB_PREFIXES`` makes the pool hash non-injective
-        over these keys, so no single value is correct -- which means the pooled
-        backend receives NOBODY's secret rather than the wrong session's. Nothing
-        crosses tenants. What breaks is a server that authenticates FROM declared
-        env, and it breaks loudly at its own auth layer.
-
-        And a server following the documented pattern (read the credential from
-        disk) declares the key without needing it at runtime, so it pools fine --
-        the case a disqualification got wrong, and the expensive kind of mistake
-        for a layer whose job is to say yes.
-
-        Reported BEFORE the probe gate on purpose: on a host where the probe
-        cannot run, naming the config fact beats saying only "unknown".
+        It is not a disqualification: ``_declared_non_secret_env`` never forwards a
+        secret-prefixed key into a shared backend, so nothing crosses tenants.
+        Reported before the probe gate, so a host that cannot probe still names it.
         """
         verdict = assess(
             ShareEvidence(name="x", probe_ok=False, declared_env_names=("AWS_SECRET_ACCESS_KEY",))
@@ -86,19 +74,9 @@ class TestDisqualifiers:
     def test_rotating_secret_env_is_a_note_that_follows_the_rewriter(self) -> None:
         """Not a disqualifier, and still not auto-shared. Both halves matter.
 
-        Not disqualifying, because it is not a leak: a secret-prefixed key is never
-        forwarded into a shared backend at all, so a pooled backend receives
-        NOBODY's secret rather than the wrong session's. A server reading its
-        credential from disk -- the documented pattern -- declares the key without
-        consuming it and pools perfectly well.
-
-        Still not auto-shared, and this is agreement rather than caution. The
-        rewriter ALREADY refuses to pool such an entry: ``_withheld_env_count``
-        counts the keys a shared backend would not receive, a non-zero count leaves
-        the entry unwrapped, and ``_stub_eligibility`` reports that as
-        ``pooling_blocked_by_env``. Recommending a share the rewriter will decline
-        would have the page promise work the broker never does. When that guard
-        changes, this withholding goes with it.
+        Not a leak: a pooled backend gets nobody's secret. Not auto-shared, because
+        the rewriter declines it too (``_withheld_env_count`` > 0 is reported by
+        ``_stub_eligibility`` as ``pooling_blocked_by_env``); the page must agree.
         """
         verdict = assess(
             ShareEvidence(
@@ -118,12 +96,8 @@ class TestDisqualifiers:
     def test_a_named_identity_key_stops_withholding_the_share(self) -> None:
         """The withholding follows the guard, in BOTH directions.
 
-        The test above pins that the page declines a share the rewriter declines.
-        Once ``mcp_gateway.pool_identity_env`` names the key the rewriter DOES pool
-        the entry (``_withheld_env_count`` stops counting it, because the key is
-        now inside ``effective_env_hash`` and really is forwarded). If the note
-        survived that, the page would decline a share the broker performs -- the
-        same two-components-disagreeing failure, mirrored.
+        Once ``mcp_gateway.pool_identity_env`` names the key, it is in
+        ``effective_env_hash`` and the rewriter pools the entry, so the page must too.
         """
         evidence = ShareEvidence(
             name="x",
@@ -142,11 +116,8 @@ class TestDisqualifiers:
     def test_a_broker_gap_does_not_borrow_that_withholding(self) -> None:
         """The two must not collapse into one rule.
 
-        ``rotating_secret_env`` withholds because a live guard declines the work.
-        A broker gap has no such guard -- pooling proceeds and log verbosity simply
-        follows the last caller's level -- so it must stay pure information.
-        Sharing one flag between them would silently re-introduce the disqualifier
-        this change removed.
+        ``rotating_secret_env`` withholds because a live guard declines the work. A
+        broker gap has no such guard, so it must stay pure information.
         """
         verdict = assess(
             ShareEvidence(
@@ -177,22 +148,10 @@ class TestDisqualifiers:
     def test_a_session_bound_server_is_never_recommended(self) -> None:
         """The disqualifier is the identity mechanism, not the authorship.
 
-        ``kirocrew-cron`` is the real shape: one of ours, and still reading its
-        channel identity from process env. The sibling test below pins the other
-        half -- that being ours is NOT itself a disqualifier.
-
-        Why this one stayed a disqualifier when three others became notes: on a
-        shared backend such a server reads EMPTY, and empty is not benign here
-        because the consumer treats it as privileged.
-        ``mcp_cron._check_cron_job_ownership`` returns None -- allow -- when the
-        session key is falsy, so a pooled cron skips the ownership check entirely
-        and one session could list, pause or remove another's jobs. That is a
-        cross-session authorization failure rather than a lost feature.
-
-        It is also the one case the "share and retreat" posture cannot cover: both
-        hazard codes are routing-shaped, so serving the wrong session's data emits
-        no unroutable frame and produces no ledger entry. No retreat exists to fall
-        back on, which is what earns the gate.
+        ``kirocrew-cron`` reads its identity from process env, which is empty on a
+        shared backend, and ``mcp_cron._check_cron_job_ownership`` allows a falsy
+        key: one session could edit another's jobs. No hazard code records that, so
+        no retreat would catch it.
         """
         verdict = assess(
             ShareEvidence(
@@ -204,13 +163,10 @@ class TestDisqualifiers:
         assert verdict.recommend_share is False
 
     def test_a_managed_server_that_consumes_the_caller_block_is_not_disqualified(self) -> None:
-        """Regression: ``kirocrew-core`` was disqualified for being ours.
+        """``kirocrew-core`` is not disqualified for being one of ours.
 
-        It advertises the caller-identity extension and resolves the session from
-        the injected caller block, which is exactly the property that makes a
-        shared backend correct — so the verdict must be the positive one. Keying
-        the disqualifier on the name inverted the answer for the one server in the
-        set that was built for pooling.
+        It resolves the session from the injected caller block, which is what makes a
+        shared backend correct, so the verdict must be positive.
         """
         verdict = assess(
             ShareEvidence(
@@ -232,14 +188,9 @@ class TestDisqualifiers:
     def test_resources_subscribe_no_longer_produces_a_degradation_note(self) -> None:
         """Subscriptions survive pooling, so there is nothing to warn about.
 
-        The broker keeps a ``uri -> {stub_uuid}`` table
-        (``backend._resource_subscriptions``) and routes each
-        ``notifications/resources/updated`` to exactly the stubs subscribed to
-        its URI. The degradation table's contract is delete-not-relax: an
-        entry leaves the moment the broker learns to attribute the frames it
-        covers, and this test pins ``resources.subscribe``'s absence. A
-        subscribe-capable server is otherwise unremarkable evidence and lands
-        on the ordinary no-objection tier.
+        ``backend._resource_subscriptions`` routes each
+        ``notifications/resources/updated`` to the stubs subscribed to its URI. The
+        degradation table is delete-not-relax, so the entry is absent.
         """
         verdict = assess(
             ShareEvidence(
@@ -272,22 +223,11 @@ class TestDisqualifiers:
         assert verdict.strength is Strength.NO_OBJECTION
 
     def test_declaring_logging_is_detected_but_does_not_disqualify(self) -> None:
-        """Two claims, and only one of them survived the epistemics change.
+        """Declaring logging is detected in both shapes, and does not disqualify.
 
-        STILL TRUE: in MCP an empty object ADVERTISES a capability rather than
-        withholding it, so ``{"logging": {}}`` means ``logging/setLevel`` is
-        supported. Testing truthiness here (an earlier version of this module)
-        read that server as one that does not log at all, so the ``present`` mode
-        must keep detecting both shapes.
-
-        It is not a disqualification. The cost of pooling a logging
-        server is that the last caller's level wins for everyone, and that a log
-        notification tied to one caller's in-flight call is dropped rather than
-        broadcast. That is log volume and lost log lines. No co-tenant ever
-        receives another tenant's content, so there is nothing here to condemn
-        the server for -- and what it predicts is precisely what
-        ``HAZARD_UNATTRIBUTABLE_NOTIFICATION`` records if it ever happens for
-        real, on evidence worth more than this guess.
+        In MCP an empty object advertises a capability, so ``{"logging": {}}`` must
+        be detected; a truthiness test misses it. Pooling costs only log volume and
+        lost log lines, and ``HAZARD_UNATTRIBUTABLE_NOTIFICATION`` records it if real.
         """
         for caps in ({"logging": {}}, {"logging": {"level": "info"}}):
             verdict = assess(
@@ -355,20 +295,11 @@ class TestPositiveDeclaration:
         assert "preflight_not_run" in _codes(verdict)
 
     def test_a_divergence_does_not_beat_the_declaration(self) -> None:
-        """The inversion this refactor is about, on its sharpest case.
+        """A probe divergence rides along as a note; the declaration stands.
 
-        The naive reading is the opposite, on the reasoning that a
-        measurement outranks a promise. It does -- when the measurement measured
-        something. Two spawns under two different ``clientInfo`` values cannot:
-        an answer computed from the caller and an answer that varies for the
-        server's own reasons both produce a difference, and the variable is never
-        isolated.
-
-        For a server that ADVERTISES caller-identity the reading is weaker still,
-        because answering two callers differently is the advertised behaviour
-        working. So the divergence rides along as a note and the declaration
-        stands. The thing that can still overrule a declaration is an entry in
-        the hazard ledger, which is an event rather than an inference.
+        Two spawns under different ``clientInfo`` cannot isolate the variable, and a
+        server advertising caller-identity is meant to answer differently. Only a
+        hazard ledger entry, an event, can overrule a declaration.
         """
         verdict = assess(
             ShareEvidence(
@@ -421,19 +352,9 @@ class TestPositiveDeclaration:
     def test_a_broker_gap_is_reported_but_does_not_withhold_sharing(self) -> None:
         """The note names OUR missing feature, so it cannot be the server's cost.
 
-        ``logging/setLevel`` is process-global, but a proxy can emit at the
-        finest level any tenant asked for and filter DOWN per stub, giving each
-        tenant the verbosity it requested from one process. The broker does not
-        do that today -- that is the defect, and it is ours. Withholding pooling
-        here would charge the operator for work we have not done, which is the
-        failure mode of a layer whose whole job is to say yes.
-
-        The note still ships, because until the broker learns to attribute it,
-        log verbosity really does follow the last caller's level once pooled,
-        and the operator is entitled to know that before pressing a bulk action.
-        The degradation table's contract is delete-not-relax: an entry leaves
-        the moment the broker attributes the frames it covers, as
-        ``resources.subscribe``'s absence demonstrates.
+        A proxy could filter ``logging/setLevel`` per stub; the broker does not, which
+        is our gap, so pooling is not withheld. The note ships because verbosity does
+        follow the last caller once pooled.
         """
         verdict = assess(
             ShareEvidence(
@@ -512,14 +433,9 @@ class TestNoObjectionSplitsStubFromShare:
 class TestMeasurementCanEarnAVerdict:
     """The rung that keeps a third-party server from being stuck for ever.
 
-    ``kirocrew.caller-identity`` is our own extension and the MCP base protocol has
-    no equivalent, so a third-party server cannot reach ``DECLARED`` no matter how
-    well it behaves. Before this tier the pre-flight could only ever take a verdict
-    away (``caller_sensitive_initialize``); provoking a server and finding NO
-    divergence recorded nothing.
-
-    What it must NOT do is recommend sharing -- see
-    ``test_a_measurement_does_not_recommend_sharing``.
+    ``kirocrew.caller-identity`` is our own extension, so a third-party server can
+    never reach ``DECLARED``; a probe with no divergence earns this tier instead. It
+    must not recommend sharing (``test_a_measurement_does_not_recommend_sharing``).
     """
 
     def test_a_passed_preflight_earns_its_own_tier_without_any_declaration(self) -> None:
@@ -539,17 +455,9 @@ class TestMeasurementCanEarnAVerdict:
     def test_a_measurement_does_not_recommend_sharing(self) -> None:
         """The limit that keeps this tier honest, not caution.
 
-        The pre-flight compares the HANDSHAKE and never makes a tool call. A
-        server whose state is process-global -- one browser context, one database
-        connection, one working directory -- replays that handshake identically for
-        two callers and still cannot serve two sessions: on a shared backend one
-        caller reads state another caller wrote. So a measurement is a fact about
-        DETERMINISM while a declaration is a claim about ISOLATION, and only the
-        second is grounds for co-tenancy.
-
-        Nothing catches this afterwards either: the hazard ledger's codes describe
-        frames the gateway could not route, not state handed to the wrong session,
-        so a wrong ``recommend_share`` here would never be refuted.
+        The pre-flight compares only the handshake, which a server with process-global
+        state replays identically. A measurement shows determinism, not isolation, and
+        no hazard code would ever refute a wrong ``recommend_share``.
         """
         verdict = assess(
             ShareEvidence(
@@ -753,11 +661,8 @@ class TestHazardLedger:
     def test_concurrent_flushes_cannot_revert_the_file(self, tmp_path) -> None:
         """Two flush callers race, and the loser must not be the newer snapshot.
 
-        The periodic sweep and the shutdown flush both run in worker threads and
-        can overlap — cancellation starts the second while the first is mid-write.
-        Each builds its payload from the in-memory records BEFORE writing, so
-        without serialization the thread that writes last can be the one that read
-        first, silently reverting an observation already on disk.
+        The periodic sweep and shutdown flush can overlap in worker threads, and each
+        builds its payload before writing, so the last writer may hold the older read.
         """
         import threading
 
@@ -797,24 +702,12 @@ class TestHazardLedger:
         assert "second" in on_disk, "the newer observation was reverted by an older flush"
 
     def test_record_and_flush_interleave_repeatedly_without_crashing(self, tmp_path) -> None:
-        """``flush`` builds its JSON payload by iterating ``self._records``
-        (and each record's ``codes`` set) off-loop, in a real worker thread
-        (``asyncio.to_thread``), while ``record``/``clear`` run on gatewayd's
-        event loop thread -- genuinely concurrent OS threads, not just
-        interleaved coroutines. Without ``record``/``clear``'s copy-on-write
-        discipline (never mutating an existing dict/set in place, only ever
-        building new ones and swapping ``self._records`` in one atomic
-        assignment), a write landing mid-iteration on the flushing thread can
-        raise "dictionary/set changed size during iteration", crashing the
-        flush before its payload ever reaches ``atomic_write`` -- so even a
-        caller that catches the exception still silently loses the write.
+        """``flush`` iterating off-loop survives concurrent ``record`` calls.
 
-        Real, sustained thread contention (not a single synchronized
-        handoff): one thread continuously records under EVER-NEW identities
-        (so ``self._records`` keeps genuinely resizing, not just updating
-        existing entries) while another continuously flushes, for long
-        enough that the original bug reproduced the crash on every run
-        before the fix.
+        ``flush`` iterates ``self._records`` in a worker thread while ``record``/``clear``
+        run on the loop thread; only their copy-on-write swap prevents "changed size
+        during iteration". One thread records ever-new identities so the dict really
+        resizes, while another flushes.
         """
         import threading
         import time as _time
@@ -848,15 +741,10 @@ class TestHazardLedger:
         assert errors == []
 
     def test_record_does_not_block_while_a_flush_disk_write_is_in_progress(self, tmp_path) -> None:
-        """``record`` runs synchronously ON gatewayd's event loop -- it must
-        never wait on a lock that a concurrent ``flush`` holds across real
-        disk I/O (a slow or contended filesystem would stall the entire
-        event loop, not just this one call). ``record``/``clear`` take no
-        lock at all (copy-on-write; see the class docstring), so a flush
-        parked in ``atomic_write`` -- holding only ``_flush_lock``, which
-        neither of them ever touches -- cannot block a concurrent ``record``
-        for any duration. This asserts the actual mechanism, not just that
-        no exception happened to occur in one run.
+        """``record`` never waits on a flush parked in disk I/O.
+
+        ``record`` runs on gatewayd's event loop, so a wait would stall the loop. A
+        flush in ``atomic_write`` holds only ``_flush_lock``, which ``record`` never takes.
         """
         import threading
 
@@ -928,12 +816,8 @@ class TestHazardLedger:
 class TestHostileRecordNumbers:
     """A record file is not a protocol message -- nothing upstream validates it.
 
-    Both records are loaded during gateway startup, so a loader that raises
-    takes the daemon down before it binds its socket. ``isinstance(v, (int,
-    float))`` reads as a sufficient guard and is not: JSON parses a bare number
-    into ``int``, which has no size limit, and ``float()`` of a large enough one
-    raises ``OverflowError`` -- an ``ArithmeticError``, so it escapes a guard
-    spelled ``except (TypeError, ValueError)``.
+    A loader that raises at startup takes the daemon down. ``float()`` of a huge JSON
+    ``int`` raises ``OverflowError``, which escapes ``except (TypeError, ValueError)``.
     """
 
     #: 310 digits: past the largest representable double, still valid JSON.
@@ -1001,11 +885,8 @@ class TestHostileRecordNumbers:
 class TestNameCollisionDoesNotInheritEvidence:
     """One server owns one row, so the reader is a direct lookup.
 
-    The ambiguity that matters is one NAME covering two different launches in the
-    merged agent config: the rows merge, and serving the measured definition's
-    verdict to the merged row would hand an unmeasured one its
-    ``recommend_share``. That is decided in the row loop, where both definitions
-    are visible — not here.
+    One name covering two launches in the merged config is decided in the row loop,
+    where both definitions are visible, not here.
     """
 
     @staticmethod
@@ -1071,16 +952,8 @@ class TestNoBlockingRecordIoOnTheLoop:
     """One invariant, not one assertion per site.
 
     Every filesystem touch of the two shareability records happens off the event
-    loop. Three separate rounds of this same finding — the row builder, the
-    evaluation pass, then daemon startup — were each closed by patching the
-    instance that was reported, because the rule named the blocking helpers in a
-    hand-written list. A helper missing from that list was invisible, so the
-    fourth instance (deriving cache keys, the most expensive of them) passed a
-    green ratchet.
-
-    So the blocking set is DERIVED from the modules themselves: any helper that
-    reaches a filesystem or subprocess primitive counts, whether or not anyone
-    remembered to list it.
+    loop. The blocking set is derived from the modules, not hand-listed: any helper
+    that reaches a filesystem or subprocess primitive counts.
     """
 
     #: Modules whose helpers own the record files and the binaries behind them.
@@ -1124,11 +997,8 @@ class TestNoBlockingRecordIoOnTheLoop:
     def _blocking_helpers(cls) -> set[str]:
         """Names of helpers in the record modules that reach an IO primitive.
 
-        Transitive on purpose. ``load_cache`` touches no primitive itself — it
-        delegates to ``VerdictCache.load``, which does. A derivation that only
-        looked one level deep, or only at module-level functions, would call the
-        public entry points non-blocking and wave through exactly the calls this
-        rule exists to stop.
+        Transitive on purpose: ``load_cache`` only delegates to ``VerdictCache.load``,
+        so a one-level scan would call the public entry points non-blocking.
         """
         import ast
         import importlib
@@ -1226,15 +1096,9 @@ class TestNoBlockingRecordIoOnTheLoop:
     def test_the_expensive_modules_stay_off_the_gateway_boot_path(self) -> None:
         """``evaluate`` must not be imported at module scope by the handler.
 
-        The handler is on the gateway's boot path, and ``evaluate`` pulls in
-        ``preflight`` -> ``mcp_discovery`` and ``stub`` (the stub PROCESS entry
-        point). Measured on this tree, hoisting it added 8 modules to that path
-        and pushed a startup loop-responsiveness ceiling over on Windows. The
-        top-level-imports convention loses to a measured startup regression —
-        this is a boot-path decision, NOT an unproven circular-import excuse.
-
-        Asserted at module scope rather than by importing and counting, so the
-        test states the rule instead of re-measuring a machine-dependent number.
+        The handler is on the boot path, and ``evaluate`` pulls in ``preflight``,
+        ``mcp_discovery`` and ``stub``; hoisting it added 8 modules and broke a Windows
+        startup ceiling. Checked on the AST, not by counting machine-dependent imports.
         """
         import ast
         import importlib
@@ -1356,11 +1220,8 @@ class TestHazardInvalidation:
     ) -> None:
         """Two identities are live at once during a blue/green drain.
 
-        The pool keeps the outgoing build serving its attached stubs while the
-        incoming one starts, so BOTH can still record. Collapsing them into one
-        row per name let a late frame from the draining backend overwrite what
-        the new build had already observed — and that reads as "nothing observed"
-        for the build actually being kept, the permissive direction.
+        Both builds can record. One row per name would let a late frame from the
+        draining build overwrite the new build's observation, the permissive way.
         """
         led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
         new = self._ident("v2")
@@ -1595,17 +1456,9 @@ class TestBackendRecordsHazards:
     def _backend(server_name: str, *, exclusive_token: str = "", refcount: int = 2) -> object:
         """A Backend-shaped stand-in for the fields ``_record_hazard`` reads.
 
-        Deliberately not a MagicMock: the point is to pin that the method reads
-        ``pool_key.server_name``, the three launch fingerprints,
-        ``exclusive_token`` and ``refcount`` — the REAL field names on
-        ``Backend`` and ``PoolKey`` — so a rename cannot leave this passing
-        against a mock that would answer to anything. That the fingerprints are
-        already ON the pool key is what lets the recording site stamp an identity
-        without doing IO on the event loop.
-
-        ``refcount`` defaults to 2 because that is the only state in which a
-        hazard means anything: two clients attached, so an unattributable frame
-        could have reached the wrong one.
+        Not a MagicMock, so a rename of the real ``Backend``/``PoolKey`` fields
+        (``pool_key.server_name``, fingerprints, ``exclusive_token``, ``refcount``)
+        fails here. ``refcount`` is 2 because a hazard needs two attached clients.
         """
         from kiro_crew.mcp_gateway.backend import Backend
 
@@ -1647,11 +1500,8 @@ class TestBackendRecordsHazards:
     ) -> None:
         """Being poolable is not the same as currently serving two clients.
 
-        A pooled backend serves exactly one client from the moment it starts
-        until a second stub attaches, and none at all between sessions. An
-        unattributable frame in either state had no second tenant to reach, so it
-        says nothing about shareability — and a hazard is permanent, so recording
-        one here would kill a server for behaviour that is correct.
+        With one or no client attached, an unattributable frame had no second tenant
+        to reach, and a hazard is permanent, so none is recorded.
         """
         monkeypatch.setattr(hazards, "_sink", hazards.HazardLedger(hazards.ledger_path(tmp_path)))
         backend = self._backend("srv", refcount=refcount)
@@ -1668,13 +1518,9 @@ class TestBackendRecordsHazards:
     def test_both_observation_sites_call_the_recorder(self) -> None:
         """Ratchet: the hazard sites must stay wired to the ledger.
 
-        Three sites: the unattributable request-scoped notification drop, the
-        unroutable server->client request recycle, and the terminal
-        resources/updated drop for a URI nobody subscribed to.
-
-        Asserted on the source because reproducing either frame end to end
-        needs a live shared backend and a misbehaving server; the value here is
-        catching a future edit that deletes the call while keeping the log line.
+        Three sites: the unattributable notification drop, the unroutable
+        server->client request recycle, and the unsubscribed resources/updated drop.
+        Checked on source, since an end-to-end frame needs a misbehaving shared server.
         """
         import importlib
         from pathlib import Path as _Path

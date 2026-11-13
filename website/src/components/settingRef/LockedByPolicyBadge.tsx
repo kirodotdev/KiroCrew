@@ -1,8 +1,8 @@
 /**
  * <LockedByPolicyBadge> — the one "locked by policy" pill.
  *
- * An enterprise build ignores some local switches: only the organization's
- * policy can turn them on (RFC crew-enterprise-edition D3). The backend says so
+ * An LTS build ignores some local switches: only the organization's
+ * policy can turn them on (RFC crew-lts-edition D3). The backend says so
  * per field: `GET /api/config/schema` carries `lockedByPolicy` on a locked path,
  * and a feature's own GET can carry `locked_by_policy`. The badge shows that the
  * setting is locked, so a toggle that does nothing explains itself. Absent on an

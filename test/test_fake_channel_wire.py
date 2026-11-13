@@ -1,15 +1,8 @@
 """Fidelity tests for the wire-level channel fake.
 
-The wire harness exists so a channel's real client, transport and renderer run
-against canned vendor bytes. That is only worth anything if the canned response
-behaves like ``aiohttp``: a response object written by hand can diverge from
-the library in ways that raise no ``AttributeError``, so a suite stays green
-while production breaks on the same bytes.
-
-These tests pin the property that removes that risk: the response read side is
-``aiohttp``'s own code, bound onto the fake's response object. The identity
-assertions are the load-bearing ones -- replacing any of those methods with a
-local re-implementation fails here, whatever the replacement happens to return.
+A hand-written response can diverge from ``aiohttp`` without raising, so the fake's
+read side is ``aiohttp``'s own code bound onto its response object. The identity
+assertions fail on any local re-implementation, whatever it returns.
 """
 
 from __future__ import annotations
@@ -153,11 +146,8 @@ class TestStatusRulesMatchAiohttp:
 class TestHeadersAreMatchedCaseInsensitively:
     """A fixture header is one field however it is spelled.
 
-    A plain dict would make ``content-type`` and ``Content-Type`` two separate
-    entries. ``HeadersMixin`` asks for aiohttp's spelling, so the lowercase
-    form would be looked past and the default answered instead -- letting
-    ``.json()`` accept a body production refuses, which is the divergence this
-    module exists to remove.
+    ``HeadersMixin`` asks for aiohttp's spelling, so a plain dict would miss a lowercase
+    key and let ``.json()`` accept a body production refuses.
     """
 
     @pytest.mark.parametrize("spelling", ["Content-Type", "content-type", "CONTENT-TYPE"])

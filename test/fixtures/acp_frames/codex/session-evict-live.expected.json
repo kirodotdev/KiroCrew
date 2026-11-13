@@ -1,0 +1,66 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "acp": false,
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {},
+        "systemPrompt": {}
+      }
+    },
+    "agent_version": "2.3.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "codex-evict-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "id": "mode"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "Session codex-evict-session-1 not found"
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 5
+  }
+]

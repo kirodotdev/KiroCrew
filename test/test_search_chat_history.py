@@ -45,6 +45,28 @@ class TestHelpers:
         if "<<<" in snip:
             assert ">>>" in snip
 
+    def test_a_prompt_in_the_content_does_not_count_as_the_closing_delimiter(self):
+        # A ">>>" before the match (a Python REPL prompt) is content, not the
+        # marker's close: a capped snippet must still end the match with ">>>".
+        needle = "z" * 330
+        content = ">>> run\n" + needle + " tail" * 50
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], needle)
+        assert "<<<" in snip
+        assert snip.rfind(">>>") > snip.rfind("<<<")
+
+    def test_a_marker_inside_the_match_does_not_count_as_the_close(self):
+        needle = "z" * 100 + ">>>" + "z" * 227
+        content = "pre " + needle + " post"
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], needle)
+        assert snip.startswith("pre <<<") and snip.endswith(">>>")
+
+    def test_a_here_string_after_the_match_is_left_as_text(self):
+        # A "<<<" after the closed match is the transcript's own (a shell
+        # here-string): the snippet must not gain a ">>>" that marks nothing.
+        content = "match here then cat <<< word"
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "match")
+        assert snip == "<<<match>>> here then cat <<< word"
+
     def test_snippet_empty_needle_guarded(self):
         # Empty/whitespace needle must not match-at-0 and wrap garbage.
         assert mcp_core._extract_history_snippet([{"role": "user", "content": "abc"}], "") == ""
@@ -154,6 +176,17 @@ class TestSearchChatHistoryHandler:
         _seed_sessions(tmp_path)
         out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
         assert "redis.timeout" in out
+
+    def test_get_chat_session_shows_a_blank_message_as_blank(self, tmp_path, monkeypatch):
+        # A null or missing content is an empty message, never the text "None".
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        path = cl._path("dashboard_chat-1")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"role": "assistant", "content": null}\n{"role": "user"}\n')
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
+        assert "redis.timeout" in out
+        assert "None" not in out
 
     def test_get_chat_session_reads_recall_roles(self, tmp_path, monkeypatch):
         """An inject-role breadcrumb is readable here, and a system-role one is not.

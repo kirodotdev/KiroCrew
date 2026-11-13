@@ -345,7 +345,7 @@ def test_gatewayd_init_exports_to_edition_destination(gatewayd_env):
         assert expected in names, expected
     # Same resource attributes the main process exports.
     assert resource is not None
-    expected_attrs = provider_mod._resource_attributes()
+    expected_attrs = provider_mod._resource_attributes("kiro")
     for key in ("service.name", "service.version", "os.type", "host.cpu.logical_count"):
         assert resource[key] == expected_attrs[key]
     assert resource["process.pid"] == os.getpid()

@@ -134,7 +134,10 @@ async def _promote_verdict(
     # allowed roots (home, data home, publish.relocate_roots); outside them the
     # path is dropped and the save proceeds as ordinary content with no pointer.
     def _within_allowed() -> bool:
-        p = Path(canonical_path)
+        from kiro_crew.platform_compat import strip_extended_length_prefix
+
+        # Folded like the roots it is compared to.
+        p = strip_extended_length_prefix(Path(canonical_path))
         for r in get_default_store().allowed_source_roots():
             # Comparison kept INLINE (not factored into a helper): CodeQL's taint
             # tracker only recognises the containment guard in this shape.
@@ -267,13 +270,13 @@ def _crewmate_binding_refusal(cfg: Any, slug: str) -> str | None:
     owners = _member_names_for_slug(cfg, slug)
     if not owners:
         return _refuse_binding(
-            f"bound_to 'crewmate:{slug}' names no crew member, so nothing can ever "
-            "render this package: a crewmate's dashboard is resolved from the roster "
-            "by that slug. Create the crewmate first, or bind to an existing one"
+            f"bound_to 'Bot:{slug}' names no Bot, so nothing can ever "
+            "render this package: a Bot's dashboard is resolved from the roster "
+            "by that slug. Create the Bot first, or bind to an existing one"
         )
     if len(owners) > 1:
         return _refuse_binding(
-            f"bound_to 'crewmate:{slug}' is ambiguous: {len(owners)} crew members "
+            f"bound_to 'Bot:{slug}' is ambiguous: {len(owners)} Bots "
             "resolve to that slug, so this page would belong to none of them and every "
             "read of it is refused 'dashboard_slug_ambiguous'. Ask the human to rename "
             "one of them"

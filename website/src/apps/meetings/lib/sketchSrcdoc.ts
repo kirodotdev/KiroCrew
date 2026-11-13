@@ -87,13 +87,15 @@
 
 import { MERMAID_RUNTIME_PATH as MERMAID_RUNTIME_PATH_ROOT } from '../../../lib/vendorPaths'
 import { withBase } from '../../../lib/basePath'
+import { escapeScriptClose } from '../../../lib/widgetSrcdoc'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
 
 /**
  * CSP for the sketch frame. `scriptOrigin` is the dashboard's own origin
  * (`window.location.origin`) — a null-origin document cannot use `'self'`, so
- * the origin is spelled out.
+ * the origin is spelled out. The exported file (`buildSketchExport`) passes
+ * `null`: its runtime is inlined, so `script-src` is `'unsafe-inline'` alone.
  *
  * Each directive, and why it is exactly this:
  *
@@ -139,9 +141,9 @@ const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
  * - `base-uri 'none'` — a `<base href>` would re-point every relative URL in the
  *   document, including the Mermaid script path, at an attacker origin.
  */
-const cspFor = (scriptOrigin: string): string =>
+const cspFor = (scriptOrigin: string | null): string =>
   "default-src 'none'; " +
-  `script-src 'unsafe-inline' ${scriptOrigin}${MERMAID_RUNTIME_PATH}; ` +
+  `script-src 'unsafe-inline'${scriptOrigin === null ? '' : ` ${scriptOrigin}${MERMAID_RUNTIME_PATH}`}; ` +
   "style-src 'unsafe-inline'; " +
   "img-src data:; font-src data:; connect-src 'none'; " +
   "form-action 'none'; base-uri 'none';"
@@ -437,8 +439,12 @@ function scrubModelDocument(root: ParentNode): void {
  * so anything allowed to parse ahead of it — an `<img>`, a `<script>`, an
  * auto-submitting `<form>` — would fire under NO policy. Keep the insert last in
  * this function and first in the head.
+ *
+ * @param inlineRuntime The text of the vendored `mermaid.min.js`, for the
+ *   exported file only (`buildSketchExport`): inlined in place of the `<script
+ *   src>`, and `scriptOrigin` is then unused.
  */
-export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
+export function buildSketchSrcdoc(html: string, scriptOrigin: string, inlineRuntime?: string): string {
   // `document.implementation.createHTMLDocument` returns a detached
   // `<html><head><title></title></head><body>` we can assemble into.
   const doc = document.implementation.createHTMLDocument('')
@@ -465,10 +471,16 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
   // NOTE: uses a placeholder <meta> instead of a live <script> to avoid
   // happy-dom's eager script loading (ECONNREFUSED in CI). See widgetSrcdoc.ts
   // for the full rationale — same pattern.
-  const mermaidPlaceholder = doc.createElement('meta')
-  mermaidPlaceholder.setAttribute('name', 'x-script-placeholder')
-  mermaidPlaceholder.setAttribute('data-src', scriptOrigin + MERMAID_RUNTIME_PATH)
-  head.appendChild(mermaidPlaceholder)
+  if (inlineRuntime === undefined) {
+    const mermaidPlaceholder = doc.createElement('meta')
+    mermaidPlaceholder.setAttribute('name', 'x-script-placeholder')
+    mermaidPlaceholder.setAttribute('data-src', scriptOrigin + MERMAID_RUNTIME_PATH)
+    head.appendChild(mermaidPlaceholder)
+  } else {
+    const runtime = doc.createElement('script')
+    runtime.textContent = escapeScriptClose(inlineRuntime)
+    head.appendChild(runtime)
+  }
 
   // Model HTML, adopted as typed DOM nodes — see the doc comment above.
   const range = doc.createRange()
@@ -497,7 +509,7 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
   // LAST, and FIRST in the head: nothing above may parse before the policy.
   const csp = doc.createElement('meta')
   csp.setAttribute('http-equiv', 'Content-Security-Policy')
-  csp.setAttribute('content', cspFor(scriptOrigin))
+  csp.setAttribute('content', cspFor(inlineRuntime === undefined ? scriptOrigin : null))
   head.insertBefore(csp, head.firstChild)
 
   // The one remaining template literal holds the static DOCTYPE plus the
@@ -509,6 +521,9 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
   // from model fragments (FORBIDDEN list), and (2) attribute serialization
   // HTML-escapes quotes regardless. Non-global replace is defense-in-depth.
   const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  // The exported file inlined its runtime, so it has no placeholder to swap,
+  // and the first match would be model text instead.
+  if (inlineRuntime !== undefined) return serialized
   return serialized.replace(
     /<meta name="x-script-placeholder" data-src="([^"]*)">/,
     // crossorigin="anonymous": this srcdoc is a null-origin sandboxed iframe (a
@@ -519,4 +534,15 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
     // No onerror half here: this frame has no loading overlay to dismiss.
     (_match, src) => `<script src="${src}" crossorigin="anonymous"></script>`,
   )
+}
+
+/**
+ * The sketch as a file a person can share: the frame's document, with the same
+ * scrub, bootstrap and CSP, and the vendored Mermaid runtime inlined, because a
+ * file opened anywhere has no dashboard origin to load it from.
+ */
+export async function buildSketchExport(html: string): Promise<string> {
+  const response = await fetch(MERMAID_RUNTIME_PATH)
+  if (!response.ok) throw new Error(`Mermaid runtime: HTTP ${response.status}`)
+  return buildSketchSrcdoc(html, '', await response.text())
 }

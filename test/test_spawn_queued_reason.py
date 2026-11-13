@@ -162,13 +162,13 @@ class TestSpawnSubAgentsNamesTheDeferral:
         assert not [c for c in post.call_args_list if c.args[0] == "/api/spawn/mark-collected"]
         return [json.loads(chunk) for chunk in out.split("\n\n")]
 
-    def test_a_not_found_answer_is_an_error_never_a_queued_member(self, monkeypatch) -> None:
+    def test_a_not_found_answer_is_unread_never_a_queued_member(self, monkeypatch) -> None:
         """ "Held" is read off ``queued: true`` only, never off a 404's prose: a
         gone row or a refused lookup is not "queued, nothing was cancelled"."""
         records = self._call(monkeypatch, {"error": "not found"})
-        assert not [r for r in records if r.get("status") == "queued"]
-        errors = [r for r in records if r.get("status") == "error"]
-        assert len(errors) == 1 and "check spawn_status" in errors[0]["hint"]
+        assert not [r for r in records if r.get("status") in ("queued", "error")]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert still and still[0]["states"] == {"q1": "unread"}
 
     def test_a_capacity_wait_does_not_repeat_the_accept_time_sentence(self, monkeypatch) -> None:
         """Deferred for memory at accept, now waiting behind the concurrency cap
@@ -216,24 +216,19 @@ class TestSpawnSubAgentsNamesTheDeferral:
         assert still and still[0]["states"] == {"q1": "running"}
         assert not [r for r in records if r.get("status") == "queued"]
 
-    def test_a_transport_failure_is_still_an_error(self, monkeypatch) -> None:
-        """An unreachable gateway says nothing about the row: the member keeps
-        its error entry, and because it was accepted (deferred) at spawn time,
-        a hint not to re-spawn it blind."""
+    def test_a_transport_failure_is_unread_not_an_error(self, monkeypatch) -> None:
+        """An unreachable gateway says nothing about the row: the member was
+        accepted at spawn time, so it is listed as unread, never as failed."""
         records = self._call(monkeypatch, {"error": "connection refused"})
-        errors = [r for r in records if r.get("status") == "error"]
-        assert len(errors) == 1
-        assert errors[0]["hint"] == (
-            "accepted at spawn time; its state couldn't be read now; "
-            "check spawn_status before re-spawning"
-        )
-        assert not [r for r in records if r.get("status") == "queued"]
+        assert not [r for r in records if r.get("status") in ("queued", "error")]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert still and still[0]["states"] == {"q1": "unread"}
 
 
-class TestSpawnSubAgentsHintsEveryUnreadChild:
+class TestSpawnSubAgentsListsEveryUnreadChild:
     """A child that STARTED (not gate-deferred) and whose final read is the
-    gateway not answering keeps its error entry, and gets the same hint not to
-    re-spawn it blind; a child that finished with an error gets its text only."""
+    gateway not answering is listed as still running, with its id, so the caller
+    waits for it; a child that finished with an error gets its text."""
 
     @staticmethod
     def _call(monkeypatch, status: dict) -> list[dict]:
@@ -277,18 +272,16 @@ class TestSpawnSubAgentsHintsEveryUnreadChild:
             )
         return [json.loads(chunk) for chunk in out.split("\n\n")]
 
-    def test_a_started_child_the_gateway_did_not_answer_for_gets_the_hint(
+    def test_a_started_child_the_gateway_did_not_answer_for_is_still_running(
         self, monkeypatch
     ) -> None:
         records = self._call(
             monkeypatch, {"error": "<urlopen error [Errno 111] Connection refused>"}
         )
-        errors = [r for r in records if r.get("status") == "error"]
-        assert len(errors) == 1
-        assert errors[0]["hint"] == (
-            "accepted at spawn time; its state couldn't be read now; "
-            "check spawn_status before re-spawning"
-        )
+        assert not [r for r in records if r.get("status") == "error"]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert len(still) == 1
+        assert still[0]["task_ids"] == ["s1"] and still[0]["states"] == {"s1": "unread"}
 
     def test_a_child_that_finished_with_an_error_gets_its_text_and_no_hint(
         self, monkeypatch
@@ -336,7 +329,7 @@ class TestSpawnSubAgentsWaitsOnlyForStartedWork:
             return {}
 
         def _get(path: str, **_kw: object) -> dict:
-            aid = path.rsplit("/", 1)[-1]
+            aid = path.partition("?")[0].rsplit("/", 1)[-1]
             gets[aid] = gets.get(aid, 0) + 1
             if aid == "a1":
                 return {"id": "a1", "done": True, "result": "A"}
@@ -500,3 +493,119 @@ class TestSpawnStatusAndListShowAQueuedRun:
         ):
             out = spawn_tools.spawn_list("spawn_list", {})
         assert out.splitlines()[0] == "No subagents running."
+
+
+class TestSpawnSubAgentsReleasesDeferredMembers:
+    """A member settled because a gate deferral holds it is named to the gateway
+    once, before the resume hold, so the parent's wait stops awaiting it. Only a
+    nested parent (``subagent:``) has a wait to release; a chat turn sends none."""
+
+    @staticmethod
+    def _wave(monkeypatch, parent: str, *, release_answers: list[dict] | None = None):
+        class _Time:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                cls.now += 0.001
+                return cls.now
+
+            @staticmethod
+            def sleep(_s: float) -> None:
+                pass
+
+        ids = iter(["a1", "q1"])
+        calls: list[tuple[str, str, object]] = []
+        polls_of_a = {"n": 0}
+        resume = iter([{"known": True, "granted": False}, {"known": True, "granted": True}])
+        releases = iter(release_answers or [])
+
+        def _post(path: str, body: dict, **kw: object) -> dict:
+            calls.append(("POST", path, body))
+            if path == "/api/spawn":
+                aid = next(ids)
+                return {
+                    "id": aid,
+                    **({"status": "queued", "reason": "low_memory"} if aid == "q1" else {}),
+                }
+            if path.endswith("/release-deferred"):
+                assert kw.get("session_key") == parent
+                return next(releases, {"released": body["ids"], "resumed": False})
+            return {}
+
+        def _get(path: str, **_kw: object) -> dict:
+            if "/resume" in path:
+                calls.append(("GET", path, None))
+                return next(resume)
+            # A status read, less the hold the wait asks the gateway for.
+            path = path.partition("?")[0]
+            calls.append(("GET", path, None))
+            aid = path.rsplit("/", 1)[-1]
+            if aid == "a1":
+                polls_of_a["n"] += 1
+                done = polls_of_a["n"] >= 3
+                return {"id": "a1", "done": done, **({"result": "A"} if done else {})}
+            return {
+                "id": "q1",
+                "done": False,
+                "queued": True,
+                "reason": "low_memory",
+                "reason_detail": _DETAIL,
+            }
+
+        monkeypatch.setenv("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200")
+        with (
+            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
+            patch.object(spawn_tools.mcp_core, "_get", side_effect=_get),
+            patch.object(spawn_tools.mcp_core, "time", _Time),
+            patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value=parent),
+            patch("kiro_crew.mcp_core.sel"),
+        ):
+            out = _settle(
+                spawn_tools.spawn_sub_agents(
+                    "spawn_sub_agents",
+                    {"agents": [{"prompt": "a"}, {"prompt": "q"}]},
+                )
+            )
+        return out, calls
+
+    def test_a_deferred_member_is_settled_once_and_released_once(self, monkeypatch) -> None:
+        out, calls = self._wave(monkeypatch, "subagent:p7")
+        releases = [c for c in calls if c[1].endswith("/release-deferred")]
+        assert releases == [("POST", "/api/spawn/p7/release-deferred", {"ids": ["q1"]})]
+        holds = [i for i, c in enumerate(calls) if "/resume" in c[1]]
+        assert len(holds) == 2, "the call returns once the second probe grants"
+        assert calls.index(releases[0]) < holds[0], "released before the first probe"
+        # q1 was read once in the wait (then settled) and once more in the result.
+        assert [c for c in calls if c[1] == "/api/spawn/q1"] == [("GET", "/api/spawn/q1", None)] * 2
+        records = [json.loads(chunk) for chunk in out.split("\n\n")]
+        assert [r["status"] for r in records if r.get("agent")] == ["completed"]
+        assert [r["agents"] for r in records if r.get("status") == "queued"] == [{"q1": _DETAIL}]
+
+    def test_a_release_that_failed_in_transport_is_sent_again(self, monkeypatch) -> None:
+        _out, calls = self._wave(
+            monkeypatch, "subagent:p7", release_answers=[{"transport_error": True}]
+        )
+        releases = [c for c in calls if c[1].endswith("/release-deferred")]
+        assert len(releases) == 2, "re-sent on the next probe, then not again"
+
+    def test_a_release_that_got_a_store_outage_is_sent_again(self, monkeypatch) -> None:
+        _out, calls = self._wave(
+            monkeypatch,
+            "subagent:p7",
+            release_answers=[
+                {
+                    "error": "task store unavailable; retry later",
+                    "code": "task_store_unavailable",
+                    "retry": True,
+                }
+            ],
+        )
+        releases = [c for c in calls if c[1].endswith("/release-deferred")]
+        assert len(releases) == 2, "re-sent after the 503 answer, then not again"
+
+    def test_a_chat_turn_parent_sends_no_release(self, monkeypatch) -> None:
+        out, calls = self._wave(monkeypatch, "chat-1")
+        assert not [c for c in calls if c[1].endswith("/release-deferred")]
+        assert not [c for c in calls if "/resume" in c[1]]
+        assert '"completed"' in out

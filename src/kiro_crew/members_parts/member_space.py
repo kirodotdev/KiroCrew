@@ -2,8 +2,8 @@
 
 Every file and directory name a member's space holds, the display-name and crew-id rules
 (validation, allocation, the label a crew may show), slugs and the containment-checked
-paths under ``members/``, and the first-welcome marker a just-created member's directory
-carries.
+paths under ``members/``, and the first-welcome marker and create-request record a
+just-created member's directory carries.
 
 :mod:`kiro_crew.members` stays the import path and the patch surface; see
 :mod:`kiro_crew.members_parts`.
@@ -350,6 +350,55 @@ def member_pin_matches(mode: object, current_agent: object, requested_agent: obj
     )
 
 
+def is_person_created_crewmate(name: object, agent_cfg: object) -> bool:
+    """Whether the crew record *agent_cfg* under *name* is a crewmate the PERSON created.
+
+    The Crewmates roster's ``dashboard_created`` rule, owned here so the roster and
+    the inventory gauge cannot drift apart: the crew manager's own origin
+    (``source == "kirocrew"``) AND a member id, which is assigned when the member's
+    memory is allocated. Both create paths the person takes write exactly that --
+    the Crewmates page's create, and Mate's ``crewmate.create`` /
+    ``crewmate.import`` card once approved. Mate itself (``source == "builtin"``),
+    package-synced rows, app-made rows, legacy rows and the reserved ``default``
+    member are not counted. ``member_id`` is never coerced by the loader, so only a
+    non-blank string counts.
+    """
+    member_id = getattr(agent_cfg, "member_id", None)
+    # "default" is the reserved main member every install carries; "kirocrew" is
+    # the crew manager's own origin, the one both person-driven create paths write.
+    return (
+        name != "default"
+        and getattr(agent_cfg, "source", None) == "kirocrew"
+        and isinstance(member_id, str)
+        and bool(member_id.strip())
+    )
+
+
+def count_person_created_crewmates(config=None) -> int:
+    """How many crewmates the person created on this install.
+
+    Walks the same rows ``GET /api/members`` builds -- a dispatchable name with a
+    resolvable slug -- and counts the ones :func:`is_person_created_crewmate`
+    accepts. Config only: no transcript, member directory or network is read, so
+    the cost is one (fingerprint-cached) config load.
+    """
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    count = 0
+    for name, agent_cfg in config.agents.items():
+        if not is_dispatchable_member_name(name):
+            continue
+        try:
+            member_slug(name, config)
+        except MemberSlugError:
+            continue
+        if is_person_created_crewmate(name, agent_cfg):
+            count += 1
+    return count
+
+
 def members_root() -> Path:
     """Root directory for member spaces.
 
@@ -410,6 +459,13 @@ def canonical_member_key(name: str, config=None) -> str:
     one: those two already collide at the slug level, and the surfaces that care
     refuse that slug outright (``dashboard_slug_ambiguous``). Guessing here would
     turn a refusal into a write on whichever key sorted first.
+
+    When no key matches even by case, *name* is tried as a member id: a record
+    from before crews were keyed by id is keyed by its display name and is never
+    re-keyed, so its id answers with the key it is stored under. The match is
+    ``execution_context.member_config_for_id``'s, the one unique-id rule memory
+    resolution uses; a missing or ambiguous id leaves *name* unchanged. The
+    ``display_name`` label is never matched.
     """
     if not isinstance(name, str) or not name:
         return name
@@ -422,7 +478,17 @@ def canonical_member_key(name: str, config=None) -> str:
         return name
     folded = name.casefold()
     hits = [key for key in agents if isinstance(key, str) and key.casefold() == folded]
-    return hits[0] if len(hits) == 1 else name
+    if hits:
+        return hits[0] if len(hits) == 1 else name
+    if not agents:
+        return name
+    from kiro_crew.execution_context import member_config_for_id
+
+    try:
+        key, _ = member_config_for_id(config, name)
+    except ValueError:
+        return name
+    return key
 
 
 def member_slug(name: str, config=None) -> str:
@@ -475,6 +541,36 @@ WELCOME_KIND_MATE = ""
 #: the user what it should work on.
 WELCOME_KIND_GOAL = "goal"
 
+#: Written into a member's directory once the ``POST /api/agents`` that created
+#: it has finished, when that request carried a ``request_id``: a repeat of the
+#: request is then answered with this member instead of ``409 agent_exists``.
+CREATE_REQUEST_FILENAME = "create_request.json"
+
+
+def _write_member_record(name: str, config, filename: str, record: dict[str, str]) -> None:
+    """Write *record* as *filename* in member *name*'s directory. Blocking IO."""
+    path = member_dir(member_slug(name, config)) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Mate's welcome is written at boot, before the gateway's own owner-only sweep
+    # runs, so the chain this creates is tightened here (members/ and members/<slug>/).
+    for _dir in (path.parent, path.parent.parent):
+        platform_compat.restrict_dir_to_owner(_dir)
+    atomic_write(path, json.dumps(record) + "\n")
+
+
+def _read_member_record(slug: str, filename: str, member: str) -> dict | None:
+    """The record *filename* at *slug* when it names *member*, else ``None``.
+
+    A missing, unreadable or foreign record is ``None``, so a directory a
+    different member later reaches under the same slug is not read as this
+    one's. Blocking IO.
+    """
+    try:
+        record = json.loads(read_bytes_with_retry(member_dir(slug) / filename, max_bytes=4096))
+    except (OSError, ValueError, MemberSlugError):
+        return None
+    return record if isinstance(record, dict) and record.get("member") == member else None
+
 
 def mark_welcome_owed(name: str, *, config=None, kind: str = WELCOME_KIND_MATE) -> bool:
     """Record that the just-created member *name* owes a first welcome.
@@ -490,13 +586,7 @@ def mark_welcome_owed(name: str, *, config=None, kind: str = WELCOME_KIND_MATE) 
     if kind:
         record["kind"] = kind
     try:
-        path = member_dir(member_slug(name, config)) / WELCOME_OWED_FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Written at boot, before the gateway's own owner-only sweep runs, so the
-        # chain this creates is tightened here (members/ and members/<slug>/).
-        for _dir in (path.parent, path.parent.parent):
-            platform_compat.restrict_dir_to_owner(_dir)
-        atomic_write(path, json.dumps(record) + "\n")
+        _write_member_record(name, config, WELCOME_OWED_FILENAME, record)
     except Exception:
         logger.warning("Could not record the first welcome owed by %r", name, exc_info=True)
         return False
@@ -510,12 +600,8 @@ def owed_welcome_kind(slug: str, member: str) -> str | None:
     foreign record owes nothing. A record whose ``kind`` is not one this
     gateway knows owes nothing either. Blocking IO.
     """
-    try:
-        raw = read_bytes_with_retry(member_dir(slug) / WELCOME_OWED_FILENAME, max_bytes=4096)
-        record = json.loads(raw)
-    except (OSError, ValueError, MemberSlugError):
-        return None
-    if not isinstance(record, dict) or record.get("member") != member:
+    record = _read_member_record(slug, WELCOME_OWED_FILENAME, member)
+    if record is None:
         return None
     kind = record.get("kind", WELCOME_KIND_MATE)
     return kind if kind in (WELCOME_KIND_MATE, WELCOME_KIND_GOAL) else None
@@ -524,3 +610,29 @@ def owed_welcome_kind(slug: str, member: str) -> str | None:
 def welcome_owed(slug: str, member: str) -> bool:
     """Whether *member* (at *slug*) owes a first welcome of any kind. Blocking IO."""
     return owed_welcome_kind(slug, member) is not None
+
+
+def mark_create_request(name: str, request_id: str, *, config=None) -> None:
+    """Record that the ``POST /api/agents`` named *request_id* created member *name*.
+
+    Best effort: without the record a repeat of that request is refused as
+    ``agent_exists``, as every repeat was before. Blocking IO.
+    """
+    try:
+        record = {"member": name, "request_id": request_id}
+        _write_member_record(name, config, CREATE_REQUEST_FILENAME, record)
+    except Exception:
+        logger.warning("Could not record the create request of %r", name, exc_info=True)
+
+
+def created_by_request(name: str, request_id: str, *, config=None) -> bool:
+    """Whether member *name* was created by the ``POST /api/agents`` named *request_id*.
+
+    Blocking IO.
+    """
+    try:
+        slug = member_slug(name, config)
+    except MemberSlugError:
+        return False
+    record = _read_member_record(slug, CREATE_REQUEST_FILENAME, name)
+    return record is not None and record.get("request_id") == request_id

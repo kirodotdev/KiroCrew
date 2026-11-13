@@ -692,7 +692,7 @@ class TestSavingAPinRefreshesSessionDefaults:
         refreshed: list[str] = []
         async with TestClient(TestServer(self._app(refreshed))) as client:
             resp = await client.post(
-                "/api/agents", json={"name": "worker", "kiro_agent": "kirocrew-lite"}
+                "/api/agents", json={"name": "worker", "kiro_agent": "kirocrew"}
             )
             assert resp.status == 200
         assert refreshed == ["yes"]

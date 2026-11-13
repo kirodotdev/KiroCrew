@@ -80,6 +80,34 @@ class TestMatching:
         )
         assert d.correct("use a w s s three") == "use AWS S3"
 
+    @pytest.mark.parametrize(
+        "terms,text,expected",
+        [
+            # A correction holds a word that is another term's alias.
+            (
+                [
+                    {"correct": "Amazon Web Services", "aliases": ["aws"]},
+                    {"correct": "AWS S3", "aliases": ["a w s s three"]},
+                ],
+                "we use a w s s three today",
+                "we use AWS S3 today",
+            ),
+            # Two terms that would swap each other back and forth.
+            (
+                [
+                    {"correct": "beta", "aliases": ["alpha"]},
+                    {"correct": "gamma", "aliases": ["beta"]},
+                ],
+                "alpha and beta",
+                "beta and gamma",
+            ),
+        ],
+    )
+    def test_a_correction_is_never_corrected_again(self, terms, text, expected):
+        d = DomainDictionary()
+        d.load_terms(terms)
+        assert d.correct(text) == expected
+
     def test_empty_text_untouched(self, dictionary):
         assert dictionary.correct("") == ""
 
@@ -220,6 +248,21 @@ class TestMutation:
         )
         with pytest.raises(ValueError):
             d.add_term("One more", ["one more"])
+
+    def test_add_replaces_a_term_in_a_full_dictionary(self):
+        d = DomainDictionary()
+        d.load_terms(
+            [{"correct": f"T{i}", "aliases": [f"t {i}"]} for i in range(k.MAX_DICTIONARY_TERMS)]
+        )
+        refusal: ValueError | None = None
+        try:
+            d.add_term("t0", ["tee zero"])
+        except ValueError as exc:
+            refusal = exc
+        assert refusal is None, "replacing a term in a full dictionary was refused"
+        assert len(d.terms) == k.MAX_DICTIONARY_TERMS
+        assert d.correct("tee zero") == "t0"
+        assert d.correct("t 0") == "t 0"
 
     def test_remove_term(self, dictionary):
         assert dictionary.remove_term("DynamoDB") is True

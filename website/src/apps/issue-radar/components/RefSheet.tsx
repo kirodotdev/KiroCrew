@@ -104,7 +104,11 @@ export default function RefSheet() {
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
-            aria-label={`${isPr ? terms.changeRequestTitle : i18nT('apps.issueRadar.components.refSheet.issue')} ${isPr ? terms.sigil : '#'}${top.number} in ${owner}/${repo}`}
+            aria-label={i18nT('apps.issueRadar.components.refSheet.dialog_label', {
+              kind: isPr ? terms.changeRequestTitle : i18nT('apps.issueRadar.components.refSheet.issue'),
+              ref: `${isPr ? terms.sigil : '#'}${top.number}`,
+              repo: `${owner}/${repo}`,
+            })}
             tabIndex={-1}
             initial={reduceMotion ? { opacity: 0 } : { y: '100%' }}
             animate={reduceMotion ? { opacity: 1 } : { y: 0 }}
@@ -135,7 +139,7 @@ export default function RefSheet() {
                 <span className="truncate">{owner}/{repo}</span>
                 <span className="font-mono text-text">{isPr ? terms.sigil : '#'}{top.number}</span>
                 {refStack.length > 1 && (
-                  <span className="text-muted opacity-70">· {refStack.length} {i18nT('apps.issueRadar.components.refSheet.deep')}</span>
+                  <span className="text-muted opacity-70">· {i18nT('apps.issueRadar.components.refSheet.deep_count', { count: refStack.length })}</span>
                 )}
               </span>
               <div className="ml-auto flex items-center gap-1">
@@ -153,8 +157,8 @@ export default function RefSheet() {
                   href={refUrl(active, { kind: isPr ? 'pull' : 'issue', number: top.number })}
                   target="_blank"
                   rel="noreferrer"
-                  aria-label={`Open on ${terms.providerName}`}
-                  title={`Open on ${terms.providerName}`}
+                  aria-label={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })}
+                  title={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })}
                   className={ICON_BTN}
                 >
                   <ExternalLink className="lucide-inline" aria-hidden="true" />

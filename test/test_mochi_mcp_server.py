@@ -124,6 +124,25 @@ class TestPlan:
         out = json.loads(_call("get_plan"))
         assert out.get("mood") == "curious"
 
+    @pytest.mark.parametrize("key", ["mood", "narrative", "planner_notes", "needs_replan"])
+    def test_a_null_metadata_field_clears_only_that_field(self, data_dir: Path, key: str) -> None:
+        """The description says "pass null to clear it". The schema refused null
+        for every metadata field, so none of them could be cleared that way."""
+        values = {
+            "mood": "curious",
+            "narrative": "old narrative",
+            "planner_notes": {"silent_until": "2026-08-02T21:00:00Z"},
+            "needs_replan": True,
+        }
+        _call("update_plan", values)
+        out = _call("update_plan", {key: None})
+        assert "update_plan failed" not in out, out
+        plan = json.loads(_call("get_plan"))
+        assert key not in plan
+        assert {k: plan.get(k) for k in values if k != key} == {
+            k: v for k, v in values.items() if k != key
+        }
+
     def test_pet_action_is_queued_for_the_runtime(self, data_dir: Path) -> None:
         """Actions are queued, not executed here — the runtime animates."""
         res = json.loads(_call("perform_pet_action", {"action": "notify", "summary": "hi"}))
@@ -249,6 +268,55 @@ class TestPins:
 
     def test_unpinning_an_unknown_path_is_not_an_error(self, data_dir: Path) -> None:
         assert json.loads(_call("unpin_file", {"path": "/tmp/never.md"}))["removed"] == 0
+
+    def test_pin_stops_at_the_service_cap(self, data_dir: Path) -> None:
+        """The MCP tool honours PinnedFilesService's MAX_PINS, like the service."""
+        from kiro_crew.apps.builtins.mochi.pinned_files_service import MAX_PINS
+
+        store = data_dir / ms._PINNED_FILE
+        pins = [{"path": f"/tmp/p{i}.md", "pinnedAt": 1} for i in range(MAX_PINS)]
+        store.write_text(json.dumps({"version": 1, "pins": pins}), encoding="utf-8")
+
+        out = _call("pin_file", {"path": "/tmp/one-more.md"})
+
+        assert out.startswith("Error:"), out
+        assert len(json.loads(store.read_text(encoding="utf-8"))["pins"]) == MAX_PINS
+        # Re-pinning a path that is already in a full list stays a no-op success.
+        assert json.loads(_call("pin_file", {"path": "/tmp/p0.md"}))["alreadyPinned"] is True
+
+    @pytest.mark.parametrize("label", [None, ""])
+    def test_pin_defaults_the_label_to_the_basename(
+        self, data_dir: Path, label: str | None
+    ) -> None:
+        """No label (or an empty one) falls back to the basename, like the service."""
+        args: dict[str, Any] = {"path": "/tmp/notes/plan.md"}
+        if label is not None:
+            args["label"] = label
+        _call("pin_file", args)
+        stored = json.loads((data_dir / ms._PINNED_FILE).read_text(encoding="utf-8"))
+        assert stored["pins"][0]["label"] == "plan.md"
+
+    def test_a_long_label_is_cut_not_refused(self, data_dir: Path) -> None:
+        out = json.loads(_call("pin_file", {"path": "/tmp/a.md", "label": "x" * 10_000}))
+        assert out["ok"] is True and out["labelTruncated"] is True
+        stored = json.loads((data_dir / ms._PINNED_FILE).read_text(encoding="utf-8"))
+        assert stored["pins"][0]["label"] == "x" * ms._MAX_PIN_LABEL_CHARS
+
+    def test_pin_keeps_a_given_label(self, data_dir: Path) -> None:
+        _call("pin_file", {"path": "/tmp/notes/plan.md", "label": "Plan"})
+        stored = json.loads((data_dir / ms._PINNED_FILE).read_text(encoding="utf-8"))
+        assert stored["pins"][0]["label"] == "Plan"
+
+    def test_unpinning_an_unknown_path_leaves_the_store_untouched(self, data_dir: Path) -> None:
+        """No match means no write, as in PinnedFilesService.remove_pin."""
+        store = data_dir / ms._PINNED_FILE
+        original = json.dumps(
+            {"version": 1, "pins": [{"path": "/tmp/a.md", "pinnedAt": 1}]}, indent=4
+        )
+        store.write_text(original, encoding="utf-8")
+
+        assert json.loads(_call("unpin_file", {"path": "/tmp/never.md"}))["removed"] == 0
+        assert store.read_text(encoding="utf-8") == original
 
     @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX permission bits only")
     def test_pins_file_is_owner_only(self, data_dir: Path) -> None:

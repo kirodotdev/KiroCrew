@@ -221,7 +221,7 @@ def test_a_state_handed_out_after_prime_does_not_move_when_the_registry_is_drive
     assert _normalized(registry.cells(SLOT)[name][0]) == _normalized(_copy_per_step(name, events))
 
 
-# --- the work a cold prime does --------------------------------------------
+# the work a cold prime does
 
 
 def _write_work_unit(unit: str, count: int) -> None:
@@ -347,7 +347,7 @@ def test_a_large_cold_slot_fold_equals_the_copy_per_step_fold(name, monkeypatch)
         assert json.loads(after)["units_omitted"] == 3
 
 
-# --- session folds ---------------------------------------------------------
+# session folds
 
 
 def _session_values(unit: str) -> dict[str, str]:
@@ -398,7 +398,7 @@ def test_a_cold_session_fold_equals_the_copy_per_step_fold_and_copies_nothing_pe
     assert after == before
 
 
-# --- aliasing --------------------------------------------------------------
+# aliasing
 
 
 def test_folds_sharing_entries_in_one_registry_do_not_reach_each_other_or_the_entries():
@@ -518,12 +518,121 @@ def test_a_checkpointed_pass_with_any_resumed_cell_keeps_apply():
 
     Here one fold sits at seq 0 and the other was resumed at seq 5. The floor is 0,
     but the resumed state came off disk and is untrusted: a fold's copier is what
-    refuses one malformed below its top level, so it must still be stepped through
-    ``apply``.
+    refuses one malformed below its top level, so its first moving entry must still
+    be stepped through ``apply``. Only the private copy ``apply`` returned is then
+    folded in place.
     """
-    calls, cells = _checkpointed({"a": ({"n": 0}, 0), "b": ({"n": 5}, 5)})
-    assert "b:owned" not in calls and "a:owned" not in calls
+    restored = {"n": 5}
+    calls, cells = _checkpointed({"a": ({"n": 0}, 0), "b": (restored, 5)})
+    assert [call for call in calls if call.startswith("b:")] == ["b:apply", "b:owned", "b:owned"]
+    assert [call for call in calls if call.startswith("a:")] == ["a:apply"] + ["a:owned"] * 7
     assert cells == {"a": ({"n": 8}, 8), "b": ({"n": 8}, 8)}
+    assert restored == {"n": 5}  # the restored state a caller may hold is not edited
+
+
+def test_a_resumed_checkpointed_tail_copies_once_per_fold_and_renders_once(monkeypatch):
+    """MUTATION-SENSITIVE: a resumed tail costs one copy and one render, not one per entry.
+
+    A stale savepoint leaves a long tail, and stepping each entry through ``apply``
+    copied and rendered the whole state per entry: O(tail x state).
+    """
+    calls = {"copied": 0, "render": 0}
+    real_copied = projection_catalogue._Fold.copied
+
+    def counting_copied(self, state):
+        calls["copied"] += 1
+        return real_copied(self, state)
+
+    monkeypatch.setattr(projection_catalogue._Fold, "copied", counting_copied)
+    definition = _SlotFold(crew_log._FOLDS["work"], SLOT)
+    real_view = definition.view
+
+    def counting_view(state):
+        calls["render"] += 1
+        return real_view(state)
+
+    monkeypatch.setattr(definition, "view", counting_view)
+    base = CANONICAL["work/recorded"]
+    entries = [
+        Entry(
+            type="work/recorded",
+            seq=seq,
+            time=1_700_000_000 + seq,
+            src="gateway",
+            data=dict(base, slot=SLOT, item_id=f"it_{seq % 7:08x}", summary=f"step {seq}"),
+        )
+        for seq in range(1, 201)
+    ]
+    events = _ordinals(entries)
+    saved = _copy_per_step("work", events[:20])
+    calls.update(copied=0, render=0)
+    registry = ProjectionRegistry(seq_of=_ordinal_seq)
+    registry.register(definition)
+    registry.prime_checkpointed(
+        SLOT, _Points({"work": (saved, 20)}), {}, lambda floor: iter(events[floor:])
+    )
+    assert calls == {"copied": 1, "render": 1}, calls
+    assert registry.cells(SLOT)["work"][1] == 200
+
+
+class _ApplyOnly:
+    """*defn* without ``apply_owned``: the registry folds it the way main always did."""
+
+    def __init__(self, defn: _SlotFold) -> None:
+        self.key = defn.key
+        self.state_version = defn.state_version
+        self.init = defn.init
+        self.apply = defn.apply
+        self.view = defn.view
+
+
+def _resumed_cells(
+    names: tuple[str, ...], marks: dict[str, int], events: list[_Ordinal], *, owned: bool
+) -> dict[str, tuple[str, int]]:
+    registry = ProjectionRegistry(seq_of=_ordinal_seq)
+    points = {}
+    for name in names:
+        definition = _SlotFold(crew_log._FOLDS[name], SLOT)
+        registry.register(definition if owned else _ApplyOnly(definition))
+        points[name] = (_copy_per_step(name, events[: marks[name]]), marks[name])
+    floor = registry.prime_checkpointed(
+        SLOT, _Points(points), {}, lambda floor: iter(events[floor:])
+    )
+    cells = registry.cells(SLOT)
+    out = {name: (_normalized(cells[name][0]), cells[name][1]) for name in names}
+    out["<floor>"] = ("", floor)
+    return out
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_resumed_checkpointed_tail_reaches_the_apply_path_value(seed):
+    """Every fold, resumed at different seqs: in-place tail == apply-per-entry tail."""
+    names = tuple(crew_log._FOLDS)
+    rng = random.Random(seed)
+    events = _ordinals(_generated(seed, 80))
+    marks = {name: rng.randint(1, 40) for name in names}
+    try:
+        expected = _resumed_cells(names, marks, events, owned=False)
+    except Exception as exc:  # noqa: BLE001 -- both paths must refuse alike
+        with pytest.raises(type(exc)):
+            _resumed_cells(names, marks, events, owned=True)
+        return
+    assert _resumed_cells(names, marks, events, owned=True) == expected
+
+
+def test_a_drive_landing_during_a_resumed_checkpointed_tail_is_not_overwritten():
+    """The resumed in-place tail installs only over the cell it started from."""
+    calls: list[str] = []
+    registry = ProjectionRegistry()
+    registry.register(_Tracked("a", calls))
+
+    def tail(floor):
+        yield {"seq": 4}
+        registry.drive("s", {"seq": 20})
+        yield {"seq": 5}
+
+    registry.prime_checkpointed("s", _Points({"a": ({"n": 3}, 3)}), {}, tail)
+    assert registry.cells("s")["a"][1] == 20
 
 
 def test_a_drive_landing_during_a_cold_checkpointed_tail_is_not_overwritten():

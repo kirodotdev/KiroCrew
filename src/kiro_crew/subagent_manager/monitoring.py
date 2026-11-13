@@ -563,7 +563,7 @@ class OrphanStallMonitor(ManagerComponent):
                 except asyncio.TimeoutError:
                     logger.warning(
                         "Orphan notices held %.0fs with no release from the gateway; "
-                        "sending them without the dashboard",
+                        "sending them to the tabs back so far and the owner DM",
                         _ORPHAN_NOTICE_HOLD_SECS,
                     )
 
@@ -827,7 +827,9 @@ class OrphanStallMonitor(ManagerComponent):
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-        result_path = str(agent_dir_for_display(agent_id) / "result.txt")
+        # Off the loop: the display path resolves the run directory (a realpath).
+        run_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+        result_path = str(run_dir / "result.txt")
 
         if result_is_whole(state):
             # A run that finished before the restart, caught before delivery:
@@ -1203,11 +1205,22 @@ class OrphanStallMonitor(ManagerComponent):
         ``_run()`` fails to fire (event-loop saturation, orphaned tasks,
         or ``reset()`` hanging in the finally block).
         """
-        try:
-            # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
-            compact_cost_log()
-        except Exception:
-            logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
+
+        async def compact_cost_log_off_loop(label: str = "") -> None:
+            # Off the loop: the trim reads, fsyncs and replaces a file, and on a
+            # slow, saturated disk that held the loop past the stall watchdog.
+            # Not during shutdown: it is housekeeping the next start redoes.
+            if self._manager._shutting_down:
+                return
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(), compact_cost_log
+                )
+            except Exception:
+                logger.debug("Reaper: %scost-log compaction failed", label, exc_info=True)
+
+        # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
+        await compact_cost_log_off_loop("startup ")
         # Seed the dedicated start projection before the first sweep, off-loop,
         # so the first interval after boot does not price at the start cost only.
         try:
@@ -1315,10 +1328,8 @@ class OrphanStallMonitor(ManagerComponent):
                     )
                 except Exception:
                     logger.debug("Reaper: owed tombstone retry failed", exc_info=True)
-            try:
-                compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
-            except Exception:
-                logger.debug("Reaper: cost-log compaction failed", exc_info=True)
+            # Periodic FIFO trim (also bounds a long-running gateway).
+            await compact_cost_log_off_loop()
             for agent_id, info in list(self._manager._agents.items()):
                 if info.done or info._ending_claimed:
                     continue
@@ -1426,18 +1437,54 @@ class OrphanStallMonitor(ManagerComponent):
                 except Exception:
                     logger.exception("Reaper: failed to reap %s", agent_id)
 
-            # Prune stale tombstoned folders (>7 days old)
+            # Prune stale tombstoned folders (>7 days old). A refusal tombstone
+            # is kept while its row is not durably terminal: it is the verdict
+            # the boot reconcile settles the row on (``REFUSED``) and, once the
+            # refusal was published on it, the only durable record of the
+            # refusal, so a store wedged past the retention window must not
+            # cost it. A store that cannot answer keeps it too.
             try:
                 pruned = await asyncio.get_running_loop().run_in_executor(
                     maintenance_executor(),
                     prune_stale_tombstones,
                     7,
                     self._manager._result_ttl_secs,
+                    self._refusal_tombstone_unsettled,
                 )
                 if pruned:
                     logger.info("Reaper: pruned %d stale tombstone(s)", pruned)
             except Exception:
                 logger.debug("Reaper: tombstone pruning failed", exc_info=True)
+
+    def _refusal_tombstone_unsettled(self, agent_id: str, tombstone: dict) -> bool:
+        """True for a refusal or queued-stop tombstone whose task row is not (known to be) terminal.
+
+        The pruner's ``keep``: any other cause answers False. A store that is
+        REQUIRED but not open -- still initializing on this boot, or a failed
+        open the reaper will retry -- keeps it, since the reopen's reconcile is
+        what reads it; so does a store that raises, since the row may still owe
+        the ending the tombstone stands in for. Only with the task queue
+        deliberately off (no store will ever read it), or with no row behind
+        it, does the tombstone decide nothing and go on its window. Runs on the
+        maintenance executor; the store's reads take its lock.
+        """
+        from kiro_crew import taskq as _taskq
+        from kiro_crew.subagent_manager.admission.types import (
+            QUEUED_STOP_TOMBSTONE_CAUSE,
+            REFUSAL_TOMBSTONE_CAUSE,
+        )
+
+        if tombstone.get("cause") not in (REFUSAL_TOMBSTONE_CAUSE, QUEUED_STOP_TOMBSTONE_CAUSE):
+            return False
+        admission = self._manager._admission
+        store = admission.taskq_store()
+        if store is None:
+            return admission.taskq_required_but_unavailable() is not None
+        try:
+            state = store.state_of(agent_id)
+        except _taskq.TaskStoreUnavailable:
+            return True
+        return state is not None and not _taskq.is_terminal(state)
 
     def _is_startup_stalled_impl(
         self, info: SubagentInfo, now: float, mono_now: float | None = None
@@ -1487,9 +1534,11 @@ class OrphanStallMonitor(ManagerComponent):
             gate_mark, queued_ms = info._gate_wait_started_mono, info._start_queue_wait_mono_ms
         # Queued for a permit: the clock reads as it stood when the wait began.
         clock_now = gate_mark if gate_mark is not None else now
-        starting = clock_now - exec_started - queued_ms / 1000.0
+        # Prompt hooks are Crew's work, not the start's: off the clock.
+        starting = clock_now - exec_started - queued_ms / 1000.0 - info._prompt_hooks_secs
         return (
-            info.turns == 0
+            not info._prompt_hooks_running
+            and info.turns == 0
             and info._pid is None
             and info._first_stream_started is None
             and starting > self._stamped_startup_deadline(info)
@@ -1518,6 +1567,7 @@ class OrphanStallMonitor(ManagerComponent):
             and not self._manager._in_startup(info)
             and info._gate_wait_started is None
             and not info._awaiting_approval
+            and not info._prompt_hooks_running
             and self._idle_since_activity(info, now, mono_now) > _FIRST_PROMPT_SILENT_SECS
         )
 
@@ -1676,7 +1726,8 @@ class OrphanStallMonitor(ManagerComponent):
         # A subagent blocked on a human tool-approval prompt is healthy, not
         # stalled — the permission request bumps `turns` before the approval
         # wait, so without this a slow approval would be mislabelled idle.
-        if info._awaiting_approval:
+        # Its prompt-start hooks are running: Crew's wait, not the runtime's.
+        if info._awaiting_approval or info._prompt_hooks_running:
             return
         idle = now - info.last_activity
         if not info.stalled and idle > self._manager._stall_idle_secs:
@@ -1812,6 +1863,12 @@ class OrphanStallMonitor(ManagerComponent):
                 "cpu_cores": round(a.last_cpu_cores, 2),
                 "procs": a.last_procs,
                 "mcp": a.last_stubs,
+                # Burned so far, the prompt in flight included; null while none,
+                # so its cell reads "—", not 0.0.
+                "credits": round(
+                    a._credit_accounting.live_credits() if a._credit_accounting else a.credits, 3
+                )
+                or None,
                 "started_at": a.started,
                 "shared": a._session_sharing,
                 "pid": a._pid,

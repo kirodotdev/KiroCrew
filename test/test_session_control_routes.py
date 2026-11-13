@@ -42,8 +42,7 @@ class TestTheRoutesRequireTheInternalSecret:
     auth, and a ``local_only=False`` deployment reclassifies strict paths as
     mixed. Since these routes authorize on the ``X-Session-Key`` the caller
     sends, a browser holding only a dashboard cookie could otherwise act AS any
-    of the user's sessions. Mutation guard: dropping the ``internal_auth`` check
-    makes every case below reach the operation.
+    of the user's sessions.
     """
 
     def _request(self, tmp_path, *, internal: bool, path: str, method: str = "POST"):
@@ -141,6 +140,11 @@ class TestTheRoutesRequireTheInternalSecret:
     def test_create_renders_a_refusal_as_its_status_not_a_500(self, tmp_path, monkeypatch):
         """A SessionControlError from create must come back as its own refusal."""
         req = self._request(tmp_path, internal=True, path="/api/session-control/create")
+
+        async def _json():
+            return {"title": "worker"}
+
+        req.json = _json
 
         async def _boom(*_a, **_kw):
             raise sc.SessionControlError("nope", status=429, code="slot_cap_reached")
@@ -393,21 +397,9 @@ def test_the_switch_is_on_by_default_and_an_explicit_false_still_disables(
 ):
     """``agent.session_control`` defaults ON; the agent config is the real grant.
 
-    Who may reach a peer session is decided by the AGENT CONFIG, not by this
-    switch: the tools come from the `kirocrew-dashboard` MCP server, so an agent
-    that does not mount it never has them -- the same rule as every other MCP
-    server. A second default-off gate on top of that only made the capability
-    unreachable for an agent whose spec had already been given it deliberately.
-
-    What the switch is still for is a single withdrawal: an operator who wants it
-    gone from every agent at once, without editing each spec. So the one direction
-    that must keep working is an EXPLICIT opt-out, including the quoted ``"false"``
-    an editor that quotes values writes: ``bool("false")`` is ``True``, so a plain
-    coercion would keep cross-session control on while the operator believes it off.
-
-    Driven through the load pipeline over a document in ``tmp_path``: the document
-    read normalizes a present non-bool to the safe ``False``, and the build reads
-    an absent key as the field default.
+    An agent gets the tools only by mounting `kirocrew-dashboard`; the switch withdraws
+    them everywhere at once. The quoted ``"false"`` must count as off, since
+    ``bool("false")`` is ``True``. A present non-bool normalizes to ``False``.
     """
     path = tmp_path / "config.json"
     agent = {} if stored is _ABSENT else {"session_control": stored}
@@ -444,8 +436,7 @@ def test_the_switch_defaults_on_wherever_a_config_is_built_without_the_key(tmp_p
 def test_a_config_read_that_raises_disables_the_feature(monkeypatch):
     """Unrelated config corruption must not undo an explicit opt-out.
 
-    Mutation guard: returning True here means a malformed section elsewhere in
-    config.json silently re-enables cross-session control.
+    A malformed section elsewhere in config.json must not re-enable cross-session control.
     """
 
     class _Exploding:
@@ -468,17 +459,9 @@ def test_safe_bool_rejects_every_non_bool():
 def test_session_control_routes_are_strict_internal():
     """Every registered session-control route must sit in the strict bucket.
 
-    The route table and `_STRICT_INTERNAL_API_PATHS` are two hand-maintained
-    lists, and nothing else pairs them. An unlisted path falls through
-    `token_auth`'s general branch, which honors only cookie/query tokens, so the
-    MCP caller's `X-Internal-Secret` is ignored and the handler's own
-    `internal_auth` re-assert refuses the call -- the tool is unreachable in
-    production. The handler-level suites cannot catch that: they stub
-    `request["internal_auth"]` and call handlers directly, bypassing the
-    middleware entirely, so they stay green while the route is dead.
-
-    Derived from the router rather than a literal list, so a fifth route fails
-    here instead of shipping unreachable.
+    An unlisted path ignores `X-Internal-Secret`, so the handler refuses every MCP call.
+    Handler suites stub `request["internal_auth"]` and cannot see it. Derived from the
+    router, so a new route fails here.
     """
     from aiohttp import web
 
@@ -504,13 +487,8 @@ def test_session_control_routes_are_strict_internal():
 def test_session_control_is_not_imported_on_the_gateway_boot_path():
     """A feature-flagged subsystem must not be eagerly imported by `server.py`.
 
-    The enabled check (`session_control_enabled`) lives inside the handlers, so a
-    module-level import in `server.py` is an import whose gate runs after it --
-    an operator who set `agent.session_control=false` would still pay to load the
-    subsystem on every launch. Route registration stays at boot; only the import
-    is deferred to first request.
-
-    Mutation guard: restoring the module-level import fails this.
+    `session_control_enabled` runs inside the handlers, so a module-level import would load
+    the subsystem even with `agent.session_control=false`. Only the import is deferred.
     """
     from pathlib import Path
 

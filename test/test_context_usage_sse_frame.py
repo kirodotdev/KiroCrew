@@ -78,6 +78,10 @@ def test_missing_slot_is_a_noop(tmp_path):
     state = _make_state(tmp_path)
     state.broadcast_context_usage("dashboard:does-not-exist", {"slot": "x", "pct": 1.0})
 
+    # Nothing is created or recorded for a slot that does not exist.
+    assert state.get_slot("dashboard:does-not-exist") is None
+    assert state._context_snapshots.get("dashboard:does-not-exist") is None
+
 
 def test_non_serializable_payload_skips_sse_mirror(tmp_path):
     """A non-JSON-serializable payload must not raise or enqueue a frame."""

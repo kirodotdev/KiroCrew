@@ -374,15 +374,13 @@ class TestKillProcessTreePinned:
 
     HANDLE = 4242
 
-    # flake-ok: no test in this class calls monkeypatch.undo(), so the shared monkeypatch cannot lift this pin
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this class calls monkeypatch.undo()
-    def _isolate_pending_registry(self, monkeypatch):
+    def _isolate_pending_registry(self, _floor_monkeypatch):
         # kill_process_tree_pinned now transfers the pinned root into the
         # process-owned pending registry. Give each case its own so no fake
         # pending state leaks between tests or into an unrelated one.
-        monkeypatch.setattr(pc, "_PENDING_WINDOWS_TREE_CLEANUPS", {})
-        monkeypatch.setattr(pc, "_WINDOWS_TREE_ADMISSIONS", set())
+        _floor_monkeypatch.setattr(pc, "_PENDING_WINDOWS_TREE_CLEANUPS", {})
+        _floor_monkeypatch.setattr(pc, "_WINDOWS_TREE_ADMISSIONS", set())
 
     def _wire(self, monkeypatch, *, handle=HANDLE, identity=(4321, 777, None)):
         """Patch the seams; return (opened, closed, killed) recorders."""
@@ -828,16 +826,21 @@ class TestKillAndReap:
         assert 0 < pc.REAP_TIMEOUT_SECS <= 30
         proc = self._proc(pid=1)
 
+        release = asyncio.Event()
+
         async def _never_returns():
-            # flake-ok: stands in for a communicate that never returns; the reap's own timeout cancels it
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- stands in for a communicate that never returns; the reap's own timeout cancels it
-            await asyncio.sleep(3600)
+            # Stands in for a communicate that never returns. The reap's own
+            # timeout is what must end it; the finally below ends it otherwise.
+            await release.wait()
 
         proc.communicate = _never_returns
-        with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()):
-            # Outer bound is a hang detector only; the helper's own bound
-            # (passed explicitly) is what must return first.
-            await asyncio.wait_for(pc.kill_and_reap(proc, timeout=0.01), timeout=30)
+        try:
+            with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()):
+                # Outer bound is a hang detector only; the helper's own bound
+                # (passed explicitly) is what must return first.
+                await asyncio.wait_for(pc.kill_and_reap(proc, timeout=0.01), timeout=30)
+        finally:
+            release.set()
 
     @pytest.mark.asyncio
     async def test_tolerates_dead_child_and_mock_pids(self) -> None:

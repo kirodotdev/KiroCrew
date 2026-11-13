@@ -27,13 +27,14 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.style-markdown-while-typing': ['markdown', 'bold', 'italic', 'strikethrough', 'inline code', 'formatting', 'live preview'],
   'chat.split-side-by-side-diffs': ['split', 'unified', 'split view', 'unified view', 'diff layout', 'side by side'],
 
+  // Agent Harness. fuzzyMatch is literal, so the spaced, hyphenated and joined
+  // spellings of "log out" are separate entries.
+  'agent.kiro-sign-in': ['log out', 'logout', 'log-out', 'signout', 'sign-out', 'account', 'change account', 'another account', 'login', 'log in'],
+
   // Voice
   'voice.enabled': ['tts', 'speak', 'read aloud', 'narrate', 'text-to-speech'],
   'voice.auto-speak-responses': ['automatic speech', 'auto read'],
   'voice.language': ['stt', 'dictation', 'microphone', 'whisper', 'transcribe', 'speech-to-text'],
-
-  // Developer
-  'developer.developer-mode': ['dev mode', 'debug', 'advanced', 'power user'],
 
   // Notifications
   'notifications.play-sound-on-new-notifications': ['alert', 'audio', 'mute', 'silent'],
@@ -46,6 +47,9 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'about.install-app-updates-automatically': ['auto update', 'auto-update', 'automatic updates', 'auto update on restart', 'auto-update on restart', 'auto download', 'app updates'],
   // About (manual entries — settingsManual.ts)
   'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta'],
+
+  // Channels (manual entry — settingsManual.ts): the bot token WeCom calls a secret.
+  'channels.wecom-bot-secret': ['bot token'],
 
   // Browser
 

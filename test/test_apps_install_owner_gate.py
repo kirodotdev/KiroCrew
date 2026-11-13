@@ -114,7 +114,7 @@ def _server(user: str, app_claim: str) -> TestServer:
 def _source_dir(tmp_path: Path) -> str:
     src = tmp_path / "chosen-src"
     src.mkdir(exist_ok=True)
-    (src / "app.json").write_text(json.dumps({"name": APP, "version": "1.0.0"}))
+    (src / "app.json").write_text(json.dumps({"name": APP, "version": "1.0.0"}), encoding="utf-8")
     return str(src)
 
 

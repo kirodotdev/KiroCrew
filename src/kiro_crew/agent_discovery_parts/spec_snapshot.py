@@ -32,18 +32,9 @@ from kiro_crew.executors import discovery_executor
 logger = logging.getLogger("kiro_crew.agent_discovery")
 
 
-# ── list_agents() result cache ──
-# list_agents() reads and JSON-parses every ~/.kiro/agents/*.json on each call.
-# Hot callers (agent picker, per-turn agent resolution) call it repeatedly, so an
-# uncached scan over 100+ AIM-installed agent files blocks the asyncio event loop.
-# Cache the parsed result keyed by directory and reuse it while a cheap stat-only
-# directory signature (file count + newest mtime) is unchanged — that signature
-# detects adds, removals, and in-place edits.
-#
-# The key carries BOTH scopes because the project scope varies per session: two
-# sessions on different checkouts must not serve each other's agents from one
-# entry. The signature is the pair of per-directory signatures, so an edit in
-# either scope invalidates.
+# list_agents() result cache: an uncached parse of 100+ agent files on every hot call
+# blocks the event loop, so the result is reused while the stat-only signature holds.
+# The key carries BOTH scopes: sessions on different checkouts must not share an entry.
 _ListAgentsSig = tuple[tuple[str, int], ...]
 _LIST_AGENTS_KEY = tuple[str, str]
 _LIST_AGENTS_CACHE: dict[_LIST_AGENTS_KEY, tuple[tuple[_ListAgentsSig, ...], list[AgentInfo]]] = {}
@@ -87,23 +78,16 @@ def parsed_agent_specs(
     """Return every parsed agent spec in *agents_dir* as ``(data, path)`` pairs.
 
     ``path`` is the ORIGINAL file path (not the resolved target), in sorted
-    filename order, so ``path.stem`` matching and relative ``skill://`` glob
-    anchoring behave exactly as a direct scan would. Reads go through
-    :func:`_read_agent_spec`, so sidecars, symlink loops, sensitive targets,
-    oversized files, and invalid JSON are skipped best-effort.
+    filename order, so ``path.stem`` matching and relative ``skill://`` globs
+    anchor as a direct scan would. Reads go through :func:`_read_agent_spec`.
 
-    Cached per directory and revalidated by :func:`_dir_signature`, so a warm
-    call costs one ``scandir`` instead of parsing every spec. The cache is
-    also dropped by :func:`clear_list_agents_cache` — the agent write paths
-    already call it, which covers a write landing inside one mtime tick. The
-    returned list is a fresh copy but its rows are the cached objects: treat
-    them as read-only.
+    Cached per directory and revalidated by :func:`_dir_signature`;
+    :func:`clear_list_agents_cache` covers a write inside one mtime tick. The
+    list is a copy but its rows are cached objects: treat them as read-only.
 
-    *operation*/*source* label the SEL denial trail exactly as
-    :func:`_read_agent_spec` documents; the cache makes the labels
-    first-reader-wins for the lifetime of one snapshot, which is acceptable
-    because every current caller reads the same user-level directory for the
-    same catalog purpose.
+    *operation*/*source* label the SEL denial trail as :func:`_read_agent_spec`
+    documents; within one snapshot the first reader's labels win, which is fine
+    because every caller reads the same directory for the same catalog purpose.
     """
     d = agents_dir or _kiro_agents_dir()
     key = str(d)
@@ -193,25 +177,15 @@ async def warm_agent_specs(
 ) -> None:
     """Publish the :func:`parsed_agent_specs` snapshot of *agents_dir* from the discovery pool.
 
-    The counterpart to :func:`cached_agent_specs`, as :func:`warm_project_agent_names`
-    is to :func:`cached_project_agent_names`: an async caller awaits this once, and
-    the synchronous, on-loop lookup that follows (``_resolve_named_agent_model``
-    through the provider factory) is a snapshot HIT instead of the cold "no rows
-    yet" answer. Only the scan is offloaded: every ``scandir``, stat and parse runs
-    on ``mc-discovery`` and nothing touches the filesystem on the caller's thread,
-    while the lookup itself stays inline, for the reason
-    :func:`warm_project_agent_names` gives.
-
-    One parse, awaited; no polling and no retry. A snapshot that is already warm
-    costs one ``scandir`` here and no parses. A :func:`clear_list_agents_cache`
-    landing during the parse keeps its rows unpublished (the generation guard), so
-    the lookup then degrades to the cold answer exactly as a concurrent agent write
-    does today; the worker refresh that lookup schedules repairs it.
+    The counterpart to :func:`cached_agent_specs`: an async caller awaits this once
+    so the on-loop lookup that follows (``_resolve_named_agent_model``) is a snapshot
+    HIT. Only the scan runs on ``mc-discovery``; the lookup stays inline, for the
+    reason :func:`warm_project_agent_names` gives. One parse, no retry: a clear
+    landing mid-parse leaves the rows unpublished, and the lookup's own refresh
+    repairs it.
 
     *operation*/*source* label the SEL denial trail as :func:`_read_agent_spec`
-    documents; the defaults name this hop truthfully. Best-effort and never raises:
-    failing to warm costs the caller the cold answer and must not break what it is
-    starting.
+    documents. Never raises: a failed warm only costs the cold answer.
     """
     d = agents_dir or _kiro_agents_dir()
     try:
@@ -226,21 +200,13 @@ async def warm_agent_specs(
 def _iter_spec_entries(d: Path) -> Iterator[os.DirEntry[str]]:
     """The one ``scandir`` walk behind the stat-only fingerprints of an agents dir.
 
-    Yields every entry with a recognised spec suffix that is not a managed
-    skill-view alias, and nothing else; the caller decides what to ``stat`` and
-    how. Both rules are the roster's own (:func:`iter_agent_spec_files`); the one
-    entry a fingerprint built here keeps and the roster drops is a Markdown spec
-    shadowed by its JSON twin, so the fingerprint is a superset of the roster,
-    never less.
-    Case-insensitive on the suffix: a case-insensitive filesystem serves
-    ``Foo.JSON`` to ``glob("*.json")`` consumers, so a case-sensitive suffix here
-    would omit from a fingerprint a file the scans include -- its edits would
-    never invalidate. Alias-free by name, before any ``stat``: the roster drops
-    the aliases, so a fingerprint that counted them would move on writes the
-    roster cannot see -- invalidating every cache it guards on each alias write
-    -- and would cost one ``stat`` per alias per call on the event loop, which
-    with thousands of aliases is the walk that stalls the loop. A directory that
-    cannot be listed raises the ``OSError``; each caller decides what that means.
+    Yields every entry with a spec suffix that is not a skill-view alias, the
+    roster's own rules (:func:`iter_agent_spec_files`), so the fingerprint is a
+    superset of the roster. The suffix match is case-insensitive because a
+    case-insensitive filesystem serves ``Foo.JSON`` to the scans. Aliases are
+    dropped by name before any ``stat``: counting them would invalidate on writes
+    the roster cannot see, and thousands of alias stats stall the event loop.
+    A directory that cannot be listed raises the ``OSError``.
     """
     with os.scandir(d) as it:
         for entry in it:
@@ -251,22 +217,13 @@ def _iter_spec_entries(d: Path) -> Iterator[os.DirEntry[str]]:
 def _dir_signature(d: Path) -> _ListAgentsSig:
     """Cheap stat-only signature of the agents dir.
 
-    Captures each spec entry's name and mtime (both forms; a markdown edit
-    that went unfingerprinted would serve a stale roster forever) — enough to detect adds,
-    removals, renames, and any edit that changes a file's mtime, without
-    reading or parsing any file. A skill-view alias is not a spec entry here
-    (:func:`_iter_spec_entries`), so an alias write leaves the signature, and
-    the caches it guards, untouched. An edit landing inside the same mtime tick
-    is invisible here; :func:`clear_list_agents_cache` is the escape hatch
-    the write paths use for exactly that case. Naming the files matters: a
-    rename changes neither the file count nor any file's mtime, but does
-    change the stem-derived agent name and the anchoring of relative
-    ``skill://`` globs. Invalidates the :func:`list_agents`, project-names,
-    and parsed-specs caches.
+    Each spec entry's name and mtime (JSON and markdown), without reading any
+    file: enough to catch adds, removals, edits and renames (a rename changes
+    the stem-derived name and relative ``skill://`` anchoring). An edit inside
+    one mtime tick is invisible; write paths call :func:`clear_list_agents_cache`.
 
-    Always a tuple, never ``None``: the catalog caches it revalidates stay on
-    for a symlinked or freshly edited directory. :func:`agents_dir_revision`
-    is the stricter fingerprint, for answers that must never be served stale.
+    Always a tuple, never ``None``. :func:`agents_dir_revision` is the stricter
+    fingerprint, for answers that must never be served stale.
     """
     entries: list[tuple[str, int]] = []
     try:

@@ -1,10 +1,8 @@
 """The shared pre-turn sequence, and the ratchet that keeps channels on it.
 
-Three findings on the Feishu channel review traced to one cause: the shared
-state object (``ConversationState``) existed, but every dispatcher had to
-REMEMBER to drive it in the right order, and nothing enforced that. These tests
-pin the order itself, plus a source-level ratchet so a channel added later
-cannot quietly hand-roll the sequence again and re-open the same hole.
+A dispatcher that drives ``ConversationState`` by hand can get the order wrong.
+These tests pin the order, and a source-level ratchet stops a new channel from
+hand-rolling the sequence again.
 """
 
 from __future__ import annotations
@@ -15,10 +13,6 @@ import pytest
 
 from kiro_crew.messaging.conversation import ConversationState
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
-
-# --------------------------------------------------------------------------- #
-# Fakes
-# --------------------------------------------------------------------------- #
 
 
 class FakeSessions:
@@ -40,11 +34,6 @@ def _key_for(conv: ConversationState) -> "callable":
         return f"webex:{key}:g{conv.current_gen(key)}"
 
     return session_key_for
-
-
-# --------------------------------------------------------------------------- #
-# Behaviour
-# --------------------------------------------------------------------------- #
 
 
 class TestResolvePreTurn:
@@ -85,13 +74,8 @@ class TestResolvePreTurn:
 
     @pytest.mark.asyncio
     async def test_busy_is_checked_before_rotation(self) -> None:
-        """The load-bearing ordering constraint.
-
-        Rotating first advances the generation, which mints a NEW session key --
-        so the in-flight turn on the old key is missed, ``is_busy`` reads False,
-        and a second concurrent turn starts instead of the message folding in via
-        steer. Pinned by making the message idle-eligible AND busy: the busy
-        branch must win and the generation must not move.
+        """Rotating first would mint a new key, miss the in-flight turn and start a
+        second one. An idle-eligible AND busy message must fold, generation unchanged.
         """
         conv: ConversationState = ConversationState()
         conv.maybe_rotate("a@b.c", 1_000.0)  # seed last_active far in the past
@@ -137,10 +121,8 @@ class TestResolvePreTurn:
 
     @pytest.mark.asyncio
     async def test_activity_is_recorded_even_when_nothing_rotates(self) -> None:
-        """``maybe_rotate`` is also what stamps ``last_active``. A dispatcher that
-        skips it leaves that frozen, and BOTH idle_reset_minutes and
-        daily_reset_hour go silently inert -- configured, documented and dead.
-        """
+        """``maybe_rotate`` also stamps ``last_active``; skipping it silently disables
+        idle_reset_minutes and daily_reset_hour."""
         conv: ConversationState = ConversationState()
 
         await resolve_pre_turn(
@@ -183,10 +165,6 @@ async def _unreachable(session_key: str) -> None:  # pragma: no cover - guard
     raise AssertionError(f"on_busy must not run for an idle key ({session_key})")
 
 
-# --------------------------------------------------------------------------- #
-# Ratchet
-# --------------------------------------------------------------------------- #
-
 _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
 #: Channels whose dispatcher drives the shared pre-turn sequence. The others are
@@ -197,17 +175,10 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: Listing them here would assert a migration that has not happened.
 _PRE_TURN_CHANNELS = ("webex", "imessage", "feishu")
 
-#: Rostered channels deliberately NOT on the shared helper. telegram, discord,
-#: teams and slack carry extra pre-turn work between the busy check and
-#: rotation; weixin and wecom run the same kind of steps from their
-#: ``handle_message`` with their own busy checks (wecom additionally clears
-#: attachments there and ingests media before rotating); whatsapp hand-rolls
-#: the sequence in its dispatcher, and although its busy
-#: handling mirrors webex's closely enough that migration looks mechanical,
-#: it is still a behaviour change -- so folding any of them into the helper
-#: is a separate, reviewed change. Both ratchet directions read this one set:
-#: joining it (a rostered channel must be accounted for) and leaving it (a
-#: migrated channel must be pruned) are each an explicit decision.
+#: Rostered channels deliberately NOT on the shared helper: they run extra steps
+#: between the busy check and rotation, or their own busy checks from
+#: ``handle_message`` (weixin, wecom). Moving one is a behaviour change. Both
+#: ratchet directions read this set, so joining and leaving it are explicit.
 _EXEMPT_CHANNELS = frozenset(
     {"telegram", "discord", "teams", "slack", "weixin", "wecom", "whatsapp"}
 )
@@ -231,22 +202,15 @@ class TestPreTurnRatchet:
 
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
     def test_dispatcher_does_not_hand_roll_the_sequence(self, channel: str) -> None:
-        """The point of the helper is that the ordering has ONE owner.
-
-        A dispatcher that also calls ``maybe_rotate`` itself has a second,
-        unreviewed copy of the sequence -- which is exactly how the ordering
-        drifted per channel before.
-        """
+        """The ordering has ONE owner: a dispatcher calling ``maybe_rotate`` itself
+        holds a second copy of the sequence that can drift."""
         src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
         assert "maybe_rotate(" not in src, f"{channel} still rotates outside the helper"
 
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
     def test_compact_command_releases_the_notice_latch(self, channel: str) -> None:
-        """A user who complies with the soft context notice must be nudged again
-        next cycle. Missing this turns the notice from a per-growth-cycle nudge
-        into a once-ever one -- silent, and only visible as "it stopped warning
-        me". Cheap to assert, and it was got wrong once.
-        """
+        """After ``/compact`` the soft context notice must fire again next cycle;
+        without the release it warns only once ever."""
         src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
         assert "clear_awaiting(" in src, f"{channel} never releases the awaiting latch"
 
@@ -269,17 +233,10 @@ class TestPreTurnRatchet:
         )
 
     def test_exempt_channels_have_not_graduated(self) -> None:
-        """The reverse direction: an exempt entry asserts the channel still
-        hand-rolls its pre-turn sequence. Once any module in the channel's
-        package calls the shared helper, the entry is stale, and with nothing
-        forcing removal the set would silently accrete entries that do not
-        describe anything. The channels host their pre-turn logic in different
-        modules (weixin and wecom drive it from ``handle_message``, slack's
-        busy check lives in its gateway), so the scan covers the whole package
-        rather than assuming one dispatch filename. The scan anchors on the
-        package directory matching the channel type, so that mapping is
-        asserted first: a renamed package must fail loudly here instead of
-        reading as never-migrated forever.
+        """An exempt channel whose package calls the helper must be pruned.
+
+        Pre-turn logic lives in different modules per channel, so the scan covers
+        the whole package; the package dir is asserted first so a rename fails loudly.
         """
         missing = {c for c in _EXEMPT_CHANNELS if not (_SRC / c).is_dir()}
         assert not missing, (

@@ -286,11 +286,8 @@ def test_a_format_char_between_controls_does_not_survive() -> None:
 def test_a_json_encoded_field_does_not_carry_the_credential_out() -> None:
     """Encoding hides the control character from the scan, so the payload is scanned too.
 
-    A memory row carries the same value as text and as a JSON document. JSON writes a
-    control character as the six printable characters of an escape, so the control pattern
-    finds nothing to remove and the credential it splits matches neither redactor pass.
-    Whatever decodes the document gets the control character back, where it renders as
-    nothing and the credential reads as whole.
+    JSON writes a control character as a printable escape, which no pass removes; a
+    decoder gets it back and the credential reads whole.
     """
     stored = f"never commit {CREDENTIAL[:8]}\x01{CREDENTIAL[8:]}"
     row = {"text": stored, "value_json": json.dumps(stored)}
@@ -416,11 +413,8 @@ def test_the_depth_bound_spans_encoding_levels_as_well_as_structural_ones() -> N
 def test_a_document_inside_a_document_is_scanned_at_every_encoding_level() -> None:
     """One decode does not reach the bottom of a field that carries a document twice.
 
-    A memory record keeps its own value as a JSON document, so a revision snapshot of that
-    record is a document holding a document. The outer decode yields a STRING whose escapes
-    are still printable text: no control character exists there to remove, and the split
-    credential matches neither redactor. Whoever parses twice gets the control character
-    back and reads the credential whole, so the descent has to continue.
+    A revision snapshot is a document holding a document; after one decode the escapes are
+    still printable text, so the descent continues.
     """
     hidden = f"{CREDENTIAL[:8]}\x01{CREDENTIAL[8:]}"
     inner = json.dumps({"rule": f"never commit {hidden}"})
@@ -651,12 +645,8 @@ def test_shapes_that_only_look_like_a_repeat_are_left_alone() -> None:
 def test_a_document_that_parses_but_cannot_be_decoded_here_is_withheld() -> None:
     """Not every decode failure means the text is not JSON, and only one of them is safe.
 
-    This interpreter caps converting a very long integer to an int, and that cap raises a
-    plain ``ValueError`` rather than the parser's own malformed-input error -- on text that
-    is perfectly well-formed JSON. Treating every ``ValueError`` as "not JSON" hands such a
-    document to the pass-through branch, so it egresses raw with its escaped control
-    character intact, and a consumer whose parser has no such cap decodes it and reads the
-    credential whole.
+    Python's long-int cap raises a plain ``ValueError`` on well-formed JSON; treating that
+    as "not JSON" would pass the escaped control character through raw.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
     stored = '{"note": "never commit ' + escaped + '", "n": ' + "9" * 5000 + "}"

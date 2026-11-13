@@ -333,12 +333,12 @@ class TestPlacementRacesTheStore:
 
         real = state.mutate_folders
 
-        async def _delete_then_run(mutate: Any) -> Any:
+        async def _delete_then_run(mutate: Any, **kwargs: Any) -> Any:
             # Stand in for a concurrent DELETE committing between the handler's
             # unlocked check and its own transaction.
             state.mutate_folders = real
             state._folders[:] = []
-            return await real(mutate)
+            return await real(mutate, **kwargs)
 
         state.mutate_folders = _delete_then_run
 
@@ -370,7 +370,7 @@ class TestPlacementRacesTheStore:
 
         real = state.mutate_folders
 
-        async def _move_then_fail(mutate: Any) -> Any:
+        async def _move_then_fail(mutate: Any, **kwargs: Any) -> Any:
             # The slot has been unfiled by now; the user drags it somewhere else
             # while the folder transaction is in flight, and the transaction then
             # fails, so the rollback runs against a slot that has moved.

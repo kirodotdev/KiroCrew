@@ -172,11 +172,12 @@ class _SessionEntry(Protocol):
     first_turn: object
     provider_switch_replay: bool
     retire_on_identity_change: bool
+    cwd_retracted: bool
     prev_turn_cancelled: bool
 
 
 class _SessionMapPort(Protocol):
-    def clear_sid(self, key: str) -> None: ...
+    def clear_sid(self, key: str) -> bool: ...
 
     def delete(self, key: str, *, reason: str | None = None) -> None: ...
 
@@ -270,6 +271,8 @@ class SessionLifecycleOwner(Protocol):
 
     async def _retire_kiro_warm_pool(self) -> bool: ...
 
+    def warm_providers(self) -> list[Any]: ...
+
     def _mark_identity_epoch(self) -> None: ...
 
     async def _retire_kiro_subagent_runtimes(self, *, live: str = "") -> bool: ...
@@ -294,6 +297,7 @@ class SessionLifecycleOwner(Protocol):
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        stop_shared_children: bool = False,
     ) -> bool: ...
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None: ...
@@ -669,7 +673,11 @@ class SessionLifecycleService:
     destroy = _teardown.destroy
     destroy_if = _teardown.destroy_if
     discard_conversation = _teardown.discard_conversation
+    swap_conversation = _teardown.swap_conversation
     # ── Account-identity retirement (identity_retirement) ──
+    holds_kiro_process_of_unknown_account = (
+        _identity_retirement.holds_kiro_process_of_unknown_account
+    )
     flag_identity_stamp_mismatches = _identity_retirement.flag_identity_stamp_mismatches
     retire_kiro_identity_sessions = _identity_retirement.retire_kiro_identity_sessions
     _retire_kiro_subagent_runtimes = _identity_retirement._retire_kiro_subagent_runtimes
@@ -679,6 +687,7 @@ class SessionLifecycleService:
     _stop_bucket = _turn_stop._stop_bucket
     note_stop = _turn_stop.note_stop
     open_replay_gap = _turn_stop.open_replay_gap
+    has_open_replay_gap = _turn_stop.has_open_replay_gap
     close_replay_gap = _turn_stop.close_replay_gap
     _discard_replay_gap = _turn_stop._discard_replay_gap
     _orphan_turn_holder = _turn_stop._orphan_turn_holder
@@ -686,11 +695,14 @@ class SessionLifecycleService:
     absorb_orphaned_release = _turn_stop.absorb_orphaned_release
     adopt_turn = _turn_stop.adopt_turn
     _wake_turn_waiters = staticmethod(_turn_stop._wake_turn_waiters)
+    retire_turn_permit = _turn_stop.retire_turn_permit
     await_replay_gap = _turn_stop.await_replay_gap
     cancel_current = _turn_stop.cancel_current
     cancel_owned_turn = _turn_stop.cancel_owned_turn
     stop_turn = _turn_stop.stop_turn
     _send_abort_for_session = _turn_stop._send_abort_for_session
+    _select_shared_children = _turn_stop._select_shared_children
+    _stop_shared_children = _turn_stop._stop_shared_children
     _eager_respawn = _turn_stop._eager_respawn
     _respawn_as = _turn_stop._respawn_as
     # ── Every session at once (fleet) ──

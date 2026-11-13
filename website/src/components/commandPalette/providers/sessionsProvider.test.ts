@@ -346,6 +346,55 @@ describe('createSessionsProvider — backend relevance order is the score tiebre
   })
 })
 
+describe('createSessionsProvider — open sessions rank above history (issue #21290)', () => {
+  // The server sets `open: true` on a local row an open tab owns (#25460).
+  const fixture = async (): Promise<SessionSearchResponse> => ({
+    sessions: [
+      { key: 'old-best', title: 'grid' },
+      { key: 'old-body', title: 'Unrelated', snippet: 'grid in body' },
+      { key: 'cron_job-1', title: 'my grid notes', open: true },
+      { key: 'slack_1785.1', title: 'Other', snippet: 'grid again', open: true },
+      { key: 'slack_1785.1', title: 'Remote twin', snippet: 'grid', instance_id: 'i', instance_name: 'peer', open: true },
+    ],
+  })
+
+  it('puts open hits first, even over a better history title match', async () => {
+    const { d } = deps({ fetchSessions: vi.fn(fixture) })
+    const results = await createSessionsProvider(d).search('grid')
+    expect(results.map(r => r.title)).toEqual([
+      'my grid notes', 'Other', 'grid', 'Unrelated', 'Remote twin',
+    ])
+  })
+
+  it('never counts a remote row as open, even when it carries the flag', async () => {
+    const { d } = deps({ fetchSessions: vi.fn(fixture) })
+    const results = await createSessionsProvider(d).search('grid')
+    const remoteAt = results.findIndex(r => r.title === 'Remote twin')
+    expect(remoteAt).toBeGreaterThan(results.findIndex(r => r.title === 'grid'))
+  })
+
+  it('reads only the flag, never the key shape', async () => {
+    // A `dashboard_` key with no flag is history, whatever tab name it resembles.
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [
+          { key: 'dashboard_chat-old', title: 'grid' },
+          { key: 'dashboard_chat-1-1', title: 'my grid notes' },
+        ],
+      }),
+    )
+    const { d } = deps({ fetchSessions })
+    const results = await createSessionsProvider(d).search('grid')
+    expect(results.map(r => r.title)).toEqual(['grid', 'my grid notes'])
+  })
+
+  it('leaves the empty-query listing in backend order', async () => {
+    const { d } = deps({ fetchSessions: vi.fn(fixture) })
+    const results = await createSessionsProvider(d).search('')
+    expect(results.map(r => r.title)).toEqual(['grid', 'Unrelated', 'my grid notes', 'Other', 'Remote twin'])
+  })
+})
+
 describe('createSessionsProvider — federated (remote-instance) rows', () => {
   // Remote rows come back from /api/instances/search-sessions tagged with
   // instance_id/_name. Their contract differs from local rows in four ways,

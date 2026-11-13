@@ -729,7 +729,7 @@ class TestRewriter:
         src = tmp_path / "agents"
         src.mkdir()
         (src / "mdbot.md").write_text(
-            "---\nname: mdbot\nmcpServers:\n  srv:\n    command: "
+            '---\nname: mdbot\ntools: ["*"]\nmcpServers:\n  srv:\n    command: '
             + json.dumps(sys.executable)
             + '\n    args: ["-x"]\n---\nprompt\n',
             encoding="utf-8",
@@ -765,7 +765,11 @@ class TestRewriter:
         src.mkdir()
         (src / "Foo.json").write_text(
             json.dumps(
-                {"name": "Foo", "mcpServers": {"srv": {"command": sys.executable, "args": ["-x"]}}}
+                {
+                    "name": "Foo",
+                    "tools": ["*"],
+                    "mcpServers": {"srv": {"command": sys.executable, "args": ["-x"]}},
+                }
             ),
             encoding="utf-8",
         )
@@ -815,7 +819,7 @@ class TestRewriter:
         src.mkdir()
         (src / "Foo.json").write_text("{not json", encoding="utf-8")
         (src / "foo.md").write_text(
-            "---\nname: foo\nmcpServers:\n  srv:\n    command: "
+            '---\nname: foo\ntools: ["*"]\nmcpServers:\n  srv:\n    command: '
             + json.dumps(sys.executable)
             + '\n    args: ["-x"]\n---\nprompt\n',
             encoding="utf-8",

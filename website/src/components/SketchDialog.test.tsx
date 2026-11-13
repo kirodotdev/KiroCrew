@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import SketchDialog from './SketchDialog'
 
 /** Captured from the mock's props so the persistence test can assert what a
@@ -144,18 +144,20 @@ describe('SketchDialog', () => {
     try {
       localStorage.removeItem('mc-sketch-scene')
       const { unmount } = render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
-      // findByTestId under fake timers: the lazy mock resolves on microtasks,
-      // so flush them explicitly instead of waiting on real time.
-      await vi.waitFor(() => expect(screen.queryByTestId('fake-excalidraw')).not.toBeNull())
+      // The lazy mock resolves on microtasks: advance fake time inside act so the
+      // suspended pad mounts and its state updates land inside the act scope.
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.queryByTestId('fake-excalidraw')).not.toBeNull()
       // The mock fires one onChange on mount; the debounced write lands 500ms later.
-      vi.advanceTimersByTime(600)
+      await act(async () => { await vi.advanceTimersByTimeAsync(600) })
       const stored = JSON.parse(localStorage.getItem('mc-sketch-scene') ?? 'null')
       expect(stored?.elements).toHaveLength(1)
       unmount()
 
       // A fresh mount (fresh sceneRef — simulating a reload) seeds from storage.
       render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
-      await vi.waitFor(() => expect(screen.queryByTestId('fake-excalidraw')).not.toBeNull())
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.queryByTestId('fake-excalidraw')).not.toBeNull()
       expect(lastInitialData?.elements).toHaveLength(1)
     } finally {
       vi.useRealTimers()

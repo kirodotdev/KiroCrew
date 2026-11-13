@@ -45,7 +45,7 @@ function DetailHeader({ run }: { run: Run }) {
         <div className="flex-1 min-w-0">
           <h1 className="text-[22px] font-bold leading-tight text-text-strong break-words">
             {label}{more > 0 && (
-              <span className="text-muted font-medium"> +{more} {i18nT('apps.codeReviewSage.components.runDetail.more')}</span>
+              <span className="text-muted font-medium">{' '}{i18nT('apps.codeReviewSage.components.runDetail.more_count', { count: more })}</span>
             )}
           </h1>
           <div className="flex items-center gap-2 mt-2 flex-wrap text-[12.5px] text-muted">

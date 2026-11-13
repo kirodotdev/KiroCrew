@@ -52,10 +52,8 @@ async function main() {
   const page = await context.newPage()
   logPageProblems(page)
 
-  await stubDashboardApi(page)
-  // AFTER the shared stub, whose own init script clears storage: Developer Mode
-  // is what puts the Developer row in the sidebar at all.
-  await page.addInitScript(() => localStorage.setItem('mc-dev-mode', '1'))
+  // Developer Mode is what puts the Developer row in the sidebar at all.
+  await stubDashboardApi(page, { localStorageEntries: { 'mc-dev-mode': '1' } })
 
   const shot = []
   const save = async (name) => {

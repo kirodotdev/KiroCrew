@@ -19,7 +19,9 @@
  * reads, and a control carrying another registered id is never a name match
  * for it. Of several matches, a section title (a heading, or a control
  * drawn in one) gives way to a control that is not one, and for a tab or a
- * settings entry the one in the page's navigation wins. `role` narrows the candidates while that still
+ * settings entry the one in the page's navigation wins; for any other search
+ * the main navigation's entry wins over same-named controls outside every
+ * navigation region. `role` narrows the candidates while that still
  * finds a match, and is dropped when it finds none; `container`
  * narrows several matches to those whose surroundings carry that name, or,
  * as `#N` (or `N`), picks the Nth of them in the order the panel numbers
@@ -337,6 +339,18 @@ export function searchByName(q: FindQuery, root: ParentNode = document, shown: S
     const hint = normalizeName(q.container)
     const near = hint ? matches.filter(m => normalizeName(contextOf(m.el)).includes(hint)) : []
     if (near.length > 0) matches = near
+  }
+  // A page's entry in the main navigation is the control that page's name
+  // means: it wins over a same-named control drawn outside any navigation
+  // region (the Mates page's switcher chip is also named "Mates"), so a tour
+  // of the rail never asks a new user which "Mates" they meant. Two entries
+  // that are both navigation (the rail link and a Customize tab of the same
+  // name) stay ambiguous, and a search for a registered control is decided
+  // by its id above, never here.
+  if (matches.length > 1 && !q.location) {
+    const rail = matches.filter(m => inMainNav(m.el))
+    const rest = matches.filter(m => !inMainNav(m.el))
+    if (rail.length === 1 && rest.every(m => !m.el.closest(NAV_REGION))) matches = rail
   }
   // Judged on what matched, never on what was asked; and a label that only
   // CONTAINS part of a ceiling control's name is refused too, though it

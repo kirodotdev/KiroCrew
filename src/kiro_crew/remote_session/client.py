@@ -79,7 +79,11 @@ async def pipe(host: str, port: int, token: bytes, stdin_read, stdout_write) -> 
     try:
         reader, writer = await asyncio.open_connection(host, port, limit=wire.MAX_LINE_BYTES * 2)
     except OSError as exc:
-        print(f"crew-remote: relay unreachable: {exc}", file=sys.stderr, flush=True)
+        # Local: only a failed dial pays for the downloader's imports.
+        from kiro_crew.asset_downloader import network_failure_cause
+
+        why = network_failure_cause(exc) or exc
+        print(f"crew-remote: relay unreachable: {why}", file=sys.stderr, flush=True)
         return EXIT_LOST
     writer.write(token + b"\n")
     loop = asyncio.get_running_loop()
@@ -135,20 +139,30 @@ def _read_token(path: str) -> bytes:
         os.close(fd)
 
 
+def _parse_pipe(text: str) -> tuple[str, int]:
+    """Split ``HOST:PORT``; ``SystemExit`` with a CLI message on a bad port."""
+    host, _, port_text = text.rpartition(":")
+    # isascii first: str.isdigit() accepts "²", which int() then rejects.
+    if not (port_text.isascii() and port_text.isdigit()):
+        raise SystemExit("--pipe must be HOST:PORT")
+    # The length bound keeps int() under its max-str-digits limit (ValueError).
+    if len(port_text) > 5 or not 1 <= int(port_text) <= 65535:
+        raise SystemExit(f"--pipe port must be 1..65535, got {port_text[:8]}")
+    return host, int(port_text)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     q = argparse.ArgumentParser(prog="kiro_crew.remote_session.client")
     q.add_argument("--pipe", required=True, help="HOST:PORT of a gateway workspace relay")
     q.add_argument("--token-file", required=True)
     pargs = q.parse_args(argv)
-    host, _, port_text = pargs.pipe.rpartition(":")
-    if not port_text.isdigit():
-        raise SystemExit("--pipe must be HOST:PORT")
+    host, port = _parse_pipe(pargs.pipe)
     token = _read_token(pargs.token_file)
     # Raw os.read: a daemon thread still blocked on a buffered reader's lock at
     # exit aborts the interpreter (SIGABRT).
     fd = sys.stdin.fileno()
-    return asyncio.run(pipe(host, int(port_text), token, lambda n: os.read(fd, n), _write_all))
+    return asyncio.run(pipe(host, port, token, lambda n: os.read(fd, n), _write_all))
 
 
 if __name__ == "__main__":

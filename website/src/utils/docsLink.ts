@@ -26,6 +26,13 @@ export const SECRETS_GUIDE_URL = 'https://github.com/kirodotdev/KiroCrew/blob/ma
  *  one place a `secret://` value resolves. */
 export const SECRETS_GUIDE_ROUTING_URL = `${SECRETS_GUIDE_URL}#route-the-server-through-the-gateway`
 
+/** The guide section that shows the oauth_endpoints.json entry a refused
+ *  approval address needs. The Connections card and the MCP table's Sign in
+ *  link it when they name a `mint_url_rejected` endpoint, so the remedy ends in
+ *  a link rather than a bare path. */
+export const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
+  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized-the-oauth-endpoint-allowlist'
+
 /**
  * The public URL for a docs filename, or `null` when the value is not one.
  *
@@ -37,4 +44,15 @@ export const SECRETS_GUIDE_ROUTING_URL = `${SECRETS_GUIDE_URL}#route-the-server-
 export function tipDocHref(doc: string | undefined): string | null {
   if (!doc || !DOC_FILENAME_RE.test(doc)) return null
   return `${DOCS_BASE}/${doc}`
+}
+
+/** A shipped docs file and one heading anchor in it: the registry's
+ *  `org_admin_guide` shape, which the backend validator enforces too. */
+const DOC_SECTION_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md#[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** The public URL for a `<file>.md#<anchor>` docs section, or `null` for any
+ *  other shape, on the same refuse-rather-than-render terms as `tipDocHref`. */
+export function docSectionHref(section: string | undefined): string | null {
+  if (!section || !DOC_SECTION_RE.test(section)) return null
+  return `${DOCS_BASE}/${section}`
 }

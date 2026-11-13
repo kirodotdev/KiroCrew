@@ -84,9 +84,11 @@ async function main() {
     // Only the target slot is present, so the active/current slot is
     // unambiguous regardless of how the shell picks a default active slot.
     const only = slots.filter(s => s.key === activeSlot)
-    await stubDashboardApi(page, { slots: only, theme, extra })
+    await stubDashboardApi(page, {
+      slots: only, theme, extra,
+      localStorageEntries: { 'mc-active-slot': activeSlot },
+    })
     await page.routeWebSocket(/\/api\/ws/, () => {})
-    await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, activeSlot)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
   }

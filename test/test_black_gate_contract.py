@@ -157,20 +157,42 @@ def test_no_operation_can_add_a_path_to_the_baseline() -> None:
 
 
 def test_the_lint_job_fetches_enough_history_to_scope_the_diff() -> None:
-    # The scoping is only exact if the checkout has both merge parents. depth 1
-    # leaves HEAD^2 unreachable, the scope silently falls back to the whole tree,
-    # and the gate is flaky again in a way nothing else would report.
+    """The job must reach a diff base, by depth 0 or by depth 2 plus a base fetch.
+
+    What ratchet_scope needs is not the base COMMIT but ANCESTRY: it will only
+    diff HEAD^1..HEAD once `merge-base --is-ancestor HEAD^1 origin/main` has
+    confirmed HEAD^1 is a base commit and not the feature tip of a local merge.
+    A bare depth-2 clone has no ancestry and no origin/main, the probe says no,
+    and the scope falls back to the whole tree -- which is why depth 2 alone was
+    tried here once and reverted.
+
+    Depth 2 plus a bounded deepening of the base branch restores the ancestry,
+    so it is accepted too. Fetching the event's base SHA alone is NOT: the merge
+    ref is recomputed when the base moves, so HEAD^1 is routinely newer than
+    base.sha and `--is-ancestor` against that one commit correctly says no. The
+    deepening step also unshallows if the base moved past its window, so the
+    accepted shape is never worse than full history -- it just stops paying for
+    it on the runs that do not need it.
+    """
     workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
     job = workflow["jobs"]["backend-lint"]
     checkout = next(step for step in job["steps"] if "checkout" in str(step.get("uses", "")))
     depth = (checkout.get("with") or {}).get("fetch-depth")
-    # depth 2 was tried and was NOT enough: a shallow clone truncates parent info
-    # and leaves no base ref, so the scope silently fell back to the whole tree and
-    # the gate reported a file the base branch had merged. Full history is the only
-    # shape proven to work here.
-    assert depth == 0, (
+    if depth == 0:
+        return
+    runs = "\n".join(str(step.get("run") or "") for step in job["steps"])
+    assert depth == 2, (
         f"backend-lint checkout fetch-depth is {depth!r}; the black gate needs "
-        "full history (0) to resolve this change's own diff"
+        "either full history (0) or depth 2 plus a fetch of the base branch"
+    )
+    assert "--depth=50 origin main" in runs, (
+        "backend-lint checks out at depth 2, so it must deepen the base branch "
+        "before the gates run; without origin/main the scope falls back to the "
+        "whole tree and the gate reports files the base branch merged"
+    )
+    assert "--unshallow origin main" in runs, (
+        "the bounded deepening must unshallow when the base moved past its "
+        "window, so a stale PR is never scoped worse than under full history"
     )
 
 

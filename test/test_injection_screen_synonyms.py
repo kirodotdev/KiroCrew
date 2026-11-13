@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.security.helpers import contains_injection
 
 _FLAGGED = [
@@ -36,8 +35,16 @@ def test_benign_text_is_not_flagged(text: str) -> None:
     assert not contains_injection(text)
 
 
-def test_screen_is_linear_on_long_input() -> None:
-    start = time.perf_counter()
-    contains_injection("ignore " + "all " * 3000 + "x")
-    contains_injection("disregard" + " " * 5000 + "x")
-    assert time.perf_counter() - start < 0.5
+@pytest.mark.parametrize(
+    "build_pump",
+    [
+        lambda n: "ignore " + "all " * n + "x",
+        lambda n: "disregard" + " " * n + "x",
+    ],
+    ids=["repeated-quantifier", "whitespace-run"],
+)
+def test_screen_is_linear_on_long_input(build_pump) -> None:
+    def reject(text: str) -> None:
+        assert isinstance(contains_injection(text), bool)
+
+    assert_rejected_without_backtracking(reject, build_pump, budget_seconds=0.5)

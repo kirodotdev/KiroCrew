@@ -23,6 +23,7 @@ from kiro_crew.work_vocab import (
     WorkBoardForgotten,
     WorkBoardItem,
     WorkBoardView,
+    coerce_retired_bindings,
 )
 
 # --------------------------------------------------------------------------- #
@@ -114,10 +115,13 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "verdict",
     "decision",
     "worker_session_key",
+    "worker_instance_id",
+    "retired_bindings",
     "round",
     "fails",
     "status",
     "reason",
+    "wake_at",
     "summary",
     "artifacts",
     "pr",
@@ -231,6 +235,32 @@ def _work_reset_board(state: dict[str, Any]) -> None:
 def _work_bind_slot(state: dict[str, Any], slot: str) -> None:
     """The board this fold is of, as the reader names it, before the first entry."""
     state["slot"] = slot
+
+
+def _work_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """The copy :func:`_work_step` needs: every container it can edit.
+
+    The step edits the top level, the index containers (``items``, ``order``,
+    ``closed``, ``parked`` and each parked list, ``forgotten``, ``tombstones``), any
+    one item, and that item's ``events`` list. A value an item holds whole
+    (``acceptance``, ``artifacts``, ``retired_bindings``) and each event or parked row
+    is replaced or dropped, never edited, so those stay shared.
+
+    shortcut: this copies one row per retained item and per event pointer, bounded by
+    ``WORK_ITEM_LIMIT`` x ``WORK_EVENT_LIMIT``; the step can reach any item, so a
+    state-only copy cannot do less.
+    """
+    grown = dict(state)
+    grown["items"] = {
+        item_id: {**item, "events": list(item["events"])}
+        for item_id, item in state["items"].items()
+    }
+    grown["order"] = list(state["order"])
+    grown["closed"] = list(state["closed"])
+    grown["parked"] = {item_id: list(held) for item_id, held in state["parked"].items()}
+    grown["forgotten"] = dict(state["forgotten"])
+    grown["tombstones"] = dict(state["tombstones"])
+    return grown
 
 
 def _work_step(state: dict[str, Any], entry: Entry) -> None:
@@ -522,7 +552,11 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     """
     action = _as_str(data.get("action"))
     actor = _as_str(data.get("actor"))
-    if actor == "worker":
+    if actor == "person":
+        # A person's steer moves no field; it is only the event line below.
+        if action != "steer":
+            return
+    elif actor == "worker":
         if action != "report" or data.get("mirror") is True:
             return
         if data.get("board_copy") is True:
@@ -533,9 +567,15 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         for name in _WORK_WORKER_FIELDS:
             if name in data:
                 item[name] = _work_field(name, data[name])
-        # Every report REPLACES the reason, so an absent one is a cleared one rather
-        # than "unchanged" -- the one worker field read that way.
+        # Every report REPLACES the reason and the wake_at, so an absent one is a
+        # cleared one rather than "unchanged". wake_at is held only while set, as the
+        # store's record holds it.
         item["reason"] = _work_reason(data.get("reason"))
+        wake_at = _work_field("wake_at", data.get("wake_at"))
+        if wake_at:
+            item["wake_at"] = wake_at
+        else:
+            item.pop("wake_at", None)
         item["last_report_at"] = _work_stamp(data.get("last_report_at"), stamp_ms)
     else:
         allowed = _WORK_CONDUCTOR_FIELDS.get(action)
@@ -557,6 +597,11 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         elif action == "accept":
             # A pending run belongs to the bar it measured; the new bar starts its own.
             item["pending_since"] = None
+        elif action == "retire":
+            # A retire that left the item unbound logs the pair as "", which the
+            # cache holds as unset.
+            for name in ("worker_session_key", "worker_instance_id"):
+                item[name] = item.get(name) or None
     _work_apply_event(item, data, stamp_ms, action)
 
 
@@ -606,9 +651,13 @@ def _work_field(name: str, value: Any) -> Any:
         return dict(value)
     if name in ("round", "fails", "pr"):
         return _as_int(value) if value is not None else None
+    if name == "retired_bindings":
+        return coerce_retired_bindings(value)
     if name == "reason":
         return _work_reason(value)
-    if name in ("verdict", "worker_session_key", "status"):
+    if name == "wake_at":
+        return _work_text(name, value) or None
+    if name in ("verdict", "worker_session_key", "worker_instance_id", "status"):
         return _work_text(name, value) if value is not None else None
     return _work_text(name, value)
 

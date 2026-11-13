@@ -26,6 +26,10 @@ from kiro_crew.knowledge.store_parts.item_ownership import _DOC_STATE_TABLES
 if TYPE_CHECKING:
     from kiro_crew.knowledge.store import KnowledgeStore
 
+# IN-list chunk size for deleting a source's items. Kept under the oldest
+# SQLite's SQLITE_MAX_VARIABLE_NUMBER of 999 so no statement trips the limit.
+_DELETE_IN_CHUNK = 900
+
 
 def find_doc_by_content_hash(
     self: KnowledgeStore, content_hash: str, exclude_source_id: str | None = None
@@ -73,6 +77,9 @@ def add_item(
     tags_json = json.dumps(tags or [])
     self.db.execute("BEGIN IMMEDIATE")
     try:
+        # Inside the write transaction, so the type read and the insert
+        # are one unit under the same lock.
+        self._refuse_live_source(source_id)
         self.db.execute(
             "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -192,7 +199,7 @@ def delete_item(self: KnowledgeStore, item_id):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def delete_items_batch(
@@ -217,7 +224,7 @@ def delete_items_batch(
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def delete_items_batch_in_txn(
@@ -234,7 +241,7 @@ def delete_items_batch_in_txn(
     """
     for item_id in item_ids:
         if owner_source_id:
-            others = self.sources_holding_item(item_id, exclude_source_id=owner_source_id)
+            others = self._reassignment_candidates(item_id, owner_source_id)
             if others:
                 self.reassign_item_source(item_id, others[0])
                 self._adopt_reassigned_item(item_id, others[0])
@@ -269,7 +276,7 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
         ]
         doomed: list[str] = []
         for item_id in owned:
-            others = self.sources_holding_item(item_id, exclude_source_id=source_id)
+            others = self._reassignment_candidates(item_id, source_id)
             if others:
                 self.reassign_item_source(item_id, others[0])
                 # Same obligation as the item-level path: a recipient must never
@@ -285,23 +292,24 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
         # item survived under a new owner or is about to be deleted.
         self.db.execute("DELETE FROM source_locations WHERE source_id = ?", (source_id,))
 
-        if doomed:
-            q = ",".join("?" for _ in doomed)
+        for start in range(0, len(doomed), _DELETE_IN_CHUNK):
+            chunk = doomed[start : start + _DELETE_IN_CHUNK]
+            q = ",".join("?" for _ in chunk)
             # FTS is external-content, so the old column values must be handed to
             # the 'delete' command BEFORE the rows go -- and only for the rows going.
             for row in self.db.execute(
                 f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
-                doomed,
+                chunk,
             ).fetchall():
                 self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
             self.db.execute(
-                f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed
+                f"DELETE FROM source_locations WHERE item_id IN ({q})", chunk
             )  # noqa: S608
-            self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
+            self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", chunk)  # noqa: S608
             self.db.execute(
-                f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed
+                f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", chunk
             )  # noqa: S608
-            self.db.execute(f"DELETE FROM items WHERE id IN ({q})", doomed)  # noqa: S608
+            self.db.execute(f"DELETE FROM items WHERE id IN ({q})", chunk)  # noqa: S608
 
         # Documents that deferred to this source need their marker cleared, or the
         # collapse outlives its reason and they stay stranded. But HOW they are
@@ -366,4 +374,4 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()

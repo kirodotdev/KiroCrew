@@ -66,9 +66,8 @@ def chained(event: Any, held: int) -> Any:
 
     The receiver rule (RFC section 2.4) for the one case a receiver cannot apply: a
     ``delta`` whose ``base_revision`` is not *held*. That event comes back as
-    ``snapshot_needed`` with reason :data:`REASON_GAP`, everything else as it is. The
-    whole value an event still carries during the migration is kept, so a receiver
-    that can use it need not read.
+    ``snapshot_needed`` with reason :data:`REASON_GAP`, everything else as it is. A
+    delta event carries no whole value, so the receiver reads a snapshot.
 
     Duplicates (``revision <= held``) are not this function's business: the bus floor
     and every receiver drop those before asking.
@@ -81,6 +80,27 @@ def chained(event: Any, held: int) -> Any:
     if replace is None:  # pragma: no cover - every bus event is a NamedTuple
         return event
     return replace(kind=KIND_SNAPSHOT_NEEDED, base_revision=0, delta={"reason": REASON_GAP})
+
+
+def value_after(held: "Mapping[str, Any] | None", held_revision: int, event: Any) -> Any:
+    """The value a receiver holding *held* at *held_revision* moves to on *event*.
+
+    Returns the new whole value, or ``None`` when the receiver has to pull a
+    snapshot: a ``snapshot_needed``, a gap, or ops that do not fit. A ``work`` event
+    from the publisher never carries a whole value; one that does (a ``kind=value``
+    event, or a test double) is used when the delta cannot be.
+    """
+    kind = getattr(event, "kind", KIND_VALUE)
+    carried = getattr(event, "value", None)
+    whole = carried if isinstance(carried, Mapping) and carried else None
+    if kind == KIND_DELTA and held is not None:
+        base = int(getattr(event, "base_revision", 0) or 0)
+        ops = getattr(event, "delta", None)
+        if base == held_revision and base > 0 and isinstance(ops, Mapping):
+            applied = apply_work(held, ops)
+            if applied is not None:
+                return applied
+    return whole
 
 
 def _item_id(item: Any) -> str:

@@ -1,0 +1,162 @@
+{
+  "fixture": "backend/list-crew-endpoints.response",
+  "kind": "backend-response",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "status": "provisional",
+  "summary": "ListCrewEndpoints answers in the backend model's shape: team Crews the person is granted, then their own personal Crews, paged by nextToken.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "awsJson1_0 per the backend model, POST / with X-Amz-Target KiroControlPlaneBearerService.ListCrewEndpoints."
+    },
+    {
+      "field": "host names",
+      "why": "Per-stage settings. The examples use example.invalid names."
+    }
+  ],
+  "operation": "ListCrewEndpoints",
+  "request": {
+    "headers": {
+      "Content-Type": "application/x-amz-json-1.0",
+      "X-Amz-Target": "KiroControlPlaneBearerService.ListCrewEndpoints"
+    },
+    "forbiddenHeaders": ["TokenType"],
+    "firstBody": {},
+    "nextBody": {"nextToken": "<the previous answer's nextToken>"}
+  },
+  "fields": {
+    "crewEndpoints": "Always, possibly empty. Each entry has endpointId, crewUrl, name, crewType, presence and relayConnectionStatus.",
+    "crewUrl": "The Crew's https origin. Its host starts with the entry's endpointId and a dot.",
+    "crewType": "PERSONAL or TEAM.",
+    "presence": "CONNECTED, HEARTBEAT_LATE, NOT_CONNECTED or NEVER_CONNECTED.",
+    "relayConnectionStatus": "CONNECTED, NOT_CONNECTED or UNKNOWN.",
+    "remoteAccessAllowed": "False when the organization does not allow remote access. The list is then empty.",
+    "nextToken": "Opaque. Present when another page follows."
+  },
+  "examples": [
+    {
+      "name": "page 1 of 2: a granted team Crew",
+      "body": {
+        "crewEndpoints": [
+          {
+            "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "crewUrl": "https://teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa.crew.example.invalid",
+            "name": "Build team Crew",
+            "crewType": "TEAM",
+            "presence": "CONNECTED",
+            "relayConnectionStatus": "CONNECTED",
+            "lastSeenAt": 1762470000,
+            "crewVersion": "0.13.0",
+            "protocolVersion": "1"
+          }
+        ],
+        "remoteAccessAllowed": true,
+        "nextToken": "page-2-opaque"
+      }
+    },
+    {
+      "name": "page 2 of 2: the person's own Crew, offline",
+      "body": {
+        "crewEndpoints": [
+          {
+            "endpointId": "personalbbbbbbbbbbbbbbbbbbbbbbbb",
+            "crewUrl": "https://personalbbbbbbbbbbbbbbbbbbbbbbbb.crew.example.invalid",
+            "name": "Desk Crew",
+            "crewType": "PERSONAL",
+            "presence": "NOT_CONNECTED",
+            "relayConnectionStatus": "NOT_CONNECTED"
+          }
+        ],
+        "remoteAccessAllowed": true
+      }
+    },
+    {
+      "name": "remote access turned off",
+      "body": {
+        "crewEndpoints": [],
+        "remoteAccessAllowed": false
+      }
+    }
+  ],
+  "unusableEntries": [
+    {
+      "name": "crewUrl host is another endpoint's",
+      "entry": {
+        "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "crewUrl": "https://otherccccccccccccccccccccccccccc.crew.example.invalid",
+        "name": "Wrong host",
+        "crewType": "TEAM",
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    },
+    {
+      "name": "crewUrl host only has the endpoint ID as a prefix",
+      "entry": {
+        "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "crewUrl": "https://teamaaaaaaaaaaaaaaaaaaaaaaaaaaaaextra.crew.example.invalid",
+        "name": "Prefix host",
+        "crewType": "TEAM",
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    },
+    {
+      "name": "crewUrl is not a bare https origin",
+      "entry": {
+        "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "crewUrl": "http://teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa.crew.example.invalid/path",
+        "name": "Not an origin",
+        "crewType": "TEAM",
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    },
+    {
+      "name": "endpointId breaks the grammar",
+      "entry": {
+        "endpointId": "Short",
+        "crewUrl": "https://short.crew.example.invalid",
+        "name": "Bad ID",
+        "crewType": "TEAM",
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    },
+    {
+      "name": "unknown crewType",
+      "entry": {
+        "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "crewUrl": "https://teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa.crew.example.invalid",
+        "name": "Odd type",
+        "crewType": "OTHER",
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    },
+    {
+      "name": "crewType is not a string",
+      "entry": {
+        "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "crewUrl": "https://teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa.crew.example.invalid",
+        "name": "List type",
+        "crewType": ["TEAM"],
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    },
+    {
+      "name": "name with a control character",
+      "entry": {
+        "endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "crewUrl": "https://teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa.crew.example.invalid",
+        "name": "Bad\u0007name",
+        "crewType": "TEAM",
+        "presence": "CONNECTED",
+        "relayConnectionStatus": "CONNECTED"
+      }
+    }
+  ]
+}

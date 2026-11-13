@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,11 +14,13 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _MAX_RECENT_PROJECTS,
         _favorite_projects_lock,
+        _recent_projects_lock,
         atomic_write,
         config_dir,
         deny_non_dashboard_caller,
         is_sensitive_path,
         read_bounded_json,
+        read_bytes_with_retry,
         sel,
     )
 
@@ -29,41 +29,58 @@ def _recent_projects_path() -> Path:
     return config_dir() / "recent_projects.json"
 
 
+def _load_recent_projects() -> list:
+    """The stored recents payload, for the save to edit; the caller holds the lock.
+
+    An absent file is an empty list, and so is a file that is not valid UTF-8 JSON: the
+    recents window rebuilds as the user switches projects, so a damaged file is
+    replaced rather than refused. Any other `OSError` propagates. That is a file that
+    exists but could not be read, such as the Windows sharing violation that outlasts
+    `read_bytes_with_retry`, and writing back an empty snapshot then would replace
+    the whole stored list with one entry.
+    """
+
+    fp = _recent_projects_path()
+    try:
+        raw = read_bytes_with_retry(fp)
+    except FileNotFoundError:
+        return []
+    try:
+        stored = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return []
+    return stored if isinstance(stored, list) else []
+
+
 def _save_recent_project(path: str) -> None:
-    """Prepend path to recent projects list (deduped, capped)."""
+    """Prepend path to recent projects list (deduped, capped).
+
+    The read-modify-write runs under `_recent_projects_lock`, and the file is
+    replaced through the shared `atomic_write`, whose rename retries the Windows
+    sharing-violation window a handle from outside this process can open. A read
+    that fails raises to the caller and leaves the stored list as it was.
+    """
 
     fp = _recent_projects_path()
     fp.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing = json.loads(fp.read_text(encoding="utf-8")) if fp.is_file() else []
-    except (json.JSONDecodeError, OSError):
-        existing = []
-    if not isinstance(existing, list):
-        existing = []
-    existing = [p for p in existing if p != path]
-    existing.insert(0, path)
-    existing = existing[:_MAX_RECENT_PROJECTS]
-    fd, tmp = tempfile.mkstemp(dir=fp.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
-            tmp_fh.write(json.dumps(existing))
-        os.replace(tmp, fp)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    with _recent_projects_lock:
+        existing = [p for p in _load_recent_projects() if p != path]
+        existing.insert(0, path)
+        atomic_write(fp, json.dumps(existing[:_MAX_RECENT_PROJECTS]), mode=0o600)
 
 
 async def api_recent_projects(request: web.Request) -> web.Response:
     """GET /api/recent-projects — list recently used project directories."""
 
     def _read_recent_projects() -> list[str]:
-        fp = _recent_projects_path()
+        # The file loads under the lock the save holds, so no read in this process is
+        # open while a save renames its new list into place. The filesystem probes run
+        # after the lock is released: they can stall on a network mount and must not
+        # hold up a save.
         try:
-            dirs = json.loads(fp.read_text(encoding="utf-8")) if fp.is_file() else []
-        except Exception:
-            dirs = []
-        if not isinstance(dirs, list):
+            with _recent_projects_lock:
+                dirs = _load_recent_projects()
+        except OSError:
             dirs = []
         return [
             d for d in dirs if isinstance(d, str) and os.path.isdir(d) and not is_sensitive_path(d)

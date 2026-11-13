@@ -51,8 +51,12 @@ class TestCardShape:
     def test_the_card_is_json_serialisable(self) -> None:
         # It goes on the wire as JSON; a non-serialisable value would fail at send
         # time, inside a turn, rather than here.
-        json.dumps(approval_card("t", nonce="n", request_id="1"))
-        json.dumps(options_card(["a", "b"], nonce="n"))
+        for card in (
+            approval_card("t", nonce="n", request_id="1"),
+            options_card(["a", "b"], nonce="n"),
+        ):
+            # A round trip is lossless only when every value is a plain JSON type.
+            assert json.loads(json.dumps(card)) == card
 
     def test_a_tool_name_carries_no_markdown_control_characters(self) -> None:
         """A tool title is model-influenced text, and a TextBlock is not a shield.
@@ -224,6 +228,14 @@ class TestLiveChoices:
         live.publish("s1", "n1", ["A", "B"])
         assert live.take("s1", "1", "n1") == "B"
 
+    def test_an_ascii_digit_press_beside_unicode_digits_still_resolves(self) -> None:
+        """``"²"`` and ``"١"`` pass ``isdigit()``; only ASCII ``"3"`` is a slot."""
+        live = LiveChoices()
+        live.publish("s1", "n1", ["A", "B", "C", "D"])
+        assert live.take("s1", "²", "n1") == ""
+        assert live.take("s1", "١", "n1") == ""
+        assert live.take("s1", "3", "n1") == "D"
+
     def test_a_press_is_one_shot(self) -> None:
         """Webex cannot retire a card that carries an attachment.
 
@@ -242,7 +254,7 @@ class TestLiveChoices:
         assert live.take("s1", "0", "n1") == ""
         assert live.take("s1", "1", "n2") == "Y"
 
-    @pytest.mark.parametrize("index", ["", "-1", "9", "abc", "0.5"])
+    @pytest.mark.parametrize("index", ["", "-1", "9", "abc", "0.5", "²", "١", "0" * 5000])
     def test_an_index_that_is_not_a_slot_resolves_to_nothing(self, index: str) -> None:
         live = LiveChoices()
         live.publish("s1", "n1", ["A", "B"])

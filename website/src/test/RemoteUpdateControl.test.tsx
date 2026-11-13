@@ -66,6 +66,22 @@ describe('RemoteUpdateControl', () => {
     expect(api.updateRemoteInstance).not.toHaveBeenCalled()
   })
 
+  it('keeps keyboard focus on the swapped-in buttons when arming and cancelling', async () => {
+    // Arming replaces the pressed Update with the confirm row, and Cancel
+    // swaps it back. Each swap unmounts the focused button, so without a
+    // handoff focus falls to the page. Arming lands on Cancel, the safe
+    // choice, so the Enter that armed it cannot also start the update.
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    const update = await screen.findByRole('button', { name: 'Update Old box' })
+    update.focus()
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Update Old box' }))
+    expect(api.updateRemoteInstance).not.toHaveBeenCalled()
+  })
+
   it('the confirming click starts exactly one job and shows its progress', async () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
@@ -126,6 +142,20 @@ describe('RemoteUpdateControl', () => {
     expect(await screen.findByText('Old box now runs 0.9.1.')).toBeInTheDocument()
   })
 
+  it('never calls an update confirmed when the version before it is unknown', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'unverified', phase: 'done', finished_at: 2, version_before: '', version_after: '0.9.1' },
+    })
+    // A versions row read before the restart still says the old version.
+    vi.mocked(api.instancesVersions).mockResolvedValue({
+      local_version: '0.9.1',
+      instances: [{ id: 'old', name: 'Old box', version: '0.9.0', behind: true, updatable: true }],
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(await screen.findByText(/now runs 0\.9\.1\. Its version before the update could not be read/)).toBeInTheDocument()
+    expect(screen.queryByText(/Old box now runs 0\.9\.\d\.$/)).toBeNull()
+  })
+
   it('shows the remote error tail of a failed update and names the Try again it offers', async () => {
     vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
       job: { ...RUNNING, state: 'failed', error: 'release feed unreachable', finished_at: 2 },
@@ -137,13 +167,90 @@ describe('RemoteUpdateControl', () => {
     expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
   })
 
-  it('says when the update landed but the restart failed', async () => {
+  it('shows the counts while the crew finishes its running work', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, phase: 'waiting_for_idle', waiting: { turns: 2, background: 3 } },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(
+      await screen.findByText(/Waiting for Old box to finish its running work .*chat turns: 2, background tasks: 3/),
+    ).toBeInTheDocument()
+  })
+
+  it.each([
+    ['still_busy', /still running work after 10 minutes, so it was not restarted/],
+    ['peer_cannot_wait', /cannot report its running work, so it was not restarted\. Update it from its own dashboard/],
+    ['idle_check_failed', /could not check its running work, so it was not restarted/],
+  ] as const)('a job that stopped short of the restart (%s) offers Restart now', async (code, text) => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', phase: 'waiting_for_idle', code, finished_at: 2 },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(await screen.findByText(text)).toBeInTheDocument()
+    // The update's exit 0 does not prove an install (it also exits 0 when nothing
+    // was newer), so the message never says one happened, and offers Restart now
+    // only as the way to start a version the update may have installed.
+    expect(screen.queryByText(/new version is installed/i)).toBeNull()
+    if (code !== 'peer_cannot_wait') {
+      expect(screen.getByText(/If the update installed a new version, Restart now starts it/)).toBeInTheDocument()
+    }
+    // The generic next step would contradict the message, which names its own.
+    expect(screen.queryByText(/Fix the cause on Old box/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Restart now' })).toBeInTheDocument()
+    if (code === 'peer_cannot_wait') {
+      // A retry reaches the same old gateway and ends the same way.
+      expect(screen.queryByRole('button', { name: 'Update Old box' })).toBeNull()
+    } else {
+      expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
+    }
+  })
+
+  it('Restart now asks first, then starts a job that does not wait', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', phase: 'waiting_for_idle', code: 'still_busy', finished_at: 2 },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    await u.click(await screen.findByRole('button', { name: 'Restart now' }))
+    expect(api.updateRemoteInstance).not.toHaveBeenCalled()
+    await u.click(screen.getByRole('button', { name: /Restart “Old box” and stop its work/ }))
+    expect(api.updateRemoteInstance).toHaveBeenCalledTimes(1)
+    expect(api.updateRemoteInstance).toHaveBeenCalledWith('old', { force: true })
+  })
+
+  it('Cancel on the Restart now confirm returns focus to Restart now', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', phase: 'waiting_for_idle', code: 'still_busy', finished_at: 2 },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    const restart = await screen.findByRole('button', { name: 'Restart now' })
+    restart.focus()
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Restart now' }))
+    expect(api.updateRemoteInstance).not.toHaveBeenCalled()
+  })
+
+  it('a failed update that did not stop for running work offers no Restart now', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'failed', error: 'release feed unreachable', finished_at: 2 },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(await screen.findByText(/release feed unreachable/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
+  })
+
+  it('says when the update ran but the restart failed', async () => {
     vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
       job: { ...RUNNING, state: 'failed', phase: 'restarting', error: 'systemd refused', finished_at: 2 },
     })
     renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
-    expect(await screen.findByText(/The new version is installed on Old box, but its restart failed: systemd refused/)).toBeInTheDocument()
-    expect(screen.getByText(/Old box keeps running its old version until it restarts\. Run kirocrew restart on that crew/)).toBeInTheDocument()
+    expect(await screen.findByText(/^Old box ran its update, but its restart failed: systemd refused$/)).toBeInTheDocument()
+    expect(screen.getByText(/Old box keeps running the version it had until it restarts\. Run kirocrew restart on that crew/)).toBeInTheDocument()
+    // Exit 0 from the update does not prove an install, so no message claims one.
+    expect(screen.queryByText(/new version is installed|old version/i)).toBeNull()
     expect(screen.queryByText(/for example its network or sign-in/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
   })

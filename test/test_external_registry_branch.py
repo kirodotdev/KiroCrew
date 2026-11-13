@@ -26,9 +26,7 @@ from external_registry_helpers import cache_dir_fixture  # noqa: F401
 
 from kiro_crew.apps.registry import get_registry_app
 
-# ---------------------------------------------------------------------------
 # Operator-configured registry branch overrides per-app declarations
-# ---------------------------------------------------------------------------
 
 
 class TestConfiguredBranchOverride:
@@ -207,25 +205,16 @@ class TestConfiguredBranchOverride:
         assert result["branch"] == "develop"
 
 
-# ---------------------------------------------------------------------------
 # Branch-aware manifest fast path: persistent clone on branch A + entry
 # branch B must NOT serve the stale (branch-A) manifest through the fast path.
 # (registry-admission-branch-consistency)
-# ---------------------------------------------------------------------------
 
 
 class TestManifestBranchGate:
-    """Regression: the fast path must require BOTH origin AND branch to match.
+    """The fast path serves the local manifest only when BOTH origin AND branch match.
 
-    The pre-fix chain:
-      1. _fetch_app_manifest served app.json from persistent clone (branch A)
-      2. Admission gated on branch-A's manifest
-      3. _git_clone_or_pull fast-forwarded onto branch B
-      4. Branch-B code ran with admission decided on branch-A's manifest
-
-    Post-fix: the fast path also checks ``_clone_branch_matches`` — it only
-    serves the local manifest when clone branch == requested branch. Mismatch
-    falls through to the throwaway clone that fetches the correct branch.
+    Otherwise admission would judge branch A's manifest while the pull runs branch B's
+    code. A mismatch falls through to the throwaway clone of the requested branch.
     """
 
     @pytest.mark.asyncio
@@ -513,8 +502,7 @@ class TestManifestBranchGate:
         """Non-UTF-8 bytes in .git/HEAD → _read_clone_branch returns None,
         _clone_branch_matches returns False, no UnicodeDecodeError propagates.
 
-        Regression: before the fix, read_text("utf-8") raised
-        UnicodeDecodeError which was not caught by the except-OSError handler.
+        UnicodeDecodeError is not an OSError, so an OSError handler alone misses it.
         """
         from kiro_crew.apps import registry as reg
 
@@ -590,18 +578,11 @@ class TestManifestBranchGate:
 
 
 class TestDetachedHeadNeverMovedAside:
-    """Regression: the install-path branch gate must not treat an unreadable
-    or detached-HEAD branch state as a confirmed mismatch.
+    """An unreadable or detached-HEAD branch is never treated as a confirmed mismatch.
 
-    GPT 5.6 finding (registry.py, install-path branch gate): a None return
-    from ``_read_clone_branch`` (detached HEAD, unreadable ``.git/HEAD``,
-    gitfile layout) was treated identically to a confirmed branch mismatch,
-    destructively moving the checkout aside for re-clone. This punished
-    tag-pinned entries (whose detached HEAD is their normal healthy state) on
-    every update cycle, and any checkout with a momentarily unreadable
-    ``.git/HEAD``. Post-fix: a None read falls through to the non-destructive
-    pull path with a log line, and only a CONCRETELY read differing branch
-    name triggers the move-aside.
+    A None from ``_read_clone_branch`` takes the non-destructive pull path with a log
+    line; a detached HEAD is the normal state of a tag-pinned entry. Only a CONCRETELY
+    read differing branch moves the checkout aside.
     """
 
     @staticmethod
@@ -739,7 +720,7 @@ class TestDetachedHeadNeverMovedAside:
     @pytest.mark.asyncio
     async def test_known_branch_mismatch_moves_aside_with_fresh_mtime(self, tmp_path):
         """Control: a CONCRETELY read differing branch still moves aside for
-        re-clone with a refreshed mtime (existing PR behavior, unchanged)."""
+        re-clone with a refreshed mtime."""
         import kiro_crew.apps.registry as reg
 
         origin_url = "https://example.com/branched-app.git"
@@ -812,13 +793,11 @@ class TestDetachedHeadNeverMovedAside:
 
 
 class TestReadCloneBranchBoundedRead:
-    """Round-11 regression (GPT 5.6): the ``.git/HEAD`` read must be BOUNDED.
+    """The ``.git/HEAD`` read is BOUNDED by ``_HEAD_READ_LIMIT``.
 
-    ``.git/HEAD`` lives inside a checkout an app's own build script can rewrite,
-    so its size is attacker-controlled. Reading it whole let an app replace the
-    file with (or symlink it to) a multi-gigabyte / sparse file and exhaust
-    gateway memory on the next update. The read is now capped at
-    ``_HEAD_READ_LIMIT`` bytes, and content that fills the bound fails closed.
+    An app's build script can rewrite ``.git/HEAD``, so its size is attacker-controlled
+    and an unbounded read could exhaust gateway memory. Content filling the bound fails
+    closed.
     """
 
     def test_oversized_head_is_not_read_past_the_bound(self, tmp_path):
@@ -826,8 +805,7 @@ class TestReadCloneBranchBoundedRead:
         memory: record the byte count passed to the bounded reader and confirm
         it is capped at ``_HEAD_READ_LIMIT``.
 
-        The bounded read now runs through ``hooks.safe_read_prefix`` (the
-        symlink-containing primitive), so the boundedness proof is the ``n``
+        The read runs through ``hooks.safe_read_prefix``, so the proof is the ``n``
         argument that reader receives, not a ``builtins.open`` read size."""
         from kiro_crew.apps import registry as reg
 
@@ -912,16 +890,11 @@ class TestReadCloneBranchBoundedRead:
         assert reg._read_clone_branch(clone_dir) is None
 
     def test_head_symlinked_to_sensitive_path_is_refused(self, tmp_path):
-        """Round-14 regression (GPT 5.6, BLOCKING): a checkout-controlled
-        ``.git/HEAD`` symlinked to a protected file must NOT be read.
+        """A checkout-controlled ``.git/HEAD`` symlinked to a protected file is NOT read.
 
-        A malicious app can replace ``.git/HEAD`` with a symlink to a secret
-        (``~/.aws/credentials``, an SSH key). The bounded read now routes
-        through ``hooks.safe_read_prefix``, which canonicalizes via ``realpath``
-        and refuses a resolved target ``is_sensitive_path`` flags before any
-        read, so the branch read fails closed to None and the secret bytes never
-        leave the sensitive-path ceiling — even though a valid ``ref:`` line at
-        the target would otherwise parse to a branch."""
+        ``hooks.safe_read_prefix`` resolves the link and refuses a target
+        ``is_sensitive_path`` flags, so the read fails closed to None even though the
+        target holds a valid ``ref:`` line."""
         from kiro_crew import hooks
         from kiro_crew.apps import registry as reg
 
@@ -990,10 +963,9 @@ class TestReadCloneBranchBoundedRead:
 
 
 class TestResolvedCloneCommitBoundedRead:
-    """Round-11 class closure: :func:`_resolved_clone_commit` reads the SAME
-    ``.git/HEAD`` primitive on the install (provenance) path, so it must be
-    bounded too — otherwise the memory-exhaustion class stays open from the
-    next call site even after :func:`_read_clone_branch` is fixed.
+    """:func:`_resolved_clone_commit` reads the SAME ``.git/HEAD``, so it is bounded too.
+
+    Otherwise the memory-exhaustion attack stays open from this call site.
     """
 
     def test_oversized_head_fails_closed_without_unbounded_read(self, tmp_path):
@@ -1078,14 +1050,10 @@ class TestResolvedCloneCommitBoundedRead:
 
 
 class TestCommitPinnedSkipsReconvergenceRead:
-    """Round-11 regression (GPT 5.6): a commit-pinned install must NOT perform
-    the branch-reconvergence ``.git/HEAD`` read.
+    """A commit-pinned install skips the branch-reconvergence ``.git/HEAD`` read.
 
-    A pinned install never reuses the existing tree (it is moved aside and the
-    commit is re-fetched into a fresh checkout regardless), so reading the old
-    tree's branch is pointless work — and pointless attack surface on a path
-    that runs during every pinned update against attacker-writable content. The
-    read is now gated behind ``not commit``.
+    A pinned install never reuses the existing tree, so the read of attacker-writable
+    content would be pure attack surface; it is gated behind ``not commit``.
     """
 
     @pytest.mark.asyncio
@@ -1121,7 +1089,7 @@ class TestCommitPinnedSkipsReconvergenceRead:
             patch.object(reg, "_move_checkout_aside", side_effect=_fake_move_aside),
             patch.object(reg, "_git_fetch_commit", new=AsyncMock(return_value=fetch_result)),
             # Origin verified identical so the origin gate passes and control
-            # reaches the (now commit-gated) reconvergence block.
+            # reaches the (commit-gated) reconvergence block.
             patch.object(reg, "_clone_origin_url", new=AsyncMock(return_value=git_url)),
             patch("kiro_crew.apps.registry.app_source_dir", return_value=dest),
             patch(

@@ -29,7 +29,7 @@ rate for a file that is in fact covered.
 
 `test/test_pipeline_conductor_agent.py` carries a dedicated `TestFleetProbe` class:
 
-- `class TestFleetProbe:` — `test/test_pipeline_conductor_agent.py:179`
+- `class TestFleetProbe:` — `test/test_pipeline_conductor_agent.py::TestFleetProbe`
 - `_mod()` loads the real script via
   `load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")` —
   `test/test_pipeline_conductor_agent.py:181`
@@ -274,7 +274,7 @@ truncated reading that leaves every job green.
 1. **Route #7597 to `needs-investigation` as a likely duplicate of the CI
    coverage-arm truncation class (#7516 / PR #7517).** Do **not** add tests for
    `fleet_probe.py` (they already exist — `TestFleetProbe`,
-   `test/test_pipeline_conductor_agent.py:179`), and do **not** extend
+   `test/test_pipeline_conductor_agent.py::TestFleetProbe`), and do **not** extend
    `.github/coverage-baselines/backend.txt` (that would record a false rate for a
    covered file). The correct fix is in the **per-shard staging step**, not in
    `coverage-combine`: at `ci.yml:705`, distinguish the benign no-op exit from a real
@@ -297,7 +297,7 @@ truncated reading that leaves every job green.
 
 | Claim | Location |
 | --- | --- |
-| `TestFleetProbe` class | `test/test_pipeline_conductor_agent.py:179` |
+| `TestFleetProbe` class | `test/test_pipeline_conductor_agent.py::TestFleetProbe` |
 | `_mod()` loads real script | `test/test_pipeline_conductor_agent.py:181` |
 | `SKILL_DIR` definition | `test/test_pipeline_conductor_agent.py:26` |
 | Control case `TestCreditSpend` | `test/test_pipeline_conductor_agent.py:453` |

@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
 )
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _REMOTE_PROVIDER_TIMEOUT_S,
+    _anchor_int_error,
     _audit,
     _err,
     _json_response,
@@ -589,6 +590,10 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
     if len(text) > 10000:
         return _err("text exceeds 10000 chars")
     text = _redact_text(text)
+    if isinstance(body.get("anchor"), dict):
+        anchor_int_error = _anchor_int_error(body["anchor"])
+        if anchor_int_error is not None:
+            return _err(anchor_int_error)
 
     # Writing a comment to a provider-hosted artifact is outbound egress (bytes
     # leave the box), so it goes through the same fail-closed capabilities.publish

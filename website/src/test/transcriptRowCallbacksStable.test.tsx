@@ -71,23 +71,26 @@ function wrapper({ children }: { children: ReactNode }) {
 beforeEach(() => { vi.clearAllMocks() })
 
 describe('row callbacks keep their identity across streamed frames', () => {
-  it('useRegenerate: handleRegenerate is stable and truncates against the newest rows', () => {
-    const dispatch = vi.fn()
+  it('useRegenerate: handleRegenerate is stable and reads the newest rows', () => {
     const base = {
-      dispatch: dispatch as never, activeSlot: 'slot-a', slotRunning: false, activeSlotRemoteBound: false,
+      activeSlot: 'slot-a', slotRunning: false, activeSlotRemoteBound: false,
       isStreaming: false, setRefusedPress: vi.fn(), showRefusedPress: vi.fn(),
     }
+    // A frame whose newest turn is a user row with no reply yet: nothing to regenerate.
+    const awaitingReply = [...first, msg('user', 't3', 'm3')]
     const ref = { current: first }
     const { result, rerender } = renderHook((p: { messages: ChatMessage[] }) => useRegenerate({ ...base, ...p, messagesRef: latest(ref, p.messages) }), {
       initialProps: { messages: first },
     })
     const before = result.current.handleRegenerate
+    rerender({ messages: awaitingReply })
+    expect(result.current.handleRegenerate).toBe(before)
+    // The first frame held a reply; the newest does not, so the press is a no-op.
+    act(() => { result.current.handleRegenerate() })
+    expect(calls.regenerateSlot).not.toHaveBeenCalled()
     rerender({ messages: next })
     expect(result.current.handleRegenerate).toBe(before)
     act(() => { result.current.handleRegenerate() })
-    // The newest turn is regenerated: truncate after the LAST user row (index 2),
-    // which only the second frame holds.
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex', payload: 3 }))
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 
@@ -113,11 +116,13 @@ describe('row callbacks keep their identity across streamed frames', () => {
 
     act(() => { result.current.handleRegenerate() })
 
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex', payload: 1 }))
+    // Nothing is removed on press: the rows after the request wait to be replaced.
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex' }))
+    expect([...result.current.replacingMids]).toEqual(['m2', 'm3'])
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 
-  it('useRegenerate: truncates before a taken-back steer when a later reply exists', () => {
+  it('useRegenerate: marks the reply after a taken-back steer for replacement', () => {
     const dispatch = vi.fn()
     const messages = [
       msg('user', 't1', 'm1'),
@@ -140,7 +145,8 @@ describe('row callbacks keep their identity across streamed frames', () => {
 
     act(() => { result.current.handleRegenerate() })
 
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex', payload: 1 }))
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex' }))
+    expect([...result.current.replacingMids]).toEqual(['m2', 'm3', 'm4'])
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 
@@ -194,5 +200,24 @@ describe('row callbacks keep their identity across streamed frames', () => {
     dispatch.mockClear()
     act(() => { rollback() })
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/replaceMessages', payload: next }))
+  })
+
+  it('useMessageActions: a refused edit-and-resend answers false so the open editor keeps its draft', () => {
+    // An editor opened before a turn started stays open with Send enabled. When
+    // the turn is running at the press, nothing is sent; UserMessage keeps the
+    // editor only on `=== false`, so any other answer closes it and drops the text.
+    const base = {
+      dispatch: vi.fn() as never, navigate: vi.fn() as never, filteredSlotsRef: { current: [] }, connected: true, activeSlot: 'slot-a',
+      activityOpen: false, activeSlotRef: { current: 'slot-a' }, activeSlotRemoteBound: false,
+      showActionError: vi.fn(), handleFileOpen: vi.fn() as never, handleFolderOpen: vi.fn(), search: { isOpen: false } as never,
+      tabsCtl: {} as never, sessionTitles: new Map(), selectSessionTab: vi.fn(), linkPreviewsOn: false, planTaskId: '',
+      setSidebarPinned: vi.fn(), sidebarAutoHidden: { current: null }, sidebarWidth: 280, setRegenerating: vi.fn(),
+    }
+    const { result } = renderHook(() => useMessageActions({ ...base, slotRunning: true, messages: first, messagesRef: { current: first } }), { wrapper })
+    calls.rewindWithRollback.mockClear()
+    let answer: unknown
+    act(() => { answer = result.current.handleEditResend(2, 't3', 'edited') })
+    expect(answer).toBe(false)
+    expect(calls.rewindWithRollback).not.toHaveBeenCalled()
   })
 })

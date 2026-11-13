@@ -67,6 +67,7 @@ import { MEMBERS_ROSTER_QUERY_KEY, memberThreadQueryKey, type MemberThreadOutcom
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector } from '../../store'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
+import { avatarFrameIn } from '../../components/CrewAvatar'
 import { PROFILE_FACE_PX } from './CrewProfilePanel'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useGuideOpenedSurface } from '../../guide/useGuideOpenedSurface'
@@ -85,9 +86,10 @@ import { FACE_FLIGHT_EASE, FACE_FLIGHT_SECS, MembersPageProfileCard, useMembersP
 import { MembersPageRosterColumn, useMembersPageRosterView } from './MembersPageRoster'
 import { MembersPageSidePanel, useMembersPageSidePanel } from './MembersPageSidePanel'
 import { MembersPageThreadColumn, useMembersPageThread, useMembersPageThreadView } from './MembersPageThread'
+import { wantsMateSessions } from '../../lib/crewMode'
 import { MEMBER_PARAM, ROSTER_DRAWER_UNCOVERED_PX, type GoneNotice, type PostCreateFailure, type ProfileCardOpen } from './membersPageModel'
 import { useMembersPageCrewEditor } from './useMembersPageCrewEditor'
-import { useMembersPageDrawers, useMembersPageDrawerSwipes } from './useMembersPageDrawers'
+import { useMembersPageDrawers, useMembersPageDrawerSwipes, useMembersPageTrackpadSwipe } from './useMembersPageDrawers'
 import { useMembersPageLayout } from './useMembersPageLayout'
 import { useMembersPageNavigation } from './useMembersPageNavigation'
 import { useMembersPageRoster, useMembersPageRosterSignals } from './useMembersPageRoster'
@@ -130,16 +132,18 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
     // the real faces at either end draw both at their fixed CSS size — the
     // corner visibly snapped on landing — so the two are counter-scaled to
     // hold their on-screen size for the whole flight.
-    const img = el.querySelector('img')
-    const rest = img ? getComputedStyle(img) : null
+    // The frame, not merely the first image: a working icon draws its border
+    // on the motion root, and the image inside it has none.
+    const frame = avatarFrameIn(el)
+    const rest = frame ? getComputedStyle(frame) : null
     const restRadius = rest ? parseFloat(rest.borderRadius) || 0 : 0
     const restBorder = rest ? parseFloat(rest.borderWidth) || 0 : 0
     const place = (left: number, top: number, side: number) => {
       const k = side / PROFILE_FACE_PX
       el.style.transform = `translate(${left}px, ${top}px) scale(${k})`
-      if (img) {
-        img.style.borderRadius = `${restRadius / k}px`
-        img.style.borderWidth = `${restBorder / k}px`
+      if (frame) {
+        frame.style.borderRadius = `${restRadius / k}px`
+        frame.style.borderWidth = `${restBorder / k}px`
       }
     }
     const { from } = flight
@@ -471,9 +475,20 @@ export default function MembersPage() {
     [activeName, threadOutcome],
   )
   const layout = useMembersPageLayout({ rosterRead, teamsRead, activeName })
-  const { isMobile, winW, rosterShown } = layout
+  const { isMobile, winW, rosterShown, panelVisible, showOpener } = layout
   const profileCard = useMembersPageProfile({ layout, activeName, profile, setProfile })
   const { schedGuardRef, schedAtStakeRef, openMemberRef } = profileCard
+  // A mate session's breadcrumb asks for the named crewmate's Profile on
+  // Sessions. Declared after the card's own reset-on-switch effect, so it opens
+  // once that member is active; the state is then cleared so a reload does not
+  // reopen it.
+  const openMateSessions = wantsMateSessions(location.state)
+  const { openProfile } = profileCard
+  useEffect(() => {
+    if (!openMateSessions || !urlMember || activeName !== urlMember) return
+    openProfile('sessions')
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
+  }, [openMateSessions, urlMember, activeName, openProfile, navigate, location.pathname, location.search])
   const drawers = useMembersPageDrawers({
     teamsRead, layout, navigate, location, activeName, createOpen, navigationType, active,
   })
@@ -520,6 +535,11 @@ export default function MembersPage() {
   // The profile card (opened from the header pill) holds the Permissions row a
   // "crewmate tools" guide points at (`members.permissions`).
   useGuideRevealScope('members.profile', !!profile)
+  // The side panel (drawn only with a crewmate open), whose first tab is the
+  // Dashboard (`members.dashboard-tab`), and whether its header opener
+  // (`members.details`) is drawn.
+  useGuideRevealScope('members.panel', !!active && panelVisible)
+  useGuidePredicate('crewmate_panel_not_docked', showOpener)
   const rosterView = useMembersPageRosterView({
     rosterRead, teamsRead, t, queryClient, activeName, slotKeyOf, liveSlots, active,
   })
@@ -532,12 +552,15 @@ export default function MembersPage() {
     layout, profileCard, drawers, rosterView, thread, navigate, location, queryClient, activeName, searchParams,
     setSearchParams, profile, setProfile, liveSlots, slotsLoaded, active, activeMemberName,
   })
-  const { schedAtStake, schedulesMountedRef, runInTerminalScope } = sidePanel
+  const { runInTerminalScope } = sidePanel
+  // Desktop: a two-finger trackpad swipe moves the same side panel the phone
+  // drag above does -- left reveals the Dashboard tab, right hides the panel.
+  useMembersPageTrackpadSwipe({ layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef })
   const schedules = useMembersPageSchedules({
-    crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+    crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
   })
   const {
-    schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
+    schedAtStake, schedulesMountedRef, schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
   } = schedules
   // ONE guard for exits that unmount Profile. The ref is what lets callbacks declared
   // in the owners (the header's panel reveal in MembersPageProfile.tsx, a roster
@@ -856,6 +879,18 @@ export default function MembersPage() {
         existingNames={existingNames}
       />
       </div>
+
+      {/* Desktop trackpad drag of a docked panel: the panel rides as a sheet, and
+          this spacer holds the chat's right edge at the sheet's left edge, so the
+          chat follows the drag and the swap to the docked column is not a step. */}
+      {drawers.deskSlide && layout.beside && (
+        <motion.div
+          aria-hidden="true"
+          data-testid="member-side-panel-spacer"
+          className="h-full shrink-0"
+          style={{ width: drawers.deskSpacerW }}
+        />
+      )}
 
       {/* Side panel — the chat page's tabbed SidePanel, docked to this page.
           Read-only observation lives in its permanent first tab (Crew

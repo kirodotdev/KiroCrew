@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -37,8 +37,8 @@ vi.mock('../../hooks/useVoiceInput', () => ({
   },
   voiceInputSupported: true,
 }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
-vi.mock('../../hooks/voiceTranscriptInbox', () => ({ redeliverPending: () => {} }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
+vi.mock('../../hooks/voiceTranscriptInbox', () => ({ redeliverPending: () => {}, deliveringHeld: () => false }))
 vi.mock('../../lib/haptic', () => ({ haptic: () => {} }))
 vi.mock('../../api/client', () => ({
   api: {
@@ -114,6 +114,27 @@ describe('submit on release: batch', () => {
     act(() => { t.view.result.current.stopVoice('finish') })
     t.batchAnswers('hello there')
     expect(t.inputRef.current).toBe('hello there')
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
+  it('a send stop sends with the setting off, once the transcript lands', async () => {
+    const t = mount({ submit: false })
+    await t.startRecording()
+    act(() => { t.view.result.current.stopVoice('send') })
+    t.render()
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+    t.batchAnswers('hello there')
+    expect(t.sent).toEqual(['hello there'])
+    t.render(); t.render()
+    expect(t.onAutoSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('a send stop keeps a draft when the person typed before it settled', async () => {
+    const t = mount({ submit: false })
+    await t.startRecording()
+    act(() => { t.view.result.current.stopVoice('send') })
+    t.inputRef.current = 'typed by hand'
+    t.batchAnswers('hello there')
     expect(t.onAutoSubmit).not.toHaveBeenCalled()
   })
 
@@ -337,5 +358,69 @@ describe('submit on release: streaming', () => {
     t.drainEnds()
     expect(t.onAutoSubmit).not.toHaveBeenCalled()
     expect(t.inputRef.current).toBe('typed earlier')
+  })
+})
+
+describe('screen lock stops the recording as a draft', () => {
+  // The desktop shell's bridge, faked: the hook subscribes, the test fires.
+  let listeners: Array<() => void> = []
+  const lock = () => act(() => { for (const fn of [...listeners]) fn() })
+  beforeEach(() => {
+    listeners = []
+    ;(window as unknown as { electronAPI?: unknown }).electronAPI = {
+      onSessionLocked: (cb: () => void) => {
+        listeners.push(cb)
+        return () => { listeners = listeners.filter(fn => fn !== cb) }
+      },
+    }
+  })
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI
+  })
+
+  it('stops a live recording and never sends, even with send-on-stop on', async () => {
+    const t = mount({ submit: true })
+    await t.startRecording()
+    lock()
+    t.render()
+    expect(t.e.stop).toHaveBeenCalledTimes(1)
+    t.batchAnswers('half a thought')
+    t.render(); t.render()
+    expect(t.inputRef.current).toBe('half a thought')
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
+  it('keeps the streamed text as a draft', async () => {
+    const t = mount({ submit: true, streaming: true })
+    await t.startRecording()
+    t.partial('still talking')
+    lock()
+    t.render()
+    expect(t.e.stop).toHaveBeenCalledTimes(1)
+    t.drainEnds()
+    t.render(); t.render()
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when nothing is recording', () => {
+    const t = mount()
+    lock()
+    expect(t.e.stop).not.toHaveBeenCalled()
+  })
+
+  it('leaves a recording another composer owns to that composer', async () => {
+    const t = mount()
+    await t.startRecording()
+    t.e.sessionOwner = 'slot-b'
+    t.render()
+    lock()
+    expect(t.e.stop).not.toHaveBeenCalled()
+  })
+
+  it('stops listening when the composer unmounts', () => {
+    const t = mount()
+    expect(listeners).toHaveLength(1)
+    t.view.unmount()
+    expect(listeners).toHaveLength(0)
   })
 })

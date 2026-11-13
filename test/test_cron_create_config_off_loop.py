@@ -34,6 +34,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew import _facade_mirror
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
@@ -65,7 +66,7 @@ def _dashboard_app(add_job_async: Any) -> web.Application:
         push_refresh=MagicMock(),
     )
     app.router.add_route("*", "/api/crons", api_crons_create)
-    return app
+    return as_owner(app)
 
 
 # ── The member split runs on a worker thread ─────────────────────────────────

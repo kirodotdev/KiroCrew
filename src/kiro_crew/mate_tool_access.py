@@ -61,10 +61,17 @@ def _path() -> Path:
     return paths_mod.mate_agents_dir().parent / "tool-access.json"
 
 
-def _read() -> dict[str, Any]:
+def _read(*, strict: bool = False) -> dict[str, Any]:
+    """The store; ``{}`` when missing or malformed, and when unreadable unless
+    *strict*, where the ``OSError`` propagates.
+    """
     try:
         data = json.loads(_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        if strict and isinstance(exc, OSError):
+            raise
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -114,10 +121,11 @@ def reserve_offer(member: str, held: dict[str, Any]) -> bool:
     *held* is the ``request_capabilities`` call that raises the card (its params
     and reason), raised as its own card once the user turns the preview on.
     ``False`` when *member* already has an entry (asked once, so no second card).
-    Blocking; a failed write raises, and the card is then not raised.
+    Blocking; a store that cannot be read or written raises, and the card is then
+    not raised.
     """
     with _lock:
-        data = _read()
+        data = _read(strict=True)
         if isinstance(data.get(member), dict):
             return False
         data[member] = {"state": STATE_OFFERED, "card_id": "", "at": int(time.time()), "held": held}

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
         AcpError,
         AcpProcessDied,
+        Any,
         CronJob,
         GatewayOrchestrator,
         PromptBusyExhaustedError,
@@ -33,8 +34,12 @@ if TYPE_CHECKING:
         _GateTally,
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
+        acp_error_needs_sign_in,
         logger,
+        note_turn_landed,
         runtime_death,
+        settle_turn,
+        stop_reason_landed,
         stream_and_collect,
     )
 
@@ -100,6 +105,20 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     # permanently tripped and the exemption silently stops applying.
     runtime_death.clear_shared_deaths(f"cron:{job.id}")
     return False
+
+
+def _cron_auth_expiry(job: CronJob, exc: BaseException) -> bool:
+    """Whether a failed cron run failed only because the harness needs a new sign-in.
+
+    Typed data only, never the error's text (``acp_error_needs_sign_in``): the
+    harness reported itself signed out (``AcpAuthRequired``), the ACP layer tagged a
+    session-expiry answer for the sign-in card (``auth_required``), or the error's
+    AWS code (``auth_error_code``) is an expired token. Agent jobs only: a command or script job never
+    runs the ACP turn those verdicts come from.
+    """
+    if job.command or job.script:
+        return False
+    return acp_error_needs_sign_in(exc)
 
 
 def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tuple[bool, bool]:
@@ -185,7 +204,7 @@ def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tup
     return _job_owns_failure, _hand_over_streak
 
 
-def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
+def _charge_failure(job: CronJob, _hand_over_streak: bool, *, auth_expiry: bool = False) -> None:
     """Charge this run's failure, performing any pending hand-over first.
 
     The two are one indivisible move. The hand-over raises the
@@ -197,11 +216,29 @@ def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
     charges nothing on its way out, so a torn move would leave the
     counter and the streak disagreeing with no writer left to
     reconcile them.
+
+    ``auth_expiry`` is forwarded to :meth:`CronJob.record_failure`: the failure
+    counts like any other, but never auto-pauses the job.
     """
     if _hand_over_streak:
         job.consecutive_failures = max(job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1)
         runtime_death.clear_shared_deaths(f"cron:{job.id}")
-    job.record_failure()
+    job.record_failure(auth_expiry=auth_expiry)
+
+
+def _streak_after_charge(job: CronJob, charges: bool, _hand_over_streak: bool) -> int:
+    """The counter :func:`_charge_failure` will leave, read before it runs.
+
+    The failure path decides what to deliver before it charges, so it needs the
+    count the charge is about to produce, hand-over included. A run that charges
+    nothing leaves the counter where it is.
+    """
+    if not charges:
+        return job.consecutive_failures
+    base = job.consecutive_failures
+    if _hand_over_streak:
+        base = max(base, _AUTO_PAUSE_THRESHOLD - 1)
+    return base + 1
 
 
 async def _inject_with_retry(
@@ -211,6 +248,8 @@ async def _inject_with_retry(
     msg: str,
     parent_key: str,
     label: str,
+    *,
+    delivery: dict[str, Any] | None = None,
 ) -> str | None:
     """Retry stream_and_collect up to 3 times on AcpError.
 
@@ -218,17 +257,55 @@ async def _inject_with_retry(
     retry doesn't hit 'Prompt already in progress'. A live backend
     that lost the parent's session is answered once by a reset and a
     fresh claim, which re-loads the same backend id; the caller's
-    single ``release(parent_key)`` balances against that claim.
+    single ``release(parent_key)`` balances against that claim. A
+    ``cron:`` parent is given up on instead: its key is stateless, so
+    the fresh claim would start a session holding none of the run.
+
+    *delivery* is the caller's record of this injection attempt, shared so its
+    timeout handler sees the provider that holds the prompt. A reload replaces
+    the provider, so it rewrites ``client`` and the ``written_before`` count
+    baseline there. When ``full_msg`` is set, *msg* is a note that leans on
+    backend session ``sent_to_session`` already holding the full report; a
+    reload onto any other session has never seen it and is sent ``full_msg``.
+
+    A completion's turn is not a person's, and no session applier reads its
+    stream, so a directive only a person's turn may issue (``set_project``, ...)
+    is refused and audited (``person_only_directive_refuser``, as on a cron
+    turn). Every refusal of the call, a retried attempt's included, leads the
+    reply.
     """
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+    refusals: list[str] = []
+    _refuse_person_only = person_only_directive_refuser(parent_key, refusals)
     _snf_reloaded = False
     attempt = 0
     while True:
+        # This attempt's stop reason, as the cron engine records it: None until a
+        # completion is seen, so a stream that ends without one never landed.
+        stop: dict[str, str | None] = {"reason": None}
+
+        def _note_complete(event: Any, _box: dict[str, str | None] = stop) -> None:
+            _box["reason"] = str(getattr(event, "stop_reason", "") or "")
+
         try:
-            response = await stream_and_collect(client, msg, retry_transient=False)
+            response = await stream_and_collect(
+                client,
+                msg,
+                retry_transient=False,
+                on_complete=_note_complete,
+                on_event=_refuse_person_only,
+            )
             # The parent's turn consumed the report: the positive
             # acknowledgement an owed expiry report is cleared on.
             info._report_delivered = True
-            return response
+            # Only a landed turn confirms what it received inline from a
+            # spawn_sub_agents call of its own. ``stream_and_collect`` also
+            # returns normally for a user stop, a refusal, a tool stall and a
+            # stream with no completion, and none of those landed.
+            if stop_reason_landed(stop["reason"]):
+                note_turn_landed(self.sessions, parent_key)
+            return "\n\n".join([*refusals, response])
         except PromptBusyExhaustedError:
             # Provider is dead after exhausting prompt-busy retries.
             # Reset session + notify, same as TimeoutError path.
@@ -305,7 +382,7 @@ async def _inject_with_retry(
             if acp_error_is_session_not_found(exc):
                 if acp_error_after_tool_activity(exc):
                     raise AcpError(f"{SESSION_NOT_FOUND_NOT_REPLAYED_TEXT} {exc}") from exc
-                if _snf_reloaded:
+                if _snf_reloaded or parent_key.startswith("cron:"):
                     raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {exc}") from exc
                 _snf_reloaded = True
                 logger.warning(
@@ -316,8 +393,21 @@ async def _inject_with_retry(
                     label,
                 )
                 assert self.sessions is not None
+                # The reload's replay is a second turn inside this one claim,
+                # so it gets an attempt of its own: the first attempt ended
+                # without landing, and what it received inline is revoked now.
+                settle_turn(self.sessions, parent_key)
                 await self.sessions.reset(parent_key)
                 client, _is_new, _resumed = await self.sessions.get_or_create(parent_key)
+                if delivery is not None:
+                    full_msg = delivery.get("full_msg")
+                    if isinstance(full_msg, str) and getattr(
+                        client, "session_id", ""
+                    ) != delivery.get("sent_to_session"):
+                        msg = full_msg
+                    delivery["client"] = client
+                    count = getattr(client, "prompts_written", None)
+                    delivery["written_before"] = count if isinstance(count, int) else None
                 continue
             if attempt == 2:
                 raise
@@ -338,5 +428,9 @@ async def _inject_with_retry(
                     info.id,
                     exc_info=True,
                 )
+            # The retry is a second turn inside this one claim. This attempt
+            # ended without landing, so what it received inline is revoked now,
+            # never confirmed by the retry's landing.
+            settle_turn(self.sessions, parent_key)
             await asyncio.sleep(2**attempt)
             attempt += 1

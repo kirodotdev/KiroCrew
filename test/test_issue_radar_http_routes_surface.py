@@ -73,6 +73,7 @@ MAIN_ROUTES = [
     ("GET", "/ci-runs", "_handle_ci_runs"),
     ("POST", "/pull/run", "_handle_pull_run_action"),
     ("POST", "/pulls/bulk", "_handle_pulls_bulk"),
+    ("POST", "/comments", "_handle_comments"),
     ("GET", "/investigation", "_handle_get_investigation"),
     ("PUT", "/investigation", "_handle_put_investigation"),
     ("GET", "/recommendations", "_handle_get_recommendations"),

@@ -17,15 +17,11 @@ A field spec is ``{"type": ..., "source": ...}``. ``type`` is one of
     A crew-log fold, read through the bus subscription rather than by refolding the
     log. ``path`` walks the rendered fold value.
 
-    One of the THREE key kinds -- session, slot or tree. A TREE-keyed fold is the one a
-    block binding a TREE reaches, and it is the one exception to the sentence above: it
-    joins the logs of many slots, so no bus scope keys it and it cannot be pushed, which
-    puts it on the page-load and refetch read instead. That read ships with the first
-    block that consumes it, so a tree binding validates and reports unavailable until
-    then (see
-    :data:`~kiro_crew.crew_log.projection.TREE_PROJECTION_NAMES` and
-    :func:`~kiro_crew.dashboard_feed.scope_for`). A block binds it exactly the same way;
-    what differs is when the value arrives.
+    The fold is session-, slot- or tree-keyed. A TREE-keyed fold joins the logs of many
+    slots, so no bus scope keys it and it cannot be pushed: it is read at page load and
+    on refetch instead (see :data:`~kiro_crew.crew_log.projection.TREE_PROJECTION_NAMES`
+    and :func:`~kiro_crew.dashboard_feed.scope_for`). It is bound the same way; only
+    when the value arrives differs.
 ``{"agentic": true}``
     The agent writes the value itself (an agentic fold). The page marks it.
 
@@ -53,6 +49,12 @@ short sentences, plus an optional ``helper`` -- a file under the template's own
 upkeep skill. A fold field has no upkeep: the fold writes it. Only a ``builtin``
 template names a helper, because a helper is code and this format carries none.
 
+An agentic field may also declare ``stale_after_s``: how many seconds a written value
+stays current before the page marks it "may be out of date" and the crewmate's turn
+names it, ``0`` for a value that never goes stale. Beside ``upkeep``, not inside it,
+so a field can set the one without writing the three sentences of the other. Absent
+means the default, ``dashboard_agentic.AGENTIC_STALE_AFTER_DEFAULT_S``.
+
 This is declarative on purpose: a user template carries no code, so the gateway can
 load one at run time without running anything an agent wrote. Built-in templates use
 the same format, so one loader, one parity check and one registry serve all three
@@ -67,12 +69,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Mapping
 
+from kiro_crew.crew_log.entry_types import CUSTOM_MAX_AGE_MAX_S, CUSTOM_MAX_AGE_MIN_S
 from kiro_crew.crew_log.projection import (
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
     TREE_PROJECTION_NAMES,
 )
 from kiro_crew.dashboard_templates.parity import ExtractionRefused, html_fields
+from kiro_crew.user_json import loads_user_json
 
 __all__ = [
     "FIELD_TYPES",
@@ -92,28 +96,15 @@ __all__ = [
 #: list or an object where a name belongs, and an unhashable candidate raises out of
 #: the loader instead of being collected as one more refusal.
 FIELD_TYPES: Final[frozenset[str]] = frozenset({"number", "string", "boolean", "array", "object"})
-#: Every fold a block may bind, as the union of the kernel's THREE key-kind sets rather
-#: than as a list here, so a fold added to the kernel is bindable without this file being
-#: edited.
-#:
-#: A name this set accepts is a name the save gate admits, so admitting one the feed can
-#: neither key nor read would hand a block author a binding that only ever draws the
-#: stale band. A TEMPLATE's reader is :func:`~kiro_crew.dashboard_feed.DashboardFeed`,
-#: which reaches a fold by its bus scope, so this set is the two SCOPED families and the
-#: tree family is deliberately not in it.
+#: Every fold a template may bind, built from the kernel's sets so a new fold needs no
+#: edit here. A template's reader, :func:`~kiro_crew.dashboard_feed.DashboardFeed`,
+#: reaches a fold by its bus scope, so only the two SCOPED families are in; a tree fold
+#: would only ever draw the stale band.
 FOLD_NAMES: Final[frozenset[str]] = frozenset(SESSION_FOLD_NAMES) | frozenset(SLOT_PROJECTION_NAMES)
-#: The same question for a dashboard PACKAGE, which has a reader the template path does
-#: not.
-#:
-#: SEPARATE FROM :data:`FOLD_NAMES` BECAUSE THE TWO SURFACES HAVE DIFFERENT READERS, and
-#: reachability is what either set is for. A tree-keyed fold has no bus scope by design
-#: -- it joins the logs of many slots, so no event can carry a key saying which one
-#: moved -- so it is READ instead, by ``member_dashboard_fields.LivePage``, the host that
-#: draws a package's page. A template is rendered by ``member_dashboard._render``, whose
-#: feed subscribes by scope and has no tree read, so a template binding a tree fold would
-#: leave that field missing on every read: the permanently stale block this gate exists
-#: to refuse. Widening the template set to admit the package's extra family would hand an
-#: operator writing a ``panel-templates`` page exactly that binding.
+#: The same question for a dashboard PACKAGE. Separate from :data:`FOLD_NAMES` because
+#: the readers differ: a package's page is drawn by ``member_dashboard_fields.LivePage``,
+#: which READS tree folds, while a template's ``member_dashboard._render`` feed only
+#: subscribes by scope, so a tree binding there would be missing on every read.
 PACKAGE_FOLD_NAMES: Final[frozenset[str]] = FOLD_NAMES | frozenset(TREE_PROJECTION_NAMES)
 #: Where a manifest came from. Every value names a template DIRECTORY, which is what
 #: lets two consumers read this word and both be right: ``instance.RENDERABLE_SOURCES``
@@ -126,12 +117,9 @@ PACKAGE_FOLD_NAMES: Final[frozenset[str]] = FOLD_NAMES | frozenset(TREE_PROJECTI
 #: synthesis, because a source no manifest declares is a word both consumers would
 #: accept off disk and nothing would ever produce.
 SOURCES: Final[frozenset[str]] = frozenset({"builtin", "user", "shared"})
-#: ``\Z``, never ``$``: Python's ``$`` also matches just before a TRAILING NEWLINE, so
-#: ``"report\n"`` satisfies a ``$``-anchored id. That id becomes a user-template
-#: directory name and a registry key, so it would sit beside ``report`` looking
-#: identical and colliding with nothing -- two templates a reader cannot tell apart.
-#: The same hole is open on a field name and a fold path, which end up as a DOM
-#: attribute and a walked key, so all three are anchored the same way.
+#: ``\Z``, never ``$``: Python's ``$`` also matches before a TRAILING NEWLINE, so
+#: ``"report\n"`` would pass and sit beside ``report`` as a look-alike directory and
+#: registry key. Field names and fold paths are anchored the same way.
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
 _FIELD = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
 _PATH = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\Z")
@@ -154,6 +142,23 @@ MAX_UPKEEP_CHARS: Final[int] = 200
 UPKEEP_KEYS: Final[tuple[str, ...]] = ("means", "when", "how")
 #: A helper's file name under the template's ``helpers/``.
 _HELPER = re.compile(r"^[a-z][a-z0-9_]{0,40}\.py\Z")
+#: What :func:`stale_after_ok` admits, worded for a refusal.
+STALE_AFTER_RULE: Final[str] = (
+    f"stale_after_s must be 0 (never stale) or a whole number of seconds from "
+    f"{CUSTOM_MAX_AGE_MIN_S} to {CUSTOM_MAX_AGE_MAX_S}"
+)
+
+
+def stale_after_ok(value: Any) -> bool:
+    """Whether *value* is an agentic field's ``stale_after_s``: ``0`` (never stale) or
+    a whole number of seconds in the range a ``custom`` record's ``max_age_s`` takes,
+    so both kinds of field age on one scale. ``bool`` is refused though it is an ``int``.
+    Shared with the package validator so a template and a package agree."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and (value == 0 or CUSTOM_MAX_AGE_MIN_S <= value <= CUSTOM_MAX_AGE_MAX_S)
+    )
 
 
 @dataclass(frozen=True)
@@ -240,6 +245,10 @@ class FieldSpec:
     shape: Shape | None = None
     #: What it means and when and how the crewmate writes it, or ``None``.
     upkeep: Upkeep | None = None
+    #: How many seconds a written value stays current, ``0`` for never stale, or
+    #: ``None`` for the default (``dashboard_agentic.AGENTIC_STALE_AFTER_DEFAULT_S``).
+    #: Agentic only; read only while the ``dashboard_stale_fields`` preview is on.
+    stale_after_s: int | None = None
 
 
 def _enum_member_ok(declared: str, value: Any) -> bool:
@@ -369,7 +378,15 @@ def _field(name: str, raw: Any, problems: list[str]) -> FieldSpec | None:
         if declares_shape and isinstance(ftype, str) and ftype in FIELD_TYPES:
             shape = _shape(f"field {name!r}", raw, problems, 1)
         upkeep = _upkeep(name, raw["upkeep"], problems) if "upkeep" in raw else None
-        return FieldSpec(name, str(ftype), None, None, True, shape, upkeep)
+        stale_after = None
+        if "stale_after_s" in raw:
+            stale_after = raw["stale_after_s"]
+            if not stale_after_ok(stale_after):
+                problems.append(f"field {name!r}: {STALE_AFTER_RULE}")
+                stale_after = None
+        return FieldSpec(name, str(ftype), None, None, True, shape, upkeep, stale_after)
+    if "stale_after_s" in raw:
+        problems.append(f"field {name!r}: only an agentic field declares stale_after_s")
     if declares_shape:
         # The fold writes these values, so a shape here would be a promise about
         # bytes nothing on the write path checks.
@@ -450,14 +467,10 @@ def check_parity(manifest: TemplateManifest, html: str) -> None:
 def load_template(directory: Path) -> tuple[TemplateManifest, str]:
     """Load and fully check one template directory."""
     try:
-        raw = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        raw = loads_user_json((directory / "manifest.json").read_text(encoding="utf-8"))
         html = (directory / "template.html").read_text(encoding="utf-8")
-    # UnicodeDecodeError belongs with the other two: a template saved in any
-    # non-UTF-8 encoding is a bad copy of THIS directory, and the scanner's whole
-    # posture is that one bad directory isolates itself. Escaping as a bare
-    # UnicodeDecodeError -- which is a ValueError, neither an OSError nor a
-    # JSONDecodeError -- carries past `_scan` and takes the registry read with it, so
-    # a single unreadable user template answers 500 for every built-in dashboard too.
+    # UnicodeDecodeError too, so one non-UTF-8 directory isolates itself: escaping as a
+    # bare ValueError would carry past `_scan` and fail the whole registry read.
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManifestError([f"{directory.name}: {exc}"]) from None
     manifest = parse_manifest(raw)

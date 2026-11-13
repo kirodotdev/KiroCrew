@@ -39,6 +39,7 @@ import { createSlotDraftStore } from './slotDraftStore'
 import { DRAFT_MAX_ENTRIES } from './draftConstants'
 import { sanitizePasteBlocks } from './chatPasteDrafts'
 import { carryPastes, mergeCarriedDraft, type PasteBlock } from './pasteTokens'
+import { mergeReplyIntoDraft } from './chatDrafts'
 
 export const PANE_DRAFTS_KEY = 'mc-pane-drafts'
 /** The key attachment paths were parked under while text and paths were two
@@ -284,6 +285,32 @@ export function suggestPaneDraft(slot: string, next: string): void {
   mergePaneDraft(slot, next, [])
 }
 
+/** The reply a dashboard page last added to each slot's composer, for `appendPaneDraftReply`. */
+const replies = new Map<string, string>()
+
+/** Add a dashboard page's reply to `slot`'s composer under `mergeReplyIntoDraft`:
+ *  appended after what is there, unless already present as a paragraph. Unlike
+ *  `suggestPaneDraft` it never replaces, so replies to two cards both stay. */
+export function appendPaneDraftReply(slot: string, text: string): void {
+  if (hasPaneListener(slot)) {
+    // Live composer: the parked store is empty (the pane took it), so the
+    // duplicate check runs against the composer's own text in its arrival handler.
+    replies.set(slot, text)
+    mergePaneDraft(slot, text, [])
+    return
+  }
+  const cur = readPaneDraft(slot)
+  if (mergeReplyIntoDraft(cur.text, text) === cur.text) return
+  mergePaneDraft(slot, text, [])
+}
+
+/** Read AND clear the pending dashboard reply for `slot` (see `appendPaneDraftReply`). */
+export function takePaneDraftReply(slot: string): string | undefined {
+  const r = replies.get(slot)
+  replies.delete(slot)
+  return r
+}
+
 /** Read AND clear the pending swap for `slot` (see `swapPaneDraftText`). */
 export function takePaneDraftSwap(slot: string): string | undefined {
   const s = swaps.get(slot)
@@ -299,6 +326,7 @@ export function __resetPaneDraftsForTests(): void {
   mirror.clear()
   listeners.clear()
   swaps.clear()
+  replies.clear()
   lastSuggested.clear()
   // The store is the fallback read when the mirror is empty, so a reset that
   // left the persisted entries behind would hand the previous test's park

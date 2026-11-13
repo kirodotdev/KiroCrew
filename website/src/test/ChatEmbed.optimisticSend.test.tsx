@@ -6,6 +6,7 @@
  * or unconfirmed) drops the row, so the user never sees two copies.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -76,6 +77,9 @@ const earlier: ChatMessage[] = [
 ]
 
 beforeEach(() => {
+  // These tests are about the busy send that queues; the steer side is
+  // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+  setBusySendDefault('queue')
   vi.clearAllMocks()
   resetEmbedRecoveryForTests()
   vi.useFakeTimers()

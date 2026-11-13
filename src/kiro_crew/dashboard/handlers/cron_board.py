@@ -65,12 +65,17 @@ async def api_crons(request: web.Request) -> web.Response:
     # module import order entirely.
     from kiro_crew.apps.cron_sdk import app_owner_name
     from kiro_crew.cron import (  # noqa: F811
+        _job_tz,
         compute_next_run_ts,
+        default_timezone_name,
         effective_wake_budget,
         format_schedule,
         get_local_tz,
+        job_zone_name,
     )
+    from kiro_crew.cron_service.model import parked_by_its_run
     from kiro_crew.cron_service.schedule import backoff_delaying_next_run
+    from kiro_crew.host_timezone import published_host_timezone
 
     def _r(text: str) -> str:
         # The two redaction passes every free-text field below goes through.
@@ -103,12 +108,21 @@ async def api_crons(request: web.Request) -> web.Response:
         _audit_app_cron(app, "crons.list", "allowed", f"jobs={len(jobs)}")
     # A crewmate's goal check-ins are controlled only by its Goals tab switches,
     # so neither the Schedule page nor a crewmate's Schedules tab lists them;
-    # the store still runs them. Only those: every other managed job stays.
+    # the store still runs them. The stale-wake job is controlled only by its
+    # Feature preview switch, so it is left out too. Only those: every other
+    # managed job stays.
     from kiro_crew.dashboard.goal_reminder import is_reminder_job
+    from kiro_crew.dashboard.stale_wake import is_stale_wake_job
 
-    jobs = [j for j in jobs if not is_reminder_job(j)]
+    jobs = [j for j in jobs if not is_reminder_job(j) and not is_stale_wake_job(j)]
     now = time.time()
     tz_name, _ = get_local_tz()
+    # What a job with no zone of its own follows, as the job form offers it: the
+    # configured zone, or "local" when none is configured. And the zone "local"
+    # resolves to right now, so the page can say where "local" is. Both are
+    # snapshots: no config or host read on the loop.
+    default_tz = default_timezone_name()
+    host_tz = published_host_timezone()
     # Secret-grant metadata is owner-view only (see the field comment below).
     # This is a read-path CLASSIFICATION on the dashboard's polling endpoint,
     # deliberately NOT SEL-audited per decision: the panel refreshes every few
@@ -141,7 +155,7 @@ async def api_crons(request: web.Request) -> web.Response:
                 "name": _r(j.name),
                 "message": _r(j.message),
                 "enabled": j.enabled,
-                "schedule": _r(format_schedule(j.schedule, tz_name=j.timezone or tz_name)),
+                "schedule": _r(format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)),
                 "cron_expr": j.schedule.cron_expr if j.schedule.kind == "cron" else None,
                 "every_secs": j.schedule.every_secs if j.schedule.kind == "every" else None,
                 "created_ts": j.created_ts or None,
@@ -161,6 +175,11 @@ async def api_crons(request: web.Request) -> web.Response:
                 # consecutive failures is the WORST one, which `unhealthy_jobs_from_disk`
                 # already treats that way by skipping only user pauses.
                 "user_paused": j.user_paused,
+                # A fired one-shot is parked with the user-pause flags. This says
+                # the park is its run's, so a failed one-shot stays a health signal.
+                "parked_after_run": parked_by_its_run(
+                    j.schedule.kind, j.user_paused, j.user_pause_requested, j.last_run_ts
+                ),
                 "agent": _r(j.agent_id or "") or None,
                 "member_id": j.member_id or None,
                 "memory_store": j.memory_store or None,
@@ -171,7 +190,8 @@ async def api_crons(request: web.Request) -> web.Response:
                 "agent_sequence": [_r(a or "") for a in (j.agent_sequence or [])],
                 "model": _r(j.model or "") or None,
                 "channel": _r(j.channel or "") or None,
-                "approval_mode": _r(j.approval_mode or "") or None,
+                # "" not null: the stored default, and a value PATCH accepts.
+                "approval_mode": _r(j.approval_mode or ""),
                 # The chat session that owns this job. Ownership decides chat-side
                 # reachability: cron_list only shows a session its own jobs, so a job
                 # whose key is empty (None here) is invisible to every chat session
@@ -193,9 +213,11 @@ async def api_crons(request: web.Request) -> web.Response:
                 # to the store's True and a save would silently re-enable the
                 # persistent session on a job the user set to ephemeral.
                 "persistent_session": j.persistent_session,
+                "new_chat_per_run": j.new_chat_per_run,
                 # The edit form's auto-pause field reads it so a save shows the
                 # job's real limit; 0 means the job never auto-pauses.
                 "auto_pause_after_failures": j.auto_pause_after_failures,
+                "alert_after_failures": j.alert_after_failures,
                 "folder_id": j.folder_id,
                 "chat_folder_id": j.chat_folder_id,
                 # The Schedule-page template this job was seeded from, or None. A
@@ -228,6 +250,11 @@ async def api_crons(request: web.Request) -> web.Response:
                 # disabled job and for one whose next slot is later anyway.
                 "failure_backoff_until": backoff_delaying_next_run(j, now=now),
                 "timezone": _r(j.timezone or "") or None,
+                # The IANA zone the scheduler reads the job's wall clock in right
+                # now (UTC when a configured name cannot load), so a page in another
+                # zone (a browser on a phone) never resolves "local" or an inherited
+                # zone itself, and never gets a name the browser cannot format in.
+                "effective_tz": _r(getattr(_job_tz(j), "key", "") or "UTC"),
                 "skip_dates": ([_r(d) for d in j.skip_dates] if j.skip_dates else None),
                 "script": _r(j.script or "") or None,
                 "command": _r(j.command or "") or None,
@@ -246,6 +273,9 @@ async def api_crons(request: web.Request) -> web.Response:
                 ),
                 "secret_env_pending_ts": (j.secret_env_pending_ts or None) if _owner_view else None,
                 "last_result": _r(j.last_result or "") or None,
+                # When `last_result` was produced (epoch), so a notification can
+                # tell whether the job's result is still the one it carries.
+                "last_result_ts": j.last_result_ts or None,
                 "last_error": _r(j.last_error or "") or None,
                 "is_running": live[j.id][1],
                 "running_since": live[j.id][2],
@@ -256,6 +286,8 @@ async def api_crons(request: web.Request) -> web.Response:
             {
                 "jobs": data,
                 "server_tz": _r(tz_name or "") or None,
+                "default_tz": _r(default_tz),
+                "host_tz": _r(host_tz) or None,
             }
         )
 
@@ -344,6 +376,13 @@ async def create_or_adopt_cron_folder(state: DashboardState, name: str) -> tuple
     if _FOLDER_ID_SHAPE.fullmatch(name):
         return "", f"cron folder not found: {name!r} looks like a folder id"
     async with _get_cron_folders_lock():
+        # A failed boot load leaves the in-memory list empty: re-read it before
+        # matching, or a name already on disk would be created a second time.
+        try:
+            await asyncio.to_thread(state._reload_cron_folders_if_unknown)
+        except Exception:
+            logger.warning("Failed to read cron folders before adopt", exc_info=True)
+            return "", "failed to save folder"
         matches = [f for f in state._cron_folders if f["name"].strip().lower() == name.lower()]
         if len(matches) > 1:
             return "", f"{len(matches)} cron folders are named {name!r}"

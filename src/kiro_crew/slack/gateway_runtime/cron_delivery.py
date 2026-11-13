@@ -4,7 +4,7 @@ The duplicate and silent paths, the dashboard tab and bell, the channel the job 
 scheduled from, and the Slack post with its uploads; the dedup anchor advances only
 on a confirmed delivery.
 
-Orchestrator fields read: ``_owner_id``, ``dashboard_state``, ``sessions``, ``slack``.
+Orchestrator fields read: ``dashboard_state``, ``sessions``, ``slack``.
 Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -84,7 +84,7 @@ async def _deliver_cron_agent_result(
                     "cron",
                     title,
                     redacted_for_dash,
-                    meta={"job_id": job.id},
+                    meta={"job_id": job.id, "result_ts": job.last_result_ts},
                 )
 
             sel().log_tool_invocation(
@@ -167,11 +167,49 @@ async def _deliver_cron_agent_result(
                 context_reading=_ctx_reading,
                 turn_stats=_turn_stats,
             )
+        run_tab = ""
+        if job.new_chat_per_run and not job.persistent_session and not job.hide_in_chat:
+            # The run's own tab, on the run's own session (``new_chat_per_run``).
+            from kiro_crew.dashboard.cron_inject import cron_tab_name
+
+            # A tab is a chat the reader keeps, so the run transcript is re-tagged
+            # out of run_residue's prune BEFORE the tab is published. A failed
+            # write withholds the tab: the notification still carries the result.
+            # shortcut: an app holding the tab name keeps the re-tagged transcript
+            # unpruned; untag it if that case is ever seen.
+            log = self.dashboard_state.conversation_log
+            try:
+                if log is not None:
+                    await asyncio.to_thread(log.update_metadata, session_key, {"cron_run": "tab"})
+            except Exception:
+                logger.warning(
+                    "Cron '%s': could not keep run transcript %s; no tab opened",
+                    job.name,
+                    session_key,
+                    exc_info=True,
+                )
+            else:
+                inject_cron_result_to_dashboard(
+                    self.dashboard_state,
+                    job,
+                    result_text,
+                    history=await prefetch_cron_history(self.dashboard_state, job.id, session_key),
+                    context_reading=_ctx_reading,
+                    turn_stats=_turn_stats,
+                    session_key=session_key,
+                )
+            if self.dashboard_state.has_slot(cron_tab_name(session_key)):
+                run_tab = cron_tab_name(session_key)
         redacted_for_dash, _ = redact_exfiltration_urls(result_text)
         redacted_for_dash, _ = redact_credentials(redacted_for_dash)
         safe_name, _ = redact_exfiltration_urls(job.name)
         safe_name, _ = redact_credentials(safe_name)
-        notify_meta: dict[str, str] = {"job_id": job.id}
+        notify_meta: dict[str, str | float] = {"job_id": job.id}
+        # `result_ts` names the stored result this note carries, so the dashboard
+        # can tell whether the job's current `last_result` is still that one. A
+        # 24h repeat reminder carries a rewritten text, so it names none.
+        if result_text == job.last_result:
+            notify_meta["result_ts"] = job.last_result_ts
         # Gate the slot linkage on not hide_in_chat for parity with the
         # three inject sites above. Without this, a job flipped to
         # hide_in_chat=True that still owns an older cron-{id} slot would
@@ -185,6 +223,8 @@ async def _deliver_cron_agent_result(
             and self.dashboard_state.has_slot(f"cron-{job.id}")
         ):
             notify_meta["slot"] = f"cron-{job.id}"
+        elif run_tab:
+            notify_meta["slot"] = run_tab
         self.dashboard_state.notify(
             "cron",
             f"Cron: {safe_name}",
@@ -242,8 +282,9 @@ async def _deliver_cron_agent_result(
             # Retry only open_dm (transient Slack API errors).
             # Delivery (post_blocks/post_message) is NOT retried to avoid duplicates.
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            dm_user = self._cron_dm_user(job)
+            if not channel and dm_user:
+                channel = await self._open_dm_with_retry(dm_user, job.name)
             if channel:
                 # ── Extract embedded local images and upload them
                 # natively (mirror the chat renderer's on_done seal).

@@ -430,6 +430,16 @@ class TestKillOrphanGatewayd:
             if sig == signal.SIGKILL:
                 raise AssertionError("recycled PID must not be SIGKILLed")
 
+        from kiro_crew import sel as sel_mod
+
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+        (tmp_path / "sel").mkdir()
+        audit = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+        monkeypatch.setattr(sel_mod, "sel", lambda: audit)
+
         with (
             patch("kiro_crew.session_pid.os.kill", side_effect=fake_kill),
             patch("kiro_crew.session_pid.os.killpg") as killpg,
@@ -437,8 +447,10 @@ class TestKillOrphanGatewayd:
             patch("kiro_crew.session_pid.sys") as mock_sys,
         ):
             mock_sys.platform = "linux"
-            sp._kill_orphan_gatewayd(902, cmdline)
+            assert sp._kill_orphan_gatewayd(902, cmdline) == 1
         killpg.assert_not_called()
+        kills = [e for e in audit.recent() if e["operation"] == "orphan_mcp_sweep"]
+        assert [e["resources"] for e in kills] == ["pid=902 pgid=902 method=sigterm"]
 
     @_POSIX_ONLY
     def test_kill_orphan_mcps_routes_gatewayd_through_term_first(self, tmp_path: Path) -> None:

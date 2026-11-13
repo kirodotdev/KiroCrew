@@ -121,13 +121,15 @@ async function main() {
     if (page) await page.close()
     page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra })
-    await page.addInitScript(slot => {
-      localStorage.setItem('mc-active-slot', slot)
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      localStorage.setItem('mc-sidebar-pinned', 'true')
-      localStorage.setItem('mc-session-stale-collapse-ms', '0')
-    }, ACTIVE)
+    await stubDashboardApi(page, {
+      slots, theme, extra,
+      localStorageEntries: {
+        'mc-active-slot': ACTIVE,
+        'mc-privacy-notice-v1': '1',
+        'mc-sidebar-pinned': 'true',
+        'mc-session-stale-collapse-ms': '0',
+      },
+    })
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
     // Wait for at least one chip to appear.

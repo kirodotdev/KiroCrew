@@ -46,10 +46,21 @@ def _junit_check(run_body):
 
 def test_the_lane_is_a_hosted_vm_running_exactly_the_two_strict_cases(jobs, run_body):
     job = jobs[JOB]
-    assert job["runs-on"] == "ubuntu-latest"
+    # A hosted VM is the contract; which hosted pool is not. The organization's
+    # larger-runner group is the same uncontainerized image, and a fork, which
+    # cannot reach an organization group, keeps the standard one. Both branches
+    # are pinned: dropping the fork one leaves fork runs queued forever.
+    assert job["runs-on"] == (
+        "${{ github.repository == 'kirodotdev/KiroCrew' "
+        "&& 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    )
     assert job["needs"] == ["changes", "await-fast-gate", "lint-gate"]
-    # Not diff-gated: its only condition is the lint gate's own success.
-    assert job["if"] == "${{ !cancelled() && needs.lint-gate.result == 'success' }}"
+    # Skipped on a frontend-only diff: backend flock tests cannot be affected
+    # by frontend-only changes.
+    assert (
+        job["if"]
+        == "${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}"
+    )
     for forbidden in ("container", "continue-on-error", "strategy"):
         assert forbidden not in job
     assert job["defaults"]["run"]["shell"] == "bash"
@@ -116,7 +127,7 @@ def test_the_coverage_artifact_is_required_by_combine_and_gate(jobs):
     assert (
         JOB in gate["needs"]
         and gate["if"]
-        == "${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}"
+        == "${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]') }}"
     )
     guard = _step(jobs, "coverage-gate", "Require upstream")
     assert guard["env"]["KERNEL_LOCK_OWNER"] == f"${{{{ needs.{JOB}.result }}}}"
@@ -138,9 +149,15 @@ def test_gate_fails_closed_for_the_strict_lane_in_every_scope(jobs, tmp_path, mo
         LEAF_TESTS=str(mode == "leaf").lower(),
     )
     result = _shell(_step(jobs, "coverage-gate", "Require upstream")["run"], tmp_path, env)
-    assert (result.returncode == 0) == (status == "success"), result.stdout + result.stderr
-    if status != "success":
-        assert f"::error::{JOB}={status} -- failing closed." in result.stdout
+    # On a frontend-only diff the lane is skipped by design; coverage-gate
+    # accepts "skipped" and passes. Every other scope requires "success".
+    if mode == "frontend":
+        expected_ok = status == "skipped"
+    else:
+        expected_ok = status == "success"
+    assert (result.returncode == 0) == expected_ok, result.stdout + result.stderr
+    if not expected_ok and status not in ("success",):
+        assert f"{JOB}={status}" in result.stdout
 
 
 def _report(cases):

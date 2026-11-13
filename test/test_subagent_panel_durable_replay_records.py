@@ -1,13 +1,7 @@
 """What one run folder rebuilds into on the subagent panel.
 
-The persisted fallback answers for the runs a replacement gateway never tracked. These
-tests pin what a rebuilt record carries and what it must refuse to invent: live state wins
-over disk, native and non-persistent runs get no card, the tombstone's own outcome
-classifies the ending, every retained field and the row count are bounded and a cut tail is
-counted, equality keys refuse the record rather than clamp it, ownership follows the app a
-run was recorded under, the carry-forward read stays off the loop, a later write keeps the
-recorded outcome, elapsed measures the run rather than the delivery wait, and a detached
-settle batch survives a cancelled waiter. The shared helpers live in
+The persisted fallback answers for runs a replacement gateway never tracked. These tests pin
+what a rebuilt record carries and what it must refuse to invent. Shared helpers are in
 ``subagent_panel_durable_replay_helpers.py``.
 """
 
@@ -17,6 +11,7 @@ import asyncio
 import json
 import os
 import pathlib
+import threading
 import time
 from types import SimpleNamespace
 
@@ -115,11 +110,8 @@ class TestLiveStateWins:
 class TestNativeCardsAreNotInvented:
     """Native slot-tracked cards have no durable record anywhere.
 
-    ``create_agent_folder`` is reached only from the manager's admission pump, so
-    a native run writes no folder. The fallback discovers records by walking
-    folders, and these pin that the walk cannot conjure one: a native card that
-    vanished with its gateway stays gone rather than reappearing as a card the
-    panel cannot address.
+    ``create_agent_folder`` is reached only from the admission pump, so a native run writes
+    no folder and the fallback's folder walk must not conjure a card the panel cannot address.
     """
 
     def test_empty_registry_yields_nothing(self, agent_root):
@@ -529,11 +521,8 @@ class TestCorruptFolders:
 class TestReusedSlotKeyOwnership:
     """A slot key an app's run was recorded under can later belong to another app.
 
-    Slot keys are caller-supplied and are not namespaced by app, and the per-frame
-    scope gate authorizes against the slot's CURRENT owner -- which for a reused
-    key is not the owner the run belonged to. Within the replay window that hands
-    the new owner the previous owner's task, agent name and error text, delivered
-    once with no recall. So the run's own recorded app is compared here.
+    Slot keys are not namespaced by app and the scope gate checks the slot's current owner,
+    so the run's own recorded app is compared to keep its task and errors from the new owner.
     """
 
     def slot(self, app: str):
@@ -799,17 +788,9 @@ class TestOverflowIsCountedNotHidden:
 class TestTheCarryForwardReadIsNeverOnTheLoop:
     """The carry-forward added a disk READ to a write that already wrote.
 
-    The invariant is REACHABILITY, not enclosure: a SYNC function called from a
-    coroutine still runs on the loop, so checking only whether the immediate
-    enclosing ``def`` is ``async`` passes a hole one level down. That is exactly
-    how a settlement helper -- sync itself, awaited from two coroutines -- kept a
-    synchronous write on the loop after the directly-async sites were fixed.
-
-    So the property asserted here is: from every coroutine in the manager, no
-    call path reaches the tombstone write without crossing an offload. Checked
-    structurally over the call graph, because what regresses is a call site losing
-    its offload or a new one arriving without one -- a property of the source, and
-    a new site is the case a runtime test on today's set could not see.
+    The rule is reachability, not enclosure: a sync helper called from a coroutine still runs
+    on the loop. So no call path from a manager coroutine may reach the tombstone write without
+    an offload, checked over the call graph so a new call site is caught too.
     """
 
     MODULES = (
@@ -901,12 +882,8 @@ class TestTheCarryForwardReadIsNeverOnTheLoop:
     def test_the_offload_uses_the_name_an_impl_method_can_resolve(self):
         """Shape is not enough: the module the offload names has to be in scope.
 
-        A method whose name ends in ``_impl`` runs with the manager facade's
-        globals, not its own module's, so a module-private alias such as
-        ``_asyncio`` is NOT defined inside one -- the call raises ``NameError`` at
-        runtime and a surrounding ``except Exception`` swallows it, leaving the
-        write silently undone. The reachability assertion above passes either way,
-        which is why this one exists beside it.
+        An ``_impl`` method runs with the manager facade's globals, so an alias such as
+        ``_asyncio`` raises ``NameError`` there, which an ``except Exception`` swallows.
         """
         import ast
 
@@ -957,13 +934,8 @@ class TestTheCarryForwardReadIsNeverOnTheLoop:
 class TestATerminalOutcomeSurvivesALaterWrite:
     """A recorded outcome is not erased by a write that carries none.
 
-    ``write_tombstone`` REPLACES the file and only ``extra`` can supply
-    ``outcome``, so a caller with no opinion about the outcome -- a delivery
-    acknowledgement is the ordinary one -- would drop what an earlier write
-    recorded. The reader then derives an outcome from ``cause``, and
-    ``cause="delivered"`` derives ``completed``, so a user stop reads as a
-    success. The run side reaching its delivery claim after the stop is recorded
-    is the ordinary sequence, not an exotic interleaving.
+    ``write_tombstone`` replaces the file, so a delivery acknowledgement would drop the
+    outcome, and ``cause="delivered"`` would then read a user stop as ``completed``.
     """
 
     def folder(self, agent_root, agent_id: str):
@@ -971,7 +943,7 @@ class TestATerminalOutcomeSurvivesALaterWrite:
         return agent_root / agent_id
 
     def tombstone(self, agent_root, agent_id: str) -> dict:
-        return json.loads((agent_root / agent_id / "tombstone.json").read_text())
+        return json.loads((agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
 
     def test_a_delivered_write_after_a_stop_keeps_the_stop(self, agent_root):
         self.folder(agent_root, "keep111")
@@ -1005,16 +977,13 @@ class TestATerminalOutcomeSurvivesALaterWrite:
 class TestElapsedMeasuresTheRunNotTheDeliveryWait:
     """A card's duration is the run's, not the wait before its result was read.
 
-    ``died`` is stamped at every write, and a delivery acknowledgement lands
-    whenever the parent got round to the result -- a busy parent queues the
-    announce and the drain settles it later. Two things keep the duration honest:
-    a write at the ending has its ``died`` carried across later writes, and where
-    no write happened at the ending at all, the run's own output file is the
-    completion evidence that remains on disk.
+    ``died`` is stamped at every write, including a late delivery acknowledgement. So an
+    ending's ``died`` is carried forward, and with no ending write the output file's time is
+    the evidence.
     """
 
     def tombstone(self, agent_root, agent_id: str) -> dict:
-        return json.loads((agent_root / agent_id / "tombstone.json").read_text())
+        return json.loads((agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
 
     def test_a_later_write_does_not_move_a_recorded_ending(self, agent_root):
         moment = time.time()
@@ -1091,12 +1060,8 @@ class TestElapsedMeasuresTheRunNotTheDeliveryWait:
     def test_only_a_write_with_no_outcome_reads_the_prior_tombstone(self, agent_root, monkeypatch):
         """The carry costs a disk read, so it is taken on one condition only.
 
-        This function is synchronous and is reached from coroutines through sync
-        helpers, so a read it takes lands on the event loop unless that caller
-        offloads it. A caller supplying an outcome is recording an ending -- its
-        own stamp IS the ending -- so taking the read there would put file I/O on
-        paths that never had it, for a value that is not wanted. Counted in both
-        directions, because the whole point is which callers pay it.
+        The read can land on the event loop, and a caller supplying an outcome is itself the
+        ending, so it must not pay for it. Counted in both directions.
         """
         import kiro_crew.subagent_persistence as persistence
 
@@ -1118,7 +1083,9 @@ class TestElapsedMeasuresTheRunNotTheDeliveryWait:
         mark_delivered("read111")
         assert len(reads) == 1, f"the acknowledgement did not take the carry read: {reads}"
         assert (
-            json.loads((agent_root / "read111" / "tombstone.json").read_text())["outcome"]
+            json.loads((agent_root / "read111" / "tombstone.json").read_text(encoding="utf-8"))[
+                "outcome"
+            ]
             == "failed"
         )
 
@@ -1126,17 +1093,11 @@ class TestElapsedMeasuresTheRunNotTheDeliveryWait:
 class TestADetachedSettleBatchSurvivesCancellation:
     """A batch taken off its owner must not be lost when the waiter is cancelled.
 
-    The settle detaches its held deliveries irrevocably before suspending, so
-    awaiting the write once per delivery would make every one after the first a
-    cancellation point -- and ``CancelledError`` is not an ``Exception``, so the
-    usual per-delivery guard does not catch it. Each one not reached keeps no
-    ``delivered`` tombstone, which is the marker restart reconciliation uses to
-    EXCLUDE a folder, so it replays as a duplicate completion. Handing the batch to
-    one worker operation is what makes the loss impossible rather than unlikely.
+    The batch is detached before suspending, and ``CancelledError`` is not an ``Exception``,
+    so per-delivery awaits would lose every tombstone after the first (each then replays as a
+    duplicate). One worker operation writes the whole batch.
 
-    The batch carries the DELIVERIES, not bare ids, because the tombstone records
-    the run's terminal usage: settling by id would write a delivered tombstone with
-    no usage, so a held wave member would show none while its siblings carry theirs.
+    The batch carries deliveries, not bare ids, so each tombstone keeps the run's usage.
     """
 
     def delivery(self, agent_id: str, elapsed: float = 1.5, credits: float = 0.25):
@@ -1151,14 +1112,16 @@ class TestADetachedSettleBatchSurvivesCancellation:
             write_record(agent_root, agent_id, tombstone_cause=None)
         settle_delivered_batch(tuple(self.delivery(agent_id) for agent_id in ids))
         for agent_id in ids:
-            data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
+            data = json.loads(
+                (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
+            )
             assert data["cause"] == "delivered", f"{agent_id} was not settled"
 
     def test_the_batch_carries_each_runs_terminal_usage(self, agent_root):
         """Offloading the write must not cost the tombstone its elapsed and credits."""
         write_record(agent_root, "usage11", tombstone_cause=None)
         settle_delivered_batch((self.delivery("usage11", elapsed=12.5, credits=3.25),))
-        data = json.loads((agent_root / "usage11" / "tombstone.json").read_text())
+        data = json.loads((agent_root / "usage11" / "tombstone.json").read_text(encoding="utf-8"))
         assert data["cause"] == "delivered"
         assert data["elapsed"] == 12.5, "the held member's runtime did not reach its tombstone"
         assert data["credits"] == 3.25, "the held member's credits did not reach its tombstone"
@@ -1175,7 +1138,9 @@ class TestADetachedSettleBatchSurvivesCancellation:
             )
         )
         for agent_id in ("batch444", "batch555"):
-            data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
+            data = json.loads(
+                (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
+            )
             assert data["cause"] == "delivered", f"{agent_id} was stranded"
 
     def test_a_cancelled_waiter_still_leaves_the_whole_batch_written(self, agent_root):
@@ -1190,7 +1155,9 @@ class TestADetachedSettleBatchSurvivesCancellation:
             write_record(agent_root, agent_id, tombstone_cause=None)
         deliveries = tuple(self.delivery(agent_id) for agent_id in ids)
 
-        started = asyncio.Event()
+        # The worker thread signals through a threading.Event: an asyncio.Event is
+        # not thread-safe, and setting one off the loop does not wake the loop.
+        started = threading.Event()
 
         def slow_batch(batch):
             started.set()
@@ -1198,8 +1165,10 @@ class TestADetachedSettleBatchSurvivesCancellation:
 
         async def drive() -> None:
             task = asyncio.create_task(asyncio.to_thread(slow_batch, deliveries))
-            # flake-ok: the worker thread sets this event as its first statement, so the wait returns; pre-existing, moved verbatim
-            await started.wait()
+            await async_wait_until(
+                started.is_set,
+                describe=lambda: "the settle worker never started the batch",
+            )
             task.cancel()
             # The waiter is gone; the worker is not, so wait for it to finish.
             await async_wait_until(
@@ -1210,7 +1179,9 @@ class TestADetachedSettleBatchSurvivesCancellation:
 
         asyncio.run(drive())
         for agent_id in ids:
-            data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
+            data = json.loads(
+                (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
+            )
             assert data["cause"] == "delivered", (
                 f"{agent_id} lost its delivered tombstone when the waiter was cancelled, "
                 "so restart reconciliation would replay it as a duplicate completion"

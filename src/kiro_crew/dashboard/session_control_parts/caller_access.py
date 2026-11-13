@@ -14,6 +14,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.history import transcript_stem
 from kiro_crew.sel import sel
 
@@ -69,6 +70,95 @@ CRON_LINK_PREFIX = "cron:"
 # module sits below the apps package, and the value is a persisted data format
 # rather than something that package exports.
 APP_CRON_OWNER_PREFIX = "app:"
+
+
+# The agents whose shipped operating model is dispatching worker sessions: the
+# stock Conductor (Crew Mode's dispatcher) and its deprecated alias
+# (``agent_materialization.conductor_agents.DEPRECATED_AGENT_SPECS``). Spelled
+# here rather than imported: this module sits below agent materialization, and the
+# names are persisted agent identifiers. A positive list: an agent is a conductor
+# by being named here, never by not being something else.
+CONDUCTOR_AGENTS: frozenset[str] = frozenset({"kirocrew-conductor", "kirocrew-ledger-conductor"})
+
+# The key prefix of a person's own dashboard chat tab (``chat-<n>-<ts>``).
+OWNER_CHAT_SLOT_PREFIX = "chat-"
+
+
+def _owner_tab_conductor(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* is the Conductor running in the owner's own dashboard tab.
+
+    The conductor analogue of :func:`_member_caller`: Crew Mode's whole job is
+    dispatching workers, so a Conductor the person started in their own tab is
+    admitted to session control without the global ``agent.session_control``
+    opt-in, bounded the way a member is -- :func:`_caller_is_ownership_fenced`
+    restricts it to sessions it created while it is relying on that admission.
+
+    Every clause is POSITIVE identity, read live from the caller's own slot:
+
+    * the key is a dashboard chat tab (``chat-``), not a cron, workflow, member DM
+      or task-review slot;
+    * the slot's agent is one of :data:`CONDUCTOR_AGENTS`;
+    * the slot is UNATTRIBUTED (no ``_created_by``): :func:`create_session` is that
+      field's only writer, so an empty value means a person opened the tab, and a
+      session any agent created -- the Conductor's own workers included -- is
+      excluded at any depth. This is what keeps a child of the Conductor from
+      inheriting the admission and becoming an unfenced deputy;
+    * no channel link (Slack, Discord, ...) or cron link, and not channel-born;
+    * not app-scoped, and no non-user creation origin; and
+    * not a crew member (:func:`_member_caller`), which keeps its own bypass and
+      ceiling unchanged.
+
+    Any slot that is missing answers ``False``, so an unresolvable caller falls
+    back under the switch like every other.
+    """
+    if not caller_key.startswith(OWNER_CHAT_SLOT_PREFIX):
+        return False
+    slot = state.get_slot(caller_key)
+    if slot is None:
+        return False
+    if str(getattr(slot, "agent", "") or "") not in CONDUCTOR_AGENTS:
+        return False
+    if getattr(slot, "_created_by", ""):
+        return False
+    if str(getattr(slot, "linked_session_key", "") or ""):
+        return False
+    if getattr(slot, "channel_origin", False):
+        return False
+    if str(getattr(slot, "_app", None) or ""):
+        return False
+    if str(getattr(slot, "_origin", "") or "") not in ("", "user"):
+        return False
+    return not _member_caller(state, caller_key)
+
+
+def _conductor_bypass(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* may skip the ``session_control`` switch as the owner's Conductor.
+
+    Gated by the SAME operator ceiling as the member bypass,
+    ``agent.member_dispatch``: it is the one switch for "a dispatching agent works
+    without ``session_control``", so an operator who withdrew it from members has
+    withdrawn it from the Conductor too, with no second key to find. It fails
+    closed on an unreadable or degraded config exactly as for members
+    (:func:`member_dispatch_enabled`).
+    """
+    return _owner_tab_conductor(state, caller_key) and member_dispatch_enabled()
+
+
+def _conductor_fenced(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* is the owner's Conductor reaching the surface through its bypass.
+
+    With ``agent.session_control`` on, the owner's Conductor is an ordinary owner
+    caller and keeps the owner's reach, as before. With it off, its only way in is
+    :func:`_conductor_bypass`, and that admission is creator-fenced. An unreadable
+    config reads as off (:func:`session_control_enabled`), so the fence fails
+    closed too.
+    """
+    return _owner_tab_conductor(state, caller_key) and not session_control_enabled()
+
+
+def _dispatch_bypass(state: "DashboardState", caller_key: str) -> bool:
+    """The switch bypass every session-control gate reads: a member or the owner's Conductor."""
+    return _member_bypass(state, caller_key) or _conductor_bypass(state, caller_key)
 
 
 def _member_caller(state: "DashboardState", caller_key: str) -> bool:
@@ -211,10 +301,12 @@ def _cron_caller(caller_key: str) -> bool:
 def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> bool:
     """Whether *caller_key* may only reach slots it created itself.
 
-    Four populations, one predicate, so the fence and the admissions that depend
+    Five populations, one predicate, so the fence and the admissions that depend
     on it cannot drift apart:
 
     * a crew member's DM slot, which bypasses the config switch;
+    * the Conductor in the owner's own tab while ``agent.session_control`` is off
+      (:func:`_conductor_fenced`), which bypasses the switch the same way;
     * a cron job's own slot, which bypasses the unattended refusal;
     * a channel-born slot admitted as the owner's own DM (:func:`owner_dm_refusal`
       answering ``""``), which bypasses the channel-link refusals. Every non-cron
@@ -224,7 +316,7 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
       session store. What it buys is the bound on a wrong audience inference: the
       DM reaches the workers it dispatched and never the person's own tabs, the
       same reach a crew member has. A DASHBOARD-born slot the same predicate
-      admits on its outbound mirror is deliberately not a fifth population: the
+      admits on its outbound mirror is deliberately not a sixth population: the
       fence follows authority, and that slot's authority is the person's own
       dashboard session -- the words that drive it are typed into the dashboard by
       the authenticated owner, and the mirror the predicate admitted changes who
@@ -264,12 +356,69 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
     """
     if _member_caller(state, caller_key) or _cron_caller(caller_key):
         return True
+    # The owner's Conductor admitted through its switch bypass: the same fence a
+    # member gets, and only while that bypass is what lets it in.
+    if _conductor_fenced(state, caller_key):
+        return True
     slot = state.get_slot(caller_key)
     if slot is None:
         return False
     if _channel_link_of(slot):
         return True
-    return bool(getattr(slot, "_created_by", ""))
+    if is_code_channel_slot(state, slot):
+        # A Slack code channel's own session: dashboard-born, so no channel link,
+        # and made by the code-channel runtime, so no ``_created_by`` -- by key it
+        # would read as a person's own tab. It is not one: its words come from the
+        # channel, and what it reads is published there. The code-channel dispatch
+        # exemption admits it as a conductor ONLY on this fence, so it reaches the
+        # workers it created and never the person's own sessions. Read on identity
+        # alone (not on the exemption's live verdict), so the fence holds even
+        # while the exemption is withheld.
+        return True
+    if getattr(slot, "_created_by", ""):
+        return True
+    if _ran_a_code_channel(state, slot):
+        # A session a code channel runs or ran in, whose live binding is gone or
+        # did not read back (quarantined, retired): still not a person's own tab.
+        return True
+    # A code channel's worker whose transcript ``created_by`` was edited away is
+    # still fenced: its lineage is also recorded in the write-protected code-channel
+    # store at birth (``code_channel_root``), which only answers from memory here.
+    return bool(code_channel_root(state, slot))
+
+
+def _ran_a_code_channel(state: "DashboardState | Any", slot: Any) -> bool:
+    """*slot* is a session a code channel runs or ran in; True when that is unknown.
+
+    From the loaded snapshot (``session_keys``: live, retired and quarantined rows'
+    session keys), against every name (key, history key, transcript stem) of every
+    live slot sharing *slot*'s identity. A store that is
+    not loaded answers False, as for every other fence read here (callers load it
+    first); one whose file could not be read answers True, since it cannot show
+    the slot is not such a session.
+    """
+    keys: set[str] = set()
+    for same in _slots_sharing_identity(state, slot):
+        # Every name a caller key could resolve the slot by, not its key alone.
+        keys.add(str(getattr(same, "key", "") or ""))
+        try:
+            history = slot_history_key(same)
+            keys |= {history, transcript_stem(history)}
+        except Exception:
+            return True  # an identity that cannot be read is not shown to be no conductor's
+    keys.discard("")
+    if not keys:
+        return False
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        current = store()
+        if not current.loaded:
+            return False
+        return bool(keys & current.session_keys())
+    except Exception:
+        logger.debug("code-channel session keys unavailable", exc_info=True)
+        return _code_channel_store_unreadable()
 
 
 def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool:
@@ -278,11 +427,14 @@ def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool
     The private-member delegation gate in :func:`create_session` needs the one
     thing :func:`_caller_is_ownership_fenced` deliberately does not give it: a
     conductor the owner started in their own tab must be allowed to mint private
-    workers, while a conductor rooted in a cron, channel link or crew member must
-    not. The shared predicate answers "every agent-created session is fenced" for
-    the ownership boundary read on every verb, and that answer must stay intact;
-    this walk is read ONLY here, at the once-per-create delegation gate, so it
-    never widens :func:`authorize_target`.
+    workers while ``agent.session_control`` is on, while a conductor rooted in a
+    cron, channel link or crew member must not. With the switch off, the owner's
+    Conductor is admitted only through its bypass and is fenced
+    (:func:`_conductor_fenced`), so it gets no exemption here either. The shared
+    predicate answers "every agent-created session is fenced" for the ownership
+    boundary read on every verb, and that answer must stay intact; this walk is
+    read ONLY here, at the once-per-create delegation gate, so it never widens
+    :func:`authorize_target`.
 
     It climbs the ``_created_by`` chain LIVE at each hop -- a creator that has
     since become a crew member, acquired a channel link, or is a cron tab fences
@@ -305,12 +457,20 @@ def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool
         seen.add(key)
         if _member_caller(state, key) or _cron_caller(key):
             return True
+        # A Conductor admitted only through its switch bypass dispatches no
+        # private-member worker, and neither does anything rooted in it.
+        if _conductor_fenced(state, key):
+            return True
         slot = state.get_slot(key)
         if slot is None:
             # Mid-chain creator gone: cannot prove the root is the owner's, so
             # fail closed rather than treat an unreadable ancestor as unfenced.
             return key != caller_key
         if _channel_link_of(slot):
+            return True
+        if is_code_channel_slot(state, slot):
+            # A code channel's session is not the owner's own tab: its words come
+            # from the channel. A chain rooted there may not mint private workers.
             return True
         parent = getattr(slot, "_created_by", "")
         if not parent:
@@ -347,7 +507,7 @@ def _created_by_other(slot: Any, caller_key: str) -> bool:
 #: verbs that mint a session or act for its creator's memory (create, fork, rename,
 #: set_model, ...) stay on ``_created_by``, which a handoff never rewrites.
 HANDOFF_WIDENED_OPERATIONS: frozenset[str] = frozenset(
-    {"send", "read", "summary", "stop", "close", "adopt", "release", "handoff"}
+    {"send", "read", "summary", "queue", "stop", "close", "adopt", "release", "handoff"}
 )
 
 #: How far up the manager line :func:`_outside_reach` walks with the chain switch on.
@@ -440,12 +600,14 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
     not read as "has no owner". ``mcp_cron``'s ``cron_add`` records an app's
     authority ONLY in ``session_key`` -- so once that slot is gone, allowing the
     job would let an app escape confinement through a cron it authored and then
-    abandoned by closing its session. The cost is a genuinely user-created
-    dispatching cron whose authoring tab has closed is refused too; that caller
-    can reopen a tab, whereas an app session minted outside its confinement cannot
-    be undone. This is the same fail-closed direction the missing-job case below
-    takes, and what still bounds the app case beyond it is that a LIVE app session
-    has its jobs refused directly by the ``_app`` read.
+    abandoned by closing its session. The one exception is a job whose
+    ``person_owner_key`` still equals its ``session_key``: ``cron_add`` saw that
+    owner as a live person's tab (:func:`is_person_tab`). Any other job with a
+    closed owner is still refused; its caller can reopen a tab, whereas an app
+    session minted outside its confinement cannot be undone. This is the same
+    fail-closed direction the missing-job case below takes, and what still bounds
+    the app case beyond it is that a LIVE app session has its jobs refused
+    directly by the ``_app`` read.
 
     Fail-CLOSED on a job that cannot be found, or a registry that cannot answer:
     "could not verify the owner" must not read as "has no owner", the same
@@ -492,25 +654,11 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
         # matches on the identity each slot actually writes.
         owning_slot = state.get_slot(caller_slot_key(state, owning_key))
         if owning_slot is None:
-            # The job names an owning session, but no live slot carries that key
-            # any more -- the authoring tab was closed or evicted. Its ``_app``
-            # tag lived only on that slot (``mcp_cron``'s ``cron_add`` records the
-            # caller in ``session_key`` and never writes ``created_by``), so the
-            # one place app-ness could be read is gone. That is precisely the
-            # confinement escape: an app creates a cron through ``cron_add``,
-            # closes its session, and its scheduled job then dispatches a
-            # persistent, non-app, sidebar-visible session this gate then cannot
-            # recognise as the app's.
-            #
-            # "Could not verify the owner is not an app" therefore fails CLOSED,
-            # the same direction the missing-job and unreadable-registry cases
-            # above take. This narrows the docstring's former "known residual":
-            # the residual was an accepted fail-OPEN, and a fail-open on an
-            # unresolvable owner is a security-gate defect (anchor
-            # backend-security-controls). The cost is that a genuinely
-            # user-created dispatching cron whose authoring tab has closed is
-            # refused too -- but that caller can reopen a tab, whereas nothing can
-            # undo an app session minted outside its confinement.
+            # The owning tab is closed, so its ``_app`` cannot be read: fail
+            # CLOSED (anchor backend-security-controls), unless ``cron_add``
+            # recorded this exact owner as a person's tab.
+            if str(getattr(found, "person_owner_key", "") or "") == owning_key:
+                return None
             return (
                 "the session that authored this scheduled job is no longer open, "
                 "so its ownership cannot be verified",
@@ -519,6 +667,20 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
         if str(getattr(owning_slot, "_app", None) or ""):
             return refusal
     return None
+
+
+def is_person_tab(state: "DashboardState", session_key: str) -> bool:
+    """Whether *session_key* is a live ``SlotOrigin.USER`` slot with no ``_app``.
+
+    Positive on purpose: a cron's tab, and every session descended from one, is
+    ``SlotOrigin.CRON`` with no ``_app`` while it acts for whoever owns the job.
+    """
+    slot = state.get_slot(caller_slot_key(state, session_key))
+    return (
+        slot is not None
+        and getattr(slot, "_origin", "") == SlotOrigin.USER
+        and not str(getattr(slot, "_app", None) or "")
+    )
 
 
 class SessionControlError(Exception):
@@ -718,6 +880,12 @@ async def prewarm_enabled_check() -> None:
     Best-effort: a failure is the gate's business, and the gate fails closed on
     its own.
     """
+    # The code-channel store too: the ownership fence and the worker depth check
+    # read its loaded snapshot synchronously (``code_channel_root``), and a store the
+    # Slack runtime never loaded (Slack not connected after a restart) would leave a
+    # worker whose transcript lineage was edited away unrecognised. Loaded first, so
+    # the config warm below stays the LAST await before the gate.
+    await load_code_channel_lineage()
     try:
         await asyncio.to_thread(session_control_enabled)
         # The managers file too, so the fence's first read after a start is not a
@@ -855,3 +1023,206 @@ def _sel_off_loop(write: "Callable[[], None]", what: str) -> None:
             logger.warning("%s failed off-loop: %r", what, exc)
 
     loop.run_in_executor(None, write).add_done_callback(_report)
+
+
+# ── Code-channel identity ──────────────────────────────────────────────────
+# Whether a slot IS a Slack code channel's own session, read server-side: the
+# code-channel store (``slack-code-channels.json``, write-protected on disk and
+# held in memory once loaded) must hold a binding naming the slot's key, the
+# binding's anchor must resolve to the SAME slot object through the live
+# Slack-link index, and the slot's own Slack link must name the binding's
+# channel. A title, key prefix or agent name is never read. It lives in this,
+# the identity layer, because the creator fence below reads it; the dispatch
+# exemption (``code_channel_exemption``) builds on it.
+
+_SLACK = "slack"
+
+
+def _bare_channel(value: Any) -> str:
+    """A Slack channel id with any ``slack:`` namespace removed."""
+    text = str(value or "")
+    return text.split(":", 1)[1] if text.startswith(f"{_SLACK}:") else text
+
+
+def code_channel_binding_of(state: "DashboardState | Any", slot: Any) -> Any | None:
+    """The code-channel binding whose session IS *slot*, or ``None``.
+
+    Synchronous with no disk access (callable inside a no-suspension window): the
+    store's in-memory snapshot (``None`` before it is loaded, which reads as "not a
+    code channel"), cross-checked against the live Slack-link index and the slot's
+    own link. A forged or stale row naming some slot fails unless that slot is ALSO
+    linked to the channel's own anchor.
+    """
+    key = str(getattr(slot, "key", "") or "")
+    if state is None or slot is None or not key:
+        return None
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        bindings = store().loaded_bindings()
+    except Exception:
+        logger.debug("code-channel store unreadable", exc_info=True)
+        return None
+    if not bindings:
+        return None
+    for binding in bindings:
+        if binding.session_key != key or not binding.anchor_ts:
+            continue
+        try:
+            linked = state.get_linked_slot(binding.anchor_ts)
+        except Exception:
+            logger.debug("Slack link lookup failed", exc_info=True)
+            return None
+        if linked is not slot:
+            continue
+        if _bare_channel(getattr(slot, "_slack_channel", "")) != binding.channel_id:
+            continue
+        return binding
+    return None
+
+
+def is_code_channel_slot(state: "DashboardState | Any", slot: Any) -> bool:
+    """Whether *slot* is a code channel's own session (identity only; fails as "no")."""
+    try:
+        return code_channel_binding_of(state, slot) is not None
+    except Exception:  # pragma: no cover - the reader fails closed itself
+        logger.debug("code-channel identity check failed", exc_info=True)
+        return False
+
+
+def _slots_sharing_identity(state: "DashboardState | Any", slot: Any) -> list[Any]:
+    """*slot* and every other live slot a caller key resolving to it could name.
+
+    ``caller_slot_key`` returns the FIRST slot whose history key, slot key or
+    transcript stem matches; two slots that answer to the same key are therefore
+    indistinguishable to a caller, and a fence decided on one must hold for both.
+    """
+    out = [slot]
+    try:
+        names = {str(getattr(slot, "key", "") or "")}
+        history = slot_history_key(slot)
+        names |= {history, transcript_stem(history)}
+    except Exception:
+        return out
+    names.discard("")
+    for other in list(getattr(state, "_slots", {}).values()):
+        if other is slot:
+            continue
+        try:
+            other_history = slot_history_key(other)
+            other_names = {other.key, other_history, transcript_stem(other_history)}
+        except Exception:
+            continue
+        if names & other_names:
+            out.append(other)
+    return out
+
+
+async def load_code_channel_lineage() -> None:
+    """Load the code-channel store OFF the event loop, before a gate reads it.
+
+    :func:`code_channel_root` runs inside synchronous gates on the loop and reads
+    only the loaded snapshot, refusing when there is none; :func:`prewarm_enabled_check`
+    -- which every session-control verb awaits right before its synchronous gates --
+    and the work-ledger write route await this first, so the one cold read never
+    blocks the loop and no verb judges a fence on an unloaded store. A store
+    the Slack runtime already loaded makes this a no-op. Never raises: a failed
+    read is remembered by the store and the gate refuses on it.
+    """
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        current = store()
+        if current.loaded_bindings() is None:  # loaded once; afterwards no thread hop
+            await asyncio.to_thread(current.load)
+    except Exception:  # pragma: no cover - the store swallows its own read errors
+        logger.debug("code-channel store load failed", exc_info=True)
+
+
+#: What :func:`code_channel_root` answers when the code-channel store's file could
+#: not be read: no session can be shown NOT to be a code-channel worker, so every
+#: gate reading the answer as truthy fences and refuses. Not a slot key (slot keys
+#: never contain ``<``), so it can never name a real session.
+LINEAGE_UNAVAILABLE = "<code-channel-lineage-unavailable>"
+
+#: The refusal a caller sees while :data:`LINEAGE_UNAVAILABLE` holds.
+LINEAGE_UNAVAILABLE_MESSAGE = (
+    "the Slack code-channel store (slack-code-channels.json) could not be read, so "
+    "this session cannot be shown not to be a code-channel worker; repair the file "
+    "and restart the gateway"
+)
+
+
+def _code_channel_store_unreadable() -> bool:
+    """Whether the loaded code-channel store's file could not be read. No disk access."""
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        return bool(store().unreadable)
+    except Exception:  # pragma: no cover - fail closed on an import failure
+        return True
+
+
+def code_channel_root(state: "DashboardState | Any", slot: Any) -> str:
+    """The key of the code-channel session *slot* was created under, ``""`` if none.
+
+    A session a code channel's session created -- at any depth -- is a WORKER, which
+    the dispatch exemption keeps one level deep: it may not create sessions or
+    conduct. Decided from PERSISTED facts first, so it holds after the conductor's
+    tab is closed and the gateway restarts: the worker record ``create_session``
+    writes into the code-channel store at birth (server-owned, so editing the
+    worker's own transcript cannot erase it), then the slot's own ``_created_by`` (written
+    at birth, rehydrated on restart) checked against every session key a code
+    channel runs in or ever ran in (the store's ``session_keys``, never evicted;
+    a store that is not loaded or could not be read refuses -- callers load it
+    off the loop first with :func:`load_code_channel_lineage`). The live
+    ``_created_by`` chain is then climbed for a deeper ancestor, bounded so a
+    corrupted cycle cannot spin.
+    """
+    parent = str(getattr(slot, "_created_by", "") or "")
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        # First the record ``create_session`` wrote into the code-channel store at
+        # the worker's birth: server-owned, so it holds even if the worker's own
+        # transcript ``created_by`` was edited away before a restart. Checked for
+        # EVERY live slot sharing this slot's identity, not only the one resolved:
+        # a transcript's editable linkage can make a worker present another
+        # session's key, and resolution takes the first match.
+        for same in _slots_sharing_identity(state, slot):
+            recorded_conductor = store().worker_conductor(str(getattr(same, "key", "") or ""))
+            if recorded_conductor:
+                return recorded_conductor
+        if not parent:
+            return ""
+        recorded = store().session_keys()
+    except Exception:
+        # An unreadable store cannot vouch that this session is NOT a code-channel
+        # worker, and the slot's own ``_created_by`` cannot either: a worker can
+        # edit it away in its transcript before a restart. So a store whose file
+        # could not be read fences EVERY session the gate judges, whatever its
+        # ``created_by`` says, until a person repairs the file and restarts
+        # (:data:`LINEAGE_UNAVAILABLE`). A store merely not loaded yet -- a caller
+        # that skipped :func:`load_code_channel_lineage` -- keeps the transcript
+        # answer.
+        logger.debug("code-channel store unreadable", exc_info=True)
+        if _code_channel_store_unreadable():
+            return LINEAGE_UNAVAILABLE
+        return parent
+    seen: set[str] = set()
+    for _ in range(64):
+        if not parent or parent in seen:
+            return ""
+        if parent in recorded:
+            return parent
+        seen.add(parent)
+        try:
+            creator = state.get_slot(parent)
+        except Exception:
+            return ""
+        if creator is None:
+            return ""
+        if is_code_channel_slot(state, creator):
+            return parent
+        parent = str(getattr(creator, "_created_by", "") or "")
+    return ""

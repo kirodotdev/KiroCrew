@@ -36,7 +36,7 @@ import { AppSdkContext, type AppSdkContextValue } from '../app-sdk/scopedApi'
 import { EMBED_FILE_SEARCH_PATH, EMBED_SLASH_COMMANDS_PATH, embedPickerSource } from '../app-sdk/embedPickerSource'
 import { offers } from '../chat-core/composer/pickerSource'
 import { resetEmbedRecoveryForTests } from '../app-sdk/embedSendRecovery'
-import { stripPickedToken } from '../app-sdk/useEmbedPickers'
+import { stripPickedToken } from '../chat-core/composer/mention'
 
 let queryClient: QueryClient
 

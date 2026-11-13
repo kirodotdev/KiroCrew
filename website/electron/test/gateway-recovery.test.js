@@ -192,6 +192,21 @@ describe("waitForProcessExit", () => {
     }
   });
 
+  // A lock holder that is still starting ends the wait once it answers, so the
+  // caller reconnects instead of spawning into its lock.
+  it("returns serving once a live holder starts answering", async () => {
+    let polls = 0;
+    const verdict = await waitForProcessExit({
+      pids: [111],
+      isAlive: () => true,
+      isServing: async () => polls >= 3,
+      sleep: async () => { polls += 1; },
+      timeoutMs: 60_000,
+    });
+    assert.equal(verdict, "serving");
+    assert.equal(polls, 3);
+  });
+
   // Empty/invalid pid sets (for example, a failed listener probe) degrade to a
   // no-op rather than hanging recovery.
   it("degrades to exited immediately with no watchable pids", async () => {
@@ -389,19 +404,70 @@ describe("snapshotIncumbentForRespawn", () => {
     }
   });
 
-  // The lock probe, and with it the held wait, runs only where a lookup that
-  // names no one blocks a respawn: Windows. On a POSIX host the replacement's
-  // own lock refusal arbitrates instead.
-  it("never consults the lock probe on a POSIX host, where an empty lookup does not block", async () => {
+  // A POSIX host asks the lock too: a gateway that holds gateway.lock but has
+  // not bound the port yet (still starting) is invisible to lsof, and a
+  // replacement spawned over it is refused by the lock.
+  it("consults the lock probe on a POSIX host when the lookup names no one", async () => {
     let probed = 0;
     const result = await snapshotIncumbentForRespawn({
       snapshot: async () => null,
       blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: false }),
-      sleep: async () => { throw new Error("a POSIX host waits on no held lock"); },
-      lockHolderProbe: async () => { probed += 1; return { verdict: "held", pid: null }; },
+      sleep: async () => { throw new Error("a captured holder needs no held wait"); },
+      lockHolderProbe: async () => { probed += 1; return { verdict: "captured", pid: 31862 }; },
     });
-    assert.deepEqual(result, { verdict: "captured", pids: null, via: "snapshot" });
-    assert.equal(probed, 0, "the lock probe is not consulted off Windows");
+    assert.deepEqual(result, { verdict: "captured", pids: [31862], via: "lock" });
+    assert.equal(probed, 1);
+  });
+
+  it("reports a released lock on a POSIX host", async () => {
+    const result = await snapshotIncumbentForRespawn({
+      snapshot: async () => null,
+      blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: false }),
+      sleep: async () => {},
+      lockHolderProbe: async () => ({ verdict: "released", pid: null }),
+    });
+    assert.deepEqual(result, { verdict: "released", pids: null, via: "lock" });
+  });
+
+  // A POSIX host whose probe cannot answer still boots: the empty lookup does
+  // not block there, so the replacement's own lock refusal arbitrates.
+  for (const verdict of ["refused", "unverified"]) {
+    it(`keeps booting a POSIX host whose lock probe answers ${verdict}`, async () => {
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: false }),
+        sleep: async () => {},
+        lockHolderProbe: async () => ({ verdict, pid: null }),
+      });
+      assert.deepEqual(result, { verdict: "captured", pids: null, via: "snapshot" });
+    });
+  }
+
+  it("keeps booting a POSIX host whose held lock outlasts the budget", async () => {
+    const h = clockHarness();
+    try {
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: false }),
+        sleep: h.sleep,
+        lockHolderProbe: async () => ({ verdict: "held", pid: null }),
+        lockHeldBudgetMs: 4_000,
+        lockHeldPollMs: 1_000,
+      });
+      assert.deepEqual(result, { verdict: "captured", pids: null, via: "snapshot" });
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("still returns refused on Windows, where an empty lookup blocks", async () => {
+    const result = await snapshotIncumbentForRespawn({
+      snapshot: async () => null,
+      blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: true }),
+      sleep: async () => {},
+      lockHolderProbe: async () => ({ verdict: "refused", pid: null }),
+    });
+    assert.deepEqual(result, { verdict: "refused", pids: null, via: "lock" });
   });
 
   // The hard case: the draining gateway released its LISTEN socket but still

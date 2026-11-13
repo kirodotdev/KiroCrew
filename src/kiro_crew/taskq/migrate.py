@@ -35,6 +35,39 @@ from .model import (
 
 logger = logging.getLogger(__name__)
 
+#: DDL for ``accepted_work`` and ``principal_storage`` (``store_work``), applied by
+#: :func:`apply_schema` on every open. Additive:
+#: an older build that does not know the table leaves it untouched, so a rollback
+#: keeps accepted-work records.
+WORK_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS accepted_work (
+      work_id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      budget_key TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      state TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      accepted_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      record_json TEXT NOT NULL,
+      payload_json TEXT
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS accepted_work_scope ON accepted_work(scope)",
+    "CREATE INDEX IF NOT EXISTS accepted_work_state ON accepted_work(state, accepted_at)",
+    "CREATE INDEX IF NOT EXISTS accepted_work_budget ON accepted_work(budget_key, state)",
+    "CREATE INDEX IF NOT EXISTS accepted_work_session ON accepted_work(session_key, state)",
+    """
+    CREATE TABLE IF NOT EXISTS principal_storage (
+      budget_key TEXT PRIMARY KEY,
+      bytes INTEGER NOT NULL,
+      updated_at REAL NOT NULL
+    )
+    """,
+)
+
+
 #: The one shape any build has written. The first real upgrade bumps this and
 #: adds its ``if current < N`` step to :func:`apply_schema`.
 SCHEMA_VERSION = 1
@@ -99,6 +132,8 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_id, state)",
     # Per-lane dispatch heads (fairness lanes).
     "CREATE INDEX IF NOT EXISTS tasks_lane ON tasks(lane, state, next_run_at, created_at)",
+    # Accepted-work admission rows (``store_work``). Additive, so the version stays.
+    *WORK_SCHEMA,
 )
 
 
@@ -175,6 +210,36 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
+#: Words a hand-edited ``state.json`` uses for "no turn cap".
+_NO_CAP_WORDS = frozenset({"unlimited", "infinite", "inf", "no limit", "none"})
+
+
+def _legacy_max_turns(raw: Any, agent_id: str) -> int:
+    """A legacy ``max_turns`` as the runner reads it, without ever raising.
+
+    ``0`` is "not set" to the runner (it falls back to the configured default),
+    so a "no cap" word maps to the largest cap the product allows instead.
+    shortcut: the runner has no uncapped value; map to it if one is added.
+    Anything else ``int()`` cannot read keeps the default, with a warning,
+    so one bad folder never costs the others their rows.
+    """
+    if not raw:
+        return 0
+    no_cap = isinstance(raw, str) and raw.strip().lower() in _NO_CAP_WORDS
+    # JSON ``Infinity`` loads as a float: the same "no cap", spelled as a number.
+    if no_cap or (isinstance(raw, float) and raw == float("inf")):
+        from kiro_crew.config.sections_limits import SUBAGENT_MAX_TURNS_CEILING
+
+        return SUBAGENT_MAX_TURNS_CEILING
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "taskq legacy import: %s has an unreadable max_turns, using the default", agent_id
+        )
+        return 0
+
+
 def legacy_subagent_records(subagents_dir: Path, *, now: float) -> list[TaskRecord]:
     """Rows for every non-tombstoned subagent folder under *subagents_dir*.
 
@@ -187,7 +252,7 @@ def legacy_subagent_records(subagents_dir: Path, *, now: float) -> list[TaskReco
     records: list[TaskRecord] = []
     try:
         entries = sorted(p for p in subagents_dir.iterdir() if p.is_dir())
-    except (FileNotFoundError, NotADirectoryError, OSError):
+    except OSError:
         return records
     for folder in entries:
         if (folder / "tombstone.json").exists():
@@ -199,11 +264,12 @@ def legacy_subagent_records(subagents_dir: Path, *, now: float) -> list[TaskReco
         if agent_id != folder.name:
             continue  # a state file that names another run is not this run's
         parent_session = str(state.get("parent_session") or "")
+        max_turns = _legacy_max_turns(state.get("max_turns"), agent_id)
         params: dict[str, Any] = {
             "task": str(state.get("task") or ""),
             "parent_session_key": parent_session,
             "agent": str(state.get("agent") or ""),
-            "max_turns": int(state.get("max_turns") or 0),
+            "max_turns": max_turns,
             "memory_store": str(state.get("memory_store") or ""),
             "_preassigned_id": agent_id,
             "_legacy_import": True,

@@ -23,223 +23,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
-from kiro_crew.lesson_validation import (
-    LESSON_APPLIES_INSTRUCTION,
-    LESSON_REFUSED_AT_CAPACITY,
+from kiro_crew.lesson_validation import LESSON_REFUSED_AT_CAPACITY
+from kiro_crew.mcp_tools.catalog.learn import (  # noqa: F401
+    schemas,
 )
-from kiro_crew.validation import (
-    LEARN_ADD_SCHEMA,
-    LESSON_LIST_LIMIT,
-    LESSON_LIST_LIMIT_MAX,
-    LESSON_LIST_OFFSET_MAX,
-    MAX_RESPONSE_LEN,
-    MAX_SHORT_STRING,
-)
-
-
-def schemas() -> list[dict[str, Any]]:
-    """Descriptors for the learn tools."""
-    # Derive the learn_add rule/negative char limit from the schema field the
-    # validator actually enforces (single source of truth) so the tool hint
-    # tracks the enforced limit — including a future config-driven value —
-    # instead of a parallel constant that can silently drift.
-    _rule_max = next(
-        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "rule"),
-        MAX_SHORT_STRING,
-    )
-    _neg_max = next(
-        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "negative"),
-        MAX_SHORT_STRING,
-    )
-    _scope_max = next(
-        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "repo_scope"),
-        MAX_SHORT_STRING,
-    )
-    return [
-        {
-            "name": "memory_recall",
-            "description": (
-                "Retrieve relevant facts, experiences and corrections from the memory "
-                "bound to this session: Global V1 for an unowned session, or this Crew "
-                "Member's private V2. Search is on demand, not run automatically for "
-                "every message. Ask a specific question when earlier decisions or "
-                "events are needed; skip it if the current conversation suffices. "
-                "Returns bounded context and sources. The caller cannot choose another "
-                "store; private members cannot access Global V1 or sibling memories."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 2000}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "learn_add",
-            "description": (
-                "Save a learned correction or preference that changes behavior in "
-                "unrelated future sessions. MUST be called only when a user correction "
-                "defines reusable behavior, including 'always do X', 'never do Y', or "
-                "'remember that'. Do NOT save volatile session or task facts such as "
-                "the active model identity or which concrete model ID the assistant "
-                "is running as. A 'running as' phrase needs an unambiguous model "
-                "noun, a qualified 'backend' that ends its clause, or a concrete "
-                "model ID; backend service-account and process wording remains "
-                "durable. The tool rejects recognized runtime identity assertions "
-                "and model-selection imperatives whose selected object is a "
-                "concrete model ID at the end of its clause in the rule or negative "
-                "clause. Clause endings are the field end, a newline, punctuation, or "
-                "the documented closed connector class. A following plain noun makes "
-                "the ID a durable tooling qualifier. "
-                "The check covers only a fixed set of model-ID families; other "
-                "backend IDs are not lesson-refused. A model version mentioned by "
-                "itself is allowed. Free-form wording remains a best-effort check, "
-                "so do not disguise either refused class. Give the rule (what to "
-                "do); negative (what not to do) is optional."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "rule": {
-                        "type": "string",
-                        "maxLength": _rule_max,
-                        "description": (
-                            f"The lesson to remember. HARD LIMIT {_rule_max} "
-                            "characters — longer rules are REJECTED (not truncated), "
-                            "so keep it concise. Put 'what not to do' in the separate "
-                            "'negative' field rather than inlining a long '-- NOT: ...' "
-                            "clause here, and split unrelated corrections into multiple "
-                            "learn_add calls instead of one oversized rule."
-                        ),
-                    },
-                    "category": {
-                        "type": "string",
-                        "enum": ["tool", "preference", "knowledge"],
-                        "description": "Category: tool, preference, or knowledge",
-                    },
-                    "negative": {
-                        "type": "string",
-                        "maxLength": _neg_max,
-                        "description": (
-                            f"What NOT to do (optional). HARD LIMIT {_neg_max} "
-                            "characters — rejected if exceeded."
-                        ),
-                    },
-                    "repo_scope": {
-                        "type": "string",
-                        "maxLength": _scope_max,
-                        "description": (
-                            "Optional. Restrict this correction to ONE repository, "
-                            "given as a path fragment that repository contains "
-                            "(e.g. 'src/kiro_crew'). The correction then applies "
-                            "only in sessions whose project is inside that tree, "
-                            "and is withheld everywhere else. Use it for a rule "
-                            "that is only true of one codebase; omit it for a "
-                            "durable preference that should always apply. Omitted "
-                            "means it applies everywhere."
-                        ),
-                    },
-                    "applies": {
-                        "type": "string",
-                        "enum": ["always", "on_topic"],
-                        "description": LESSON_APPLIES_INSTRUCTION,
-                    },
-                },
-                "required": ["rule", "category"],
-            },
-        },
-        {
-            "name": "learn_list",
-            "description": (
-                "List saved lessons and corrections, one window at a time. "
-                f"Returns the newest `limit` lessons (default {LESSON_LIST_LIMIT}) "
-                "and, when the store holds more, a first line saying how many are "
-                "shown of how many exist. Pass `offset` to page back to older "
-                "lessons; a lesson you are looking for and do not see may be on a "
-                "later page."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": LESSON_LIST_LIMIT_MAX,
-                        "description": (
-                            "Optional. How many lessons to return in this window "
-                            f"(default {LESSON_LIST_LIMIT}, at most "
-                            f"{LESSON_LIST_LIMIT_MAX})."
-                        ),
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": LESSON_LIST_OFFSET_MAX,
-                        "description": (
-                            "Optional. How many of the newest lessons to skip before "
-                            "the window starts (default 0). The 'showing N of M' line "
-                            "names the offset that reaches the next older page."
-                        ),
-                    },
-                },
-            },
-        },
-        {
-            "name": "learn_remove",
-            "description": "Remove lessons whose rule contains the given substring",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Substring to match"},
-                    "repo_scope": {
-                        "type": "string",
-                        "maxLength": _scope_max,
-                        "description": (
-                            "Optional. Only remove lessons carrying this repo "
-                            "scope, given as the same path fragment used to store "
-                            "them (e.g. 'src/kiro_crew'). A lesson's identity is "
-                            "the pair (rule, repo_scope), so the same rule scoped "
-                            "to a repo and stored globally are two separate "
-                            "lessons; without this the substring removes both. "
-                            "Omit to match every scope. Pass an empty string to "
-                            "remove only the unscoped (global) lessons."
-                        ),
-                    },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["global", "workspace"],
-                        "description": (
-                            "Optional. Which lessons file to delete from, as "
-                            "learn_list reports it: a row shown with "
-                            "'(workspace: NAME)' lives in that workspace's file "
-                            "and is reached only with scope='workspace' plus "
-                            "workspace=NAME; every other row is in the global "
-                            "file, which is also the default."
-                        ),
-                    },
-                    "workspace": {
-                        "type": "string",
-                        "description": (
-                            "Optional. The workspace name from the row's "
-                            "'(workspace: NAME)' marker; required with "
-                            "scope='workspace'."
-                        ),
-                    },
-                    "keep_one": {
-                        "type": "boolean",
-                        "description": (
-                            "Optional, default false. Remove only the extra "
-                            "copies: of the matching lessons, those with the "
-                            "same stored rule, NOT clause, tier and scope are collapsed to the "
-                            "oldest one. Different lessons are never removed "
-                            "in this mode, so use it to clean up duplicates."
-                        ),
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    ]
+from kiro_crew.validation import MAX_RESPONSE_LEN
 
 
 def memory_recall(name: str, args: dict[str, Any]) -> str:
@@ -553,6 +341,8 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
     err_val = d.get("error")
     if err_val:
         return f"Error: {err_val}"
+    if d.get("lessons_withheld") == "memory_reads_disabled":
+        return "Memory reads are disabled for this session."
     lessons = d.get("lessons", [])
     lines = _window_header(d, len(lessons))
     if not lessons:
@@ -636,8 +426,8 @@ def _applies_suffix(row: dict[str, Any]) -> str:
     This exists because the overflow notices point the reader HERE. A rule the
     model misfiled as a finding stops arriving on unrelated sessions, and without
     this marker the listing the notice recommends is the one place that cannot
-    show why -- leaving re-tiering (remove plus re-add with the right tier)
-    impossible to even diagnose.
+    show why -- leaving re-tiering (``learn_update``) impossible to even
+    diagnose.
     """
     if row.get("applies") == "on_topic":
         return " (applies: on_topic)"
@@ -774,9 +564,56 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     return f"Removed lessons matching: {query}"
 
 
+# What ``learn_update`` answers for each ``PATCH /api/lessons`` outcome.
+_UPDATE_REPLIES = {
+    "updated": "Lesson now applies {applies}: {rule}",
+    "unchanged": "Lesson already applies {applies}; nothing changed.",
+    "not_found": "No lesson was changed: no saved lesson has exactly this text.",
+    "ambiguous": (
+        "No lesson was changed: more than one lesson has this text. Pass its "
+        "repo_scope (an empty string for the unscoped one); if they share a scope, "
+        "remove the extra copy with learn_remove first."
+    ),
+    "conflict": (
+        "No lesson was changed: it no longer applies {current}. Read it again with learn_list."
+    ),
+    "refused": "No lesson was changed: the memory store refused the new value.",
+    "unsupported": (
+        "No lesson was changed: this memory store cannot change a tier in place; "
+        "use learn_remove and learn_add."
+    ),
+}
+
+
+def learn_update(name: str, args: dict[str, Any]) -> str:
+    # Governed like learn_add: the tier decides which sessions are given the lesson.
+    _gov_mem = mcp_core._vet_memory_writes_governance(
+        mcp_core._resolve_session_key(), "learn_update"
+    )
+    if _gov_mem:
+        return f"Error: {_gov_mem}"
+    payload = {
+        k: args[k]
+        for k in ("rule", "repo_scope", "current", "applies")
+        if isinstance(args.get(k), str)
+    }
+    d = mcp_core._patch("/api/lessons", payload)
+    err_val = d.get("error")
+    if err_val:
+        if d.get("code") == "missing_session_key":
+            return (
+                "No lesson was changed: learn_update requires an established session"
+                + mcp_core.strict_identity_diagnosis()
+            )
+        return f"No lesson was changed: {err_val}"
+    reply = _UPDATE_REPLIES.get(str(d.get("outcome")), "No lesson was changed.")
+    return reply.format(**payload)
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "memory_recall": memory_recall,
     "learn_add": learn_add,
     "learn_list": learn_list,
     "learn_remove": learn_remove,
+    "learn_update": learn_update,
 }

@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { approvalNotificationBody, APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
 import { stripMd } from '../components/notifications/notifMeta'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import Clickable from '../components/Clickable'
 
 const commands = [
   'rm -rf *cache*',
@@ -66,6 +67,35 @@ describe('approvalNotificationBody', () => {
     const { container } = render(<MarkdownRenderer content={approvalNotificationBody('agent', wide)} />)
     expect(container.querySelector('.code-block')?.textContent).toContain(APPROVAL_COMMAND_TAG)
     expect(container.querySelector('.code-block [role="region"]')?.textContent).toBe(wide)
+  })
+
+  it('opens a JSON tool input on the Formatted view and keeps Raw as the verbatim code block', () => {
+    const text = '# Report\n\n| a | b |\n✅ done'
+    // As a Python producer writes it: line breaks and non-ASCII escaped.
+    const toolInput = JSON.stringify({ path: '/tmp/report.md', text }).replace('✅', '\\u2705')
+    const { container } = render(<MarkdownRenderer content={approvalNotificationBody('subagent', toolInput)} readOnlyCode />)
+    const cells = [...container.querySelectorAll('td')].map(td => td.textContent)
+    expect(cells).toEqual(['path', '/tmp/report.md', 'text', text])
+    expect(container.querySelector('.code-block')).toBeNull()
+
+    fireEvent.click(screen.getByText('Raw'))
+    expect(container.querySelector('td')).toBeNull()
+    expect(container.querySelector('.code-block [role="region"]')?.textContent).toBe(toolInput)
+  })
+
+  it.each(['[ -d out ] && printf \'a\\nb\' > out/f', '{ echo x; } && sed \'s/\\t/ /\'', '{"path": "/tmp/a", "text": "cut'])(
+    'keeps a command that is not a whole JSON object as the verbatim code block alone: %s', command => {
+      const { container } = render(<MarkdownRenderer content={approvalNotificationBody('agent', command)} readOnlyCode />)
+      expect(screen.queryByText('Raw')).toBeNull()
+      expect(container.querySelector('.code-block [role="region"]')?.textContent).toBe(command)
+    })
+
+  it('switches the view without pressing the feed row it sits in', () => {
+    const open = vi.fn()
+    const toolInput = JSON.stringify({ path: '/tmp/a.md', text: 'a\nb' })
+    render(<Clickable onClick={open}><MarkdownRenderer content={approvalNotificationBody('agent', toolInput)} readOnlyCode /></Clickable>)
+    fireEvent.click(screen.getByText('Raw'))
+    expect(open).not.toHaveBeenCalled()
   })
 
   it.each(commands)('renders the literal command as one detail-panel code block: %s', command => {

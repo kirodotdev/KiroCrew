@@ -14,6 +14,7 @@ the lane says, and the only local way to check what it says is to read it.
 
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 
@@ -749,6 +750,24 @@ class TestPutRecipeObject:
         api.put_recipe_object("b", "k", "/tmp/body", region="us-east-1")
         assert _value_after(calls[0], "--server-side-encryption") == "AES256"
 
+    def test_an_owner_pin_reaches_the_put(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            api, "checked_json", lambda args, *a, **k: calls.append(list(args)) or {}
+        )
+        api.put_recipe_object(
+            "b", "k", "/tmp/body", expected_bucket_owner="123456789012", region="us-east-1"
+        )
+        assert _value_after(calls[0], "--expected-bucket-owner") == "123456789012"
+
+    def test_no_owner_sends_no_pin(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            api, "checked_json", lambda args, *a, **k: calls.append(list(args)) or {}
+        )
+        api.put_recipe_object("b", "k", "/tmp/body", region="us-east-1")
+        assert "--expected-bucket-owner" not in calls[0]
+
 
 class TestPutSecret:
     """The value never reaches argv; it rides a 0600 file that is removed at once."""
@@ -842,12 +861,16 @@ class TestDeleteSecret:
         assert _value_after(argv, "--secret-id") == "kc/abc"
         assert "--force-delete-without-recovery" not in argv
 
-    def test_a_failure_is_swallowed_so_the_teardown_continues(self, monkeypatch):
+    def test_a_failure_is_swallowed_so_the_teardown_continues(self, monkeypatch, caplog):
         def fake(args, profile="", region="", *, action="", timeout=0, visible_dirs=()):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(api, "checked_json", fake)
-        api.delete_secret("kc/abc", region="us-east-1")
+        with caplog.at_level(logging.WARNING, logger=api.logger.name):
+            api.delete_secret("kc/abc", region="us-east-1")
+        # The failure is logged by its type alone: the secret's name stays out.
+        logged = [r.getMessage() for r in caplog.records if r.name == api.logger.name]
+        assert logged == ["could not delete a crew secret: RuntimeError"]
 
 
 class TestCredentialsAreStagedUnderTheMaskedRoot:

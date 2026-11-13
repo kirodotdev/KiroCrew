@@ -1,7 +1,11 @@
 """Entity extraction using the LLM pool."""
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import logging
 import uuid
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from kiro_crew.llm_helpers import _extract_json_of_type
@@ -9,7 +13,57 @@ from kiro_crew.llm_helpers import _extract_json_of_type
 if TYPE_CHECKING:
     from kiro_crew.knowledge.llm_pool import LLMPool
 
+logger = logging.getLogger(__name__)
+
+#: The source an extraction batch belongs to, so a failure warning can name it.
+#: Set by the ingestion pipeline around its ``extract_batch`` call rather than
+#: passed as an argument, which keeps ``extract_batch(chunks)`` the one shape every
+#: caller and stand-in already uses. Only the source id is ever logged: a document
+#: name is free-form and may carry a credential.
+_EXTRACTION_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "knowledge_extraction_source", default=""
+)
+
+
+@contextlib.contextmanager
+def extraction_source(source_id: str) -> Iterator[None]:
+    """Name *source_id* in any extraction failure warning raised inside the block."""
+    token = _EXTRACTION_SOURCE.set(source_id or "")
+    try:
+        yield
+    finally:
+        _EXTRACTION_SOURCE.reset(token)
+
+
+def _source_label() -> str:
+    return _EXTRACTION_SOURCE.get() or "(unknown)"
+
+
+def _is_harness_refusal(exc: BaseException) -> bool:
+    """Whether *exc* is the LTS pool's harness refusal (RFC D6).
+
+    It is not an extraction failure to store past: no chunk can be extracted, so it
+    reaches the ingest, which fails the job rather than commit empty metadata.
+    """
+    from kiro_crew.knowledge.llm_pool import KnowledgeHarnessUnavailable
+
+    return isinstance(exc, KnowledgeHarnessUnavailable)
+
+
+def _fails_the_ingest(exc: BaseException) -> bool:
+    """The harness refusal, or the pool shut down under the extraction.
+
+    Either way no reply comes, so the error reaches the ingest instead of an
+    empty extraction it would store under the document's hash.
+    """
+    from kiro_crew.knowledge.llm_pool import LLMPoolClosed
+
+    return _is_harness_refusal(exc) or isinstance(exc, LLMPoolClosed)
+
+
 _PAYLOAD_KEYS = frozenset({"title", "entities", "relations", "category", "summary"})
+# Fields of an entity or relation record that the ingest treats as text.
+_RECORD_TEXT_KEYS = frozenset({"name", "type", "description", "source", "target"})
 
 
 def _extraction_shaped(value: object) -> bool:
@@ -25,8 +79,20 @@ EXTRACTION_PROMPT = """Extract structured information from this text chunk.
 
 Return valid JSON with:
 - title: short descriptive title for this chunk (5-10 words, specific to content)
-- entities: list of {{"name": str, "type": str, "description": str}}
+- entities: list of {{"name": str, "type": str, "description": str, "aliases": list[str]}}
   Types: person|service|api|concept|org|technology
+  Language rules:
+    * name MUST be the bare source-language canonical form of the entity
+      (e.g. "뮤직뱅크", NOT "뮤직뱅크 (Music Bank)")
+    * aliases contains established alternate names a user would naturally search for:
+      - official English name (for non-Latin entities, e.g. "Music Bank")
+      - common acronym (e.g. "BTS"), for lookup only, never as merge evidence
+      - widely used transliteration (e.g. "Nintendo" for "任天堂")
+    * Do NOT include parenthetical formatting variants as aliases
+      (e.g. "뮤직뱅크 (Music Bank)" is NOT a valid alias — "Music Bank" is)
+    * Latin-script names need no translation; aliases may include abbreviations for lookup
+    * Automatic alias-based identity reuse requires full names across scripts
+      (e.g. "뮤직뱅크" and "Music Bank"); short abbreviations never establish identity
 - relations: list of {{"source": str, "target": str, "type": str, "description": str}}
   Types: owns|uses|works_on|part_of|calls|depends_on
 - category: one of design_doc|runbook|meeting_notes|code_doc|presentation|report|policy|personal_notes|external_reference
@@ -34,7 +100,7 @@ Return valid JSON with:
 
 Rules:
 - Title must be specific to THIS chunk's content, not generic
-- Use canonical entity names (e.g. "DynamoDB" not "dynamo")
+- Use canonical entity names (e.g. "DynamoDB" not "dynamo", "뮤직뱅크" not "뮤직 뱅크")
 - Only extract explicitly mentioned entities
 - Relations must reference entities in your entities list
 
@@ -70,9 +136,28 @@ class EntityExtractor:
                 end_marker=f"<<<END_UNTRUSTED_CHUNK_{nonce}>>>",
             )
             response = await self._pool.send(prompt, timeout=EXTRACTION_TIMEOUT)
-            return self._parse_response(response)
-        except Exception:
+        except Exception as exc:
+            if _fails_the_ingest(exc):
+                raise
+            # The type only: an exception's message can echo the prompt, which
+            # carries the document text.
+            logger.warning(
+                "Entity extraction failed for source_id=%s: %s; the chunk is stored "
+                "without entities or a summary",
+                _source_label(),
+                type(exc).__name__,
+            )
             return _empty_result()
+        data = self._parse_payload(response)
+        if data is None:
+            logger.warning(
+                "Entity extraction for source_id=%s got %s reply; the chunk is stored "
+                "without entities or a summary",
+                _source_label(),
+                "an empty" if not (response or "").strip() else "an unparseable",
+            )
+            return _empty_result()
+        return data
 
     async def extract_batch(self, chunks: list[str]) -> list[dict]:
         """Extract from multiple chunks in parallel using the pool."""
@@ -91,12 +176,44 @@ class EntityExtractor:
             )
         try:
             responses = await self._pool.send_batch(prompts, timeout=EXTRACTION_TIMEOUT)
-            results = [_empty_result() for _ in chunks]
-            for idx, response in zip(non_empty_indices, responses):
-                results[idx] = self._parse_response(response)
-            return results
-        except Exception:
+        except Exception as exc:
+            if _fails_the_ingest(exc):
+                raise
+            # The type only: an exception's message can echo the prompt, which
+            # carries the document text.
+            logger.warning(
+                "Entity extraction failed for source_id=%s: %s; %d chunk(s) stored "
+                "without entities or a summary",
+                _source_label(),
+                type(exc).__name__,
+                len(non_empty_indices),
+            )
             return [_empty_result() for _ in chunks]
+        results = [_empty_result() for _ in chunks]
+        empty = unparseable = 0
+        for idx, response in zip(non_empty_indices, responses):
+            data = self._parse_payload(response)
+            if data is not None:
+                results[idx] = data
+            elif not (response or "").strip():
+                # The pool answers "" for a prompt whose send failed (and warns
+                # about that send itself); a worker can also reply with nothing.
+                empty += 1
+            else:
+                unparseable += 1
+        if empty or unparseable:
+            # Counts only, never the reply: it is model output over document text.
+            logger.warning(
+                "Entity extraction for source_id=%s: %d of %d chunk(s) got no usable "
+                "reply (%d empty, %d unparseable); those chunks are stored without "
+                "entities or a summary",
+                _source_label(),
+                empty + unparseable,
+                len(non_empty_indices),
+                empty,
+                unparseable,
+            )
+        return results
 
     def _parse_response(self, response: str) -> dict:
         """Pull the extraction payload dict out of an LLM reply.
@@ -108,17 +225,42 @@ class EntityExtractor:
         non-dict reply, or when two DIFFERENT payload-shaped dicts make the
         choice ambiguous (the shared contract refuses to guess).
         """
-        data = _extract_json_of_type(response, dict, prefer=_extraction_shaped)
+        data = self._parse_payload(response)
+        return data if data is not None else _empty_result()
+
+    def _parse_payload(self, response: str) -> dict | None:
+        """The validated payload in *response*, or ``None`` when there is none."""
+        try:
+            data = _extract_json_of_type(response, dict, prefer=_extraction_shaped)
+        except Exception:
+            return None
         if isinstance(data, dict):
             return self._validate(data)
-        return _empty_result()
+        return None
 
     @staticmethod
     def _validate(data: dict) -> dict:
+        # A model reply can parse as JSON yet carry the wrong types. Each field
+        # keeps its default unless it has the shape the ingest reads, so one
+        # odd reply cannot fail the whole document.
+        def _text(key: str, default: str) -> str:
+            value = data.get(key, default)
+            return value if isinstance(value, str) else default
+
+        def _records(key: str) -> list[dict]:
+            value = data.get(key, [])
+            if not isinstance(value, list):
+                return []
+            return [
+                {k: v for k, v in rec.items() if k not in _RECORD_TEXT_KEYS or isinstance(v, str)}
+                for rec in value
+                if isinstance(rec, dict)
+            ]
+
         return {
-            "title": data.get("title", ""),
-            "entities": data.get("entities", []),
-            "relations": data.get("relations", []),
-            "category": data.get("category", "document"),
-            "summary": data.get("summary", ""),
+            "title": _text("title", ""),
+            "entities": _records("entities"),
+            "relations": _records("relations"),
+            "category": _text("category", "document"),
+            "summary": _text("summary", ""),
         }

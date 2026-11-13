@@ -688,10 +688,11 @@ async def _api_user_prompt_detail(request: web.Request, name: str, scope: str) -
         # Content tolerates undecodable bytes (the pane shows what is there),
         # but the description does not: strict-decode for metadata so a file
         # that is not UTF-8 yields no description rather than mojibake, which
-        # is what the listing path does too.
+        # is what the listing path does too. utf-8-sig drops a leading BOM,
+        # which would otherwise hide the column-0 frontmatter fence.
         lossy = False
         try:
-            description = _description_from_text(raw.decode("utf-8"))
+            description = _description_from_text(raw.decode("utf-8-sig"))
         except UnicodeDecodeError:
             # The content copy below substitutes U+FFFD for the bytes it could
             # not decode. That copy is a TRANSFORMATION of the file, so it must
@@ -961,6 +962,8 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
                 # too_large means the file outgrew the cap since the edit base
                 # was read — by definition not the state the edit was based on.
                 return "conflict"
+            if outcome == "busy":
+                return "busy"
             if outcome != "ok":
                 return "write refused"
         return None
@@ -996,6 +999,16 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
                 "code": "content_conflict",
             },
             status=409,
+        )
+    if err == "busy":
+        # Every check passed, but another process held the prompt file open at
+        # the final rename (Windows refuses to replace an open file). Nothing
+        # was written, and the same save can succeed once that handle closes,
+        # so this is a retryable 503, not the security refusal below.
+        _refuse(op, "error", "prompt_busy", name=name, scope=scope)
+        return web.json_response(
+            {"error": "the prompt file is open in another program; retry", "code": "prompt_busy"},
+            status=503,
         )
     if err == "write refused":
         # The writer failed closed — a hardlink, a non-regular file, an escape

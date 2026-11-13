@@ -55,8 +55,8 @@ async def _seed(world, tmp_path):
             attempts=2,
         ),
     ]
+    run.agent = "old-agent"
     runner._runs[run.task_id] = run
-    runner._agent = "old-agent"
     await runner._apersist_runs()
     return runner, run
 
@@ -65,7 +65,7 @@ def _assert_retained(runner, run, before, tasks):
     assert runner._runs[run.task_id] is run
     assert all(current is prior for current, prior in zip(run.tasks, tasks))
     assert asdict(run) == before
-    assert runner._agent == "old-agent"
+    assert run.agent == "old-agent"
     assert runner._tasks == {}
     assert runner._start_ids_in_flight == set()
 
@@ -203,7 +203,7 @@ async def _assert_success(runner, run, monkeypatch, tasks):
     monkeypatch.setattr(runner, "_watchdog_loop", AsyncMock())
     task_id = await runner.retry_from_task(run.name, 2, agent="new-agent")
     assert runner._start_ids_in_flight == set()
-    assert runner._agent == "new-agent"
+    assert run.agent == "new-agent"
     assert run.status == "running"
     assert run.error == "" and run.finished_at == 0.0
     assert run.started_at == run.last_task_time and run.started_at > 22.0

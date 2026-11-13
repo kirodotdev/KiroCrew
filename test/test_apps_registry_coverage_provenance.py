@@ -21,9 +21,7 @@ from apps_registry_coverage_helpers import _config_with, _fake_sandbox, _FakePro
 from conftest import requires_symlinks
 from kiro_crew.apps import registry
 
-# ---------------------------------------------------------------------------
 # Candidate resolution / provenance pinning
-# ---------------------------------------------------------------------------
 
 
 class TestCandidateResolution:
@@ -111,6 +109,94 @@ class TestCandidateResolution:
         )
         entry = registry._pinned_registry_entry("demo", {"sourceUrl": "https://x/demo.git"})
         assert entry == {"gitUrl": "https://x/demo.git"}
+
+    def test_candidates_take_their_registry_from_the_index_not_the_cache_file(
+        self, monkeypatch, cache_dir
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.apps.official_catalog.inventory_for_install", lambda name: None
+        )
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        reg = _reg("mine", "https://gitea.internal/idx.git")
+        _config_with(monkeypatch, [reg])
+        registry._write_external_registry_cache(
+            registry._external_registry_cache_identity(reg),
+            [{"name": "demo", "gitUrl": "https://x/demo.git", "_registry": "forged"}],
+        )
+        [candidate] = registry._registry_app_candidates("demo")
+        assert candidate["_registry"] == "mine"
+
+
+class TestMoveBetweenPinnedRegistries:
+    """An app listed by one build-pinned registry and later by another keeps updating."""
+
+    def _setup(self, monkeypatch, candidates, pinned=("tier-a", "tier-b")):
+        monkeypatch.setattr(
+            registry,
+            "_pinned_registries",
+            lambda: [_reg(n, f"https://forge.example/{n}.git") for n in pinned],
+        )
+        monkeypatch.setattr(registry, "_registry_app_candidates", lambda name: candidates)
+
+    def test_a_move_between_pinned_registries_resolves_to_the_new_listing(self, monkeypatch):
+        moved = {"gitUrl": "https://x/demo.git", "_registry": "tier-b"}
+        self._setup(monkeypatch, [moved])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is moved
+
+    def test_an_exact_match_wins_over_a_move(self, monkeypatch):
+        moved = {"gitUrl": "https://x/demo.git", "_registry": "tier-b"}
+        same = {"gitUrl": "https://x/demo.git", "_registry": "tier-a"}
+        self._setup(monkeypatch, [moved, same])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is same
+
+    @pytest.mark.parametrize(
+        ("recorded", "listed"),
+        [
+            pytest.param("user-added", "tier-b", id="recorded-registry-not-pinned"),
+            pytest.param("tier-a", "user-added", id="listing-registry-not-pinned"),
+            pytest.param("", "tier-b", id="recorded-bundled-catalog"),
+            pytest.param("tier-a", "", id="listing-bundled-catalog"),
+        ],
+    )
+    def test_a_move_with_an_unpinned_end_is_refused(self, monkeypatch, recorded, listed):
+        self._setup(monkeypatch, [{"gitUrl": "https://x/demo.git", "_registry": listed}])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": recorded}
+        )
+        assert entry is None
+
+    def test_a_name_a_pinned_and_an_operator_registry_both_claim_is_refused(self, monkeypatch):
+        # The operator's own "tier-a" points somewhere else, so neither "tier-a" is
+        # served; an install recorded from it must not follow the app to tier-b.
+        self._setup(monkeypatch, [{"gitUrl": "https://x/demo.git", "_registry": "tier-b"}])
+        _config_with(monkeypatch, [_reg("tier-a", "https://operator.example/tier-a.git")])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is None
+
+    def test_a_move_to_a_different_repository_is_refused(self, monkeypatch):
+        self._setup(monkeypatch, [{"gitUrl": "https://x/fork.git", "_registry": "tier-b"}])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is None
+
+    def test_an_installed_app_resolves_its_update_after_the_move(self, monkeypatch):
+        moved = {"name": "demo", "gitUrl": "https://x/demo.git", "_registry": "tier-b"}
+        self._setup(monkeypatch, [moved])
+        monkeypatch.setattr(
+            registry,
+            "get_app",
+            lambda name: {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"},
+        )
+        assert registry._resolve_install_entry("demo") == (moved, "")
 
 
 class TestResolveInstallEntry:
@@ -417,9 +503,7 @@ class TestServerPlatform:
         assert info["os"] and info["arch"]
 
 
-# ---------------------------------------------------------------------------
 # Git provenance reader
-# ---------------------------------------------------------------------------
 
 
 class TestResolvedCloneCommit:
@@ -571,11 +655,13 @@ class TestCloneOriginUrl:
     async def test_timeout_kills_the_group_and_yields_none(self, tmp_path, monkeypatch):
         (tmp_path / ".git").mkdir()
 
+        hang_release = asyncio.Event()
+
         class _Hang(_FakeProc):
             async def communicate(self):
-                # flake-ok: pre-existing hang in the fake communicate that the patched wait_for times out at once, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake communicate's hang, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(30)
+                # The patched wait_for times this call out at once and closes it, so this body never runs.
+                # The event is released in the test's finally, so a run that did reach it still ends.
+                await hang_release.wait()
                 return b"", b""
 
         _fake_sandbox(monkeypatch, [_Hang()])
@@ -586,8 +672,11 @@ class TestCloneOriginUrl:
 
         monkeypatch.setattr(registry, "_kill_process_group", _kill)
         monkeypatch.setattr(registry.asyncio, "wait_for", _immediate_timeout)
-        assert await registry._clone_origin_url(tmp_path) is None
-        assert killed == [31337]
+        try:
+            assert await registry._clone_origin_url(tmp_path) is None
+            assert killed == [31337]
+        finally:
+            hang_release.set()
 
 
 async def _immediate_timeout(awaitable, timeout=None):
@@ -599,9 +688,7 @@ async def _immediate_timeout(awaitable, timeout=None):
     raise asyncio.TimeoutError
 
 
-# ---------------------------------------------------------------------------
 # Stale checkout sweep
-# ---------------------------------------------------------------------------
 
 
 class TestStaleCheckoutSweep:
@@ -698,9 +785,7 @@ class TestStaleCheckoutSweep:
         assert registry._is_stale_candidate(tmp_path / "a") is False
 
 
-# ---------------------------------------------------------------------------
 # Process-group kill
-# ---------------------------------------------------------------------------
 
 
 class TestKillProcessGroup:
@@ -746,6 +831,8 @@ class TestKillProcessGroup:
         monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _tree_kill)
         monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
 
+        stubborn_release = asyncio.Event()
+
         class _Stubborn(_FakeProc):
             def __init__(self) -> None:
                 super().__init__(returncode=0)
@@ -759,14 +846,16 @@ class TestKillProcessGroup:
                 self.wait_calls += 1
                 if not self._reaped:
                     self._reaped = True
-                    # flake-ok: pre-existing hang in the fake process's first wait, which the kill path reaps, moved verbatim; tracked for a de-flake pass
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake process's first-wait hang, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(5)
+                    # Never set here: the kill path's grace wait_for cancels this first wait, then reaps the child.
+                    await stubborn_release.wait()
                 self.returncode = 0
                 return 0
 
         proc = _Stubborn()
-        await registry._kill_process_group(proc)
+        try:
+            await registry._kill_process_group(proc)
+        finally:
+            stubborn_release.set()
         assert sent == [
             registry.platform_compat.SIGTERM,
             registry.platform_compat.SIGKILL,
@@ -784,6 +873,8 @@ class TestKillProcessGroup:
         monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _tree_kill)
         monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
 
+        stubborn_release = asyncio.Event()
+
         class _Stubborn(_FakeProc):
             def __init__(self) -> None:
                 super().__init__(returncode=0)
@@ -797,14 +888,16 @@ class TestKillProcessGroup:
                 self.wait_calls += 1
                 if not self._reaped:
                     self._reaped = True
-                    # flake-ok: pre-existing hang in the fake process's first wait, which the kill path reaps, moved verbatim; tracked for a de-flake pass
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake process's first-wait hang, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(5)
+                    # Never set here: the kill path's grace wait_for cancels this first wait, then reaps the child.
+                    await stubborn_release.wait()
                 self.returncode = 0
                 return 0
 
         proc = _Stubborn()
-        await registry._kill_process_group(proc)
+        try:
+            await registry._kill_process_group(proc)
+        finally:
+            stubborn_release.set()
         assert signals == [
             registry.platform_compat.SIGTERM,
             registry.platform_compat.SIGKILL,

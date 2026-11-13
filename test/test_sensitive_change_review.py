@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "sensitive_change_review.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review.yml"
 COMMENT_WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review-comment.yml"
+APPROVAL_WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review-approval.yml"
 HEAD = "a" * 40
 OLD = "b" * 40
 
@@ -545,10 +546,12 @@ class TestWorkflow:
     def wf(self):
         return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
-    def test_reruns_on_review_events(self, wf):
+    def test_runs_the_default_branch_workflow(self, wf):
+        # Any `pull_request` or `pull_request_review` run reads this file from
+        # the PR head, so a PR could rewrite the check it is judged by.
         on = wf.get("on") or wf[True]
-        assert set(on["pull_request_review"]["types"]) == {"submitted", "edited", "dismissed"}
-        assert {"synchronize", "edited"} <= set(on["pull_request"]["types"])
+        assert set(on) == {"pull_request_target"}
+        assert {"synchronize", "edited"} <= set(on["pull_request_target"]["types"])
 
     def test_token_can_only_comment(self, wf):
         # Write is for the sticky comment; nothing else.
@@ -578,14 +581,16 @@ class TestCommentWorkflow:
     def wf(self):
         return yaml.safe_load(COMMENT_WORKFLOW.read_text(encoding="utf-8"))
 
-    def test_only_issue_comment_triggers(self, wf):
-        # issue_comment runs from the default branch, so a PR cannot edit it.
+    def test_reruns_on_a_comment_or_when_called_for_a_review(self, wf):
         on = wf.get("on") or wf[True]
-        assert set(on) == {"issue_comment"}
+        assert set(on) == {"issue_comment", "workflow_call"}
+        (job,) = wf["jobs"].values()
+        assert "github.event_name == 'pull_request_review'" in job["if"]
 
     def test_token_can_only_rerun(self, wf):
         assert wf["permissions"] == {
             "actions": "write",
+            "checks": "read",
             "contents": "read",
             "pull-requests": "read",
         }
@@ -598,14 +603,24 @@ class TestCommentWorkflow:
         assert "## Sensitive change review" in cond
 
     def test_hosted_runner_and_no_checkout(self, wf):
+        # Still a GitHub-hosted Ubuntu VM, not the CodeBuild fleet: both
+        # branches of the expression carry no fleet credentials and are
+        # dispatched by GitHub, so an arbitrary commenter's event cannot reach
+        # AWS. A personal fork cannot reach the larger-runner definition, so it
+        # falls back to the shared hosted pool.
         (job,) = wf["jobs"].values()
-        assert job["runs-on"] == "ubuntu-latest"
+        assert job["runs-on"] == (
+            "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+            "|| 'ubuntu-latest' }}"
+        )
         assert all("uses" not in step for step in job["steps"])
 
     def test_reruns_the_check_workflow(self, wf):
         (job,) = wf["jobs"].values()
         run = job["steps"][-1]["run"]
         assert "actions/workflows/sensitive-change-review.yml/runs" in run
+        # Only that run executed the default branch's copy of the check.
+        assert '.event == "pull_request_target"' in run
         assert "/rerun" in run
 
     def test_other_comments_cannot_cancel_the_authors_rerun(self, wf):
@@ -614,6 +629,25 @@ class TestCommentWorkflow:
         assert "concurrency" not in wf
         (job,) = wf["jobs"].values()
         assert job["concurrency"]["cancel-in-progress"] is False
+
+
+class TestApprovalWorkflow:
+    @pytest.fixture(scope="class")
+    def wf(self):
+        return yaml.safe_load(APPROVAL_WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_a_review_calls_the_rerun(self, wf):
+        on = wf.get("on") or wf[True]
+        assert set(on) == {"pull_request_review"}
+        assert set(on["pull_request_review"]["types"]) == {"submitted", "edited", "dismissed"}
+        (job,) = wf["jobs"].values()
+        assert job["uses"] == "./.github/workflows/sensitive-change-review-comment.yml"
+        assert wf["permissions"] == {
+            "actions": "write",
+            "checks": "read",
+            "contents": "read",
+            "pull-requests": "read",
+        }
 
 
 # -- Fork PRs -----------------------------------------------------------------
@@ -835,3 +869,20 @@ def test_one_failed_pr_read_no_longer_fails_the_check(mod, gh_calls, monkeypatch
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     assert mod.main() == 0
     assert gh_calls["answers"] == []
+
+
+def test_a_write_sends_its_body_from_a_file_not_stdin(mod, monkeypatch) -> None:
+    # The job's rate-limit wrapper re-runs a rate-limited call; a body fed on
+    # stdin would be empty on that retry.
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["stdin"] = kwargs.get("input")
+        with open(cmd[-1], encoding="utf-8") as payload:
+            seen["body"] = json.load(payload)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    mod._gh_write("POST", "repos/o/r/issues/1/comments", "hello")
+
+    assert seen == {"stdin": None, "body": {"body": "hello"}}

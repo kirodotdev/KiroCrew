@@ -151,6 +151,9 @@ describe('ActivityViewer', () => {
     expect(screen.queryByText('No files changed yet')).toBeNull()
     expect(screen.queryByText('/proj/foo.ts')).toBeNull()
     expect(screen.getByText(/No pull requests in this session yet/)).toBeInTheDocument()
+    // The empty state names what the tab lists and where edited files live,
+    // so "Changes" is not read as a list of edited files.
+    expect(screen.getByText('This tab lists the pull requests and merge requests this session links to. Edited files are in the Files tab.')).toBeInTheDocument()
   })
 
   it('Resources hides links present in the Changes tab (sources) and keeps the rest', () => {
@@ -340,6 +343,19 @@ describe('ActivityViewer — Artifacts tab', () => {
     // Auto-registered + unpinned is the sweepable state, so this row is the one
     // that offers to save it permanently.
     expect(screen.getByTestId('artifact-save-abc123')).toBeInTheDocument()
+  })
+
+  it('names each artifact in its save button label, so a screen reader can tell them apart', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [
+        { slug: 'a1', name: 'Sales Chart', kind: 'widget', pinned: false, auto_registered: true },
+        { slug: 'a2', name: 'Roadmap', kind: 'widget', pinned: false, auto_registered: true },
+      ],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    const first = await screen.findByTestId('artifact-save-a1')
+    expect(first).toHaveAccessibleName(expect.stringContaining('Sales Chart'))
+    expect(screen.getByTestId('artifact-save-a2')).toHaveAccessibleName(expect.stringContaining('Roadmap'))
   })
 
   it('lists an auto-registered image artifact for this session', async () => {

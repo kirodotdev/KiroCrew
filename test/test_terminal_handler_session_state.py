@@ -725,7 +725,7 @@ class TestTerminalRefusalCodes:
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_create(req)
-        assert resp.status == 429
+        assert resp.status == 409
         assert self._body(resp)["code"] == "terminal_max_sessions"
 
     @pytest.mark.asyncio

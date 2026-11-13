@@ -58,9 +58,12 @@ _POLICY_REFUSALS = frozenset(
     {
         "rejected_empty_task",
         "rejected_invalid_cwd",
+        "rejected_depth_cap",  # the child would sit past _MAX_SPAWN_DEPTH
         "denied",  # governance, and the parent spec's availableAgents
         "rejected",  # the spawn-approval prompt said no, or had no surface
         "rejected_spawn",
+        # The parent's turn was started by a Dashboard card (CARD_TURN_POLICY).
+        "rejected_card_origin_turn",
     }
 )
 _STORE_REFUSALS = frozenset({"refused_task_store"})
@@ -143,6 +146,8 @@ _REFUSAL_TEXTS = frozenset(
         "memory_unavailable: the parent's memory mode could not be established",
         "memory_unavailable: {}",
         "spawn refused: {}",  # the cwd allowlist, and the parent spec's allowlist
+        "spawn refused: a sub-agent at depth {} would exceed the nesting cap of {}; "
+        "do this work in the current run instead of delegating it further",
         "spawn refused by governance: {}",
         "spawn denied by governance",
         "<gov_spawn_err>",
@@ -153,6 +158,7 @@ _REFUSAL_TEXTS = frozenset(
         "<owner_err>",  # an app spawn of another app's agent
         "<err>",  # an agent name that does not resolve
         "spawn rejected: no approval mechanism configured",
+        "spawn refused: a turn started by a Dashboard card cannot start a sub-agent",
         # The pressure hold's terminal: ended, never started, past its bound. The
         # caller was already told the start was queued (test below).
         "<MEMORY_PRESSURE_NEVER_STARTED>",

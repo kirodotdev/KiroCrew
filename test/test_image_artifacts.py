@@ -139,6 +139,27 @@ class TestCreateImage:
         assert art.image is not None
         assert art.image.width == 20 and art.image.height == 10
 
+    def test_bmp_core_header_dimension_sniff(self, store: ArtifactStore) -> None:
+        # 14-byte file header, then a 12-byte BITMAPCOREHEADER declaring 4x3
+        # as uint16 width/height, planes=1 and 24 bits per pixel.
+        core = (
+            (12).to_bytes(4, "little")
+            + (4).to_bytes(2, "little")
+            + (3).to_bytes(2, "little")
+            + (1).to_bytes(2, "little")
+            + (24).to_bytes(2, "little")
+        )
+        data = (
+            b"BM"
+            + (14 + len(core)).to_bytes(4, "little")
+            + b"\x00" * 4
+            + (26).to_bytes(4, "little")
+            + core
+        )
+        art = store.create_image(name="B", image_bytes=data, mime="image/bmp")
+        assert art.image is not None
+        assert (art.image.width, art.image.height) == (4, 3)
+
     def test_unmeasurable_image_stores_with_none_dims(self, store: ArtifactStore) -> None:
         # Valid mime, but bytes are not a real PNG — sniff must yield None, not raise.
         art = store.create_image(name="X", image_bytes=b"not a real png", mime="image/png")
@@ -413,6 +434,18 @@ class TestRegisterImages:
         assert art.image is not None
         assert art.image.original_filename == "screenshot(1).png"
         assert art.image.width == 6
+
+    def test_over_long_alt_text_still_registers(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        img = tmp_path / "chart.png"
+        img.write_bytes(_png_bytes())
+        alt = "Quarterly " * 40  # 400 chars, past the 200-char name limit
+        slugs = image_artifacts.register_images(f"![{alt}]({img})", "ts-long-alt", "chat-1")
+        assert len(slugs) == 1
+        name = store.get(slugs[0]).name
+        assert 0 < len(name) <= 200
+        assert alt.startswith(name)
 
     def test_title_suffix_still_does_not_leak_into_the_path(
         self, store: ArtifactStore, tmp_path: Path

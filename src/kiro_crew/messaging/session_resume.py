@@ -40,6 +40,7 @@ from kiro_crew.history import (
     parse_search_query,
     transcript_stem,
 )
+from kiro_crew.history_search import search_coverage_note
 from kiro_crew.messaging.link import (
     UNBIND_REASON_ORIGIN_REBIND,
     UNBIND_REASON_USER_UNLINK,
@@ -375,8 +376,12 @@ async def resolve_session_choices(
     fetch_limit: int = SEARCH_FETCH_LIMIT,
     sessions: Any | None = None,
     native_key: str = "",
-) -> tuple[list[SessionChoice], int]:
-    """The offerable sessions for *query* (newest-first when blank), and the total.
+) -> tuple[list[SessionChoice], int, str]:
+    """The offerable sessions for *query* (newest-first when blank), the total, and a note.
+
+    The note is ``""`` unless the content search's scan window left older sessions
+    unsearched, in which case it says so in one line the picker shows beside the
+    choices or the empty-result message.
 
     Reuses the SAME search the dashboard uses (``search_sessions``): it matches message
     CONTENT with a title boost and length-normalised ranking, so a phrase the user
@@ -395,8 +400,12 @@ async def resolve_session_choices(
     Raises whatever the history layer raises; the caller decides what to tell the user.
     """
     normalized = " ".join(query.casefold().split())
+    coverage_note = ""
     if normalized:
         rows = await asyncio.to_thread(conv_log.search_sessions, query, fetch_limit)
+        # Read before the title fallback below can replace the rows: the content
+        # search is what the window bounded, whatever the fallback then finds.
+        coverage_note = search_coverage_note(rows)
         # Off the loop too: the parse may ask the Chinese dictionary, whose first
         # use loads it.
         needles, phrase, floor = await asyncio.to_thread(parse_search_query, normalized)
@@ -406,7 +415,9 @@ async def resolve_session_choices(
         multi_word = [n.text for n in needles if n.required] != [phrase] or any(
             n.word for n in needles
         )
-        if not rows and multi_word:
+        # A title-only match cannot prove excluded text is absent from content,
+        # so queries with exclusions cannot use this fallback.
+        if not rows and multi_word and not any(needle.excluded for needle in needles):
             # search_sessions matches multi-word queries needle-wise, so out-of-order
             # words DO resolve. What it cannot reach is a session older than its scan
             # window, so this unbounded TITLE match is the last resort for a long-lived
@@ -446,7 +457,7 @@ async def resolve_session_choices(
         raw_title = str(row.get("title") or key.removeprefix("dashboard:"))
         title = display_safe(" ".join(raw_title.split()), TITLE_LIMIT) or "Untitled session"
         eligible.append(SessionChoice(key=key, title=title))
-    return eligible[:limit], len(eligible)
+    return eligible[:limit], len(eligible), coverage_note
 
 
 @dataclass
@@ -955,7 +966,7 @@ class SessionResumeController:
             return
 
         try:
-            choices, total = await resolve_session_choices(
+            choices, total, coverage_note = await resolve_session_choices(
                 self.conv_log,
                 query,
                 surface.display_safe,
@@ -982,8 +993,11 @@ class SessionResumeController:
             source=self.channel_type,
             resources=f"{len(choices)} sessions read",
         )
+        # Plain text the surface did not write, so it passes the surface's own
+        # display budget like any other shared line.
+        note = f"\n{surface.display_safe(coverage_note, 200)}" if coverage_note else ""
         if not choices:
-            await surface.say(surface.no_choices(query))
+            await surface.say(surface.no_choices(query) + note)
             return
 
         self.pickers.purge()
@@ -991,7 +1005,7 @@ class SessionResumeController:
         nonce = self.pickers.mint()
         frozen = tuple(choices)
         message_id = await surface.post_picker(
-            surface.picker_heading(query, total),
+            surface.picker_heading(query, total) + note,
             nonce,
             frozen,
         )

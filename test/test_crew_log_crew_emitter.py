@@ -84,7 +84,7 @@ def _seed_session(unit_id: str = WORKER_UNIT, entries: int = 3) -> CrewLog:
 DISPATCH_DATA = {"item": "it_1", "target": {"kind": "session", "slot": WORKER}}
 
 
-# --- the emitter: where the entry lands -----------------------------------
+# the emitter: where the entry lands
 
 
 def test_a_dispatch_creates_the_crew_unit_under_the_crews_root():
@@ -164,11 +164,8 @@ def test_the_cited_span_is_clamped_to_the_cap_rather_than_refused(monkeypatch):
 def test_lowering_the_cap_on_its_owner_reaches_the_emitter(monkeypatch):
     """The owner is what the emitter reads, so one name is enough to lower it.
 
-    The package re-exports the cap and caches the value the first time anything
-    reads it (:pep:`562`), which makes the re-export a second copy of one number.
-    The first line here is that first read, so the copy exists for the rest of this
-    test -- and the cap is then lowered on its owner alone. An emitter reading the
-    copy cites the unit whole; an emitter reading the owner clamps.
+    The package re-export caches the cap on first read (:pep:`562`). The first line makes
+    that copy, then only the owner is lowered: an emitter reading the copy would cite whole.
     """
     assert lg.MAX_REF_SPAN == crew_schema.MAX_REF_SPAN
     monkeypatch.setattr(crew_schema, "MAX_REF_SPAN", 2)
@@ -182,13 +179,9 @@ def test_lowering_the_cap_on_its_owner_reaches_the_emitter(monkeypatch):
 def test_a_stale_cap_on_the_package_does_not_narrow_what_a_report_cites(monkeypatch):
     """A copy of the cap sitting on the package cannot change a citation.
 
-    ``monkeypatch`` restores an attribute to whatever ``getattr`` answered when it
-    was set, and on the package that answer comes from the re-export reading the
-    owner. So a caller that lowers the owner and then the re-export has the lowered
-    value recorded as the re-export's original, and teardown writes it back as a
-    real attribute holding a value the owner does not have. This installs that
-    state directly: the citation stays the whole unit, because the emitter reads
-    the owner.
+    ``monkeypatch`` restores what ``getattr`` answered, so lowering owner then re-export
+    leaves a real package attribute the owner does not have after teardown. This installs
+    that state directly; the citation stays whole because the emitter reads the owner.
     """
     monkeypatch.setitem(vars(lg), "MAX_REF_SPAN", 2)
     _seed_session(entries=4)
@@ -232,11 +225,8 @@ def test_a_report_with_no_dispatch_behind_it_carries_no_thread():
 def test_a_report_whose_dispatch_is_missing_lands_unthreaded_rather_than_dropped():
     """A missing anchor must cost the link, not the record.
 
-    The dispatch append is best effort, so a dispatch whose append failed leaves no
-    dispatch entry at all -- and refusing the reply on that ground refuses every
-    later report for the item too, so the log reads for good as though the item was
-    never dispatched. An absent history is the worse record: unbounded in time and
-    invisible, where an unthreaded report still states that the work happened.
+    The dispatch append is best effort. Refusing reports with no dispatch entry would drop
+    every later report for the item, so the report lands unthreaded instead.
     """
     _seed_session()
     # The dispatch that would have been the anchor never landed.
@@ -358,7 +348,7 @@ def test_a_report_for_an_item_no_dispatch_named_stays_unthreaded():
     assert "thread" not in _crew_entries()[-1]
 
 
-# --- the emitter: what it refuses -----------------------------------------
+# the emitter: what it refuses
 
 
 #: A target has to name exactly ONE party. The registry cannot state a conditional
@@ -430,7 +420,7 @@ def test_the_emitter_holds_no_lease_between_entries():
     assert emit.on_crew_dispatch(CREW, DISPATCH_DATA) == 1
 
 
-# --- the two call sites ---------------------------------------------------
+# the two call sites
 
 
 class _Slot:

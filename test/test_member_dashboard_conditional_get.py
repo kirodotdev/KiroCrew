@@ -1,11 +1,7 @@
 """Per-user conditional-GET safety for the crewmate Dashboard page.
 
-These tests drive the ``member_dashboard`` route, the same one
-``test_member_dashboard_routes.py`` covers, and sit beside it to keep each file
-under the file-line cap. The fixtures and helpers they need (the autouse ``_env``
-fixture and the ``_client`` / ``_q`` client factories) are imported from that
-module, so there is one definition of each and pytest applies the autouse fixture
-here too.
+Same route as ``test_member_dashboard_routes.py``, split out for the file-line cap; the
+autouse ``_env`` fixture and ``_client`` / ``_q`` are imported from there.
 """
 
 from __future__ import annotations
@@ -70,13 +66,13 @@ async def test_the_empty_state_carries_no_etag():
         assert "ETag" not in resp.headers
 
 
-async def test_a_lock_toggle_is_never_served_as_a_304_on_the_real_route():
-    """A layout-lock change moves the body (`structure_locked`), so a re-read echoing
-    the pre-toggle ETag must be recomposed (200) with a new ETag, never short-circuited
-    to a 304 with the stale lock state. This drives the REAL route: it reads once, flips
-    the lock through the store the handler reads (`instance.set_structure_lock`), and
-    re-reads with the old validator -- so it proves the property on the handler, not on
-    a local digest of a hand-built dict."""
+async def test_a_new_version_is_never_served_as_a_304_on_the_real_route():
+    """A new instance version moves the body (`instance_version`), so a re-read echoing
+    the earlier ETag must be recomposed (200) with a new ETag, never short-circuited to
+    a 304 with the old page. This drives the REAL route: it reads once, writes a new
+    version through the store the handler reads, and re-reads with the old validator --
+    so it proves the property on the handler, not on a local digest of a hand-built
+    dict."""
     async with _client() as client:
         instance.adopt(SLUG, "fixture-board")
         first = await client.get(_q(""))
@@ -84,41 +80,26 @@ async def test_a_lock_toggle_is_never_served_as_a_304_on_the_real_route():
         etag_before = first.headers.get("ETag")
         assert etag_before, "a composed read must carry an ETag"
         # The same read, unchanged, still revalidates to a 304 -- the perf win holds
-        # right up until the lock moves.
+        # right up until the page moves.
         unchanged = await client.get(_q(""), headers={"If-None-Match": etag_before})
         assert unchanged.status == 304
-        # Flip the layout lock through the SAME store the route reads. This moves the
-        # body's `structure_locked` without touching any instance/template version.
-        locked = instance.set_structure_lock(SLUG, True)
-        assert locked.structure_locked is True
-        # The pre-toggle validator does not match the moved body, so the handler
-        # recomposes and sends a full 200 with a NEW ETag -- the stale lock is never
-        # handed back via a 304.
+        assert instance.adopt(SLUG, "fixture-board").instance_version == 2
         after = await client.get(_q(""), headers={"If-None-Match": etag_before})
-        assert after.status == 200, (
-            "a page whose lock changed was served a 304 against the pre-toggle ETag "
-            "-- a lock toggle must move the content validator"
-        )
-        etag_after = after.headers.get("ETag")
         assert (
-            etag_after and etag_after != etag_before
-        ), "the lock toggle did not change the ETag, so a stale lock could be 304'd"
-        body = await after.json()
-        assert body.get("structure_locked") is True
+            after.status == 200
+        ), "a page with a new version was served a 304 against the earlier ETag"
+        etag_after = after.headers.get("ETag")
+        assert etag_after and etag_after != etag_before
+        assert (await after.json())["instance_version"] == 2
 
 
 @asynccontextmanager
 async def _client_as(reader: str, *, owner_gate=None, state=None):
     """A started client whose requests carry *reader* as ``request["user"]``.
 
-    The real stack sets ``request["user"]`` in the token-auth middleware, ahead of the
-    owner gate and the handler. This mirror sets it to *reader* in a front middleware
-    so a test can drive the SAME route as two different authenticated identities and
-    compare what each one is served -- which is the only way to show the conditional
-    GET is keyed per reader rather than per page content. *owner_gate*, when given,
-    replaces ``routes._owner_only`` for this client so the gate's ORDER against the 304
-    shortcut can be exercised with the real handler (the autouse fixture otherwise
-    opens the gate).
+    A front middleware stands in for token auth, so one route can be driven as two
+    identities. *owner_gate* replaces ``routes._owner_only`` to test its order against
+    the 304 shortcut (the autouse fixture otherwise opens the gate).
     """
     seen_order: list[str] = []
 
@@ -150,16 +131,10 @@ async def _client_as(reader: str, *, owner_gate=None, state=None):
 
 
 async def test_the_conditional_get_is_safe_on_a_per_user_authenticated_page():
-    """The dashboard page is a per-reader, owner-only document, so its conditional GET
-    must never let one reader's ``If-None-Match`` short-circuit onto another reader's
-    page. This locks the three properties that make that true:
+    """One reader's ``If-None-Match`` never gets a 304 for another reader's page.
 
-    1. The ETag is keyed to the AUTHENTICATED READER (and the store key), so two
-       different identities mint different tags -- a reader echoing another reader's
-       tag is recomposed, never 304'd.
-    2. AUTH runs BEFORE any 304: an unauthenticated / non-owner request is refused by
-       the owner gate before the conditional-GET branch can answer a 304 shortcut.
-    3. The response is ``Cache-Control: private`` (never shared/stored by a proxy).
+    The ETag is keyed to the authenticated reader, the owner gate runs before any 304,
+    and the response is ``Cache-Control: private``.
     """
     import kiro_crew.dashboard.handlers.member_dashboard as mod
 

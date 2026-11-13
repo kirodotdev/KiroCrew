@@ -474,6 +474,24 @@ class TestExecutionDecision:
         assert reason
         assert "third-party app execution is disabled" in reason
 
+    def test_denial_points_at_the_app_store_trust_prompt(self, monkeypatch) -> None:
+        """The per-app grant is made by the App Store's Enable prompt; the Settings
+        panel only lists and revokes grants, so the reason must not send a CLI
+        user there to make one."""
+        from kiro_crew.apps import execution
+
+        monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: False)
+        quiet_sel = SimpleNamespace(log_api_access=lambda **_: None)
+        monkeypatch.setattr(execution, "sel", lambda: quiet_sel)
+
+        reason = execution.app_execution_denied("store-app", action="enable")
+
+        assert reason
+        assert "App Store" in reason
+        assert "agent.apps_trusted" in reason
+        assert "agent.apps_allow_third_party=true" in reason
+        assert "in Settings" not in reason
+
 
 class TestLaunchAndLifecycleBoundary:
     @pytest.mark.asyncio
@@ -536,6 +554,7 @@ class TestLaunchAndLifecycleBoundary:
             manifest_extra={"openCommand": "echo admitted"},
         )
         monkeypatch.setenv("DISPLAY", ":99")
+        monkeypatch.setattr(routes, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: True)
         monkeypatch.setattr(routes, "wrap_argv", lambda argv, **kwargs: (argv, None))
         monkeypatch.setattr(routes, "cgroup_scope_argv", lambda argv: argv)
@@ -684,14 +703,9 @@ class TestLaunchAndLifecycleBoundary:
 class TestTrustedGrantBounds:
     """``execution.trusted_app_names`` bounds — the gate's per-decision cost.
 
-    The set is rebuilt on EVERY execution decision (each hook load, backend
-    spawn, bridge registration and boot-reconcile iteration), so an unbounded
-    name or an unbounded list turns a hand-edited ``config.json`` into a cost
-    multiplier on the hot path. The caps are a DoS bound, not a naming rule:
-    a too-long NAME is dropped (it can name no real app), while a too-long LIST
-    is TRUNCATED rather than emptied, because ``apps_trusted`` is append-ordered
-    — the operator's real grants sit at the front, and denying the whole list
-    would revoke them all over someone else's junk.
+    The set is rebuilt on EVERY execution decision, so the caps are a DoS bound: a
+    too-long NAME is dropped, while a too-long LIST is TRUNCATED, not emptied, because
+    ``apps_trusted`` is append-ordered and the operator's real grants sit at the front.
     """
 
     @staticmethod

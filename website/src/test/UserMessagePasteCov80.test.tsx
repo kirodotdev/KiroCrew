@@ -57,9 +57,11 @@ function copyFrom(bubble: HTMLElement, opts: { collapse?: boolean; outside?: HTM
 const bubbleOf = (container: HTMLElement) => container.querySelector('.msg-content') as HTMLElement
 
 describe('UserMessage paste chips', () => {
-  it('copies the EXPANDED text, not the chip label', () => {
+  it('copies the EXPANDED text, not the chip label', async () => {
     render(<UserMessage content={`before ${TOKEN} after`} meta={{ pastes: [BLOCK] }} renderContent={renderWithChip} />)
-    fireEvent.click(screen.getByTitle(i18nT('pages.chat.userMessage.copy')))
+    // The copy resolves a promise before it flashes the outcome state. Run the
+    // click inside an async act so that update lands in the act scope.
+    await act(async () => { fireEvent.click(screen.getByTitle(i18nT('pages.chat.userMessage.copy'))) })
     expect(copyToClipboard).toHaveBeenCalledWith(`before ${BLOCK.content} after`)
   })
 

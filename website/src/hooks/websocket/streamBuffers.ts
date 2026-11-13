@@ -22,6 +22,7 @@ import { streamingFlushHoldMs } from '../../lib/streamHold'
 import { registerPendingChunkDrain } from '../../lib/pendingChunkDrain'
 import type { SocketConnection } from './connection'
 import { autoBatched } from '../../lib/streamBatch'
+import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 
 /** One buffered chunk: its text (gap marker included) and the seq it carried,
  *  kept apart so the reducer can hold each part against the slot's replay
@@ -109,8 +110,9 @@ const FLUSH_RECONNECT: FlushSet = { content: false, thinking: true, subagents: f
 export interface StreamBuffersDeps {
   dispatch: AppDispatch
   socket: SocketConnection
-  /** Called after a flush landed content in the active slot. */
-  onActiveSlotFlushed: (activeSlot: string) => void
+  /** Called after a flush landed content in the slot read aloud
+   *  (`storeFocusedSlot`: a mounted crewmate thread, else the active chat). */
+  onVoiceSlotFlushed: (slot: string) => void
 }
 
 export interface StreamBuffers {
@@ -156,7 +158,7 @@ export interface StreamBuffers {
   flushForUnmount(): void
 }
 
-export function useStreamBuffers({ dispatch, socket, onActiveSlotFlushed }: StreamBuffersDeps): StreamBuffers {
+export function useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed }: StreamBuffersDeps): StreamBuffers {
   // Streaming-chunk coalescing: accumulate per-slot chunk text and flush once
   // per animation frame. lastSeq is carried across flushes so cross-batch gap
   // detection mirrors the reducer's per-chunk "N chunk(s) missed" marker.
@@ -199,9 +201,10 @@ export function useStreamBuffers({ dispatch, socket, onActiveSlotFlushed }: Stre
      *  leaves it scheduled for the other buffers. */
     const flush = (sel: FlushSet, notifyNow = false) => {
       const activeSlot = store.getState().chat.activeSlot
+      const voiceSlot = storeFocusedSlot()
       const slots: StreamFlushSlot[] = []
       let openSlotText = false
-      let activeContent = false
+      let voiceContent = false
       for (const [slot, entry] of chunkBufRef.current) {
         const out: StreamFlushSlot = { slot }
         if (sel.thinking && entry.thinking) {
@@ -219,7 +222,7 @@ export function useStreamBuffers({ dispatch, socket, onActiveSlotFlushed }: Stre
           if (text) {
             out.content = { text, seq: entry.lastSeq, gen: entry.gen, parts: entry.parts }
             entry.parts = []
-            if (slot === activeSlot) activeContent = true
+            if (slot === voiceSlot) voiceContent = true
           }
         }
         // The status lands with the reasoning, so a reconnect or unmount
@@ -270,7 +273,7 @@ export function useStreamBuffers({ dispatch, socket, onActiveSlotFlushed }: Stre
       // Recency only re-ranks the sidebar, so one frame later is invisible.
       // Reconnect and unmount salvage notify at once.
       dispatch(!notifyNow && !openSlotText ? autoBatched(action) : action)
-      if (activeContent && activeSlot) onActiveSlotFlushed(activeSlot)
+      if (voiceContent && voiceSlot) onVoiceSlotFlushed(voiceSlot)
     }
 
     const flushFrame = () => flush(FLUSH_FRAME)
@@ -414,7 +417,7 @@ export function useStreamBuffers({ dispatch, socket, onActiveSlotFlushed }: Stre
         resetFlush(frameFlushRef.current)
       },
     }
-  }, [dispatch, socket, onActiveSlotFlushed])
+  }, [dispatch, socket, onVoiceSlotFlushed])
 
   // Expose the synchronous flush to steer initiators (ChatPage / ChatPane):
   // an optimistic steer card dispatched while a chunk is still in this

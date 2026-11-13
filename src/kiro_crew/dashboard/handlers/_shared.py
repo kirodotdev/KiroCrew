@@ -62,7 +62,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         require_owner_for_dashboard_caller,
     )
     from kiro_crew.dashboard.handlers._shared_config_followups import (  # noqa: F401
+        AGENT_SPEC_COMPOSITION_REFUSED,
         AGENT_SPEC_NOT_REWRITTEN,
+        COMPOSITION_REFUSED_LOG,
         _pip_install_channel_available,
         logger,
         pip_extra_install_command,
@@ -86,6 +88,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _store_name,
         _store_tier_lock,
         _store_unavailable,
+        lesson_store_owner_only,
         markdown_memory_for_store,
         memory_startup_refusal,
         release_markdown_memory_store,
@@ -95,13 +98,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers._shared_request_body import (  # noqa: F401
         _MAX_BODY_BYTES,
+        _NOT_MULTIPART_ERROR,
         _RESPONSE_READ_CHUNK_BYTES,
         _declares_json,
         _json_content_type_error,
+        body_not_object_error,
         bounded_json_error_as_exception,
         bounded_json_error_code,
+        open_multipart,
         read_bounded_json,
         read_capped_response,
+        string_field_error,
     )
     from kiro_crew.dashboard.handlers._shared_route_guards import (  # noqa: F401
         _CRON_SESSION_CONTROL_PATHS,
@@ -190,9 +197,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _KIRO_SKILL_FRONTMATTER_BYTES,
         _agent_dirs,
         _agent_loads_skill,
+        _AgentMatch,
+        _AgentMatchIndex,
         _agents_loading_skill,
+        _agents_loading_skill_indexed,
+        _build_agent_match_index,
         _expand_agent_globs,
         _expand_resource_uri,
+        _has_wildcard,
+        _index_selects,
         _kiro_skill_roots,
         _load_parsed_agents,
         _one_row_per_skill_file,
@@ -205,6 +218,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         annotate_skills_with_agents,
         collect_skills_blocking,
         list_kiro_skills,
+        skill_rows_for_globs,
     )
     from kiro_crew.dashboard.handlers._shared_skill_roots import (  # noqa: F401
         LEAF_SYMLINK_PREFIX,
@@ -230,6 +244,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         active_project_dir,
         active_project_state,
         requesting_slot_project,
+        session_folder_steering_dirs,
         session_project_for_spawn_gate,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
@@ -264,7 +279,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
     from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted  # noqa: F401
-    from kiro_crew.skills import _matches_any  # noqa: F401
     from kiro_crew.skills import _trusted_skill_roots  # noqa: F401
     from kiro_crew.skills import _with_canonical_globs  # noqa: F401
     from kiro_crew.skills import skills_dir  # noqa: F401

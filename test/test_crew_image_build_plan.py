@@ -1,25 +1,13 @@
 """The crew image lane must cover the recipe CLASS, not two named recipes.
 
-``backend-test-crew-container`` imports the crew image's Python modules and runs
-them on the host. It never builds the image, so a recipe naming a producer script
-that is not in the tree is green in CI: the image cannot be built from a clean
-checkout, and no gate says so.
+``crew-image-build.yml`` builds the image for real; these tests pin what a build cannot
+check about itself, statically and with no Docker:
 
-``crew-image-build.yml`` runs the build for real. These tests hold the part of
-that lane which a build cannot check about itself:
-
-* the derivation is right, and every refusal fires -- so "the lane could not
-  classify a recipe" can never quietly become "the lane skipped a recipe";
-* every recipe in the real tree has a derivable role, checked statically on
-  every pull request with no Docker;
-* the digest the probe bundle is stamped with equals the one the IMAGE computes,
-  so the two cannot drift apart into a lane that builds only bundles the
-  container would refuse;
-* every producer the recipes cite is inside the workflow's ``paths`` filter, so
-  editing a producer fires the lane that runs it;
-* every registry the lane writes to is a loopback address, which is the whole
-  basis of its claim to need no credentials -- a claim that until now lived only
-  in a comment beside the code that could break it.
+* every refusal fires, so an unclassifiable recipe is never silently skipped;
+* every recipe in the tree has a derivable role;
+* the probe bundle's digest equals the one the image computes;
+* every producer the recipes cite is inside the workflow's ``paths`` filter;
+* every registry the lane writes to is loopback, which is why it needs no credentials.
 """
 
 from __future__ import annotations
@@ -37,7 +25,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "crew_image_build_plan.py"
+SCRIPT = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/crew_image_build_plan.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "crew-image-build.yml"
 
 #: Windows reports success from ``os.access(path, os.X_OK)`` for any file that
@@ -60,9 +48,12 @@ _SPEC.loader.exec_module(plan_mod)
 
 
 def _fake_tree(root: Path, recipe_text: str, *, producer: str = "scripts/p.sh") -> Path:
-    """A throwaway repo root with one recipe and one executable producer."""
+    """A throwaway repo root with one recipe and one executable producer.
+
+    *producer* is spelled as a recipe cites it, relative to the crew tree.
+    """
     (root / plan_mod.RUNTIME_SUBPATH).mkdir(parents=True, exist_ok=True)
-    script = root / producer
+    script = root / plan_mod.CREW_SUBPATH / producer
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
@@ -133,13 +124,8 @@ def test_a_pre_from_arg_makes_a_layer(tmp_path: Path, text: str, base_arg: str) 
 def test_a_from_option_is_not_mistaken_for_the_image(tmp_path: Path, flag: str) -> None:
     """``FROM --platform=... <image>`` is legal and must still read as a base.
 
-    Taking the first token after ``FROM`` picks the option instead of the image.
-    With an interpolated value that then looks like a ``FROM`` naming an
-    undeclared ``ARG``, so a sound base recipe is refused with a message about a
-    defect it does not have. With a literal value it is worse than a refusal: the
-    operand carries no ``$``, so the recipe classifies as ``base`` anyway and the
-    wrong answer is indistinguishable from the right one. The resolved operand is
-    therefore asserted, not only the role it produces.
+    The operand is asserted, not just the role: with a literal ``--platform`` the
+    wrong token has no ``$``, so it would still classify as ``base``.
     """
     text = f"# built by scripts/p.sh\nFROM {flag} python:3.12-slim\n"
     operand, _ = plan_mod.first_from_and_pre_args(plan_mod.logical_instructions(text))
@@ -222,7 +208,7 @@ def test_an_unbuildable_recipe_is_refused(tmp_path: Path, text: str, match: str)
 @_POSIX_ONLY
 def test_a_non_executable_producer_is_refused(tmp_path: Path) -> None:
     recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nFROM python:3.12-slim\n")
-    (tmp_path / "scripts" / "p.sh").chmod(0o644)
+    (tmp_path / plan_mod.CREW_SUBPATH / "scripts" / "p.sh").chmod(0o644)
     with pytest.raises(plan_mod.PlanError, match="not executable"):
         plan_mod.classify(recipe, tmp_path)
 
@@ -232,17 +218,13 @@ def test_the_executability_check_stands_down_on_windows(
 ) -> None:
     """On Windows the execute bit does not exist, so it is not required there.
 
-    ``os.access(path, os.X_OK)`` answers true for any existing file on Windows,
-    so the check cannot fail there whatever the mode is; requiring it would make
-    the outcome depend on which platform ran the plan. The requirement binds on
-    the Linux runner that invokes the producer. This drives the Windows branch
-    from a POSIX host by patching the platform marker the guard reads, so the
-    branch is executed rather than argued about.
+    ``os.access(path, os.X_OK)`` is true for any existing file on Windows. The
+    platform marker is patched so the Windows branch runs on a POSIX host.
     """
     recipe = _fake_tree(tmp_path, "# built by scripts/p.sh\nFROM python:3.12-slim\n")
-    (tmp_path / "scripts" / "p.sh").chmod(0o644)
+    (tmp_path / plan_mod.CREW_SUBPATH / "scripts" / "p.sh").chmod(0o644)
     monkeypatch.setattr(plan_mod.os, "name", "nt")
-    assert plan_mod.classify(recipe, tmp_path).producer == "scripts/p.sh"
+    assert plan_mod.classify(recipe, tmp_path).producer == f"{plan_mod.CREW_SUBPATH}/scripts/p.sh"
 
 
 def test_an_absent_producer_is_still_refused_on_windows(
@@ -284,7 +266,7 @@ def test_a_layer_with_several_candidate_bases_is_refused(tmp_path: Path) -> None
     """
     runtime = tmp_path / plan_mod.RUNTIME_SUBPATH
     runtime.mkdir(parents=True)
-    script = tmp_path / "scripts" / "p.sh"
+    script = tmp_path / plan_mod.CREW_SUBPATH / "scripts" / "p.sh"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
@@ -305,7 +287,7 @@ def test_several_bases_alone_are_fine(tmp_path: Path) -> None:
     """
     runtime = tmp_path / plan_mod.RUNTIME_SUBPATH
     runtime.mkdir(parents=True)
-    script = tmp_path / "scripts" / "p.sh"
+    script = tmp_path / plan_mod.CREW_SUBPATH / "scripts" / "p.sh"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
@@ -317,7 +299,7 @@ def test_several_bases_alone_are_fine(tmp_path: Path) -> None:
 def test_bases_are_planned_before_layers(tmp_path: Path) -> None:
     runtime = tmp_path / plan_mod.RUNTIME_SUBPATH
     runtime.mkdir(parents=True)
-    script = tmp_path / "scripts" / "p.sh"
+    script = tmp_path / plan_mod.CREW_SUBPATH / "scripts" / "p.sh"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
@@ -339,7 +321,7 @@ def test_the_real_tree_holds_recipes() -> None:
     """Guard the guard, against the real tree this time."""
     assert plan_mod.discover_recipes(ROOT), (
         f"no Dockerfile* under {plan_mod.RUNTIME_SUBPATH}; if the recipes moved, move "
-        "scripts/crew_image_build_plan.py and crew-image-build.yml with them"
+        "crew/scripts/crew_image_build_plan.py and crew-image-build.yml with them"
     )
 
 
@@ -371,13 +353,9 @@ def test_every_real_recipe_cites_a_producer() -> None:
 def test_the_script_does_not_restate_the_digest_algorithm() -> None:
     """The probe bundle's digest must come from the container, not a copy.
 
-    A restated algorithm would let a probe bundle satisfy the layer producer's
-    digest check by construction whatever the container's function did. That
-    protection is real, but it already exists without a copy here:
-    ``container_tests/test_supervisor_bundle.py`` keeps an ``_independent_digest``
-    written out longhand so a scheme change breaks an agreement between two
-    implementations there. A copy in this script would be the fifth in-tree
-    spelling, and this fails if one comes back.
+    A copy would pass the layer producer's check by construction. The longhand
+    cross-check already lives in ``container_tests/test_supervisor_bundle.py``
+    (``_independent_digest``).
     """
     source = SCRIPT.read_text(encoding="utf-8")
     assert "from container.supervisor.bundle import _content_digest" in source, (
@@ -386,7 +364,7 @@ def test_the_script_does_not_restate_the_digest_algorithm() -> None:
     )
     for restated in ("hashlib", 'separators=(",", ":")'):
         assert restated not in source, (
-            f"scripts/crew_image_build_plan.py restates the digest algorithm ({restated!r}); "
+            f"crew_image_build_plan.py restates the digest algorithm ({restated!r}); "
             "import it instead -- a fifth spelling is what the container's own "
             "_independent_digest already covers"
         )
@@ -395,11 +373,8 @@ def test_the_script_does_not_restate_the_digest_algorithm() -> None:
 def test_the_probe_digest_is_what_the_container_recomputes(tmp_path: Path) -> None:
     """End to end: the stamped digest is the one the container will check.
 
-    The script imports the container's function, so this cannot catch a
-    divergence between two implementations -- there is only one. What it does
-    catch is a probe bundle stamped over the wrong TREE: a digest computed before
-    the last file is written, or over the caller's directory rather than the four
-    members the recipe copies.
+    There is one implementation, so this catches a digest over the wrong TREE:
+    taken before the last file is written, or over more than the four copied members.
     """
     runtime = ROOT / plan_mod.RUNTIME_SUBPATH
     sys.path.insert(0, str(runtime))
@@ -467,11 +442,8 @@ def _workflow_paths() -> list[str]:
 def _covered(candidate: str, patterns: list[str]) -> bool:
     """Would any of the workflow's ``paths`` patterns match this repo-relative path?
 
-    Reduced to the two glob forms this workflow uses -- a ``dir/**`` subtree and
-    a flat ``*`` within one directory -- rather than reimplementing GitHub's
-    matcher. A pattern in some other shape would silently match nothing here, so
-    the assertion is conservative: it can demand a pattern that is missing, and
-    cannot invent coverage that is not there.
+    Only the two forms this workflow uses (``dir/**`` and a flat ``*``). Any other
+    shape matches nothing, so the check can miss coverage but never invent it.
     """
     for pattern in patterns:
         if pattern.endswith("/**"):
@@ -492,7 +464,10 @@ def test_the_workflow_triggers_on_the_recipe_subtree() -> None:
 
 def test_the_workflow_triggers_on_the_plan_script_and_itself() -> None:
     patterns = _workflow_paths()
-    for rel in ("scripts/crew_image_build_plan.py", ".github/workflows/crew-image-build.yml"):
+    for rel in (
+        f"{plan_mod.CREW_SUBPATH}/scripts/crew_image_build_plan.py",
+        ".github/workflows/crew-image-build.yml",
+    ):
         assert _covered(rel, patterns), f"{rel} is outside crew-image-build.yml's paths filter"
 
 
@@ -530,6 +505,8 @@ def test_the_paths_filter_stops_short_of_every_script() -> None:
         "scripts/local-gate.py",
         "scripts/check_comment_history.py",
         "scripts/build_something_else.sh",
+        f"{plan_mod.CREW_SUBPATH}/scripts/build_something_else.sh",
+        f"{plan_mod.CREW_SUBPATH}/packaging/build.py",
     ):
         assert not _covered(unrelated, patterns), (
             f"crew-image-build.yml's paths filter matches {unrelated}, which this lane does "
@@ -539,15 +516,8 @@ def test_the_paths_filter_stops_short_of_every_script() -> None:
 
 # ── the lane's claim to needing no credentials ───────────────────────────────
 #
-# The lane pushes a base image only to mint a repository digest, and its whole
-# claim to running on a fork PR with no secrets rests on that push going to a
-# loopback address. Until this assertion existed, "loopback" lived in a comment
-# and one `env:` value: nothing failed if a later edit pointed them at a real
-# host, or if a third write site hardcoded one. A non-loopback push is the single
-# change that would turn this lane from credential-free into credential-
-# requiring, so it is the property a reader most wants guaranteed -- and prose
-# asserting what the adjacent code does not enforce is this change's own subject
-# one level up.
+# The lane pushes a base image only to mint a repository digest. It runs on fork PRs
+# with no secrets only because every push goes to a loopback address.
 
 #: `NAME=value`, optionally exported, as written in a `run:` block. The value may
 #: itself reference other names; resolution below is iterative.
@@ -616,11 +586,8 @@ def _expand(reference: str, bindings: dict[str, str]) -> str:
 def _registry_authority(reference: str) -> str | None:
     """The registry authority of an image reference, by Docker's own rule.
 
-    The first ``/``-separated component is a registry host only when it carries a
-    ``.`` or a ``:``, or is exactly ``localhost``. Without one the whole reference
-    is a Docker Hub repository -- which for something being PUSHED means a real
-    remote registry needing real credentials, so ``None`` is a failure here and
-    not an exemption.
+    The first component is a host only if it has a ``.`` or ``:`` or is ``localhost``.
+    ``None`` means Docker Hub, a real remote registry, so it is a failure here.
     """
     head, _, rest = reference.partition("/")
     if not rest:
@@ -652,11 +619,8 @@ def _is_loopback(authority: str) -> bool:
 def _off_machine_write_sites(text: str) -> list[str]:
     """Every write site in this workflow text not shown to be loopback.
 
-    Fails closed on the registry AUTHORITY, which is the part that decides
-    whether a credential is needed: a reference with no host (a Docker Hub name,
-    or one built from a name this file never binds) and one whose host is a real
-    address are both problems. What follows the host is not read -- a variable
-    repository or tag under a loopback host is still a write to this machine.
+    Fails closed on the registry AUTHORITY only: no host, or a non-loopback host, is
+    a problem; a variable repository or tag under a loopback host is not.
     """
     bindings = _bindings(text)
     ambiguous = {name: sorted(values) for name, values in bindings.items() if len(values) > 1}
@@ -690,11 +654,8 @@ def _off_machine_write_sites(text: str) -> list[str]:
 def test_every_registry_this_lane_writes_to_is_loopback() -> None:
     """No push or tag in this lane may name a registry off this machine.
 
-    Not covered: this reads the YAML statically, so an authority built at runtime
-    -- by a ``${{ }}`` expression, a command substitution, or the producer script
-    itself -- and the ``-p`` address the registry container publishes on, are
-    outside it; what is enforced is the reference every write site in the
-    workflow text names.
+    Static only: an authority built at runtime (``${{ }}``, command substitution,
+    the producer script) and the registry's ``-p`` address are not covered.
     """
     text = WORKFLOW.read_text(encoding="utf-8")
     assert _write_targets(text), (
@@ -717,16 +678,13 @@ def test_every_registry_this_lane_writes_to_is_loopback() -> None:
         "docker tag local-only:ci registry.example.com/kirocrew-crew-base:ci",
         "docker build -t registry.example.com/kirocrew-crew-base:ci .",
         "docker buildx build --push --tag registry.example.com/kirocrew-crew-base:ci .",
-        "./scripts/build_crew_base_image.sh --tag registry.example.com/base:ci",
+        "./src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_base_image.sh --tag registry.example.com/base:ci",
     ],
 )
 def test_an_off_machine_write_site_is_caught(site: str) -> None:
     """The assertion above must red on a write the lane does not make today.
 
-    A guard whose existence is cited as the guarantee has to be shown to fire.
-    Each spelling here is a way a later edit could reach a real registry -- a
-    bare ``docker push``, the same under ``docker image``, a Docker Hub name
-    with a namespace and one without, a re-tag, a build tag, a buildx push, and a
+    Each spelling is a way an edit could reach a real registry; the last is a
     producer handed a remote tag, which is how this lane spells its own write.
     """
     real = WORKFLOW.read_text(encoding="utf-8")
@@ -742,11 +700,8 @@ def test_an_off_machine_write_site_is_caught(site: str) -> None:
 def test_a_second_binding_of_the_registry_is_caught() -> None:
     """A shell assignment shadows ``env:``, so every binding must be read.
 
-    ``REGISTRY=registry.example.com`` in a run block overrides the job's value for
-    that block, and which one a write site resolves through is a fact about shell
-    scoping that reading the YAML cannot settle. Resolving through either binding
-    alone would let the loopback one vouch for a write that does not use it, so
-    two bindings is reported rather than chosen between.
+    Which binding a write uses is shell scoping the YAML cannot settle, so two
+    bindings are reported rather than letting the loopback one vouch for both.
     """
     real = WORKFLOW.read_text(encoding="utf-8")
     doctored = real.replace(
@@ -784,15 +739,11 @@ def test_a_variable_tag_under_a_loopback_host_is_not_refused() -> None:
 def test_the_plan_script_is_recorded_executable() -> None:
     """The mode GIT records is the authority, not the mode on this filesystem.
 
-    The recipe's prose tells a reader to invoke its producer directly, and the
-    plan script refuses a producer that is not executable, so this file must be
-    executable too. ``stat`` cannot answer that portably: Windows has no execute
-    bit, so a checked-out file reports ``0o100666`` and a mode test fails there
-    for every file in the tree. The committed mode is the same fact on every
-    platform, and it is the one that decides what a Linux runner checks out.
+    The lane invokes it directly. ``stat`` is not portable (Windows reports
+    ``0o100666``); the committed mode is what a Linux runner checks out.
     """
     listed = subprocess.run(
-        ["git", "ls-files", "--stage", "--", "scripts/crew_image_build_plan.py"],
+        ["git", "ls-files", "--stage", "--", SCRIPT.relative_to(ROOT).as_posix()],
         cwd=ROOT,
         capture_output=True,
         encoding="utf-8",
@@ -801,29 +752,20 @@ def test_the_plan_script_is_recorded_executable() -> None:
     assert listed.strip(), "the plan script is not tracked, so git records no mode for it"
     mode = listed.split()[0]
     assert mode == "100755", (
-        f"git records mode {mode} for scripts/crew_image_build_plan.py; it carries a shebang "
+        f"git records mode {mode} for {SCRIPT.relative_to(ROOT).as_posix()}; it carries a shebang "
         "and the lane invokes it, so the committed mode must be 100755. Fix with "
-        "`git update-index --chmod=+x scripts/crew_image_build_plan.py`"
+        f"`git update-index --chmod=+x {SCRIPT.relative_to(ROOT).as_posix()}`"
     )
 
 
 def test_supervisor_tree_imports_without_kiro_crew(tmp_path: Path) -> None:
     """The build plan imports the container tree with no ``kiro_crew`` on the path.
 
-    ``content_digest`` puts the runtime directory on ``sys.path`` and imports
-    ``container.supervisor.bundle`` as a TOP-LEVEL package, under whatever interpreter
-    the lane happens to run -- a bare ``python3`` with this repository installed
-    nowhere. ``supervisor/__init__.py`` re-exports from ``backend``, so a module-scope
-    ``kiro_crew`` import in ANY supervisor module makes that reach raise
-    ``ModuleNotFoundError`` and fails the image lane on its first step.
-
-    A developer checkout hides this: an editable install makes ``kiro_crew`` importable,
-    so the same call succeeds locally and reds only in CI. ``-S`` reproduces the lane's
-    condition by dropping ``site-packages``, which is where the editable install lives.
-
-    Not a style rule. The supervisor is free to import ``kiro_crew`` inside a function --
-    the vault seed does, because by the time it runs the image HAS the wheel -- and this
-    test says only that reaching a module must not require it.
+    The lane imports ``container.supervisor.bundle`` as a top-level package under a bare
+    ``python3``, and ``supervisor/__init__.py`` re-exports from ``backend``, so a
+    module-scope ``kiro_crew`` import anywhere there fails the lane. ``-S`` drops
+    ``site-packages`` (the editable install) to reproduce that. Imports inside a
+    function are fine.
     """
     runtime = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/runtime"
     probe = "import container.supervisor.bundle, container.supervisor.__main__"

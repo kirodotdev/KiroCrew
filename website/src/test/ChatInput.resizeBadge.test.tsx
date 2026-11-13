@@ -161,7 +161,9 @@ describe('ChatInput attachment resize badge', () => {
 
     // The pill makes the rendered strip taller. Re-stub the measurement to say
     // so, and the reserved floor must move with it rather than with a constant.
-    setStripHeight('preview-strip', PREVIEW_STRIP_H + 20)
+    act(() => {
+      setStripHeight('preview-strip', PREVIEW_STRIP_H + 20)
+    })
     rerender(<ChatInput {...defaultProps} pendingFiles={[IMG]} resizedInfo={{ [IMG]: RESIZE }} />)
     expect(outerOf().style.minHeight).toBe(`${INPUT_DRAG_MIN_H + PREVIEW_STRIP_H + 20}px`)
   })

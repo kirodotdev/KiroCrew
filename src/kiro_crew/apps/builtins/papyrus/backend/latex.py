@@ -57,12 +57,26 @@ logger = logging.getLogger("kirocrew.app.papyrus")
 #: Compilers we know how to drive, in preference order.
 COMPILER_NAMES = ("pdflatex", "tectonic")
 
+
+def _userspace_compiler_globs(is_windows: bool) -> tuple[str, ...]:
+    """Userspace install globs, with the Windows ``.exe`` suffix applied.
+
+    The glob matches an on-disk file name, so like :data:`_BIBTEX_BASENAME` it
+    must carry the ``.exe`` suffix on Windows — ``glob.glob`` does not apply
+    ``PATHEXT``, so a bare ``pdflatex``/``tectonic`` pattern never matches a
+    Windows TeX install's ``pdflatex.exe``/``tectonic.exe``. Taking the platform
+    as a parameter keeps the Windows branch testable on a POSIX host.
+    """
+    suffix = ".exe" if is_windows else ""
+    return (
+        f"~/texlive/*/bin/*/pdflatex{suffix}",
+        f"~/.local/bin/tectonic{suffix}",
+    )
+
+
 #: Userspace install locations probed when neither compiler is on ``PATH``. A
 #: TeX Live install script (the usual no-sudo route) lands under ``~/texlive``.
-USERSPACE_COMPILER_GLOBS = (
-    "~/texlive/*/bin/*/pdflatex",
-    "~/.local/bin/tectonic",
-)
+USERSPACE_COMPILER_GLOBS = _userspace_compiler_globs(platform_compat.IS_WINDOWS)
 
 #: Wall-clock ceiling for one compiler pass. A large thesis legitimately takes
 #: tens of seconds; beyond this the run is a wedge, not slow work.

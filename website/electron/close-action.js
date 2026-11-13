@@ -94,7 +94,33 @@ function createCloseHandler({ isQuitting, getAction, cancelPendingHide, requestQ
   };
 }
 
+/** The event Electron's native autoUpdater emits as its quitAndInstall begins. */
+const QUIT_FOR_UPDATE_EVENT = "before-quit-for-update";
+
+/**
+ * Run `onQuit` when an update install starts quitting the app.
+ *
+ * An install quits differently from the Quit menu item. Electron's native
+ * quitAndInstall emits `before-quit-for-update`, then closes every window, and
+ * emits `before-quit` only after the last one has closed. A close handler that
+ * learns about the quit from `before-quit` therefore sees the installer's close
+ * as a user close: hide-to-tray cancels it, the window list never empties,
+ * Squirrel never hands the swap to ShipIt, and the update does not install
+ * (#29449). Setting the quitting flag on this event makes those closes land on
+ * "persist".
+ *
+ * @param {{on?: Function}|null|undefined} nativeAutoUpdater Electron's autoUpdater
+ * @param {() => void} onQuit
+ * @returns {boolean} whether the listener was registered
+ */
+function onQuitForUpdate(nativeAutoUpdater, onQuit) {
+  if (!nativeAutoUpdater || typeof nativeAutoUpdater.on !== "function") return false;
+  nativeAutoUpdater.on(QUIT_FOR_UPDATE_EVENT, () => onQuit());
+  return true;
+}
+
 module.exports = {
+  onQuitForUpdate,
   CLOSE_ACTION_KEY,
   CLOSE_ACTION_BACKGROUND,
   CLOSE_ACTION_QUIT,

@@ -25,6 +25,7 @@ import sys
 from push_guard import (
     DEFAULT_MAX_AHEAD,
     GIT_TIMEOUT_S,
+    SSH_AUTH_REFUSAL,
     _remote_ref,
     _Terminated,
     child_env,
@@ -109,7 +110,8 @@ def run(args, extra_env=None, timeout=None, stall=None):
     (CVE-2024-24576, "BatBadBut").  Arguments here can carry values read from
     the cloned repo's own config (remote URLs, branch names), so when the
     resolved target is a batch launcher, any argument containing a cmd.exe
-    metacharacter fails closed as rc 126 instead of being passed through.
+    metacharacter fails closed as rc 126 instead of being passed through
+    (``push_guard.run_child``, which launches it, refuses it).
 
     On Windows the PATH search also visits the CURRENT DIRECTORY, and this
     script runs inside the cloned repo - so a checkout carrying its own
@@ -133,17 +135,6 @@ def run(args, extra_env=None, timeout=None, stall=None):
                 ("{}: refusing executable resolved inside the working " "tree".format(args[0])),
             )
         rest = list(args[1:])
-        if exe_abs.lower().endswith((".cmd", ".bat")):
-            bad = [a for a in rest if any(ch in a for ch in '^&|<>%!"\r\n')]
-            if bad:
-                return (
-                    126,
-                    "",
-                    (
-                        "{}: refusing batch-file launch with cmd.exe "
-                        "metacharacters in arguments".format(args[0])
-                    ),
-                )
         # push_guard's runner: files instead of pipes, so a hook's background
         # child cannot hold the call open, and a child stopped at its bound is
         # reaped before this returns.
@@ -235,19 +226,28 @@ _PUSH_REJECTED_RE = re.compile(r"non-fast-forward|fetch first|\[rejected\]", re.
 
 # Definitive denials whose missing piece is a NON-INTERACTIVE PUSH CREDENTIAL
 # rather than repo permission.  The remedy is credential setup, not a fork -
-# a fork push rides the same absent/locked credential.
+# a fork push rides the same absent, locked, or rejected credential.  An
+# authentication failure (``authentication failed``, HTTP 401 Unauthorized) is
+# a presented-but-rejected credential: the same missing piece as ``could not
+# read Username``, so it routes to the credential remedy, not the fork one.
 _PUSH_NO_CREDENTIAL_RE = re.compile(
-    r"could not read (?:Username|Password)|permission denied \(publickey", re.IGNORECASE
+    r"could not read (?:Username|Password)|"
+    + SSH_AUTH_REFUSAL
+    + r"|authentication failed|HTTP 401\b|returned error: 401\b",
+    re.IGNORECASE,
 )
 
 # Git Credential Manager under GCM_INTERACTIVE=never with an expired token: a
 # credential to refresh, not a denial.
 _GCM_NO_PROMPT_RE = re.compile(r"interactivity has been disabled", re.IGNORECASE)
 
-# Definitive permission/authentication denials from the transport.
+# Definitive repo-permission denials from the transport: the credential was
+# accepted but the account cannot push here (HTTP 403 Forbidden, a named
+# denial).  The remedy is a fork, since a different credential, not the same
+# one refreshed, is what a fork push needs.
 _PUSH_DENIED_RE = re.compile(
-    r"permission denied|denied to |not authorized|authentication failed"
-    r"|repository not found|HTTP 40[13]\b|returned error: 40[13]\b",
+    r"permission denied|denied to |not authorized"
+    r"|repository not found|HTTP 403\b|returned error: 403\b",
     re.IGNORECASE,
 )
 
@@ -260,11 +260,12 @@ def _classify_push_probe_error(stderr):
     surfaced.
 
     A non-fast-forward rejection is WRITER: the remote evaluated the ref
-    update, which it only does for an accepted credential.  A missing
-    non-interactive credential (``could not read Username`` under
+    update, which it only does for an accepted credential.  A missing or
+    rejected non-interactive credential (``could not read Username`` under
     ``GIT_TERMINAL_PROMPT=0``, ``Permission denied (publickey)`` under batch
-    mode) is a definitive denial with a credential-setup remedy.  Other
-    permission/authentication shapes are definitive denials with the fork
+    mode, ``authentication failed`` / HTTP 401 from a rejected credential) is
+    a definitive denial with a credential-setup remedy.  A repo-permission
+    denial (HTTP 403, a named denial) is a definitive denial with the fork
     remedy.  Anything else (network, DNS, odd transport) is transient and
     reads as unknown.
     """

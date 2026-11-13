@@ -35,6 +35,7 @@ from kiro_crew.mcp_gateway.backend import (
     Backend,
     _PendingRequest,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # --- MCP Apps helpers -------------------------------------------------------
 
@@ -176,8 +177,10 @@ class TestReadUiResource:
         backend = _make_backend()
 
         async def _answer(payload: dict[str, Any]) -> None:
-            # flake-ok: pre-existing one-tick yield, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            await async_wait_until(
+                lambda: bool(backend._pending_requests),
+                describe=lambda: repr(backend._pending_requests),
+            )
             await backend._route_backend_line(_line(payload))
 
         task = asyncio.create_task(
@@ -185,8 +188,7 @@ class TestReadUiResource:
         )
         with pytest.raises(RuntimeError, match="resources/read error"):
             await backend._read_ui_resource("ui://x/y.html")
-        # flake-ok: pre-existing await of the reply task, which the read above already consumed, moved verbatim
-        await task
+        await await_until(task, what="reply task after the error read")
         assert backend._pending_requests == {}
         assert _frames(backend)[0]["method"] == "resources/read"
 
@@ -196,8 +198,7 @@ class TestReadUiResource:
         task = asyncio.create_task(_deferred_route(backend, {"id": "gw-4242-1", "result": "text"}))
         with pytest.raises(RuntimeError, match="malformed result"):
             await backend._read_ui_resource("ui://x/y.html")
-        # flake-ok: pre-existing await of the reply task, which the read above already consumed, moved verbatim
-        await task
+        await await_until(task, what="reply task after the read")
 
     @pytest.mark.asyncio
     async def test_empty_contents_raises(self) -> None:
@@ -207,8 +208,7 @@ class TestReadUiResource:
         )
         with pytest.raises(RuntimeError, match="no contents"):
             await backend._read_ui_resource("ui://x/y.html")
-        # flake-ok: pre-existing await of the reply task, which the read above already consumed, moved verbatim
-        await task
+        await await_until(task, what="reply task after the read")
 
     @pytest.mark.asyncio
     async def test_contents_returned_on_success(self) -> None:
@@ -218,11 +218,11 @@ class TestReadUiResource:
             _deferred_route(backend, {"id": "gw-4242-1", "result": {"contents": [entry]}})
         )
         assert await backend._read_ui_resource("ui://x/y.html") == [entry]
-        # flake-ok: pre-existing await of the reply task, which the read above already consumed, moved verbatim
-        await task
+        await await_until(task, what="reply task after the read")
 
 
 async def _deferred_route(backend: Backend, payload: dict[str, Any]) -> None:
-    # flake-ok: pre-existing one-tick yield, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0)
+    await async_wait_until(
+        lambda: bool(backend._pending_requests), describe=lambda: repr(backend._pending_requests)
+    )
     await backend._route_backend_line(_line(payload))

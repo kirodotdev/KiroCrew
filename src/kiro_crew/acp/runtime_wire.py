@@ -13,7 +13,8 @@ Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
 ``_native_skill_projection``,
-``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``.
+``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``,
+``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -23,9 +24,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew import kiro_sandbox_conflict
+from kiro_crew.acp._frame_record import record_sent_frame
 from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.runtime_start import _cold_start_counts
-from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead
+from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead, AcpRuntimeError
 from kiro_crew.acp.transport_framing import (
     _RESPONSE_WRITE_BOUND_SECS,
     RequestWriteResult,
@@ -112,6 +115,7 @@ async def send_request(
     params: dict[str, Any],
     *,
     on_reserved: "Callable[[int], None] | None" = None,
+    before_write: Callable[[], None] | None = None,
 ) -> int:
     """Send a JSON-RPC request and return the request id.
 
@@ -122,6 +126,9 @@ async def send_request(
     ``on_reserved`` is called with the id BEFORE the write, whose ``drain()``
     can suspend: the response can reach the session queue during that
     suspension, so a caller that must claim it registers the id by then.
+    ``before_write`` runs under the write lock right before the frame is
+    written, after the dead-runtime check; whatever it raises aborts the write
+    with nothing written and the id left unrouted.
     """
     if not self._process or not self._process.stdin:
         raise AcpRuntimeDead("process not running")
@@ -155,14 +162,19 @@ async def send_request(
         # other session. On a stall _write_request_bounded marks the runtime
         # dead and raises AcpRuntimeStdinStalled (an AcpRuntimeDead) -- caught
         # below so the routing registration is dropped like any other death.
-        await self._write_request_bounded(data, req_id, method)
-    except AcpRuntimeDead:
-        self._routed_requests.pop(req_id, None)
-        raise
+        if before_write is None:
+            await self._write_request_bounded(data, req_id, method)
+        else:
+            await self._write_request_bounded(data, req_id, method, before_write=before_write)
     except (BrokenPipeError, ConnectionResetError) as exc:
         self._routed_requests.pop(req_id, None)
         self._mark_dead(f"pipe broken: {exc}")
         raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
+    except Exception:
+        # Any failure out of the write (a death, a ``before_write`` refusal) leaves
+        # nobody waiting on this id.
+        self._routed_requests.pop(req_id, None)
+        raise
 
     self._last_activity = time.monotonic()
     return req_id
@@ -194,6 +206,7 @@ async def send_notification(self: AcpRuntime, method: str, params: dict[str, Any
             data,
             bound_secs=_RESPONSE_WRITE_BOUND_SECS,
             before_write=self._refuse_write_if_dead,
+            on_written=self._record_sent,
         )
     except (BrokenPipeError, ConnectionResetError) as exc:
         self._mark_dead(f"pipe broken: {exc}")
@@ -226,6 +239,12 @@ def _refuse_write_if_dead(self: AcpRuntime) -> None:
     """
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
+
+
+def _record_sent(self: AcpRuntime, data: bytes) -> None:
+    """Feed a written request or notification to the frame recorder, gated like the read side."""
+    if self.recording_allowed:
+        record_sent_frame(self._acp_backend, data)
 
 
 def _stdin_write_lock(self: AcpRuntime) -> asyncio.Lock:
@@ -301,7 +320,12 @@ async def _write_response_bounded(
 
 
 async def _write_request_bounded(
-    self: AcpRuntime, data: bytes, request_id: int, method: str
+    self: AcpRuntime,
+    data: bytes,
+    request_id: int,
+    method: str,
+    *,
+    before_write: Callable[[], None] | None = None,
 ) -> None:
     """Write a REQUEST frame under the write lock and the same no-progress bound.
 
@@ -335,15 +359,23 @@ async def _write_request_bounded(
     the recovery resume from restored state rather than replay the prompt the
     paused backend may have consumed; a ``LOCK_STALL`` wrote no byte, so it is
     not ambiguous and its replay is safe. The method name and request id appear
-    only through ``_loggable_request_id``.
+    only through ``_loggable_request_id``. A caller's ``before_write`` runs under
+    the lock after the dead-runtime check.
     """
     assert self._process is not None and self._process.stdin is not None
+
+    def checks() -> None:
+        self._refuse_write_if_dead()
+        if before_write is not None:
+            before_write()
+
     result = await write_request_frame_bounded(
         self._process.stdin,
         self._stdin_write_lock(),
         data,
         bound_secs=_RESPONSE_WRITE_BOUND_SECS,
-        before_write=self._refuse_write_if_dead,
+        before_write=checks,
+        on_written=self._record_sent,
     )
     if result is RequestWriteResult.OK:
         return
@@ -643,6 +675,21 @@ async def _send_and_await(
     started = time.monotonic()
     try:
         result = await asyncio.wait_for(future, timeout=timeout)
+    except AcpRuntimeError as exc:
+        # The error answer to a session start. kiro-cli's own sandbox stops Crew's
+        # MCP servers starting, and its error names only the server; the hint names
+        # the setting. Exact type only: a subclass carries fields a caller reads.
+        if type(exc) is not AcpRuntimeError or method not in (
+            METHOD_SESSION_NEW,
+            METHOD_SESSION_LOAD,
+        ):
+            raise
+        hint = await asyncio.to_thread(
+            kiro_sandbox_conflict.session_start_hint, str(exc), self._acp_backend
+        )
+        if not hint:
+            raise
+        raise AcpRuntimeError(f"{exc}. {hint}") from exc
     except asyncio.TimeoutError:
         if method == METHOD_SESSION_NEW:
             # The answer may still come, and it names a session the runtime

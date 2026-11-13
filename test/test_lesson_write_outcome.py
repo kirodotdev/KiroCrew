@@ -1,26 +1,12 @@
 """What a lesson write reports, and the four surfaces that read it.
 
-A bare ``bool`` return cannot carry this: one ``False`` would mean several
-unrelated things at once -- validation refused the value, a dedup rule claimed the
-write, the submit was a no-op, or a bare re-submit deliberately kept a stored
-NOT-clause. The first group means "your lesson did not land"; the second means
-"your lesson is fine, there was nothing to do". These tests pin the outcome each
-path reports, that the result's TRUTH VALUE answers the plain bool predicate (so
-the callers that only
-branch on success are unaffected -- see ``TestWriteLessonTruthValueIsTheOldBool``), and
-that the three surfaces a human or a model reads -- the CLI, the ``/api/lessons``
-response and the ``learn_add`` tool result -- stop saying "Saved" for a write that
-stored nothing.
+A bare ``bool`` cannot carry this: ``False`` could mean "your lesson did not land"
+(refused, claimed by dedup) or "nothing to do" (a no-op, a kept NOT-clause).
 
-This file pins the volatile-fact boundary every lesson producer shares and the
-durable model-version references it lets through, then the outcome, reason and winner
-each ``write_lesson`` path reports and the result's truth value; its boundary tests
-also reach the ``learn_add`` tool and the ``api_lessons`` list where each meets that
-boundary. What the ``learn add`` CLI, the ``/api/lessons`` routes and the
-``learn_add`` tool report for each write outcome, including the rules a supersede
-removed, and what ``learn_list`` shows for a withheld row, live in
-``test_lesson_write_outcome_surfaces.py``; what the store reports and records on disk
-when a write supersedes a stored lesson lives in
+This file pins the volatile-fact boundary every lesson producer shares, the durable
+model-version references it lets through, and the outcome, reason and winner each
+``write_lesson`` path reports, plus the result's truth value. Surface reports live in
+``test_lesson_write_outcome_surfaces.py``; supersede behaviour lives in
 ``test_lesson_write_outcome_supersede.py``.
 """
 
@@ -789,10 +775,10 @@ class TestWriteLessonOutcomes:
             store.close()
 
     def test_identical_resubmit_is_unchanged_not_a_failure(self, tmp_path):
-        """The case that made the CLI write a redundant JSONL record.
+        """Nothing was written, but the lesson IS stored exactly as submitted.
 
-        Nothing was written, but the lesson IS stored exactly as submitted, so a
-        caller told "this did not land" would act on a false premise.
+        A caller told "this did not land" would act on a false premise, such as
+        the CLI writing a redundant JSONL record.
         """
         store = _store(tmp_path)
         try:
@@ -898,14 +884,10 @@ class TestWriteLessonOutcomes:
 
 
 class TestWriteLessonTruthValueIsTheOldBool:
-    """The result's TRUTH VALUE must keep answering exactly "did this write something".
+    """The result's TRUTH VALUE must answer exactly "did this write something".
 
-    This is what let the bool return be replaced outright instead of shipped beside a
-    second method. ~55 assertions and three production callers read the old answer with
-    a bare ``if``/``assert``; returning an ordinary object would have made every one of
-    them unconditionally true, silently, with no type error for mypy to catch. So
-    ``__bool__`` is load-bearing, not a convenience -- these pin it directly, and the
-    bare-truthy assertions across the lesson suites exercise it on every path.
+    Callers and many assertions branch on a bare ``if``/``assert``; without
+    ``__bool__`` every one would be true, with no type error for mypy to catch.
     """
 
     @pytest.mark.parametrize(
@@ -922,7 +904,7 @@ class TestWriteLessonTruthValueIsTheOldBool:
             store.close()
 
     def test_truth_value_is_false_for_a_no_op_resubmit(self, tmp_path):
-        """A bare ``if`` on a re-submit must still read False, as it did before."""
+        """A bare ``if`` on a re-submit must read False."""
         store = _store(tmp_path)
         try:
             assert store.write_lesson("prefer ruff over flake8", "tool")
@@ -943,10 +925,8 @@ class TestWriteLessonTruthValueIsTheOldBool:
     def test_truth_value_is_wrote_for_every_outcome(self, outcome, expect_truthy):
         """Exhaustive, so a new outcome cannot join without a decision here.
 
-        ``UNCHANGED`` is the one a reader might expect to be truthy -- the lesson IS
-        stored. It is deliberately falsy, because the predicate the old bool answered
-        was "did this call write", and every caller branching on the truth value was
-        written against that. ``stored`` is where "is my lesson in there" lives.
+        ``UNCHANGED`` is falsy though the lesson IS stored: the truth value answers
+        "did this call write". ``stored`` answers "is my lesson in there".
         """
         assert bool(LessonWriteResult(outcome)) is expect_truthy
 
@@ -959,10 +939,8 @@ class TestWriteLessonTruthValueIsTheOldBool:
     def test_wire_values_are_pinned_against_the_jsonl_store_vocabulary(self):
         """The route's JSONL branch matches these words as inline literals.
 
-        Both stores describe the same three events, and the route checks the JSONL
-        store's return against the literal words rather than importing this enum
-        (there is one reader, and the import would have no reason to be lazy). This
-        pins the enum's wire values so the two sides cannot drift apart in silence.
+        The route checks the JSONL store's return against literal words rather than
+        this enum, so the enum's wire values are pinned here to keep the two in step.
         """
         assert LessonWriteOutcome.INSERTED.value == "inserted"
         assert LessonWriteOutcome.ENRICHED.value == "enriched"
@@ -971,3 +949,37 @@ class TestWriteLessonTruthValueIsTheOldBool:
         # matches on the rule alone so it never dedups one rule against another.
         assert LessonWriteOutcome.REFUSED.value == "refused"
         assert LessonWriteOutcome.DEDUPED.value == "deduped"
+
+
+class TestConsolidationSkipsANonStringRule:
+    """The model's ``lessons`` array is untyped. A ``rule`` that is not a string
+    is skipped, and it must not abort the pass and drop the lessons after it."""
+
+    BAD_THEN_GOOD = [
+        {"rule": ["prefer", "tabs"], "category": "tool"},
+        {"rule": 42, "category": "tool"},
+        {"rule": "run the linter before committing", "category": "tool"},
+    ]
+
+    def _consolidator(self, **stores):
+        from kiro_crew.history import HistoryConsolidator
+
+        return HistoryConsolidator(log=MagicMock(), memory=MagicMock(), **stores)
+
+    def test_jsonl_tier(self, tmp_path: Path) -> None:
+        from kiro_crew.learn import LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
+        self._consolidator(lesson_store=store)._save_lessons(self.BAD_THEN_GOOD, vector_store=None)
+        assert [le.rule for le in store.load_all()] == ["run the linter before committing"]
+
+    def test_vector_tier(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        try:
+            self._consolidator()._save_lessons(
+                self.BAD_THEN_GOOD, vector_store=store, lesson_store=None
+            )
+            rules = [_rule_of(row) for row in store.get_lessons()]
+        finally:
+            store.close()
+        assert rules == ["run the linter before committing"]

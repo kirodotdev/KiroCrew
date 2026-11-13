@@ -122,6 +122,9 @@ class _Registry:
 
 _registry = _Registry()
 _limits: dict[str, int] = {}
+#: Wake-ups started and not awaited. The loop holds only a weak reference to a
+#: running task, so one that nothing else holds can be collected mid-run.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
 
 
 def _require_app(app: str) -> str:
@@ -151,7 +154,9 @@ def set_worker_slot_limit(app: str, limit: int) -> None:
         except RuntimeError:
             running = None
         if running is reg.loop:
-            reg.loop.create_task(_notify_all(reg.cond))
+            task = reg.loop.create_task(_notify_all(reg.cond))
+            _BACKGROUND_TASKS.add(task)
+            task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 async def _notify_all(cond: asyncio.Condition) -> None:

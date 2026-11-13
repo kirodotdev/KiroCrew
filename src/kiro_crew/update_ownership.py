@@ -7,9 +7,8 @@ stale-asset watchdog shuts the gateway down then, the shutdown cancels the step
 mid-write, and a cancelled installer leaves a venv without its console scripts.
 
 So each such step registers here for as long as it rewrites the install
-(:func:`step`, :func:`owning`), and so does the restart into an applied update,
-which ``_restart_after_update`` and the dashboard's ``_restart_gateway`` own for
-as long as they run. The stale-asset watchdog stands down while any entry is
+(:func:`step`, :func:`owning`), and so does the dashboard's ``_restart_gateway``,
+which owns it for as long as it runs. The stale-asset watchdog stands down while any entry is
 live. Each kind carries a generous maximum duration: an entry past it stops
 counting, with a WARNING, so a step wedged on an unbounded wait cannot switch
 the watchdog off for good.
@@ -89,6 +88,8 @@ class _Entry:
 _live: list[_Entry] = []
 _deferred_restart_until: float | None = None
 _restart_refusal: str | None = None
+#: Whether the stale-asset watchdog's import probe may clear the refusal.
+_refusal_probe_clears = True
 #: Bumped by every :func:`refuse_restart`, so evidence gathered before a
 #: refusal was recorded cannot clear it.
 _refusal_generation = 0
@@ -162,14 +163,20 @@ def clear_restart_deferral() -> None:
     _deferred_restart_until = None
 
 
-def refuse_restart(reason: str) -> None:
+def refuse_restart(reason: str, *, import_probe_clears: bool = True) -> None:
     """An update stayed up instead of restarting; a restart now would fail.
 
     Recorded once the update has moved the tree and could not sync its
-    dependencies, including when it raised after the move.
+    dependencies or build its frontend, including when it raised after the move.
+
+    *import_probe_clears* is False for a refusal an import probe cannot speak
+    for: a failed frontend build leaves a stale or missing bundle that a probe
+    of the supervisor's command does not look at, so only a later update that
+    completes clears it.
     """
-    global _restart_refusal, _refusal_generation
+    global _restart_refusal, _refusal_generation, _refusal_probe_clears
     _restart_refusal = reason
+    _refusal_probe_clears = import_probe_clears
     _refusal_generation += 1
 
 
@@ -185,10 +192,13 @@ def clear_restart_refusal(*, recorded_by: int | None = None) -> None:
     leaves the state the refusal describes on disk. The stale-asset watchdog
     clears it too, with *recorded_by*, when a probe of the supervisor's own
     command proved the relaunch would start: an install repaired out of band.
-    That clears only a refusal recorded before the probe began.
+    That clears only a refusal recorded before the probe began, and never one
+    recorded with ``import_probe_clears=False``.
     """
     global _restart_refusal
-    if recorded_by is None or recorded_by == _refusal_generation:
+    if recorded_by is None:
+        _restart_refusal = None
+    elif recorded_by == _refusal_generation and _refusal_probe_clears:
         _restart_refusal = None
 
 
@@ -219,23 +229,3 @@ def current_owner() -> str | None:
     if _deferred_restart_until is not None and now < _deferred_restart_until:
         return "a deferred restart into an applied update"
     return None
-
-
-# --- the re-entry check's verdict -------------------------------------------------
-
-
-class Reentry(enum.Enum):
-    REENTERABLE = "reenterable"
-    REFUSED = "refused"
-    INCONCLUSIVE = "inconclusive"
-
-
-@dataclass(frozen=True)
-class ReentryVerdict:
-    """Whether the gateway's supervisor could relaunch it, and why not."""
-
-    status: Reentry
-    reason: str = ""
-    #: A REENTERABLE that ran the supervisor's own command check, as opposed to
-    #: one that had nothing to check (no service manager, no check at all).
-    probed: bool = False

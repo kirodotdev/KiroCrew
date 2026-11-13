@@ -80,7 +80,13 @@ def _clean_agent_def(raw: Any) -> dict[str, Any] | None:
         "id": agent_id,
         "name": str(raw.get("name") or agent_id).strip()[:120],
         "agent": _clean_agent_ref(raw.get("agent")),
-        "widget_type": widget if widget in k.WIDGET_EXT_MAP else k.DEFAULT_WIDGET_TYPE,
+        # ``isinstance`` first: a list or object is not hashable, and testing it
+        # against the dict would raise out of the handler as a 500.
+        "widget_type": (
+            widget
+            if isinstance(widget, str) and widget in k.WIDGET_EXT_MAP
+            else k.DEFAULT_WIDGET_TYPE
+        ),
         "prompt": str(raw.get("prompt") or "").strip()[:_MAX_PROMPT],
         "enabled_by_default": bool(raw.get("enabled_by_default", True)),
         "listening_by_default": bool(raw.get("listening_by_default", True)),

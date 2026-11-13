@@ -18,6 +18,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+)
 from subagent_stop_reason_helpers import (
     _complete,
     _done_event,

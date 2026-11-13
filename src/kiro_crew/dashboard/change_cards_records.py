@@ -224,7 +224,11 @@ def rebuild_record(rec: dict[str, Any]) -> dict[str, Any] | None:
         if k != "risk" and (k != "widen" or "widen" in rec)
     ):
         return None
-    if not _same(list(catalog.KINDS[kind].editable), rec.get("editable")):
+    # A goal card stored before its Heartbeat checkbox has ["long_term"] and a
+    # snapshot with no ``heartbeat``, so it rebuilds to its own plan and keeps
+    # its history and Undo.
+    legacy_goal = kind == catalog.KIND_CREWMATE_GOAL and _same(["long_term"], rec.get("editable"))
+    if not _same(list(catalog.KINDS[kind].editable), rec.get("editable")) and not legacy_goal:
         return None
     plan = rec.get("plan")
     if not isinstance(plan, dict):

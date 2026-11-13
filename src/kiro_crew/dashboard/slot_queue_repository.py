@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -9,6 +10,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
@@ -58,10 +61,11 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: process-local plumbing (retry callbacks, synthetic payloads) or is
 #: deliberately excluded — see :func:`durable_queue_entries`.
 #:
-#: ``_directive_user_origin`` and ``_directive_channel_origin`` are NOT here, and
+#: ``_directive_user_origin``, ``_directive_channel_origin`` and
+#: ``_directive_owner_origin`` are NOT here, and
 #: their absence is a security property rather than an omission. They record that
-#: an entry's words arrived from an authenticated human, and the drain turns that
-#: into real authority: ``chat_runner`` reduces the consumed entries' flags into
+#: an entry's words arrived from an authenticated human (the owner, for the third),
+#: and the drain turns that into real authority: ``chat_runner`` reduces the consumed entries' flags into
 #: ``producer_is_user_facing``, which admits user-surface and self-arming
 #: directives and exempts them from the LINKED containment constraint. The
 #: transcript this value is written to is an ordinary readable-writable file in
@@ -81,15 +85,63 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: consumer asks instead of trying to tell the two apart from the actor alone.
 RESTORED_QUEUE_KEY = "_restored_from_disk"
 
+#: The Slack channels a channel-origin entry's words were typed in. Turn
+#: admission checks the entry's turn against these channels' configured agents.
+#: Unlike the provenance flags above, it is a RESTRICTION, never authority: it
+#: can only refuse a turn, so it is persisted (under
+#: :data:`DURABLE_SOURCE_CHANNELS_KEY`) and a restored entry is still judged by
+#: the channel its words came from. A hand edit that adds one only narrows.
+SOURCE_CHANNELS_KEY = "_directive_source_channels"
+
+#: The durable spelling of :data:`SOURCE_CHANNELS_KEY` on a persisted entry.
+DURABLE_SOURCE_CHANNELS_KEY = "source_channels"
+
+#: Stands in for a persisted source channel that cannot be read back. Admission
+#: refuses a turn that carries it: the channel the words came from is unknown,
+#: so the agent it requires cannot be established.
+UNREADABLE_SOURCE_CHANNEL = "<unreadable>"
+
+
+def stamp_source_channels(owner: Any, queue_id: str, channels: tuple[str, ...]) -> None:
+    """Record *channels* on the queued entry *queue_id*. Called right after the
+    append that returned the id, with nothing suspending between the two."""
+    clean = tuple(ch for ch in channels if isinstance(ch, str) and ch)
+    if not clean:
+        return
+    for item in getattr(owner, "_queue", None) or ():
+        if isinstance(item, dict) and item.get("id") == queue_id:
+            item[SOURCE_CHANNELS_KEY] = clean
+            return
+
+
+def source_channels_of(item: Any) -> tuple[str, ...]:
+    """The source channels stamped on a queue entry; empty when none are."""
+    raw = item.get(SOURCE_CHANNELS_KEY) if isinstance(item, dict) else None
+    if not isinstance(raw, tuple):
+        return ()
+    return tuple(ch for ch in raw if isinstance(ch, str) and ch)
+
+
+#: Marks a restored entry the user picked with a card's "run this next" while a
+#: turn was running. That click promotes the card and stops the turn, and the
+#: turn's end drains the queue with no card named, so the drain reads this mark
+#: to run the chosen card instead of holding it like every other restored entry.
+#: Process-local for the same reason as :data:`RESTORED_QUEUE_KEY`: the writer
+#: never emits it, so a restart forgets the choice and the card waits again.
+RESTORED_SEND_CHOSEN_KEY = "_restored_send_chosen"
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
     "meta",
+    # A tab can hold a card at its last revision across a restart; restoring the
+    # counter keeps the next edit above it, so the tab's ordering guard accepts it.
+    "edit_rev",
 )
 
 
 def _is_durable_queue_entry(item: Any) -> bool:
-    """True when *item* is a plain user prompt a restart may hand back.
+    """True when *item* is a queued prompt a restart may hand back.
 
     The queue holds two populations and only one of them survives its process.
     A plain user prompt is the user's own words, waiting for the running turn
@@ -107,7 +159,17 @@ def _is_durable_queue_entry(item: Any) -> bool:
     - an entry carrying a ``kind`` is an injection whose producer is gone: a
       cron notification, a subagent completion, a plan approval. Its content
       names an event, and a restart is not that event happening again.
+
+    One kind is the exception: a heartbeat prompt (``HEARTBEAT_PROMPT_KIND``)
+    carries a finished task's report, which nothing else delivers into this
+    chat, so it is kept as the plain prompt it would be without the kind. The
+    writer emits no kind (:data:`_DURABLE_QUEUE_KEYS`) and the reader restores
+    none (:func:`sanitize_restored_queue`), so the restored entry is that plain
+    prompt: what a heartbeat prompt queued with no kind restores as.
     """
+    # circular import: chat_utils_injected_rows imports this module.
+    from kiro_crew.dashboard.chat_utils_injected_rows import HEARTBEAT_PROMPT_KIND
+
     if not isinstance(item, dict):
         return False
     content = item.get("content")
@@ -117,7 +179,8 @@ def _is_durable_queue_entry(item: Any) -> bool:
         return False
     if item.get("payload"):
         return False
-    if item.get("kind"):
+    kind = item.get("kind")
+    if kind and kind != HEARTBEAT_PROMPT_KIND:
         return False
     return True
 
@@ -165,6 +228,10 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
             continue
+        # The source channel rides along as a restriction (SOURCE_CHANNELS_KEY).
+        channels = source_channels_of(item)
+        if channels:
+            entry[DURABLE_SOURCE_CHANNELS_KEY] = list(channels)
         cost = len(json.dumps(entry))
         if cost > budget:
             continue
@@ -208,10 +275,6 @@ def warn_if_not_durable(queue: list[dict[str, Any]], entry_id: str, slot_key: st
     large prompt can be refused at position 3 — so anything that re-implemented
     them here would answer differently from the writer for exactly the entries
     this exists to report.
-
-    Not a receipt field. A caller-visible ``durable`` boolean on the enqueue
-    acknowledgments has no reader, so it is not shipped; the on-screen queue-card
-    marker belongs with its consumer.
     """
     if not entry_id:
         return False
@@ -235,6 +298,13 @@ def warn_if_not_durable(queue: list[dict[str, Any]], entry_id: str, slot_key: st
         len(kept),
     )
     return False
+
+
+def refused_durable_ids(queue: list[dict[str, Any]]) -> set[str]:
+    """The ids of the queued user prompts the durable write will not keep, read off
+    :func:`durable_queue_entries`' own output as :func:`warn_if_not_durable` is."""
+    kept = {entry["id"] for entry in durable_queue_entries(queue)}
+    return {item["id"] for item in queue if _is_durable_queue_entry(item)} - kept
 
 
 def durable_queue_view(queue: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -275,6 +345,26 @@ def queue_persist_signature(entries: list[dict[str, Any]]) -> str:
 EMPTY_QUEUE_SIGNATURE = queue_persist_signature([])
 
 
+def _restored_source_channels(item: dict[str, Any]) -> tuple[str, ...]:
+    """The source-channel restriction of a persisted entry.
+
+    Restored because it can only refuse a turn. A value present but not a list
+    of channel ids fails closed to :data:`UNREADABLE_SOURCE_CHANNEL`, which
+    admission refuses; an absent key restores no restriction.
+    """
+    if DURABLE_SOURCE_CHANNELS_KEY not in item:
+        return ()
+    raw = item.get(DURABLE_SOURCE_CHANNELS_KEY)
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or len(raw) > 8
+        or not all(isinstance(ch, str) and ch and len(ch) <= 64 for ch in raw)
+    ):
+        return (UNREADABLE_SOURCE_CHANNEL,)
+    return tuple(raw)
+
+
 def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     """Validate a persisted ``queued_prompts`` value back into queue entries.
 
@@ -285,7 +375,8 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     callback key, because each of those changes what the drain DOES with it.
 
     Provenance is dropped for the same reason and matters most:
-    ``_directive_user_origin``, ``_directive_channel_origin`` and the entry's
+    ``_directive_user_origin``, ``_directive_channel_origin``,
+    ``_directive_owner_origin`` and the entry's
     ``meta`` turn actor are never restored, so a restored entry is non-directive
     and actor-less by construction. The drain
     reduces the consumed entries' flags into the authenticated-human authority a
@@ -328,6 +419,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
     from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+    from kiro_crew.dashboard.chat_utils_injected_rows import COMPOSER_SEND_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
@@ -364,13 +456,19 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # empty kind is what keeps them out of the system-injection paths.
             "kind": "",
             # PROCESS-LOCAL, and never round-trips: the writer admits only
-            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta), so this key cannot be
+            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta, edit_rev), so this key cannot be
             # set by editing the line -- which is the whole point of having it.
             # It records that this entry's provenance was established by a
             # previous process and cannot be vouched for by this one, which is
             # what :data:`RESTORED_QUEUE_KEY` is read for.
             RESTORED_QUEUE_KEY: True,
         }
+        edit_rev = item.get("edit_rev")
+        if isinstance(edit_rev, int) and not isinstance(edit_rev, bool) and edit_rev > 0:
+            entry["edit_rev"] = edit_rev
+        restriction = _restored_source_channels(item)
+        if restriction:
+            entry[SOURCE_CHANNELS_KEY] = restriction
         meta = item.get("meta")
         if isinstance(meta, dict):
             # The admission-time containment snapshot is stripped for the same
@@ -416,6 +514,11 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # blast radius: it names a conversation on a network surface and the
             # drop notice would carry the entry's text there, so an edited stamp
             # would turn a file write into an outbound channel message.
+            #
+            # The COMPOSER SEND mark goes too: it lets an entry drain past the
+            # sub-agent hold (``releases_past_subagent_hold``), a path that never
+            # runs the drain's containment sweep. Restored, a composer send is
+            # an ordinary card that waits for the user like every other one.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -425,6 +528,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
+                    COMPOSER_SEND_META,
                 )
             }
         try:
@@ -453,6 +557,89 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             len(entries),
         )
     return entries
+
+
+async def drain_restored_parked_sends(state: Any) -> None:
+    """Resume accepted parked sends after slot restore, through the ordinary drain.
+
+    Ordinary restored cards still wait for a person. A durable parked work row
+    proves this card was accepted for dispatch; it grants no authority to its
+    restored metadata. The drain revalidates containment and admits it afresh.
+    """
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.shared_crew import admission_gate, host_hooks
+    from kiro_crew.shared_crew.admission import OperationState, ReasonCode
+    from kiro_crew.shared_crew.admission_entry import queued_work_ids
+
+    service = admission_gate.installed_service()
+    if service is None or not service.enabled:
+        return
+    await service.ensure_ready()
+    await host_hooks.deliver_owed_notes(state)
+    accepted: dict[str, frozenset[str]] = {}
+    for slot in list(state._slots.values()):
+        queue_ids: set[str] = set()
+        for entry in list(slot._queue):
+            if not entry.get(RESTORED_QUEUE_KEY):
+                continue
+            for work_id in queued_work_ids([entry]):
+                work = await service.current_work(work_id)
+                if (
+                    work is not None
+                    and work.session_key == effective_session_key(slot)
+                    and work.extra.get(admission_gate.PARKED_KEY)
+                    and work.runtime is None
+                    and work.state is OperationState.CANCELLED
+                    and work.reason in (None, ReasonCode.CANCELLED_BY_USER)
+                ):
+                    queue_ids.add(entry["id"])
+                    break
+        if queue_ids:
+            accepted[slot.key] = frozenset(queue_ids)
+    from kiro_crew.dashboard.chat_runner import _RESTORED_DRAIN_IDS
+    from kiro_crew.memory_startup import memory_startup_preparing
+
+    token = _RESTORED_DRAIN_IDS.set(accepted)
+    try:
+        keys = list(accepted)
+        memory_task = state.memory_startup_task
+        if keys and (
+            (memory_task is None and memory_startup_preparing())
+            or (memory_task is not None and not memory_task.done())
+        ):
+            task = asyncio.create_task(_drain_after_memory_task_publication(state, keys))
+            state._background_tasks.add(task)
+            task.add_done_callback(state._background_tasks.discard)
+        else:
+            await _drain_parked_queues(state, keys)
+    finally:
+        _RESTORED_DRAIN_IDS.reset(token)
+
+
+# Startup publishes the memory task after restoring slots; there is no event for that assignment.
+_MEMORY_TASK_POLL_SECONDS = 0.1
+
+
+async def _drain_after_memory_task_publication(state: Any, keys: list[str]) -> None:
+    """Hand restored sends to the ordinary memory wait once startup publishes its task."""
+    from kiro_crew import shutdown_event
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.memory_startup import memory_startup_preparing
+
+    while state.memory_startup_task is None and memory_startup_preparing():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=_MEMORY_TASK_POLL_SECONDS)
+            return
+        except asyncio.TimeoutError:
+            pass
+    if state.memory_startup_task is not None:
+        try:
+            await asyncio.shield(state.memory_startup_task)
+        except Exception:
+            logger.warning("Memory preparation failed; restored sends remain queued", exc_info=True)
+            return
+    await _drain_parked_queues(state, keys)
 
 
 def _delivery_key(content: str) -> str:
@@ -623,6 +810,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -639,6 +827,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if directive_owner_origin:
+            item["_directive_owner_origin"] = True
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -661,6 +851,7 @@ class SlotQueueRepository:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -682,6 +873,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if directive_owner_origin:
+            item["_directive_owner_origin"] = True
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -743,6 +936,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -760,14 +954,20 @@ class SlotQueueRepository:
             # the linked-thread mirror suppressed, so a human on the mirrored
             # channel never sees what the user typed. Refused, not re-kinded:
             # the entry is not a user prompt to begin with. Scoped to the app
-            # kind alone: other system kinds (queued cron text among them)
-            # were editable before this endpoint existed, and taking that
-            # away is not this feature's call. The frontend pencil gate
-            # (`isAppMessageQueued`) withholds exactly this same set.
+            # kind and the gateway's own prompts (a workflow follow-up, a
+            # heartbeat prompt): other system kinds (queued cron text among
+            # them) were editable before this endpoint existed, and taking that
+            # away is not this feature's call. The frontend withholds the same
+            # set: the app card's pencil (`isAppMessageQueued`), a gateway
+            # prompt's whole card (`isNonInteractiveQueued`).
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
-            from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+            from kiro_crew.dashboard.chat_utils_injected_rows import (
+                AUTOMATION_STEER_META,
+                GATEWAY_PROMPT_INJECT_KINDS,
+            )
 
-            if item.get("kind") == MCP_APP_MESSAGE_KIND:
+            kind = item.get("kind")
+            if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors
@@ -789,10 +989,23 @@ class SlotQueueRepository:
             else:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
-            # Replacement words belong to the editor, not the automation that queued them.
+            # Replacement words belong to the editor, not the automation that
+            # queued them, nor the peer session whose ``session_send`` did (its
+            # ``relay`` would draw the editor's words as that session's message).
             meta = item.get("meta")
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
+                meta.pop("relay", None)
+                # The label summarized the old text; an edited row shows its own.
+                if previous != item["content"]:
+                    meta.pop("banner", None)
+            if item["content"] != previous and isinstance(item.get("meta"), dict):
+                # A code channel's Slack sender names whose words these are;
+                # replacement text is the editor's, so the name goes.
+                item["meta"].pop("slack_sender", None)
+                # Nor are the editor's words in the linked thread, so they echo.
+                item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+            item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:
@@ -801,6 +1014,13 @@ class SlotQueueRepository:
                 item["_directive_channel_origin"] = True
             else:
                 item.pop("_directive_channel_origin", None)
+            # The replacement words are the EDITOR's, so the owner mark follows
+            # the editor too: an owner's queued entry rewritten by another
+            # dashboard user drains without it.
+            if directive_owner_origin:
+                item["_directive_owner_origin"] = True
+            else:
+                item.pop("_directive_owner_origin", None)
             return True
         return False
 

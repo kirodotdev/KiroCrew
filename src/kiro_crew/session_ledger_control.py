@@ -367,9 +367,12 @@ def _read_lines(
     coming back short: a caller that rewrites what it reads would otherwise persist the
     truncation, which is a silent loss rather than a bounded read.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     try:
         with path.open("r", encoding="utf-8") as fh:
-            text = fh.read(limit + 1)
+            text = bounded_read(fh, limit + 1)
     except FileNotFoundError:
         return ()
     if len(text) > limit:
@@ -684,10 +687,14 @@ def _note_unit_order(slot_key: str, session_id: str, *, order_file: str = _UNIT_
         logger.warning("ledger: could not record this slot's unit order", exc_info=True)
 
 
-def note_work_unit_recorded(slot_key: str, session_id: str) -> None:
-    """Publish that *session_id* just appended a work record under its slot."""
+def note_work_unit_recorded(slot_key: str, session_id: str, *, canonical: str = "") -> None:
+    """Publish that *session_id* just appended a work record under its slot.
+
+    *canonical* is :func:`canonical_slot` already read by a caller off the writer (the
+    board relay), so the append job does not read the unit's header again.
+    """
     _note_unit_order(
-        canonical_slot(slot_key, session_id),
+        canonical or canonical_slot(slot_key, session_id),
         session_id,
         order_file=_WORK_UNIT_ORDER_FILE,
     )
@@ -724,8 +731,9 @@ def newest_work_unit(slot_key: str) -> str:
 def work_crew_log_units(slot_key: str) -> tuple[str, ...]:
     """Work-record units for *slot_key* in causal append order, oldest first.
 
-    Units absent from the bounded order tail predate every retained unit and fold
-    first. Listing failures fail closed because this runs on a loop-cycle read path.
+    Units absent from the bounded order tail fold first, except the slot's newest unit
+    by succession, which folds last (:func:`_causal_units`). Listing failures fail
+    closed because this runs on a loop-cycle read path.
     """
     if not slot_key:
         return ()
@@ -734,11 +742,7 @@ def work_crew_log_units(slot_key: str) -> tuple[str, ...]:
 
         units = session_units_for_slot(slot_key)
         recorded = _recorded_unit_order(slot_key, order_file=_WORK_UNIT_ORDER_FILE)
-        if recorded:
-            known = [unit for unit in recorded if unit in units]
-            rest = [unit for unit in units if unit not in recorded]
-            units = tuple(rest + known)
-        return units
+        return _causal_units(slot_key, units, recorded)
     except Exception:
         logger.warning("work ledger: could not list this slot's crew logs", exc_info=True)
         return ()
@@ -756,8 +760,9 @@ def note_panel_unit_recorded(slot_key: str, session_id: str) -> None:
 def panel_crew_log_units(slot_key: str) -> tuple[str, ...]:
     """Panel units for *slot_key* in causal append order, oldest first.
 
-    Units absent from the bounded order tail predate every retained unit and fold
-    first. Listing failures fail closed, which for the panel costs the history and not
+    Units absent from the bounded order tail fold first, except the slot's newest unit
+    by succession, which folds last (:func:`_causal_units`). Listing failures fail
+    closed, which for the panel costs the history and not
     the panel: the file is the durable record and the read falls back to it.
     """
     if not slot_key:
@@ -767,14 +772,37 @@ def panel_crew_log_units(slot_key: str) -> tuple[str, ...]:
 
         units = session_units_for_slot(slot_key)
         recorded = _recorded_unit_order(slot_key, order_file=_PANEL_UNIT_ORDER_FILE)
-        if recorded:
-            known = [unit for unit in recorded if unit in units]
-            rest = [unit for unit in units if unit not in recorded]
-            units = tuple(rest + known)
-        return units
+        return _causal_units(slot_key, units, recorded)
     except Exception:
         logger.warning("panel: could not list this slot's crew logs", exc_info=True)
         return ()
+
+
+def _causal_units(
+    slot_key: str, units: "tuple[str, ...]", recorded: "tuple[str, ...]"
+) -> "tuple[str, ...]":
+    """*units* (header order) reordered by the *recorded* order tail, oldest first.
+
+    A unit missing from the tail folds BEFORE the recorded units -- it is either older
+    than all of them or evicted from the bounded tail -- except the slot's NEWEST unit
+    by durable succession (``previous_sid``, not the header clock), which folds last.
+    That unit is a reset's new session that has not recorded yet, or whose order write
+    failed. Listing it last keeps the list an append through the reset's open and
+    first record, so the warm cell and the savepoint carry over instead of refolding
+    the slot cold. Succession rather than ``createdAt`` decides it, so an evicted unit
+    whose header a backward clock step made "newest" still folds first.
+    """
+    if not recorded:
+        return units
+    known = [unit for unit in recorded if unit in units]
+    rest = [unit for unit in units if unit not in recorded]
+    if not known or not rest:
+        return tuple(rest + known)
+    from kiro_crew.crew_log.projection_readers import newest_unit_in_succession
+
+    newest = newest_unit_in_succession(slot_key)
+    last = [newest] if newest in rest else []
+    return tuple([unit for unit in rest if unit not in last] + known + last)
 
 
 def _rewrite_lines(path: Path, lines: "tuple[str, ...]") -> None:

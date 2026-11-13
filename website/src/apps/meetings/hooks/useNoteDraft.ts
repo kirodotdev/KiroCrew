@@ -94,6 +94,15 @@ function isPermanentSaveRefusal(error: unknown): boolean {
  */
 type FlushMode = 'normal' | 'exit' | 'unload' | 'pagehide'
 
+/**
+ * The server answered with the note as stored, having dropped this save because a
+ * NEWER one from the same page was already on disk (see
+ * `useMeetingSession`'s note order).
+ */
+function isSuperseded(response: unknown): boolean {
+  return typeof response === 'object' && response !== null && (response as { superseded?: unknown }).superseded === true
+}
+
 /** Quiet period after the last keystroke before a save fires. */
 export const SAVE_DEBOUNCE_MS = 800
 
@@ -107,7 +116,9 @@ interface Options {
   /** The GET failed. Every save path stays shut: the field is empty because the note
    *  could not be read, not because it is empty, and saving would overwrite it. */
   loadFailed: boolean
-  /** Sends one save. Resolves when the server ACKNOWLEDGED it, rejects on refusal. */
+  /** Sends one save. Resolves when the server ACKNOWLEDGED it, rejects on refusal.
+   *  An answer carrying `superseded: true` means the server kept a newer save from
+   *  this page instead, and does not move the baseline. */
   save: (content: string) => Promise<unknown>
   /** Sends one save at once, never queued behind another: the `pagehide` save. */
   saveNow: (content: string) => Promise<unknown>
@@ -258,8 +269,11 @@ export function useNoteDraft({
     void (async () => {
       let landed = false
       try {
-        await (direct ? saveNowRef : saveRef).current(text)
+        const response = await (direct ? saveNowRef : saveRef).current(text)
         landed = true
+        // A superseded save was dropped because a NEWER one from this editor is
+        // already on disk; that newer save's own answer moves the baseline.
+        if (isSuperseded(response)) return
         if (meetingIdRef.current === sendMeetingId && seq > ackedSeqRef.current) {
           ackedSeqRef.current = seq
           permanentRefusalRef.current = false

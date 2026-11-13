@@ -1,11 +1,13 @@
 import type { NavigateFunction } from 'react-router-dom'
 import { useCallback, useState, useRef, useEffect, useMemo, type RefObject, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
-import { useAppSelector, store, type AppDispatch } from '../../../store'
+import { useAppSelector, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { useWindowWidth } from '../../../hooks/useWindowWidth'
 import { useRailWidth } from '../../../hooks/useRailWidth'
-import { openActivityToTab, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity, setVoiceAudio } from '../../../store/chatSlice'
+import { openActivityToTab, openActivityPanel, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity } from '../../../store/chatSlice'
+import { TOGGLE_SIDE_TERMINAL_EVENT } from '../../../lib/panelToggleShortcuts'
+import { usePanelTerminalsPending } from '../../../hooks/usePanelTabs'
 import { useSelectionQuoteAsk } from '../../../chat-core/composer/selectionActions'
 import { api, type PlanStepInput } from '../../../api/client'
 import { safeSetItem } from '../../../utils/safeStorage'
@@ -18,6 +20,7 @@ import { clampSidebarWidth } from '../sidebarWidth'
 import { revealComposer } from '../composerFocus'
 import { rewindWithRollback } from '../../../lib/rewindCall'
 import { i18nT } from '../../../i18n/t'
+import { speakReply } from '../speakReply'
 
 interface PageSelectionActionsOptions {
   dispatch: AppDispatch
@@ -103,8 +106,10 @@ export function useMessageActions({
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
   // frame, and this callback feeds the transcript renderers memo, so a
   // `messages` dep re-rendered every mounted row on every frame.
-  const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
-    if (!activeSlot || slotRunning || activeSlotRemoteBound) return
+  // `false` when nothing is sent: an editor opened before a turn started stays
+  // open with Send enabled, and UserMessage keeps it (and its draft) only on false.
+  const handleEditResend = useCallback((index: number, ts: string, newContent: string): boolean | void => {
+    if (!activeSlot || slotRunning || activeSlotRemoteBound) return false
     const snapshot = [...messagesRef.current]
     dispatch(truncateAfterIndex(index))
     dispatch(appendMessage({ role: 'user', content: newContent, cls: '', ts: new Date().toISOString() }))
@@ -253,6 +258,24 @@ export function useMessageActions({
     window.addEventListener('toggle-activity-panel', h)
     return () => window.removeEventListener('toggle-activity-panel', h)
   }, [toggleAct])
+  // A closed/search-covered panel only reveals an existing, restored terminal.
+  // A ready, visible SidePanel handles focusing or creating a terminal itself.
+  const searchOpen = search.isOpen
+  const closeSearch = search.close
+  const terminalsPending = usePanelTerminalsPending()
+  useEffect(() => {
+    if (activityOpen && !searchOpen) return
+    const h = () => {
+      if (searchOpen) closeSearch()
+      if (!terminalsPending) {
+        const last = tabsCtl.tabs.filter(t => t.kind === 'terminal').at(-1)
+        if (last) tabsCtl.setActive(last.id)
+      }
+      dispatch(openActivityPanel())
+    }
+    window.addEventListener(TOGGLE_SIDE_TERMINAL_EVENT, h)
+    return () => window.removeEventListener(TOGGLE_SIDE_TERMINAL_EVENT, h)
+  }, [activityOpen, searchOpen, closeSearch, terminalsPending, tabsCtl, dispatch])
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
@@ -278,20 +301,7 @@ export function useMessageActions({
   // renderer. Both read live state from a ref / the store rather than closing over
   // it, so neither needs a dependency that churns while a turn streams.
   const handleSpeak = useCallback((content: string) => {
-    if (store.getState().chat.voicePlaying) {
-      window.dispatchEvent(new Event('voice-stop'))
-      dispatch(setVoiceAudio(null))
-      return
-    }
-    dispatch(setVoiceAudio(null))
-    // A synthesis still loading its model has no playing audio yet, but owns
-    // the same output channel. Replace it before starting a manual request.
-    window.dispatchEvent(new Event('voice-stop'))
-    // clientFallback: on a headless remote gateway that cannot synthesize
-    // (voice_unavailable), speak the reply with the webview's own engine instead
-    // of only showing an error notice. A working gateway never emits that code,
-    // so this leaves the normal path untouched.
-    api.voiceSynthesize(activeSlotRef.current || '', content, { clientFallback: true }).catch(() => {})
+    speakReply(dispatch, activeSlotRef.current || '', content)
   }, [dispatch, activeSlotRef])
 
   const handleApplyPlan = useCallback(async (steps: PlanStepInput[]) => {

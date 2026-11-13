@@ -1,15 +1,10 @@
 """A transcript row records the MCP App this tool call produced.
 
-The render payload is live-only by design: it goes out on the owner-only
-WebSocket, carries the app's callback capability, and its spool record expires.
-A stored transcript holds nothing that can rebuild the frame, so a reader can
-have the turn's prose describing an artifact they cannot see. The row's durable
-flag is what lets the dashboard say the app exists.
+The render payload is live-only (owner-only WebSocket, callback capability, expiring
+spool record), so the row's durable flag is what lets the dashboard say the app exists.
 
-These drive the real ``dashboard.chat_runner._run_chat`` turn loop with a fake
-ACP client, so what they measure is the flag a REPLAY reads off disk rather
-than a reimplementation of the write. The harness mirrors
-``test_acp_tool_identity.TestChatRunnerDirectiveSeam``.
+These drive the real ``dashboard.chat_runner._run_chat`` turn loop with a fake ACP
+client, mirroring ``test_acp_tool_identity.TestChatRunnerDirectiveSeam``.
 """
 
 from __future__ import annotations
@@ -131,11 +126,9 @@ def _events(marker: str) -> list[AcpEvent]:
 def _events_two_rows(marker: str) -> list[AcpEvent]:
     """One call, TWO transcript rows -- the auto-approved shape.
 
-    An auto-approved tool is announced twice (the pending pill, then the
-    approved one) under a single ``tool_call_id``, so the turn appends two rows
-    and flags both. Any assertion about WHICH of an occurrence's rows is the lead
-    needs at least two, or writing the marker once and writing it on every row
-    are indistinguishable.
+    An auto-approved tool is announced twice under one ``tool_call_id``. Tests about
+    which row is the lead need two rows, or marking once and marking every row look
+    the same.
     """
     return [
         AcpEvent(
@@ -201,17 +194,10 @@ class TestAClaimedAppIsRecordedOnItsRow:
     def test_a_slot_key_past_the_claim_bound_still_takes_the_claim(self, tmp_path, spool):
         """A key the claim cannot encode costs the recovery, never the app.
 
-        The claim body bounds the slot key's length. FAILING the write when a key exceeds
-        it propagates to the blanket handler around the claim, which strips the marker and
-        records nothing -- so both halves go at once: no frame goes out AND the row
-        carries no flag, leaving nothing to recover from either. Omitting the key from the
-        body gives up only the restore-time attribution, so the claim is still taken here
-        and the caller still renders.
-
-        Pinned at the claim rather than through a driven turn: a key this long cannot
-        reach the turn harness, because the session file it would be named after exceeds
-        the filesystem's own filename limit. The claim is written to the spool under the
-        record id, so it does not depend on that file.
+        Failing the write would make the blanket handler strip the marker (no frame, no
+        flag); omitting the key loses only restore-time attribution. Pinned at the claim:
+        a key this long cannot reach the turn harness, as its session file name would
+        exceed the filename limit.
         """
         overlong = "dashboard:" + "k" * 600
         assert len(overlong) > mcp_apps_render._MAX_SLOT_KEY_LEN
@@ -228,16 +214,12 @@ class TestAClaimedAppIsRecordedOnItsRow:
 class TestTheFlagAlsoReachesOpenClients:
     @pytest.mark.asyncio
     async def test_a_live_meta_patch_carries_the_flag(self, tmp_path, spool):
-        """`chat.mcpApps` is a BOUNDED cache, so a session that opens many apps
-        evicts an older payload while its row is still on screen. Storing the
-        flag alone would leave that row blank until a reload, so the flag is also
-        pushed as a `chat_message_update` patch.
+        """A live `chat_message_update` patch carries the flag to open clients.
 
-        The patch carries ONLY the flag: the reducer merges meta, and the row's
-        output is capped at 1 MB and already delivered by its own event. It is
-        addressed by the row's own ``ts`` rather than by tool-call id, because an
-        auto-approved call has two rows sharing that id and the client's reducer
-        patches only the newest of them.
+        `chat.mcpApps` is a bounded cache, so an older payload can be evicted while its
+        row is on screen. The patch carries only the flag and is addressed by the row's
+        ``ts``: an auto-approved call has two rows sharing the tool-call id and the
+        reducer patches only the newest.
         """
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("app-patch")
@@ -289,15 +271,11 @@ class TestTheFlagAlsoReachesOpenClients:
 class TestNoViewerStillRecordsTheApp:
     @pytest.mark.asyncio
     async def test_zero_owner_sockets_still_records_it(self, tmp_path, spool):
-        """An unattended run has no dashboard attached, and
-        ``broadcast_ws_owners`` returns early when no owner socket is registered,
-        so the payload reaches no browser. The row is still flagged, and that is
-        the decision rather than an oversight: gating on a delivered count would
-        write nothing for exactly the run where the reader arrives afterwards and
-        most needs to be told the app exists.
+        """An unattended run with no owner socket still flags the row.
 
-        This leaves the real ``broadcast_ws_owners`` in place, unstubbed, so the
-        zero-delivery path is the shipped one rather than a fake.
+        ``broadcast_ws_owners`` returns early with no owner socket, so no browser gets
+        the payload. Gating on a delivered count would write nothing for exactly the run
+        whose reader arrives later. The real ``broadcast_ws_owners`` stays unstubbed.
         """
         state = _stub_state(tmp_path)
         del state.broadcast_ws_owners  # fall through to the real method
@@ -366,14 +344,10 @@ class TestNothingIsFlaggedWithoutAClaim:
 class TestAPreservedRowSharingTheIdIsNotFlagged:
     """A reset that keeps the transcript must not let an old row take the flag.
 
-    A project change recreates the session without clearing ``slot.messages``,
-    so a historical tool row survives it. ``tool_call_id`` is the BACKEND's id
-    and session-local, so the call after that reset can legitimately be issued
-    an id the old row already holds. Selecting rows by id alone then returns
-    both, and the flag is written to both -- permanently, since it is never
-    written ``False``. Because the client draws the notice on the FIRST flagged
-    row for an id, the stale row would answer for the app and the row that
-    actually has it would be passed over.
+    A project change keeps ``slot.messages``, and ``tool_call_id`` is the backend's
+    session-local id, so a new call can reuse an old row's id. The flag is never written
+    ``False`` and the client draws on the first flagged row for an id, so the stale row
+    would answer for the app.
     """
 
     @pytest.mark.asyncio
@@ -444,12 +418,9 @@ class TestAPreservedRowSharingTheIdIsNotFlagged:
     async def test_the_claim_records_only_the_row_from_this_turn(self, tmp_path, spool):
         """The DURABLE half: the sidecar must not name the preserved row.
 
-        The claim is what a later replay is attributed against, so a stale row's
-        ``ts`` written into it outlives this turn: the next time that row reaches
-        the seam the claim answers ``spent`` instead of ``inert``, and the row
-        that never had an app is flagged as though it had lost one. The stored
-        flag and the live patch above are both same-turn, so neither can see
-        this; only the sidecar's own content can.
+        A stale row's ``ts`` in the claim would make a later replay answer ``spent``
+        instead of ``inert`` and flag a row that never had an app. Only the sidecar's
+        content shows this; the stored flag and live patch are same-turn.
         """
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("app-reused-id-claim")
@@ -482,16 +453,10 @@ class TestAPreservedRowSharingTheIdIsNotFlagged:
 class TestOneRowPerOccurrenceIsMarkedTheLead:
     """The client draws the notice on ONE row per call, and the backend picks it.
 
-    An auto-approved call appends a pre- and a post-approval row under one
-    ``tool_call_id`` and both are flagged, so something must choose between them
-    or one lost app reads as two. That choice cannot be derived on the client: a
-    pre-reset row that had its own app keeps ``mcp_app`` for good -- the flag is
-    never written ``False`` -- so any rule picking the earliest flagged row for an
-    id answers with that stale row. Keying on the earliest row for the id drew
-    nothing at all (the stale row is unflagged), and keying on the earliest
-    FLAGGED row suppressed the newer app's notice whenever the stale row had had
-    an app. Only the turn that appended the rows knows which are its own, so the
-    turn stamps the lead.
+    An auto-approved call has two flagged rows under one ``tool_call_id``. The client
+    cannot choose: a pre-reset row keeps ``mcp_app`` for good, so any earliest-row rule
+    can pick a stale row. Only the turn that appended the rows knows its own, so it
+    stamps the lead.
     """
 
     @pytest.mark.asyncio
@@ -552,11 +517,9 @@ class TestOneRowPerOccurrenceIsMarkedTheLead:
 class TestTheClaimIsReadWithTheKeyItWasWrittenUnder:
     """A claim records the CANONICAL producing session, not the bare slot key.
 
-    ``_take_claim`` is handed ``binding_key``, so that is what the claim body
-    records, while the bare slot key is what every other chat event routes on. A
-    restore asking with the bare key matches nothing and recovers nothing, in
-    silence. The reader takes a KEY, so what needs pinning is every caller that
-    CHOOSES one -- there are three, and one of them has no slot to ask.
+    ``_take_claim`` is handed ``binding_key``, while chat events route on the bare slot
+    key, so a restore asking with the bare key silently recovers nothing. These pin each
+    of the three callers that choose the key; one has no slot to ask.
     """
 
     class _Slot:
@@ -646,20 +609,10 @@ class TestTheClaimIsReadWithTheKeyItWasWrittenUnder:
     async def test_an_unbound_channel_slot_is_asked_for_what_the_write_used(self, monkeypatch):
         """The fallback must be ``effective_session_key``'s, not the transcript's.
 
-        A channel-born slot the dashboard could not bind has an EMPTY
-        ``linked_session_key`` -- ``surface_channel_session`` surfaces it unbound
-        rather than guess a key the channel never reads. That is the one case where
-        the two candidate fallbacks disagree, because ``slot_transcript_key``
-        returns a channel stem unchanged while ``_history_key_for`` prefixes
-        ``dashboard:``.
-
-        The write side settles it: ``chat_runner`` claims with
-        ``producing_session_key=effective_session_key(slot)``, so that is the key
-        the claim is filed under and the only key a read can match. Asking with the
-        bare stem finds nothing and recovers nothing, in silence. This has to be
-        asserted HERE, at the call site that chooses the key, because the sibling
-        test above drives ``session_key_for`` directly and a call site swapped to
-        the transcript key passes it untouched.
+        An unbound channel-born slot has an empty ``linked_session_key``; there
+        ``slot_transcript_key`` returns the channel stem while ``_history_key_for``
+        prefixes ``dashboard:``. ``chat_runner`` claims with
+        ``producing_session_key=effective_session_key(slot)``, so only that key matches.
         """
         built = self._Slot()
         built.key = "slack_1700000000.1"
@@ -735,16 +688,10 @@ class TestARecoveredFlagIsLeftToBeSaved:
 class TestTargetedRehydrationRecoversToo:
     """One slot rebuilt on demand recovers, the same as a bulk restore.
 
-    ``rehydrate_slot_from_history_async`` is the ONLY way anything outside
-    ``chat_persistence`` rebuilds a single slot from disk, and it has eight such
-    callers. Wiring them one at a time is how the bulk drivers were first done and
-    two of four were missed, so the recovery sits inside this function and these
-    pin it there: the first drives the REAL reader against a real claim on disk,
-    so a recovery removed from the wrapper cannot pass by stubbing.
-
-    The live-slot early return is pinned the other way. Nothing was read from disk
-    on that path and the flags are already in memory, so a spool scan there would
-    be paid per cache hit on a lookup ``messaging`` documents as O(1).
+    ``rehydrate_slot_from_history_async`` is the only single-slot rebuild and has eight
+    callers, so the recovery lives inside it; the first test drives the real reader
+    against a claim on disk. The live-slot early return must not scan the spool: the
+    flags are in memory and ``messaging`` documents that lookup as O(1).
     """
 
     class _Slot:
@@ -831,18 +778,10 @@ class TestTargetedRehydrationRecoversToo:
 class TestNoAwaitSeparatesTheDeletionCheckFromTheBuild:
     """The recovery's spool read runs in the PREFETCH phase, not after the build.
 
-    ``rehydrate_slot_from_history_async`` places its two race re-checks
-    synchronously and immediately before the build so no await can reopen the
-    windows they close. An await after the build reopens the deletion one a step
-    later and worse: the slot is published by then and RETURNED, so a deletion
-    landing during that await hands the caller a slot for a session that has been
-    deleted, it accepts a message, and the delete-won save discards it. The remedy
-    is the split this module uses everywhere else.
-
-    The two bulk drivers are a different case and stay as they are: each already
-    yields with ``await asyncio.sleep(0)`` at that exact point by construction, and
-    neither hands the slot back to anyone, so there is no return value through
-    which a stale slot becomes reachable.
+    The two race re-checks sit synchronously right before the build. An await after it
+    would let a deletion land after the slot is returned, so the caller's next message
+    is discarded by the delete-won save. The bulk drivers already yield there with
+    ``await asyncio.sleep(0)`` and return no slot, so they stay as they are.
     """
 
     class _Slot:
@@ -954,16 +893,10 @@ class TestNoAwaitSeparatesTheDeletionCheckFromTheBuild:
 class TestTheFlagAndItsLeadReachTheRowTogether:
     """Both keys land in ONE write, because a half-written row renders nothing.
 
-    The periodic flush takes ``slot.messages`` as a shallow copy of REFERENCES and
-    serializes those same live ``meta`` dicts on a worker thread. Two separate
-    assignments are therefore visible half-done: a snapshot between them stores
-    ``mcp_app`` with no ``mcp_app_lead``. The client draws the notice on the lead
-    alone, so that row shows nothing at all.
-
-    Nothing repairs it either, which is what makes the ordering worth pinning rather
-    than arguing: this same pass reads a surviving ``mcp_app`` as proof the lead
-    survived, so it marks the claim's lead taken and skips the row, and the claim is
-    swept at its TTL.
+    The periodic flush serializes the live ``meta`` dicts on a worker thread, so a
+    snapshot between two assignments stores ``mcp_app`` without ``mcp_app_lead``. The
+    client draws on the lead alone, and nothing repairs it: this pass reads a surviving
+    ``mcp_app`` as proof the lead survived.
     """
 
     class _Recording(dict):
@@ -1022,19 +955,10 @@ class TestTheFlagAndItsLeadReachTheRowTogether:
 class TestAClaimIsMatchedByRowIdentityNotTimestamp:
     """A ``ts`` does not name a row, so the claim is attributed by ``meta.mid``.
 
-    ``_ChatSlot.append`` preserves an explicit ``ts`` verbatim for a row replayed
-    from a channel transcript -- rewriting it would reorder the replay -- and a
-    coarse clock stamps two same-tick appends identically, which is the collision
-    ``meta.mid`` is minted per row to answer. A concurrent foreign append sharing
-    the app row's timestamp would therefore make the restore flag a row that never
-    had an app, and flag it DURABLY: ``mcp_app`` is never written back ``False``.
-
-    The ids and the timestamps are never mixed. A claim carrying ids is matched on
-    ids ALONE; one carrying none was written before the ids existed and keeps the
-    ts match, because that is the only identity it has. On that fallback an
-    ambiguous ts -- one naming more than one restored row -- identifies neither, so
-    neither is flagged: silence on a row is this module's failure direction, a
-    false notice is not.
+    Replayed rows keep their ``ts`` and a coarse clock can stamp two appends alike, so a
+    ts match could durably flag a row that never had an app. A claim with ids matches on
+    ids alone; one without keeps the ts match, and an ambiguous ts flags neither, since
+    silence is this module's failure direction.
     """
 
     KEY = "dashboard:chat-9-9"
@@ -1079,12 +1003,9 @@ class TestAClaimIsMatchedByRowIdentityNotTimestamp:
     def test_a_claim_with_ids_ignores_its_own_recorded_timestamp(self, spool):
         """A claim carrying ids is matched on ids ALONE, never on its own ts too.
 
-        Reachable when the claim's own row has left the transcript -- rewound, or
-        trimmed -- while another row carries the ``ts`` it recorded. That ts is then
-        UNAMBIGUOUS, so the fallback's shared-ts guard does not fire and cannot
-        help; only keeping the two identities unmixed refuses the stranger. Without
-        this case the mixing is invisible, because in a transcript that still holds
-        both rows the shared-ts guard blocks the stranger for a different reason.
+        Covers a claim whose own row left the transcript while another row carries its
+        ``ts``. That ts is unambiguous, so only keeping the identities unmixed refuses
+        the stranger; with both rows present the shared-ts guard would hide the bug.
         """
         self._claim(
             spool,
@@ -1152,34 +1073,17 @@ class TestAClaimIsMatchedByRowIdentityNotTimestamp:
 class TestACollapsedCallIdFlagsNothing:
     """A redacted call id names every redacted call, so it names none of them.
 
-    The rows store the REDACTED ``tool_call_id`` and the turn compares against
-    the redacted form, which is the convention ``_tool_meta`` documents. Credential
-    redaction does not mask a span inside the value: it replaces the whole field
-    with one constant, so two different calls whose ids both look like a
-    credential end up byte-identical. Selecting rows by that value then returns
-    another call's row as an owner of this call's app, and the flag it receives is
-    permanent -- it is never written ``False``, and the client draws its notice on
-    the first flagged row it finds for the id.
-
-    So the flag is withheld where the id cannot name one call. That fails towards
-    silence, which a later render repairs; a flag on a row that never had an app
-    does not repair.
+    Rows store the redacted ``tool_call_id``, and redaction replaces the whole field
+    with one constant, so two credential-shaped ids become identical and a permanent
+    flag could land on another call's row. The flag is withheld instead: silence is
+    repaired by a later render, a false flag is not.
     """
 
-    #: Two DISTINCT ids that redact to one string. A JWT-shaped value is matched
-    #: WHOLESALE by the credential detector -- the whole field becomes one
-    #: constant rather than a span inside it being masked -- so two of them
-    #: differing anywhere arrive at every later reader byte-identical. That
-    #: wholesale property is what this class is about, and ``_premise`` asserts it
-    #: rather than trusting it.
+    #: Two DISTINCT ids that redact to one string: the credential detector replaces a
+    #: JWT-shaped value whole, which ``_premise`` asserts.
     #:
-    #: A JWT shape rather than the more familiar cloud-key one deliberately: an
-    #: access-key literal is matched by GitHub's own push protection, which
-    #: refuses the push outright, and writing one in fragments to slip past that
-    #: check would be hiding a credential pattern from a security control for a
-    #: value that is not a credential at all. The header segment below is public
-    #: (it decodes to an algorithm name), the payload differs between the two,
-    #: and the signature segment is filler.
+    #: A JWT shape because GitHub push protection refuses access-key literals. The header
+    #: segment is public (an algorithm name), the payloads differ, the signature is filler.
     _JWT_HEAD = "eyJhbGciOiJIUzI1NiJ9"
     _JWT_SIG = "s" * 20
     ID_APP = f"{_JWT_HEAD}.{'a' * 30}.{_JWT_SIG}"
@@ -1285,16 +1189,9 @@ class TestACollapsedCallIdFlagsNothing:
     async def test_the_claim_names_no_row_when_the_id_collapses(self, tmp_path, spool):
         """The DURABLE half, which the in-turn flag assertions cannot see.
 
-        The claim is what a later replay is attributed against, so a row named in
-        it outlives this turn: the next time that row reaches the seam the claim
-        answers ``spent`` rather than ``inert`` and the row is flagged as though it
-        had lost an app. Selecting owners by a collapsed id would write the
-        unrelated call's row into the claim, so the restore would flag it on a
-        later reload even though nothing was flagged during the turn.
-
-        An empty row list is the documented degrade rather than a failure: the
-        claim is still written for its render-once half and simply attributes
-        nothing.
+        A row named in the claim would be flagged on a later reload as though it lost an
+        app. An empty row list is the documented degrade: the claim still records the
+        render-once half and attributes nothing.
         """
         self._premise()
 
@@ -1358,16 +1255,9 @@ class TestACollapsedCallIdFlagsNothing:
 class TestAnIdThatAlreadyIsTheRedactionTag:
     """The collision a "record only what redaction changed" rule lets through.
 
-    Credential redaction replaces the whole field with one constant, so an id
-    whose raw value ALREADY equals that constant is left alone -- and is then
-    byte-identical to what every credential-shaped id becomes. Recording only the
-    values redaction changed leaves such a pair tracked as ONE source, which reads
-    unambiguous, so the app notice lands on whichever row the walk reaches first
-    and never repairs: the flag is never written ``False``.
-
-    ``tool_call_id`` comes from the LLM -- the loop preamble says so in its own
-    comment -- so this pair is producible rather than a freak coincidence, which
-    is why every id is recorded and not only the changed ones.
+    An id whose raw value already equals the redaction constant is left unchanged yet
+    matches every redacted id, so tracking only changed values reads the pair as one
+    source. ``tool_call_id`` comes from the LLM, so this can happen; every id is recorded.
     """
 
     @staticmethod

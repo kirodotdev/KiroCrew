@@ -9,41 +9,24 @@ and the sanitizer every dashboard-facing string passes through.
 
 from __future__ import annotations
 
-import os
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.kiro_cli import is_bundled_kiro_cli
+from kiro_crew.kiro_cli import is_bundled_kiro_cli  # noqa: F401 - re-exported surface
+from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
+    _LOGIN_TAIL,
+    _SSO_LOGIN_TAIL,
+    KIRO_CLI_LOGIN_COMMAND,
+    KIRO_CLI_SSO_LOGIN_COMMAND,
+    _is_off_path_override,
+    login_commands,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
-# The exact command the user runs to sign in. A CODE CONSTANT, never a catalog
-# value: a translated command cannot be typed or executed (see
-# website/docs/i18n-catalog.md — "A literal token the user must type must never be
-# a catalog value"). Served in the status payload so the UI has one source of
-# truth for it rather than hardcoding a second copy that can drift.
-# The argument tails are split out so login_commands_for() can compose the
-# bundled-copy form (absolute path + same tail) without duplicating flag
-# literals that would drift. They carry the leading space DELIBERATELY: the
-# read-only-probe tripwire in test_kiro_prerequisite_handlers.py forbids the standalone
-# quoted token a spawn argv element would have, and these are display strings
-# the user types, never argv.
-_LOGIN_TAIL = " login"
-_SSO_LOGIN_TAIL = " login --use-device-flow --license pro"
-KIRO_CLI_LOGIN_COMMAND = f"kiro-cli{_LOGIN_TAIL}"
-# The organization-SSO counterpart, served alongside the bare command so the gate
-# can offer both instead of one ambiguous line. Both flags are load-bearing:
-# ``--use-device-flow`` is what makes the others take effect at all (kiro-cli
-# discards every login flag unless the environment is remote OR that flag is set,
-# falling back to a browser portal), and ``--license pro`` then selects Identity
-# Center directly. The pair cannot yield a Builder ID session, which is the
-# failure this exists to prevent: on the portal, a free Builder ID sits as a
-# visual peer of organization SSO, so a user on an SSO plan can sign in to the
-# wrong tier and only discover it when models are missing.
-KIRO_CLI_SSO_LOGIN_COMMAND = f"kiro-cli{_SSO_LOGIN_TAIL}"
 
 
 def login_commands_for(
@@ -52,42 +35,11 @@ def login_commands_for(
 ) -> tuple[str, str, bool]:
     """Sign-in commands for the RESOLVED binary, plus whether it is bundled.
 
-    The desktop app's bundled kiro-cli (``KIROCREW_BUNDLED_KIRO_DIR``) is not
-    on the user's shell PATH, so when it is the copy that resolved, the served
-    commands must carry the binary's absolute path — otherwise the setup gate
-    asserts "installed" while its only on-screen instruction fails with
-    command-not-found on a fresh machine. POSIX paths use shell quoting. Windows
-    commands name PowerShell explicitly, which also lets the same copied command
-    run from cmd.exe. An operator's ``KIROCREW_KIRO_BIN`` override gets the same
-    treatment when its resolved file is not what the user's shell would run as
-    ``kiro-cli``: the bare command would then fail or sign in a different
-    install. Any other resolution keeps the bare constants: the binary is on
-    PATH by construction there.
+    :func:`kiro_crew.kiro_cli_bundle.login_commands` on this host's platform. The
+    composition lives in that stdlib-only leaf so the sign-in remedy in
+    ``agent_sdk.host_auth`` names the same command the setup gate serves.
     """
-    bundled = is_bundled_kiro_cli(binary, environ)
-    if bundled or _is_off_path_override(binary, environ):
-        if platform_compat.IS_WINDOWS:
-            # A quoted executable path alone is data in PowerShell; its call
-            # operator is required. Wrapping the command in powershell.exe keeps
-            # this one display string runnable from both PowerShell and cmd.exe.
-            # The user's terminal is outside the gateway's process tree, so the
-            # KIRO_NO_AUTO_UPDATE the Electron shell sets does not reach this
-            # run; upstream compiles the startup self-update only for Windows,
-            # and without the switch a fresh sign-in would rewrite the sealed
-            # bundled exe. ``Set-Item`` rather than ``$env:`` because an outer
-            # interactive PowerShell interpolates ``$env:`` inside the double
-            # quotes before powershell.exe ever sees it.
-            quoted = binary.replace("'", "''")
-            prefix = (
-                'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
-                f"& '{quoted}'"
-            )
-            suffix = '"'
-        else:
-            prefix = shlex.quote(binary)
-            suffix = ""
-        return f"{prefix}{_LOGIN_TAIL}{suffix}", f"{prefix}{_SSO_LOGIN_TAIL}{suffix}", bundled
-    return KIRO_CLI_LOGIN_COMMAND, KIRO_CLI_SSO_LOGIN_COMMAND, False
+    return login_commands(binary, environ, windows=platform_compat.IS_WINDOWS)
 
 
 def config_set_hints_for_launcher(launcher: str, platform_name: str) -> dict[str, Any]:
@@ -142,27 +94,6 @@ def _cmd_launcher_prefix(launcher: str) -> str | None:
     if "!" in launcher or "%" in launcher:
         return None
     return f'"{launcher}"'
-
-
-def _is_off_path_override(binary: str, environ: Mapping[str, str]) -> bool:
-    """Whether *binary* came from ``KIROCREW_KIRO_BIN`` and sits in no ``PATH``
-    directory, so a bare ``kiro-cli`` typed in the user's shell would not run it.
-
-    Pure string work, like :func:`is_bundled_kiro_cli`: the callers run on the
-    event loop, so no ``which``/stat may happen here. A directory match is the
-    whole test -- an override named ``kiro-cli-chat`` inside a ``PATH`` dir is
-    left bare, which is the pre-existing behaviour for every ``PATH`` install.
-    """
-    override = environ.get("KIROCREW_KIRO_BIN", "")
-    if not override or not binary:
-        return False
-    if os.path.normpath(override) != os.path.normpath(binary):
-        return False
-    binary_dir = os.path.normpath(os.path.dirname(binary))
-    path_dirs = {
-        os.path.normpath(entry) for entry in environ.get("PATH", "").split(os.pathsep) if entry
-    }
-    return binary_dir not in path_dirs
 
 
 # Why ``update_cli`` refuses the desktop app's bundled copy. Shown verbatim in the

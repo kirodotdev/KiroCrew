@@ -34,8 +34,8 @@ export function usePinnedSessionOrder({ localSlots, sortKey }: {
   // Pinned membership AND the order inside the pinned section live on the
   // gateway: each slot row carries `pin_rank` (see utils/pinnedSessionOrder.ts
   // and dashboard/pinned_session_order.py). Rows with no rank follow the
-  // ranked ones in the sidebar's own sort, so a person who never reordered
-  // keeps the plain sort.
+  // ranked ones in the sidebar's own sort; usePinnedOrderAuthority's
+  // first-load seed ranks them even when nobody reordered.
   //
   // Both collections read `localSlots`, NOT the merged `allRows`: pin state and
   // pin order are local sidebar metadata keyed by local slot key, and a peer row
@@ -173,12 +173,12 @@ function pinnedOrderQueue(store: object): { tail: Promise<unknown> } {
 type PinnedOrderState = ReturnType<typeof usePinnedSessionOrder>['orderState']
 
 /** First-load seed of the gateway's pinned order: the order this browser kept
- *  in localStorage before the gateway stored it, else the natural order it
+ *  in localStorage before the gateway stored it, then the natural order it
  *  shows. Only an unranked gateway adopts it (`only_if_unset`), so a second
  *  browser cannot overwrite a newer shared order. As on `main`, it waits for
  *  the slots, the tag columns and any pin write in flight, and a board view
- *  does not seed the natural order: a board's projection is not the order the
- *  person sees in the list. */
+ *  with no old local order does not seed the natural order: a board's
+ *  projection is not the order the person sees in the list. */
 export function usePinnedOrderAuthority({ orderState, slotsLoaded, tagColumnsSettled, boardProjection }: {
   orderState: PinnedOrderState
   slotsLoaded: boolean
@@ -200,8 +200,8 @@ export function usePinnedOrderAuthority({ orderState, slotsLoaded, tagColumnsSet
       legacyPinnedOrderMigrated.current = true
       return
     }
-    // A board view hands over only an order this browser already kept; it
-    // leaves the natural-order seed to the next list view.
+    // A board view with no old local order seeds nothing; the next list
+    // view does.
     if (boardProjection && legacy.length === 0) return
     // Nothing ranked yet. As before the gateway stored the order, the first
     // load freezes the pinned section in the sort the person is looking at:
@@ -225,9 +225,9 @@ export function usePinnedOrderAuthority({ orderState, slotsLoaded, tagColumnsSet
       })
       .catch((err: unknown) => {
         // 409: the gateway already has an order, which the next slots frame
-        // carries. Any other failure keeps the local copy for the next page
-        // load (retrying here would re-send on every slots frame) and says
-        // the order was not saved.
+        // carries. Any other failure keeps the local copy for the next
+        // sidebar mount (retrying here would re-send on every slots frame)
+        // and says the order was not saved.
         if ((err as { status?: number } | null)?.status === 409) {
           if (legacy.length > 0) clearLegacyPinnedSessionOrder()
         } else setPinnedOrderError(i18nT('pages.chatSidebar.pinned_order_handoff_failed'))
@@ -236,16 +236,17 @@ export function usePinnedOrderAuthority({ orderState, slotsLoaded, tagColumnsSet
 }
 
 /** Where the automatic section starts, and Alt+Arrow pinned reorder. */
-export function usePinnedKeyboardReorder({ searchRanked, pinned, pinnedOrder, slotFolders, reorderPinned }: {
+export function usePinnedKeyboardReorder({ searchRanked, isPinned, pinnedOrder, slotFolders, reorderPinned }: {
   searchRanked: Map<string, number> | null
-  pinned: Set<string>
+  /** The row model's own pin read (rows.ts `isPinned`), so a peer row is never pinned here. */
+  isPinned: (slot: Slot) => boolean
   pinnedOrder: string[]
   slotFolders: Record<string, string>
   reorderPinned: (activeKey: string, overKey: string) => void
 }) {
   const startsAutomaticSection = useCallback((list: readonly Slot[], index: number) => (
-    !searchRanked && index > 0 && pinned.has(list[index - 1].key) && !pinned.has(list[index].key)
-  ), [searchRanked, pinned])
+    !searchRanked && index > 0 && isPinned(list[index - 1]) && !isPinned(list[index])
+  ), [searchRanked, isPinned])
   // Read through a ref, not the dependency array: `slotFolders` and
   // `pinnedOrder` are rebuilt whenever the slot list changes, so a callback
   // closing over them takes a new identity on EVERY slots frame — and this

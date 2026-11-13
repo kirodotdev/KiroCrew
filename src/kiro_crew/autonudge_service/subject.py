@@ -219,53 +219,29 @@ def infer_subject(
 ) -> "targets.Target | None":
     """WHICH pull request a loop is about: its judge brief first, then its instruction.
 
-    One function, because the answer is needed in five places -- the arm, the
-    retarget, the tick's probe config, the rebinding check that runs after the poll,
-    and the terminal revalidation -- and a subject decided differently in any one of
-    them is a loop whose monitor and whose reader disagree about what is watched.
+    One function for all five callers (arm, retarget, probe config, post-poll
+    rebinding check, terminal revalidation), so the monitor and the reader never
+    disagree about what is watched.
 
     The brief's ``targets`` list is read FIRST because
-    :func:`~kiro_crew.autonudge_judge.parse_targets` already reads it first: a list
-    NARROWS the watch, and once it is present the collector asks about those strings
-    and nothing else. A monitor resolved from the instruction while the collector
-    asks about the list is two halves about two pull requests, and the reading is
-    dropped every tick as "a pull request this loop does not watch".
+    :func:`~kiro_crew.autonudge_judge.parse_targets` does: a list narrows what the
+    collector asks about, and a monitor on a different pull request has its reading
+    dropped every tick, so the judge never sees the comment bodies.
 
-    That is not hypothetical. A loop armed with the URL in ``judge.targets`` and the
-    number alone in its instruction got NO monitor: nothing was fetched, the tick
-    recorded no evidence, and every interval fired on the plain timer -- so the
-    comment bodies the judge exists to read never reached it.
+    That is a precedence, not an override. A single-PR brief supplies the subject
+    only when the instruction names NO pull request. Otherwise the instruction
+    decides: its own pull request, or ``None`` for a shorthand-only or two-subject
+    text. A brief naming several pull requests selects none, since a loop holds
+    one monitor. Falling back rather than refusing keeps merge-retirement for the
+    "blocked on #7" shape (instruction names its PR, brief names the blocker).
 
-    The instruction decides when the brief names no pull request, which is the
-    ordinary case and the one this inference was built for. It also decides when the
-    brief names MORE than one: a loop holds a single monitor, so a list of two
-    subjects selects none, and falling back leaves such a loop exactly the reading it
-    gets today rather than taking its monitor away.
+    Every candidate goes through :func:`targets.infer`, which refuses a shorthand
+    wherever it comes from (``#123`` may be an issue; a slug has no host), so a brief
+    naming ``owner/name#123`` selects nothing, as the collector drops it.
 
-    The brief reading FIRST is a precedence, never an override. It supplies the
-    subject only when the instruction names NO pull request in any of this module's
-    grammars -- the case this inference exists for. Once the instruction names one,
-    the instruction decides, which is what this module answered before the brief was
-    read at all: for a one-subject instruction that is its own pull request, and for
-    a shorthand-only or two-subject instruction it is ``None``.
-
-    Falling back rather than refusing, because refusing would SUBTRACT. For the
-    ordinary "blocked on #7" shape -- instruction names its own pull request, brief
-    names the blocker -- base bound a monitor on the instruction's pull request,
-    polled it and retired the loop when it merged; only the judge's collector dropped
-    that reading. Answering ``None`` would take merge-retirement away from loops that
-    already have it, stored ones included, and the brief-only fix does not need it.
-
-    The GRAMMAR is unchanged and stays in one place. Every candidate goes through
-    :func:`targets.infer`, whose refusal of a shorthand has nothing to do with where
-    the text came from -- ``#123`` is equally an issue reference, and a slug carries
-    no host -- so a brief naming ``owner/name#123`` selects nothing here, exactly as
-    the collector drops that entry.
-
-    One source is added for the INSTRUCTION only: when it names its pull request by
-    number alone (``PR <number>``), the repository is taken from the loop's own session
-    log, through :func:`targets.resolve_bare` -- see :func:`_resolve_instruction`, which
-    also says what *monitor_target* is for.
+    For the INSTRUCTION only, a bare ``PR <number>`` takes its repository from the
+    session log via :func:`targets.resolve_bare` -- see :func:`_resolve_instruction`,
+    which also explains *monitor_target*.
     """
     listed: list["targets.Target"] = []
     if str(watch or "").strip() == targets.WORK_LEDGER:
@@ -294,25 +270,10 @@ def infer_subject(
             from_message.host_key,
         ) == (only.kind, only.subject, only.host_key):
             return only
-        # The brief NARROWS a watch; it does not declare one. So it supplies the
-        # subject only when the instruction names NO pull request -- the case this
-        # whole inference exists for. Once the instruction names one, the answer is
-        # the instruction's own, which is exactly what this module computed before
-        # the brief was consulted at all.
-        #
-        # Falling back rather than refusing, because refusing would SUBTRACT: base
-        # bound a monitor on the instruction's pull request for this shape, polled it,
-        # and retired the loop when it merged. Only the JUDGE's collector dropped the
-        # reading, never the probe and never the terminal settlement -- so answering
-        # ``None`` here would take merge-retirement away from loops that have it,
-        # including ones already stored on disk. The brief-only fix does not need it.
-        #
-        # ``from_message`` is itself ``None`` when the instruction names a pull
-        # request it cannot select from -- a shorthand with no host, or two subjects
-        # at once. That is base's answer for those texts too, and it is the answer
-        # that matters most here: it keeps the brief from resolving an ambiguity
-        # ``targets.infer`` refuses to resolve, which is how the blocker would
-        # otherwise become the watched subject.
+        # The instruction names a pull request, so it decides (see the docstring).
+        # ``from_message`` is ``None`` for a hostless shorthand or two subjects; the
+        # brief must not resolve an ambiguity ``targets.infer`` refuses, or the
+        # blocker would become the watched subject.
         logger.info(
             "AutoNudge: a judge brief and an instruction disagree about the pull "
             "request (brief names %s), so the instruction decides the watched subject",
@@ -358,31 +319,19 @@ def infer_monitor(
     """Build a monitor for this loop's subject, or ``None`` to stay ungated.
 
     ``None`` is the common, safe answer: a loop watching something with no probe
-    -- a deployment, a ticket, a file -- keeps exactly the behaviour it had
-    before this feature existed. Only a loop that names ONE observable
-    subject becomes a gated monitor.
+    (a deployment, a ticket, a file) stays a plain timer. Only a loop naming ONE
+    observable subject becomes a gated monitor.
 
-    Public because the ARMING SURFACE has to report this same decision in its
-    acknowledgement, and the reasons it can answer ``None`` are not all in
-    :func:`infer_subject` -- a subject that will not form a valid monitor is
-    another. An ack that re-derived the answer from the target alone could claim
-    a gate the loop never got, which is the one thing a disclosure must not do.
-    One function, one answer.
+    Public so the arming surface's acknowledgement reports this same decision; a
+    subject that cannot form a valid monitor is a ``None`` reason outside
+    :func:`infer_subject`, and an ack derived from the target alone could claim a
+    gate the loop never got. *judge* is passed because on the arming path the loop
+    does not exist yet.
 
-    *judge* is the brief this loop will be STORED with, and it is passed rather
-    than re-read because on the arming path the loop does not exist yet. Which of
-    the two strings names the subject is :func:`infer_subject`'s decision, not
-    this function's.
-
-    Budgets are left at their defaults and are NOT enforced on this path. The
-    default wake cap is unlimited, so there is nothing here to enforce for the
-    budget a shadow monitor would otherwise trip on first; what remains -- the
-    runtime, token and provider-error bounds -- is enforced by the decision
-    controller that owns the rest of the budget vocabulary, against live state
-    this function does not have. Enforcement is deliberately not smuggled in
-    behind a token saving: a bound applied here, without the probe history the
-    controller reads, would stop working watches early -- a regression wearing a
-    budget's clothing.
+    Budgets stay at their defaults and are NOT enforced here: the wake cap defaults
+    to unlimited, and the runtime, token and provider-error bounds are enforced by
+    the decision controller, which has the probe history. A bound applied here
+    without it would stop working watches early.
     """
     target = infer_subject(
         message, judge, watch=watch, slot_key=slot_key, session_texts=session_texts

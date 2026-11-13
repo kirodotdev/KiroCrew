@@ -37,6 +37,7 @@ import pytest
 # fake sessions, dispatcher factory) so this suite exercises the SAME doubles.
 from test_telegram import _cfg, _dispatcher, _prime_live  # noqa: E402
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging import spawn_approval_delivery as seam
 from kiro_crew.messaging.display_safety import canonicalize_display
 from kiro_crew.messaging.link import (
@@ -49,7 +50,7 @@ from kiro_crew.messaging.session_trust import (
     clear_trusted_sessions,
     is_session_trusted,
 )
-from kiro_crew.subagent import SpawnApprovalUnreachable
+from kiro_crew.subagent import HostSpawnDecision, SpawnApprovalUnreachable
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -237,9 +238,9 @@ class TestWrappedSpawnApproval:
         wiring = Path(gateway_mod.__file__).with_name("gateway_runtime") / "subagent_wiring.py"
         src = wiring.read_text(encoding="utf-8")
         consult = src.index("deliver_spawn_approval(")
-        fallback = src.index("return await _approve_spawn_gate(event, parent_session_key)")
+        fallback = src.index("approved = await _approve_spawn_gate(event, parent_session_key)")
         assert consult < fallback, "the channel seam must be consulted before the fallback gate"
-        assert "return await _approve_spawn_gate(event, parent_session_key)" in src
+        assert "approved = await _approve_spawn_gate(event, parent_session_key)" in src
 
 
 # ── (c) the Telegram delivery hook ──────────────────────────────────────────
@@ -458,10 +459,11 @@ class TestTelegramDeliveryHook:
             )
             await d.on_callback(cb)
             # The armed prompt is still pending — the press landed on a different
-            # key — so it deny-by-defaults when the (shortened) timeout elapses.
+            # key — so it deny-by-defaults when the (shortened) timeout elapses,
+            # and nobody pressed it, so the deny is the host's.
             return await task
 
-        assert asyncio.run(_go()) is False
+        assert asyncio.run(_go()) == HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
 
     def test_a_cancelled_awaiting_decider_leaks_no_registry_or_nonce_entry(self) -> None:
         # The prompt posts and the hook awaits the press, but the awaiting task is

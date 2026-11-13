@@ -3,6 +3,8 @@
 :mod:`kiro_crew.doc_parser` flattens a document to one plaintext string, which is
 what an agent reading an attachment wants. The dashboard's file viewer wants the
 structure back, so this module returns a JSON-serializable block list instead.
+For a .docx that plaintext is this module's walk flattened (:func:`docx_text`), so
+the two shapes cannot disagree about what a document says.
 
 Hardening is inherited, not re-spelled: the archive-inventory preflight and the
 bounded per-entry reader are doc_parser's, imported directly so a change to
@@ -56,6 +58,7 @@ MAX_TABLE_COLS = 40
 # ── OOXML namespaces ──
 
 _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 #: ``Heading3``, ``heading 3`` and ``Heading_3`` all name level 3. Word writes
 #: the style id without a space; documents from other writers do not.
 _HEADING_RE = re.compile(r"^heading([1-9])$")
@@ -77,6 +80,7 @@ class _Budget:
         # were at import time.
         self.nodes_left = MAX_NODES
         self.chars_left = MAX_CHARS
+        self.max_cols: int | None = MAX_TABLE_COLS
         #: Set when a cap stopped extraction, so the caller can tell a short
         #: document from a trimmed one and say so in the UI.
         self.truncated = False
@@ -123,12 +127,16 @@ class _Budget:
         the character budget as ONE paragraph, and the browser then has half a
         million elements to lay out.
         """
-        if len(text) > self.chars_left or nodes > self.nodes_left:
+        if not self.fits(len(text), nodes):
             self.refuse()
             return False
         self.chars_left -= len(text)
         self.nodes_left -= nodes
         return True
+
+    def fits(self, chars: int, nodes: int) -> bool:
+        """Would a unit of *chars* characters and *nodes* elements fit what is left?"""
+        return chars <= self.chars_left and nodes <= self.nodes_left
 
     def refuse(self) -> None:
         """Spend the REST of the allowance: the unit being built does not fit.
@@ -160,6 +168,44 @@ class _Budget:
         if not self.spend(text, nodes):
             return False
         blocks.append(block)
+        return True
+
+
+class _TextBudget(_Budget):
+    """The plain-text allowance: soft, and on characters only.
+
+    :func:`kiro_crew.doc_parser.extract_text` stops after the unit that MEETS its
+    *max_chars*, keeping that unit whole. Its callers ask for one character past
+    their cap to see a cut, and redact units they must see whole, so the block
+    budget's refusal of the unit that does not fit would hide both. A text has no
+    DOM, so it has no element or column ceiling either.
+    """
+
+    def __init__(self, max_chars: int | None) -> None:
+        super().__init__()
+        self.max_cols = None
+        self.max_chars = max_chars
+        #: The text's length so far. Exact for paragraphs; a table row is charged
+        #: without its cell separators, which can only let the walk run on.
+        self.collected = 0
+
+    def stop(self) -> bool:
+        # At least one character: even a budget of 0 is met by the first unit.
+        return self.max_chars is not None and self.collected >= max(self.max_chars, 1)
+
+    def fits(self, chars: int, nodes: int) -> bool:
+        return True
+
+    def spend(self, text: str, nodes: int) -> bool:
+        """Take every unit until the budget is met, the one that meets it included."""
+        if not text:
+            return True
+        if self.stop():
+            return False
+        # The separator is charged only BETWEEN units: charged to the first one
+        # too, a cap-sized opening unit would stop the walk while the caller's
+        # length check reads the cut as whole.
+        self.collected += len(text) + (1 if self.collected else 0)
         return True
 
 
@@ -208,24 +254,44 @@ def extract_blocks(
     return blocks, budget.truncated
 
 
+def docx_text(zf: zipfile.ZipFile, max_chars: int | None = None) -> str:
+    """The .docx body as plain text: the block walk, flattened.
+
+    One line per paragraph, heading and list item, and one per non-empty table
+    cell, row by row. This is what :func:`kiro_crew.doc_parser.extract_text`
+    returns for a .docx; that function owns admission and the archive vet.
+    """
+    lines: list[str] = []
+    for block in _docx_blocks(zf, _TextBudget(max_chars)):
+        if block["type"] == "paragraph":
+            lines.append("".join(run["text"] for run in block["runs"]))
+        elif block["type"] == "heading":
+            lines.append(block["text"])
+        elif block["type"] == "list":
+            lines.extend(block["items"])
+        elif block["type"] == "table":
+            lines.extend(cell for row in block["rows"] for cell in row if cell)
+    return "\n".join(lines)
+
+
 # ── Shared helpers ──
 
 
 def _parse_member(zf: zipfile.ZipFile, member: str) -> Any | None:
     """Read and XML-parse one ZIP member, or None when it is absent/unusable.
 
-    Absent, over the per-entry decompression cap and malformed all collapse to
-    None: there is no way to render half a part, and doc_parser's contract is
-    that an unreadable document degrades rather than raises.
+    Absent, over the per-entry decompression cap, undecompressable (a bad CRC)
+    and malformed all collapse to None: there is no way to render half a part,
+    and doc_parser's contract is that an unreadable document degrades rather than
+    raises. A broken numbering or styles part then costs only the list styling,
+    not the document's text.
     """
     assert _xml_fromstring is not None
     if member not in zf.namelist():
         return None
-    data = _read_zip_entry(zf, member)
-    if data is None:
-        return None
     try:
-        return _xml_fromstring(data)
+        data = _read_zip_entry(zf, member)
+        return None if data is None else _xml_fromstring(data)
     except Exception:
         logger.warning("unreadable OOXML part: %s", member, exc_info=True)
         return None
@@ -374,7 +440,9 @@ def _sdt_children(parent: Any, tag: str = "") -> Iterator[Any]:
     A template-produced document wraps things -- whole body sections, a
     repeating row, a single cell -- in a structured document tag (``w:sdt``,
     children under ``w:sdtContent``) or a custom XML element (``w:customXml``,
-    children directly inside), so what the walker wants is not a direct child
+    children directly inside), and Word wraps content in alternate content
+    (``mc:AlternateContent``, one branch read, :func:`_read_once`), so what the
+    walker wants is not a direct child
     of where it looks, and reading only direct children silently drops
     everything inside. The text preview reaches through both, so a structured
     walk that reached through only one returned a non-empty block list with
@@ -385,18 +453,107 @@ def _sdt_children(parent: Any, tag: str = "") -> Iterator[Any]:
     *tag* narrows the yield to that element; empty yields every non-wrapper
     child. Deliberately NOT ``parent.iter(tag)``: that would also collect a
     NESTED table's rows or cells as the outer one's own.
+
+    A loop over a stack of levels, not recursion: a crafted document can nest
+    wrappers past Python's recursion limit, and each yield would climb every level.
     """
-    for child in parent:
-        if child.tag == f"{_W_NS}sdt":
+    levels = [iter(parent)]
+    while levels:
+        child = next(levels[-1], None)
+        if child is None:
+            levels.pop()
+        elif child.tag == f"{_W_NS}sdt":
             content = child.find(f"{_W_NS}sdtContent")
             if content is not None:
-                yield from _sdt_children(content, tag)
-            continue
-        if child.tag == f"{_W_NS}customXml":
-            yield from _sdt_children(child, tag)
-            continue
-        if not tag or child.tag == tag:
+                levels.append(iter(content))
+        elif child.tag == f"{_W_NS}customXml":
+            levels.append(iter(child))
+        elif child.tag == f"{_MC_NS}AlternateContent":
+            levels.append(_read_once(child))
+        elif not tag or child.tag == tag:
             yield child
+
+
+def _read_once(node: Any) -> Iterator[Any]:
+    """The children of *node* a reader visits: one copy of alternate content.
+
+    Word saves a text box as ``mc:AlternateContent`` holding the same content
+    twice, under ``mc:Choice`` and again under the ``mc:Fallback`` older readers
+    use, and a reader takes ONE branch. Reading more glues the text to itself, so
+    only the first Choice is read; with no Choice, the Fallback is the content.
+    Lazy, so a wide element costs nothing until its children are walked.
+    """
+    if node.tag == f"{_MC_NS}AlternateContent":
+        branch = node.find(f"{_MC_NS}Choice")
+        if branch is None:
+            branch = node.find(f"{_MC_NS}Fallback")
+        return iter(branch) if branch is not None else iter(())
+    return iter(node)
+
+
+def _cell_paras(cell: Any) -> Iterator[Any]:
+    """The ``w:p`` of one cell, nested tables included, text-box paragraphs not.
+
+    A text box's paragraphs sit inside a run of the paragraph holding it, which
+    :func:`_para_texts` already reads through, so the walk stops at each paragraph.
+    """
+    levels = [_read_once(cell)]
+    while levels:
+        node = next(levels[-1], None)
+        if node is None:
+            levels.pop()
+        elif node.tag == f"{_W_NS}p":
+            yield node
+        else:
+            levels.append(_read_once(node))
+
+
+def _run_format(run: Any) -> tuple[bool, bool]:
+    """``(bold, italic)`` of one ``w:r``."""
+    props = run.find(f"{_W_NS}rPr")
+    if props is None:
+        return False, False
+    return _toggle_on(props, f"{_W_NS}b"), _toggle_on(props, f"{_W_NS}i")
+
+
+def _para_texts(para: Any) -> Iterator[tuple[tuple[bool, bool], str]]:
+    """``((bold, italic), text)`` for every ``w:t`` under *para*, in document order.
+
+    Each text takes the formatting of its nearest ``w:r``, read once per run as
+    the walk enters it: a run of many text nodes must not be searched again for
+    each one. A text box nests whole paragraphs
+    inside a run, so its text is read once, in place, between the holding run's
+    own text before and after it, with a ``"\\n"`` at each of its paragraph
+    edges: glued to its neighbours, a credential on a line of its own would lose
+    the boundary the redactor matches on. Alternate content is read once
+    (:func:`_read_once`). A loop over a stack of levels, not recursion, for the
+    reason :func:`_sdt_children` gives.
+    """
+    # Each level is (children, their run's format, whether it is a nested w:p).
+    levels: list[tuple[Iterator[Any], tuple[bool, bool], bool]] = [
+        (_read_once(para), (False, False), False)
+    ]
+    started = pending_break = False
+    while levels:
+        children, fmt, nested_para = levels[-1]
+        node = next(children, None)
+        if node is None:
+            levels.pop()
+            pending_break = pending_break or nested_para
+        elif node.tag == f"{_W_NS}t":
+            if node.text:
+                if pending_break and started:
+                    yield fmt, "\n"
+                pending_break = False
+                started = True
+                yield fmt, node.text
+        elif node.tag == f"{_W_NS}p":
+            pending_break = True
+            levels.append((_read_once(node), fmt, True))
+        else:
+            if node.tag == f"{_W_NS}r":
+                fmt = _run_format(node)
+            levels.append((_read_once(node), fmt, False))
 
 
 def _docx_para_runs(para: Any, budget: _Budget) -> list[Block]:
@@ -423,19 +580,13 @@ def _docx_para_runs(para: Any, budget: _Budget) -> list[Block]:
     # the end, since concatenating onto a growing string per run is quadratic.
     runs: list[tuple[bool, bool, list[str]]] = []
     chars = 0
-    for run in para.iter(f"{_W_NS}r"):
-        text = "".join(t.text for t in run.iter(f"{_W_NS}t") if t.text)
-        if not text:
-            continue
-        props = run.find(f"{_W_NS}rPr")
-        bold = props is not None and _toggle_on(props, f"{_W_NS}b")
-        italic = props is not None and _toggle_on(props, f"{_W_NS}i")
+    for (bold, italic), text in _para_texts(para):
         if runs and runs[-1][0] == bold and runs[-1][1] == italic:
             runs[-1][2].append(text)
         else:
             runs.append((bold, italic, [text]))
         chars += len(text)
-        if chars > budget.chars_left or len(runs) > budget.nodes_left:
+        if not budget.fits(chars, len(runs)):
             # Past the boundary: this paragraph will be refused whole, so refuse
             # it now -- the same charge, with the same exhaustion -- instead of
             # building the rest of it first.
@@ -474,10 +625,7 @@ def _cell_text(cell: Any) -> str:
     """
     return "\n".join(
         line
-        for line in (
-            "".join(t.text for t in para.iter(f"{_W_NS}t") if t.text)
-            for para in cell.iter(f"{_W_NS}p")
-        )
+        for line in ("".join(text for _, text in _para_texts(para)) for para in _cell_paras(cell))
         if line
     )
 
@@ -507,7 +655,7 @@ def _table_block(table: Any, out: list[Block], budget: _Budget) -> None:
         # the silent omission this docstring exists to prevent.
         if not cells:
             continue
-        texts = [_cell_text(cell) for cell in cells[:MAX_TABLE_COLS]]
+        texts = [_cell_text(cell) for cell in cells[: budget.max_cols]]
         if block is None:
             block = {"type": "table", "rows": [texts], "truncated_cols": False}
             if not budget.emit(out, block, "".join(texts), len(texts) + 1):
@@ -516,7 +664,7 @@ def _table_block(table: Any, out: list[Block], budget: _Budget) -> None:
             block["rows"].append(texts)
         else:
             return
-        if len(cells) > MAX_TABLE_COLS:
+        if len(texts) < len(cells):
             # Recorded ON THE TABLE, not on the document. The document-level flag
             # says "only the beginning of this document", which describes running
             # out of budget part-way through; dropping right-hand columns from a

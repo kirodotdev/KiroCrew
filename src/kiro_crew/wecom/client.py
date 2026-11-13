@@ -105,21 +105,15 @@ _PUSH_ACK_TIMEOUT_SECS = 10.0
 _UPLOAD_REQ_PREFIX = "aibot_upload_media-"
 
 # Per-frame ACK wait for one init/chunk/finish round trip. The whole UPLOAD
-# HANDSHAKE is separately bounded by _UPLOAD_TOTAL_TIMEOUT_SECS below — the
+# HANDSHAKE is separately bounded by _upload_total_timeout_secs() below — the
 # per-frame wait times the chunk count is NOT a safe bound (a 20 MB / 40-chunk
 # body could otherwise run ~20 min instead of seconds).
 _UPLOAD_ACK_TIMEOUT_SECS = 30.0
 
-# Whole-HANDSHAKE deadline (init + all chunks + finish) — bounds upload_media
-# alone, NOT the full send_document (the caller adds a file-push ACK wait and,
-# for a caption, a second proactive-send ACK wait after this returns). Its job is
-# to stop a STALLED handshake from running for minutes, not to guarantee the send
-# beats any caller's HTTP timeout. It is DERIVED from the plan, never a flat
-# literal: a 20 MB body is ~41 serialized round trips carrying ~27 MB of base64,
-# so a fixed 25 s would time out a legitimate large upload after transferring most
-# of the bytes. The budget is _UPLOAD_ACK_TIMEOUT_SECS (a full per-frame wait for
-# init/finish latency) plus a per-chunk allowance times the chunk count, so it is
-# always strictly greater than the per-frame wait and scales with real work.
+# Whole-HANDSHAKE deadline (init + all chunks + finish) for upload_media alone,
+# not the full send_document. It stops a STALLED handshake; it is DERIVED from the
+# plan because a 20 MB body is ~41 round trips, so a flat 25 s would kill a
+# legitimate upload. Budget: _UPLOAD_ACK_TIMEOUT_SECS plus a per-chunk allowance.
 _UPLOAD_PER_CHUNK_BUDGET_SECS = 5.0
 
 
@@ -391,8 +385,6 @@ class WeComClient:
             self._seen_msgids.popitem(last=False)
         return False
 
-    # -- stream liveness ---------------------------------------------------
-
     def forget_msgid(self, msgid: str) -> None:
         """Drop *msgid* from the dedupe window so a redelivery is handled.
 
@@ -402,6 +394,8 @@ class WeComClient:
         """
         if msgid:
             self._seen_msgids.pop(msgid, None)
+
+    # -- stream liveness ---------------------------------------------------
 
     def stream_is_dead(self, stream_id: str) -> bool:
         """True once the server has terminally refused writes to *stream_id*.
@@ -476,13 +470,10 @@ class WeComClient:
         there marks the stream dead (see :meth:`stream_is_dead`), which is the
         only way a caller can learn that a bubble stopped taking writes.
 
-        There is deliberately no per-frame ACK wait here. Every frame of a turn
-        replays the same inbound ``req_id``, and that is the only correlation key an
-        ACK carries, so a waiter for one frame can be resolved by another frame's
-        ACK — reporting success for a refusal, which is worse than not asking. Only
-        ``send_proactive`` waits, because it mints its OWN unique req_id and the
-        correlation is therefore exact. A stream caller instead rotates its bubble
-        before the platform expires it.
+        No per-frame ACK wait: every frame of a turn replays the same inbound
+        ``req_id``, the ACK's only correlation key, so a waiter could be resolved by
+        another frame's ACK. ``send_proactive`` waits because its req_id is unique;
+        a stream caller instead rotates its bubble before the platform expires it.
         """
         ws = self._ws
         if ws is None or ws.closed or not req_id:
@@ -529,9 +520,7 @@ class WeComClient:
         answer. It arrives with group support, together with the sessions and
         allow-list that make a group safe to write to.
 
-        This is what makes the dashboard mirror, cron delivery and threshold
-        notices reachable on WeCom at all; before it, every reply had to be an
-        answer to a live ``req_id``.
+        This carries the dashboard mirror, cron delivery and threshold notices.
         """
         ws = self._ws
         if ws is None or ws.closed or not chat_id:
@@ -624,24 +613,14 @@ class WeComClient:
         over the long connection and returns the ``media_id`` a send frame then
         references. The id is valid for three days.
 
-        Takes BYTES, never a path — the same security contract every channel's
-        ``send_file`` keeps: the bytes handed here are exactly what a caller
-        validated, and nothing can substitute different content between validation
-        and upload. Raises :class:`WeComUploadError` on any refusal or transport
-        failure, so the caller never sends a frame referencing an id that was
-        never issued.
+        Takes BYTES, never a path, like every channel's ``send_file``: nothing can
+        swap content between the caller's validation and the upload. Raises
+        :class:`WeComUploadError` on any refusal or transport failure, so no frame
+        ever references an id that was never issued.
 
-        The prepare step (md5 + chunking) is CPU-bound on a multi-megabyte body,
-        so it runs off the event loop, matching how :mod:`kiro_crew.wecom.media`
-        keeps AES-CBC off it.
-
-        ``WECOM_MAX_PLAINTEXT_BYTES`` (20 MiB) is only an outer bound passed in;
-        inside :func:`prepare_upload` the effective ceiling is
-        ``min(WECOM_MAX_PLAINTEXT_BYTES, type-cap)``, and the per-type cap
-        (image/voice 2 MB, file/video 20 MB — see ``media_upload.MAX_BYTES_BY_TYPE``,
-        decimal-MB, all ≤ 20 MB) is always the smaller, so the type cap is what
-        actually applies. An oversize object is refused before the handshake rather
-        than accepted here and rejected by the platform mid-upload.
+        The CPU-bound prepare step (md5 + chunking) runs off the event loop. The
+        per-type cap in ``media_upload.MAX_BYTES_BY_TYPE`` is always below the
+        ``WECOM_MAX_PLAINTEXT_BYTES`` outer bound, so it is what applies.
         """
         upload: MediaUpload = await asyncio.to_thread(
             prepare_upload, data, media_type, filename, max_bytes=WECOM_MAX_PLAINTEXT_BYTES
@@ -659,7 +638,7 @@ class WeComClient:
                     await self._upload_command(CMD_CHUNK, body)
                 finish = await self._upload_command(CMD_FINISH, upload.finish_body(upload_id))
         except TimeoutError as exc:
-            # The whole handshake outran _UPLOAD_TOTAL_TIMEOUT_SECS. Fail closed so
+            # The whole handshake outran _upload_total_timeout_secs(). Fail closed so
             # the caller does not send a frame referencing an id that never issued,
             # and so a late-landing frame cannot duplicate a delivery the caller
             # already treated as failed.
@@ -729,14 +708,9 @@ class WeComClient:
         reply would be persisted as part of the assistant's turn and replayed as
         though the model had said it.
 
-        Delivered as a PROACTIVE PUSH first, because that is the only path whose
-        acceptance can be confirmed: a push mints its own ``req_id``, so its ACK is
-        exactly correlatable, where a stream frame replays the inbound one and its
-        refusal arrives with nothing to attribute it to and no later frame to notice
-        it on. An ack that silently vanishes is worse here than anywhere else — the
-        user pressed a command and got nothing back, which reads as the command not
-        existing. The conversation is warm by construction: this only runs on a turn
-        the user just sent.
+        Delivered as a PROACTIVE PUSH first, the only path whose acceptance can be
+        confirmed (its own ``req_id``); a lost command ack reads as the command not
+        existing. The conversation is warm: the user just wrote.
 
         Falls back to a sealed stream frame, then to ``response_url``, so a
         deployment where the push is unavailable still gets its ack.
@@ -786,7 +760,11 @@ class WeComClient:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 data = await resp.json(content_type=None)
-                if resp.status != 200 or data.get("errcode") not in (0, None):
+                # A body that is not a JSON object (null, a list, a bare string)
+                # carries no errcode, which reads the same as an object without
+                # one; ``.get`` on it would raise past the except below.
+                errcode = data.get("errcode") if isinstance(data, dict) else None
+                if resp.status != 200 or errcode not in (0, None):
                     # The errcode/errmsg are externally-derived frame content and
                     # must not be logged: errmsg can echo the rejected payload, which
                     # is the answer text itself. Log the http status and the
@@ -802,9 +780,7 @@ class WeComClient:
             if owns_session and session is not None:
                 await session.close()
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
+    # -- Internal --
 
     async def _run_loop(self) -> None:
         """Reconnect loop with exponential backoff."""
@@ -827,8 +803,8 @@ class WeComClient:
                 # the channel. Letting it escape kills this task while
                 # ``_closed`` stays False, so the badge keeps whatever state it
                 # last had — typically green — and WeCom is silently dead until
-                # the gateway restarts. Cancellation is re-raised above so a real
-                # shutdown is never mistaken for a fault.
+                # the gateway restarts. Cancellation ends the loop in its own arm
+                # above, so a real shutdown is never mistaken for a fault.
                 logger.exception("WeCom WS: unexpected error in connect/serve")
                 reason = f"{type(exc).__name__}"
 
@@ -938,7 +914,9 @@ class WeComClient:
 
         cmd = data.get("cmd", "")
 
-        # Cmd-less frame carrying errcode: either a pong ACK or a stream-reply ACK.
+        # Cmd-less frame carrying errcode. Told apart by req_id, in this order: a
+        # pong, an upload-command response, a proactive-push ACK, the subscribe
+        # ACK, and otherwise a stream-reply ACK.
         if "errcode" in data and not cmd:
             headers = data.get("headers", {})
             if not isinstance(headers, dict):
@@ -967,11 +945,8 @@ class WeComClient:
                 return
             waiter = self._pending_acks.get(rid) if isinstance(rid, str) else None
             if waiter is not None:
-                # Still mark the bubble: a caller recovering by rolling needs
-                # ``stream_is_dead`` to be true, and resolving the waiter alone
-                # would leave the sealed bubble looking writable.
-                if isinstance(ec, int) and ec in _STREAM_DEAD_ERRCODES:
-                    self._mark_stream_dead(self._stream_of_req.get(rid, ""))
+                # A push's req_id is minted for that push alone and never carries a
+                # stream bubble, so a refusal here marks no bubble.
                 if not waiter.done():
                     # A non-integer errcode is UNKNOWN, not zero. Mapping it to 0
                     # would report a refused mirror send as delivered -- the
@@ -1170,9 +1145,7 @@ class WeComClient:
             logger.exception("WeCom on_message handler raised for userid=%s", inbound.userid)
 
 
-# ------------------------------------------------------------------
 # Frame builders (pure functions, no side effects)
-# ------------------------------------------------------------------
 
 
 def _build_subscribe_frame(bot_id: str, secret: str) -> dict:

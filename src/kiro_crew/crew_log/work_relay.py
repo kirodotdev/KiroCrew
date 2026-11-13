@@ -13,7 +13,10 @@ so what they need from other sessions has to be written there. Three things are:
   so the parent's project report can show and cost the nested board.
 
 Every copy is written by this process's one crew-log writer, through the same queue as
-the entry it copies, so a board's log still has a single writer. Copies are best-effort:
+the entry it copies, so a board's log still has a single writer. The append job fixes the
+board (the binding in force when the entry committed) and queues the rest for the relay's
+consumer thread (``work_relay_feed``), which finds the board's newest unit off the
+writer and hands the copies back, one ``append_many`` per board unit. Copies are best-effort:
 a relay that cannot resolve its target, or whose append fails, costs the parent board a
 charge or a record and never the entry being copied. A charge is identified by its
 closer (``<unit>:<seq>``) and a relayed record by its origin, so a reader counts each
@@ -28,7 +31,13 @@ import threading
 import traceback
 from collections import OrderedDict
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
+
+if TYPE_CHECKING:
+    from kiro_crew.crew_log.store import CrewLog
+    from kiro_crew.crew_log.work_relay_feed import Wake
+
+from kiro_crew.crew_log.writer_groups import UNIT_SLOTS_LIMIT
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +62,8 @@ _recent_guard = threading.Lock()
 
 #: Each unit's own slot, from its header, which is written once at create.
 _UNIT_SLOTS: "OrderedDict[str, str]" = OrderedDict()
-_UNIT_SLOTS_LIMIT: Final[int] = 4096
+#: The writer's unit -> slot keys bound (``writer_groups``): one population, one bound.
+_UNIT_SLOTS_LIMIT: Final[int] = UNIT_SLOTS_LIMIT
 
 #: Each worker's binding as last read, keyed by the binding file's ``stat``. Every
 #: closer asks for its slot's binding on the writer thread, and a binding changes only
@@ -66,12 +76,13 @@ def relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any])
     """Copy *entry*, just appended to *session_id*'s log, to the board above it. Never raises.
 
     Called from the append job right after the append returned, like the eager-fold
-    notice beside it. Types this module does not relay return on the first line.
+    notice beside it. Types this module does not relay return on the first line. Reads
+    only what fixes the board at commit, then queues the decision off the writer.
     """
     if entry_type not in CHARGE_SOURCES and entry_type not in (_WORK_TYPE, _CHARGE_TYPE):
         return
     try:
-        _relay(entry, entry_type, session_id, data)
+        _capture(entry, entry_type, session_id, data)
     except Exception:  # pragma: no cover - a relay must not cost the entry it copies
         # Rendered text, never ``exc_info``: this runs inside the append job, whose frames
         # bind the live ``CrewLog`` and its write lease (see ``emit_state._note_eager``).
@@ -86,20 +97,58 @@ def relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any])
 
 def forget_for_tests() -> None:
     """Drop the relay memory, so one test's relays cannot hide another's."""
+    from kiro_crew.crew_log import work_relay_feed
+
+    work_relay_feed.forget_for_tests()
     with _recent_guard:
         _RECENT.clear()
         _UNIT_SLOTS.clear()
         _BINDINGS.clear()
 
 
-def _relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]) -> None:
+def _capture(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]) -> None:
+    """On the writer: the unit's slot and the board it is bound to now, then queue."""
+    from kiro_crew.crew_log import work_relay_feed
+
     seq = int(getattr(entry, "seq", 0) or 0)
-    own = _unit_slot(session_id)
-    if seq <= 0 or not own:
+    if seq <= 0:
+        return
+    own = _writer_slot(session_id)
+    if not own:
         return
     parent = _bound_board(own)
     if not parent or parent == own:
         return
+    work_relay_feed.note(work_relay_feed.Wake(session_id, entry_type, seq, data, own, parent))
+
+
+def _writer_slot(unit_id: str) -> str:
+    """*unit_id*'s slot as a work-ledger key: the one the writer noted when it opened the
+    unit, else from the header (a unit this process did not open; read once, cached)."""
+    from kiro_crew import session_ledger
+    from kiro_crew.crew_log import writer_groups
+
+    raw = writer_groups.slot_of(unit_id)
+    return session_ledger.ledger_key(raw) if raw else _unit_slot(unit_id)
+
+
+class Copy(NamedTuple):
+    """One decided copy, waiting for :func:`hand_over` to queue it for its board's unit."""
+
+    board: str
+    unit: str
+    entry_type: str
+    payload: "dict[str, Any]"
+
+
+#: Copies one follow-on job writes with one ``append_many``.
+COPIES_PER_JOB: Final[int] = 64
+
+
+def decide(wake: "Wake", out: "list[Copy]") -> None:
+    """On the relay consumer: build *wake*'s copy, if any, into *out*."""
+    entry_type, session_id, seq, data = wake.entry_type, wake.unit, wake.seq, wake.data
+    own, parent = wake.own, wake.board
     if entry_type in CHARGE_SOURCES:
         charge = _charge_of(data)
         if charge is None:
@@ -115,7 +164,7 @@ def _relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]
             payload["credits"] = credits
         if duration_ms:
             payload["duration_ms"] = duration_ms
-        _send_charge(parent, payload, origin=payload["closer"])
+        _send(out, parent, _CHARGE_TYPE, payload, origin=payload["closer"])
         return
     if entry_type == _CHARGE_TYPE:
         # A charge that reached THIS board's log goes up once more when this board is
@@ -129,7 +178,7 @@ def _relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]
         closer = str(data.get("closer") or "")
         if not closer:
             return
-        _send_charge(parent, {**dict(data), "slot": parent}, origin=closer)
+        _send(out, parent, _CHARGE_TYPE, {**dict(data), "slot": parent}, origin=closer)
         return
     # A work record of THIS board (its own conductor entry, a report written into it, or
     # a copy relayed up from below) goes up to the board it is bound under. A worker's own
@@ -142,73 +191,104 @@ def _relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]
         # cycle (A under B, B under A) it would come home and fold a second time.
         return
     origin = origin or f"{session_id}:{seq}"
-    _send_record(parent, {**dict(data), "relay": origin}, origin=origin)
+    _send(out, parent, _WORK_TYPE, {**dict(data), "relay": origin}, origin=origin)
 
 
-def _send_charge(board: str, payload: dict[str, Any], *, origin: str) -> None:
-    """Queue one ``work/charged`` copy into *board*'s newest unit."""
+def _send(
+    out: "list[Copy]", board: str, entry_type: str, payload: "dict[str, Any]", *, origin: str
+) -> None:
     unit = _target(board, origin)
-    if not unit:
-        return
-    from kiro_crew.crew_log.emit_runtime import _handle
-    from kiro_crew.crew_log.emit_state import _SRC_GATEWAY, _note_eager
-
-    def _job() -> None:
-        log = _handle(unit)
-        if log is None:
-            return
-        entry = log.append("work/charged", payload, src=_SRC_GATEWAY)
-        _publish_order(board, unit)
-        _note_eager(entry, "work/charged", unit, payload)
-
-    _follow_on(unit, _job, "relaying a worker charge")
+    if unit:
+        out.append(Copy(board, unit, entry_type, payload))
 
 
-def _send_record(board: str, payload: dict[str, Any], *, origin: str) -> None:
-    """Queue one relayed ``work/recorded`` copy into *board*'s newest unit."""
-    unit = _target(board, origin)
-    if not unit:
-        return
-    from kiro_crew.crew_log.emit_runtime import _handle
-    from kiro_crew.crew_log.emit_state import _SRC_GATEWAY, _note_eager
+def hand_over(copies: "list[Copy]") -> None:
+    """Queue *copies* for the writer, one follow-on job per target unit and run.
 
-    def _job() -> None:
-        log = _handle(unit)
-        if log is None:
-            return
-        entry = log.append("work/recorded", payload, src=_SRC_GATEWAY)
-        _publish_order(board, unit)
-        # The copy keeps the sub-board's ``slot``, but it lands in THIS board's log, so
-        # this board's folds are the ones to advance.
-        _note_eager(entry, "work/recorded", unit, payload, board=board)
-
-    _follow_on(unit, _job, "relaying a sub-board record")
-
-
-def _publish_order(board: str, unit: str) -> None:
-    """Record that *unit* holds *board*'s newest work entry, as a local append does.
-
-    The board's folds read its units in this order, so a copy landing in a unit the
-    board has not recorded into yet (a restarted conductor's new unit) must move that
-    unit last, or the predecessor's older entries fold over it.
+    Copies into one unit keep the order they were decided in. Each job writes its run
+    with one ``append_many`` and publishes the board's unit order once, so the writer
+    pays one lock, one tail read, one ``write()`` and one ``fsync`` for the run.
     """
+    runs: "dict[str, list[Copy]]" = {}
+    for copy in copies:
+        runs.setdefault(copy.unit, []).append(copy)
+    for unit, run in runs.items():
+        for at in range(0, len(run), COPIES_PER_JOB):
+            _queue_run(unit, run[at : at + COPIES_PER_JOB])
+
+
+def _queue_run(unit: str, run: "list[Copy]") -> None:
     from kiro_crew import session_ledger
-
-    session_ledger.note_work_unit_recorded(board, unit)
-
-
-def _follow_on(unit: str, job: "Any", what: str) -> None:
-    """Hand *job* to the writer as a follow-on for *unit*.
-
-    This runs on the writer thread, inside the job that appended the entry being
-    copied. A follow-on is the writer's policy for exactly that: queued behind what
-    the unit already owes and never run inline, where it would wait for the pass it is
-    inside to finish.
-    """
+    from kiro_crew.crew_log import writer_groups
     from kiro_crew.crew_log.emit_runtime import _hand_over
     from kiro_crew.crew_log.writer import WriteJob
 
-    _hand_over(unit, WriteJob.follow_on(job, what))
+    board = run[0].board
+    # Read here, off the writer, so the job does not read the unit's header again.
+    canonical = writer_groups.slot_of(unit) or session_ledger.canonical_slot(board, unit)
+
+    def _job() -> None:
+        from kiro_crew.crew_log.emit_runtime import _handle
+        from kiro_crew.crew_log.emit_state import _note_eager
+
+        log = _handle(unit)
+        if log is None:
+            return
+        entries = _append_run(log, run)
+        # The board's folds read its units in this order, so a copy landing in a unit the
+        # board has not recorded into yet (a restarted conductor's new unit) must move
+        # that unit last, or the predecessor's older entries fold over it.
+        session_ledger.note_work_unit_recorded(board, unit, canonical=canonical)
+        for copy, entry in zip(run, entries):
+            if entry is None:
+                continue
+            # A relayed record keeps the sub-board's ``slot``, but it lands in THIS
+            # board's log, so this board's folds are the ones to advance.
+            board_of = copy.board if copy.entry_type == _WORK_TYPE else None
+            _note_eager(entry, copy.entry_type, unit, copy.payload, board=board_of)
+
+    what = f"relaying {len(run)} board cop{'y' if len(run) == 1 else 'ies'}"
+    _hand_over(unit, WriteJob.follow_on(_job, what))
+
+
+def _append_run(log: "CrewLog", run: "list[Copy]") -> "list[Any]":
+    """Append *run* as one group; on a refusal, one at a time so only the bad one is lost.
+
+    A refusal is decided before any byte is written, so the one-at-a-time pass writes
+    nothing twice. When every copy is refused the last refusal is raised, so the writer's
+    own rule (one loss marker, never retried) decides it.
+    """
+    from kiro_crew.crew_log.emit_state import _SRC_GATEWAY
+    from kiro_crew.crew_log.errors import CrewLogError
+
+    items = [_item(copy) for copy in run]
+    try:
+        return list(log.append_many(items, src=_SRC_GATEWAY))
+    except CrewLogError:
+        if len(run) == 1:
+            raise
+    entries: "list[Any]" = []
+    refusal: "CrewLogError | None" = None
+    # shortcut: a non-refusal failure part way through this pass raises, and the
+    # writer's retry of the job writes the copies before it again; every reader counts a
+    # copy once by its closer or origin. Track per-copy outcomes if that ever matters.
+    for copy in run:
+        try:
+            entries.append(log.append(copy.entry_type, copy.payload, src=_SRC_GATEWAY))
+        except CrewLogError as exc:
+            refusal = exc
+            entries.append(None)
+    if refusal is not None and all(entry is None for entry in entries):
+        raise refusal
+    return entries
+
+
+def _item(copy: Copy) -> "dict[str, Any]":
+    """*copy* as an ``append_many`` member, its type spelled as a literal for the writer
+    vocabulary check (``test_crew_log_types``)."""
+    if copy.entry_type == _CHARGE_TYPE:
+        return {"type": "work/charged", "data": copy.payload, "ignorable": False}
+    return {"type": "work/recorded", "data": copy.payload, "ignorable": False}
 
 
 def _target(board: str, origin: str) -> str:
@@ -220,6 +300,7 @@ def _target(board: str, origin: str) -> str:
     from kiro_crew import session_ledger
 
     unit = session_ledger.newest_work_unit(board)
+    _note_hold_key(board, unit)
     if not unit:
         # Not remembered: a later copy of the same origin may find the board's unit.
         logger.debug("crew log: board %s has no work unit to relay %s into", board, origin)
@@ -231,6 +312,22 @@ def _target(board: str, origin: str) -> str:
         while len(_RECENT) > _RECENT_LIMIT:
             _RECENT.popitem(last=False)
     return unit
+
+
+def _note_hold_key(board: str, unit: str) -> None:
+    """Give the writer *unit*'s slot, so it is never written beside a sibling unit.
+
+    A board unit this process did not open has no key yet. Read once per unit, here, in
+    a job and off the writer's lock, with the spelling the order file is published under.
+    """
+    # Imported here: the writer modules stay off the gateway boot path.
+    from kiro_crew.crew_log import writer_groups
+
+    if not unit or writer_groups.known(unit):
+        return
+    from kiro_crew import session_ledger
+
+    writer_groups.note_unit_slot(unit, session_ledger.canonical_slot(board, unit))
 
 
 def _unit_slot(unit_id: str) -> str:

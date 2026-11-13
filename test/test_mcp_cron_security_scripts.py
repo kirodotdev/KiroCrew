@@ -1,4 +1,4 @@
-"""Fix 5: the storage-time scan of a cron script's contents, and the read behind it.
+"""The storage-time scan of a cron script's contents, and the read behind it.
 
 A script body is Python source, never a shell-gate subject: whole-body detectors
 refuse a credential path, a secret env var or an exfiltration URL, and a body that
@@ -184,14 +184,11 @@ def test_vet_script_contents_allows_source_that_only_names_a_fenced_store(body):
 
 
 def test_script_body_is_never_a_shell_gate_subject(monkeypatch):
-    """RATCHET: the cron script gate must not route a source body through any shell
-    matcher. Every shell-grammar pass added to ``is_sensitive_bash_command`` produces
-    another class of false denial on ordinary Python scripts -- separator collapse,
-    stage budget, ordered-existence env rules, `find`-grammar docstrings -- because a
-    shell matcher handed a document reads the document as one command line. So the
-    stop handing it one, not to add another AST layer. If this test fails, the coupling
-    is back: put the detector in ``_vet_script_contents`` as a whole-body, source-aware
-    match, or leave the concern to the sandbox that runs the script.
+    """RATCHET: the cron script gate must not route a source body through any shell matcher.
+
+    A shell matcher reads a document as one command line and falsely denies ordinary
+    Python. Put new detectors in ``_vet_script_contents`` as whole-body, source-aware
+    matches, or leave the concern to the sandbox.
     """
     from kiro_crew import mcp_cron, security
 
@@ -242,14 +239,8 @@ def test_vet_script_file_missing_file_errors(tmp_path):
 def _recording_closes(monkeypatch):
     """Record every descriptor the vetter hands to ``os.close``.
 
-    The vetter runs in a process shared with background threads
-    (``mc-pathres-reaper``, ``sel-writer``), so a number it closes can be handed
-    straight back to another thread's ``os.open`` before the test looks at it.
-    Proving release with ``os.fstat(number)`` therefore races fd reuse: the
-    number is already live again and ``fstat`` succeeds against an unrelated
-    file, failing the assertion though the vetter did close its descriptor.
-    Recording the closes the vetter actually performs is a fact about the
-    descriptor, not about whatever currently occupies its number.
+    Background threads (``mc-pathres-reaper``, ``sel-writer``) can reuse a closed fd
+    number at once, so ``os.fstat(number)`` would race; recorded closes do not.
     """
     closed: list[int] = []
     original_close = os.close
@@ -265,11 +256,8 @@ def _recording_closes(monkeypatch):
 def _assert_descriptors_closed(opened, closed):
     """Every descriptor the vetter opened must be released before it returns.
 
-    An empty ``opened`` is a valid outcome, not a failure: when the guarded
-    open is itself refused (e.g. ``O_NOFOLLOW`` rejects a swapped-in symlink
-    with ``ELOOP``), the vetter may open no descriptor of its own, and there is
-    then nothing to leak. A test that needs to prove a descriptor was exercised
-    asserts that on its own recorded list before calling this.
+    An empty ``opened`` is valid: a refused open (``O_NOFOLLOW`` -> ``ELOOP``) opens
+    nothing. Tests that need a descriptor exercised assert that themselves.
     """
     outstanding = [descriptor for descriptor in opened if descriptor not in closed]
     assert not outstanding, f"vetter left descriptor(s) open: {outstanding}"
@@ -381,7 +369,7 @@ def test_script_parent_swap_before_metadata_never_reads_the_target(monkeypatch, 
     target = root / "private-target"
     target.mkdir()
     (target / script.name).write_text("private content must not reach the reader", encoding="utf-8")
-    original_sensitive = mcp_cron.sensitive_path_refusal
+    original_sensitive = mcp_cron.canonical_path_refusal
     original_fd_path = mcp_cron.fd_real_path
     swapped = []
     descriptors = []
@@ -401,7 +389,7 @@ def test_script_parent_swap_before_metadata_never_reads_the_target(monkeypatch, 
         assert actual is not None and Path(actual) == target / script.name
         return actual
 
-    monkeypatch.setattr(mcp_cron, "sensitive_path_refusal", swap_after_path_check)
+    monkeypatch.setattr(mcp_cron, "canonical_path_refusal", swap_after_path_check)
     monkeypatch.setattr(mcp_cron, "fd_real_path", observed_fd_path)
     monkeypatch.setattr(os, "fdopen", _refuse_content_read)
     with _recording_closes(monkeypatch) as closed:
@@ -527,7 +515,7 @@ class TestCronAddScriptGuard:
 @requires_symlinks
 def test_vet_script_file_blocks_sensitive_symlink(monkeypatch, tmp_path):
     """A crons-dir entry that resolves to a credential path must be blocked,
-    not opened (symlink defense — finding review-bot review)."""
+    not opened (symlink defense)."""
     import kiro_crew.mcp_cron as mcp_cron_mod
 
     target = tmp_path / "looks_like_creds"
@@ -535,10 +523,10 @@ def test_vet_script_file_blocks_sensitive_symlink(monkeypatch, tmp_path):
     link = tmp_path / "evil.py"
     link.symlink_to(target)
 
-    # Force sensitive_path_refusal to flag the resolved target, simulating ~/.aws.
+    # Force canonical_path_refusal to flag the resolved target, simulating ~/.aws.
     monkeypatch.setattr(
         mcp_cron_mod,
-        "sensitive_path_refusal",
+        "canonical_path_refusal",
         lambda p: "Blocked: x" if str(target) in p else None,
     )
     err = _vet_script_file(str(link))

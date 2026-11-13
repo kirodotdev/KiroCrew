@@ -25,6 +25,9 @@ _BENIGN_SSH_STDERR_MARKERS = (
     "store now, decrypt later",
     "server may need to be upgraded",
     "openssh.com/pq",
+    # An ssh config with `UserKnownHostsFile /dev/null` prints this on every
+    # connect, so it otherwise leads every exit line from such a host.
+    "to the list of known hosts",
 )
 
 
@@ -46,8 +49,14 @@ _SSH_TRANSPORT_DROP_SIGNALS = (
     "connection reset",
     "closed by remote host",
     "connection refused",
+    # A ProxyCommand that writes text into the ssh stream when its own
+    # transport dies: session-manager-plugin prints "Cannot perform start
+    # session: ..." to stdout, and ssh reads "Cann" as a packet length.
+    "bad packet length",
+    "connection corrupted",
 )
-_SSH_BIND_SIGNALS = ("address already in use", "cannot listen to port")
+_SSH_CANNOT_LISTEN = "cannot listen to port"
+_SSH_BIND_SIGNALS = ("address already in use", _SSH_CANNOT_LISTEN)
 # Appended to a transport drop ONLY when the child died before the forward ever
 # came up. A drop on the first connect is most often not a drop at all: the
 # instance's ``ssh_host`` names a host that does not exist under that name
@@ -180,6 +189,22 @@ def _first_hit(low: str, phrases: tuple[str, ...]) -> str | None:
     return None
 
 
+def _ssh_cannot_listen_on(stderr: str, port: int) -> bool:
+    """True when ssh's *stderr* says it could not listen on local *port*.
+
+    ssh prints ``channel_setup_fwd_listener_tcpip: cannot listen to port: <n>``
+    for each forward it could not bind, whether or not it then exits. The port
+    is what tells this tunnel's own ``-L`` apart from a forward the user's
+    ssh_config adds for the same host; one on the same port number prints the
+    same line and counts as the tunnel's own.
+    """
+    for line in stderr.lower().splitlines():
+        _, found, rest = line.partition(f"{_SSH_CANNOT_LISTEN}:")
+        if found and rest.strip() == str(port):
+            return True
+    return False
+
+
 def _strip_benign_ssh_noise(text: str) -> str:
     """Drop ssh's benign post-quantum KEX warning lines so a real error shows."""
     kept = [
@@ -259,7 +284,11 @@ def _build_ssh_tunnel_argv(
         "-o",
         "BatchMode=yes",  # never prompt — fail fast if auth is needed
         "-o",
-        "ExitOnForwardFailure=yes",  # exit if the local forward can't bind
+        # A held ssh_config LocalForward on another port must not end the tunnel;
+        # its own bind failure is read off stderr instead (_SshTunnel._drain_stderr).
+        "ExitOnForwardFailure=no",
+        "-o",
+        "LogLevel=INFO",  # a user's QUIET/FATAL would hide that bind error
         "-o",
         "ServerAliveInterval=30",
         "-o",

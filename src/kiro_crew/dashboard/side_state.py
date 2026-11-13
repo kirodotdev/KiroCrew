@@ -71,14 +71,16 @@ class SideState:
     #: destroy, acquire or release the old session — never the replacement's.
     gen: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     #: The binding the live side session was created under, as
-    #: ``(derived agent name, cwd, derived-spec digest)`` — set by
-    #: ``_run_side_turn`` after ``get_or_create``. A later turn whose binding
-    #: differs (the slot's project or agent changed, or the base spec changed so
-    #: the derived spec's content did) destroys the session first: kiro-cli
-    #: loads the spec at spawn, so a retained session would keep running under
-    #: the old agent, in the old cwd, with the old grants. ``None`` = no live
-    #: session has been bound through this sidecar yet.
-    binding: tuple[str, str, str] | None = None
+    #: ``(derived agent name, cwd, derived-spec digest)``, plus
+    #: ``"memory_withheld"`` while the parent chat is incognito or temporary —
+    #: set by ``_run_side_turn`` after ``get_or_create``. A later turn whose
+    #: binding differs (the slot's project or agent changed, the base spec changed
+    #: so the derived spec's content did, or the parent was tightened) destroys
+    #: the session first: kiro-cli loads the spec at spawn, so a retained
+    #: session would keep running under the old agent, in the old cwd, with the
+    #: old grants. ``None`` = no live session has been bound through this
+    #: sidecar yet.
+    binding: tuple[str, ...] | None = None
     #: The asyncio task driving the in-flight turn, so a stop request can cancel
     #: it by lookup. The turn's own handle is otherwise only in
     #: ``state._background_tasks`` (a set with no per-slot key), which a stop
@@ -160,7 +162,7 @@ class SideState:
 
     # ── Queue helpers ──
 
-    def queue_append(self, content: str) -> str | None:
+    def queue_append(self, content: str, *, budget: str = "") -> str | None:
         """Append to the pending queue. Returns the queue ID, or None when there is
         no room left (caller surfaces a 429).
 
@@ -174,18 +176,25 @@ class SideState:
         if len(self.queue) + len(self.steer_pending()) >= MAX_SIDE_QUEUE:
             return None
         qid = uuid.uuid4().hex[:12]
-        self.queue.append({"id": qid, "content": content, "ts": _now_iso(), "rev": 0})
+        entry: dict[str, Any] = {"id": qid, "content": content, "ts": _now_iso(), "rev": 0}
+        if budget:
+            # Shared Crew: the sender's server-derived budget, charged at drain.
+            entry["budget"] = budget
+        self.queue.append(entry)
         return qid
 
     def queue_headroom(self) -> int:
         """Slots left before the queue hits :data:`MAX_SIDE_QUEUE`."""
         return max(0, MAX_SIDE_QUEUE - len(self.queue))
 
-    def queue_insert_front(self, content: str, *, steer_id: str = "") -> str | None:
+    def queue_insert_front(
+        self, content: str, *, steer_id: str = "", budget: str = ""
+    ) -> str | None:
         """Put *content* at the HEAD of the queue, ahead of anything waiting.
 
         Queue entries have ``{"id", "content", "ts", "rev"}`` and carry the
-        optional ``steer_id`` key only when the entry came from a requeued steer.
+        optional ``steer_id`` key only when the entry came from a requeued steer,
+        and ``budget`` (the sender's Shared Crew budget key) when one was known.
 
         For text that was meant to reach the CURRENT turn (an unconsumed steer, or
         an entry whose dispatch failed) — it should run before entries the user
@@ -209,6 +218,8 @@ class SideState:
         }
         if steer_id:
             entry["steer_id"] = steer_id
+        if budget:
+            entry["budget"] = budget
         self.queue.insert(0, entry)
         return qid
 
@@ -249,7 +260,7 @@ class SideState:
 
     # ── Steer ledger ──
 
-    def steer_register(self, text: str) -> str | None:
+    def steer_register(self, text: str, *, budget: str = "") -> str | None:
         """Record a steer as handed to the backend, delivery unproven.
 
         Returns its ledger id, or None when the caller must fall through to the
@@ -272,7 +283,10 @@ class SideState:
         if len(self.steers) >= MAX_STEER_LEDGER and not self._steer_evict_one():
             return None
         sid = uuid.uuid4().hex[:12]
-        self.steers.append({"id": sid, "text": text, "state": STEER_PENDING})
+        entry = {"id": sid, "text": text, "state": STEER_PENDING}
+        if budget:
+            entry["budget"] = budget
+        self.steers.append(entry)
         return sid
 
     def _steer_evict_one(self) -> bool:

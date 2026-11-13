@@ -1067,9 +1067,10 @@ def _register_mcp_servers(
                         cfg = {**cfg, "env": emit_env(env)}
             servers[namespaced] = cfg
             registered.append(namespaced)
-        # LAST governance pass before this map hits disk. This file IS read by
-        # kiro-cli, and an `autoApprove` on an entry here auto-approves that
-        # server locally with NO permission request — so a manifest that ships
+        # LAST governance pass before this map hits disk. A verb an entry here
+        # keeps in `autoApprove` runs with NO permission request (kiro-cli has
+        # no such field, but the skill view and the KAS projection grant each
+        # kept verb in `allowedTools`), so a manifest that ships
         # `autoApprove` on a governed server would bypass the PreToolUse gate and
         # the ceiling's denial, the same second route the agent-config writers
         # already close. Strip a governed grant here too; the tools stay, they

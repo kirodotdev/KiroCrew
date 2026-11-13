@@ -572,36 +572,31 @@ async def _bind_shared_handle_impl(
     # Capture cleanup identity before persistence or later setup can fail,
     # otherwise the live handle becomes an untracked ghost.
     cleanup_session_id = str(handle.session_id or "")
-    # The backend that actually served this session, read from the provider
-    # rather than fixed at kiro's label -- this path creates a session on
-    # whatever backend the parent runs, so a constant here can only be right
-    # for one of them.
-    #
-    # This is NOT what the continuation reads. ``_run_inner_impl`` re-captures
-    # the label from the same provider immediately after session acquisition,
-    # and that value is what reaches ``state.json`` and the corrected identity
-    # record -- so a run that gets that far was always labelled correctly, on
-    # every backend. What this write owns is the window BEFORE that re-capture:
-    # a run cancelled in it leaves the identity record claiming kiro for a
-    # session some other host holds, and the tombstone prune then takes
-    # ``_cleanup_session_files_sync``'s kiro branch, unlinks a path that was
-    # never going to exist, and reports cleanup SUCCEEDED -- where the label it
-    # should have carried reports "no cleanup route for this provider" and keeps
-    # the retry metadata. Fail-closed is the behaviour that constant was quietly
-    # spending.
-    #
-    # ``_provider_label_of`` resolves it through ``PROVIDER_LABEL_BY_BACKEND``,
-    # so a harness added later is one table row rather than one more branch here
-    # (harness-parity H13).
+    # The backend that actually served this session (the parent's, whichever it
+    # is), never a fixed kiro label. ``_run_inner_impl`` re-captures it right
+    # after session acquisition; this write covers a run cancelled before that.
+    # A wrong kiro label there makes the tombstone prune take
+    # ``_cleanup_session_files_sync``'s kiro branch and report cleanup SUCCEEDED,
+    # instead of failing closed with the retry metadata kept. Resolved through
+    # ``PROVIDER_LABEL_BY_BACKEND`` (harness-parity H13).
     cleanup_provider = self._manager._provider_label_of(provider)
+    # Imported here: a rebound ``_impl`` resolves globals in ``kiro_crew.subagent``.
+    from kiro_crew.agent_sdk.codex_transcripts import is_codex_provider_label, recorded_codex_home
+
+    # The runtime's extra_env can move the store, and the prune has no session to ask.
+    cleanup_codex_home = (
+        recorded_codex_home(provider) if is_codex_provider_label(cleanup_provider) else ""
+    )
     setattr(info, "_session_id", cleanup_session_id)
     setattr(info, "_session_provider", cleanup_provider)
+    setattr(info, "_session_codex_home", cleanup_codex_home)
     self._publish_identity(
         info.id,
         session_id=cleanup_session_id,
         provider=cleanup_provider,
         keep=info.keep,
         conversation_key=session_key if info.keep else "",
+        codex_home=cleanup_codex_home,
     )
     try:
         await self._remember_identity_off_loop(
@@ -610,6 +605,7 @@ async def _bind_shared_handle_impl(
             provider=cleanup_provider,
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=cleanup_codex_home,
         )
     except (OSError, ValueError, RecursionError):
         logger.debug(

@@ -1,9 +1,10 @@
 """Reading the two layers a bundle carries, and writing Layer B back on arrival.
 
 Layer A is the visible transcript, read here as the chained history of a slot. Layer B
-is the kiro-cli context window (``<sid>.json`` + ``<sid>.jsonl``): resolving the session
-id a slot is joined to, snapshotting and reading its files on the sending side, and on
-the receiving side validating, rewriting, writing, joining and removing them again.
+is the model's context window: kiro-cli's ``<sid>.json`` + ``<sid>.jsonl`` pair, or a KAS
+session's ``session.json`` + ``messages.jsonl``. This module resolves the session id a
+slot is joined to, snapshots and reads its files on the sending side, and on the
+receiving side validates, rewrites, writes, joins and removes them again.
 
 Owner of :mod:`kiro_crew.dashboard.session_transfer`, which is its only import path:
 callers and tests reach every name here as ``session_transfer.<name>``.
@@ -11,6 +12,7 @@ callers and tests reach every name here as ``session_transfer.<name>``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -21,16 +23,26 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.drivers.acp_vocab import PROVIDER_LABEL_DEFAULT, PROVIDER_LABEL_KAS
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.dashboard.session_transfer_staging import (
     LayerBEvents,
     _egress_tmp_dir,
     _rm_import_temps,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger("kiro_crew.dashboard.session_transfer")
+
+#: KAS's own session-id prefix (its ``isCanonicalSessionId``): such a sid lives in
+#: ``<kiro home>/sessions/<bucket>/<sid>/``, not in kiro-cli's flat pair.
+_KAS_SID_PREFIX = "sess_"
+
+#: ``session.json`` fields that never leave the host: ``_meta`` holds the sender's MCP
+#: server URLs and headers, ``description`` a summary of the work.
+_KAS_PRIVATE_FIELDS = ("_meta", "description")
 
 
 def _read_chained_history(
@@ -141,6 +153,8 @@ def _read_layer_b(sid: str) -> dict[str, Any] | None:
     """
     if not sid:
         return None
+    if sid.startswith(_KAS_SID_PREFIX):
+        return _read_kas_layer_b(sid)
     try:
         d = kiro_sessions_dir()
         jf = d / f"{sid}.json"
@@ -181,6 +195,37 @@ def _read_layer_b(sid: str) -> dict[str, Any] | None:
     # text is rendered in a transcript and re-read by an agent as context, so it
     # stays scrubbed on the same boundary.
     return {"sid": sid, "envelope": envelope, "events": LayerBEvents(snapshot)}
+
+
+def _kas_sessions_root() -> Path:
+    """KAS's session store, ``<kiro home>/sessions``: the parent of kiro-cli's ``cli``."""
+    return kiro_sessions_dir().parent
+
+
+def _read_kas_layer_b(sid: str) -> dict[str, Any] | None:
+    """Read the KAS session *sid* for the bundle. **Blocking IO, thread-safe.**
+
+    The same contract as :func:`_read_layer_b`: ``messages.jsonl`` is snapshotted
+    byte-exact (KAS checks its reasoning signatures on replay), ``None`` when the
+    session cannot be read. ``session.json`` travels without
+    :data:`_KAS_PRIVATE_FIELDS`. The bucket is found by search, because it hashes the
+    workspace the session was created in, which the session map does not keep.
+    """
+    try:
+        meta = next(_kas_sessions_root().glob(f"*/{sid}/session.json"), None)
+        if meta is None:
+            return None
+        session = json.loads(meta.read_text(encoding="utf-8"))
+        if not isinstance(session, dict):
+            return None
+        snapshot = _snapshot_events_file(meta.parent / "messages.jsonl")
+    except Exception:
+        logger.debug("session_transfer: could not read KAS session sid=%s", sid, exc_info=True)
+        return None
+    if snapshot is None:
+        return None
+    envelope = {k: v for k, v in session.items() if k not in _KAS_PRIVATE_FIELDS}
+    return {"sid": sid, "envelope": envelope, "events": LayerBEvents(snapshot), "kas": True}
 
 
 def _snapshot_events_file(src: Path) -> Path | None:
@@ -257,6 +302,35 @@ def _rewrite_layer_b_envelope(env: dict[str, Any], new_sid: str, agent: str) -> 
     return e
 
 
+def _slot_starts_on(session_key: str, backend: str) -> bool:
+    """Whether a new session on *session_key* starts on *backend*. **Blocking** (config read).
+
+    A context joined to a slot that runs another backend is dropped at its first
+    turn (``detect_provider_switch``) and the tab reopens from the transcript, so
+    the import would report a full resume it does not have. Read through the same
+    member-aware gate as the provider factory; any failure answers False, so the
+    import falls back to the marked transcript-only copy.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.crewmate_harness import crewmate_backend_pin
+        from kiro_crew.members import select_provider_backend, session_backend_pick
+
+        cfg = KiroCrewConfig.load()
+        pick = session_backend_pick(session_key)
+        starts_on = select_provider_backend(
+            session_key,
+            cfg.agent.member_acp_backend,
+            cfg.agent.acp_backend,
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, session_key) if pick is None else None,
+        )
+    except Exception:
+        logger.debug("session_transfer: could not resolve %s's backend", session_key, exc_info=True)
+        return False
+    return starts_on == backend
+
+
 def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
     """Write imported Layer B to disk under a FRESH sid. **Blocking IO, thread-safe.**
 
@@ -272,6 +346,8 @@ def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
     trusted), and returns the new sid, or ``None`` on any failure so the caller
     keeps the transcript-only import.
     """
+    if layer_b.get("kas"):
+        return _write_kas_layer_b(layer_b)
     new_sid = ""
     try:
         new_sid = str(uuid.uuid4())
@@ -369,6 +445,57 @@ def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
         return None
 
 
+def _kas_install_dir(sid: str) -> Path:
+    """Where an imported KAS session *sid* goes: the bucket KAS names its workspace by."""
+    workspace = _kas_import_workspace().as_posix()
+    bucket = hashlib.sha256(workspace.encode("utf-8")).hexdigest()[:16]
+    return _kas_sessions_root() / bucket / sid
+
+
+def _kas_import_workspace() -> Path:
+    """The runtime's default work dir, where an unscoped session opens."""
+    return data_home() / "workspace"
+
+
+def _write_kas_layer_b(layer_b: dict[str, Any]) -> str | None:
+    """Install an imported KAS session under a FRESH sid. **Blocking IO, thread-safe.**
+
+    ``messages.jsonl`` is written byte-exact. ``session.json`` keeps the peer's
+    settings except where they name the sender: a fresh ``id``, an empty title, no
+    :data:`_KAS_PRIVATE_FIELDS`, no ``autopilot`` (this host's default applies), and
+    the workspace an unscoped session opens in, because KAS refuses to load a session
+    with none. Owner-only and fail closed like :func:`_write_layer_b_files`: ``None``
+    imports the session transcript-only, with nothing left behind.
+    """
+    events = layer_b.get("events") or ""
+    if not _events_jsonl_is_loadable(events):
+        logger.warning(
+            "session_transfer: refusing an unparseable KAS session from the peer; "
+            "importing transcript-only"
+        )
+        return None
+    new_sid = f"{_KAS_SID_PREFIX}{uuid.uuid4()}"
+    dropped = (*_KAS_PRIVATE_FIELDS, "autopilot")
+    session = {k: v for k, v in (layer_b.get("envelope") or {}).items() if k not in dropped}
+    try:
+        workspace = str(_kas_import_workspace())
+        session.update(id=new_sid, title="", workspacePaths=[workspace], rootPaths=[workspace])
+        d = _kas_install_dir(new_sid)
+        mkdirs_owner_only(d.parent)
+        d.mkdir(mode=0o700)
+        atomic_write(d / "messages.jsonl", events, newline="", restrict_to_owner=True)
+        # Last, because KAS finds a session by its ``session.json``.
+        atomic_write(d / "session.json", json.dumps(session), restrict_to_owner=True)
+        return new_sid
+    except Exception:
+        logger.warning(
+            "session_transfer: could not install the KAS session; importing transcript-only",
+            exc_info=True,
+        )
+        _unlink_layer_b_files(new_sid)
+        return None
+
+
 def _join_layer_b(sessions: Any, sm_key: str, sid: str) -> bool:
     """Point the session map at *sid*. **MUST run on the event loop.**
 
@@ -392,7 +519,10 @@ def _join_layer_b(sessions: Any, sm_key: str, sid: str) -> bool:
         )
         return False
     try:
-        sessions.seed_conversation(sm_key, sid, provider="acp")
+        kas = sid.startswith(_KAS_SID_PREFIX)
+        sessions.seed_conversation(
+            sm_key, sid, provider=PROVIDER_LABEL_KAS if kas else PROVIDER_LABEL_DEFAULT
+        )
         return True
     except Exception:
         logger.warning(
@@ -404,12 +534,21 @@ def _join_layer_b(sessions: Any, sm_key: str, sid: str) -> bool:
 
 
 def _unlink_layer_b_files(sid: str) -> None:
-    """Delete a materialised Layer B pair. **Blocking IO, thread-safe.**
+    """Delete a materialised Layer B pair or KAS session. **Blocking IO, thread-safe.**
 
     File-only, for the same reason :func:`_write_layer_b_files` is: the map half
     of the rollback belongs on the event loop.
     """
     if not sid:
+        return
+    if sid.startswith(_KAS_SID_PREFIX):
+        try:
+            d = _kas_install_dir(sid)
+            for name in ("session.json", "messages.jsonl"):
+                (d / name).unlink(missing_ok=True)
+            d.rmdir()
+        except Exception:
+            logger.debug("session_transfer: could not remove KAS session %s", sid, exc_info=True)
         return
     for suffix in (".json", ".jsonl"):
         try:

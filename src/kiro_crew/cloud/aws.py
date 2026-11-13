@@ -21,9 +21,12 @@ import os
 import subprocess
 from typing import Any, Optional
 
+from kiro_crew import sandbox as _sandbox
+from kiro_crew import sandbox_launch_mark
+from kiro_crew.constants import KIROCREW_RUNTIME_AGENT_ENV
 from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin
 from kiro_crew.platform_compat import IS_POSIX
-from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, without_python_env, wrap_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,11 @@ _AUTH_DENIED_MARKERS = (
     "UnauthorizedOperation",
     "is not authorized to perform",
 )
+
+#: What the aws CLI writes before a service error's code, which follows in
+#: parentheses: ``An error occurred (NoSuchEntity) when calling the GetPolicy
+#: operation: ...``.
+_SERVICE_ERROR_PREFIX = "An error occurred ("
 
 
 class CloudActionDenied(Exception):
@@ -58,23 +66,85 @@ class CloudActionDenied(Exception):
     """
 
 
+#: Environment markers Kiro Crew sets on the processes it spawns for agents.
+#: ANY one of them present means "not a human at a bare terminal". A single
+#: variable is not enough: ``KIROCREW_SESSION_KEY`` is set only on a
+#: per-session ACP child, so a worker on the shared runtime carries none of it
+#: while still carrying the others. The human paths (a host terminal, the
+#: dashboard Terminal panel, the gateway process serving ``/api/cloud/*``)
+#: carry none of these.
+#:
+#: ``KIROCREW_SPAWNED`` is deliberately NOT here. It marks every tree Kiro Crew
+#: spawns, app backends included, and a gateway that an app backend restarts
+#: (Dev Fleet's foreground restart) inherits it, so reading it would refuse the
+#: owner's own dashboard cloud actions. The agent trees it marks carry one of
+#: the markers below or the confinement signal as well.
+_AGENT_ENV_MARKERS: tuple[str, ...] = (
+    "KIROCREW_SESSION_KEY",  # per-session ACP child (client_spawn_env)
+    KIROCREW_RUNTIME_AGENT_ENV,  # agent runtime child (runtime_spawn_launch)
+    "KIROCREW_HOST_PID",  # set by the sandbox launcher on the child it launches
+)
+
+
 def _in_agent_session() -> bool:
-    """True inside an agent/ACP subprocess (the gateway injects this var)."""
-    return bool(os.environ.get("KIROCREW_SESSION_KEY"))
+    """True inside any process Kiro Crew spawned for an agent, worker or sub-agent.
+
+    Deny-direction only: each signal can only make the answer "agent".
+
+    * any of :data:`_AGENT_ENV_MARKERS`, non-empty;
+    * :func:`kiro_crew.sandbox_launch_mark.launched_in_sandbox`, which remembers the
+      ``KIROCREW_SANDBOX_ACTIVE`` marker that ``cli.main`` drops before any
+      ``kirocrew cloud`` subcommand runs;
+    * :func:`kiro_crew.sandbox.agent_confinement_evidence`, the one confinement
+      probe (the ``kirocrew-agents.slice`` cgroup on Linux, which an environment
+      scrub cannot remove; the Seatbelt verdict on macOS).
+
+    A ``False`` still does not prove a human (see :func:`assert_human_action`).
+    """
+    if any(os.environ.get(name) for name in _AGENT_ENV_MARKERS):
+        return True
+    return _agent_confinement()
+
+
+def _agent_confinement() -> bool:
+    """The non-environment half of :func:`_in_agent_session`: sandbox launch or confinement."""
+    if sandbox_launch_mark.launched_in_sandbox():
+        return True
+    return _sandbox.agent_confinement_evidence() is not None
+
+
+def warn_if_started_from_agent_session() -> bool:
+    """Log one WARNING when the gateway carries an agent session's markers.
+
+    A gateway restarted from an agent's shell keeps that session's environment and
+    sandbox, and nothing else says why AWS features then fail. Warns only: starting
+    a gateway is an ordinary command. Returns whether it warned.
+    """
+    if not _in_agent_session():
+        return False
+    logger.warning(
+        "This gateway was started from inside an agent session and inherits that "
+        "session's environment and any sandbox around it, so AWS credentials may not "
+        "resolve (dictation fails with 'Unable to locate credentials') and dashboard "
+        "cloud actions are refused. Restart the gateway from a normal terminal."
+    )
+    return True
 
 
 def assert_human_action(action: str) -> None:
     """Refuse a destructive/sensitive cloud mutation from an agent session.
 
-    The gateway injects ``KIROCREW_SESSION_KEY`` into every agent/ACP subprocess
-    (and MCP tools key off it). A human running ``kirocrew cloud …`` in their own
-    terminal has no such var, so we fail closed whenever it IS set. This reaches
+    Kiro Crew marks every process it spawns for an agent (see
+    :func:`_in_agent_session`: the spawn markers, the sandbox marker it remembers,
+    and the agents cgroup). A human running ``kirocrew cloud …`` in their own
+    terminal has none of them, so we fail closed whenever ANY is present. This reaches
     the path the shell ``deniedCommands`` can't (a raw ``ec2.destroy()`` call
     never spawns the denied wrapper string).
 
     Honest scope: this is **best-effort friction, not a containment boundary**.
-    ``KIROCREW_SESSION_KEY`` is an ordinary env var the agent's own code can
-    ``del os.environ[...]`` before calling in-process, and in the default
+    The environment markers are ordinary env vars the agent's own code can
+    ``del os.environ[...]`` before calling in-process (the cgroup signal survives
+    that on Linux, but not every host has it), and in the default
     ``standard`` sandbox ``~/.aws`` is readable so the agent could bypass this
     module entirely (raw ``aws``/boto3). The actual ceiling on what an escaped
     agent can do to the account is the least-privilege scope of the operator's
@@ -134,8 +204,8 @@ def assert_chokepoint_allowed(args: list[str]) -> None:
     (2) the shell ``deniedCommands`` block the CLI + wrapper strings from the
     ``execute_bash``/``shell`` tools; (3) this env-keyed chokepoint stops the
     in-process ``import kiro_crew.cloud`` path. All three are bypassable by a
-    determined, code-executing agent (obfuscated shell string; ``del
-    os.environ['KIROCREW_SESSION_KEY']``; raw ``aws``/boto3 when ``~/.aws`` is
+    determined, code-executing agent (obfuscated shell string; deleting the
+    agent env markers; raw ``aws``/boto3 when ``~/.aws`` is
     readable — which it IS in the default ``standard`` sandbox). The load-bearing
     control is therefore the **least-privilege IAM scope** of the operator's own
     credentials (:mod:`kiro_crew.cloud.iam` — tag/ARN-scoped, no IAM writes), plus
@@ -289,7 +359,9 @@ def run_aws(
                 # which a GUI-launched gateway leaves minimal. The sandbox's
                 # AWS_SECRET*/AWS_SESSION* scrub still applies: the wrapped argv
                 # runs it inside the child, on whatever env it is handed.
-                env=aws_spawn_env(argv[0]),
+                # aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME
+                # would make it import the gateway's packages instead.
+                env=without_python_env(aws_spawn_env(argv[0])),
             )
             if proc_sink is not None:
                 try:
@@ -353,9 +425,38 @@ def env_credentials_hint() -> str:
     return ""
 
 
+def configured_region(profile: str) -> str:
+    """The Region the AWS config file sets for *profile*, or "" when it sets none.
+
+    ``aws configure get`` reads only the config file, so this is the profile's own
+    setting, never ``AWS_REGION``. An agent session may not run it and gets "".
+    """
+    try:
+        rc, out, _err = run_aws(["configure", "get", "region"], profile)
+    except CloudActionDenied:
+        return ""
+    return out.strip() if rc == 0 else ""
+
+
 def is_access_denied(stderr: str) -> bool:
     """True if the stderr text is an authorization (not client-side) error."""
     return any(marker in stderr for marker in _AUTH_DENIED_MARKERS)
+
+
+def service_error_code(stderr: str) -> str:
+    """The AWS error code the aws CLI reports in *stderr*, or ``""`` when it names none.
+
+    Read from the CLI's own ``An error occurred (<Code>)`` prefix, never from the
+    rest of the text: the message after it quotes ARNs and role names a caller
+    chose, and one of those may spell any code. The first such prefix is the
+    CLI's, because neither an ARN nor a role or session name can hold a space or
+    a parenthesis.
+    """
+    _before, found, rest = stderr.partition(_SERVICE_ERROR_PREFIX)
+    if not found:
+        return ""
+    code, closed, _after = rest.partition(")")
+    return code if closed else ""
 
 
 def map_missing_action(stderr: str) -> Optional[str]:
@@ -397,13 +498,17 @@ def checked(
     rc, out, err = run_aws(args, profile, region, timeout=timeout, **run_extra)
     if rc != 0:
         missing = map_missing_action(err)
-        hint = ""
+        # The remedy leads: the dashboard keeps a launch error's first 400
+        # characters, which a raw denial (role and resource ARNs) can fill.
+        cause = err.strip()[:400]
         if missing:
-            hint = f" — grant `{missing}` in your IAM policy and retry"
+            cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         elif is_access_denied(err):
-            hint = " — add the missing permission (see `kirocrew cloud iam-policy`) and retry"
+            cause = (
+                f"add the missing permission (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            )
         raise AWSError(
-            f"{action} failed: {err.strip()[:400]}{hint}",
+            f"{action} failed: {cause}",
             action=action,
             missing_action=missing,
             returncode=rc,

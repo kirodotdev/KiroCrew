@@ -8,10 +8,11 @@ import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
+import TruncatedText from '../components/TruncatedText'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import { Card, CardTitle, EmptyState, Input } from '../components/ui'
 import { usePersistedString } from '../hooks/usePersistedString'
-import { fmtBytes, fmtNumber, fmtPercent } from '../i18n/format'
+import { fmtBytes, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import {
   DEFAULT_RANGE,
@@ -59,8 +60,14 @@ const TURN_NON_FAULT_OUTCOMES = new Set([
   'unclassified',
 ])
 
+// Seconds to one decimal from 1s up, whole milliseconds below; a missing or
+// non-finite reading is a dash rather than "NaNms".
 const fmtMs = (ms?: number | null): string =>
-  ms == null ? '—' : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'
+  ms == null || !Number.isFinite(ms)
+    ? '—'
+    : ms >= 1000
+      ? fmtUnit(ms / 1000, 'second', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      : fmtUnit(Math.round(ms), 'millisecond', { maximumFractionDigits: 0 })
 
 function Notice({ children }: { children: React.ReactNode }) {
   return <div className="text-muted text-sm py-12 text-center leading-relaxed">{children}</div>
@@ -210,13 +217,15 @@ function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms
               date: r.date,
               cold: fmtMs(r.cold_p50_ms),
               warm: fmtMs(r.warm_p50_ms),
-              count: fmtNumber(r.count),
+              count: r.count,
+              n: fmtNumber(r.count),
             })}
             title={i18nT('pages.telemetryPanel.daily_trend_point', {
               date: r.date,
               cold: fmtMs(r.cold_p50_ms),
               warm: fmtMs(r.warm_p50_ms),
-              count: fmtNumber(r.count),
+              count: r.count,
+              n: fmtNumber(r.count),
             })}
           >
             <span className="block w-full rounded-t-sm" style={{ height: `${cold}%`, background: 'var(--accent)' }} />
@@ -321,9 +330,7 @@ function LatencyTab({ other }: { other: Other[] }) {
               const r = histRow(o)
               return (
               <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
-                <span className="w-[260px] shrink-0 truncate font-mono text-[11px]" title={o.name}>
-                  {o.name}
-                </span>
+                <TruncatedText full={o.name} className="w-[260px] shrink-0 font-mono text-[11px]" />
                 {/* The endpoints flank the bar so each row is visibly its own
                     scale, rather than a position on a shared axis it never had. */}
                 <span className="w-14 shrink-0 text-right font-mono tabular-nums text-muted">
@@ -365,9 +372,7 @@ function LatencyTab({ other }: { other: Other[] }) {
               <div className="flex flex-col gap-1">
                 {counters.map(o => (
                   <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={o.name}>
-                      {o.name}
-                    </span>
+                    <TruncatedText full={o.name} className="min-w-0 flex-1 font-mono text-[11px]" />
                     <span className="shrink-0 font-mono tabular-nums">
                       {fmtNumber(o.count ?? o.total ?? 0)}
                     </span>
@@ -392,9 +397,7 @@ function LatencyTab({ other }: { other: Other[] }) {
                 {gauges.map(o => (
                   <div key={o.name}>
                     <div className="flex items-center gap-3 text-[11.5px]">
-                      <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={o.name}>
-                        {o.name}
-                      </span>
+                      <TruncatedText full={o.name} className="min-w-0 flex-1 font-mono text-[11px]" />
                       <span
                         className="shrink-0 font-mono tabular-nums"
                         title={String(o.latest ?? 0)}
@@ -409,9 +412,7 @@ function LatencyTab({ other }: { other: Other[] }) {
                       <div className="ml-4 flex flex-col gap-0.5">
                         {Object.entries(o.by_attr).map(([sig, v]) => (
                           <div key={sig} className="flex items-center gap-3 text-[10.5px] text-muted">
-                            <span className="min-w-0 flex-1 truncate font-mono text-[10px]" title={sig}>
-                              {sig}
-                            </span>
+                            <TruncatedText full={sig} className="min-w-0 flex-1 font-mono text-[10px]" />
                             <span className="shrink-0 font-mono tabular-nums" title={String(v)}>
                               {fmtGaugeValue(o.name, v)}
                             </span>
@@ -1033,9 +1034,15 @@ export default function TelemetryPanel() {
         <div className="text-muted text-[11px] mt-2">
           {/* The footer speaks for the OTEL sections, so it names the period they
               cover: the retention-capped one their card titles use, when capped. */}
-          {i18nT('pages.telemetryPanel.window_footer', { period: (otelWin ?? win).period })} {data.shard_count}{' '}
-          {i18nT('pages.telemetryPanel.shard_s_source')} <code>{data.metrics_dir}</code>{' '}
-          {i18nT('pages.telemetryPanel.local_only_no_egress')}
+          <Trans
+            i18nKey="pages.telemetryPanel.window_footer_shards"
+            count={data.shard_count}
+            values={{ period: (otelWin ?? win).period, n: fmtNumber(data.shard_count) }}
+            // The path is a React child, never an interpolated value: Trans
+            // parses interpolated text as markup, and a configured path may
+            // hold `<` or `>`.
+            components={{ dir: <code>{data.metrics_dir}</code> }}
+          />
         </div>
       </div>
     </PanelWindowCtx.Provider>

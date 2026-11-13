@@ -1,24 +1,9 @@
 """The six dashboard tools, and the preview/apply store behind four of them.
 
-The user-facing flow is three phrases -- "show me another", "keep this one", "go back"
--- and this file holds the claims that make each of them safe to say to an agent:
-
-* a PREVIEW records nothing. No version, no history row, and the current page is
-  untouched, so "show me another" costs nothing when the answer is no;
-* an APPLY installs the page that was STAGED. The tool takes no arguments, which is
-  what makes the thing applied provably the thing the person looked at;
-* only a page that SHIPPED with the product can be staged. A call carrying a manifest
-  and html the agent wrote is refused, at the tool and again in the store, with a
-  sentence that says custom templates come later -- because a rendered page runs its
-  own script against the crewmate's task titles and summaries inside a frame that can
-  navigate itself, so it could carry them out;
-* "go back" reaches only a version still on disk, and the list it reads comes back on
-  the fields call it was already going to make.
-
-Every tool gets its real path and its refusal. A refusal with no test is a sentence
-nobody has read: these tools are the first ones whose refusals an AGENT has to act on
-without a person in the loop, so the refusal text is as much the product as the
-success.
+A preview records nothing; apply takes no arguments, so it installs exactly the staged
+page; only shipped pages can be staged, because a page's script could carry task titles
+out through a self-navigating frame; "go back" reaches only versions still on disk. An
+agent acts on each refusal with no person in the loop, so every refusal is tested.
 """
 
 from __future__ import annotations
@@ -102,14 +87,8 @@ def _authored_manifest(**over: Any) -> dict[str, Any]:
 def _home(tmp_path, _floor_monkeypatch):
     """Own data home and two fixture built-ins, patched on the test-owned undo stack.
 
-    Through ``_floor_monkeypatch`` and not the shared ``monkeypatch`` for the reason
-    the sibling instance suites give (D11): an isolation patch on the shared stack is
-    lifted by any body that calls ``monkeypatch.undo()``, which would hand the rest of
-    that test the real data home and the real registry -- and this file writes instance
-    records and template directories.
-
-    TWO templates, because the staging and rollback claims are about swapping one page
-    for another and the only pages that can be staged are the ones the catalog serves.
+    A body calling ``monkeypatch.undo()`` would lift a shared-stack patch and expose the
+    real data home. Two templates because staging and rollback swap one page for another.
     """
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     root = tmp_path / "builtin"
@@ -131,7 +110,7 @@ def _verified_caller() -> Any:
         yield
 
 
-# ------------------------------------------------------------------ the store
+# the store
 
 
 class TestStagingRecordsNothing:
@@ -230,18 +209,11 @@ class TestThePreviewLinkIsAPageForOneCrewmate:
 
 
 class TestAnAgentWrittenPageCannotBeStaged:
-    """The F1 rule, at the layer that owns it.
+    """Only shipped pages can be staged, enforced in the store.
 
-    A dashboard page runs its own script against this crewmate's task titles and
-    summaries, and the dashboard's own ``frame-src`` admits the hosts its artifact
-    previews need -- so a page that runs can navigate itself to one of them with those
-    values in the URL, and a closed ``connect-src`` does not stop that. Scripts ARE the
-    format, so the only available signal is the author.
-
-    The store keeps the ``html`` and ``manifest`` PARAMETERS and refuses them, rather
-    than dropping them from the signature. That is what makes the refusal total: a
-    second caller added later cannot stage an authored page by forgetting a check of its
-    own, because the check is here.
+    A page's script can navigate to a ``frame-src`` host with task titles in the URL, so
+    the author is the only signal. The store refuses ``html`` and ``manifest`` itself, so
+    a new caller cannot skip the check.
     """
 
     @pytest.mark.parametrize(
@@ -411,7 +383,7 @@ class TestGoingBack:
         assert back.html == PAGE
 
 
-# ------------------------------------------------------------------- the tools
+# the tools
 
 
 class TestTheToolSurface:
@@ -749,19 +721,14 @@ class TestTheFieldsReadCarriesTheHistory:
         assert "dashboard_rollback can still reach: 8, 9" in out
 
 
-# ------------------------------------------------- the refusal an agent reads
+# the refusal an agent reads
 
 
 class TestARefusalReachesTheAgentWhole:
     """The stored row is capped; the sentence the agent reads is not.
 
-    The 240-character cap bounds the crew-log entry. Applying it to the 400 body as
-    well cut the sentence from the END, and the end is where the remedy is: the
-    valid field names come first and the "you have made this mistake N times before,
-    and 'x' worked" note last. A manifest with about five fields therefore pushed
-    exactly the useful half past the cap, and an agent was told what it got wrong
-    without being told what to do instead -- which is the cycle the mistake book
-    exists to end.
+    The 240-character cap bounds the crew-log entry only; the remedy comes last in the
+    400 body, so capping it would cut exactly the part that says what to do.
     """
 
     @staticmethod
@@ -809,19 +776,15 @@ class TestARefusalReachesTheAgentWhole:
         assert "AKIAIOSFODNN7EXAMPLE" not in dashboard_agentic.refusal_entry(leaked)["reason"]
 
 
-# ------------------------------------------- the discard happens under the lock
+# the discard happens under the lock
 
 
 def test_the_consumed_preview_is_discarded_inside_the_instance_lock() -> None:
     """Read off the function's own syntax tree, because the race is not reachable.
 
-    With the discard outside the lock, an apply commits, releases, and only then
-    deletes whatever preview is staged at that moment -- so an apply racing a
-    preview throws away the page that was just staged, and a second apply arriving
-    in the same window consumes the first one's preview before it is deleted at all.
-    Neither sequence can be driven from a test: the window is between two real
-    syscalls. What CAN be checked exactly is the thing that closes it, which is the
-    call sitting inside the ``with _locked(...)`` body.
+    Outside the lock, a racing preview or second apply would lose or reuse a staged page.
+    The window is between two syscalls, so the test checks the call sits inside the
+    ``with _locked(...)`` body.
     """
     import ast
     import inspect
@@ -851,17 +814,14 @@ def test_applying_twice_cannot_install_the_same_page_twice() -> None:
     assert instance.read(SLUG).instance_version == 1
 
 
-# --------------------------------------- redaction keeps every row it scrubs
+# redaction keeps every row it scrubs
 
 
 class TestRedactionDoesNotLoseRows:
     """Two keys that scrub to one placeholder are suffixed, not collapsed.
 
-    The collapse was recorded as an acceptable trade on the grounds that such keys
-    must not be displayed anyway. The label is indeed unreadable either way -- but
-    each key carries a VALUE the agent wrote and meant to store, so a two-row write
-    landing as one row loses a row with nothing raised and nothing in the mistake
-    book. `member_dashboard._page_safe` already suffixes for exactly this reason.
+    Each key carries a value the agent meant to store, so collapsing would drop a row
+    silently. `member_dashboard._page_safe` suffixes for the same reason.
     """
 
     @staticmethod

@@ -46,9 +46,12 @@ function subscribe(channel: string) {
 
 /** Push a backend frame to whatever the panel registered on `channel`. */
 function emit(channel: string, ...args: unknown[]): void {
-  for (const cb of Array.from(subscribers.get(channel) ?? [])) {
-    ;(cb as (...a: unknown[]) => unknown)(...args)
-  }
+  // Each delivered event drives a React state update, so the delivery runs inside act.
+  act(() => {
+    for (const cb of Array.from(subscribers.get(channel) ?? [])) {
+      ;(cb as (...a: unknown[]) => unknown)(...args)
+    }
+  })
 }
 
 /** Chat history handed back by `getChatHistory`; set per test before render. */

@@ -298,7 +298,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
         this fix changed nothing."""
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as P
 
-        targets = P._write_protected_targets()
+        targets = P.write_protected_targets()
         for t in targets:
             assert Path(t).is_dir(), f"{t} is not a directory — the mask would be a no-op"
 
@@ -308,7 +308,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as P
         from kiro_crew.security import write_protected_home_paths
 
-        masked = {Path(t) for t in P._write_protected_targets()}
+        masked = {Path(t) for t in P.write_protected_targets()}
         home = Path.home()
         native = set(home_leaves())
         for rel in write_protected_home_paths():
@@ -330,7 +330,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
         crew_dir = tmp_path / ".kiro" / "crew"
         crew_dir.mkdir(parents=True, exist_ok=True)
 
-        masked = {Path(t) for t in P._write_protected_targets()}
+        masked = {Path(t) for t in P.write_protected_targets()}
         assert crew_dir in masked, "Kiro Crew's own config dir must still be hidden"
         assert not native_parents & masked, sorted(str(p) for p in native_parents & masked)
 
@@ -354,7 +354,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
 
         src = inspect.getsource(P._run)
         assert (
-            "extra_hidden_dirs=_write_protected_targets()" in src
+            "extra_hidden_dirs=write_protected_targets()" in src
         ), "the sandbox spawn does not mask Kiro Crew's write-protected paths"
 
     def test_a_broken_helper_still_runs_the_suite(self, monkeypatch) -> None:
@@ -366,7 +366,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
             raise RuntimeError("unavailable")
 
         monkeypatch.setattr(security_mod, "write_protected_home_paths", _boom)
-        assert P._write_protected_targets() == ()
+        assert P.write_protected_targets() == ()
 
 
 class TestFallbackAgentCannotSeeCredentials:

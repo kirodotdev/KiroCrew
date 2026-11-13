@@ -1,12 +1,8 @@
 """The comment-history gate must be real, wired into CI, and diff-scoped.
 
-``docs/system-specs/common/code-style.md`` forbids change history in comments and
-docstrings. ``scripts/check_comment_history.py`` is what makes that rule
-enforceable. These tests pin the halves that must stay true together: CI actually
-runs the gate (a gate that exists only on disk is not a gate), the detector reads
-comments and docstrings but NOT ordinary string literals, and the verdict covers
-exactly the lines a change adds -- a marker on a pre-existing line is the base
-branch's, and a marker on an added line fails whoever added it.
+``scripts/check_comment_history.py`` enforces the rule in
+``docs/system-specs/common/code-style.md``. Pins that CI runs it, that it reads
+comments and docstrings but NOT plain string literals, and that it judges only added lines.
 """
 
 from __future__ import annotations
@@ -15,6 +11,7 @@ import importlib.util
 import tokenize
 from pathlib import Path
 
+import gate_script_checks
 import pytest
 import yaml
 
@@ -31,12 +28,12 @@ SPEC.loader.exec_module(gate)
 
 def _gate_step() -> dict:
     workflow = yaml.safe_load(FAST_GATE.read_text(encoding="utf-8"))
-    job = workflow["jobs"].get("comment-history-lint")
-    assert job, "fast-gate.yml has no comment-history-lint job"
+    job = workflow["jobs"].get("source-gates")
+    assert job, "fast-gate.yml has no source-gates job"
     for step in job.get("steps") or []:
         if "scripts/check_comment_history.py" in str(step.get("run", "")):
             return step
-    raise AssertionError("comment-history-lint runs no check_comment_history.py step")
+    raise AssertionError("source-gates runs no check_comment_history.py step")
 
 
 class TestCiWiring:
@@ -97,7 +94,7 @@ class TestCiWiring:
         assert "comment-history-baseline.json" not in text, "the baseline is gone"
 
 
-class TestRuleFamilies:
+class TestRuleFamilies(gate_script_checks.SelfTestPasses):
     """One probe per rule family, through the real detector."""
 
     def _found(self, source: str) -> list[tuple[int, str]]:
@@ -187,9 +184,6 @@ class TestRuleFamilies:
         with pytest.raises((SyntaxError, tokenize.TokenError)):
             self._found(broken)
 
-    def test_self_test_passes(self) -> None:
-        assert gate._self_test() == 0
-
     def test_prefilter_cannot_fall_behind_the_pattern_tuple(self) -> None:
         # The pre-filter skips tokenize/ast for a file it cannot match, so a
         # pattern missing from it would be silently unenforced.
@@ -264,12 +258,9 @@ class TestAddedLineVerdict:
 class TestEnforceDiff:
     """``enforce_diff`` end to end on a synthetic repo.
 
-    Builds a base commit carrying one legacy marker, a topic commit that appends
-    clean lines, then edits the working tree and asks the real gate -- scope
-    resolution through a fresh ``ratchet_scope`` pointed at the repo, detection
-    through ``violations_in_source``, verdict through ``added_line_violations``
-    -- the same pipeline ``enforce_diff`` wires together. A gate that only ever
-    saw its unit tests could still pass every PR through a mis-wired scope.
+    A base commit with one marker, a clean topic commit, then a working-tree edit run
+    through ``ratchet_scope``, ``violations_in_source`` and ``added_line_violations``,
+    so a mis-wired scope cannot pass unseen.
     """
 
     BASE_SOURCE = "# hotfix\nvalue = 1\n"

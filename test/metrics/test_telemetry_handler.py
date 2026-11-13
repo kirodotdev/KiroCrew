@@ -10,6 +10,8 @@ import math
 import sys
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.dashboard.handlers.telemetry import _aggregate, _Hist, _pct_from_buckets
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 
@@ -1432,3 +1434,44 @@ class TestTelemetryPosture:
         from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR
 
         assert _telemetry_cfg().env_var == TELEMETRY_ENV_VAR
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "1e999",
+        "[1, 2]",
+        "42",
+        '"text"',
+        "null",
+        '{"resource_metrics": "x"}',
+        '{"resource_metrics": [1, "x", null]}',
+        '{"resource_metrics": [{"scope_metrics": "x"}]}',
+        '{"resource_metrics": [{"scope_metrics": [{"metrics": [7, {"name": 3}]}]}]}',
+        '{"resource_metrics": [{"scope_metrics": [{"metrics": '
+        '[{"name": "kirocrew.session.startup.duration", "data": "x"}]}]}]}',
+        '{"resource_metrics": [{"scope_metrics": [{"metrics": '
+        '[{"name": "kirocrew.session.startup.duration", "data": {"data_points": [5, "x"]}}]}]}]}',
+    ],
+)
+def test_aggregate_skips_a_line_that_is_not_an_export_cycle(tmp_path: Path, bad_line: str):
+    """A line that parses but is not the exporter's shape is skipped, not a 500.
+
+    The good cycle written beside it is still counted, at every level: the line
+    itself, then each nested list and its members.
+    """
+    ready = {"outcome": "ready", "backend": "kiro", "spawned": True}
+    startup = {
+        "name": "kirocrew.session.startup.duration",
+        "data": {"data_points": [_startup_dp({**ready, "phase": "total"}, bucket=4)]},
+    }
+    p = _write_shard(tmp_path, [startup])
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(bad_line + "\n")
+
+    s = _aggregate([p])["startup"]
+
+    assert s["overall"]["count"] == 1

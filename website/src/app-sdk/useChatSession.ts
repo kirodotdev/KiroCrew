@@ -14,6 +14,7 @@ import { useAppApi, useNavigate } from './index'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { type ChatFolderRow, ensureChatFolder } from '../utils/ensureChatFolder'
 import { appApiSendWire } from './appSendWire'
+import { i18nT } from '../i18n/t'
 
 export function hashStr(s: string): string {
   let h = 0
@@ -105,6 +106,9 @@ export function useChatSession(opts: ChatSessionOptions): ChatSessionState {
   const createMutation = useMutation({
     mutationFn: async () => {
       const slot = await api.post<ChatSlot>('/api/chat/slots', { name: slotName, agent })
+      // The returned slot is what the hook stands on until the lookup lists it,
+      // so a create that names no slot is a failure, not a session to wait for.
+      if (!slot?.key) throw new Error(i18nT('appSdk.chatSession.create_returned_no_session') as string)
       const isPackage = workspacePath.includes('/src/')
       const seedMsg = seed({ label, path: workspacePath, isPackage })
       // The seed rides the same transport as every other send (JSON receipt,
@@ -125,22 +129,27 @@ export function useChatSession(opts: ChatSessionOptions): ChatSessionState {
   })
 
   const slot = slotData?.found ? slotData.slot : null
+  // The lookup can lag the create, or never list its key; the created slot is
+  // already real, so it makes the session ready on its own.
   const status: ChatSessionState['status'] = isLoading
     ? 'loading'
     : queryError
       ? 'error'
       : createMutation.error
         ? 'error'
-        : slot
+        : (slot || createMutation.data)
           ? 'ready'
-          : (createMutation.isPending || (createMutation.isSuccess && !slot))
+          : createMutation.isPending
             ? 'loading'
             : 'no-session'
 
+  // One navigation, so one history entry and a single Back returns to the app.
+  // The routed chat resolves `?sid=` on hot navigation, as `useChatLauncher` relies on.
+  // The created key, when the lookup has not listed it, is the session to open.
+  const slotKey = slot?.key ?? (createMutation.data?.key ?? null)
   const openChat = useCallback(() => {
-    hostNavigate('/')
-    setTimeout(() => hostNavigate('/chat?sid=' + encodeURIComponent(slotName)), 50)
-  }, [hostNavigate, slotName])
+    hostNavigate('/chat?sid=' + encodeURIComponent(slotKey ?? slotName))
+  }, [hostNavigate, slotKey, slotName])
 
   const createSession = useCallback(async () => {
     await createMutation.mutateAsync()
@@ -153,7 +162,7 @@ export function useChatSession(opts: ChatSessionOptions): ChatSessionState {
 
   return {
     status,
-    slotKey: slot?.key ?? (createMutation.data?.key ?? null),
+    slotKey,
     slotInfo: slot
       ? { key: slot.key, title: slot.title || label, messages: slot.messages || 0, running: !!slot.running }
       : createMutation.data

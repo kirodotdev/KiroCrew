@@ -399,7 +399,7 @@ def test_off_a_skill_added_in_advanced_settings_reaches_a_fresh_worker(off, mate
     from kiro_crew import mate_capabilities as mc
 
     catalog = {"kiro-user/release": "skill://release/SKILL.md"}
-    revision = mc._revision(json.loads((mate_home / "pixel.json").read_text()))
+    revision = mc._revision(json.loads((mate_home / "pixel.json").read_text(encoding="utf-8")))
     op = {"section": "skills", "id": "kiro-user/release", "action": "set", "value": True}
     body = {
         "revision": revision,
@@ -415,12 +415,13 @@ def test_off_a_skill_added_in_advanced_settings_reaches_a_fresh_worker(off, mate
 def test_off_a_custom_template_still_configures_the_worker(off, mate_home):
     from kiro_crew import mate_worker_kit
 
-    ask = {"template": "release-bot", "keep_additions": True}
+    ask = {"template": "release-bot"}
     preview = mate_worker_kit.preview("pixel", ask)
     mate_worker_kit.apply("pixel", {**ask, "revision": preview["revision"]})
     worker = _fresh_worker(mate_home)
     assert "jira" in worker["mcpServers"]
-    assert "Release SOP." in worker["prompt"]
+    # The template's prompt rides as behaviour directions, after the worker's own.
+    assert worker["prompt"].endswith("\n\nRelease SOP.")
 
 
 # ── per crewmate: on for one, the others unaffected ──
@@ -492,10 +493,12 @@ def test_per_crewmate_hand_off_summary(roster, monkeypatch):
         cards_mod, "_capability_service", lambda app: SimpleNamespace(_mate_catalog=lambda m: {})
     )
     monkeypatch.setattr(catalog_mod, "worker_spec", lambda m: {})
-    monkeypatch.setattr(catalog_mod, "dispatch_summary", lambda spec, cat: "worker has: jira")
+    monkeypatch.setattr(
+        catalog_mod, "dispatch_summary", lambda spec, cat, report: "worker has: jira"
+    )
     for name, want in (("Atlas", "worker has: jira"), ("Briar", "")):
         monkeypatch.setattr(crewmate_approval, "crewmate_name_for", lambda cfg, e, n=name: n)
-        assert crewmate_dispatch_capabilities._note(None, "c", "t") == want, name
+        assert crewmate_dispatch_capabilities._note(None, "c", "t", None) == want, name
 
 
 def test_per_crewmate_conductor_prompt(roster, monkeypatch, tmp_path):

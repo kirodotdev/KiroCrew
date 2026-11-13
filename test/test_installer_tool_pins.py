@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.cloud import ssm
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MISE_LIB = REPO_ROOT / "scripts" / "lib" / "pinned-mise.sh"
 AWS_PINS = REPO_ROOT / "packaging" / "pins" / "aws-tools.env"
@@ -65,7 +67,7 @@ def _env_pins(path: Path) -> dict[str, str]:
     return pins
 
 
-# ---------------------------------------------------------------- static ---
+# Static checks
 
 
 @pytest.mark.parametrize("name", SHELL_INSTALLERS)
@@ -140,7 +142,20 @@ def test_aws_pins_are_complete_and_match_the_runtime_image() -> None:
     assert used and used <= set(pins), f"read but not pinned: {sorted(used - set(pins))}"
 
 
-# ------------------------------------------------------------ behavioural ---
+def test_gateway_plugin_installer_carries_the_same_pins() -> None:
+    pins = _env_pins(AWS_PINS)
+    assert ssm._SSM_PLUGIN_VERSION == pins["SSM_PLUGIN_VERSION"]
+    assert ssm._SSM_PLUGIN_SHA256 == {
+        "mac": pins["SSM_SHA256_MAC"],
+        "mac_arm64": pins["SSM_SHA256_MAC_ARM64"],
+        "linux_64bit": pins["SSM_SHA256_LINUX_64BIT_RPM"],
+        "linux_arm64": pins["SSM_SHA256_LINUX_ARM64_RPM"],
+        "ubuntu_64bit": pins["SSM_SHA256_UBUNTU_64BIT_DEB"],
+        "ubuntu_arm64": pins["SSM_SHA256_UBUNTU_ARM64_DEB"],
+    }
+
+
+# Behavioural checks
 
 
 def _stub_curl(bin_dir: Path, payload: Path) -> None:

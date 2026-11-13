@@ -70,10 +70,9 @@ async function main() {
     if (path.startsWith('/api/chat/slots/')) { await json(route, detail); return true }
     return false
   }
-  await stubDashboardApi(page, { slots, extra })
+  await stubDashboardApi(page, { slots, extra, localStorageEntries: { 'mc-active-slot': SLOT } })
   let wsServer = null
   await page.routeWebSocket(/\/api\/ws/, ws => { wsServer = ws })
-  await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
   if (!wsServer) throw new Error('websocket route never bound')

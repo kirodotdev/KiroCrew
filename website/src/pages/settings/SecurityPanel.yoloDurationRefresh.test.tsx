@@ -12,7 +12,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../../test/helpers'
 import { api } from '../../api/client'
 import { sseStatus } from '../../store/dashboardSlice'
@@ -68,8 +68,12 @@ describe('YoloDurationCard save updates dashboard.status.yolo_duration', () => {
 
     await saveDuration(/24 hours/, '24h')
     // The boot read (or an earlier request) resolving late with the old token.
-    store.dispatch(sseStatus(httpStatus('30m')))
-    store.dispatch(sseStatus(wsFrame()))
+    act(() => {
+      store.dispatch(sseStatus(httpStatus('30m')))
+    })
+    act(() => {
+      store.dispatch(sseStatus(wsFrame()))
+    })
 
     expect(store.getState().dashboard.status?.yolo_duration).toBe('24h')
   })
@@ -82,7 +86,9 @@ describe('YoloDurationCard save updates dashboard.status.yolo_duration', () => {
     await saveDuration(/24 hours/, '24h')
     mocked(api.kirocrewConfig).mockResolvedValue({ agent: { yolo_duration: '24h' } })
     await saveDuration(/12 hours/, '12h')
-    store.dispatch(sseStatus(httpStatus('24h')))
+    act(() => {
+      store.dispatch(sseStatus(httpStatus('24h')))
+    })
 
     expect(store.getState().dashboard.status?.yolo_duration).toBe('12h')
   })
@@ -93,7 +99,9 @@ describe('YoloDurationCard save updates dashboard.status.yolo_duration', () => {
     renderWithProviders(<SecurityPanel />, { route: '/?section=approval', store })
 
     await saveDuration(/24 hours/, '24h')
-    store.dispatch(sseStatus(wsFrame()))
+    act(() => {
+      store.dispatch(sseStatus(wsFrame()))
+    })
 
     expect(store.getState().dashboard.status?.yolo_duration).toBe('24h')
   })
@@ -106,7 +114,9 @@ describe('YoloDurationCard save updates dashboard.status.yolo_duration', () => {
 
     fireEvent.click(await screen.findByRole('radio', { name: /24 hours/ }))
     await screen.findByText('Could not save the duration.')
-    store.dispatch(sseStatus(wsFrame()))
+    act(() => {
+      store.dispatch(sseStatus(wsFrame()))
+    })
 
     expect(store.getState().dashboard.status?.yolo_duration).toBe('30m')
   })

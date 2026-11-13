@@ -37,8 +37,15 @@ jobs:
     # availability-bug mechanism as issue-summary.yml/issue-triage.yml's
     # `issues`/`issue_comment` triggers, which have the identical gap. A
     # scheduled run whose actor the allowlist rejects queues forever
-    # instead of running, so this job stays on `ubuntu-latest`.
-    runs-on: ubuntu-latest
+    # instead of running, so this job stays off the fleet.
+    #
+    # Off the fleet is not the same as on the standard pool: this takes the
+    # `kirocrew-runners` group, which has no actor allowlist, so the
+    # availability bug above cannot recur. Named by its runner LABEL rather
+    # than by `group:`, because the group belongs to the kirodotdev
+    # organization and a fork cannot reach it; the `||` leg keeps a fork on
+    # the hosted image instead of waiting forever for a runner.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       nightly_version: ${{ steps.stamp.outputs.version }}
@@ -199,7 +206,15 @@ jobs:
   # matrix so a future backend cannot remain silently uncovered.
   pod-scenarios:
     name: Pod Scenario E2E (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # Keep matrix.os stable: the rendered check name above reads it, so the
+    # decision lives here instead. Only the Linux leg moves, to the
+    # `kirocrew-runners` group in THIS repository rather than the standard pool
+    # whose concurrency is shared enterprise-wide; macOS and Windows keep their
+    # hosted images, since the group is Linux-only. Named by its runner LABEL,
+    # not by `group:`: the group belongs to the kirodotdev organization, so a
+    # fork running its own copy cannot reach it and would wait forever for a
+    # runner. The inner `||` leg keeps a fork on the hosted image.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
     timeout-minutes: 40
     strategy:
       max-parallel: 4
@@ -384,7 +399,14 @@ jobs:
   # about a single commit's diff.
   process-leak-invariant:
     name: Process Leak Invariant + Chaos (Linux)
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. Still a GitHub-hosted
+    # Ubuntu VM, so the `systemd --user` manager the comment above is about is
+    # started the same way. Named by its runner LABEL, not by `group:`: the
+    # group belongs to the kirodotdev organization, so a fork running its own
+    # copy cannot reach it and would wait forever for a runner. The `||` leg
+    # keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -477,6 +499,10 @@ jobs:
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
+      # Bakes the lane into _build_info.py: a nightly build defaults
+      # agent.kas_bundle on (kiro_crew.build_channel). Every build caller
+      # below passes the same; release.yml passes none.
+      build_channel: nightly
 
   build-desktop:
     name: Build Desktop
@@ -484,6 +510,7 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      build_channel: nightly
       # A failed arm64 build must not skip the x64 publishers (#2645). Safe on
       # THIS lane specifically: a nightly run publishes per-arch keys, per-arch
       # feeds and per-arch aliases and records no cross-arch completeness claim
@@ -522,6 +549,7 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      build_channel: nightly
       soft_fail: true
       use_prod_environment: true
     # Explicit passthrough, not `secrets: inherit`: the callee declares

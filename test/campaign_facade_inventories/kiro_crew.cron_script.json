@@ -51,7 +51,6 @@
   "safe_read_file_bytes_nolink",
   "sanitize_spec_env",
   "sel",
-  "sensitive_path_refusal",
   "tmp_env",
   "validate_secret_env_grant",
   "wrap_argv"
@@ -85,7 +84,6 @@
   "safe_read_file_bytes_nolink": "kiro_crew.hooks",
   "sanitize_spec_env": "kiro_crew.env",
   "sel": "kiro_crew.sel",
-  "sensitive_path_refusal": "kiro_crew.security",
   "tmp_env": "kiro_crew.mcp_gateway.backend_tmp",
   "wrap_argv": "kiro_crew.sandbox"
  }

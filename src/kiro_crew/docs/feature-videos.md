@@ -1,28 +1,28 @@
 # Feature Videos
 
-Kiro Crew plays a short intro clip for a feature this install has not used yet. Unlike [Feature Tips](feature-tips.md), which are written by a model, a feature video is a recorded clip picked by a fixed rule set: the same install state always produces the same set of *eligible* clips, and one of them is chosen at random.
+Kiro Crew plays a short intro clip for a feature this install has not used yet. Clips show in one place: the video card at the top of the **Explore** panel. There is no startup popup. Unlike [Feature Tips](feature-tips.md), which are written by a model, a feature video is a recorded clip picked by a fixed rule set: the same install state always produces the same set of *eligible* clips, and the card draws one of them at random. It keeps that clip for the page session, and is hidden once every clip is finished.
 
-Clips are hosted, not shipped inside the package. Kiro Crew downloads them in the background and plays them from your own disk — see [Hosted Clips](#hosted-clips).
+Clips are hosted, not shipped inside the package. That includes the "Kiro Crew in 15 seconds" intro. Kiro Crew downloads them in the background and plays them from your own disk — see [Hosted Clips](#hosted-clips).
 
 ## How It Works
 
 - The catalog is data, not generated: a signed manifest published for your release, with a small built-in list as the fallback for an install that has never fetched one. There is no model call. The built-in list currently ships no media, so an install that has never fetched a manifest offers no clips.
 - A clip is eligible when the feature is on, its media is on your machine, it is not yet recorded as seen or dismissed, the running version satisfies its floor, and no "you already use this" signal fires.
 - Which eligible clip you get is random. Eligibility is not: a clip you retired, or one for a feature you already use, can never come back.
-- Only clips already on your disk are offered, so playback starts immediately and costs no bandwidth. A hosted clip that has not finished downloading waits for the next launch.
-- An entry whose media is not shipped is withheld, not shown. The dialog opens on the JSON answer alone and fetches nothing until the user presses play, so it cannot detect a missing clip itself -- it would open around a blank player, and the verdict a user then records is permanent. Withholding keeps the entry on offer for the launch after its clip lands.
+- Only clips already on your disk are offered, so playback starts immediately and costs no bandwidth. A hosted clip that has not finished downloading is offered once it lands.
+- An entry whose media is not shipped is withheld, not shown. The card shows on the JSON answer alone and fetches nothing until the user presses Watch, so it cannot detect a missing clip itself -- it would show a blank player, and the verdict a user then records is permanent. Withholding keeps the entry on offer once its clip lands.
 - One function checks every clip source. A downloaded clip is served from your own machine under `/feature-videos/<release>/`; a built-in one from `/app-assets/feature-videos/`. Nothing else: your browser never fetches a clip from the CDN, because the only bytes it plays are ones this gateway downloaded and checked first.
 - Seen and dismissed are both permanent. There is no snooze: a feature intro that comes back is noise.
-- Temporary and incognito sessions get no video, because the state a video records is permanent and instance-wide.
+- Temporary and incognito sessions get no card, because the state a video records is permanent and instance-wide.
 - A clip whose `min_version` is above the running version is skipped, so a video recorded ahead of a release never plays on an older build.
 
 ## Controls
 
 | Action | Effect |
 |--------|--------|
-| Watch a clip to the end | Records `seen`; that video is never offered again. |
-| Close the modal | Records `dismissed`; same permanence. |
-| `dashboard.feature_videos_enabled: true` in config | Turns the feature ON. It is OFF by default until real clips ship. |
+| Watch a clip to the end (80% counts) | Records `seen`; that video is never offered again. |
+| Close the Explore video card | Records `dismissed`; same permanence. |
+| `dashboard.feature_videos_enabled: true` in config | Turns the feature ON. It is OFF by default: no clip is downloaded or shown. |
 | "Download all" in Settings | Fetches every clip for your release now, without the background rate limit. |
 
 ## Hosted Clips
@@ -38,10 +38,10 @@ and plays them from there.
   your way. An interrupted download resumes on the next start.
 - Every file is checked against the SHA-256 in the signed manifest before it is
   installed. A tampered or truncated file is discarded, never played.
-- A clip that is not downloaded yet is not shown. It becomes eligible on the first
-  launch after it lands on disk. Once a manifest has arrived it replaces the
-  built-in list, so on a launch where nothing has landed yet, nothing is shown:
-  the download runs in the background and the next launch shows what it landed.
+- A clip that is not downloaded yet is not shown. It becomes eligible once it
+  lands on disk. Once a manifest has arrived it replaces the built-in list, so
+  while nothing has landed yet, nothing is shown: the download runs in the
+  background and the Explore card shows what it landed.
 - "Download all" in Settings does the same pass immediately, without the rate limit.
 
 ### Trust
@@ -89,14 +89,7 @@ you are about to play would just download them again.
 Two independent switches:
 
 - `dashboard.feature_videos_enabled: false` (the default) turns the feature off:
-  nothing is fetched and no clip is shown, except the built-in **Meet your Mates**
-  intro. That one is marked `default_on` because it stands in for a first-run step
-  that never had this switch; set `dashboard.crewmates_onboarded: true` to turn it
-  off. It is not a clip: the dashboard draws the dialog itself (the catalog entry
-  carries `component: "crewmates"` and no media), so nothing is fetched for it. Its
-  **Try now** button opens the entry's `cta_route` (`/members?member=mate`, the
-  first Mate's chat); on **Not now** Mate's avatar flies to the Mates rail item
-  and becomes a "New" tag there that opens the same chat.
+  nothing is fetched and the Explore card shows no clip.
 - A managed fleet can forbid the fetch itself with the
   `capabilities.feature_videos_download` policy scope. Then no manifest is requested,
   no clip is downloaded, and nothing streams from the CDN — clips already on disk
@@ -124,7 +117,7 @@ refused with a logged reason rather than cached where the next start cannot find
 
 ## Adding a Catalog Entry
 
-This is the **fallback** list, used by an install that has never fetched a manifest; a new clip normally goes into the published manifest instead, which needs no release. Append a `VideoEntry` to `CATALOG` in `src/kiro_crew/feature_videos.py`. Order no longer decides what is shown — the pick among eligible entries is random.
+This is the **fallback** list, used by an install that has never fetched a manifest; a new clip normally goes into the published manifest instead, which needs no release. Append a `VideoEntry` to `CATALOG` in `src/kiro_crew/feature_videos.py`. Order does not decide what is shown: the Explore card draws among eligible entries at random.
 
 ```python
 VideoEntry(
@@ -180,7 +173,7 @@ Shipped signals:
 | `sel_event_seen:<tool_name>` | A recent audit-log row names that tool, e.g. `sel_event_seen:monitor_start`. |
 | `config_key_set:<dotted.path>` | The user set that key in `config.json` or `config.local.json`. Presence in the file, not the effective value, so a shipped default never fires it. |
 
-To add one, register a function in `_PROBES` (no argument) or `_PARAM_PROBES` (the part after the first `:` is passed in). Keep it cheap: probes run on a polled route, at most once per `/api/feature-videos/next` request, and only for entries no earlier check has already ruled out.
+To add one, register a function in `_PROBES` (no argument) or `_PARAM_PROBES` (the part after the first `:` is passed in). Keep it cheap: probes run at most once per `/api/feature-videos/library` request, and only for entries no earlier check has already ruled out.
 
 ## Configuration
 

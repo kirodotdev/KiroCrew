@@ -1,0 +1,266 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "strands-synthetic-side"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work/strands-probe/notes.txt"
+        },
+        "title": "read",
+        "tool_call_id": "tooluse_k6_read",
+        "tool_input": "{\n  \"path\": \"/work/strands-probe/notes.txt\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "title": "read",
+        "tool_call_id": "v1:before_tool_call:tooluse_k6_read:strands-interrupt-1"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_k6_read",
+        "tool_final": true,
+        "tool_output": "     1\tkumquat-6\n     2\t",
+        "tool_output_bytes": 24,
+        "tool_output_digest": "442e4d66a556ff562103f5eeb4456a463b2eb9058353d61b7f601c9e9e5ab710",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "RESULT: success:      1\tkumquat-6\n     2\t"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "RESULT: success:      1\tkumquat-6\n     2\t",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "ls"
+        },
+        "title": "ls",
+        "tool_call_id": "tooluse_k6_shell",
+        "tool_input": "{\n  \"command\": \"ls\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "shell"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "request_id": 1,
+        "title": "shell",
+        "tool_call_id": "v1:before_tool_call:tooluse_k6_shell:strands-interrupt-2"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_k6_shell",
+        "tool_output": "DENIED: Kiro Crew did not approve 'shell'",
+        "tool_output_bytes": 41,
+        "tool_output_digest": "3d1c8d5d39e74088b49b4170f429dd5691af419e37faf13706359d67970982f6",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "RESULT: error: DENIED: Kiro Crew did not approve 'shell'"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "RESULT: error: DENIED: Kiro Crew did not approve 'shell'",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "content": "x",
+          "path": "/work/strands-probe/written.txt"
+        },
+        "title": "write",
+        "tool_call_id": "tooluse_k6_write",
+        "tool_input": "{\n  \"content\": \"x\",\n  \"path\": \"/work/strands-probe/written.txt\"\n}",
+        "tool_kind": "edit",
+        "wire_title": "write"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "request_id": 2,
+        "title": "write",
+        "tool_call_id": "v1:before_tool_call:tooluse_k6_write:strands-interrupt-3"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_k6_write",
+        "tool_output": "DENIED: Kiro Crew did not approve 'write'",
+        "tool_output_bytes": 41,
+        "tool_output_digest": "83789a60ed93d359cd2e7b5f7f6d49ef38daebf8a08a7d27e42f137c44f2c95e",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "RESULT: error: DENIED: Kiro Crew did not approve 'write'"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "RESULT: error: DENIED: Kiro Crew did not approve 'write'",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  }
+]

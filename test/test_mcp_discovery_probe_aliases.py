@@ -13,6 +13,7 @@ parked, so overlap is read from state, never from how long a sleep lasted.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import Counter
 
 import pytest
@@ -239,3 +240,155 @@ class TestSpawnFingerprint:
         odd_command = McpServerInfo(name="y")
         odd_command.command = {"not": "a string"}  # type: ignore[assignment]
         assert _spawn_fingerprint(odd_command) is None
+
+    def test_windows_spellings_of_one_launcher_share_a_key(self, monkeypatch) -> None:
+        """Windows ignores case and the PATHEXT suffix, and a path names the same file."""
+        from kiro_crew import mcp_discovery
+
+        monkeypatch.setattr(mcp_discovery.platform_compat, "IS_WINDOWS", True)
+        # Joined with the host's separator, as ``_win_exec_suffixes`` splits it.
+        monkeypatch.setenv("PATHEXT", os.pathsep.join([".COM", ".EXE", ".BAT", ".CMD"]))
+        keys = {
+            _spawn_fingerprint(McpServerInfo(name=n, command=cmd, args=["-y", "pkg"]))
+            for n, cmd in (
+                ("a", "npx"),
+                ("b", "npx.cmd"),
+                ("c", "NPX.CMD"),
+                ("d", "C:\\Program Files\\nodejs\\npx.cmd"),
+            )
+        }
+        assert keys == {("npx", "-y", "pkg")}
+        other = McpServerInfo(name="e", command="npx.cmd", args=["-y", "other"])
+        assert _spawn_fingerprint(other) == ("npx", "-y", "other")
+        # Only a PATHEXT suffix is one Windows ignores; any other stays in the name.
+        script = McpServerInfo(name="f", command="C:\\tools\\Srv.py", args=[])
+        assert _spawn_fingerprint(script) == ("srv.py",)
+
+    def test_posix_keeps_the_command_as_written(self, monkeypatch) -> None:
+        from kiro_crew import mcp_discovery
+
+        monkeypatch.setattr(mcp_discovery.platform_compat, "IS_WINDOWS", False)
+        a = McpServerInfo(name="a", command="tool", args=[])
+        b = McpServerInfo(name="b", command="Tool", args=[])
+        assert _spawn_fingerprint(a) != _spawn_fingerprint(b)
+
+
+class _CrowdedHost:
+    """A ``probe_server`` stand-in for a host busy starting up.
+
+    A probe times out when any other probe ran at the same moment, and answers when
+    it ran alone -- servers that are each fast, on a host that is not. *hangs* names
+    servers that time out even alone; *raises* names servers whose second call raises.
+    """
+
+    def __init__(
+        self, *, hangs: frozenset[str] = frozenset(), raises: frozenset[str] = frozenset()
+    ):
+        self.gate = asyncio.Event()
+        self.active: list[dict] = []
+        self.calls: Counter = Counter()
+        self.hangs = hangs
+        self.raises = raises
+
+    async def __call__(self, server: McpServerInfo) -> McpServerInfo:
+        me = {"crowded": bool(self.active)}
+        for other in self.active:
+            other["crowded"] = True
+        self.active.append(me)
+        self.calls[server.name] += 1
+        try:
+            await self.gate.wait()
+            if server.name in self.raises and self.calls[server.name] > 1:
+                raise RuntimeError("probe blew up")
+            if me["crowded"] or server.name in self.hangs:
+                server.status, server.error = "error", "timeout\nstderr: still importing"
+            else:
+                server.status = "ok"
+            return server
+        finally:
+            self.active.remove(me)
+
+    async def run_pass(self, first_wave: int) -> list[McpServerInfo]:
+        from kiro_crew.mcp_discovery import probe_all
+
+        self.gate.clear()
+        task = asyncio.ensure_future(probe_all())
+        await async_wait_until(
+            lambda: len(self.active) >= first_wave or task.done(),
+            describe=lambda: f"parked={len(self.active)} calls={dict(self.calls)}",
+        )
+        self.gate.set()
+        return await task
+
+
+def _distinct(count: int) -> list[McpServerInfo]:
+    return [McpServerInfo(name=f"srv-{i}", command="uvx", args=[f"pkg-{i}"]) for i in range(count)]
+
+
+class TestTimedOutProbeIsRetriedAlone:
+    @pytest.mark.asyncio
+    async def test_servers_that_time_out_only_together_end_ok(self, monkeypatch) -> None:
+        """The startup burst: every server of the first wave times out in the same
+        second. Each retry runs alone, so each answers and the pass reports ok."""
+        host = _CrowdedHost()
+        _configure(monkeypatch, _distinct(PROBE_MAX_CONCURRENCY), host)
+
+        rows = await host.run_pass(first_wave=PROBE_MAX_CONCURRENCY)
+
+        assert [r.status for r in rows] == ["ok"] * PROBE_MAX_CONCURRENCY
+        assert all(r.error == "" for r in rows)
+        assert set(host.calls.values()) == {2}, "each timed-out server is retried once"
+
+    @pytest.mark.asyncio
+    async def test_the_burst_adds_no_quarantine_strike(self, monkeypatch) -> None:
+        from kiro_crew import mcp_quarantine
+
+        host = _CrowdedHost()
+        _configure(monkeypatch, _distinct(3), host)
+
+        for _ in range(3):
+            rows = await host.run_pass(first_wave=3)
+            mcp_quarantine.record_verdicts([(s.name, s.status, s.error) for s in rows])
+
+        failing = {n for n, st in mcp_quarantine.snapshot().items() if st.get("failing")}
+        assert failing == set()
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_hangs_alone_is_retried_once_and_still_quarantined(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew import mcp_quarantine
+
+        host = _CrowdedHost(hangs=frozenset({"srv-0"}))
+        _configure(monkeypatch, _distinct(2), host)
+
+        for _ in range(3):
+            rows = await host.run_pass(first_wave=2)
+            mcp_quarantine.record_verdicts([(s.name, s.status, s.error) for s in rows])
+
+        assert host.calls["srv-0"] == 6, "one retry per pass, not a loop"
+        assert [r.status for r in rows] == ["error", "ok"]
+        failing = {n for n, st in mcp_quarantine.snapshot().items() if st.get("failing")}
+        assert failing == {"srv-0"}
+
+    @pytest.mark.asyncio
+    async def test_a_remote_timeout_is_not_retried(self, monkeypatch) -> None:
+        """A remote timeout is the network's answer, not a cold start."""
+        host = _CrowdedHost()
+        rows = [McpServerInfo(name=f"r{i}", url="https://mcp.example/x") for i in range(2)]
+        _configure(monkeypatch, rows, host)
+
+        out = await host.run_pass(first_wave=2)
+
+        assert [r.status for r in out] == ["error", "error"]
+        assert set(host.calls.values()) == {1}
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_raises_keeps_the_first_verdict(self, monkeypatch) -> None:
+        host = _CrowdedHost(raises=frozenset({"srv-0"}))
+        _configure(monkeypatch, _distinct(2), host)
+
+        rows = await host.run_pass(first_wave=2)
+
+        assert (rows[0].status, rows[0].error.partition("\n")[0]) == ("error", "timeout")
+        assert rows[1].status == "ok"

@@ -261,7 +261,7 @@ def test_a_create_card_whose_goal_write_fails_says_so_on_the_card(
     assert rec["status"] == "partial"
     assert rec["error"]["step"] == catalog.CREWMATE_CREATE_GOAL_STEP
     assert rec["result"]["summary"] == (
-        "Created mate “Rover”, but its goal or its schedule was not saved"
+        "Created Bot “Rover”, but its goal or its schedule was not saved"
     )
     # The schedule after the failed goal never ran, and Undo still removes the crewmate.
     assert state.cron_bodies == []
@@ -987,7 +987,13 @@ def test_a_goal_card_never_shows_an_unscrubbed_previous_goal(tmp_path: Path, _ca
     rec = _propose_card(
         state,
         catalog.KIND_CREWMATE_GOAL,
-        {"member": ORDINARY, "long_term": "Ship", "goal_id": _gid(slug, ORDINARY)},
+        # Only the goal write: the Heartbeat checkbox is test_member_goals_heartbeat_card.py's.
+        {
+            "member": ORDINARY,
+            "long_term": "Ship",
+            "goal_id": _gid(slug, ORDINARY),
+            "heartbeat": False,
+        },
     )
     store = state._change_card_store
     assert TOKEN not in json.dumps(store.public(rec))

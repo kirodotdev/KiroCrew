@@ -173,6 +173,66 @@ function setPetWindowsHidden(hidden) {
   petWindowsHidden = Boolean(hidden);
 }
 
+/**
+ * Gateway log sink, injected by the shell (index.js `glog`) so a pet overlay's
+ * load failure, renderer crash or page error lands in gateway-launch.log instead
+ * of a console the packaged app throws away. Defaults to console.warn so the
+ * module is usable (and testable) before the shell wires it.
+ */
+let petLog = (line) => console.warn(line);
+function setPetLogger(fn) {
+  if (typeof fn === "function") petLog = fn;
+}
+
+/**
+ * Drop a URL's query string. The pet window URL carries the session credential
+ * (`?token=…`), which must never be written to a log line.
+ */
+function stripQuery(url) {
+  return String(url || "").split("?")[0];
+}
+
+/**
+ * Mask every `token=` value inside free text. A page error message can quote the
+ * page's own URL, credential included, anywhere in its text.
+ */
+function maskTokens(text) {
+  let out = String(text ?? "").replace(/([?&#;]token=)[^&#\s"'<>)]*/gi, "$1<redacted>");
+  // The page credential itself, raw or URL-encoded, wherever the text quotes it.
+  if (currentToken) {
+    for (const form of new Set([currentToken, encodeURIComponent(currentToken)])) {
+      out = out.split(form).join("<redacted>");
+    }
+  }
+  return out;
+}
+
+/** Page-error lines written per minute, so a page that errors every frame cannot
+ *  grow gateway-launch.log without bound. */
+const PAGE_ERROR_LINES_PER_MIN = 20;
+let pageErrorWindowStart = 0;
+let pageErrorLines = 0;
+let pageErrorsDropped = 0;
+
+/** Log one pet page error, within the per-minute cap. */
+function logPageError(message) {
+  const now = Date.now();
+  if (now - pageErrorWindowStart >= 60_000) {
+    if (pageErrorsDropped > 0) {
+      petLog(`Mochi pet page error: ${pageErrorsDropped} more suppressed in the last minute`);
+    }
+    pageErrorWindowStart = now;
+    pageErrorLines = 0;
+    pageErrorsDropped = 0;
+  }
+  if (pageErrorLines >= PAGE_ERROR_LINES_PER_MIN) {
+    pageErrorsDropped += 1;
+    return;
+  }
+  pageErrorLines += 1;
+  petLog(`Mochi pet page error: ${maskTokens(message)}`);
+}
+
 /** @type {{x:number,y:number,w:number,h:number}|null} */
 let petHitbox = null;
 /** @type {{x:number,y:number,w:number,h:number}|null} */
@@ -303,12 +363,59 @@ function findNearestDisplay(sx, sy) {
 }
 
 /** Clamp a local position the way the drag path does (upstream formula: the pet
- *  may hang half off the left/right edge, but never off the top/bottom). */
+ *  may hang half off the left/right edge, but never off the top/bottom). Both
+ *  the position and `bounds`' size are in page pixels (see toPagePixels). */
 function clampLocal(localX, localY, bounds) {
   return {
     x: Math.max(-PET_W / 2, Math.min(bounds.width - PET_W / 2, localX)),
     y: Math.max(0, Math.min(bounds.height - PET_H, localY)),
   };
+}
+
+/**
+ * A screen point relative to `bounds`' origin, and `bounds`' size, in page
+ * pixels. pet.html shares the dashboard's origin, so it renders at the
+ * dashboard's persisted per-host zoom, and the hitboxes and positions the
+ * renderer trades are CSS pixels of `zoom` DIP each. Every overlay loads that
+ * origin, so the active one's zoom, read per call to follow a live change,
+ * serves them all.
+ */
+function toPagePixels(point, bounds) {
+  const win = getActiveOverlay();
+  const zoom = win ? win.webContents.getZoomFactor() : 1;
+  return {
+    x: (point.x - bounds.x) / zoom,
+    y: (point.y - bounds.y) / zoom,
+    width: bounds.width / zoom,
+    height: bounds.height / zoom,
+  };
+}
+
+// ── Click-through state ───────────────────────────────────────────────────
+
+/**
+ * Make an overlay click-through. Every click-through call goes through here.
+ *
+ * Off Windows the overlay keeps `forward: true`, as upstream did.
+ *
+ * On Windows `forward` is NOT used (#23345). Electron implements it there by
+ * re-posting every mouse move to the overlay's Chromium widget, and Chromium
+ * answers each one by setting the cursor for the transparent page. The
+ * dashboard window shares the same UI thread, so its I-beam/hand and the
+ * overlay's arrow took turns on every move: the cursor flickered over text and
+ * buttons whenever Mochi was on.
+ *
+ * Mochi does not need the forwarded moves. Whether the pointer is over the pet,
+ * bubble or menu is decided in the MAIN process from
+ * `screen.getCursorScreenPoint()` (startHitPoll), and the overlay is made fully
+ * interactive (setIgnoreMouseEvents(false)) for the pet, the open menu and a
+ * drag before the renderer needs any mouse event.
+ *
+ * Read `process.platform` at call time so tests can switch it per case.
+ */
+function setClickThrough(win) {
+  if (process.platform === "win32") win.setIgnoreMouseEvents(true);
+  else win.setIgnoreMouseEvents(true, { forward: true });
 }
 
 // ── The handoff ───────────────────────────────────────────────────────────
@@ -326,7 +433,7 @@ function transferPetToDisplay(targetDisplayId, localX, localY, isDragging = fals
     if (oldWin && !oldWin.isDestroyed()) {
       oldWin.webContents.send("mochi-pet:set-active", false);
       if (!isDragging) {
-        oldWin.setIgnoreMouseEvents(true, { forward: true });
+        setClickThrough(oldWin);
       }
     }
   }
@@ -386,14 +493,12 @@ function startDragPolling(offsetX, offsetY) {
 
   dragPollTimer = setInterval(() => {
     const cursor = screen.getCursorScreenPoint();
-    const petScreenX = cursor.x - dragOffsetX;
-    const petScreenY = cursor.y - dragOffsetY;
-
     const targetDisplay =
       findDisplayAtPoint(cursor.x, cursor.y) || findNearestDisplay(cursor.x, cursor.y);
 
-    const localX = petScreenX - targetDisplay.bounds.x;
-    const localY = petScreenY - targetDisplay.bounds.y;
+    const page = toPagePixels(cursor, targetDisplay.bounds);
+    const localX = page.x - dragOffsetX;
+    const localY = page.y - dragOffsetY;
 
     if (targetDisplay.id !== activeDisplayId) {
       // Note: upstream transfers with the UNCLAMPED local position — the pet is
@@ -404,7 +509,7 @@ function startDragPolling(offsetX, offsetY) {
       return;
     }
 
-    const clamped = clampLocal(localX, localY, targetDisplay.bounds);
+    const clamped = clampLocal(localX, localY, page);
     const win = overlays.get(activeDisplayId);
     if (win && !win.isDestroyed()) {
       win.webContents.send("mochi-pet:drag-update", clamped.x, clamped.y);
@@ -426,11 +531,8 @@ function stopDragPolling() {
   if (activeDisplayId !== null) {
     const display = screen.getAllDisplays().find((d) => d.id === activeDisplayId);
     if (display) {
-      const clamped = clampLocal(
-        cursor.x - dragOffsetX - display.bounds.x,
-        cursor.y - dragOffsetY - display.bounds.y,
-        display.bounds,
-      );
+      const page = toPagePixels(cursor, display.bounds);
+      const clamped = clampLocal(page.x - dragOffsetX, page.y - dragOffsetY, page);
       const win = overlays.get(activeDisplayId);
       if (win && !win.isDestroyed()) {
         win.webContents.send("mochi-pet:drag-ended", clamped.x, clamped.y);
@@ -445,7 +547,7 @@ function stopDragPolling() {
   // display. The hitbox poll switches the active overlay back once the renderer
   // reports a real rectangle.
   for (const win of overlays.values()) {
-    if (!win.isDestroyed()) win.setIgnoreMouseEvents(true, { forward: true });
+    if (!win.isDestroyed()) setClickThrough(win);
   }
   lastIgnoreState = true;
 }
@@ -465,7 +567,7 @@ function startHitPoll() {
       // Safety net: an interactive overlay with no known hitbox swallows every
       // click on the display — the worst failure this module can produce.
       if (!lastIgnoreState) {
-        win.setIgnoreMouseEvents(true, { forward: true });
+        setClickThrough(win);
         lastIgnoreState = true;
       }
       return;
@@ -475,8 +577,8 @@ function startHitPoll() {
     // `win.getBounds()`, NOT `display.bounds`: upstream learned the two drift
     // apart (macOS menu-bar offset, display rearrangement, scaling), and the
     // window's own bounds are the ground truth for where the overlay sits.
-    const b = win.getBounds();
-    const shouldIgnore = shouldIgnoreAt(cursor.x - b.x, cursor.y - b.y, {
+    const page = toPagePixels(cursor, win.getBounds());
+    const shouldIgnore = shouldIgnoreAt(page.x, page.y, {
       pet: petHitbox,
       bubble: bubbleHitbox,
       menu: menuHitbox,
@@ -484,7 +586,7 @@ function startHitPoll() {
 
     if (shouldIgnore !== lastIgnoreState) {
       lastIgnoreState = shouldIgnore;
-      if (shouldIgnore) win.setIgnoreMouseEvents(true, { forward: true });
+      if (shouldIgnore) setClickThrough(win);
       else win.setIgnoreMouseEvents(false);
     }
   }, POLL_MS);
@@ -552,7 +654,7 @@ function bindIpc() {
     // false below.
     for (const [id, win] of overlays) {
       if (!win.isDestroyed() && id !== activeDisplayId) {
-        win.setIgnoreMouseEvents(true, { forward: true });
+        setClickThrough(win);
       }
     }
     lastIgnoreState = false;
@@ -562,7 +664,7 @@ function bindIpc() {
   ipcMain.on("mochi-pet:ignore-mouse", (_e, ignore) => {
     const win = activeDisplayId !== null ? overlays.get(activeDisplayId) : null;
     if (!win || win.isDestroyed()) return;
-    if (ignore) win.setIgnoreMouseEvents(true, { forward: true });
+    if (ignore) setClickThrough(win);
     else win.setIgnoreMouseEvents(false);
     lastIgnoreState = !!ignore;
   });
@@ -595,6 +697,8 @@ function bindIpc() {
   ipcMain.on("mochi-pet:drag-mouseup", () => {
     if (dragPollTimer !== null) stopDragPolling();
   });
+
+  ipcMain.on("mochi-pet:pet-ready", handlePetReady);
 
   // The panel is opened BY the pet, so its IPC is bound here — one place, once.
   require("./panelWindow").bindPanelIpc(currentBaseUrl);
@@ -668,7 +772,7 @@ function createOverlayForDisplay(display) {
   // eaten by Chromium's WM_MOUSEACTIVATE handler (MA_NOACTIVATEANDEAT), so the pet
   // could never be clicked or dragged. acceptFirstMouse is the macOS-only analogue.
   if (process.platform !== "win32") win.setFocusable(false);
-  win.setIgnoreMouseEvents(true, { forward: true });
+  setClickThrough(win);
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows
   // WDA_EXCLUDEFROMCAPTURE; no-op elsewhere). This window covers a whole display,
@@ -686,10 +790,7 @@ function createOverlayForDisplay(display) {
   // own error document, and `did-finish-load` would reveal it like a pet page.
   // Hide + latch, same as the >=400 path below; the reconcile tick re-arms it.
   win.webContents.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
-    // Strip the query string: the pet window URL carries the session token
-    // (?token=…), which must not be written to the console/log on a load error.
-    const safeUrl = String(url || "").split("?")[0];
-    console.warn(`Mochi pet: load failed (${code} ${desc}) for ${safeUrl}`);
+    petLog(`Mochi pet: load failed (${code} ${maskTokens(desc)}) for ${stripQuery(url)}`);
     handleOverlayLoadFailure(win, code, isMainFrame);
   });
 
@@ -701,14 +802,16 @@ function createOverlayForDisplay(display) {
     handleOverlayNavigation(win, httpResponseCode);
   });
   win.webContents.on("render-process-gone", (_e, details) => {
-    console.warn("Mochi pet: renderer gone —", details && details.reason);
+    const reason = details && details.reason;
+    const exitCode = details && details.exitCode;
+    petLog(`Mochi pet: renderer gone — reason=${reason} exitCode=${exitCode}`);
     // Tear down so the reconcile loop recreates it: isDestroyed() stays false
     // on a window with a dead renderer, so it would otherwise be handed back
     // forever and the pet would be gone until the app restarted.
     closePetWindow();
   });
   win.webContents.on("console-message", (_e, level, message) => {
-    if (level >= 2) console.warn("Mochi pet page error:", message);
+    if (level >= 2) logPageError(message);
   });
 
   return win;
@@ -723,30 +826,95 @@ function defaultStartPos(display) {
 }
 
 /**
+ * The start position each overlay was wired with, used when no saved position
+ * names that overlay's display.
+ *
+ * @type {WeakMap<BrowserWindow, {x:number,y:number}>}
+ */
+const handshakePos = new WeakMap();
+
+/**
+ * Where the active overlay should draw the pet: the saved position when it was
+ * saved on this display, otherwise the overlay's wired start position, otherwise
+ * the display's default corner.
+ */
+function activationPos(win, displayId) {
+  if (savedPetPos !== null && savedPetPos.displayId === displayId) return savedPetPos;
+  const wired = handshakePos.get(win);
+  if (wired) return wired;
+  if (savedPetPos !== null) return savedPetPos;
+  const display =
+    screen.getAllDisplays().find((d) => d.id === displayId) || screen.getPrimaryDisplay();
+  return defaultStartPos(display);
+}
+
+/**
+ * Tell one overlay its geometry and whether it hosts the pet.
+ *
+ * The one place an overlay's activation state is sent, so every delivery obeys
+ * the same two rules: an overlay that does not host the pet is only ever told
+ * set-active(false), and an overlay activated while a drag is in flight gets the
+ * pet under the cursor with the drag flag set, so the drag keeps going instead
+ * of the pet snapping back to a resting position.
+ */
+function sendActivationTo(win, displayId) {
+  if (win.isDestroyed()) return;
+  win.webContents.send(
+    "mochi-pet:displays-info",
+    getAllDisplayInfo(),
+    displayId,
+    activeDisplayId,
+  );
+  if (displayId !== activeDisplayId) {
+    win.webContents.send("mochi-pet:set-active", false);
+    return;
+  }
+  const dragDisplay =
+    dragPollTimer !== null ? screen.getAllDisplays().find((d) => d.id === displayId) : undefined;
+  if (dragDisplay) {
+    // Unclamped, as the drag poll's own handoff is: clamping would pull the pet
+    // away from the pointer mid-drag.
+    const page = toPagePixels(screen.getCursorScreenPoint(), dragDisplay.bounds);
+    const x = page.x - dragOffsetX;
+    const y = page.y - dragOffsetY;
+    win.webContents.send("mochi-pet:set-active", true, x, y, true);
+    return;
+  }
+  const pos = activationPos(win, displayId);
+  win.webContents.send("mochi-pet:set-active", true, pos.x, pos.y, false);
+}
+
+/**
+ * Answer an overlay's `mochi-pet:pet-ready`, which its renderer sends once its
+ * set-active listener is mounted. This reply is the reliable activation path: it
+ * reaches the renderer however late its listener mounted. Only the overlay that
+ * sent it is answered, and an overlay hidden on an error page is not answered.
+ */
+function handlePetReady(event) {
+  const senderId = event && event.sender ? event.sender.id : undefined;
+  if (senderId === undefined) return;
+  for (const [displayId, win] of overlays) {
+    if (win.isDestroyed() || win.webContents.id !== senderId) continue;
+    if (overlayErrorLatch.isBlanked(win)) return;
+    sendActivationTo(win, displayId);
+    return;
+  }
+}
+
+/**
  * Activation handshake for one overlay.
  *
  * PetWidget renders NOTHING until it receives set-active(true) —
  * useDisplayActivation starts inactive — so this is what makes the pet appear.
- * The 300ms re-send is upstream's and is load-bearing: the page's React effects
- * may not have registered their listeners when the first event fires, and a
- * missed event means a permanently invisible pet.
+ * The sends at load and 300ms later are a fast path only: the page's React
+ * effects may not have registered their listeners yet, and an event sent before
+ * then is dropped. The renderer's `mochi-pet:pet-ready` (handlePetReady) is the
+ * delivery that cannot be missed.
  */
 function wireHandshake(win, displayId, pos) {
+  handshakePos.set(win, pos);
   win.webContents.on("did-finish-load", () => {
-    const send = () => {
-      if (win.isDestroyed()) return;
-      win.webContents.send(
-          "mochi-pet:displays-info",
-          getAllDisplayInfo(),
-          displayId,
-          activeDisplayId,
-        );
-      if (displayId === activeDisplayId) {
-        win.webContents.send("mochi-pet:set-active", true, pos.x, pos.y, false);
-      } else {
-        win.webContents.send("mochi-pet:set-active", false);
-      }
-    };
+    const send = () => sendActivationTo(win, displayId);
     send();
     setTimeout(send, 300);
     // Never reveal an overlay while hide-all is active or while it is latched on
@@ -1049,6 +1217,7 @@ module.exports = {
   broadcastToOverlays,
   rearmBlankedOverlays,
   hasBlankedOverlay,
+  setPetLogger,
   // Exported for tests: the pure geometry decisions, no Electron needed.
   _inRect: inRect,
   _shouldIgnoreAt: shouldIgnoreAt,

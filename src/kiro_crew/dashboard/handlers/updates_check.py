@@ -22,9 +22,13 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, update_next_start, update_restart_ready
 from kiro_crew.changelog import release_of_build
-from kiro_crew.config.loader import KiroCrewConfig, overlay_pins
+from kiro_crew.config.loader import (  # noqa: F401 - overlay_pins: the updates facade serves it
+    KiroCrewConfig,
+    overlay_pins,
+)
+from kiro_crew.config.overlay_owners import overlay_pin
 from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _capability_fields,
@@ -37,6 +41,7 @@ from kiro_crew.dashboard.handlers.updates_verdict import (
     _refresh_auto_update_effect_once,
     _set_update_info,
     _status_auto_update_effect,
+    _status_auto_update_manual_only,
     _update_info,
     remediation_command,
 )
@@ -62,7 +67,13 @@ from kiro_crew.platform.update_capability import (
     bundled_by_desktop_app,
     derive_capability,
 )
-from kiro_crew.platform.update_governance import min_version
+from kiro_crew.platform.update_fetch import fetch_and_pin_upstream
+from kiro_crew.platform.update_governance import (
+    git_command_env,
+    min_version,
+    repo_exec_config_reason,
+    upstream_remote_and_branch,
+)
 from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
@@ -96,6 +107,15 @@ _CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
 _FEED_MAX_BYTES = 65536
 _FEED_TIMEOUT_SECS = 15
 
+#: Total deadline for a source checkout's update fetch. A killed fetch keeps none
+#: of what it downloaded, so a deadline shorter than the transfer fails the same
+#: way on every later check and a far-behind checkout never recovers. 300s is the
+#: largest bound ``git_tmp_packs`` vouches for, so its reaper still cannot take a
+#: pack this fetch is writing.
+#: shortcut: a total-time bound; a fetch still slower than this still fails every
+#: time, upgrade to a no-progress bound if that is reported.
+_GIT_FETCH_TIMEOUT_S = 300.0
+
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
 #: The feed's forced-update floor must be a bare release (``0.6.0``) — the
@@ -104,7 +124,32 @@ _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
 _MIN_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
 
 
-def status_update_fields() -> dict[str, object]:
+def _update_policy_file() -> str:
+    """The home policy file when its update commands manage this install, else ``""``.
+
+    Only the home tier is named. The commands are the top tier's alone, so under a
+    central, env-pointed or bundled policy, editing the home file changes nothing.
+    """
+    if _update_info.get("managed_by") != MANAGED_BY_COMMAND:
+        return ""
+    from kiro_crew.platform.context import current_context
+    from kiro_crew.platform.governance import TIER_HOME, _policy_home_path
+
+    if getattr(current_context().governance, "tier", "") != TIER_HOME:
+        return ""
+    return str(_policy_home_path())
+
+
+def last_checked_at() -> float | None:
+    """When the last update check finished (epoch seconds), or None if none has.
+
+    The status frame and the check and channel responses all carry this one
+    stamp, so the dashboard can tell which of two answers is newer.
+    """
+    return _last_update_check or None
+
+
+def status_update_fields(next_start: dict[str, object] | None = None) -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
     One reader for both emitters: the hot path carries a deliberate SUBSET of the
@@ -114,6 +159,9 @@ def status_update_fields() -> dict[str, object]:
     ``update_available`` is passed through unflattened — ``None`` means no
     verdict, and coercing it to ``False`` here would hand the dashboard the
     "never checked reads as current" bug at the last step.
+
+    *next_start* is :func:`update_next_start.status_fields` read by a caller
+    that took the file read off the event loop; left out, it is read here.
     """
     available = _update_info.get("update_available")
     ahead = _update_info.get("commits_ahead")
@@ -146,6 +194,10 @@ def status_update_fields() -> dict[str, object]:
             str(_update_info.get("channel") or ""),
         ),
         "update_channel": str(_update_info.get("channel") or ""),
+        # The About page's "Upcoming update" block: version, date, highlights,
+        # notes link of an announced build. ``None`` when there is no
+        # announcement. Display only.
+        "update_upcoming": _update_info.get("upcoming") or None,
         # Is the running build ahead of everything the FOLLOWED channel
         # publishes? The panel keys its "you must re-run the installer to move
         # onto this lane" copy on this rather than on a comparison of
@@ -158,6 +210,9 @@ def status_update_fields() -> dict[str, object]:
         # command-managed host must not render the self-managed installer
         # instructions its policy exists to bypass.
         "update_managed_by": str(_update_info.get("managed_by") or ""),
+        # The file the policy notice tells the user to edit, so it can say where
+        # it is. Empty unless that file is the one owning updates.
+        "update_policy_file": _update_policy_file(),
         # Commit distance for a git checkout, both directions, so the About
         # panel's badge can tell DIVERGED (ahead and behind at once — reported
         # as ``update_available: False`` because the apply path must never be
@@ -165,7 +220,7 @@ def status_update_fields() -> dict[str, object]:
         # manual check. 0/0 everywhere except a successful git-checkout check.
         "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
         "update_commits_behind": behind if isinstance(behind, int) else 0,
-        "update_last_checked_at": _last_update_check or None,
+        "update_last_checked_at": last_checked_at(),
         "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
         # Mandatory-update verdict (governance pin OR feed floor) plus the floor
         # that triggered it, on the hot path because the proactive update popup
@@ -185,6 +240,11 @@ def status_update_fields() -> dict[str, object]:
         # gateway's update loop acts on, so the switch's label cannot promise
         # what the loop will not do.
         "update_auto_effect": _status_auto_update_effect(),
+        # ``notify`` only because the security policy turns unattended installs
+        # off: a person's Update still installs here. The switch's note reads it,
+        # since ``update_can_apply`` is false on a managed venv whose Update is
+        # the arm and approve flow.
+        "update_auto_manual_only": _status_auto_update_manual_only(),
         # Whether the desktop app bundles and launches this gateway, from the
         # baked packaging stamp. Independent of who owns the update: a policy
         # ``updates`` provider makes ``update_managed_by`` read ``command`` on
@@ -192,6 +252,12 @@ def status_update_fields() -> dict[str, object]:
         # gateway's loop does there — the provider's answer — because the
         # provider, not the app's updater, is what the loop runs.
         "update_bundled_by_app": bundled_by_desktop_app(),
+        # "Update ready, restart to use it": see ``kiro_crew.update_restart_ready``.
+        **update_restart_ready.status_fields(),
+        # The update a person armed for the next start, whether the install on
+        # disk already moved past what runs, and what the last boot-time apply
+        # said: see ``kiro_crew.update_next_start``.
+        **(update_next_start.status_fields() if next_start is None else next_start),
         # The RUNNING build's version folded for display (clean base on the
         # stable channel), so the About page's version chip can show `0.4.0`
         # instead of the promoted candidate's baked-in `0.4.0rc14` stamp.
@@ -222,11 +288,14 @@ async def api_update_check(request: web.Request) -> web.Response:
     # Offloaded for the same reason as every other config read in the update
     # handlers: the data home can be network-backed.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
+    pin = await asyncio.to_thread(overlay_pin, "auto_update")
+    next_start = await asyncio.to_thread(update_next_start.status_fields)
     return web.json_response(
         {
             **_update_info,
             "current_version": _display_local_version(),
+            # The same stamp the status frame carries as `update_last_checked_at`.
+            "last_checked_at": last_checked_at(),
             "update_auto_effect": _status_auto_update_effect(),
             # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
             # via `**_update_info`) — folds a promoted stable candidate's
@@ -239,10 +308,10 @@ async def api_update_check(request: web.Request) -> web.Response:
                 str(_update_info.get("channel") or ""),
             ),
             "auto_update": cfg.auto_update,
-            # Whether config.local.json pins it, so the panel can explain a
-            # switch that snaps back: this endpoint's writer updates the base
-            # file, which the overlay deep-merges over.
-            "overlay_override": overlay_override,
+            # Whether config.local.json pins it, and whose entry it is, so the
+            # panel can explain a switch that snaps back: this endpoint's writer
+            # updates the base file, which the overlay deep-merges over.
+            **pin.fields(),
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button. ``minimum_version_enforced``
             # stays governance-only (its historical meaning); the combined
@@ -251,6 +320,7 @@ async def api_update_check(request: web.Request) -> web.Response:
             "minimum_version_enforced": min_version(),
             "update_required": _effective_update_required(),
             "update_min_version": _effective_min_version(),
+            **next_start,
         }
     )
 
@@ -467,43 +537,65 @@ async def _run_update_check() -> None:
 
 
 async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
-    """Compare a git checkout in *proj* against its tracked remote."""
+    """Compare a git checkout in *proj* against its tracked remote.
+
+    *proj* is a tree an agent can write, and this runs on the host at boot, on
+    the 12-hourly poll and on the dashboard's Check button. So every git call
+    here goes through the same guards as the unattended apply: ``git`` resolved
+    off ``PATH``, :func:`git_command_env` pinning every fixed-key exec vector
+    (``core.sshCommand``, ``core.fsmonitor``, ``core.hooksPath``,
+    ``diff.external`` ...), and a :func:`repo_exec_config_reason` refusal for
+    the repo-NAMED ones (``diff.<driver>.textconv``, ``filter.<name>.*``) that
+    no pin can reach. The changelog diff also runs ``--no-textconv
+    --no-ext-diff``, so no attribute can route it to a program.
+    """
     base: dict[str, object] = _capability_fields(capability)
 
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "fetch",
-        "--quiet",
-        cwd=proj,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        _, fetch_err = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.CancelledError:
-        await platform_compat.kill_and_reap(proc)
-        raise
-    except asyncio.TimeoutError:
-        await platform_compat.kill_and_reap(proc)
-        logger.warning("git fetch timed out")
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
+    git = platform_compat.trusted_git_bin()
+    if git is None:
+        logger.warning("Update check skipped: no trustworthy git outside PATH")
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
-    if proc.returncode != 0:
+    exec_config = await asyncio.to_thread(repo_exec_config_reason, proj)
+    if exec_config:
         logger.warning(
-            "git fetch failed (rc=%s): %s",
-            proc.returncode,
-            (fetch_err or b"").decode(errors="replace").strip(),
+            "Update check skipped: %s, which git would run during the check", exec_config
         )
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
+        return
+    # Carries the shared guards (trusted PATH, built-in transports only, no git
+    # proxy, every fixed-key exec vector pinned, location vars stripped).
+    env = git_command_env()
+
+    # The tracked upstream to compare against, read from config (not the
+    # `origin/<name>` short form). None for a detached HEAD or a branch with no
+    # upstream: nothing to compare against, a failed check -- exactly what the
+    # old bare `git fetch` + `rev-parse @{u}` reported.
+    upstream = await asyncio.to_thread(upstream_remote_and_branch, proj)
+    if upstream is None:
+        logger.warning("Could not resolve the tracked upstream in %s", proj)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
+        return
+    remote_name, remote_branch = upstream
+
+    # The fetch runs through the shared isolated helper: a repo-defined hook
+    # cannot fire on the fetch's ref write (it happens in a git dir the gateway
+    # owns), while the fetched objects land in this checkout's object store. The
+    # tip comes back as a commit id the reads below use directly; no ref in this
+    # checkout is written. The same helper fetches for the unattended apply.
+    remote_sha = await fetch_and_pin_upstream(
+        proj, remote_name, remote_branch, git=git, env=env, timeout=_GIT_FETCH_TIMEOUT_S
+    )
+    if remote_sha is None:
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
         return
 
     local = await asyncio.create_subprocess_exec(
-        "git",
+        git,
         "rev-parse",
         "HEAD",
         cwd=proj,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -518,33 +610,10 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         await platform_compat.kill_and_reap(local)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
-    remote = await asyncio.create_subprocess_exec(
-        "git",
-        "rev-parse",
-        "@{u}",
-        cwd=proj,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        remote_out, _ = await asyncio.wait_for(remote.communicate(), timeout=10)
-    except asyncio.CancelledError:
-        await platform_compat.kill_and_reap(remote)
-        raise
-    except asyncio.TimeoutError:
-        await platform_compat.kill_and_reap(remote)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
-        return
 
     local_sha = local_out.decode(errors="replace").strip()
-    remote_sha = remote_out.decode(errors="replace").strip()
-    if not local_sha or not remote_sha:
-        # No upstream (detached HEAD, untracked branch) or an unreadable HEAD.
-        # There is nothing to compare against, which is a failed check and not
-        # "you are on the latest version".
-        logger.warning("Could not resolve HEAD and/or upstream in %s", proj)
+    if not local_sha:
+        logger.warning("Could not resolve HEAD in %s", proj)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
 
@@ -554,15 +623,15 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # behind reads as current for as long as the next bump takes.
     #
     # Both counts are needed because one of the apply paths is DESTRUCTIVE.
-    # ``GatewayOrchestrator._auto_apply_update`` runs unattended under
-    # ``auto_update`` and applies ``git fetch`` + ``git reset --hard``, so an
+    # The apply (`kirocrew update`, run at the start after a click armed it)
+    # does ``git fetch`` + ``git reset --hard``, so an
     # update offered on a branch carrying local commits discards them with no
     # prompt. ``behind > 0`` alone is not safe: it is true both for a checkout
     # that is purely behind AND for a DIVERGED one (ahead and behind at once),
     # and the second is precisely the case with commits to lose. Only a checkout
     # that is behind and NOT ahead can be fast-forwarded, so only that one is
     # offered an update.
-    counts = await count_divergence(proj, "@{u}")
+    counts = await count_divergence(proj, remote_sha, git=git, env=env)
     if isinstance(counts, DivergenceUnreadable):
         # A check that could not count must not answer "you are on the latest
         # version" — the unattended auto-apply reads this verdict.
@@ -576,10 +645,12 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # Compare the remote's version (or the on-disk one when already pulled).
     target_sha = remote_sha if local_sha != remote_sha else local_sha
     show = await asyncio.create_subprocess_exec(
-        "git",
+        git,
         "show",
+        "--no-textconv",
         f"{target_sha}:src/kiro_crew/__init__.py",
         cwd=proj,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -630,7 +701,7 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # Without that gate the term reaches a case it was never about. A checkout
     # that pulled a version bump and then committed on top is AHEAD, so its
     # upstream still reads newer than the version this process imported — and
-    # the unattended ``_auto_apply_update`` would answer that by resetting hard
+    # the apply would answer that by resetting hard
     # onto the upstream, dropping those commits. Its own preflight does not
     # catch it either: ``git diff HEAD origin/<branch> --quiet`` compares tree
     # CONTENT, so an ahead checkout whose commits changed anything reads as
@@ -642,12 +713,17 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     if available:
         diff_base = f"v{_local_version}" if local_sha == remote_sha else local_sha
         diff = await asyncio.create_subprocess_exec(
-            "git",
+            git,
             "diff",
+            # A tracked `.gitattributes` can name a diff driver for CHANGELOG.md;
+            # these keep git's own text diff whatever the attributes say.
+            "--no-textconv",
+            "--no-ext-diff",
             f"{diff_base}..{target_sha}",
             "--",
             "CHANGELOG.md",
             cwd=proj,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=platform_compat.IS_POSIX,
@@ -733,6 +809,37 @@ async def _check_via_provider(provider: CommandProvider) -> None:
         version_newer=result.available,
         check_status=CHECK_SUCCEEDED,
     )
+
+
+async def _upcoming_for_feed(
+    url: str,
+    *,
+    channel: str,
+    available: bool,
+) -> dict[str, object] | None:
+    """The About page's "Upcoming update" record, or ``None`` when there is none.
+
+    Display only: nothing here decides whether or when anything installs. The
+    record is an optional ``announce.json`` naming a version newer than this
+    install while the feed does not offer a build yet; once the feed offers one
+    (``available``) the update card already describes it and nothing is added.
+    Reading it costs one more bounded GET per check, through the same fetch,
+    timeout and 12-hour cache as the manifest, and a missing or malformed file
+    leaves no record.
+    """
+    if available:
+        return None
+    # Imported here, not at module level: a module-level name would be served
+    # through the ``updates`` facade, which this display-only helper does not need.
+    from kiro_crew.dashboard.handlers import _update_announce
+
+    announcement = await _update_announce.fetch_announcement(
+        url, _fetch_feed_bytes, channel=channel, max_bytes=_FEED_MAX_BYTES
+    )
+    if announcement is None or _is_newer(announcement["version"], _local_version) is not True:
+        return None
+    version = _display_version(announcement["version"], channel)
+    return dict(_update_announce.compose_upcoming(announcement, version=version))
 
 
 async def _check_release_feed(capability: UpdateCapability) -> None:
@@ -869,6 +976,11 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
                 )
     elif floor is not None:
         logger.warning("Release feed %s carries an unusable min_version", url)
+    extra["upcoming"] = await _upcoming_for_feed(
+        f"{feed_base}/feed/{channel}/announce.json",
+        channel=channel,
+        available=available,
+    )
     # No ``changes``: the manifest carries no changelog, and the CHANGELOG.md
     # bundled into the wheel describes the version already INSTALLED, not the new
     # one. The dashboard's "view full changelog" disclosure covers the gap

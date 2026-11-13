@@ -235,6 +235,18 @@ def _governance_denial(
     silently widened to the surface profile). ``None`` means the resolution
     failed, and denies: an unknown agent is indistinguishable from a narrow one.
 
+    A crewmate's stub identity (``crewmate:<id>``, ``mcp_gateway.mate_overlays``)
+    is bound by no profile of its own kind: its render came from a crewmate's
+    worker session, whose own tool calls are governed as
+    ``kirocrew-mate-worker``. :func:`~kiro_crew.mcp_gateway.mate_overlays.governance_agents`
+    names every agent whose task profile applies (the worker's AND the identity
+    itself). The worker's name resolves as the worker's own tool calls do (task
+    bind over surface); the identity adds only a profile bound to it by task, with
+    no surface fallback. The call runs only when every resolved profile permits
+    it, so the narrowest wins. A crewmate identity whose id is not a
+    file id resolves to nothing and denies. Every other agent resolves exactly
+    as before, under its own one name.
+
     Freshness note: Plane A uses the boot-frozen ceiling on the dashboard
     process; gatewayd is a separate daemon, so the policy is loaded per call
     (small JSON, app calls are user-interaction-rate). That is strictly
@@ -247,6 +259,12 @@ def _governance_denial(
     if agent is None:
         return "cannot resolve the calling session's agent"
     try:
+        from kiro_crew.mcp_gateway.mate_overlays import governance_agents
+
+        governing = governance_agents(agent)
+        if governing is None:
+            logger.warning("app-call: stub identity %r names no crewmate file; denying", agent)
+            return "cannot resolve the calling session's agent"
         # circular import: platform.governance imports gateway-adjacent modules;
         # loaded per-call (also keeps the policy read fresh). Keep lazy.
         from kiro_crew.platform.governance import (
@@ -254,7 +272,10 @@ def _governance_denial(
             load_security_policy,
             resolve,
         )
-        from kiro_crew.platform.governance_profiles import resolve_active_scope
+        from kiro_crew.platform.governance_profiles import (
+            resolve_active_scope,
+            resolve_task_bound_profile,
+        )
 
         ceiling = load_security_policy()
         # Enforce the signature mandate on the ceiling this LIVE re-read produced —
@@ -274,12 +295,21 @@ def _governance_denial(
         # file, which is pre-existing behavior and a separate change.
         if ceiling is not None:
             assert_policy_signature_satisfied(ceiling)
-        profile = resolve_active_scope(session_key, agent=agent)
-        if ceiling is None and profile is None:
+        # The first name resolves with the usual app > task > surface order. Any
+        # further name only narrows it by its own task bind, so the surface
+        # default cannot override a task profile the first resolution chose.
+        primary, *narrowing = governing
+        profiles = [resolve_active_scope(session_key, agent=primary)]
+        for name in narrowing:
+            bound = resolve_task_bound_profile(name)
+            if bound is not None:
+                profiles.append(bound)
+        if ceiling is None and all(profile is None for profile in profiles):
             return None  # ungoverned standalone host — permits, as on Plane A
-        decision = resolve(ceiling, profile, "mcp", f"@{server}/{tool_name}")
-        if not decision.permitted:
-            return f"blocked by governance policy: {decision.reason}"
+        for profile in profiles:
+            decision = resolve(ceiling, profile, "mcp", f"@{server}/{tool_name}")
+            if not decision.permitted:
+                return f"blocked by governance policy: {decision.reason}"
         return None
     except Exception as exc:
         logger.warning("app-call governance evaluation failed; denying: %s", exc)

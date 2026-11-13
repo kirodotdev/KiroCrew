@@ -67,8 +67,11 @@ _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 _WORD_CHAR_RE = re.compile(r"\w")
 
 
-def _literal_replacement(value: str) -> Callable[[re.Match[str]], str]:
-    """A ``re.sub`` replacement that inserts *value* verbatim.
+def _literal_replacement(corrections: tuple[str, ...]) -> Callable[[re.Match[str]], str]:
+    """A ``re.sub`` replacement that inserts the matched alias's term verbatim.
+
+    *corrections* holds one correct spelling per alias group of the combined
+    pattern, in group order, so the group that matched names the term to insert.
 
     ``re.sub``'s replacement argument is a TEMPLATE, not a literal, so passing the
     correct spelling directly made a backslash in it an escape sequence:
@@ -76,13 +79,14 @@ def _literal_replacement(value: str) -> Callable[[re.Match[str]], str]:
     substitutes a capture group. The term is user-supplied text from the
     pronunciation dictionary, and :meth:`DomainDictionary.correct` runs on every
     transcript segment before dispatch — so one such term killed the correction
-    path for the whole meeting.
-
-    A named function rather than an inline ``lambda`` with a default argument:
-    the default-argument form defeats mypy's inference (``Cannot infer type of
-    lambda``), and this reads as what it is.
+    path for the whole meeting. A function replacement is inserted as it is.
     """
-    return lambda _match: value
+
+    def _replace(match: re.Match[str]) -> str:
+        index = match.lastindex
+        return corrections[index - 1] if index else match.group(0)
+
+    return _replace
 
 
 def _bounded_pattern(alias: str) -> str:
@@ -111,14 +115,18 @@ class DomainDictionary:
 
     def __init__(self) -> None:
         self.terms: list[tuple[str, list[str]]] = []
-        self._compiled: list[tuple[str, re.Pattern[str]]] = []
+        # The combined pattern and its corrections, one per alias group, in ONE
+        # attribute assigned once: a reload on a worker thread then swaps both
+        # together, and a live ``correct`` never pairs one generation's pattern
+        # with another's corrections.
+        self._compiled: tuple[re.Pattern[str], tuple[str, ...]] | None = None
 
     # -- loading --
 
     def load(self, path: Path) -> None:
         """(Re)load from *path*. A missing or malformed file clears the dictionary."""
         self.terms = []
-        self._compiled = []
+        self._compiled = None
         if not path.is_file():
             return
         if _toml is None:
@@ -141,7 +149,7 @@ class DomainDictionary:
     def load_terms(self, entries: Any) -> None:
         """Populate from a list of ``{"correct":…, "aliases":[…]}`` dicts."""
         self.terms = []
-        self._compiled = []
+        self._compiled = None
         if not isinstance(entries, list):
             return
         for entry in entries[: k.MAX_DICTIONARY_TERMS]:
@@ -162,25 +170,36 @@ class DomainDictionary:
         self._compile()
 
     def _compile(self) -> None:
-        # Longest alias first so "a w s s three" wins over "a w s".
+        # ONE pattern with one group per alias, longest alias first, so a single
+        # scan picks the longest alias at each position ("a w s s three" wins
+        # over "a w s") and never matches text a correction inserted. Separate
+        # patterns applied in turn would run each alias over the earlier
+        # aliases' output, so "aws" would re-correct the "AWS" inside "AWS S3".
         replacements: list[tuple[str, str]] = [
             (alias, correct) for correct, aliases in self.terms for alias in aliases
         ]
         replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
-        for alias, correct in replacements:
-            self._compiled.append(
-                (correct, re.compile(_bounded_pattern(alias), re.IGNORECASE))
-            )
+        if not replacements:
+            return
+        pattern = re.compile(
+            "|".join(f"({_bounded_pattern(alias)})" for alias, _correct in replacements),
+            re.IGNORECASE,
+        )
+        self._compiled = (pattern, tuple(correct for _alias, correct in replacements))
 
     # -- applying --
 
     def correct(self, text: str) -> str:
-        """Apply every correction to *text* (identity when empty)."""
-        if not self._compiled or not text:
+        """Apply every correction to *text* in one pass (identity when empty).
+
+        Each span of the input is corrected at most once: a correction's own
+        output is never matched again by another alias.
+        """
+        compiled = self._compiled
+        if compiled is None or not text:
             return text
-        for correct, pattern in self._compiled:
-            text = pattern.sub(_literal_replacement(correct), text)
-        return text
+        pattern, corrections = compiled
+        return pattern.sub(_literal_replacement(corrections), text)
 
     # -- serializing --
 
@@ -231,9 +250,12 @@ class DomainDictionary:
             raise ValueError("term or alias is too long")
         if _SURROGATE_RE.search(correct) or any(_SURROGATE_RE.search(a) for a in clean):
             raise ValueError("term or alias contains an unpaired surrogate code point")
-        if len(self.terms) >= k.MAX_DICTIONARY_TERMS:
-            raise ValueError(f"dictionary is limited to {k.MAX_DICTIONARY_TERMS} terms")
+        # The cap counts the terms that remain once the one being replaced is
+        # dropped, so editing a term in a full dictionary is a replacement, not
+        # an addition past the limit.
         existing = [(c, a) for c, a in self.terms if c.lower() != correct.lower()]
+        if len(existing) >= k.MAX_DICTIONARY_TERMS:
+            raise ValueError(f"dictionary is limited to {k.MAX_DICTIONARY_TERMS} terms")
         existing.append((correct, clean))
         self.load_terms([{"correct": c, "aliases": a} for c, a in existing])
 

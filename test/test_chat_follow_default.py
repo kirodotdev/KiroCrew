@@ -190,6 +190,10 @@ class TestWhichChatsCount:
             slot.model, slot._origin = OLD, origin
             assert follow._slot_model(slot) == "", origin
 
+    def test_a_null_origin_is_a_persons_line(self):
+        """A JSON ``null`` origin reads as no origin, not the string ``"None"``."""
+        assert follow._persons_line({"origin": None}) is True
+
 
 class TestCountAndConfirm:
     @pytest.mark.asyncio

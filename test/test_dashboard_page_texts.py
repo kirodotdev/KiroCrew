@@ -200,3 +200,29 @@ def test_type_is_paired_by_role_and_no_text_names_a_typeface():
         low = text.lower()
         for face in TYPEFACES + LANGUAGES:
             assert not re.search(rf"(?<![\w-]){re.escape(face)}(?![\w-])", low), face
+
+
+THEMES = SKILL.with_name("THEMES.md")
+
+#: Products, franchises and agencies the theme ideas describe by look, never by name.
+BRANDS = (
+    "windows", "mac", "macintosh", "apple", "microsoft", "outlook", "nasa", "lcars",
+    "star trek", "star wars", "nintendo", "atari", "vhs", "ibm",
+)  # fmt: skip
+
+
+def test_theme_ideas_are_optional_looks_that_keep_the_data_live():
+    skill = _skill()
+    assert "`THEMES.md` beside this file holds whole-page theme ideas" in skill
+    assert "A clean, plain page is just as correct, and a theme is never required" in skill
+    assert "When the person leaves the style open, you may pick one" in skill
+    assert "every value stays bound to its fold and every link keeps working" in skill
+    themes = " ".join(THEMES.read_text("utf-8").split())
+    assert "**Every one is optional.**" in themes
+    assert "Every value stays bound to its fold and every link keeps working" in themes
+    assert "Decoration never stands in for data" in themes
+    assert "motion and reduced-motion rules" in themes
+    assert len(re.findall(r"^\d+\. \*\*", THEMES.read_text("utf-8"), re.M)) == 22
+    low = themes.lower()
+    for name in BRANDS + TYPEFACES + LANGUAGES:
+        assert not re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", low), name

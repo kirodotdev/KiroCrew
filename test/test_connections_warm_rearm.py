@@ -11,6 +11,7 @@ premint without blocking the caller or stacking duplicates.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import connections_warm_helpers
@@ -24,15 +25,26 @@ from connections_warm_helpers import (
     _Runtime,
 )
 
+from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.types import METHOD_MCP_SERVER_INIT_FAILURE, JsonRpcMessage
 from kiro_crew.connections import warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
+from kiro_crew.connections.warm_runtime import shared_rows
 from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _clean_mint_table = connections_warm_helpers._clean_mint_table
 _clean_warm_runtime = connections_warm_helpers._clean_warm_runtime
 _stub_activation = connections_warm_helpers._stub_activation
+
+
+@pytest.fixture(autouse=True)
+def _empty_invalidation_rearms():
+    # The registry is module-global and outlives each test's loop.
+    warm._invalidation_rearms.clear()
+    yield
+    warm._invalidation_rearms.clear()
 
 
 # ── redeemability takes TWO questions, and they die independently ──
@@ -141,6 +153,67 @@ async def test_a_row_whose_process_and_session_both_live_keeps_its_url(
     }
     assert await warm.expire_dead_mints() == []
     assert _mints["linear"]["state"] == "waiting"
+
+
+@pytest.mark.asyncio
+async def test_the_reaper_fails_an_adopted_row_whose_session_reports_a_refused_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An adopted row owns no client, so the reaper reads the refused exchange off its
+    session. A refused server whose grant landed anyway is left to its own watcher."""
+
+    def _refused(server: str) -> JsonRpcMessage:
+        return JsonRpcMessage(
+            method=METHOD_MCP_SERVER_INIT_FAILURE,
+            params={"serverName": server, "error": "OAuth token exchange failed: invalid_grant"},
+        )
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.report = McpSessionReport()
+            self.frames = [_refused("linear"), _refused("notion")]
+
+        async def drain_init(self, **kwargs: Any) -> None:
+            for frame in self.frames:
+                self.report.record_frame(frame, owned=True)
+            self.frames.clear()
+
+        def mcp_session_report(self) -> McpSessionReport:
+            return self.report
+
+    async def _granted(url: str) -> bool:
+        return url == _provider("notion")["mcp_url"]
+
+    monkeypatch.setattr(shared_rows, "grant_observed", _granted)
+    monkeypatch.setattr(warm, "_MINT_GRANT_POLL_SECONDS", 0)
+    monkeypatch.setattr(warm._warm_mint, "_generation", 5)
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _Runtime(True))
+    monkeypatch.setattr(warm._warm_mint, "_retiring", [])
+    session = warm._WarmSession(
+        generation=5,
+        handle=_Handle(),
+        expires_at=time.monotonic() + 600,
+        providers=(_provider("linear"), _provider("notion")),
+    )
+    monkeypatch.setattr(warm._warm_mint, "_sessions", {2: session})
+    for slug in ("linear", "notion"):
+        _mints[slug] = {
+            "state": "waiting",
+            "oauth_url": f"https://{slug}/consent",
+            "generation": 5,
+            "activation": 2,
+            "token": f"tok-{slug}",
+        }
+
+    reaper = asyncio.get_running_loop().create_task(warm._warm_mint_reaper(5))
+    await async_wait_until(lambda: _mints["linear"]["state"] != "waiting")
+    reaper.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reaper
+
+    assert _mints["linear"]["state"] == "failed"
+    assert _mints["linear"]["reason"] == "mint_sign_in_rejected"
+    assert _mints["notion"]["state"] == "waiting"
 
 
 # ── defect: the retry's expiry pass is unscoped ──
@@ -641,6 +714,50 @@ def test_the_scheduler_is_a_noop_without_a_running_loop():
     warm._invalidation_rearms.clear()
 
     warm.rearm_invalidated_provider("linear")
+
+    assert warm._invalidation_rearms == {}
+
+
+def _rearm_on_a_closed_loop() -> Any:
+    """A pending re-arm whose loop is gone, so it never finishes or drops its entry."""
+    other = asyncio.new_event_loop()
+    try:
+        rearm = other.create_future()
+        # Registered like the real re-arm's forget callback: cancelling it would
+        # schedule that callback onto the closed loop.
+        rearm.add_done_callback(lambda _f: None)
+        return rearm
+    finally:
+        other.close()
+
+
+@pytest.mark.asyncio
+async def test_a_rearm_left_by_a_torn_down_loop_does_not_block_a_new_one(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    async def _rearm(slug: str) -> list[str]:
+        calls.append(slug)
+        return [slug]
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _rearm)
+
+    async with _rearm_registry() as registry:
+        dead = _rearm_on_a_closed_loop()
+        registry["linear"] = dead
+        warm.rearm_invalidated_provider("linear")
+        task = registry["linear"]
+        assert task is not dead, "the dead re-arm was taken for one still in flight"
+        assert await await_until(task) == ["linear"]
+        assert calls == ["linear"]
+
+
+@pytest.mark.asyncio
+async def test_settling_skips_a_rearm_left_by_a_torn_down_loop():
+    warm._invalidation_rearms["linear"] = _rearm_on_a_closed_loop()
+
+    await warm._settle_invalidation_rearms()
 
     assert warm._invalidation_rearms == {}
 

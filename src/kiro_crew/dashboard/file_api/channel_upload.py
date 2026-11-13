@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _sel,
         binary_content_is_flagged,
         config_loader,
+        platform_compat,
         read_bounded_json,
         redact,
         redact_for_display,
@@ -68,6 +69,21 @@ def _gate_upload_file(
             error=error,
         )
 
+    # An empty value of any type still answers missing_required_fields below.
+    if (file_path and not isinstance(file_path, str)) or (
+        filename and not isinstance(filename, str)
+    ):
+        # A number, list, object, bool or null reaches redact() and Path() below,
+        # which raise TypeError: caller error, so a 400 rather than a 500.
+        _audit_denial("invalid_field_type")
+        return (
+            web.json_response(
+                {"error": "file_path and filename must be strings", "code": "invalid_field_type"},
+                status=400,
+            ),
+            None,
+            None,
+        )
     if not file_path or not filename:
         _audit_denial("missing_required_fields")
         return (
@@ -96,9 +112,29 @@ def _gate_upload_file(
             None,
             None,
         )
-    resolved = Path(file_path).resolve()
-    allowed_outbox = config_loader.outbox_dir().resolve()
-    allowed_workspace = config_loader.workspace_root().resolve()
+    fold = platform_compat.strip_extended_length_prefix
+    unfolded = Path(file_path).resolve()
+    # The folded path is the one read, so a name only the ``\\?\`` spelling
+    # reaches (a trailing dot, a DOS device) is refused: its plain spelling
+    # names a different file.
+    if platform_compat.names_a_verbatim_only_file(unfolded):
+        _audit_denial(f"verbatim_only_name: {file_path}")
+        return (
+            web.json_response(
+                {
+                    "error": "file_path names a file reachable only by its extended-length path",
+                    "code": "path_not_allowed",
+                },
+                status=403,
+            ),
+            None,
+            None,
+        )
+    # Windows' ``\\?\`` prefix folded off all three (lexically), so one resolve
+    # keeping it is not read as an escape.
+    resolved = fold(unfolded)
+    allowed_outbox = fold(config_loader.outbox_dir().resolve())
+    allowed_workspace = fold(config_loader.workspace_root().resolve())
     if not (resolved.is_relative_to(allowed_outbox) or resolved.is_relative_to(allowed_workspace)):
         _audit_denial(f"path_not_allowed: {file_path}")
         return (
@@ -207,10 +243,12 @@ def _gate_upload_file(
                     None,
                 )
         except Exception as redact_err:
-            _audit_denial(f"redaction_failed: {redact_err}", outcome="error")
+            # A stable message: the raw exception text is neither returned nor
+            # logged, only its type (the handlers below show only redacted text).
+            _audit_denial(f"redaction_failed: {type(redact_err).__name__}", outcome="error")
             return (
                 web.json_response(
-                    {"error": f"Redaction failed: {redact_err}", "code": "redaction_failed"},
+                    {"error": "Redaction failed", "code": "redaction_failed"},
                     status=500,
                 ),
                 None,
@@ -365,6 +403,15 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     if isinstance(destination, upload_destination.Skip):
         return _skip(destination.reason)
     link, deliver = destination.link, destination.deliver
+    raw_description = body.get("description", "")
+    if raw_description and not isinstance(raw_description, str):
+        # An empty value of any type reads as no description, as it always has; a
+        # non-empty non-string would reach redact_for_display() and raise.
+        _audit_file_send(leg="channel", outcome="denied", error="invalid_field_type")
+        return web.json_response(
+            {"error": "description must be a string", "code": "invalid_field_type"},
+            status=400,
+        )
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content
     # (no-blocking-call-on-event-loop).
     error_resp, resolved, raw = await asyncio.to_thread(
@@ -382,7 +429,7 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     # a literal scan and displays as an intact key. Same boundary rule every
     # renderer sink applies (``redact_for_display``) before text reaches a
     # transport.
-    description, _ = redact_for_display(body.get("description", "") or "", redact)
+    description, _ = redact_for_display(raw_description or "", redact)
     outbound = OutboundFile(
         path=str(resolved),
         data=raw,

@@ -27,6 +27,7 @@ import type { HeightIndex } from './HeightIndex'
 import type { FollowState, Pinning } from './followPolicy'
 import type { ShiftCapture } from './shiftCompensation'
 import { devLog, devWatchScroller, inspectorOn, keyShape, shortId } from '../../dev/scrollInspector'
+import { releaseReadingPosition } from '../../utils/panelSlide'
 
 type Ref<V> = MutableRefObject<V>
 type SetWindowRange = (next: WindowRange | ((prev: WindowRange) => WindowRange)) => void
@@ -790,6 +791,8 @@ export function useReadingPositionRestore<T>(ctx: {
       const idxTree = heightIndexRef.current
       const off = idxTree ? idxTree.offsetOf(index) : getOffsetFn(index, count, getH)
       const target = Math.max(0, off - anchor.top)
+      // The restore owns the position: a panel slide's hold lets go first.
+      releaseReadingPosition(el)
       writeScrollTop(el, target, 'auto', 'pin', 'restore')
       // The write clamps against the CURRENT (pre-jump-window) geometry; align
       // the self-scroll reference with the value that actually landed so the

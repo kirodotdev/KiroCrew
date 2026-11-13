@@ -23,8 +23,12 @@ const {
   OWN_GATEWAY_COMMAND,
   INSTALLING_PROBE_MS,
   INSTALLING_COMPLETE_LINGER_MS,
+  INSTALLING_STALL_MS,
   fakeDialogWindows,
 } = require("./gateway-supervisor-test-helpers");
+
+// gateway-supervisor.js's TUNNEL_READY_POLL_MS.
+const TUNNEL_READY_POLL_MS = 500;
 
 // Driving the failure dialog itself: the fake window records the document the
 // dialog loads and answers it the way the page does, by setting a title the
@@ -98,6 +102,29 @@ function clientOnlyClickHarness({
     webContents: { isDestroyed: () => false, loadFile() {}, send() {} },
   };
 
+  // A stored crew nothing answers gets the app's own forward first, and each
+  // launch and Retry polls the port for it (ensureManagedTunnel). Those polls run
+  // at once. They share their delay with the successor's readiness poll, which
+  // only starts once a successor is spawned and stays the test's own to fire.
+  let gatewaySpawns = [];
+  const realTimers = {
+    setTimeoutFn: setTimeout,
+    clearTimeoutFn: clearTimeout,
+    setIntervalFn: setInterval,
+    clearIntervalFn: clearInterval,
+  };
+  const base = timers || realTimers;
+  const launchTimers = {
+    ...base,
+    setTimeoutFn(fn, ms) {
+      if (gatewaySpawns.length === 0 && ms === TUNNEL_READY_POLL_MS) {
+        setImmediate(fn);
+        return 0;
+      }
+      return base.setTimeoutFn(fn, ms);
+    },
+  };
+
   const built = harness({
     store: store || fakeStore({
       runLocalGateway: false,
@@ -109,7 +136,7 @@ function clientOnlyClickHarness({
     httpMod: httpOverride || httpMod,
     mainWindow,
     ...(execFileFn ? { execFileFn } : {}),
-    ...(timers ? { timers } : {}),
+    timers: launchTimers,
     app: {
       exit: (code) => state.exits.push(code),
       releaseSingleInstanceLock: () => { state.lockReleases += 1; },
@@ -143,6 +170,8 @@ function clientOnlyClickHarness({
       readFileSync() { throw new Error("no log"); },
     },
   });
+
+  gatewaySpawns = built.spawnCalls;
 
   return { ...built, documents, mainWindow, state };
 }
@@ -266,6 +295,11 @@ test("a port held by something that is neither our gateway nor a crew is refused
   assert.match(shown, /served by a program this app did not start/);
   assert.match(shown, /choose Add Remote Crew and fill in its address/, "saving the crew is the first remedy");
   assert.match(shown, /If it is unrelated software, quit it and then retry/);
+  // The owner probe found the holder, so the message names it and the command
+  // that ends it: "quit it" is no remedy while nothing says which program it is.
+  assert.match(shown, /It is held by process 4242 \(some-other-server --port 5476\)\./,
+    "the holder's pid and command are named");
+  assert.match(shown, /kill -TERM 4242/, "and the command that ends it");
   // The title says what is true of this port. Left on the generic line it read
   // "no gateway on port N" above a body saying that port IS served.
   assert.match(shown, /<div class="title">[^<]*port 5476 is in use by another program/,
@@ -279,9 +313,37 @@ test("a port held by something that is neither our gateway nor a crew is refused
     /free port/,
     "no crew is configured here, so nothing re-execs onto another port",
   );
-  // Nothing was launched, so this is not a crash and must not be dressed as one:
-  // a log pane here shows an earlier run's log under a state that never spawned.
-  assert.doesNotMatch(shown, /onclick="act\('reveal'\)"/, "no crash log pane");
+  // Nothing was spawned, but this launch did probe the port and wrote the
+  // holder's pid and command to the launch log, so the log is this launch's own
+  // evidence and the dialog shows it.
+  assert.match(shown, /<pre class="log">/, "the launch log pane is shown");
+  assert.match(shown, /onclick="act\('reveal'\)"/, "and so is Reveal Log");
+});
+
+test("a port holder whose command could not be read is named by pid, not called someone else's", async () => {
+  // ps answered nothing, which is what a failed or timed-out read leaves. The
+  // holder is still refused, because adopting a program no one identified
+  // would post this machine's local secret to it, but it is reported as
+  // unread rather than as a program positively identified as not Kiro Crew.
+  const { supervisor, documents, mainWindow, spawnCalls, logs } = clientOnlyClickHarness({
+    actions: ["quit"],
+    store: fakeStore({ runLocalGateway: true, remoteHosts: {} }),
+    port: 5476,
+    httpMod: unidentifiedResponder(),
+    execFileFn: ownerProbe(""),
+  });
+
+  assert.strictEqual(await supervisor.start(), false, "the unread holder is not adopted");
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.ok(!logs.some((line) => line.includes("NON-KiroCrew")), "the log does not call it non-Kiro-Crew");
+
+  await supervisor.connect(mainWindow);
+  for (let i = 0; i < 80 && documents.length < 1; i += 1) await flush();
+  assert.strictEqual(documents.length, 1, "the failure dialog opens");
+  const shown = documents[0];
+  assert.match(shown, /It is held by process 4242, whose command could not be read\./);
+  assert.match(shown, /kill -TERM 4242/);
+  assert.match(shown, /onclick="act\('reveal'\)"/, "the launch log is offered");
 });
 
 test("the same unidentified payload IS adopted when our own gateway holds the port", async () => {
@@ -301,15 +363,14 @@ test("the same unidentified payload IS adopted when our own gateway holds the po
   assert.strictEqual(spawnCalls.length, 0, "nothing is spawned over it");
 });
 
-test("the handoff waits for the successor's own platform budget, not one flat number", async () => {
-  // A primary local gateway on Windows gets 120s to bind, because importing a
-  // freshly installed bundled Python tree exceeds the ordinary deadline there.
-  // The successor IS that, so a flat 60s here expired while the successor was
+test("the handoff waits for the successor's own gateway budget, not one flat number", async () => {
+  // A primary local gateway gets 120s to bind, because importing a freshly
+  // installed bundled Python tree can exceed the ordinary deadline. The
+  // successor IS that, so a flat 60s here expired while the successor was
   // still inside its own budget, and the deadline's fail() killed a gateway that
   // was starting normally. The deadline is derived from the same function the
-  // successor applies to itself, plus one Electron-boot margin -- which is why
-  // the non-Windows value is unchanged.
-  for (const [platform, expected] of [["darwin", 60_000], ["win32", 150_000]]) {
+  // successor applies to itself, plus one Electron-boot margin, on every platform.
+  for (const [platform, expected] of [["darwin", 150_000], ["win32", 150_000]]) {
     const timers = fakeTimers();
     const built = clientOnlyClickHarness({
       readyAnswers: false,
@@ -680,6 +741,20 @@ function extractingBundleFs(files, { launchLog = null } = {}) {
     },
     openSync() { return 41; },
     closeSync() {},
+    statSync(file) {
+      if (launchLog !== null && file === "/virtual/logs/gateway-launch.log") {
+        return { size: Buffer.byteLength(launchLog) };
+      }
+      throw Object.assign(new Error("no launch log yet"), { code: "ENOENT" });
+    },
+    readSync(_fd, buffer, offset, length) {
+      // The launch log here is far smaller than readLogTail's byte cap, so it
+      // always takes the small-file readFileSync path; this is only present so
+      // the fake models the full fs surface readLogTail may touch.
+      const bytes = Buffer.from(launchLog || "", "utf8");
+      const copied = bytes.copy(buffer, offset, 0, Math.min(length, bytes.length));
+      return copied;
+    },
     readFileSync(file) {
       if (launchLog !== null && file === "/virtual/logs/gateway-launch.log") return launchLog;
       throw new Error("no launch log yet");
@@ -770,6 +845,83 @@ test("installing dialog re-probes the bundle and repaints the falling count", as
   assert.strictEqual(timers.intervals.length, 1, "the probe keeps running");
 });
 
+// A bundle that never completes must not promise an automatic start forever:
+// five minutes of an unchanged probe result escalates to the "app files
+// missing" copy with Quit accented, and the probe still retries if parts land.
+test("installing dialog escalates after five unchanged minutes and still retries on completion", async () => {
+  const { dialog, timers, files, spawnCalls, connected } = await installingDialogHarness({
+    missing: ["zoneinfo"],
+  });
+  const stallTicks = INSTALLING_STALL_MS / INSTALLING_PROBE_MS;
+  const titlePaints = () => dialog.scripts.filter((js) => js.startsWith('document.querySelector(".title")'));
+  for (let i = 1; i < stallTicks; i += 1) timers.tick(INSTALLING_PROBE_MS);
+  assert.deepStrictEqual(dialog.paintedMessages(), [], "one tick short of the window, nothing escalates");
+  assert.deepStrictEqual(titlePaints(), []);
+
+  timers.tick(INSTALLING_PROBE_MS);
+  assert.match(dialog.paintedMessages().at(-1), /^Some of Kiro Crew's app files were removed/);
+  const escalated = titlePaints().at(-1) || "";
+  assert.match(escalated, /app files missing/);
+  assert.match(escalated, /act\('quit'\)"\) b\.className = 'ok'/, "Quit takes the accent");
+  assert.match(escalated, /primaryAct = "act\('quit'\)"/, "Enter presses Quit");
+  assert.strictEqual(dialog.destroyed, false);
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.strictEqual(timers.intervals.length, 1, "the probe stays armed");
+
+  files.add(`${BUNDLE_LIB}/zoneinfo/__init__.py`);
+  timers.tick(INSTALLING_PROBE_MS);
+  assert.match(dialog.paintedMessages().at(-1), /Installation finished/);
+  assert.match(titlePaints().at(-1), /installation finished/);
+  timers.fire(INSTALLING_COMPLETE_LINGER_MS);
+  await connected;
+  assert.strictEqual(spawnCalls.length, 1, "the retry spawned exactly once");
+});
+
+// A second window reads the same failure and opens its own installing dialog.
+// Two probes must not count the five minutes twice as fast.
+test("two open installing dialogs still escalate only after five unchanged minutes", async () => {
+  const { dialog, timers, windows, supervisor } = await installingDialogHarness({ missing: ["zoneinfo"] });
+  const second = {
+    isDestroyed: () => false, show() {}, focus() {}, isMinimized: () => false, restore() {}, destroy() {},
+    webContents: { isDestroyed: () => false, loadFile() {}, send() {} },
+  };
+  supervisor.connect(second);
+  await flush();
+  assert.strictEqual(windows.length, 2, "the second window opened its own dialog");
+  assert.strictEqual(timers.intervals.length, 2);
+  // Every armed probe fires each period, as two real intervals would.
+  const tickAll = () => { for (const interval of [...timers.intervals]) interval.fn(); };
+  for (let i = 1; i < INSTALLING_STALL_MS / INSTALLING_PROBE_MS; i += 1) tickAll();
+  assert.deepStrictEqual(dialog.paintedMessages(), [], "one period short of five minutes, nothing escalates");
+  assert.deepStrictEqual(windows[1].paintedMessages(), []);
+  tickAll();
+  assert.match(dialog.paintedMessages().at(-1), /^Some of Kiro Crew's app files were removed/);
+  dialog.click("quit");
+  windows[1].click("quit");
+});
+
+// Reveal Log closes and reopens the dialog; an escalated dialog must reopen
+// escalated, not fall back to the automatic-start promise for five more minutes.
+test("a reopened installing dialog keeps the escalated copy of a stalled bundle", async () => {
+  const { dialog, timers, windows, spawnCalls } = await installingDialogHarness({
+    missing: ["zoneinfo"],
+  });
+  for (let i = 0; i < INSTALLING_STALL_MS / INSTALLING_PROBE_MS; i += 1) timers.tick(INSTALLING_PROBE_MS);
+  assert.match(dialog.paintedMessages().at(-1), /^Some of Kiro Crew's app files were removed/);
+  dialog.click("reveal");
+  await flush();
+  assert.strictEqual(windows.length, 2, "Reveal Log reopened the dialog");
+  const reopened = decodeURIComponent(windows[1].loaded[0]);
+  assert.match(reopened, /app files missing/);
+  assert.match(reopened, /Some of Kiro Crew's app files were removed/);
+  assert.match(reopened, /<button class="ok" onclick="act\('quit'\)">Quit<\/button>/, "Quit keeps the accent");
+  assert.match(reopened, /var primaryAct = "act\('quit'\)"/, "Enter still presses Quit");
+  timers.tick(INSTALLING_PROBE_MS);
+  assert.deepStrictEqual(windows[1].paintedMessages(), [], "the reopened dialog does not flip back");
+  assert.strictEqual(spawnCalls.length, 0);
+  windows[1].click("quit");
+});
+
 // Reveal Log resolves the dialog and the caller's loop reopens it with the
 // message it computed at refusal time. The reopened dialog must show the
 // CURRENT count, or the number the user watched fall climbs back up.
@@ -813,7 +965,7 @@ test("installing dialog retries exactly once when the probe reports complete", a
   // mouse, and the keyboard has to honour the same guard.
   const html = decodeURIComponent(dialog.loaded[0]);
   assert.match(html, /var primaryAct = "act\('retry'\)";/, "Enter's primary is Retry here");
-  assert.match(html, /if \(e\.key === 'Enter'\) \{\s*for \(const b of document\.querySelectorAll\('button'\)\) \{\s*if \(b\.getAttribute\('onclick'\) !== primaryAct\) continue;\s*if \(!b\.disabled\) b\.click\(\);/,
+  assert.match(html, /if \(e\.key === 'Enter' && e\.target\.tagName !== 'SUMMARY'\) \{\s*for \(const b of document\.querySelectorAll\('button'\)\) \{\s*if \(b\.getAttribute\('onclick'\) !== primaryAct\) continue;\s*if \(!b\.disabled\) b\.click\(\);/,
     "Enter presses the primary button and respects its disabled state");
   assert.ok(!/if \(e\.key === 'Enter'\) act\(/.test(html), "Enter never calls act() directly");
   assert.strictEqual(dialog.destroyed, false, "the dialog lingers on the completion line");
@@ -1003,4 +1155,115 @@ test("non-installing failure dialogs arm no probe", async () => {
   assert.strictEqual(timers.intervals.length, 0, "no probe for a failure that does not self-resolve");
   windows[0].click("quit");
   await connected;
+});
+
+test("the failure dialog leaves the splash's Close window usable on Windows and Linux", async () => {
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const timers = fakeTimers();
+    const { windows, FakeBrowserWindow } = fakeDialogWindows();
+    const window = {
+      isDestroyed: () => false,
+      show() {},
+      focus() {},
+      isMinimized: () => false,
+      restore() {},
+      webContents: { isDestroyed: () => false, loadFile() {}, send() {} },
+    };
+    const { supervisor } = harness({
+      store: fakeStore({ runLocalGateway: false }),
+      timers,
+      BrowserWindow: FakeBrowserWindow,
+      mainWindow: window,
+      app: { show() {} },
+      processRef: {
+        platform,
+        arch: "x64",
+        env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
+        resourcesPath: "/virtual/resources",
+        kill() { throw new Error("process kill must not run in this harness"); },
+      },
+    });
+    assert.strictEqual(await supervisor.start(), false);
+    const connected = supervisor.connect(window);
+    await flush();
+    assert.strictEqual(windows.length, 1, `${platform}: the failure dialog opened`);
+    assert.strictEqual(windows[0].options.parent, window, `${platform}: it stays above its window`);
+    // A modal child disables its parent on Windows and Linux; on macOS it is a sheet.
+    assert.strictEqual(windows[0].options.modal, platform === "darwin", `${platform}: modal`);
+    windows[0].click("quit");
+    await connected;
+  }
+});
+
+// The launch log carries internal identifiers and boot diagnostics (#34693): a
+// first-time user's error view shows the title, the message and the actions,
+// and the log opens only on a deliberate click, or through Reveal Log.
+test("the launch log opens folded, and unfolding it grows the window", async () => {
+  const { createFailureDialog } = require("../runtime/gateway/failure-dialog");
+  const { windows, FakeBrowserWindow } = fakeDialogWindows();
+  const { showGatewayErrorDialog } = createFailureDialog({
+    app: {},
+    BrowserWindow: FakeBrowserWindow,
+    nativeTheme: { shouldUseDarkColors: false },
+    shell: {},
+    fs: {},
+    isMac: false,
+    log: () => {},
+    gatewayLogPath: () => "/virtual/logs/gateway-launch.log",
+    mainWindow: () => null,
+    quitting: () => false,
+    quitApp: () => {},
+    cancelTrayHide: () => {},
+    getInstallingUpdate: () => false,
+  });
+  const action = showGatewayErrorDialog(null, {
+    title: "Kiro Crew — gateway failed to start",
+    message: "The gateway exited before it was ready.",
+    logTail: "Generated new staging user ID: 00000000-0000-0000-0000-000000000000\n"
+      + "crash collector armed",
+    logPath: "/virtual/logs/gateway-launch.log",
+  });
+  const [dialog] = windows;
+  const shown = decodeURIComponent(dialog.loaded[0]);
+  const folded = shown.slice(shown.indexOf("<details"), shown.indexOf("</details>"));
+  assert.ok(shown.includes("<details"), "the log sits in a disclosure");
+  assert.ok(folded.includes("<summary>Show launch log</summary>"), "named for what it opens");
+  assert.ok(folded.includes("Generated new staging user ID"), "the log is still one click away");
+  assert.ok(!folded.startsWith("<details open"), "and starts folded");
+  assert.ok(shown.includes("onclick=\"act('reveal')\""), "Reveal Log stays in the row");
+  const foldedHeight = dialog.options.height;
+  assert.ok(foldedHeight < 460, "a folded log does not open a mostly empty window");
+  const resized = [];
+  dialog.getContentSize = () => [dialog.options.width, foldedHeight];
+  dialog.setContentSize = (width, height) => resized.push([width, height]);
+  let titleKept = 0;
+  dialog.emit("page-title-updated", { preventDefault: () => { titleKept += 1; } }, "mc-log:open");
+  assert.deepStrictEqual(resized, [[dialog.options.width, 460]], "unfolding makes room for the log");
+  dialog.emit("page-title-updated", { preventDefault: () => { titleKept += 1; } }, "mc-log:closed");
+  assert.strictEqual(titleKept, 2, "the fold signal never becomes the window's title");
+  assert.strictEqual(resized.length, 1, "folding again leaves the size alone");
+
+  // Enter on the focused toggle unfolds the log; it must not also press the
+  // primary button (Retry here, Force-stop & Retry on a port conflict).
+  // The page's inline code runs from act() to the closing tag before </body>.
+  const inline = shown.slice(shown.indexOf("function act("), shown.indexOf("</body>"));
+  const script = inline.slice(0, inline.lastIndexOf("</"));
+  const clicked = [];
+  const listeners = {};
+  const buttons = [{ getAttribute: () => "act('retry')", disabled: false, click: () => clicked.push("retry") }];
+  const page = {
+    document: {
+      title: "",
+      querySelectorAll: () => buttons,
+      addEventListener: (type, fn) => { listeners[type] = fn; },
+    },
+    window: { close() {} },
+  };
+  require("node:vm").runInNewContext(script, page);
+  listeners.keydown({ key: "Enter", target: { tagName: "SUMMARY" } });
+  assert.deepStrictEqual(clicked, [], "Enter on Show launch log presses nothing else");
+  listeners.keydown({ key: "Enter", target: { tagName: "BODY" } });
+  assert.deepStrictEqual(clicked, ["retry"], "Enter elsewhere still presses the primary");
+  dialog.click("quit");
+  assert.strictEqual(await action, "quit");
 });

@@ -25,6 +25,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home
+from kiro_crew.instances.constants import SESSION_BUNDLE_CONTEXT_KEYS
 
 logger = logging.getLogger("kiro_crew.dashboard.session_transfer")
 
@@ -176,10 +177,11 @@ def release_bundle_files(bundle: dict[str, Any] | None) -> None:
 
     Synchronous and idempotent, so it can run in a ``finally`` whatever raised.
     """
-    layer_b = (bundle or {}).get("layer_b")
-    events = layer_b.get("events") if isinstance(layer_b, dict) else None
-    if isinstance(events, LayerBEvents):
-        _rm_import_temps(events.path)
+    for key in SESSION_BUNDLE_CONTEXT_KEYS:
+        layer_b = (bundle or {}).get(key)
+        events = layer_b.get("events") if isinstance(layer_b, dict) else None
+        if isinstance(events, LayerBEvents):
+            _rm_import_temps(events.path)
 
 
 def _write_json_string_from_file(src: Path, write: Any) -> None:
@@ -230,7 +232,7 @@ def write_bundle_json(bundle: dict[str, Any], write: Any) -> None:
                     write(b",")
                 write(json.dumps(message, separators=sep).encode("ascii"))
             write(b"]")
-        elif key == "layer_b" and isinstance(value, dict):
+        elif key in SESSION_BUNDLE_CONTEXT_KEYS and isinstance(value, dict):
             write(b"{")
             for k, (lkey, lvalue) in enumerate(value.items()):
                 if k:

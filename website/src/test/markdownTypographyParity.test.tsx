@@ -142,18 +142,18 @@ describe('markdown and Office preview typography parity', () => {
     // Literal values, so a change to the shared owner is a visible restyle of
     // both surfaces in review rather than a silent one.
     expect(MD_HEADING_CLS).toEqual([
-      'text-xl font-bold mt-4 mb-2 text-text-strong',
-      'text-lg font-bold mt-3 mb-2 text-text-strong',
-      'text-base font-semibold mt-3 mb-1.5 text-text-strong',
-      'text-sm font-semibold mt-2 mb-1 text-text-strong',
-      'text-sm font-medium mt-2 mb-1 text-text-strong',
-      'text-[13px] font-medium mt-2 mb-1 text-muted',
+      'text-xl font-semibold leading-[1.35] mt-[1.225em] mb-[0.525em] text-text-strong',
+      'text-lg font-semibold leading-[1.35] mt-[1.3611em] mb-[0.5833em] text-text-strong',
+      'text-base font-semibold leading-[1.35] mt-[1.5313em] mb-[0.6563em] text-text-strong',
+      'text-sm font-semibold leading-[1.35] mt-[1.75em] mb-[0.75em] text-text-strong',
+      'text-sm font-medium leading-[1.35] mt-[1.75em] mb-[0.75em] text-text-strong',
+      'text-[13px] font-medium leading-[1.35] mt-[1.8846em] mb-[0.8077em] text-muted',
     ])
-    expect(MD_UL_CLS).toBe('list-disc pl-8 my-2 space-y-1 marker:text-muted')
-    expect(MD_OL_CLS).toBe('list-decimal pl-8 my-2 space-y-1 marker:text-muted')
-    expect(MD_LIST_ITEM_CLS).toBe('text-sm leading-relaxed')
-    expect(MD_TABLE_HEAD_CELL_CLS).toBe('text-left text-muted text-[13px] font-medium px-3 py-2 border-b border-border bg-bg-elevated')
-    expect(MD_TABLE_CELL_CLS).toBe('px-3 py-2 border-b border-border text-sm')
+    expect(MD_UL_CLS).toBe('list-disc pl-8 mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em] marker:text-muted')
+    expect(MD_OL_CLS).toBe('list-decimal pl-8 mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em] marker:text-muted')
+    expect(MD_LIST_ITEM_CLS).toBe('text-sm leading-normal')
+    expect(MD_TABLE_HEAD_CELL_CLS).toBe('text-left text-text-strong text-[13px] font-semibold pl-0 pr-[1.0769em] py-[0.5385em] border-b border-border-strong')
+    expect(MD_TABLE_CELL_CLS).toBe('pl-0 pr-[1em] py-[0.625em] border-b border-border text-sm leading-normal')
     expect(MD_STRONG_CLS).toBe('font-semibold text-text-strong')
     expect(MD_EM_CLS).toBe('italic')
   })

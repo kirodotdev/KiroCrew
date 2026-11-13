@@ -1,7 +1,9 @@
 import { useCallback, useRef } from 'react'
 import { applyListEdit, listLineBreakEdit, listMarkerBackspaceEdit } from '../composerListContinuation'
 import { findTokenRanges, type PasteBlock } from '../../utils/pasteTokens'
-import type { useImeGuard } from '../../hooks/useImeGuard'
+
+/** Set once the user dismisses the visible list-indent hint under the composer. */
+export const LIST_HINT_DISMISSED_KEY = 'kirocrew:list-indent-hint-dismissed'
 
 /* Markdown list continuation for the textarea composer.
 
@@ -39,12 +41,19 @@ export function applyTextareaListBreak(
 }
 
 /** Write a composer-owned edit to `textarea` as if the user typed it: set the
- *  value and caret, then fire an `input` event so onChange, the undo recorder
- *  and the autosize caret-follow all run on their ordinary path. Shared by the
- *  Enter list break and the Tab list indent. */
-export function writeTextareaEdit(textarea: HTMLTextAreaElement, next: string, caret: number) {
+ *  value and selection (collapsed at `caret` unless `end` is given), then fire
+ *  an `input` event so onChange, the undo recorder and the autosize caret-follow
+ *  all run on their ordinary path. Shared by the Enter list break and the Tab
+ *  list indent. */
+export function writeTextareaEdit(
+  textarea: HTMLTextAreaElement,
+  next: string,
+  caret: number,
+  end = caret,
+  direction?: HTMLTextAreaElement['selectionDirection'],
+) {
   setNativeValue(textarea, next)
-  textarea.setSelectionRange(caret, caret)
+  textarea.setSelectionRange(caret, end, direction)
   textarea.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
@@ -103,7 +112,9 @@ const NEW_LINE_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph'])
  *  229) that the guard still reports as composing is the WebKit commit. */
 export function useTextareaListContinuation(
   blocksRef: React.RefObject<readonly PasteBlock[]>,
-  ime: Pick<ReturnType<typeof useImeGuard>, 'isComposing'>,
+  // Only the textarea's own keydowns reach it, so any guard that reads those
+  // will do: the main composer's `useImeGuard` and the app embed's draft guard.
+  ime: { isComposing: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean },
   endUndoBurst: () => void,
 ) {
   const detachRef = useRef<(() => void) | null>(null)

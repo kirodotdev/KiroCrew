@@ -48,6 +48,14 @@ AUTO_ADDED_PROP = "auto_added"
 AUTO_REGISTRATION_RETIRED_PROP = "auto_registration_retired"
 
 
+# Why a source row reads 'pending', for the Sources list to show while it does.
+# Written in the same take as the 'pending' status by a background ingest the
+# explicit-import budget deferred; the sync tasks' reasonless 'pending' write
+# removes it, and a bundle import never carries it.
+PENDING_REASON_PROP = "pending_reason"
+PENDING_REASON_IMPORT_BUDGET = "import_budget"
+
+
 def is_auto_registered(props: dict) -> bool:
     """True when *props* belong to a source Kiro Crew registered itself, unadopted.
 
@@ -71,6 +79,23 @@ def is_auto_registered(props: dict) -> bool:
 # registered with empty properties and never carries the marker at all; it is excluded
 # by type here for the same structural reason.)
 _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
+
+# The source type that names a LIVE ACCOUNT BINDING rather than documents: a
+# ``bedrock_kb`` row is queried on the owner's AWS credentials against the
+# owner's consent grant and holds no items. A bundle is portable knowledge
+# and untrusted input, so it never carries such a row in either direction:
+# ``export_all`` leaves them out (nothing local to carry, and the row names
+# the owner's account and profile) and ``import_bundle`` refuses them, because
+# registering one is an owner action that runs validation and the target
+# check on the gated add-source path -- a bundle would register a KB against
+# whatever grant already exists without any of that. One type today, so every
+# consumer compares equality; a second account-bound type widens this to a set.
+_ACCOUNT_BOUND_SOURCE_TYPE = "bedrock_kb"
+
+# The uri the gated add-source path derives for an account-bound row. A bundle
+# row under ANY type that carries it would take the UNIQUE handle the owner's
+# later add dedupes on, so ``import_bundle`` refuses it like the type itself.
+_ACCOUNT_BOUND_URI_PREFIX = "bedrock-kb://"
 
 
 def _without_sync_status(properties):

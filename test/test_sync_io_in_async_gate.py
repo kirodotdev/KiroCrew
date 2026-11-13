@@ -16,6 +16,7 @@ import ast
 import importlib.util
 from pathlib import Path
 
+import gate_script_checks
 import pytest
 import yaml
 
@@ -45,26 +46,34 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
-def _lint_steps() -> list[dict]:
+#: The job this gate runs in. Named rather than discovered by a marker step:
+#: the gate lives in ``backend-ratchets``, a sibling that does NOT feed
+#: ``lint-gate``, and every step in that job is a ratchet -- so there is no
+#: neighbouring step to key on that is not itself one of the things under test.
+#: Addressed by job id, the way ``test_file_line_cap.py``'s ``TestCiWiring``
+#: addresses the same two jobs, so a rename fails here loudly instead of
+#: silently selecting a different job's steps.
+RATCHET_JOB = "backend-ratchets"
+
+
+def _ratchet_steps() -> list[dict]:
     workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
-    for job in workflow["jobs"].values():
-        steps = job.get("steps") or []
-        if any("isort --check-only" in str(step.get("run", "")) for step in steps):
-            return steps
-    raise AssertionError("ci.yml has no job running isort --check-only")
+    jobs = workflow["jobs"]
+    assert RATCHET_JOB in jobs, f"ci.yml has no {RATCHET_JOB} job"
+    return jobs[RATCHET_JOB].get("steps") or []
 
 
 class TestCiWiring:
     def test_ci_actually_runs_the_gate(self) -> None:
-        runs = [str(step.get("run", "")) for step in _lint_steps()]
+        runs = [str(step.get("run", "")) for step in _ratchet_steps()]
         assert any(
             "scripts/check_sync_io_in_async.py" in run for run in runs
-        ), "ci.yml's lint job no longer runs the sync-io-in-async gate"
+        ), f"ci.yml's {RATCHET_JOB} job no longer runs the sync-io-in-async gate"
 
     def test_ci_runs_the_self_test_first(self) -> None:
         # The self-test plants one probe per rule family, so a typo that
         # silently disables a rule fails in CI instead of shipping green.
-        for run in (str(step.get("run", "")) for step in _lint_steps()):
+        for run in (str(step.get("run", "")) for step in _ratchet_steps()):
             if "check_sync_io_in_async.py" not in run:
                 continue
             assert "--test" in run, "the gate step must run the --test self-test"
@@ -110,7 +119,7 @@ class TestCiWiring:
                 ), f"{name} loads {sibling}'s private helpers instead of ratchet_scope"
 
 
-class TestRuleFamilies:
+class TestRuleFamilies(gate_script_checks.SelfTestPasses):
     """The rules, driven through the real detector.
 
     The per-spelling PROBE CORPUS lives in the script (`_FLAGGED` / `_CLEAN`), so
@@ -302,9 +311,6 @@ class TestRuleFamilies:
     def test_unparseable_source_raises_instead_of_reading_clean(self) -> None:
         with pytest.raises(SyntaxError):
             gate._violations_in_source("async def f(:\n")
-
-    def test_self_test_passes(self) -> None:
-        assert gate._self_test() == 0
 
 
 class TestVerdicts:

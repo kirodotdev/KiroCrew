@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import resource_status
 from kiro_crew.agent_capabilities import CapabilityError
@@ -43,7 +43,10 @@ if TYPE_CHECKING:
         app_agent_binding_applies,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
-    from kiro_crew.dashboard.chat_turn.model_fallback import _app_allocation_kwargs
+    from kiro_crew.dashboard.chat_turn.model_fallback import (
+        _app_allocation_kwargs,
+        _slot_backend_allocation_kwargs,
+    )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
 
@@ -61,7 +64,8 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 # queued for later, and the first signal after the window starts normally. With
 # a cap of 3 the reachable windows are 10s after the first failure and 20s after
 # the second (the doubling and its 300s ceiling bound a larger cap). After the cap the slot stops starting in the background and says so once (one ERROR
-# log line and one error row in the chat). From then on background starts stay
+# log line, and one error row in the chat unless the start was policy-blocked,
+# below). From then on background starts stay
 # OFF for that slot until a start succeeds -- the user's own next message still
 # starts it, and that success clears the count -- or the gateway restarts: the
 # count lives only on the in-memory slot, so a restart starts it again at zero.
@@ -71,6 +75,9 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 # binding/selection write, the admission bookkeeping around it, or a capability
 # refusal raised before any process ran (``_is_pre_spawn_refusal``) spawned no
 # agent process, so it is logged and does not move the slot toward the cap.
+# A start Windows policy refused (``AcpSpawnBlocked``, read by its
+# ``windows_spawn_blocked`` tag) goes to the cap at once, with no stop row of its
+# own: every retry meets the same policy, and the next send shows the policy card.
 _EAGER_SPAWN_FAILURE_CAP = 3
 
 
@@ -132,12 +139,20 @@ def _note_eager_spawn_failure(slot: "_ChatSlot", exc: BaseException) -> None:
     # near-frame-limit payload, and this row is retained and broadcast.
     detail = redact_and_truncate(str(exc), _EAGER_SPAWN_ERROR_DETAIL_MAX_CHARS)
     try:
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        _last_error = detail or type(exc).__name__
         slot.append(
             "error",
             f"This chat's agent failed to start {failures} times in a row, so it "
             "will not be started again in the background. Send a message to try "
-            f"again. Last error: {detail or type(exc).__name__}",
+            f"again. Last error: {_last_error}",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_EAGER_SPAWN_STOPPED,
+                failures=failures,
+                detail=_last_error,
+            ),
         )
     except Exception:
         logger.debug("Eager spawn: could not post the stop notice for %s", slot.key, exc_info=True)
@@ -172,6 +187,12 @@ def _is_pre_spawn_refusal(exc: BaseException) -> bool:
     feeds the churn the background-start cap bounds.
     """
     if isinstance(exc, CapabilityError):
+        return True
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+    if isinstance(exc, CrewmateHarnessUnavailable):
+        # Refused before the factory spawned anything, and a retry repeats it
+        # until someone changes the crewmate's harness.
         return True
     return isinstance(exc, CapabilityStartupError) and str(exc) in _PRE_SPAWN_CAPABILITY_CODES
 
@@ -421,6 +442,7 @@ def schedule_eager_spawn(
     *,
     allow_resume: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    on_ended: Callable[[Exception | None], None] | None = None,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -440,9 +462,14 @@ def schedule_eager_spawn(
     agent/project switch handlers reset the session themselves.
 
     ``start_priority`` is FOREGROUND only from a handler serving the dashboard
-    owner's own slot action (create, agent or project switch), where the person is
-    about to type; the focus-driven resume prefetch, reloads and app callers stay
-    BACKGROUND (rule: ``kiro_crew.start_priority``).
+    owner's own slot action (create, agent or project switch, the tab menu's
+    Reload), where the person is about to type; the focus-driven resume prefetch,
+    the other reloads and app callers stay BACKGROUND (rule:
+    ``kiro_crew.start_priority``).
+
+    ``on_ended`` is called once the start has ended without being cancelled,
+    with the exception that failed it or ``None``; a reload reads it to say how
+    its respawn went. It is not called when this returns ``None``.
 
     The flag is read from the live-config watcher's adopted snapshot, a plain
     attribute read, and there is deliberately no disk fallback behind it: this
@@ -460,6 +487,12 @@ def schedule_eager_spawn(
 
         cfg = live.snapshot()
         if cfg is None or not cfg.session.eager_spawn:
+            return None
+        # Shared Crew: with fair admission on, a runtime starts only inside an
+        # admitted turn, so creating sessions cannot start unbounded processes.
+        from kiro_crew.shared_crew.turn_gate import admission_active
+
+        if admission_active():
             return None
     except Exception:
         return None
@@ -484,9 +517,14 @@ def schedule_eager_spawn(
             allow_resume=allow_resume,
             signal_generation=_arm_generation,
             start_priority=start_priority,
+            on_ended=on_ended,
         )
     )
     slot._eager_spawn_task = task
+    # A resume start whose signal waits on its end (a reload's respawn): a focus
+    # frame keeps it. A focus's own prefetch reports to nobody, so another
+    # window's focus still re-arms it (``ws._handle_slot_focused``).
+    slot._eager_spawn_reported_resume = allow_resume and on_ended is not None
     return task
 
 
@@ -540,6 +578,7 @@ async def _eager_spawn(
     allow_resume: bool = False,
     signal_generation: float | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    on_ended: Callable[[Exception | None], None] | None = None,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -559,7 +598,13 @@ async def _eager_spawn(
        registered. For eligible V1 sessions, a first message arriving during
        the handshake blocks on the same semaphore and reuses the created
        session.
+
+    ``on_ended`` (see ``schedule_eager_spawn``) is called on every exit but a
+    cancel: a cancelled start was replaced by a newer slot signal or stopped by
+    the shutdown, and has nothing to report.
     """
+    failure: Exception | None = None
+    cancelled = False
     try:
         # The arm generation as of this slot signal. ``schedule_eager_spawn``
         # reads it synchronously at signal arrival (create_task only queues
@@ -711,7 +756,7 @@ async def _eager_spawn(
                 # Do not pre-register the resolver's Global fallback first;
                 # doing so would leave an unrelated provider behind the error.
                 logger.info(
-                    "Eager spawn: Crew Member %r is unresolved; leaving to first turn",
+                    "Eager spawn: Bot %r is unresolved; leaving to first turn",
                     slot.agent,
                 )
                 return
@@ -767,10 +812,18 @@ async def _eager_spawn(
             # same fresh-session path it always does. The backend is the
             # factory's own selection for this key, and the prefetch allocates
             # with no channel identity.
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
+            from kiro_crew.members import session_backend_pick
+
+            pick = session_backend_pick(session_key)
             if allow_resume and resume_takes_tool_search_replay(
                 tool_search=cfg.agent.tool_search,
                 backend=select_provider_backend(
-                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                    session_key,
+                    cfg.agent.member_acp_backend,
+                    cfg.agent.acp_backend,
+                    backend_override=pick,
+                    crew_backend=crewmate_backend_pin(cfg, session_key) if pick is None else None,
                 ),
                 channel_id=None,
                 session_key=session_key,
@@ -854,19 +907,29 @@ async def _eager_spawn(
                 # cancelled -- gives the reserved allowance back.
                 _release_prefetch_reservation(session_key)
     except asyncio.CancelledError:
+        cancelled = True
         raise
     except SessionClosingError:
         # Same shutdown race as _on_session_closing: the gateway began
         # closing while the speculative spawn was mid-start. Not a failure —
         # the allocation path already reaped the half-started provider.
         logger.info("Eager spawn for %s aborted — gateway is shutting down", slot.key)
-    except Exception:
+    except Exception as exc:
         # Logged, not counted: the agent-start failures that count toward the
         # background-start cap were already noted at the allocation itself
         # (``_spawn_admitted_prefetch``); everything else reaching here -- a
         # pending-reset consume, a selection write, admission bookkeeping --
         # spawned no agent and must not stop background starts.
+        failure = exc
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+    finally:
+        if on_ended is not None and not cancelled:
+            try:
+                on_ended(failure)
+            except Exception:
+                logger.warning(
+                    "Eager spawn: the end callback for slot %s failed", slot.key, exc_info=True
+                )
 
 
 async def _spawn_admitted_prefetch(
@@ -932,11 +995,14 @@ async def _spawn_admitted_prefetch(
                 crew_agent=crew_alias,
                 model=_requested_model or None,
                 cwd=slot.project or None,
+                # Same opt-in as the turn's claim: the chat shows the notice.
+                fallback_hidden_cwd=True,
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
                 **_app_allocation_kwargs(slot),
+                **_slot_backend_allocation_kwargs(slot),
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -948,7 +1014,14 @@ async def _spawn_admitted_prefetch(
             # ``_eager_spawn``'s catch-all, so a reset or binding error raised
             # around this call never moves the slot toward the cap. A
             # capability refusal raised before any process ran is not one.
-            if not _is_pre_spawn_refusal(exc):
+            if getattr(exc, "windows_spawn_blocked", False) is True:
+                slot._eager_spawn_failures = _EAGER_SPAWN_FAILURE_CAP
+                logger.error(
+                    "Eager spawn: Windows policy blocked the agent for slot %s; "
+                    "background starts stay off until a start succeeds or the gateway restarts",
+                    slot.key,
+                )
+            elif not _is_pre_spawn_refusal(exc):
                 _note_eager_spawn_failure(slot, exc)
             raise
     except SpeculativeResumeRefused:
@@ -957,7 +1030,10 @@ async def _spawn_admitted_prefetch(
         # or a failed speculative LOAD (allow_resume path: F2 fell
         # back / mapping vanished / provider switch), rejected before
         # registration so no claimable fallback session exists. Both
-        # end the same way: the first real message handles it.
+        # end the same way: the first real message handles it. The same
+        # refusal stands down a resume start a person's message took over
+        # before it reached its spawn door (``get_or_create``): that
+        # message starts the agent itself.
         logger.info("Eager spawn: %s left to first turn (refused)", session_key)
         return
     sessions.release(session_key)

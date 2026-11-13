@@ -7,15 +7,18 @@
  * Notification that can never show. These tests drive the two real sites
  * through their hooks with the pane flag on.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { render, renderHook, act, screen } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { store as globalStore } from '../store'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import EmbeddedHostBridge from '../components/EmbeddedHostBridge'
+import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import { CHAT_COMPLETE_NOTIFY_KEY } from '../hooks/chatCompleteNotify'
 import { readNotificationPermission } from '../hooks/useNotificationPermission'
 import { addNotification } from '../store/notificationsSlice'
@@ -123,7 +126,7 @@ describe('embedded instance pane relays native notifications to the parent', () 
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-pane-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
+        data: { id: 'ap-pane-1', instance: 'inst-ap-pane-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
       })
     })
 
@@ -153,6 +156,50 @@ describe('embedded instance pane relays native notifications to the parent', () 
     expect(notes[0]).toEqual({
       type: 'mc-native-notify', v: 1, title: 'Deploy notes', body: 'Response ready', tag: 'kirocrew-chat-done:slot-bg', silent: false,
     })
+  })
+
+  it('chat finished while away, opted in only at the hub: relays it (#20191)', () => {
+    // The pane's own storage is empty; the hub's opt-in arrives in its model.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+    act(() => {
+      globalStore.dispatch(sseSlots([{ key: 'slot-hub', title: 'Hub opt-in', messages: 1, running: false }]))
+    })
+    const bridge = render(createElement(Provider, { store: globalStore }, createElement(EmbeddedHostBridge)))
+    onTestFinished(() => bridge.unmount())
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent, origin: 'http://127.0.0.1:8787',
+        data: { type: 'mc-host-model', v: 1, tabs: [], chatCompleteNotify: true },
+      }))
+    })
+    const { ws } = mountWs(globalStore)
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-hub' } })
+    })
+
+    expect(relayed().map(n => (n as { title?: string }).title)).toEqual(['Hub opt-in'])
+  })
+
+  it('the pane\'s Settings switch follows a relayed hub opt-in while mounted (#20191)', () => {
+    const view = render(createElement(Provider, { store: globalStore },
+      createElement(EmbeddedHostBridge),
+      createElement(MemoryRouter, { initialEntries: ['/settings?tab=notifications&sub=alerts'] },
+        createElement(QueryClientProvider, { client: queryClient }, createElement(NotificationsPanel)))))
+    onTestFinished(() => view.unmount())
+    const relayHubOptIn = (on: boolean) => act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent, origin: 'http://127.0.0.1:8787',
+        data: { type: 'mc-host-model', v: 1, tabs: [], chatCompleteNotify: on },
+      }))
+    })
+    const checked = () => screen.getByRole('switch', { name: /background chat finishes/i }).getAttribute('aria-checked')
+
+    expect(checked()).toBe('false')
+    relayHubOptIn(true)
+    expect(checked()).toBe('true')
+    relayHubOptIn(false)
+    expect(checked()).toBe('false')
   })
 
   it('chat finished with the opt-in off: keeps the site guard -- nothing relayed', () => {

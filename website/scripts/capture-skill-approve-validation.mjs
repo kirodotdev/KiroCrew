@@ -178,7 +178,7 @@ try {
   // candidate, so the message itself states the dismissal (no separate
   // resolution line under a hedge — the frame must show one statement).
   await page
-    .getByText('Candidate “auto/rotate-staging-fixtures” is no longer pending — it was dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.', { exact: true })
+    .getByText('Candidate “auto/rotate-staging-fixtures” is no longer pending — it was removed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.', { exact: true })
     .first()
     .waitFor()
   await shot(page, '05-notfound-empty-queue')

@@ -148,6 +148,10 @@ class TestTheDecompressionGuardStillHolds:
         printed = capsys.readouterr().out
         assert rc == 1, printed
         assert "declares more than" in printed and "Nothing was restored" in printed, printed
+        # A full snapshot of a large home trips this too, so the refusal must not speak
+        # as if only memory bundles reached it.
+        assert "memory bundle" not in printed, printed
+        assert "over the bound `kirocrew restore` holds it to" in printed, printed
         assert list(fresh.iterdir()) == []
 
     def test_a_raised_bound_is_still_held_to_the_free_space(self, tmp_path, monkeypatch, capsys):

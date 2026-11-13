@@ -88,7 +88,7 @@ def describe_frame(frame: Optional[FrameType]) -> str:
     for _ in range(_MAX_DEPTH):
         if current is None:
             break
-        if current is not frame and _is_own(current):
+        if _is_own(current):
             return f"{top} via {_name_of(current)}"
         callback = _handle_callback(current)
         if callback is not None:

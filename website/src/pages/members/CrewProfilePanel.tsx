@@ -198,10 +198,13 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   const openerRef = useRef<HTMLElement | null>(null)
   const name = crewDisplayName(p.member)
   // The workspace NAME the crew record carries (a key into the configured
-  // workspaces), shown as-is. It is not a directory: the host resolves the
-  // name to the DM slot's project when it roots Files / Terminal, so there is
-  // no path here to take a folder name from.
+  // workspaces). It is not a directory: the host resolves the name to the DM
+  // slot's project when it roots Files / Terminal, so there is no path here to
+  // take a folder name from. The one made for this Bot (`member-<slug>`) keeps
+  // the name it was made under through a rename, so the tile reads the Bot's
+  // current name for it; any other workspace is shown as-is.
   const ws = p.member.workspace ?? ''
+  const wsLabel = ws === `member-${p.member.slug}` ? name : ws
 
   const captureOpener = () => {
     const active = document.activeElement
@@ -476,9 +479,15 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               ariaLabel={t('pages.membersPage.profile_card')}
               layoutId="crew-profile-tab-indicator"
               labels="active"
-              // The Profile tab is a find_ui location: a guide to the Settings
-              // row (which lives on it) selects this tab first.
-              segments={[{ key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') }]}
+              // find_ui locations: Schedules and Goals are where a mate shows
+              // the user what wakes it and what it is after; the Profile tab
+              // is also the step a guide to the Settings row (which lives on
+              // it) selects first.
+              segments={[
+                { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
+                { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
+                { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
+              ]}
             />
           </div>
 
@@ -525,7 +534,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />
-                  <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={ws || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
+                  <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={wsLabel || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
                 </div>
 
                 {/* The doors: Notes, and the Settings row the settings body
@@ -576,7 +585,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               {pushed === 'about' ? (
                 <div className="px-4 py-4">
                   <div className="rounded-2xl border border-border bg-bg px-4 py-4 text-[14px] leading-relaxed text-text whitespace-pre-wrap" data-testid="crew-profile-about-full">{p.description}</div>
-                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-white text-[13px] font-semibold cursor-pointer">
+                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer">
                     <Pencil size={14} aria-hidden="true" />
                     {t('pages.membersPage.edit_member')}
                   </button>

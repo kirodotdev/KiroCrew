@@ -44,6 +44,7 @@ from kiro_crew.crew_log.store import (
     session_units_for_slot,
     unit_header_created_at,
     unit_opened_previous,
+    unit_opening,
 )
 
 # The ledger fold reads a record whose semantics -- which phases end a workstream,
@@ -147,13 +148,30 @@ def read_slot_state(
     if name == WORKERS_FOLD_NAME:
         raise ValueError("the workers fold has no single state; read its projection")
     units = list(_slot_units_for_fold(slot, name))
+    own = len(units)
     known = set(units)
     for extra in also_slots:
         for unit_id in _supplemental_units(extra, name):
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    return fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
+    if len(units) == own:
+        return fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
+    # A LONGER list than every other reader of this cell builds. Folded in a throwaway
+    # cell -- no warm memo, no savepoint -- because the shared cell is keyed by slot and
+    # fold, not by list: a pass over these units would leave the cell holding a list the
+    # next ordinary read cannot continue, and would persist its savepoint beside the
+    # list's newest unit, which is another slot's unit, over that slot's own file. The
+    # value is the same either way: a warm cell answers what a cold fold answers.
+    # shortcut: a full fold of every listed unit; it is the operator's rebuild, the only
+    # caller, which walks every slot anyway. Upgrade with the child-process backfill.
+    if not cold:
+        from kiro_crew.crew_log.projection_slot_memo import SlotFoldNotReady
+
+        raise SlotFoldNotReady(slot, name)
+    # Revision 0, below every cell's: a consumer that keeps the highest revision per
+    # (key, fold) must never prefer this one-off value over the shared cell's.
+    return fold_slot_checkpoint(require_name(name), units, slot=slot), 0
 
 
 #: Per ``(data home, crewmate slot)``, the part revisions the last ``workers`` read
@@ -287,12 +305,14 @@ def newest_unit_in_succession(slot: str) -> str:
         held = _NEWEST_UNITS.get(slot)
     if held is not None and held[0] == identity:
         return held[1]
-    units = units_in_succession(slot)
+    units, settled = _succession(slot)
     unit = units[-1] if units else ""
-    # Cached only when at most one unit lacks a readable predecessor (the chain start).
-    # A unit whose opening entry has not landed yet reads as a second start and would
-    # be ordered by the clock; caching that guess would outlive the opener's arrival.
-    settled = sum(1 for u in units if unit_opened_previous(KIND_SESSION, u) is None) <= 1
+    # Cached only when the order was built from reads that all succeeded: every header's
+    # ``createdAt`` and every opening entry, landed. A unit whose opening entry has not
+    # been written yet, or whose read failed just now, is ordered on a default; caching
+    # that guess would outlive the read that would correct it. A landed opening entry is
+    # final, so a slot of many genuine chain starts (a conductor restarted many times)
+    # is cached too, instead of re-read on every relay into it from the writer thread.
     if unit and settled:
         with _newest_units_guard:
             _NEWEST_UNITS.pop(slot, None)
@@ -337,14 +357,26 @@ def units_in_succession(slot: str) -> "tuple[str, ...]":
     preserves every predecessor edge as a contiguous run and confines the wall clock to
     the one question the chain leaves open.
     """
+    return _succession(slot)[0]
+
+
+def _succession(slot: str) -> "tuple[tuple[str, ...], bool]":
+    """:func:`units_in_succession`, and whether every read the order rests on succeeded."""
     units = session_units_for_slot(slot)
     if len(units) < 2:
         # One unit (or none) has nothing to reorder, and the chain read is pure cost.
-        return units
+        return units, True
     records = []
+    settled = True
     for unit_id in units:
         created = unit_header_created_at(KIND_SESSION, unit_id)
         previous = unit_opened_previous(KIND_SESSION, unit_id)
+        settled = settled and isinstance(created, int)
+        if settled and previous is None:
+            # None is both "starts a chain" and "could not be read". Only a landed opening
+            # entry that names no predecessor makes it the first.
+            landed, named = unit_opening(KIND_SESSION, unit_id)
+            settled = landed and named is None
         records.append(
             OpenedRecord(
                 sid=unit_id,
@@ -396,7 +428,7 @@ def units_in_succession(slot: str) -> "tuple[str, ...]":
         depth = rank.get(unit_id, (0, 0, unit_id))[0]
         return (root_created, listed.get(root, len(units)), depth, listed.get(unit_id, len(units)))
 
-    return tuple(sorted(units, key=_order_key))
+    return tuple(sorted(units, key=_order_key)), settled
 
 
 def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":

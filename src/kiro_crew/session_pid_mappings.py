@@ -379,33 +379,43 @@ def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) 
     reach the case that actually accumulates files — a gateway that dies without
     running one — so an age-based pass is what bounds the directory.
 
-    It runs where its caller runs: :func:`cleanup_orphaned_sessions` is startup and
-    graceful-shutdown only, NOT periodic. A long-lived gateway therefore holds one
-    mapping per session started since its last boot or clean stop. Stated because
-    the TTL below reads like a continuous expiry and is not one.
+    It runs from :func:`cleanup_orphaned_sessions` at startup and graceful shutdown,
+    and from the session cleanup loop's periodic tick
+    (``SessionCleanup._sweep_session_token_mappings``), so a long-lived gateway
+    reclaims a mapping within one tick of it passing the TTL.
 
     A mapping outliving its session is not a forgery risk: it names a session that
     does not exist, and any holder of its token is inside the trust boundary. So
     this is hygiene rather than a control, and it fails soft on every file it
     cannot read or unlink.
 
+    Each file's age is read and the file unlinked under
+    ``session_token_sig.MAPPING_WRITE_LOCK``, the lock every publication in this
+    process holds around its write. So a session that republishes its mapping
+    while this pass runs is either seen as fresh or writes after the unlink; the
+    pass never removes or hides a mapping published after its age check. The
+    lock is per process: a publication by a different process on the same data
+    home is not ordered against this pass.
+
     Returns the number of mappings removed.
     """
+    from kiro_crew.session_token_sig import MAPPING_WRITE_LOCK
+
     removed = 0
-    now = time.time()
     try:
         candidates = list(config_dir().glob("session_token_*.sig"))
     except OSError:
         return 0
     for path in candidates:
-        try:
-            if now - path.stat().st_mtime <= ttl_secs:
+        with MAPPING_WRITE_LOCK:
+            try:
+                if time.time() - path.stat().st_mtime <= ttl_secs:
+                    continue
+                path.unlink(missing_ok=True)
+            except OSError:
+                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - path.name is the sha256 DIGEST of a token, never a token  # noqa: E501
+                logger.debug("could not prune identity mapping %s", path.name, exc_info=True)
                 continue
-            path.unlink(missing_ok=True)
-        except OSError:
-            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - path.name is the sha256 DIGEST of a token, never a token  # noqa: E501
-            logger.debug("could not prune identity mapping %s", path.name, exc_info=True)
-            continue
         removed += 1
     if removed:
         logger.info("Cleaned up %d stale session-token mappings", removed)

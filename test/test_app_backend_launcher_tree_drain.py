@@ -185,9 +185,7 @@ def _pinned_recorder(
     return calls
 
 
-# ---------------------------------------------------------------------------
 # Startup-survival failure: the launcher exited, its tree must still be drained
-# ---------------------------------------------------------------------------
 
 
 class TestFailedLauncherOnWindows:
@@ -390,9 +388,7 @@ class TestFailedLauncherOnPosix:
         assert any("/proc scan failed" in r.getMessage() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Live stops: disable / uninstall / gateway shutdown / retired spawn
-# ---------------------------------------------------------------------------
 
 
 def _track(

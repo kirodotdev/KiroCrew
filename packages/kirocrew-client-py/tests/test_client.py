@@ -1,12 +1,12 @@
 """Tests for kirocrew_client — mirrors TS @kirocrew/client test coverage."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-
 from kirocrew_client import KiroCrewClient, KiroCrewError
-from kirocrew_client.errors import ErrorCode, http_status_to_code, http_error
+from kirocrew_client.errors import ErrorCode, http_error, http_status_to_code
 
 
 class TestErrors:
@@ -121,7 +121,7 @@ class TestContextBuffer:
         await mc.inject_context(None, "a")
         await mc.inject_context(None, "b")
         assert mc.pending_context_count == 2
-        with pytest.raises(Exception):
+        with pytest.raises(KiroCrewError):
             await mc.flush_pending_context("slot-1")
         # Failed entries preserved for retry
         assert mc.pending_context_count == 2
@@ -139,3 +139,23 @@ class TestAppDataDir:
         # Path so the assertion holds on Windows separators too.
         assert str(Path.home() / ".kiro" / "crew") in str(d)
         assert "apps" in str(d)
+
+
+class TestAppSecretSource:
+    def test_a_gateway_started_backend_reads_its_secret_from_the_spawn_env(
+        self, tmp_path, monkeypatch
+    ):
+        from kirocrew_client import client as client_mod
+
+        app = "my-app"
+        (tmp_path / "apps" / app).mkdir(parents=True)
+        (tmp_path / "apps" / app / ".app_secret").write_text("on-disk", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROXY_SECRET", "from-gateway")
+        monkeypatch.setenv("KIROCREW_APP_NAME", app)
+        assert client_mod._read_app_secret(app) == "from-gateway"
+        # Another app's env never answers for this one.
+        assert client_mod._read_app_secret("other-app") == ""
+        # Only a Gateway older than the env channel leaves the file to read.
+        monkeypatch.delenv("KIROCREW_PROXY_SECRET")
+        assert client_mod._read_app_secret(app) == "on-disk"

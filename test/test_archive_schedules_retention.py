@@ -69,6 +69,101 @@ async def test_archiving_hands_the_session_key_to_retention(tmp_path, scheduled,
     assert key in scheduled[0]
 
 
+async def test_a_history_resume_hands_the_session_key_to_retention(
+    tmp_path, scheduled, monkeypatch
+):
+    # Reopening keeps the workspace even when no message ever starts it.
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+
+    reopened: list[tuple[str, ...]] = []
+
+    async def keep(keys):
+        reopened.append(tuple(keys))
+        return None
+
+    monkeypatch.setattr(retention, "keep_reopened", keep)
+    state, slot, key = _state(tmp_path)
+    await _archive_closed(state, slot)
+    assert reopened == []
+    outcome = await resume_slot_from_history(state, name=slot.key, history_key=key)
+    assert outcome.refusal is None and outcome.slot is not None
+    assert len(reopened) == 1 and key in reopened[0]
+
+
+async def _archive_closed(state, slot):
+    # A transcript first, so the production close leaves a real ``closed``
+    # marker and the resume takes its refusal window, as an archived chat does.
+    from chat_test_helpers import close_before_resume
+
+    slot.messages.extend(
+        [{"role": "user", "content": "m0"}, {"role": "assistant", "content": "m1"}]
+    )
+    slot._dirty = True
+    await _archive(state, slot, "tab_close")
+    await asyncio.to_thread(close_before_resume, state.conversation_log, slot_history_key(slot))
+
+
+async def test_a_resume_whose_deletion_cannot_be_cancelled_is_refused_and_rearchived(
+    tmp_path, scheduled, monkeypatch
+):
+    # A tab edited only through Files never restarts, so nothing would retry a
+    # failed cancellation: the resume refuses, retryably, and the still-closed
+    # session goes back on retention.
+    from kiro_crew.dashboard.chat_handlers import resume_slot_from_history
+
+    async def keep(keys):
+        return "its boxd machine's deletion could not be cancelled; try again"
+
+    monkeypatch.setattr(retention, "keep_reopened", keep)
+    state, slot, key = _state(tmp_path)
+    await _archive_closed(state, slot)
+    scheduled.clear()
+    outcome = await resume_slot_from_history(state, name=slot.key, history_key=key)
+    assert outcome.slot is None and outcome.refusal is not None
+    assert outcome.refusal.code == "reopen_retention_failed"
+    assert outcome.refusal.status == 503
+    assert len(scheduled) == 1 and key in scheduled[0]
+
+
+async def test_a_refused_revive_of_an_open_session_does_not_archive_it(
+    tmp_path, scheduled, monkeypatch
+):
+    # A revive of a session that was never closed (only unloaded) takes the
+    # refusal window through its hook. Refused after the cancellation ran, it
+    # must not put an open session's workspace on retention.
+    from kiro_crew.dashboard.chat_handlers import ResumeRefusal, resume_slot_from_history
+
+    reopened: list[tuple[str, ...]] = []
+
+    async def keep(keys):
+        reopened.append(tuple(keys))
+        return None
+
+    monkeypatch.setattr(retention, "keep_reopened", keep)
+    state, slot, key = _state(tmp_path)
+    await _archive_closed(state, slot)
+    await asyncio.to_thread(state.conversation_log.clear_closed, key)
+    assert not state.conversation_log.get_metadata(key).get("closed")
+    scheduled.clear()
+    passes: list[str] = []
+
+    async def second_pass_refuses(_built):
+        passes.append(_built.key)
+        if len(passes) < 2:
+            return None
+        return ResumeRefusal("no", "hook_said_no", 403)
+
+    outcome = await resume_slot_from_history(
+        state, name=slot.key, history_key=key, containment=second_pass_refuses
+    )
+    assert outcome.slot is None and outcome.refusal is not None
+    assert outcome.refusal.code == "hook_said_no"
+    # The cancellation really ran before the refusal, so the assertion below is
+    # about the discard, not a resume that stopped early.
+    assert len(reopened) == 1 and key in reopened[0]
+    assert scheduled == []
+
+
 async def test_a_close_whose_key_a_replacement_took_schedules_nothing(
     tmp_path, scheduled, monkeypatch
 ):
@@ -96,10 +191,20 @@ async def test_a_tab_close_stops_and_stamps_the_sessions_workspace(tmp_path, mon
 
     monkeypatch.setattr(retention, "_environments", environments)
     monkeypatch.setattr(retention, "_TASKS", set())
+    # Read the task when it is scheduled: it can finish, and leave _TASKS,
+    # before the close returns.
+    started: set[asyncio.Task[None]] = set()
+    schedule = retention.schedule_archived
+
+    def schedule_and_record(keys, notify=None):
+        schedule(keys, notify)
+        started.update(retention._TASKS)
+
+    monkeypatch.setattr(retention, "schedule_archived", schedule_and_record)
     await close_slot(state, slot, slot.key)
     # The close does not wait for Coder; wait for the task it started, bounded.
-    assert retention._TASKS, "the close scheduled no retention task"
-    await await_until(asyncio.gather(*retention._TASKS), what="archive retention tasks")
+    assert started, "the close scheduled no retention task"
+    await await_until(asyncio.gather(*started), what="archive retention tasks")
     assert f"stop {row.workspace_name}" in fake.calls
     stamped = envs.registry.get_by_session(key)
     due = datetime.fromisoformat(stamped.deletion_due_at.replace("Z", "+00:00"))

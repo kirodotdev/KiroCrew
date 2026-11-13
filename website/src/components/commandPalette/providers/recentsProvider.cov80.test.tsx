@@ -30,11 +30,14 @@ vi.mock('../../../api/client', () => ({ api: apiMock }))
 /** The real thunk's `fulfilled` creator, so the mocked create opens its session
  *  through the real reducer and records `lastCreatedActivation`. */
 const realCreateSlot = vi.hoisted(() => ({ fulfilled: null as null | ((...a: unknown[]) => unknown) }))
+const createOutcome = vi.hoisted(() => ({ fail: false }))
 const thunks = vi.hoisted(() => ({
   createSlot: vi.fn(() => (dispatch: (a: unknown) => unknown, getState: () => { chat: { activeSlot: string | null } }) => {
     const meta = { originActiveSlot: getState().chat.activeSlot, originActiveSlotMoves: 0, originActiveSlotAutoMoves: 0, activate: true }
-    const p = Promise.resolve({ key: 'zzq-new', title: '', messages: 0, running: false })
-      .then((s) => { dispatch(realCreateSlot.fulfilled!(s, 'zzq-create', undefined, meta)); return s })
+    const p = createOutcome.fail
+      ? Promise.reject(new Error('zzq create failed'))
+      : Promise.resolve({ key: 'zzq-new', title: '', messages: 0, running: false })
+        .then((s) => { dispatch(realCreateSlot.fulfilled!(s, 'zzq-create', undefined, meta)); return s })
     return { requestId: 'zzq-create', unwrap: () => p }
   }),
   // Thunks, like the real ones: the rows unwrap the dispatch to focus the
@@ -86,6 +89,7 @@ const group = (rows: Result[], label: string) => rows.filter((r) => r.groupLabel
 beforeEach(() => {
   navigateSpy.mockClear()
   Object.values(thunks).forEach((t) => t.mockClear())
+  createOutcome.fail = false
   apiMock.sessions.mockReset().mockResolvedValue({ sessions: [] })
   apiMock.crons.mockReset().mockResolvedValue([])
   apiMock.chatFolders.mockReset().mockResolvedValue([])
@@ -294,6 +298,15 @@ describe('useRecentsProvider — Current group', () => {
     } finally {
       window.history.replaceState(null, '', '/')
     }
+  })
+
+  it('reports a failed create on the shell notice and stays put', async () => {
+    createOutcome.fail = true
+    const { result, store } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
+    const rows = await result.current.search('')
+    rows[0].onActivate?.()
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice).toEqual({ title: "Couldn't create a new chat.", message: 'zzq create failed', error: true }))
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 
   it('lets an existing empty untitled slot BE the create row (no synthetic row)', async () => {

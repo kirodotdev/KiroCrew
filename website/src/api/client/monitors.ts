@@ -69,6 +69,14 @@ export function createMonitorsEndpoints({ post, patch, j, jfetch: fetch }: Clien
       post('/api/monitors/' + encodeURIComponent(id) + '/clear').then(j) as Promise<MonitorResponse>,
     monitorRestart: (id: string): Promise<MonitorResponse> =>
       post('/api/monitors/' + encodeURIComponent(id) + '/restart').then(j) as Promise<MonitorResponse>,
+    /** The monitor data contract the gateway builds at runtime -- the same shape
+     *  as the bundled `contract.json`, but with the kinds an edition contributed
+     *  at boot included in `pullRequestMonitorKinds`. The dashboard
+     *  prefers it over the bundled snapshot so a contributed kind is not shown as
+     *  blocked; an older gateway has no such route and 404s, and the
+     *  caller then keeps the bundled contract. */
+    monitorContract: (): Promise<{ pullRequestMonitorKinds?: string[] } & Record<string, unknown>> =>
+      fetch('/api/monitor-contract').then(j),
   }
 
   return { loops }

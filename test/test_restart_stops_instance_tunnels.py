@@ -1,20 +1,19 @@
 """The in-app restart paths run the pre-exec seam before they exec.
 
 ``SshTunnelManager.shutdown()`` runs from the aiohttp cleanup hook, which the
-two exec-based restarts (the dashboard's ``_restart_gateway`` and the update
-coordinator's ``_restart_after_update_claimed``) never reach. The exec keeps
+exec-based restart (the dashboard's ``_restart_gateway``) never reaches. The exec keeps
 the pid, so a forwarder left running still names the gateway as its parent:
 the new image refuses to reclaim it, allocates around its port, and the old
 ``ssh -N -L`` stays alive unused for the life of the process.
 
 Owners that supervise a child register its stop with ``kiro_crew.pre_exec_stops``
-and both restarts call ``run_pre_exec_stops()``. These tests pin the seam itself
-(registration, concurrency under one bound, a hung or raising stop), that both
-paths call it after the sessions close and before the exec, that the instances
+and the restart calls ``run_pre_exec_stops()``. These tests pin the seam itself
+(registration, concurrency under one bound, a hung or raising stop), that the
+path calls it after the sessions close and before the exec, that the instances
 startup hook registers the manager's teardown and its cleanup hook drops it,
 that the sleep inhibitor registers its release the same way (the stop cancels
 the poll and releases the block, and a restart reaches the exec released),
-that the skill-usage ledger's debounced hits reach disk before either exec,
+that the skill-usage ledger's debounced hits reach disk before the exec,
 that a real child is reaped through the seam on each path and left running when
 the path skips it, that an SSM forwarder's tree kill never blocks the loop, and
 that a fresh manager over the same registry (the new image) reconnects on the
@@ -38,8 +37,6 @@ import pytest
 from kiro_crew import platform_compat, pre_exec_stops
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.pre_exec_stops import register_pre_exec_stop, run_pre_exec_stops
-from kiro_crew.slack import gateway as slack_gateway
-from kiro_crew.slack.gateway import GatewayOrchestrator
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
@@ -94,31 +91,6 @@ def _dashboard_exec_seams(monkeypatch, seen: list[str]) -> None:
     monkeypatch.setattr(updates, "resolve_restart_launcher", lambda: None)
     monkeypatch.setattr(updates, "reexec_launcher", Mock())
     monkeypatch.setattr(updates, "reexec_python_module", lambda *_a, **_k: seen.append("exec"))
-
-
-def _orchestrator(seen: list[str]) -> SimpleNamespace:
-    return SimpleNamespace(
-        _pending_update_respawn=None,
-        _update_apply_deferred=False,
-        _UPDATE_DRAIN_TIMEOUT_SECS=GatewayOrchestrator._UPDATE_DRAIN_TIMEOUT_SECS,
-        dashboard_state=SimpleNamespace(push_update_progress=Mock()),
-        sessions=SimpleNamespace(
-            close_all=_recorder(seen, "close_all"), fence_update_restart=Mock(return_value=True)
-        ),
-        _drain_update_callback_work=AsyncMock(return_value=True),
-        _stop_mcp_broker=_recorder(seen, "broker"),
-    )
-
-
-def _update_exec_seams(monkeypatch, seen: list[str]) -> None:
-    monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: None)
-    monkeypatch.setattr(slack_gateway, "flush_breadcrumb_writes", Mock())
-    monkeypatch.setattr(slack_gateway.platform_compat, "reexec_launcher", Mock())
-    monkeypatch.setattr(
-        slack_gateway.platform_compat,
-        "reexec_python_module",
-        lambda *_a, **_k: seen.append("exec"),
-    )
 
 
 # ── the seam itself ───────────────────────────────────────────────────────
@@ -266,55 +238,6 @@ class TestTheDashboardRestart:
         assert seen == ["close_all", "broker", "exec"]
 
 
-class TestTheUpdateRestart:
-    @pytest.mark.asyncio
-    async def test_runs_the_seam_after_the_sessions_and_before_the_exec(
-        self, monkeypatch, tmp_path
-    ):
-        seen: list[str] = []
-        _update_exec_seams(monkeypatch, seen)
-        register_pre_exec_stop("Child", _recorder(seen, "child"))
-
-        await GatewayOrchestrator._restart_after_update(
-            _orchestrator(seen), lambda: _executable(tmp_path)
-        )
-
-        assert seen == ["close_all", "broker", "child", "exec"]
-
-    @pytest.mark.asyncio
-    async def test_a_deferred_restart_leaves_the_children_up(self, monkeypatch, tmp_path):
-        """A pre-fence drain that does not finish defers with every session open."""
-        seen: list[str] = []
-        _update_exec_seams(monkeypatch, seen)
-        register_pre_exec_stop("Child", _recorder(seen, "child"))
-        orch = _orchestrator(seen)
-        orch._UPDATE_DRAIN_TIMEOUT_SECS = 0.01
-        orch._drain_update_callback_work = AsyncMock(return_value=False)
-
-        await GatewayOrchestrator._restart_after_update(orch, lambda: _executable(tmp_path))
-
-        assert orch._update_apply_deferred is True
-        assert seen == []
-
-    @pytest.mark.asyncio
-    async def test_a_stop_that_hangs_is_abandoned_and_the_exec_still_runs(
-        self, monkeypatch, tmp_path
-    ):
-        """Bounded: the hung stop is cancelled at the ceiling, never awaited out."""
-        seen: list[str] = []
-        _update_exec_seams(monkeypatch, seen)
-        monkeypatch.setattr(pre_exec_stops, "PRE_EXEC_STOP_TIMEOUT_SECS", 0.05)
-        cancelled = asyncio.Event()
-        register_pre_exec_stop("Child", _hang(cancelled))
-
-        await GatewayOrchestrator._restart_after_update(
-            _orchestrator(seen), lambda: _executable(tmp_path)
-        )
-
-        assert cancelled.is_set()
-        assert seen == ["close_all", "broker", "exec"]
-
-
 # ── the skill-usage ledger flushes before the exec ───────────────────────
 
 
@@ -351,20 +274,6 @@ class TestTheSkillUsageLedgerJoinsTheSeam:
         )
 
         assert restarted is True
-        assert seen[-1] == "exec"
-        assert skill_usage.SkillUsageLedger(path).score("alpha")[0] == 1.0
-        assert not ledger.dirty
-
-    @pytest.mark.asyncio
-    async def test_the_update_restart_persists_the_window(self, monkeypatch, tmp_path):
-        seen: list[str] = []
-        _update_exec_seams(monkeypatch, seen)
-        skill_usage, path, ledger = self._debounced_ledger(monkeypatch, tmp_path)
-
-        await GatewayOrchestrator._restart_after_update(
-            _orchestrator(seen), lambda: _executable(tmp_path)
-        )
-
         assert seen[-1] == "exec"
         assert skill_usage.SkillUsageLedger(path).score("alpha")[0] == 1.0
         assert not ledger.dirty
@@ -419,39 +328,6 @@ class TestTheRestartClaimSpansTheWholeSequence:
         await updates._restart_gateway(state, resolver=lambda: _executable(tmp_path))
 
         assert readings == [("seam", True), ("exec", True)]
-        assert state._gateway_restart_in_progress is False
-
-    @pytest.mark.asyncio
-    async def test_the_update_restart_holds_it_through_every_drain_the_seam_and_the_exec(
-        self, monkeypatch, tmp_path
-    ):
-        seen: list[str] = []
-        orch = _orchestrator(seen)
-        state = orch.dashboard_state
-        readings: list[tuple[str, bool]] = []
-
-        def _note(label: str) -> None:
-            readings.append((label, getattr(state, "_gateway_restart_in_progress", False)))
-
-        async def _drain(*_a, **_k):
-            _note("drain")
-            return True
-
-        orch._drain_update_callback_work = AsyncMock(side_effect=_drain)
-        _update_exec_seams(monkeypatch, seen)
-        monkeypatch.setattr(
-            slack_gateway.platform_compat, "reexec_python_module", lambda *_a, **_k: _note("exec")
-        )
-
-        async def _stop():
-            _note("seam")
-
-        register_pre_exec_stop("Child", _stop)
-
-        await GatewayOrchestrator._restart_after_update(orch, lambda: _executable(tmp_path))
-
-        assert [label for label, _ in readings] == ["drain", "seam", "drain", "exec"]
-        assert all(held for _, held in readings), readings
         assert state._gateway_restart_in_progress is False
 
 
@@ -564,88 +440,6 @@ class TestTheSleepInhibitorJoinsTheSeam:
             )
 
         assert seen[-1] == "exec:False", "the block was held, or engaged again, at the exec"
-
-
-# ── the browser view is the seam's third owner ────────────────────────────
-
-
-class TestTheBrowserViewJoinsTheSeam:
-    """`playwright-cli show` is spawned detached (``start_new_session``), so an
-    in-place restart's exec would leave it running parented to the new image,
-    which then starts a second tree on the next view request. The on_cleanup
-    hook that reaps it is skipped by the exec, so the startup hook registers the
-    same reap with the seam and the cleanup hook drops it."""
-
-    @pytest.mark.asyncio
-    async def test_startup_registers_the_view_stop_and_cleanup_drops_it(self, monkeypatch):
-        from aiohttp import web
-
-        from kiro_crew.dashboard import server
-
-        monkeypatch.setattr(server.browser_cli_view, "stop", Mock())
-        monkeypatch.setattr(server.browser_cli_launcher, "reclaim_stranded", Mock())
-        monkeypatch.setattr(server.browser_cli_launcher, "close_all", Mock())
-        monkeypatch.setattr(server.handlers, "close_relay_client", AsyncMock())
-        state = SimpleNamespace(_background_tasks=set())
-        app = web.Application()
-        server._register_browser_view_cleanup(app, state)
-        app.freeze()
-
-        await app.on_startup.send(app)
-        for task in list(state._background_tasks):
-            await task
-        assert list(pre_exec_stops._stops) == ["Browser view"]
-
-        await app.on_cleanup.send(app)
-        assert pre_exec_stops._stops == {}
-
-    @pytest.mark.asyncio
-    async def test_the_seam_reaps_the_view_child(self, monkeypatch):
-        """The registered stop calls view.stop(), the only reaper of the child."""
-        from aiohttp import web
-
-        from kiro_crew.dashboard import server
-
-        view_stop = Mock()
-        monkeypatch.setattr(server.browser_cli_view, "stop", view_stop)
-        monkeypatch.setattr(server.browser_cli_launcher, "reclaim_stranded", Mock())
-        state = SimpleNamespace(_background_tasks=set())
-        app = web.Application()
-        server._register_browser_view_cleanup(app, state)
-        app.freeze()
-        await app.on_startup.send(app)
-        for task in list(state._background_tasks):
-            await task
-
-        await run_pre_exec_stops()
-
-        view_stop.assert_called_once_with()
-
-    @pytest.mark.asyncio
-    async def test_a_restart_reaps_the_view_before_the_exec(self, monkeypatch, tmp_path):
-        from aiohttp import web
-
-        from kiro_crew.dashboard import server
-
-        order: list[str] = []
-        monkeypatch.setattr(server.browser_cli_view, "stop", lambda: order.append("view"))
-        monkeypatch.setattr(server.browser_cli_launcher, "reclaim_stranded", Mock())
-        state = SimpleNamespace(_background_tasks=set())
-        app = web.Application()
-        server._register_browser_view_cleanup(app, state)
-        app.freeze()
-        await app.on_startup.send(app)
-        for task in list(state._background_tasks):
-            await task
-
-        _dashboard_exec_seams(monkeypatch, order)
-        monkeypatch.setattr(updates, "reexec_python_module", lambda *_a, **_k: order.append("exec"))
-
-        await updates._restart_gateway(
-            _dashboard_state(order), resolver=lambda: _executable(tmp_path)
-        )
-
-        assert order == ["close_all", "broker", "view", "exec"]
 
 
 # ── the instances hooks register and drop the manager's teardown ──────────
@@ -807,14 +601,9 @@ class TestARealForwarderChildIsReaped:
             await updates._restart_gateway(
                 _dashboard_state(seen), resolver=lambda: _executable(tmp_path)
             )
-        else:
-            _update_exec_seams(monkeypatch, seen)
-            await GatewayOrchestrator._restart_after_update(
-                _orchestrator(seen), lambda: _executable(tmp_path)
-            )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("path", ["dashboard", "update"])
+    @pytest.mark.parametrize("path", ["dashboard"])
     async def test_the_restart_reaps_the_child_before_the_exec(self, path, monkeypatch, tmp_path):
         manager, proc = await self._connected_child(tmp_path)
         seen: list[str] = []
@@ -827,7 +616,7 @@ class TestARealForwarderChildIsReaped:
             await manager.shutdown()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("path", ["dashboard", "update"])
+    @pytest.mark.parametrize("path", ["dashboard"])
     async def test_a_path_that_skips_the_seam_leaves_the_child_running(
         self, path, monkeypatch, tmp_path
     ):
@@ -837,8 +626,7 @@ class TestARealForwarderChildIsReaped:
         async def _skipped(*_a, **_k):
             return None
 
-        owner = updates if path == "dashboard" else slack_gateway
-        monkeypatch.setattr(owner, "run_pre_exec_stops", _skipped)
+        monkeypatch.setattr(updates, "run_pre_exec_stops", _skipped)
         try:
             await self._restart(path, monkeypatch, tmp_path, seen)
 

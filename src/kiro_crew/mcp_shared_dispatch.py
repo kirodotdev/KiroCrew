@@ -19,22 +19,19 @@ import contextlib
 import functools
 import logging
 import os
-import queue
-import select
 import sys
 import threading
 import time
 from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.install_liveness import install_pruned, respawned_by_pool
+from kiro_crew.install_liveness import install_pruned, is_pooled_backend, respawned_by_pool
 from kiro_crew.mcp_caller import (
-    INFLIGHT_CAPABILITY_KEY,
     INFLIGHT_NOTIFICATION,
     CallerContext,
-    caller_identity_capability,
     set_current_caller,
     set_current_tenant_nonce,
+    set_current_tool_call_id,
     tenant_nonce_from_meta,
 )
 from kiro_crew.mcp_shared_calls import (
@@ -43,31 +40,38 @@ from kiro_crew.mcp_shared_calls import (
     DEFERRED_STEP_WORKERS,
     INFLIGHT_REPORT_SECS,
     PENDING_CALLS_MAX,
+    PROGRESS_NOTIFICATION,
     DeferredTool,
     ToolCancelled,
     _declares_inflight_capability,
     _DeferredEntry,
     _remember_cancelled_id,
     _StepPool,
+    progress_heartbeat,
+    request_progress_token,
+)
+from kiro_crew.mcp_shared_listing import (
+    caller_tool_policy,
+    initialize_result,
+    listable_tools,
+    take_early_frames,
 )
 from kiro_crew.mcp_shared_policy import (
-    _NEGATIVE_CACHE_TTL,
+    _NEGATIVE_CACHE_PROBE_INTERVAL,
     _POLICY_DETAIL_MAX_CHARS,
     _UNRESOLVED_REFUSES_CALL,
-    ToolPolicy,
     _ambient_audit_session,
-    _resolve_tool_policy,
     external_client_identity_note,
+    registry_identity_note,
     serves_managed_tools,
     spawned_without_gateway_identity,
 )
 from kiro_crew.mcp_shared_wire import (
     NO_FRAME,
+    _frame_within,
     _NoFrame,
-    _read_message,
     _Skipped,
     _start_stdin_pump,
-    _stdin_holds_a_line,
     notify,
     respond,
 )
@@ -97,6 +101,22 @@ def _tool_call_name(params: dict[str, Any]) -> str | None:
     """The tool a ``tools/call`` names, or ``None`` when it names none usable."""
     name = params.get("name")
     return name if isinstance(name, str) and name else None
+
+
+def _approved_tool_call_id(params: dict[str, Any], caller: "CallerContext | None") -> str:
+    """The harness ACP ``toolCallId`` a ``tools/call`` was approved under, or ``""``.
+
+    The gateway-authored caller block wins; the request's own
+    ``_meta.progressToken`` (the same value, before the gateway promoted it) is
+    the fallback for the non-pooled topology, where no block is injected.
+    """
+    if caller is not None and caller.tool_call_id:
+        return caller.tool_call_id
+    meta = params.get("_meta")
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return ""
+    return str(token)
 
 
 #: Backstop wait while only a worker runs. Not a latency: the wake pipe ends
@@ -195,6 +215,10 @@ def _run_stdio_dispatch_loop(
     _current_caller_key: str = ""
     _current_caller_ctx: "CallerContext | None" = None
     _current_tenant_nonce: str = ""
+    # The running call's harness toolCallId and ``_meta.progressToken``, kept for
+    # its ``_DeferredEntry`` if it parks.
+    _current_tool_call_id: str = ""
+    _current_progress_token: Any = None
     _cancel_event: Optional[threading.Event] = None
     _worker_thread: Optional[threading.Thread] = None
     _result_lock = threading.Lock()
@@ -297,59 +321,6 @@ def _run_stdio_dispatch_loop(
 
     _applies_tool_policy = serves_managed_tools(call_tool_fn)
 
-    def _caller_tool_policy(caller: "CallerContext | None") -> ToolPolicy:
-        """This request's exclusion set AND whether the policy was readable.
-
-        The enforcement seam: the ``tools/call`` branch needs the second half
-        to tell "the operator excluded nothing" apart from "we could not read
-        what the operator excluded".
-
-        The caller block's token rides along explicitly. This runs on the read
-        loop before the worker installs the caller ContextVar, so the resolver
-        cannot find the token there; a pooled backend has it nowhere else.
-
-        A server that is not Kiro Crew's own (:func:`serves_managed_tools`) has
-        no managed tools for the policy to name, so it is answered "nothing
-        excluded" without a read.
-        """
-        if not _applies_tool_policy:
-            return ToolPolicy(frozenset(), "")
-        return _resolve_tool_policy(
-            caller.session_key if caller else "",
-            caller_token=caller.session_token if caller else "",
-        )
-
-    def _listable_tools(caller: "CallerContext | None") -> list[dict]:
-        """The tool list for a ``tools/list``, minus this session's exclusions.
-
-        An unresolved policy lists EVERYTHING on purpose. kiro-cli calls
-        ``tools/list`` once per session and caches the answer, so hiding tools
-        on a transient policy failure would hide them for the session's whole
-        life. Listing is not the enforcement point; ``tools/call`` is, and it
-        refuses while the policy is unresolved. The audit event records that a
-        listing went out unfiltered so the widened window is attributable.
-        """
-        policy = _caller_tool_policy(caller)
-        tools = list_tools_fn()
-        if policy.unresolved:
-            try:
-                sel().log_api_access(
-                    caller=(caller.session_key if caller is not None else _ambient_audit_session()),
-                    operation="tool_policy.unfiltered_listing",
-                    outcome="unresolved",
-                    source="mcp",
-                    resources=f"reason={policy.unresolved}",
-                )
-            except Exception as sel_exc:
-                logger.warning("SEL audit failed for unfiltered listing: %s", sel_exc)
-            return tools
-        if policy.excluded:
-            tools = [t for t in tools if t.get("name") not in policy.excluded]
-        included = policy.include_for(server_name)
-        if included is not None:
-            tools = [t for t in tools if t.get("name") in included]
-        return tools
-
     def _tool_response(text: str) -> dict[str, Any]:
         """Frame a tool result, flagging ``Error:`` prose when opted in."""
         flagged = error_prefix_is_error and text.startswith("Error:")
@@ -362,6 +333,7 @@ def _run_stdio_dispatch_loop(
         cancel_evt: threading.Event,
         caller_ctx: "CallerContext | None" = None,
         tenant_nonce: str = "",
+        tool_call_id: str = "",
     ) -> None:
         """Worker thread: run tool, store result unless cancelled."""
         # Install the verified per-call caller for identity resolvers. A
@@ -373,6 +345,9 @@ def _run_stdio_dispatch_loop(
         # gateway could not name reads it instead of a process-global fallback.
         # Cleared in the same places as the caller.
         set_current_tenant_nonce(tenant_nonce)
+        # The harness ACP toolCallId this call was approved under, for the one
+        # tool (kirocrew-secrets) whose host-side claim is keyed by it.
+        set_current_tool_call_id(tool_call_id)
         try:
             result = call_tool_fn(tool_name, tool_args)
         except ToolCancelled:
@@ -386,6 +361,7 @@ def _run_stdio_dispatch_loop(
                 caller_ctx.session_key if caller_ctx else "",
             )
             set_current_caller(None)
+            set_current_tool_call_id("")
             set_current_tenant_nonce("")
             _result_ready.set()
             _wake.wake()
@@ -397,6 +373,7 @@ def _run_stdio_dispatch_loop(
             _tool_errored = False
         finally:
             set_current_caller(None)
+            set_current_tool_call_id("")
             set_current_tenant_nonce("")
         # Audit decision is made atomically with the cancellation check, under
         # the same lock that guards response delivery: exactly ONE audit event
@@ -578,38 +555,20 @@ def _run_stdio_dispatch_loop(
         """Serve one request while no tool is running (the idle path)."""
         nonlocal _worker_thread, _current_req_id, _current_tool_name
         nonlocal _current_caller_key, _current_caller_ctx, _current_tenant_nonce
+        nonlocal _current_tool_call_id, _current_progress_token
         nonlocal _cancel_event, _pruned_exit, _client_wants_inflight
         if method == "initialize":
-            _caps: dict[str, Any] = {"tools": {"listChanged": False}}
-            _experimental: dict[str, Any] = {}
-            if advertise_caller_identity:
-                # Pooled-operation opt-in for IDENTITY, not for pooling:
-                # gatewayd injects the per-call ``_meta.kirocrew.caller`` block
-                # only into a backend that advertised this capability, and
-                # nothing declines to POOL one that did not (see
-                # ``rewriter.UNPOOLABLE_SERVERS``, which lists only credential vendors and documents
-                # exactly that). So NOT advertising does not buy a per-session
-                # spawn -- it buys a shared process whose dispatch-loop caller
-                # slot never receives gateway-authored metadata, which is how a
-                # session-scoped tool silently degrades to unattached behaviour.
-                _experimental.update(caller_identity_capability())
-            _sends_inflight = reports_inflight
-            if _sends_inflight:
-                # Only a server that opted in advertises: a gateway that
-                # believes a backend reports applies the short recycle ceiling
-                # to its calls.
-                _experimental[INFLIGHT_CAPABILITY_KEY] = {}
-            if _experimental:
-                _caps["experimental"] = _experimental
-            _client_wants_inflight = _sends_inflight and _declares_inflight_capability(params)
-            _init_result: dict[str, Any] = {
-                "protocolVersion": "2024-11-05",
-                "capabilities": _caps,
-                "serverInfo": {"name": server_name, "version": server_version},
-            }
-            if instructions:
-                _init_result["instructions"] = instructions
-            respond(req_id, _init_result)
+            _client_wants_inflight = reports_inflight and _declares_inflight_capability(params)
+            respond(
+                req_id,
+                initialize_result(
+                    server_name,
+                    server_version,
+                    advertise_caller_identity=advertise_caller_identity,
+                    reports_inflight=reports_inflight,
+                    instructions=instructions,
+                ),
+            )
         elif method == "notifications/initialized":
             pass
         elif method == "notifications/cancelled":
@@ -630,7 +589,17 @@ def _run_stdio_dispatch_loop(
                 )
                 _cancel_deferred(str(cancelled_rid))
         elif method == "tools/list":
-            respond(req_id, {"tools": _listable_tools(_req_caller(params))})
+            respond(
+                req_id,
+                {
+                    "tools": listable_tools(
+                        server_name,
+                        list_tools_fn,
+                        _req_caller(params),
+                        applies_policy=_applies_tool_policy,
+                    )
+                },
+            )
         elif method == "ping":
             respond(req_id, {})
         elif method == "tools/call":
@@ -648,6 +617,14 @@ def _run_stdio_dispatch_loop(
             # name — the case it exists for — so it cannot be folded
             # into ``_caller_ctx``, which is None exactly then.
             _tenant_nonce = tenant_nonce_from_meta(params.get("_meta"))
+            # Correlation key between the approval gate and this execution: the
+            # harness ACP ``toolCallId`` the approval was keyed by. The harness
+            # carries it as the ``tools/call`` ``_meta.progressToken`` and the
+            # gateway promotes it into the caller block, so it is read from the
+            # caller block when present and from ``progressToken`` otherwise -- the
+            # SAME value either way. A call with no progress token yields an empty
+            # id, and the capability claim it drives is refused fail-closed.
+            _tool_call_id = _approved_tool_call_id(params, _caller_ctx)
             # A queued request may have been cancelled while waiting -- emit
             # no response (per MCP spec) but audit the cancellation.
             if req_id is not None and str(req_id) in _cancelled_ids:
@@ -699,7 +676,7 @@ def _run_stdio_dispatch_loop(
             # Defense-in-depth: reject calls to excluded tools even if
             # the LLM somehow attempts to call them (hallucination).
             # Per-call caller identity keys the policy in pooled backends.
-            _policy = _caller_tool_policy(_caller_ctx)
+            _policy = caller_tool_policy(_caller_ctx, applies_policy=_applies_tool_policy)
             _policy_session = _caller_ctx.session_key if _caller_ctx else _ambient_audit_session()
             if _policy.unresolved and _policy.unresolved not in _UNRESOLVED_REFUSES_CALL:
                 # An identity reason: no agent was named, so no operator
@@ -730,10 +707,15 @@ def _run_stdio_dispatch_loop(
                 # one would be unrecoverable. A tool that is listed but refuses
                 # is not a hole; a tool that is unlisted but runs is.
                 logger.warning(
-                    "Refusing tool call %r: session %s tool policy unresolved (%s)",
+                    "Refusing tool call %r: session %s tool policy unresolved (%s)%s",
                     tool_name,
                     _policy_session,
                     _policy.unresolved,
+                    (
+                        registry_identity_note(server_name)
+                        if _policy.unresolved == "identity_unattestable"
+                        else ""
+                    ),
                 )
                 sel().log_tool_invocation(
                     session_key=_policy_session,
@@ -805,6 +787,7 @@ def _run_stdio_dispatch_loop(
                         f"list; it succeeds once this server is started by a Kiro "
                         f"Crew session that gives it a signed session token."
                     )
+                    _refusal += registry_identity_note(server_name)
                     if _caller_ctx is None and spawned_without_gateway_identity():
                         _refusal += external_client_identity_note(server_name)
                 elif _policy.unresolved == "gateway_locked":
@@ -833,7 +816,7 @@ def _run_stdio_dispatch_loop(
                         f"broken{_cause}. No agent spec is implicated and nothing needs "
                         f"editing. Refusing the call rather than ignoring an "
                         f"operator's exclusion list; the call succeeds on retry "
-                        f"within {_NEGATIVE_CACHE_TTL:.0f}s of the gateway "
+                        f"within {_NEGATIVE_CACHE_PROBE_INTERVAL:.0f}s of the gateway "
                         f"answering again."
                     )
                 else:
@@ -937,6 +920,8 @@ def _run_stdio_dispatch_loop(
                 _current_caller_key = _caller_ctx.session_key if _caller_ctx else ""
                 _current_caller_ctx = _caller_ctx
                 _current_tenant_nonce = _tenant_nonce
+                _current_tool_call_id = _tool_call_id
+                _current_progress_token = request_progress_token(params)
                 _worker_audited[0] = False
                 _result_ready.clear()
                 _result_box.clear()
@@ -949,6 +934,7 @@ def _run_stdio_dispatch_loop(
                         _cancel_event,
                         _caller_ctx,
                         _tenant_nonce,
+                        _tool_call_id,
                     ),
                     daemon=True,
                 )
@@ -995,6 +981,8 @@ def _run_stdio_dispatch_loop(
                         _current_caller_ctx,
                         _current_tenant_nonce,
                         boxed,
+                        tool_call_id=_current_tool_call_id,
+                        progress_token=_current_progress_token,
                     )
                     # The handler decides the result type, so admission bounds retention.
                     if len(_deferred) >= DEFERRED_PARKED_MAX:
@@ -1034,11 +1022,14 @@ def _run_stdio_dispatch_loop(
         entry.step_started = time.monotonic()
         set_current_caller(entry.caller_ctx)
         set_current_tenant_nonce(entry.tenant_nonce)
+        # As the worker had it: a step's heartbeat names its call.
+        set_current_tool_call_id(entry.tool_call_id)
         try:
             return entry.deferred.step()
         finally:
             set_current_caller(None)
             set_current_tenant_nonce("")
+            set_current_tool_call_id("")
 
     def _settle_deferred(key: str, entry: _DeferredEntry, payload: Any, *, error: bool) -> None:
         """Answer a parked call and forget it. ``payload`` is response text, or
@@ -1095,7 +1086,9 @@ def _run_stdio_dispatch_loop(
             refuse()
 
     def _commit_settled(entry: _DeferredEntry, text: str) -> None:
-        """Commit with the call's identity installed, then answer with ``text``."""
+        """Commit with the call's identity installed, answer with ``text``, then
+        tell the call whether that answer reached the client (``on_answered``).
+        """
         set_current_caller(entry.caller_ctx)
         set_current_tenant_nonce(entry.tenant_nonce)
         try:
@@ -1109,7 +1102,26 @@ def _run_stdio_dispatch_loop(
         finally:
             set_current_caller(None)
             set_current_tenant_nonce("")
-        respond(entry.req_id, _tool_response(text))
+        # A write that raises propagates before the hook below: unanswered, the
+        # call is told nothing, which claims nothing delivered.
+        written = respond(entry.req_id, _tool_response(text)) is True
+        # A pooled backend writes into the MCP gateway's broker, whose relay to
+        # the client confirms nothing back, so none of its answers counts.
+        _tell_answered(entry, written and not is_pooled_backend())
+
+    def _tell_answered(entry: _DeferredEntry, written: bool) -> None:
+        """Run the call's ``on_answered`` with its identity installed."""
+        set_current_caller(entry.caller_ctx)
+        set_current_tenant_nonce(entry.tenant_nonce)
+        try:
+            entry.deferred.on_answered(written)
+        except Exception:  # noqa: BLE001 - one call's hook must not end the server
+            logger.warning(
+                "%s: on_answered failed for request %s", server_name, entry.req_id, exc_info=True
+            )
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
 
     def _harvest_step(key: str, entry: _DeferredEntry) -> bool:
         """Consume a FINISHED step: answer or drop the call as its outcome and
@@ -1265,6 +1277,17 @@ def _run_stdio_dispatch_loop(
         except Exception:  # noqa: BLE001 - a missed report costs one refresh, never the server
             logger.warning("%s: in-flight report failed", server_name, exc_info=True)
 
+    def _maybe_send_progress() -> None:
+        """Send each parked call the MCP progress heartbeat it is due (``progress_heartbeat``)."""
+        now = time.monotonic()
+        for entry in list(_deferred.values()):
+            beat = progress_heartbeat(entry, now)
+            if beat is not None:
+                try:
+                    notify(PROGRESS_NOTIFICATION, beat)
+                except Exception:  # noqa: BLE001 - a missed beat costs one beat, never the server
+                    logger.warning("%s: progress heartbeat failed", server_name, exc_info=True)
+
     def _refuse_parked_on_pruned_exit() -> None:
         """A pruned install is exiting: answer every parked call.
 
@@ -1334,36 +1357,27 @@ def _run_stdio_dispatch_loop(
         )
 
     # Windows: select() cannot poll stdin, so a pump thread reads it.
-    _frames = None if platform_compat.IS_POSIX else _start_stdin_pump(sys.stdin)
+    # What the server answered before this loop started (``serve_before_handlers``):
+    # the client's ``initialize`` params, the frames it read and left unanswered, and
+    # the stdin pump it started where the platform reads stdin through one.
+    _early = take_early_frames()
+    _carried: "collections.deque[dict[str, Any] | None]" = (
+        _early.pending if _early is not None else collections.deque()
+    )
+    if _early is not None and _early.init_params is not None:
+        _client_wants_inflight = reports_inflight and _declares_inflight_capability(
+            _early.init_params
+        )
+    _frames = _early.pump if _early is not None else None
+    if _frames is None and not platform_compat.IS_POSIX:
+        _frames = _start_stdin_pump(sys.stdin)
 
     def _next_frame(timeout: float | None) -> dict[str, Any] | _Skipped | _NoFrame | None:
-        """The next stdin frame, or :data:`NO_FRAME` when *timeout* seconds
-        pass with none (``None`` waits for one). A line already buffered is
-        read first: select cannot see it. On POSIX the wait also ends, with
-        :data:`NO_FRAME`, the moment the wake pipe fires (a worker or a step
-        finished)."""
-        if _frames is None:
-            if timeout is not None and not _stdin_holds_a_line(sys.stdin):
-                wake_fd = _wake.read_fd
-                waits: list[Any] = [sys.stdin] if wake_fd is None else [sys.stdin, wake_fd]
-                ready = select.select(waits, [], [], timeout)[0]
-                if wake_fd is not None and wake_fd in ready:
-                    _wake.drain()
-                if not any(r is sys.stdin for r in ready):
-                    return NO_FRAME
-            return _read_message(sys.stdin)
-        while True:
-            try:
-                # A bounded get even when waiting: an untimed lock acquire on
-                # Windows cannot be interrupted.
-                item = _frames.get(timeout=1.0 if timeout is None else timeout)
-            except queue.Empty:
-                if timeout is None:
-                    continue
-                return NO_FRAME
-            if isinstance(item, BaseException):
-                raise item
-            return item
+        """The next frame: one carried over from before the loop started, else the
+        next from stdin within *timeout* seconds (:func:`_frame_within`)."""
+        if _carried:
+            return _carried.popleft()
+        return _frame_within(sys.stdin, _frames, timeout, _wake)
 
     # Made here, right before the ``try`` that closes it, so no exit path
     # leaks the two descriptors. The worker and step hooks above read it late.
@@ -1388,6 +1402,7 @@ def _run_stdio_dispatch_loop(
                 # has no wake pipe and keeps the _POLL_SECS tick.
                 _service_deferred()
                 _maybe_report_inflight()
+                _maybe_send_progress()
                 if worker_busy and _result_ready.is_set():
                     # Deliver a finished result before reading on: an EOF
                     # read next would end the loop with it unsent.

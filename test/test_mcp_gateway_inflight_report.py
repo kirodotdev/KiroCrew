@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -418,13 +419,21 @@ class TestCancelledCallMarking:
 
 
 @pytest.mark.asyncio
-async def test_unknown_notification_still_records_a_hazard():
+async def test_unknown_notification_still_records_a_hazard(tmp_path, monkeypatch):
     """The inflight arm is a narrow carve-out: any other unattributable
     request-scoped notification is still dropped and recorded."""
-    backend = _make_backend()
-    backend._record_hazard = MagicMock()  # type: ignore[method-assign]
+    ledger = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+    monkeypatch.setattr(hazards, "_sink", ledger)
+    # A hazard counts only on a shared backend, so two clients are attached.
+    backend = _make_backend(refcount=2)
+    backend.pool_key = SimpleNamespace(
+        server_name="shared-mcp",
+        command_args_hash="c",
+        effective_env_hash="e",
+        binary_version="v",
+    )
     await backend._route_backend_line(
         b'{"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": "zz"}}\n'
     )
-    backend._record_hazard.assert_called_once_with(hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
+    assert ledger.codes_for_name("shared-mcp") == (hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,)
     await asyncio.sleep(0)

@@ -58,6 +58,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FRAMEWORK_OWNED_AGENT_KEYS,
         _RENDERED_AGENTS_DIRNAME,
         _TEMPLATE_PLACEHOLDER_RE,
+        _TEMPLATE_RECORD_SUFFIX,
         AGENT_MCP_POLICY_FILE,
         _agent_mcp_policy,
         _apply_agent_mcp_policy,
@@ -77,10 +78,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_agent_config,
         _register_agents,
         _render_shipped_agent,
+        _shipped_builtin_placeholder_values,
         _strip_ungoverned_auto_approve,
+        _template_record,
         _unlink_unheld_app_lock,
         _unresolvable_tool_refs,
+        _user_owned_agent_keys,
         purge_uninstalled_agent_residue,
+        snapshot_app_agent_configs,
     )
     from kiro_crew.apps.bridges_crons import (  # noqa: F401
         _CREATE_ONLY_CRON_KEYS,
@@ -166,12 +171,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         logger,
         reconcile_enabled_app_resources,
         refresh_app_agents,
+        refresh_app_agents_if_enabled,
         register_app,
     )
     from kiro_crew.apps.bridges_skills import (  # noqa: F401
+        _APP_SKILL_LINKS,
+        _APP_SKILL_LINKS_LOCK,
         _RESERVED_SKILL_DIRS,
         _deregister_skills,
+        _holds_exactly,
         _register_skills,
+        _write_app_skill_links,
         reconcile_app_skills,
     )
     from kiro_crew.apps.bridges_sources import (  # noqa: F401
@@ -198,6 +208,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import shutil  # noqa: F401
     import stat  # noqa: F401
     import sys  # noqa: F401
+    import threading  # noqa: F401
     import zipfile  # noqa: F401
     from contextlib import (  # noqa: F401
         ExitStack,
@@ -216,6 +227,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         Container,
         Iterable,
         Iterator,
+        Mapping,
         Optional,
     )
     from urllib.parse import (  # noqa: F401
@@ -227,8 +239,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         pinned_fs,
         platform_compat,
+        skill_live_loaders,
     )
     from kiro_crew.apps import deps_boot as _deps_boot_module  # noqa: F401
+    from kiro_crew.apps.agent_template_values import (  # noqa: F401
+        HOST_PLACEHOLDERS,
+        host_placeholder_values,
+    )
     from kiro_crew.apps.cron_sdk import (  # noqa: F401
         CronSDK,
     )
@@ -243,8 +260,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         venv_provided_command,
     )
     from kiro_crew.apps.manager import (  # noqa: F401
+        INSTALLED_META_FILENAME,
         app_data_dir,
         app_dir,
+        app_enabled_state,
         get_app,
         get_app_manifest,
         list_apps,
@@ -259,6 +278,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,
+        read_bytes_with_retry,
     )
     from kiro_crew.config.loader import (  # noqa: F401
         config_dir,
@@ -282,6 +302,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.executors import (  # noqa: F401
         maintenance_executor,
+    )
+    from kiro_crew.file_uri import (  # noqa: F401
+        file_uri_path_text,
     )
     from kiro_crew.gateway_lock import (  # noqa: F401
         GatewayLock,

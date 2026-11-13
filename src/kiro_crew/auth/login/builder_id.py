@@ -14,12 +14,15 @@ Endpoints (all under ``https://oidc.<region>.amazonaws.com``):
   POST /token (grant device_code) -> {accessToken, refreshToken, expiresIn, ...}
 
 RegisterClient returns a client_id + client_secret; both are persisted with the token so
-refresh (a separate CreateToken call) can reuse them.
+refresh (a separate CreateToken call) can reuse them, with the registration's expiry so a
+refresh refused past it can be told apart from any other refusal. The next sign-in into
+the same slot reuses that registration while it is in date (:func:`stored_client`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -40,9 +43,55 @@ logger = logging.getLogger(__name__)
 _HEADERS = {"Content-Type": "application/x-amz-json-1.1", "User-Agent": USER_AGENT}
 _DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
+# A reused registration should outlive the sign-in it starts, since every refresh
+# past its lapse is refused. One with under a week left is replaced instead.
+REUSE_MARGIN_SECS = 7 * 24 * 3600
+
 
 class BuilderIdAuthError(Exception):
     """Builder ID / IdC SSO-OIDC login failed."""
+
+
+class StartUrlRejectedError(BuilderIdAuthError):
+    """SSO-OIDC refused an Identity Center start URL (HTTP 400 ``invalid_request``).
+
+    The message says what to change, because AWS's own text ("Invalid start url
+    provided", "Invalid request") names neither the expected URL shape nor the
+    region the portal was looked up in. ``names_start_url`` is False for the bare
+    "Invalid request", which leaves the start URL and the region both in doubt.
+    """
+
+    def __init__(self, message: str, *, names_start_url: bool = True) -> None:
+        super().__init__(message)
+        self.names_start_url = names_start_url
+
+
+def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlRejectedError | None:
+    """Map a StartDeviceAuthorization 400 about the start URL to a readable error."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("error") != "invalid_request":
+        return None
+    detail = str(data.get("error_description") or "")[:200]
+    names_start_url = "start url" in detail.lower()
+    if names_start_url:
+        advice = (
+            f"AWS did not accept the start URL {start_url!r}. Use your company's AWS "
+            "access portal URL, which looks like https://your-company.awsapps.com/start."
+        )
+    else:
+        # A portal that does not exist and one looked up in the wrong region get
+        # this same bare answer, so the likelier slip, the start URL, comes first.
+        advice = (
+            f"AWS found no Identity Center for {start_url!r} in region {region}. "
+            "Check the start URL for a typo; if it is right, set Region to the "
+            "region your company's Identity Center is in."
+        )
+    return StartUrlRejectedError(
+        f"{advice} (AWS: {detail or 'invalid_request'})", names_start_url=names_start_url
+    )
 
 
 async def _parse_json(resp: aiohttp.ClientResponse, step: str) -> dict:
@@ -72,6 +121,7 @@ def _require_str(data: dict, key: str, step: str) -> str:
 class RegisteredClient:
     client_id: str
     client_secret: str
+    client_secret_expires_at: int | None = None
 
 
 @dataclass
@@ -97,10 +147,30 @@ async def register_client(region: str, *, session: aiohttp.ClientSession) -> Reg
             body = await resp.text()
             raise BuilderIdAuthError(f"RegisterClient failed: HTTP {resp.status} {body}")
         data = await _parse_json(resp, "RegisterClient")
+    expires_at = data.get("clientSecretExpiresAt")
     return RegisteredClient(
         client_id=_require_str(data, "clientId", "RegisterClient"),
         client_secret=_require_str(data, "clientSecret", "RegisterClient"),
+        client_secret_expires_at=expires_at if isinstance(expires_at, int) else None,
     )
+
+
+def stored_client(token: KasToken | None, region: str) -> RegisteredClient | None:
+    """The registration ``token`` carries, when a sign-in in ``region`` may reuse it.
+
+    It must be from the same region and have a known expiry more than
+    ``REUSE_MARGIN_SECS`` away. An entry stored before the expiry was kept has
+    none, so its next sign-in registers anew.
+    """
+    if token is None or token.region != region:
+        return None
+    if not (token.client_id and token.client_secret):
+        return None
+    lapses = token.client_secret_expires_at
+    now = datetime.now(timezone.utc).timestamp()
+    if not isinstance(lapses, int) or lapses <= now + REUSE_MARGIN_SECS:
+        return None
+    return RegisteredClient(token.client_id, token.client_secret, lapses)
 
 
 async def start_device_authorization(
@@ -119,6 +189,10 @@ async def start_device_authorization(
     async with session.post(url, json=payload, headers=_HEADERS) as resp:
         if resp.status != 200:
             body = await resp.text()
+            if resp.status == 400 and start_url != BUILDER_ID_START_URL:
+                rejected = _start_url_rejection(body, start_url=start_url, region=region)
+                if rejected is not None:
+                    raise rejected
             raise BuilderIdAuthError(f"StartDeviceAuthorization failed: HTTP {resp.status} {body}")
         data = await _parse_json(resp, "StartDeviceAuthorization")
     try:
@@ -235,4 +309,5 @@ def _token_from_create(
         region=region,
         client_id=client.client_id,
         client_secret=client.client_secret,
+        client_secret_expires_at=client.client_secret_expires_at,
     )

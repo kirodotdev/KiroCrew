@@ -68,3 +68,20 @@ describe('buildCronRunReport', () => {
     expect(buildCronRunReport({ ...base, status: 'timeout' }).message).toBe('Scheduled job "job-7" timed out.')
   })
 })
+
+describe('LogEntry row toggle', () => {
+  beforeEach(() => {
+    cronRunDetail.mockReset().mockResolvedValue({ trace: 'step 1 ok' })
+  })
+
+  it('says whether the run is open and hides its chevron from the name', async () => {
+    renderWithProviders(<LogEntry entry={row('success')} jobId="job-7" jobName="Nightly digest" />)
+    const toggle = screen.getByRole('button', { name: /exit 1/ })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await screen.findByText(/step 1 ok/)
+  })
+})

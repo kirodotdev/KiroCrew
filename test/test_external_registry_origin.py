@@ -27,11 +27,8 @@ from external_registry_helpers import _explicit_registry_execution_admission  # 
 def _real_argv(captured_argv):
     """Strip the spawn shim's own prologue from a captured argv.
 
-    ``create_subprocess_limited`` runs commands through the post-exec shim
-    (``python -I -S -c <shim> --rlimits=… -- <real argv>``), so a captured
-    spawn does not start with the command itself. Return the argv after the
-    ``--`` separator, with argv[0] reduced to its basename (git resolves to an
-    absolute path, and to ``git.EXE`` on Windows).
+    Commands run through ``python -I -S -c <shim> --rlimits=… -- <real argv>``. Return
+    the argv after ``--``, with argv[0] reduced to its basename (``git.EXE`` on Windows).
     """
     argv = list(captured_argv)
     if "--" in argv:
@@ -76,8 +73,8 @@ class TestStaleCloneOriginVerification:
 
         async def _fake_exec(*args, **kwargs):
             captured.setdefault("calls", []).append(list(args))
-            # The origin read is sandbox-routed + shim-wrapped now, so match on
-            # the real argv rather than the raw prefix.
+            # The origin read is sandbox-routed + shim-wrapped, so match on the
+            # real argv rather than the raw prefix.
             if _real_argv(args)[:4] == ["git", "remote", "get-url", "origin"]:
                 return _FakeProc(origin_url.encode() + b"\n")
             return _FakeProc()
@@ -175,12 +172,9 @@ class TestStaleCloneOriginVerification:
 class TestManifestOriginGate:
     """The manifest fed to admission must describe the repo that gets cloned.
 
-    ``_fetch_app_manifest`` shortcuts to the persisted clone's ``app.json``,
-    but that clone is keyed on app NAME only. When a registry is replaced, a
-    checkout of a different repo can sit under the same name — and
-    ``_git_clone_or_pull`` then discards it and re-clones from the new URL.
-    Reusing the stale ``app.json`` would admit repo A's manifest and run repo
-    B's code, so the shortcut only applies when the clone's origin matches.
+    The persisted clone is keyed on app NAME only, so after a registry swap its
+    ``app.json`` may belong to another repo. The shortcut applies only when the
+    clone's origin matches.
     """
 
     @staticmethod
@@ -304,11 +298,8 @@ class TestManifestOriginGate:
 class TestStaleCloneDeletionFailsClosed:
     """A stale clone that cannot be moved aside must abort, never be pulled.
 
-    The move-aside rename can fail (a locked ``.git/index.lock`` on Windows, a
-    permission error). If the install continued, the surviving clone would be
-    pulled from its OWN unverified origin under the credential posture decided
-    for the vetted URL, and built under an admission decision made for a
-    different repository.
+    The rename can fail (a locked ``.git/index.lock`` on Windows). Continuing would pull
+    the clone's OWN unverified origin with credentials vetted for another URL.
     """
 
     @pytest.mark.asyncio
@@ -368,8 +359,8 @@ class TestStaleCloneDeletionFailsClosed:
 
 
 class TestOriginMismatchDeleteOrder:
-    """Regression tests for the delete-order fix: origin-mismatch must move
-    aside the old checkout BEFORE cloning, and delete AFTER success.  On clone
+    """Delete order: an origin mismatch moves the old checkout aside BEFORE
+    cloning, and deletes it AFTER success.  On clone
     failure/timeout, the old checkout is RESTORED so local changes survive.
     """
 
@@ -659,8 +650,8 @@ class TestOriginMismatchDeleteOrder:
         """Origin mismatch + create_subprocess_limited RAISES (spawn failure)
         → old checkout restored at dest, no stale-* leftover.
 
-        Regression: prior to the try/finally guard, a spawn failure after
-        move-aside would strand the old checkout under .stale-* permanently.
+        Without the try/finally guard, a spawn failure after move-aside would
+        strand the old checkout under .stale-* permanently.
         """
         import kiro_crew.apps.registry as reg
 
@@ -731,7 +722,7 @@ class TestOriginMismatchDeleteOrder:
         """Origin mismatch + CancelledError during clone → old checkout
         restored at dest.
 
-        Regression: CancelledError must also trigger the try/finally restore
+        CancelledError must also trigger the try/finally restore
         path (it propagates through the outer try without hitting the timeout
         or returncode handlers).
         """
@@ -802,9 +793,8 @@ class TestOriginMismatchDeleteOrder:
         """Origin mismatch + CancelledError during proc.communicate() → process
         is killed, partial dest removed, old checkout restored.
 
-        Regression test for GPT 5.6 finding: cancellation after the clone
-        process starts must not leave the process running or the old checkout
-        stranded.
+        Cancellation after the clone process starts must not leave the process
+        running or the old checkout stranded.
         """
         import asyncio as _asyncio
 
@@ -900,11 +890,10 @@ class TestOriginMismatchDeleteOrder:
 
 
 class TestUnreadableOriginAbort:
-    """Regression: unreadable origin must NOT enter destructive move-aside path.
+    """An unreadable origin must NOT enter the destructive move-aside path.
 
-    A checkout with a corrupt .git/config or missing remote enters the
-    move-aside → re-clone → delete path, permanently losing local edits even
-    though the checkout might be the right repo.
+    A corrupt .git/config or missing remote does not prove a different repo, and the
+    move-aside, re-clone and delete would lose local edits.
     """
 
     @pytest.mark.asyncio
@@ -1009,11 +998,8 @@ class TestUnreadableOriginAbort:
 
 
 class TestOriginMismatchLogsBeforeMoveAside:
-    """Regression (First Principles round-6 Watch): the origin-mismatch
-    move-aside path must announce WHY it is replacing the checkout -- naming
-    the mismatched origin -- for parity with the branch-mismatch path. A
-    branch rebuild had dropped that log line, leaving the origin-mismatch
-    re-clone silent while the branch-mismatch path still logged its reason.
+    """The origin-mismatch move-aside logs WHY it replaces the checkout, naming the
+    mismatched origin, as the branch-mismatch path does.
     """
 
     @pytest.mark.asyncio

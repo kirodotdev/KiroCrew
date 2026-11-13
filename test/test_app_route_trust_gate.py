@@ -34,6 +34,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from chat_test_helpers import _make_state
 from off_loop_helpers import off_loop
 
@@ -91,8 +92,13 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"app-route-trust-gate-key")
+    mark_apps_live(monkeypatch, _MANIFESTS)
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    # The app tokens here stand for owner-enabled apps (the sealed marker).
+    monkeypatch.setattr(
+        "kiro_crew.apps.host_exec_grants.host_exec_granted", _MANIFESTS.__contains__
+    )
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
     monkeypatch.setattr(revocation_gen, "_gen", 0)
     monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", _MANIFESTS.get)
@@ -416,7 +422,10 @@ async def test_dashboard_user_still_resolves_every_approval(state):
     async with _serve(state) as client:
         for approval_id in ("7", "9", "spawn:dash"):
             resp = await client.post(f"/api/approvals/{approval_id}/approve", params=_q())
-            assert (resp.status, await resp.json()) == (200, {"ok": True})
+            body = await resp.json()
+            # The answer also names the Shared Crew decision it settled.
+            assert (resp.status, body.get("ok")) == (200, True)
+            assert set(body) <= {"ok", "decision"}
         assert native.result() == "approved"
         assert app_owned.result() == "approved"
         assert await await_until(task) is True

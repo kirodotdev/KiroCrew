@@ -584,6 +584,48 @@ describe('PptxMakerPage', () => {
     )
   })
 
+  it('disables the deck-start buttons until the engine is ready', async () => {
+    // Regression for #29820: starting a deck before the engine is installed
+    // opens a chat on an engine agent whose prompt file is not on disk yet, so
+    // the first turn fails reading it. While the engine is not ready the click
+    // would fail anyway, so the buttons stay disabled and no chat slot is
+    // created.
+    const { api } = await import('../api/client')
+    mockApi.engine.mockResolvedValue({
+      ready: false,
+      clone: false,
+      venv: false,
+      pinnedTag: 'v0.3.8',
+      provision: { state: 'idle' as const, log: '', elapsed: 0 },
+    })
+    await renderPage()
+    const specButton = (await screen.findByText('Spec mode')).closest('button')
+    expect(specButton).not.toBeNull()
+    await waitFor(() => expect((specButton as HTMLButtonElement).disabled).toBe(true))
+    await userEvent.click(specButton as HTMLButtonElement)
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('enables the deck-start buttons once the engine is ready', async () => {
+    // The default mocked engine is ready, so the buttons are usable.
+    await renderPage()
+    const specButton = (await screen.findByText('Spec mode')).closest('button')
+    expect(specButton).not.toBeNull()
+    await waitFor(() => expect((specButton as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('surfaces an error when the engine status cannot be read, keeping the gate closed', async () => {
+    // The readiness gate fails closed, and the banner renders nothing without
+    // data, so a failed status request would otherwise leave the buttons
+    // disabled with no explanation. Show the failure beside the buttons instead.
+    mockApi.engine.mockRejectedValue(new Error('engine status unavailable'))
+    await renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('engine status unavailable')
+    const specButton = (await screen.findByText('Spec mode')).closest('button')
+    expect((specButton as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('surfaces a visible error and does not navigate when the deck-start create fails', async () => {
     // The reporter of the flash-and-return symptom inferred that a failed
     // create was swallowed. It is not: a rejected createChatSlot sets the

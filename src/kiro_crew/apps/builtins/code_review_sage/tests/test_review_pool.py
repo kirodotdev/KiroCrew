@@ -701,8 +701,9 @@ class TestRuntimePreflight(unittest.TestCase):
 
 
 class TestReviewBackend(unittest.IsolatedAsyncioTestCase):
-    """The shared review runtime follows ``agent.acp_backend`` when that runtime
-    serves the backend, and otherwise stays on kiro-cli with one warning."""
+    """Reviews follow ``agent.acp_backend``: on the shared runtime when it serves
+    the backend, on a client per review when one can run it, and otherwise on
+    kiro-cli with one warning."""
 
     def setUp(self):
         rp._WARNED_FALLBACK_BACKENDS.clear()
@@ -757,8 +758,159 @@ class TestReviewBackend(unittest.IsolatedAsyncioTestCase):
         kwargs = await self._spawn()
         self.assertEqual(kwargs["acp_backend"], rp.ACP_BACKEND_KIRO)
 
-    async def test_claude_falls_back_to_kiro_and_warns_once(self):
+    def _patch_shields(self) -> list[tuple[str, int]]:
+        shields: list[tuple[str, int]] = []
+        for name, state in (("register_protected_pid", "on"),
+                            ("unregister_protected_pid", "off")):
+            patcher = unittest.mock.patch.object(
+                rp, name, lambda pid, state=state: shields.append((state, pid)))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return shields
+
+    async def test_claude_runs_each_review_on_a_claude_client(self):
         self._configure("claude")
+        shields = self._patch_shields()
+        built: list = []
+        test = self
+
+        class _Provider:
+            def __init__(self, **kwargs):
+                built.append(self)
+                self.kwargs = kwargs
+                self.client = type("C", (), {"_pid": 4242})()
+                self.session_id = "c1"
+                self.stopped = False
+
+            async def start(self):
+                pass
+
+            async def stream(self, message, timeout=None):
+                test.assertEqual(shields, [("on", 4242)])
+                yield _ev(rp.EVENT_TEXT_CHUNK, text="reviewed on claude")
+                yield _ev(rp.EVENT_COMPLETE, stop_reason="end_turn")
+
+            async def shutdown(self):
+                self.stopped = True
+
+        work_dir = _work_dir(self)
+        pool = ReviewPool(work_dir=work_dir)
+        with unittest.mock.patch.object(rp, "build_acp_provider", _Provider):
+            await pool.begin_batch()
+            out = await pool.send("review this")
+            await pool.end_batch()
+        self.assertEqual(out, "reviewed on claude")
+        self.assertEqual(self.calls, [])   # no kiro-cli runtime was spawned
+        self.assertEqual(len(built), 1)
+        kwargs = built[0].kwargs
+        self.assertEqual(kwargs["acp_backend"], "claude")
+        self.assertEqual(kwargs["sandbox_mode"], "auto")
+        self.assertEqual(kwargs["memory_mode"], "temporary")
+        self.assertEqual(kwargs["work_dir"], work_dir)
+        self.assertTrue(built[0].stopped)
+        self.assertEqual(shields, [("on", 4242), ("off", 4242)])
+        self.assertEqual(pool.stats()["busy"], 0)
+
+    async def test_a_claude_client_takes_the_configured_review_effort(self):
+        self._configure("claude")
+        self._patch_shields()
+        built: list[dict] = []
+
+        class _Provider:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+                self.client = type("C", (), {"_pid": 4242})()
+                self.session_id = "c1"
+
+            async def start(self):
+                pass
+
+            async def stream(self, message, timeout=None):
+                yield _ev(rp.EVENT_COMPLETE, stop_reason="end_turn")
+
+            async def shutdown(self):
+                pass
+
+        default = rp._DEFAULT_REVIEW_MODEL
+        cases = [("reviewer-model", "high", {"reviewer-model": "high"}, ""),
+                 (default, "high", None, "high"),
+                 ("reviewer-model", "", None, ""),
+                 (default, "", None, "")]
+        for model, effort, per_model, unbound in cases:
+            settings = {"model": None, "effort": effort}
+            with (unittest.mock.patch.object(rp, "_reviewer_model", lambda agent, m=model: m),
+                  unittest.mock.patch.object(rp, "_get_review_settings", lambda s=settings: s),
+                  unittest.mock.patch.object(rp, "build_acp_provider", _Provider)):
+                await ReviewPool(work_dir=_work_dir(self)).send("review this")
+            self.assertEqual(built[-1]["model"], model)
+            self.assertEqual(built[-1]["effort_per_model"], per_model)
+            self.assertEqual(built[-1]["unbound_effort"], unbound)
+        self.assertEqual(len(built), len(cases))
+
+    async def test_a_client_that_cannot_start_is_shut_down_and_never_shielded(self):
+        self._configure("claude")
+        shields = self._patch_shields()
+        stopped: list[bool] = []
+
+        class _Provider:
+            def __init__(self, **kwargs):
+                self.client = None
+
+            async def start(self):
+                raise rp.SandboxUnavailableError(
+                    "no sandbox backend", "no_backend", "no mechanism")
+
+            async def shutdown(self):
+                stopped.append(True)
+
+        pool = ReviewPool(work_dir=_work_dir(self))
+        with unittest.mock.patch.object(rp, "build_acp_provider", _Provider):
+            with self.assertRaises(rp.ReviewRuntimeUnavailable):
+                await pool.send("review this")
+        self.assertEqual(stopped, [True])
+        self.assertEqual(shields, [])
+        self.assertEqual(pool.stats()["busy"], 0)
+
+    async def test_shutdown_stops_a_client_still_running(self):
+        self._configure("claude")
+        shields = self._patch_shields()
+        started, release = asyncio.Event(), asyncio.Event()
+        stopped: list[bool] = []
+
+        class _Provider:
+            def __init__(self, **kwargs):
+                self.client = type("C", (), {"_pid": 7})()
+                self.session_id = "c1"
+
+            async def start(self):
+                pass
+
+            async def stream(self, message, timeout=None):
+                started.set()
+                await release.wait()
+                yield _ev(rp.EVENT_COMPLETE, stop_reason="end_turn")
+
+            async def shutdown(self):
+                stopped.append(True)
+
+        pool = ReviewPool(work_dir=_work_dir(self))
+        with unittest.mock.patch.object(rp, "build_acp_provider", _Provider):
+            task = asyncio.create_task(pool.send("review this"))
+            await asyncio.wait_for(started.wait(), 10)
+            await pool.shutdown()
+            self.assertEqual(stopped, [True])
+            self.assertEqual(shields, [("on", 7), ("off", 7)])
+            release.set()
+            await asyncio.wait_for(task, 10)
+        self.assertEqual(stopped, [True])   # the task's own teardown stops nothing twice
+
+    async def test_a_backend_served_neither_way_falls_back_to_kiro_and_warns_once(self):
+        self._configure("claude")
+        unservable = unittest.mock.patch.object(
+            rp, "capabilities_for",
+            lambda backend: type("Caps", (), {"acp_client_spawnable": False})())
+        unservable.start()
+        self.addCleanup(unservable.stop)
         with self.assertLogs(rp.logger, level="WARNING") as logs:
             kwargs = await self._spawn()
             self.assertEqual(rp.review_backend(), rp.ACP_BACKEND_KIRO)

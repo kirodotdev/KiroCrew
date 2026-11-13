@@ -377,51 +377,24 @@ def plan_teardown(
 
     Launch identity is read under :data:`LAUNCH_TAG_KEY`, imported from the module
     that writes it (see :func:`classify_task`).
-    *started_by* is the ``startedBy`` value the launcher stamps for THIS launch,
-    and it is required because the ambiguous case below is defined by it: without
-    it there is no way to tell a task this launch plausibly started from a foreign
-    one, so the refusal that case exists for could not fire.
+    *started_by* is the ``startedBy`` value the launcher stamps for THIS launch;
+    the ambiguous cases below are defined by it.
 
-    Four cases, and the last two are the ones worth stating plainly.
+    * Nothing of ours and nothing ambiguous: ``confirmed=True``, nothing to delete
+      (teardown is idempotent).
+    * :attr:`Ownership.OURS` tasks are deleted; :attr:`Ownership.OTHER_LAUNCH`
+      tasks are left alone for their own launch to tear down.
+    * A running :attr:`Ownership.UNMARKED` task whose ``startedBy`` is ours, or a
+      running :attr:`Ownership.MISLABELLED` one (marker and ``startedBy`` present,
+      launch tag absent or foreign), is REFUSED: not deleted, since a ``startedBy``
+      match alone is a guess, and not ignored, since it may bill until a human acts.
+      The plan returns ``confirmed=False`` and the warning names the ARN and which
+      refusal fired, because an unmarked task may not be the operator's while a
+      mislabelled one is theirs and wrongly tagged.
 
-    Nothing of ours is present and nothing is ambiguous: ``confirmed=True`` with
-    an empty delete list. Teardown is idempotent, so a tag whose task is already
-    gone is a success and not an error.
-
-    Tasks classified :attr:`Ownership.OURS`: delete exactly those, and confirm.
-    :attr:`Ownership.OTHER_LAUNCH` tasks are left alone silently -- another launch
-    owns them and will tear them down itself.
-
-    A running :attr:`Ownership.UNMARKED` task whose ``startedBy`` says this
-    launcher started it: this is the ambiguous case, and it REFUSES to claim that
-    task. It is not deleted, because deleting on a ``startedBy`` match alone is
-    deleting by a guess when the marker that authorises deletion is absent. It is
-    not ignored either, because a task this launcher plausibly started and cannot
-    claim is a task that bills until a human intervenes. So the plan returns
-    ``confirmed=False`` and names the ARN -- which surfaces through the existing
-    caller as a warning the user can act on. A mislabelled marker produces exactly
-    this shape in production, so it is the case with a test.
-
-    A running :attr:`Ownership.MISLABELLED` task: the same refusal through a
-    different door. The marker is present and the ``startedBy`` is this launcher's,
-    but the launch tag -- the value that authorises this launch to claim a task --
-    is absent or names another launch. Deleting on the ``startedBy`` match would
-    override the one field whose job is to say whose task it is; skipping it would
-    leave a task this launcher started to bill unattended. So it is refused the
-    same way, and the warning says WHICH refusal fired, because the operator's
-    next step differs: an unmarked task may not be theirs at all, while a
-    mislabelled one is theirs and wrongly tagged.
-
-    Both refusals apply only to a running task. ``STOPPED`` is the one ECS state
-    that costs nothing, and a warning that tells the operator to stop a task that
-    is already stopped is noise that trains them to ignore the real one.
-
-    The refusal is per task, not per teardown. Authority to stop an
-    :attr:`Ownership.OURS` task comes from that task's own marker and is not
-    withdrawn by an unclaimable neighbour, so when both are present the plan still
-    deletes ours, still returns ``confirmed=False`` because something may be left
-    billing, and the warning names both halves: what is being stopped and what
-    could not be claimed.
+    Refusals apply only to running tasks: a ``STOPPED`` task costs nothing. They
+    are per task, so OURS tasks are still deleted beside an unclaimable neighbour,
+    with ``confirmed=False`` and a warning naming both halves.
     """
     if not launch_tag:
         raise ValueError("a launch tag is required to plan a teardown")
@@ -703,54 +676,23 @@ def plan_bounds_sweep(
     """Decide which of *crew*'s sighted tasks are over their lifetime, and which are
     inside it.
 
-    Deliberately takes no launch tag. A TTL has to reach a task whose tag the
-    caller has forgotten -- ``launch_job._new_tag`` mints a fresh random tag for
-    every launch, so a sweep scoped to the tag in hand would bound the one task
-    that is certainly fine and never the leftovers, which are the whole reason a
-    TTL exists. So each sighting supplies its own launch tag and ownership is
-    decided per task.
+    Takes no launch tag: ``launch_job._new_tag`` mints a fresh tag per launch, so a
+    sweep scoped to the tag in hand would never reach the leftovers a TTL exists
+    for. Each sighting supplies its own tag and ownership is decided per task.
 
-    Attribution is what *crew* is for, and it is the rule this sweep turns on.
-    A cluster-wide read reaches every task in the cluster, and a shared account
-    can hold a colleague's crew, so the sweep needs a value that says WHOSE a
-    managed task is. Two candidates do not: :func:`classify_task` against a
-    sighting's own tag can only answer the MARKER half, because ``launch_tag``
-    equals the tag the sighting itself carries and so matches by construction;
-    and :func:`_started_by_for` is a prefix plus that same tag, carrying no host
-    or crew component, so a genuine task of ANY crew satisfies it. Both are kept
-    -- the first keeps an unmarked task out of the stop list including the case
-    where the launch tag was written into the marker itself, and the second
-    refuses a task whose ``startedBy`` disagrees with its own tag -- but neither
-    can attribute, and treating them as if they could is how a sweep stops a
-    neighbour's running crew. :data:`CREW_TAG_KEY` is the value that attributes:
-    ``runtask.run_task_request`` writes the launching crew's name onto every task
-    it starts, and a crew name is stable across launches, which is exactly the
-    property a TTL needs and a launch tag lacks.
+    *crew* is what attributes a task on a shared cluster. :func:`classify_task`
+    against a sighting's own tag matches by construction, and
+    :func:`_started_by_for` carries no crew component, so neither can say WHOSE a
+    task is (both still filter unmarked and inconsistent tasks).
+    :data:`CREW_TAG_KEY`, written by ``runtask.run_task_request``, is stable across
+    launches and does. An empty *crew* is refused rather than read as a wildcard.
 
-    An empty *crew* is refused rather than treated as a wildcard. It is the one
-    value that would match nothing and therefore appear to match everything to a
-    reader, and a bound sweep that silently widened to the whole cluster is the
-    failure this parameter exists to prevent.
-
-    A ``STOPPED`` task is skipped before anything else. It costs nothing, so it
-    is neither stopped again nor counted against the cap.
-
-    A task whose age cannot be established -- no ``startedAt`` and no
-    ``createdAt`` in the read -- is never stopped for age. That is the safe
-    direction: stopping on an unknown age would stop a task that may have started
-    a second ago. It is counted as running, so it still presses against the cap,
-    and it is named in the warning so the case is auditable rather than silent.
-
-    A managed task carrying a launch tag and this launcher's stamp but NO crew tag
-    is treated the same way: never stopped, counted as running, and named. It
-    cannot be attributed, so it may be a leftover of this crew from a launcher too
-    old to have written the tag, or a neighbour's from the same. Counting it
-    presses the cap and can refuse a launch that would otherwise have gone ahead,
-    which is the direction this module already chose -- a refusal costs a launch,
-    a wrong stop costs a running crew. A task whose crew tag names a DIFFERENT
-    crew is skipped in silence, because on a shared cluster it is not this
-    launcher's business and naming every one of them would be noise an operator
-    learns to scroll past.
+    * A ``STOPPED`` task costs nothing: skipped, not counted against the cap.
+    * A task with no ``startedAt`` or ``createdAt`` is never stopped for age, is
+      counted as running, and is named in the warning.
+    * A managed task with NO crew tag is handled the same way: it cannot be
+      attributed, and a refusal costs a launch while a wrong stop costs a crew.
+    * A task whose crew tag names a DIFFERENT crew is skipped silently.
     """
     if not crew:
         raise ValueError(
@@ -1337,62 +1279,32 @@ class FargateLaunchEngine:
         """``(ssm_target, "", True)`` once the crew container reports a runtime id,
         else ``("", reason, alive)``.
 
-        The new AWS read this lane needs. ``RunTask`` answers with a task ARN and
-        nothing else, so the launcher holds two of an SSM ECS target's three
-        fields; the third, the container's ``runtimeId``, exists only once ECS has
-        started the container, and ``DescribeTasks`` is the only place it is
-        readable. This polls that read on :data:`REGISTER_TARGET_POLL_SECONDS` up
-        to :data:`REGISTER_TARGET_TIMEOUT_SECONDS` of ELAPSED time -- the last
-        sleep is shortened to whatever the budget has left, so the ceiling is the
-        documented number and not that number plus one round trip per poll -- and
-        returns on the first answer that carries one.
+        ``RunTask`` returns only a task ARN; the container's ``runtimeId``, the third
+        field of an SSM ECS target, is readable only from ``DescribeTasks`` once ECS
+        has started it. This polls on :data:`REGISTER_TARGET_POLL_SECONDS` up to
+        :data:`REGISTER_TARGET_TIMEOUT_SECONDS` of ELAPSED time (the last sleep is
+        shortened to the budget left).
 
-        Never raises, and returns a REASON rather than a bare failure, because
-        every way this ends badly is a different thing for its owner to do:
+        Never raises; returns a REASON, because each failure means a different next
+        step:
 
-        * the task has left ``RUNNING`` -- ECS's own ``stoppedReason`` is quoted,
-          since that is where the cause is (an image it could not pull, a secret
-          it could not read). There is no crew to add and none to tear down;
-        * ECS does not list the task -- :meth:`describe_task` answers ``None``.
-          This counts as gone only AFTER some read has seen the task, because
-          ``RunTask`` and ``DescribeTasks`` are eventually consistent: a task
-          accepted moments ago is legitimately absent from the first read, and
-          treating that as gone would fail the launch of a task that is starting
-          normally and going on to bill. So an absence before any sighting is
-          polled like any other not-ready answer, and only a DISAPPEARANCE -- an
-          absence after a sighting -- ends it;
-        * the read is denied or otherwise fails -- the ``ecs:DescribeTasks``
-          error, which names the caller ARN on an AccessDenied;
-        * the budget ran out -- the honest answer, and the one case where simply
-          looking again later works. Its wording separates a task ECS never
-          listed from one that was listed and stayed pre-``RUNNING``, because
-          those are different things to go and look at.
+        * the task left ``RUNNING`` -- ECS's ``stoppedReason`` is quoted;
+        * ECS does not list the task -- gone only AFTER some read has seen it, since
+          ``RunTask`` and ``DescribeTasks`` are eventually consistent;
+        * the read failed -- the ``ecs:DescribeTasks`` error, naming the caller ARN
+          on an AccessDenied;
+        * the budget ran out -- worded to separate a task ECS never listed from one
+          that stayed pre-``RUNNING``.
 
-        The third element separates those: ``alive`` is False only when this read
-        SAW a task that is gone or past running, and True whenever the task may
-        still come up -- including when the read itself failed, so a denied
-        ``DescribeTasks`` never reports a live crew as dead, and including a task
-        no read has managed to see yet. :meth:`register` is what turns that into a
-        fatal or non-fatal failure; the distinction is a fact about the task, so it
-        is established here, where the task was read.
+        ``alive`` is False only when a read SAW the task gone or past running, so a
+        failed read or a not-yet-seen task never reports a live crew as dead.
+        :meth:`register` decides whether that is fatal.
 
-        A target is composed only from a task that is
-        :attr:`~TaskSighting.is_serving`, and every state after ``RUNNING`` is
-        refused before that point. ``runtimeId`` outlives the container that had
-        it: a container that reached ``RUNNING`` and then began stopping still
-        carries one through ``DEACTIVATING``, ``STOPPING`` and ``DEPROVISIONING``,
-        so a check that reads the runtime id -- or that asks
-        :attr:`~TaskSighting.is_running`, which answers a billing question and
-        admits every state but ``STOPPED`` -- would compose a well-formed target
-        for a task whose ENI is being torn down and report the launch as
-        connectable. A task not serving YET is a different case and is polled, not
-        refused.
-
-        The composed target goes through :func:`split_ecs_target`, the registry's
-        own reader, before being returned. A cluster or id that cannot be read
-        back is refused HERE, where the reason can name the parts, rather than at
-        ``reg.add``, whose refusal would arrive as a launch-time traceback about a
-        string the operator never typed.
+        A target is composed only from a task that :attr:`~TaskSighting.is_serving`:
+        ``runtimeId`` survives through ``DEACTIVATING``, ``STOPPING`` and
+        ``DEPROVISIONING``, and :attr:`~TaskSighting.is_running` admits every state
+        but ``STOPPED``. The target is read back through :func:`split_ecs_target`
+        so a malformed one is refused here, with its parts named, not at ``reg.add``.
         """
         cluster, task_id = split_task_arn(task_arn)
         if not cluster and self._spec is not None:

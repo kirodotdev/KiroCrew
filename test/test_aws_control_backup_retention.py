@@ -1,23 +1,9 @@
 """Cloud backup retention: keep the newest N archives, erase the rest by VERSION.
 
-Every AWS call in here is a fake. Two layers are faked, and which one a test uses
-is the point of that test:
-
-* the retention tests patch ``storage.list_object_versions`` /
-  ``storage.delete_object_versions``, so they assert what retention DECIDES;
-* the storage tests patch ``storage._checked``, the package's single AWS CLI
-  chokepoint, so they assert the argv that would have gone to the CLI.
-
-No test reaches a network, a profile or a bucket. The drive under test is
-versioned, which is why "delete the object" is never the assertion: a delete
-without a ``VersionId`` writes a marker and the bytes keep billing, so the tests
-pin the version-pinned form specifically.
-
-The suite is split by topic. This file holds what the sweep decides, the storage argv
-and the audit trail; ``test_aws_control_backup_retention_unclaimed.py`` holds what the
-sweep counts but can never retire, and ``test_aws_control_backup_retention_setting.py``
-the retention count's writer, its gate and the last-sweep status read. The fakes they
-share live in ``aws_control_backup_retention_helpers.py``.
+Every AWS call is a fake: retention tests patch ``storage.list_object_versions`` /
+``storage.delete_object_versions`` to assert decisions, and storage tests patch
+``storage._checked`` to assert the CLI argv. The drive is versioned, so a delete
+without a ``VersionId`` only writes a marker; the tests pin the version-pinned form.
 """
 
 from __future__ import annotations
@@ -122,14 +108,9 @@ class TestRecoveredUploadsKeepTheirVersion:
 class TestHeldVersionsAreReleasedOncePersisted:
     """The other direction: a held version the state CARRIES must leave the overlay.
 
-    ``_merge_pending`` copies the whole held-version map into every successful state
-    update, so an entry that is never released is written back for the life of the
-    process. That re-adds the records ``_prune_recorded_versions`` deleted on a trusted
-    listing's proof, which would make the prune's decision silently temporary.
-
-    The release paired with the fingerprint cannot cover this on its own: the two maps
-    are bounded differently, so a held version outlives its ``uploads`` counterpart and
-    after that eviction the paired condition can never match again.
+    ``_merge_pending`` writes the held-version map into every update, so an unreleased
+    entry re-adds records ``_prune_recorded_versions`` deleted. The two maps are bounded
+    differently, so a held version can outlive its ``uploads`` counterpart.
     """
 
     def _orphan(self) -> str:
@@ -1046,11 +1027,8 @@ class TestOnlyOurOwnArchivesAreRetired:
 class TestRetentionOffKeepsEverything:
     """Both roads to off, and the one difference between them.
 
-    Neither deletes. They are audited differently because not-enabled is the
-    configured behaviour of an ordinary install, while a state file this process
-    cannot read means an operator who DID configure a count is silently not getting
-    it -- that is a fault, and filing it as success would bury it among every
-    unconfigured install.
+    Neither deletes. Not-enabled is an ordinary install, but an unreadable state file
+    silently drops a configured count, so it is audited as a failure.
     """
 
     def test_a_corrupt_state_file_deletes_nothing_and_is_audited_as_failed(
@@ -1281,22 +1259,11 @@ class TestEveryVersionUnderAKeyMustBeOurs:
     """The record proves we wrote A version of a key, not every version of it."""
 
     def test_a_key_whose_current_version_is_foreign_is_neither_kept_nor_retired(self, drive, state):
-        # `storage.get_file` reads whatever is CURRENT under a key unless it is handed
-        # a version id, so that is where a restore starts. While a co-writer's version
-        # is current, this sweep does not treat the key as a restorable copy: it holds
-        # no keep slot, and it is not retired either.
+        # While a co-writer's version is current, the key holds no keep slot and is
+        # not retired either; that is the conservative reading.
         #
-        # Our bytes under such a key are not unreachable any more -- the restore path
-        # reads the recorded version when the current object fails the fingerprint --
-        # so not counting the key is the CONSERVATIVE reading rather than the only one.
-        # Retention's behaviour here is deliberately unchanged, which is what this
-        # test pins.
-        #
-        # The overwrite is dated between archives 01 and 02 on purpose, so the two
-        # readings disagree. Counting the key as live makes its newest version the
-        # OLDEST of the three, which puts it past keep=1 and erases our version under
-        # it; excluding the key leaves it alone. Without that dating both readings
-        # delete the same set and the test proves nothing.
+        # The overwrite is dated between archives 01 and 02 so the readings disagree:
+        # counting the key would put it past keep=1 and erase our version under it.
         state(1)
         rows = _archives(backup.KIND_SNAPSHOT, ["01", "02", "03"])
         old = _key_of(rows[0])
@@ -1392,16 +1359,9 @@ class TestEveryVersionUnderAKeyMustBeOurs:
         assert "c" not in backup.uploaded_versions(ACCOUNT)
 
     def test_a_key_with_no_recorded_version_is_not_retired(self, drive, state):
-        # The fail-closed direction, and the one that matters: a key this install
-        # recorded by NAME but not by version cannot be proven ours, so it stays.
-        # An unversioned bucket and a response that named no version both land here.
-        #
-        # So does every archive pushed before the version record existed, which is
-        # why retention bounds forward growth and drains nothing already on a drive.
-        #
-        # Built without `_prune`, which records a version for every owned key by
-        # design -- the point here is a key present in `uploads` and absent from
-        # `upload_versions`, which that helper cannot produce.
+        # Fail closed: a key recorded by NAME but not by version cannot be proven ours,
+        # so it stays (an unversioned bucket lands here too). Built without `_prune`,
+        # which always records a version.
         state(1)
         rows = _archives(backup.KIND_SNAPSHOT, ["01", "02"])
         drive.rows = rows

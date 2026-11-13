@@ -204,6 +204,7 @@ class TestEagerSpawn:
             ) as resolve,
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
+        assert chat_runner._armed_prefetches == {}
         resolve.assert_called_once_with(cfg, agent, validate_memory_files=False)
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
@@ -229,6 +230,7 @@ class TestEagerSpawn:
             ),
         ):
             await _eager_spawn(state, slot)
+        assert list(chat_runner._armed_prefetches) == ["dashboard:t1"]
         state.sessions.get_or_create.assert_awaited_once()
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.release.assert_called_once_with(key)
@@ -327,6 +329,7 @@ class TestEagerSpawn:
         state.get_slot = MagicMock(return_value=_ChatSlot("t1"))  # different object
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
+        assert chat_runner._armed_prefetches == {}
         state.sessions.get_or_create.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -373,6 +376,10 @@ class TestEagerSpawn:
         state.sessions.get_or_create = AsyncMock(side_effect=RuntimeError("spawn failed"))
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)  # must not raise
+        # A failed agent start counts toward the background-start cap, and the
+        # admission reservation is given back.
+        assert slot._eager_spawn_failures == 1
+        assert chat_runner._armed_prefetches == {}
         state.sessions.release.assert_not_called()
 
     @pytest.mark.asyncio
@@ -400,6 +407,9 @@ class TestEagerSpawn:
         )
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)  # must not raise
+        # A refusal is not a failed start: the slot stays clear of the cap.
+        assert getattr(slot, "_eager_spawn_failures", 0) == 0
+        assert chat_runner._armed_prefetches == {}
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()
 
@@ -421,6 +431,7 @@ class TestEagerSpawn:
         state.sessions.get_or_create = AsyncMock(side_effect=_create_then_delete)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
+        assert chat_runner._armed_prefetches == {}
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.remove.assert_awaited_once_with(key)
         # Semaphore still released before teardown.
@@ -446,6 +457,7 @@ class TestEagerSpawn:
         state.sessions.get_or_create = AsyncMock(side_effect=_create_then_switch)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
+        assert chat_runner._armed_prefetches == {}
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.remove.assert_awaited_once_with(key)
         # Semaphore still released before teardown.
@@ -460,6 +472,7 @@ class TestEagerSpawn:
         state.sessions.remove = AsyncMock()
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
+        assert list(chat_runner._armed_prefetches) == ["dashboard:t1"]
         state.sessions.remove.assert_not_awaited()
 
     @pytest.mark.asyncio

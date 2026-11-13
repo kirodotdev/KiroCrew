@@ -418,7 +418,7 @@ describe('ui.find: point at a control by its name', () => {
     fireEvent.pointerDown(screen.getByTestId('more'), { button: 0, ctrlKey: false })
     await waitFor(() => expect(writes('/api/guide/progress')[0]?.body).toMatchObject({ step_index: 0, outcome: 'observed' }), { timeout: 3000 })
     const list = await screen.findByTestId('guide-find-ambiguous', {}, { timeout: 5000 })
-    expect(within(list).getAllByRole('button')).toHaveLength(2)
+    expect(within(list).getAllByRole('radio')).toHaveLength(2)
     fireEvent.click(within(list).getByTestId('guide-find-pick-2'))
     await waitFor(() => expect(writes('/api/guide/progress').some(c => c.body.outcome === 'target_found')).toBe(true), { timeout: 5000 })
   })

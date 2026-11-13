@@ -441,6 +441,7 @@ src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/
     resolve_profile.py        # NEW — resolves the profile to JSON
     diff_signals.py
     _review_contract.py       # shared marker/finding/disposition contract
+    _tool_argv.py             # shared argv[0] lookup + .cmd/.bat argument guard for the runners
     pr_status.py              # + optional --readiness-context / env override
     pr_findings.py
     enable_automerge.py

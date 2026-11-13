@@ -489,6 +489,7 @@ class TestFlushFileChanges:
             "path": str(target),
             "before": "before",
             "after": "after",
+            "before_fragment": False,
         }
 
     def test_dedup_keeps_first_before(self, short_tmp_dir: Path):

@@ -6,12 +6,13 @@
  * in a two-pane layout: results list (left) + detail preview (right).
  * Keyboard-first: arrow keys move the selection, Enter installs.
  */
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
 import { safeHttpUrl } from '../lib/safeUrl'
@@ -23,6 +24,8 @@ import type { DiscoveredSkill, SkillProviderOutcome } from '../types'
 import { i18nT } from '../i18n/t'
 import { fmtCompact } from '../i18n/format'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 interface Props {
   open: boolean
   onClose: () => void
@@ -50,7 +53,8 @@ export function providerFailureLines(outcomes: SkillProviderOutcome[]): string[]
 /** Per-skill install lifecycle for UI feedback. */
 type InstallPhase =
   | { step: 'installing' }
-  | { step: 'done'; fileCount: number; kind: string }
+  /** `reinstalled`: the Reinstall button replaced an installed copy. */
+  | { step: 'done'; fileCount: number; kind: string; reinstalled: boolean }
   | { step: 'conflict'; key: string }
   | { step: 'error'; message: string }
 
@@ -70,7 +74,15 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
   // yank the list away on small screens.
   const [mobileDetail, setMobileDetail] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const listRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  // The results column is capped by the modal, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more skills sit below (see MORE_BELOW_MASK).
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  const setListNode = useCallback((node: HTMLDivElement | null) => {
+    listRef.current = node
+    attachList(node)
+  }, [attachList])
 
   const handleQueryChange = useCallback((value: string) => {
     setQuery(value)
@@ -104,15 +116,21 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
     inputRef.current?.focus()
   }, [])
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['discover-skills', debouncedQuery],
-    queryFn: () => api.discoverSkills(debouncedQuery),
-    enabled: open && debouncedQuery.length >= 2,
+  const searching = debouncedQuery.length >= 2
+  const { data, isLoading, isFetching, error: discoverError } = useQuery({
+    // Below 2 characters the modal shows the bundled featured list instead of
+    // an empty "type to search" screen; typing still searches.
+    queryKey: ['discover-skills', searching ? debouncedQuery : ''],
+    queryFn: () => (searching ? api.discoverSkills(debouncedQuery) : api.discoverSkills('', { featured: true })),
+    enabled: open,
     retry: false,
     staleTime: 30_000,
   })
 
   const results = useMemo(() => data?.results ?? [], [data])
+  // New results or an install note change the rows, not the column's own box,
+  // so no observer on the column sees it.
+  useEffect(() => { remeasureList() }, [results, installPhases, remeasureList])
   const providers = data?.providers ?? []
   const failureLines = providerFailureLines(data?.provider_outcomes ?? [])
   // Every provider failed and nothing came back: "no skills found" would claim we
@@ -144,12 +162,17 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
   }, [])
 
   const installMutation = useMutation({
-    mutationFn: ({ skill, overwrite }: { skill: DiscoveredSkill; overwrite?: boolean }) =>
+    mutationFn: ({ skill, overwrite }: { skill: DiscoveredSkill; overwrite?: boolean; reinstall?: boolean }) =>
       api.installDiscoveredSkill(skill.provider, skill.id, { overwrite }),
     onMutate: ({ skill }) => setPhase(skillKey(skill), { step: 'installing' }),
-    onSuccess: (result, { skill }) => {
+    onSuccess: (result, { skill, reinstall }) => {
       const key = skillKey(skill)
-      setPhase(key, { step: 'done', fileCount: result.file_count, kind: result.kind })
+      setPhase(key, {
+        step: 'done',
+        fileCount: result.file_count,
+        kind: result.kind,
+        reinstalled: !!reinstall && result.kind === 'updated',
+      })
       setInstalledOverride(prev => new Set(prev).add(key))
       queryClient.invalidateQueries({ queryKey: ['skills'] })
     },
@@ -163,8 +186,8 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
     },
   })
 
-  const handleInstall = useCallback((skill: DiscoveredSkill, overwrite?: boolean) => {
-    installMutation.mutate({ skill, overwrite })
+  const handleInstall = useCallback((skill: DiscoveredSkill, overwrite?: boolean, reinstall?: boolean) => {
+    installMutation.mutate({ skill, overwrite, reinstall })
   }, [installMutation])
 
   // Keyboard navigation: ArrowDown/ArrowUp move selection, Enter installs
@@ -219,7 +242,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
           inputProps={ime.bindComposition()}
         />
 
-        {!isLoading && debouncedQuery.length >= 2 && failureLines.length > 0 && (
+        {!isLoading && searching && failureLines.length > 0 && (
           <div className="mb-3 space-y-2">
             {failureLines.map(line => (
               <ErrorNotice
@@ -234,8 +257,19 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
           </div>
         )}
 
-        {!nothingAnswered && (
-          <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="skills" />
+        {/* A request that failed is not an empty list: say so instead of
+            falling back to the type-to-search hint. */}
+        {discoverError ? (
+          <div className="py-6 px-4">
+            <ErrorNotice
+              message={errMessage(discoverError) || i18nT('components.skillBrowserModal.search_failed')}
+              askAgent
+              onHandoff={onClose}
+              testId="skill-browser-search-error"
+            />
+          </div>
+        ) : !nothingAnswered && (
+          <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="skills" featuredLabel={i18nT('components.skillBrowserModal.popular_skills')} />
         )}
 
         {/* Two-pane on md+: results list (left) + detail preview (right).
@@ -244,11 +278,11 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
         {results.length > 0 && (
           <div className="flex gap-3 flex-1 min-h-0">
             <div
-              ref={listRef}
+              ref={setListNode}
               id="skill-results-list"
               role="listbox"
               aria-label={i18nT('components.skillBrowserModal.skill_search_results')}
-              className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1`}
+              className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`}
             >
               {results.map(skill => {
                 const key = skillKey(skill)
@@ -353,12 +387,15 @@ function InstallStatus({
   phase,
   onInstall,
   large,
+  reinstallHintId,
 }: {
   skill: DiscoveredSkill
   installed: boolean
   phase: InstallPhase | undefined
-  onInstall: (skill: DiscoveredSkill, overwrite?: boolean) => void
+  onInstall: (skill: DiscoveredSkill, overwrite?: boolean, reinstall?: boolean) => void
   large?: boolean
+  /** Id of the line saying Reinstall replaces the local copy, read with the button. */
+  reinstallHintId?: string
 }) {
   const iconSize = large ? 14 : 12
 
@@ -374,7 +411,9 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1 text-xs text-ok" role="status">
         <Check size={iconSize} aria-hidden="true" />
-        {phase.fileCount > 1 ? `Installed ${phase.fileCount} files` : i18nT('components.skillBrowserModal.installed')}
+        {phase.reinstalled
+          ? (phase.fileCount > 1 ? i18nT('components.skillBrowserModal.reinstalled_files', { count: phase.fileCount }) : i18nT('components.skillBrowserModal.reinstalled'))
+          : (phase.fileCount > 1 ? i18nT('components.skillBrowserModal.installed_files', { count: phase.fileCount }) : i18nT('components.skillBrowserModal.installed'))}
       </span>
     )
   }
@@ -391,9 +430,25 @@ function InstallStatus({
     )
   }
   if (installed) {
-    return (
+    const badge = (
       <span className="flex items-center gap-1 text-xs text-ok">
         <Check size={iconSize} aria-hidden="true" /> {i18nT('components.skillBrowserModal.installed')}
+      </span>
+    )
+    // The detail pane is where an installed skill can be fetched again (an
+    // upstream change). The list row keeps the bare badge: a button nested in
+    // a listbox option is off the list's keyboard path.
+    if (!large) return badge
+    return (
+      <span className="flex items-center gap-1.5">
+        {badge}
+        <Btn
+          aria-describedby={reinstallHintId}
+          onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill, true, true) }}
+        >
+          <RefreshCw size={iconSize} aria-hidden="true" />
+          {i18nT('components.skillBrowserModal.reinstall')}
+        </Btn>
       </span>
     )
   }
@@ -419,7 +474,7 @@ function SkillDetailPanel({
   skill: DiscoveredSkill
   installed: boolean
   phase: InstallPhase | undefined
-  onInstall: (skill: DiscoveredSkill, overwrite?: boolean) => void
+  onInstall: (skill: DiscoveredSkill, overwrite?: boolean, reinstall?: boolean) => void
   /** Closes the modal once an agent hand-off proceeds, so the chat it navigates to is visible. */
   onHandoff: () => void
 }) {
@@ -428,6 +483,11 @@ function SkillDetailPanel({
     queryFn: () => api.previewDiscoveredSkill(skill.provider, skill.id),
     staleTime: 60_000,
   })
+  // The bundle file list is capped at max-h-40; the bottom fade says more
+  // files sit below. Opening the <details> resizes the list, which the
+  // observer sees; a new preview swaps the rows, which it does not.
+  const [attachFileList, fileListEdges, remeasureFileList] = useScrollEdgesY<HTMLUListElement>()
+  useEffect(() => { remeasureFileList() }, [preview, remeasureFileList])
 
   // Same presentation as the installed-skill viewer (SkillDirectoryBrowser):
   // frontmatter parsed into the labeled meta strip, body rendered without
@@ -439,6 +499,9 @@ function SkillDetailPanel({
   const stripDescription = parsed.meta.description || preview?.description || skill.description || ''
   const stripTriggers = parsed.meta.triggers ?? ''
   const stripTags = parsed.meta.tags || (skill.tags && skill.tags.length > 0 ? skill.tags.join(', ') : '')
+  // Reinstall overwrites the local copy at once, so the pane says so beside it.
+  const reinstallHintId = useId()
+  const showsReinstall = installed && (!phase || phase.step === 'error')
 
   return (
     <div className="pb-2">
@@ -450,12 +513,24 @@ function SkillDetailPanel({
           </span>
         </div>
         <div className="shrink-0">
-          <InstallStatus skill={skill} installed={installed} phase={phase} onInstall={onInstall} large />
+          <InstallStatus
+            skill={skill}
+            installed={installed}
+            phase={phase}
+            onInstall={onInstall}
+            large
+            reinstallHintId={showsReinstall ? reinstallHintId : undefined}
+          />
         </div>
       </div>
+      {showsReinstall && (
+        <p id={reinstallHintId} className="text-xs text-muted mb-1">
+          {i18nT('components.skillBrowserModal.reinstall_hint', { provider: skill.display_provider })}
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mb-3">
-        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by')} {preview?.author || skill.author}</span>}
+        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by_author', { author: preview?.author || skill.author })}</span>}
         {(skill.installs ?? 0) > 0 && (
           <span className="flex items-center gap-1">
             <Download size={11} aria-hidden="true" /> {formatInstalls(skill.installs!)} {i18nT('components.skillBrowserModal.installs')}
@@ -516,7 +591,7 @@ function SkillDetailPanel({
           <summary className="text-xs text-muted cursor-pointer hover:text-text">
             {i18nT('components.skillBrowserModal.bundle_contents_count', { count: preview!.file_count })}
           </summary>
-          <ul className="mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto">
+          <ul ref={attachFileList} data-testid="skill-bundle-file-list" className={`mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto ${fileListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
             {preview!.files!.map(f => <li key={f}>{f}</li>)}
           </ul>
         </details>

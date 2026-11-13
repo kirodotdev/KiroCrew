@@ -31,7 +31,7 @@ import re
 import uuid
 from pathlib import Path
 
-from kiro_crew.atomic_write import read_json_or
+from kiro_crew.atomic_write import atomic_write, read_json_or
 
 QUEUE_FILENAME = "subquestion_queue.json"
 _WS_RE = re.compile(r"\s+")
@@ -75,7 +75,8 @@ def enqueue(
     ``candidates`` are dicts ``{"text", "priority"?}`` or plain strings.
     De-duplicates (case/whitespace-insensitive) against everything already in
     the queue AND within the batch. Admits at most ``max_admit`` of the
-    survivors, highest ``priority`` first (stable for ties). Returns the items
+    survivors, highest ``priority`` first (stable for ties). A priority that
+    is not a finite number ranks as 0.0 (see ``_priority``). Returns the items
     actually admitted (so the caller can log/emit them).
     """
     known = _known_keys(queue)
@@ -86,7 +87,7 @@ def enqueue(
     for order, c in enumerate(candidates):
         if isinstance(c, dict):
             text = str(c.get("text", "")).strip()
-            priority = float(c.get("priority", 0.0))
+            priority = _priority(c)
         else:
             text = str(c).strip()
             priority = 0.0
@@ -122,7 +123,7 @@ def _priority(item: dict) -> float:
     """
     try:
         value = float(item.get("priority", 0.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
     return value if math.isfinite(value) else 0.0
 
@@ -213,9 +214,12 @@ def load_queue(campaign_dir: Path) -> dict:
 
 
 def save_queue(campaign_dir: Path, queue: dict) -> None:
-    """Atomically persist the queue to the campaign dir."""
+    """Atomically persist the queue to the campaign dir.
+
+    Through ``atomic_write``, whose unique temp name keeps two writers of the
+    same campaign from sharing one staging file and whose rename retries the
+    Windows sharing-violation window.
+    """
     p = Path(campaign_dir) / QUEUE_FILENAME
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    atomic_write(p, json.dumps(queue, indent=2))

@@ -135,7 +135,7 @@ def test_the_alias_prompt_closes_a_child_once_its_item_is_terminal(tmp_path, mon
     than on the shared constant: the identity test above proves the two specs match,
     and this one proves the clause is in the one the alias ships."""
     alias = _install(tmp_path, monkeypatch)
-    assert "`session_close` (close a child once its item is terminal)" in alias["prompt"]
+    assert "`session_close` (close a child once its item is terminal;" in alias["prompt"]
 
 
 def test_the_alias_permissions_field_is_gated_on_the_installed_kiro_cli(tmp_path, monkeypatch):
@@ -241,9 +241,12 @@ def test_the_boot_installer_writes_this_spec():
     A session already running under the old name resolves it on every dispatch,
     which is exactly what the alias is for, so eager installation is load-bearing
     rather than tidy."""
-    rebuild = Path(agent.__file__).parent / "agent_parts" / "spec_rebuild.py"
-    source = rebuild.read_text(encoding="utf-8")
-    assert "_install_ledger_conductor_agent(clean=clean)" in source
+    parts = Path(agent.__file__).parent / "agent_parts"
+    # The rebuild runs the sibling installs, and the sibling installs write this spec.
+    rebuild = (parts / "spec_rebuild.py").read_text(encoding="utf-8")
+    assert "_install_sibling_specs(refresh_forks, gated_off, clean=clean)" in rebuild
+    siblings = (parts / "spec_siblings.py").read_text(encoding="utf-8")
+    assert "_install_ledger_conductor_agent(clean=clean)" in siblings
 
 
 # ── the deprecated skill ──────────────────────────────────────────────────

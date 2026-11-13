@@ -17,11 +17,14 @@
  * reconnection when pasting a token is the fix (issue #9692).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import type { RootState } from '../store'
-import { sseConnected } from '../store/dashboardSlice'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import App from '../App'
+import en from '../i18n/locales/en.manual.json'
 
 // Match the App.test.tsx mock setup. Differ only in `isAuthBannerShown`
 // where each test controls it explicitly.
@@ -53,6 +56,10 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    // ThemeProvider's catalog query retries every 1s, 2s, 4s... until a read succeeds, and each failed retry notifies it.
+    themes: vi.fn().mockResolvedValue({ themes: [] }),
+    // The mates dock's roster read retries 1s, 2s, 4s through a failure, past SHELL_SETTLED, so it is answered.
+    members: vi.fn().mockResolvedValue({ members: [] }),
   },
   isAuthBannerShown: isAuthBannerShownMock,
   ApiError: class ApiError extends Error {
@@ -74,6 +81,28 @@ Object.defineProperty(window, 'matchMedia', {
 })
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
+// These tests assert on the shell's first frame, before the mount-time status read flips `connected`, so they
+// cannot wait first. Everything else the shell starts at mount (apps, instances, slots, the theme boot, about ten
+// queries this mock leaves unanswered, the 600ms timer that retires the entrance class) lands after that frame,
+// and without a wait it lands after the test. Each test ends here: the entrance class gone and every query idle.
+const SHELL_SETTLED = namedCeiling('SHELL_SETTLED', 5000)
+const shellSettled = (queryClient: QueryClient) =>
+  waitFor(() => {
+    expect(screen.getByTestId('dashboard-shell')).not.toHaveClass('animate-rise')
+    expect(queryClient.isFetching()).toBe(0)
+  }, SHELL_SETTLED)
+
+// The connection dot is the capsule's only button carrying aria-expanded;
+// grab it that way so the query does not depend on the accessible name that
+// these tests are asserting varies.
+const connDot = () => {
+  const btns = screen.getAllByRole('button')
+  const dot = btns.find(b => b.hasAttribute('aria-expanded') && b.querySelector('[role="status"]'))
+  if (!dot) throw new Error('connection dot button not found')
+  return dot
+}
+const statusText = (dot: HTMLElement) => dot.querySelector('[role="status"]')?.textContent ?? ''
+
 describe('App offline capsule — auth-required accessible name + live region', () => {
   beforeEach(() => {
     isAuthBannerShownMock.mockReset()
@@ -84,19 +113,9 @@ describe('App offline capsule — auth-required accessible name + live region', 
     dashboard: { connected: false, status: { platform: 'darwin' }, slots: [], approvalMode: 'normal' } as unknown as RootState['dashboard'],
   }
 
-  // The connection dot is the capsule's only button carrying aria-expanded;
-  // grab it that way so the query does not depend on the accessible name that
-  // these tests are asserting varies.
-  const connDot = () => {
-    const btns = screen.getAllByRole('button')
-    const dot = btns.find(b => b.hasAttribute('aria-expanded') && b.querySelector('[role="status"]'))
-    if (!dot) throw new Error('connection dot button not found')
-    return dot
-  }
-  const statusText = (dot: HTMLElement) => dot.querySelector('[role="status"]')?.textContent ?? ''
-
-  it('announces the generic offline cause when WS is disconnected AND no auth banner', () => {
-    renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+  it('announces the generic offline cause when WS is disconnected AND no auth banner', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    act(() => { store.dispatch(sseDisconnected()) })
     const dot = connDot()
     // Accessible name and live region carry the reconnecting cause; the
     // dot has no "Offline" text pill (the capsule's danger tint is the
@@ -112,11 +131,12 @@ describe('App offline capsule — auth-required accessible name + live region', 
     expect(dot.getAttribute('aria-label')).toMatch(/collapse readouts/i)
     expect(dot.getAttribute('aria-label')).toBe(dot.getAttribute('title'))
     expect(statusText(dot)).not.toMatch(/collapse readouts/i)
+    await shellSettled(queryClient)
   })
 
-  it('announces the session-expired cause (name + live region) when the auth banner is shown on mount', () => {
+  it('announces the session-expired cause (name + live region) when the auth banner is shown on mount', async () => {
     isAuthBannerShownMock.mockReturnValue(true)
-    renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
     const dot = connDot()
     // The fix: the accessible name AND the role="status" live region — not
     // just the native title — say the session expired, so a screen-reader
@@ -127,10 +147,12 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // And the generic wording is gone from the announced surfaces.
     expect(dot.getAttribute('aria-label')).not.toMatch(/reconnecting/i)
     expect(statusText(dot)).not.toMatch(/reconnecting/i)
+    await shellSettled(queryClient)
   })
 
-  it('flips name + live region live in response to mc-auth-required / mc-auth-cleared events', () => {
-    renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+  it('flips name + live region live in response to mc-auth-required / mc-auth-cleared events', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
+    act(() => { store.dispatch(sseDisconnected()) })
     expect(connDot().getAttribute('aria-label')).toMatch(/reconnecting/i)
     expect(statusText(connDot())).toMatch(/reconnecting/i)
 
@@ -147,9 +169,10 @@ describe('App offline capsule — auth-required accessible name + live region', 
     })
     expect(connDot().getAttribute('aria-label')).toMatch(/reconnecting/i)
     expect(statusText(connDot())).toMatch(/reconnecting/i)
+    await shellSettled(queryClient)
   })
 
-  it('announces session-expired even when the transport is still connected (auth wins over connected)', () => {
+  it('announces session-expired even when the transport is still connected (auth wins over connected)', async () => {
     // The independently-sourced state: 403 set authRequired while the socket
     // (Redux `connected`) is still up. A transport-first order would announce
     // "Gateway connected" -- a reassuring lie, uncorrected because the banner
@@ -157,7 +180,7 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // Force both signals ON explicitly (sseConnected pins connected=true so the
     // assertion does not race the mount status fetch; mc-auth-required sets the
     // local auth flag), so the ordering is what the test measures.
-    const { store } = renderWithProviders(<App />, { route: '/chat' })
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
     act(() => {
       store.dispatch(sseConnected())
       window.dispatchEvent(new CustomEvent('mc-auth-required'))
@@ -168,6 +191,7 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // The reassuring "Gateway connected" must NOT be announced in this state.
     expect(statusText(dot)).not.toMatch(/^gateway connected/i)
     expect(dot.getAttribute('aria-label')).not.toMatch(/^gateway connected/i)
+    await shellSettled(queryClient)
   })
 })
 
@@ -183,26 +207,106 @@ describe('App connection indicator — the shape carries the state, not colour a
     return glyph
   }
 
-  it('shows a plug icon when the gateway is connected', () => {
-    const { store } = renderWithProviders(<App />, { route: '/chat' })
+  it('shows a plug icon when the gateway is connected', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
     act(() => { store.dispatch(sseConnected()) })
     const glyph = connGlyph()
     expect(glyph.getAttribute('aria-hidden')).toBe('true')
     expect(glyph.getAttribute('data-conn-state')).toBe('connected')
     expect(glyph.classList.contains('lucide-plug')).toBe(true)
     expect(glyph.classList.contains('lucide-unplug')).toBe(false)
+    await shellSettled(queryClient)
   })
 
-  it('shows an unplugged icon when offline, and its pulse stops under reduced motion', () => {
-    renderWithProviders(<App />, {
+  it('shows an unplugged icon when offline, and its pulse stops under reduced motion', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, {
       route: '/chat',
       preloadedState: { dashboard: { connected: false, status: { platform: 'darwin' }, slots: [], approvalMode: 'normal' } as unknown as RootState['dashboard'] },
     })
+    act(() => { store.dispatch(sseDisconnected()) })
     const glyph = connGlyph()
     expect(glyph.getAttribute('aria-hidden')).toBe('true')
     expect(glyph.getAttribute('data-conn-state')).toBe('offline')
     expect(glyph.classList.contains('lucide-unplug')).toBe(true)
     expect(glyph.classList.contains('lucide-plug')).toBe(false)
     expect(glyph.classList.contains('motion-reduce:animate-none')).toBe(true)
+    await shellSettled(queryClient)
+  })
+})
+
+describe('App offline notice — visible at desktop width, worded by the cause (#34355)', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it.each([
+    [undefined, en.app.gateway_offline_reconnecting],
+    ['session_ended', en.app.relay_session_ended],
+    ['refused', en.app.relay_access_refused],
+  ] as const)('shows the cause %s in words beside the connection dot', async (cause, text) => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    // Explicit transport state: the mount-time status read turns `connected`
+    // on, and whether it lands first is a race.
+    act(() => { store.dispatch(sseDisconnected(cause)) })
+    const notice = screen.getByTestId('topbar-offline-notice')
+    expect(notice).toHaveTextContent(text)
+    // In flow in the actions group, where the collapse ladder makes room for
+    // it, not hanging below the bar where the rail and panes paint over it.
+    expect(notice.closest('.tb-right')).not.toBeNull()
+    expect(notice.querySelector('.tb-offline-notice-msg')).toHaveTextContent(text)
+    // The shared error surface (ErrorNotice, inline), whose icon rung tbr-6
+    // drops by the `.tb-offline-notice` class, with no hand-off: the gateway
+    // it would hand to is the thing that is down.
+    expect(notice).toHaveClass('tb-offline-notice')
+    expect(notice.querySelector(':scope > svg')).not.toBeNull()
+    expect(within(notice).queryByRole('button')).toBeNull()
+    // The dot's sr-only span is the live region; the notice is not a second one.
+    expect(notice).not.toHaveAttribute('role')
+    // The phone strip stays a phone-only element.
+    expect(screen.queryByTestId('mobile-offline-strip')).toBeNull()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    await shellSettled(queryClient)
+  })
+
+  it('stays hidden while the session-expired banner carries the message', async () => {
+    isAuthBannerShownMock.mockReturnValue(true)
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    await shellSettled(queryClient)
+  })
+})
+
+describe('App before the first socket opens — connecting, not offline (#34947)', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it('says it is connecting, with no outage notice or danger tint, until the first socket opens', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    expect(statusText(connDot())).toBe(en.app.gateway_connecting)
+    expect(connDot().getAttribute('aria-label')).toContain(en.app.gateway_connecting)
+    expect(connDot().querySelector('svg')?.getAttribute('data-conn-state')).toBe('connecting')
+    expect(connDot().closest('.tb-capsule')).not.toHaveClass('glass-danger')
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(statusText(connDot())).toBe(en.app.gateway_connected)
+    // A drop after that first open is a real outage, worded as one.
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
+    expect(connDot().closest('.tb-capsule')).toHaveClass('glass-danger')
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
+    await shellSettled(queryClient)
+  })
+
+  it('reports the outage when the first socket closes without ever opening', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
+    await shellSettled(queryClient)
   })
 })

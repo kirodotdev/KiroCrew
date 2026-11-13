@@ -1,20 +1,39 @@
 ---
 title: Crewmates list — only the crewmates the user chatted with, newest first
-status: accepted
+status: superseded
 author: iamwhatever
 created: 2026-10-07
-last-audited: 2026-10-07
-audited-at: acc08092d7
+last-audited: 2026-11-04
+audited-at: e86fbdc606
 doc-pr:
 implementation-prs: [17808]
-tracking-issues: [19341]
+tracking-issues: [19341, 29769]
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-session-template-vs-crewmate.md]
 ---
 
 # RFC: Crewmates list — only the crewmates the user chatted with, newest first
 
-- Status: accepted. This is the product owner's decision, given 2026-10-07 in the
+> **Superseded.** On 2026-10-09 the product owner decided that the Crewmates
+> list is a messages list: a thread with a message is listed, whoever sent it.
+> [rfc-session-template-vs-crewmate.md](rfc-session-template-vs-crewmate.md)
+> §3 rules 3 and 4 replaced this document's §3, and
+> [#18342](https://github.com/kirodotdev/KiroCrew/pull/18342) built it:
+> `crew_recency.json` and `last_chat_ts` are gone, and Recent order reads
+> `last_active_ts`. So the §2 ask below that a crewmate which only ran in the
+> background is never shown no longer holds; a heartbeat wake's message lists
+> its row. At `e86fbdc606`, `listedByDefault` in
+> `website/src/pages/members/rosterFilter.ts` lists a starred row, Mate, a
+> crewmate the person created (restored by
+> [#24987](https://github.com/kirodotdev/KiroCrew/pull/24987)), the `default`
+> row once the person sent it a message, and any other row once its DM thread
+> holds a message; a row from an older gateway that sends no message field is
+> listed. The sections
+> below are the record of the 2026-10-07 decision.
+
+- Status: superseded by
+  [rfc-session-template-vs-crewmate.md](rfc-session-template-vs-crewmate.md).
+  It was accepted as the product owner's decision, given 2026-10-07 in the
   "Crew page polish" goal. It amends the listing and landing rules of
   [rfc-crewmates-launch.md](rfc-crewmates-launch.md) (screen 02, "landing").
   Claims about today's code were checked at `acc08092d7` (main).
@@ -52,7 +71,9 @@ At `acc08092d7`:
 The product owner's ask: show only the crewmates the user actually chatted with,
 newest first. Never show one that only ran in the background (crons, wakes,
 sub-agents, dispatched workers) or that an app drove. After a restart, open the
-one last talked to.
+one last talked to. (Reversed 2026-10-09: see the note at the top. Listing and
+landing follow the thread's messages, whoever sent them; only the `default` row
+still needs a message from the person.)
 
 ## 3. Decision
 

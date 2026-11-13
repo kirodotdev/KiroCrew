@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { InstantTip, useInstantTip } from '../InstantTip'
 import ErrorNotice from '../ErrorNotice'
+import { i18nT } from '../../i18n/t'
 
 /**
  * The copy acknowledgment, shared by every chip that copies.
@@ -15,8 +16,9 @@ import ErrorNotice from '../ErrorNotice'
  * `copyToClipboard` resolves true, per that helper's contract — a tick over an
  * unchanged clipboard is worse than no cue at all. A refused write reports
  * `failed` instead, which every caller renders through `CopyFailedNotice` in an
- * `InstantTip` bubble — the copy chip in the bubble that also carries its hint
- * and confirmation, the title-cued chips through `useTitleCuedCopy`. One
+ * `InstantTip` bubble — the copy, session and folder chips in the bubble that
+ * also carries their hint and confirmation (`useBubbleCuedCopy`), the
+ * title-cued chips through `useTitleCuedCopy`. One
  * failure surface for one operation: two shapes of "Copy failed" (a bubble on
  * one chip, a red label pushed into the sentence on another) read as two
  * different features, and the in-flow one reflowed the line for as long as it
@@ -140,20 +142,21 @@ export function useCopiedFlash(text: string): {
  * nothing and the notice stands on the message alone.
  *
  * One placement: inside an `InstantTip` bubble, held for `COPY_FAILED_FLASH_MS`
- * and closed by the flash's own timer. The copy chip's bubble also carries its
- * hint and confirmation, so success and failure never read from different
- * spots; the title-cued chips (session, path, broken image) open a bubble for
- * the refusal alone (`useTitleCuedCopy`). Nothing enters the text flow — the
+ * and closed by the flash's own timer. The copy, session and folder chips'
+ * bubble also carries their hint and confirmation (`useBubbleCuedCopy`), so
+ * success and failure never read from different spots; the title-cued chips
+ * (path, broken image) open a bubble for the refusal alone
+ * (`useTitleCuedCopy`). Nothing enters the text flow — the
  * in-flow red label those chips used to render pushed the sentence around for
  * as long as it showed and read as a second, different feature beside the
  * bubble. The bubble is `pointer-events-none`, so there is no dismiss control:
  * the flash clears itself.
  *
- * The wording is the caller's, chosen by what the chip copies, and all four
+ * The wording is the caller's, chosen by what the chip copies, and all of them
  * share one family, "Couldn’t copy …". The copy chip, whose clipboard text IS
  * the span the reader sees, names the recovery: "Couldn’t copy — select the
- * text to copy it manually". The title-cued chips (`useTitleCuedCopy`) copy
- * something their label need not show — the session chip the normalised key
+ * text to copy it manually". The other chips copy something their label need
+ * not show — the session chip the normalised key
  * behind the author's spelling or nickname, the broken-image chip the path
  * behind its alt — so that sentence would have the reader copy the wrong
  * thing; each names what failed to copy instead, in the reader's own terms:
@@ -182,7 +185,7 @@ export function CopyFailedNotice({ message }: { message: string }) {
 
 /**
  * The copy path of a chip whose hint and confirmation are its native `title`
- * — the session and path chips' Ctrl/Cmd+click, the broken-image chip's click.
+ * — the path chip's Ctrl/Cmd+click, the broken-image chip's click.
  *
  * The same gated write as the copy chip (`useCopiedFlash`), and the SAME
  * failure surface: `CopyFailedNotice` in an `InstantTip` bubble opened at the
@@ -192,8 +195,8 @@ export function CopyFailedNotice({ message }: { message: string }) {
  * then holds the bubble open for the failure's flash, a later outcome or the
  * flash's end closes it. The bubble carries no hover or focus handlers — the
  * native `title` is still this chip's hint, and its `Copied!` swap still its
- * confirmation (moving those into the bubble too is #13608) — so it exists for
- * the refusal alone and is held only while one shows.
+ * confirmation — so it exists for the refusal alone and is held only while one
+ * shows. A chip whose bubble carries the hint too uses `useBubbleCuedCopy`.
  */
 export function useTitleCuedCopy(text: string, failureMessage: string): {
   copied: boolean
@@ -214,4 +217,44 @@ export function useTitleCuedCopy(text: string, failureMessage: string): {
     </InstantTip>
   )
   return { copied, press, failureBubble }
+}
+
+/**
+ * The copy path of a chip whose hint AND both outcomes live in one
+ * `InstantTip` bubble — the copy chip's click, the session and folder chips'
+ * Ctrl/Cmd+click. Nothing enters the text flow (`CopyableCode` says why): the
+ * bubble flips from `hint` to "Copied!" or to `CopyFailedNotice`, held by the
+ * outcome's attempt number so a mouse leave cannot take it, and opens off the
+ * words that lead up to the chip (`placement: 'flow'`). Spread `tipHandlers`
+ * on the chip; `press(el)` names the anchor (`arm`) and writes. `bubble` is
+ * the portal plus the always-mounted `sr-only` status that announces
+ * "Copied!": render it BESIDE the chip, since a `role="button"` element's
+ * children are presentational and a live region inside one is never read. The
+ * refusal is announced by the notice's own `role="alert"` alone.
+ */
+export function useBubbleCuedCopy(text: string, hint: React.ReactNode, failureMessage: string): {
+  press: (el: HTMLElement) => void
+  tipHandlers: ReturnType<typeof useInstantTip>['tipHandlers']
+  bubble: React.ReactNode
+} {
+  const { copied, failed, flashSeq, copy } = useCopiedFlash(text)
+  const { tip, tipHandlers, tipId, arm } = useInstantTip({ hold: flashSeq, placement: 'flow' })
+  const press = (el: HTMLElement) => {
+    arm(el)
+    copy(text)
+  }
+  const cue = failed
+    ? <CopyFailedNotice message={failureMessage} />
+    : copied ? i18nT('components.markdownRenderer.copied') : hint
+  const bubble = (
+    <>
+      <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] break-words">{cue}</InstantTip>
+      {/* Always mounted: a live region that appears already filled is not
+          reliably read. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {copied ? i18nT('components.markdownRenderer.copied') : ''}
+      </span>
+    </>
+  )
+  return { press, tipHandlers, bubble }
 }

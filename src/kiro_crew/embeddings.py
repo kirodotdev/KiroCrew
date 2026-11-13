@@ -2,9 +2,11 @@
 
 Embeddings run in-process via the vendored llama-cpp-python runtime
 (``kiro_crew/_vendor``) — no external Ollama server, no HTTP hop, no
-runtime pip install. The Qwen3-Embedding-0.6B GGUF model is downloaded in
-the background (sha256-verified, with retries) and installed persistently
-to ``~/.kiro/crew/models/``. Sources are tried in order: a byte-identical
+runtime pip install — unless ``memory.embedding_provider`` selects the
+opt-in Ollama server backend (``embeddings_ollama``). The
+Qwen3-Embedding-0.6B GGUF model is downloaded in the background
+(sha256-verified, with retries) and installed persistently to
+``~/.kiro/crew/models/``. Sources are tried in order: a byte-identical
 blob salvaged from a legacy Ollama install, then the public CloudFront CDN
 (plain HTTPS — no git access, no cloud SDK). ``KIROCREW_EMBED_MODEL_URL``
 (or the ``memory.embed_model_url`` config knob) overrides the CDN URL for
@@ -43,6 +45,7 @@ from kiro_crew import _facade_mirror
 #   ``embeddings_gguf`` -- GGUF embedding metadata and the context a model loads with.
 #   ``embeddings_model`` -- The active model file: bundled path, custom model, identity.
 #   ``embeddings_llama`` -- ``EmbeddingBackend`` and the in-process ``LlamaCppEmbedder``.
+#   ``embeddings_ollama`` -- ``OllamaHttpEmbedder``, the backend served by an Ollama server.
 #   ``embeddings_shared`` -- The shared embedder, its embedding space, the sync embed cache.
 #   ``embeddings_download`` -- Downloading the bundled model in the background.
 
@@ -53,6 +56,7 @@ _OWNERS = (
     "kiro_crew.embeddings_gguf",
     "kiro_crew.embeddings_model",
     "kiro_crew.embeddings_llama",
+    "kiro_crew.embeddings_ollama",
     "kiro_crew.embeddings_shared",
     "kiro_crew.embeddings_download",
 )
@@ -117,6 +121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _InferJob,
         _install_bounded_decode,
         _install_metadata_kv_clear,
+        _runtime_has_blas,
         _trim_native_heap,
     )
     from kiro_crew.embeddings_model import (  # noqa: F401
@@ -155,20 +160,45 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.embeddings_native import (  # noqa: F401
         _LIB_PATH_SEAM,
+        _LINUX_AARCH64_DOTPROD_DIRNAME,
         _LINUX_CPUINFO_PATH,
         _LINUX_X86_64_REQUIRED_CPU_FLAGS,
         _VENDOR_DIR,
         _WINDOWS_MSVC_RUNTIME_DLLS,
-        _harden_llama_null_streams,
         _install_diskcache_stub,
+        _linux_aarch64_cpu_features,
+        _linux_aarch64_has_dotprod,
+        _linux_aarch64_libs_dir,
         _linux_x86_64_cpu_flags,
         _load_llama_class,
         _log_dropped_inherited_lib_path,
         _macos_x86_64_missing_cpu_flags,
         _missing_windows_msvc_runtime,
+        _native_quiet_enter,
+        _native_quiet_exit,
+        _NativeQuiet,
         _platform_libs_dirname,
         _publish_lib_path_for_import,
+        _quiet_native_log_without_redirect,
         verify_vendored_libs,
+    )
+    from kiro_crew.embeddings_ollama import (  # noqa: F401
+        _BATCH_SIZE,
+        _MAX_RESPONSE_BYTES,
+        _PROBE_TIMEOUT_SECS,
+        _READY_TTL_FAIL_SECS,
+        _READY_TTL_OK_SECS,
+        _REQUEST_TIMEOUT_SECS,
+        OllamaHttpEmbedder,
+        OllamaSettings,
+        _build_opener,
+        _finite_vector,
+        _is_loopback_host,
+        _RefuseRedirects,
+        _url_error,
+        build_ollama_backend,
+        ollama_backend_selected,
+        resolve_ollama_settings,
     )
     from kiro_crew.embeddings_settings import (  # noqa: F401
         _CHILD_CALL_BASE_SECS,
@@ -199,6 +229,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HTTP_TIMEOUT_SECS,
         _INFER_STOP_TIMEOUT_SECS,
         _INTERACTIVE_QUEUE_RESERVE,
+        _LARGE_HOST_EMBED_THREADS,
+        _LARGE_HOST_MIN_CORES,
         _LLM_LOAD_RETRY_SECS,
         _MAX_BULK_PACE_SLEEP,
         _MAX_EMBED_BATCH_TEXTS,
@@ -230,7 +262,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         bulk_pace_delay,
         embedding_child_process_enabled,
         embedding_idle_evict_secs,
+        embedding_weight_repack,
         embedding_work,
+        enter_work_phase,
+        work_phase,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401
         _EMBED_CACHE_MAX,
@@ -285,15 +320,28 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         consume_dropped_inherited_lib_path,
         operator_lib_path_override,
     )
+    from kiro_crew.atomic_write import (  # noqa: F401
+        replace_with_retry,
+    )
     from kiro_crew.config.loader import (  # noqa: F401
+        config_local_path,
         config_path,
         read_config_text,
+        read_merged_config_files,
+    )
+    from kiro_crew.config.memory_sections import (  # noqa: F401
+        OLLAMA_DEFAULT_URL,
+        OLLAMA_HTTP_PROVIDER,
     )
     from kiro_crew.config.paths import (  # noqa: F401
         config_dir,
     )
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
+    )
+    from kiro_crew.embeddings_blas import (  # noqa: F401
+        blas_safe_ubatch,
+        runtime_has_blas_backend,
     )
     from kiro_crew.embeddings_child import (  # noqa: F401
         ChildLlama,

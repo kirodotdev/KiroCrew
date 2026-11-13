@@ -61,12 +61,11 @@ def _scratch_entries() -> list[Path]:
     return sorted(root.iterdir()) if root.is_dir() else []
 
 
-def _assert_run_scratch(seen: str, job_id: str, wrap_calls: list[dict]) -> Path:
+def _assert_run_scratch(seen: str, wrap_calls: list[dict]) -> Path:
     values = seen.split("|")
     assert len(values) == 3 and len(set(values)) == 1, values
     scratch = Path(values[0])
     assert scratch.parent == agent_scratch.scratch_root()
-    assert scratch.name.startswith(f"cron-{job_id}-")
     # The scratch root is masked for sandboxed children: the run's own dir
     # must be carved back out, or the child's TMPDIR names a path it cannot see.
     assert wrap_calls[-1]["extra_private_dirs"] == (str(scratch),)
@@ -79,7 +78,7 @@ def test_command_cron_gets_its_own_temp_dir_owned_by_the_child(wrap_calls):
         job_id="cmdjob",
     )
     assert result["status"] == "ok", result
-    scratch = _assert_run_scratch(result["output"], "cmdjob", wrap_calls)
+    scratch = _assert_run_scratch(result["output"], wrap_calls)
     assert (scratch / "probe").read_text().strip() == "hi"
     owners = agent_scratch._read_owner_pids(scratch / agent_scratch.OWNER_FILENAME)
     # The child's pid, not the gateway's: a gateway-owned dir is never swept.
@@ -101,7 +100,7 @@ def test_script_cron_gets_its_own_temp_dir(tmp_path, wrap_calls):
     with patch("pathlib.Path.home", return_value=tmp_path):
         result = run_script_sandboxed(f"{script}:run", "scriptjob", timeout=30)
     assert result["status"] == "done", result
-    _assert_run_scratch(result["message"], "scriptjob", wrap_calls)
+    _assert_run_scratch(result["message"], wrap_calls)
 
 
 def test_allocation_failure_degrades_to_inherited_temp(monkeypatch, wrap_calls):
@@ -194,4 +193,3 @@ def test_command_run_without_a_job_id_still_gets_a_temp_dir(wrap_calls):
     assert result["status"] == "ok", result
     scratch = Path(result["output"])
     assert scratch.parent == agent_scratch.scratch_root()
-    assert scratch.name.startswith("cron-adhoc-")

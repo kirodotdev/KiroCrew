@@ -126,7 +126,7 @@ function buildMenuTemplate(deps) {
           label: "Toggle Developer Tools",
           accelerator: "CmdOrCtrl+Shift+I",
           id: "devtools-toggle",
-          visible: false, // hidden until dev-mode IPC fires
+          visible: true,
           click: toggleDevTools,
         },
       ],
@@ -151,17 +151,34 @@ function buildMenuTemplate(deps) {
         { label: "Rename Window…", click: renameCurrentWindow },
         { type: "separator" },
         { label: "Set Remote Host…", click: promptRemoteHost },
-        { label: "Refresh Token", accelerator: "CmdOrCtrl+Shift+T", click: refreshToken },
+        // Was CmdOrCtrl+Shift+T, which is "reopen closed session" in the
+        // renderer (src/lib/shortcutRegistry.ts, #18969) — the browser
+        // reopen-closed-tab chord. Moved to an Alt variant, like New
+        // Connection Window… above, so the menu does not take the keystroke.
+        // Not CmdOrCtrl+Alt+T either: on GNOME/Ubuntu Ctrl+Alt+T opens a
+        // terminal system-wide, so Linux (and Windows) add Shift.
+        { label: "Refresh Token", accelerator: isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T", click: refreshToken },
         { label: "Open Config File", click: openConfigFile },
       ],
     },
-    // macOS keeps the stock Window menu (Minimize, Zoom, Front — no Close entry,
-    // so Cmd+W reaches the renderer). Windows/Linux write it out: the stock role
-    // puts "Close" on Ctrl+W, which is "close session" in the renderer, so the
-    // window close moves to Ctrl+Shift+W — the VS Code / Chrome convention (Ctrl+W
-    // closes a tab, Ctrl+Shift+W the window; Alt+F4 still works).
+    // Both platforms write the Window menu out: Cmd/Ctrl+W is "close session" in
+    // the renderer, so the window close sits on Cmd/Ctrl+Shift+W, the VS Code /
+    // Chrome convention (Ctrl+W closes a tab, Ctrl+Shift+W the window; Alt+F4
+    // still works). macOS keeps the windowMenu role so AppKit still lists the open
+    // windows; the stock Windows/Linux role would put Close on Ctrl+W.
     isMac
-      ? { id: "window-menu", role: "windowMenu" }
+      ? {
+          id: "window-menu",
+          role: "windowMenu",
+          submenu: [
+            { role: "minimize" },
+            { role: "zoom" },
+            { type: "separator" },
+            { role: "front" },
+            { type: "separator" },
+            { role: "close", accelerator: "Cmd+Shift+W" },
+          ],
+        }
       : {
           id: "window-menu",
           label: "Window",

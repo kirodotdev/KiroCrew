@@ -1,4 +1,5 @@
 import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { afterSlide, forgetAfterSlide, slideHeld } from '../../utils/panelSlide'
 import ColumnResizer from '../ColumnResizer'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 
@@ -126,6 +127,9 @@ export function useMarkdownTableColumns(tableRef: React.RefObject<HTMLTableEleme
     // of observer callbacks collapse into one measurement per frame.
     let frame = 0
     const schedule = () => {
+      // A side panel sliding resizes every table on every frame: measure once
+      // when it rests (utils/panelSlide).
+      if (slideHeld()) { afterSlide(measure); return }
       if (frame) return
       frame = requestAnimationFrame(() => { frame = 0; measure() })
     }
@@ -133,7 +137,7 @@ export function useMarkdownTableColumns(tableRef: React.RefObject<HTMLTableEleme
     if (table.tHead) observer.observe(table.tHead)
     for (const th of headerCells(table)) observer.observe(th)
     observeHeader = () => { for (const th of headerCells(table)) observer.observe(th) }
-    return () => { observer.disconnect(); if (frame) cancelAnimationFrame(frame) }
+    return () => { observer.disconnect(); forgetAfterSlide(measure); if (frame) cancelAnimationFrame(frame) }
   }, [tableRef])
 
   // A table whose header changed shape (a streamed reply) drops stale widths.

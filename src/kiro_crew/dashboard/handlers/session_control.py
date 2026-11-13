@@ -20,6 +20,9 @@ from aiohttp import web
 
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard import session_control_queue as scq
+from kiro_crew.dashboard import session_send_receipts
+from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
 from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
 from kiro_crew.dashboard.handlers._shared import (
     _read_session_key,
@@ -247,6 +250,114 @@ def _target(body: dict) -> str:
     return target.strip()
 
 
+def _first_message(body: dict) -> str | None:
+    """The optional first turn a create carries, refused BEFORE anything is created.
+
+    Absent means a create that starts empty, as it always did. Present, it is held
+    to the same bar the send route and ``send_to_target`` hold -- non-empty, and no
+    longer than ``MAX_SEND_MESSAGE_CHARS`` once stripped, with the same codes --
+    but checked here, ahead of the create, so a message session_send would refuse
+    never leaves an empty session behind. ``send_to_target`` repeats both checks.
+    """
+    message = body.get("message")
+    if message is None:
+        return None
+    if not isinstance(message, str):
+        raise sc.SessionControlError("message must be a string", code="invalid_field_type")
+    if not message.strip():
+        raise sc.SessionControlError("message is required", code="message_required")
+    if len(message.strip()) > sc.MAX_SEND_MESSAGE_CHARS:
+        raise sc.SessionControlError(
+            f"message exceeds {sc.MAX_SEND_MESSAGE_CHARS} characters",
+            code="message_too_long",
+            status=400,
+        )
+    return message
+
+
+def _caller_auto_approvals(
+    caller_key: str, agent: str, project: str, agent_kind: str = ""
+) -> set[str] | None:
+    """Every grant the user-level spec of the caller's runtime template carries, or
+    ``None`` when it cannot be read (a project-only template included)."""
+    from kiro_crew.agent_sdk.agent_specs import session_spec_grants
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.config.loader_agents import resolve_agent_bindings
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    try:
+        bindings = resolve_session_agent_bindings(
+            resolve_agent_bindings,
+            KiroCrewConfig.load(),
+            caller_key,
+            agent or None,
+            project or None,
+            agent_kind=agent_kind,
+        )
+    except Exception:
+        return None
+    return session_spec_grants(bindings.kiro_agent)
+
+
+async def _refuse_unprompted_seed(state: DashboardState, caller_key: str) -> None:
+    """Refuse a first message that would skip the prompt ``session_send`` gets.
+
+    A conductor auto-approves ``session_create`` but not ``session_send``; an
+    unreadable spec cannot say which prompt applies, so it is refused too.
+    """
+    from kiro_crew.agent_sdk.agent_specs import creates_without_send
+
+    # The header is often the history key; the slot is then found by the walk.
+    slot = state.get_slot(caller_key) or state.get_slot(sc.caller_slot_key(state, caller_key))
+    granted = (
+        await asyncio.to_thread(
+            _caller_auto_approvals,
+            caller_key,
+            slot.agent or "",
+            slot.project or "",
+            getattr(slot, "agent_kind", "") or "",
+        )
+        if slot is not None
+        else None
+    )
+    if granted is None or creates_without_send(granted):
+        raise sc.SessionControlError(
+            "a first message needs session_send's approval: create the session, "
+            "then session_send to it",
+            status=403,
+            code="message_needs_send_approval",
+        )
+
+
+async def _deliver_first_message(
+    request: web.Request, state: DashboardState, created: dict, message: str
+) -> dict:
+    """Seed the session a create just opened, through session_send's own path.
+
+    ``send_to_target`` is the whole delivery: the same authorization gate (a
+    caller that could not session_send to the new session cannot seed it here),
+    the same size limit, provenance line, sanitizing and audit trail. The create
+    has already committed, so a failed delivery is REPORTED next to the key and
+    never rolls the session back: the caller can still session_send to it.
+    """
+    target = str(created.get("target") or "")
+    try:
+        receipt = await sc.send_to_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            message=message,
+            caller_fenced=_carried_fence(request),
+            via="session_create",
+        )
+    except sc.SessionControlError as exc:
+        return {"delivery_error": {"error": exc.message, "code": exc.code}}
+    except Exception:  # noqa: BLE001 - the created key must still reach the caller
+        logger.warning("session_create: first message to %s failed", target, exc_info=True)
+        return {"delivery_error": {"error": "delivery failed", "code": "delivery_failed"}}
+    return {"delivery": receipt}
+
+
 _Route = Callable[[web.Request], Awaitable[web.Response]]
 
 
@@ -335,6 +446,29 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if body.get("backend") not in (None, ""):
+            from kiro_crew import session_harness_preview as harness_preview
+
+            # Behind the `session_harness` feature preview: refused before any
+            # other read, so nothing is created and no crew is reached.
+            if not await asyncio.to_thread(harness_preview.session_harness_enabled):
+                raise sc.SessionControlError(
+                    harness_preview.PREVIEW_OFF_MESSAGE,
+                    status=403,
+                    code=harness_preview.PREVIEW_OFF_CODE,
+                )
+        if body.get("backend") and (crew_routes.has_crew(body) or "work_item" in body):
+            # A remote crew starts its sessions on its own gateway's harnesses,
+            # which this gateway cannot check; refused rather than dropped.
+            raise sc.SessionControlError(
+                "backend is taken only for a session on this gateway, not with crew",
+                code="backend_with_crew",
+            )
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "create", body)
+        if "work_item" in body and await crew_routes.placement_enabled():
+            # Wave 5: a work item with no crew is placed on one by the hub.
+            return await crew_routes.handle_crew_call(request, "create", body)
         # Strictly typed, never truthiness: the string "false" is truthy, and a
         # caller asking for a real create must never get a silent preview.
         dry_run = body.get("dry_run", False)
@@ -354,6 +488,20 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             raise sc.SessionControlError(
                 "reasoning_effort must be a string", code="invalid_field_type"
             )
+        # The harness the session runs on, refused up front with the spawn
+        # endpoint's own check and codes, so a pick that cannot start never
+        # becomes a session that silently runs elsewhere. Absent or "" = no pick.
+        raw_backend = body.get("backend")
+        if raw_backend is not None and not isinstance(raw_backend, str):
+            raise sc.SessionControlError("backend must be a string", code="invalid_field_type")
+        from kiro_crew.dashboard.handlers import messaging
+
+        backend, failover_from, backend_refusal = await messaging._requested_backend(raw_backend)
+        if backend_refusal is not None:
+            return backend_refusal
+        first_message = _first_message(body)
+        if first_message is not None:
+            await _refuse_unprompted_seed(state, _read_session_key(request))
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -379,9 +527,19 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             # from the mutable config record. Here it decides whether the child
             # may be bound to a member's private store.
             caller_fenced=_carried_fence(request),
+            backend=backend,
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if failover_from is not None and isinstance(result, dict):
+        # Moved by agent.acp_failover, as a spawn is: the caller asked for one
+        # harness and the session runs on another vendor's, so the reply says so.
+        result = {**result, "failover_from": failover_from}
+    if first_message is not None and not dry_run and isinstance(result, dict):
+        result = {
+            **result,
+            **await _deliver_first_message(request, state, result, first_message),
+        }
     if not dry_run and isinstance(result, dict):
         # A create is a dispatch, and a dispatch needs a patrol reading what
         # comes back: the same default patrol a ledger bind arms, through the
@@ -391,15 +549,43 @@ async def api_session_control_create(request: web.Request) -> web.Response:
 
         caller = session_ledger.ledger_key(_read_session_key(request))
         ledger = await holds_ledger(caller)
+        # Attested only while the caller holds a ledger: without one nothing is armed.
+        attested = await conductor_patrol.attested_caller_slot(request, state) if ledger else ""
         patrol, reason = await conductor_patrol.ensure_patrol(
-            state, caller, has_ledger=ledger, source="session-create"
+            state, caller, has_ledger=ledger, source="session-create", attested_caller=attested
         )
         result = {**result, "patrol": patrol, "patrol_reason": reason}
         note = conductor_patrol.patrol_note(state, caller, reason, has_ledger=ledger)
         if note:
             result["patrol_note"] = note
         await _add_worker_capabilities(request, state, result)
+        _write_crew_dispatch_notice(state, _read_session_key(request), result)
     return web.json_response(result)
+
+
+def _write_crew_dispatch_notice(
+    state: "DashboardState", caller_session_key: str, result: dict
+) -> None:
+    """Write the one-per-turn Crew Mode dispatch notice into the conductor's chat.
+
+    Only a Crew Mode root conductor whose child landed in a turned-on tree earns
+    one, and only the first dispatch of its current person turn (the helper
+    gates both). A member's own sub-dispatch, a plain-chat dispatch and a failed
+    or dry-run dispatch all write nothing -- the last two never reach this block.
+    """
+    from kiro_crew.dashboard.crew_dispatch_notice import maybe_write_dispatch_notice
+
+    # The create already committed; the notice is extra. Resolving the caller
+    # slot off `state` must never fault the route -- a stub or slotless state
+    # (as the member-gate contract passes) is a safe no-op, matching the other
+    # post-create hooks (`own_worker_note`).
+    try:
+        caller_key = sc.caller_slot_key(state, caller_session_key)
+        caller_slot = state.get_slot(caller_key) if caller_key else None
+    except Exception:  # noqa: BLE001 - the dispatch already happened; the notice is extra
+        return
+    if caller_slot is not None:
+        maybe_write_dispatch_notice(state, caller_slot, result)
 
 
 async def _add_worker_capabilities(
@@ -463,6 +649,8 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "stop", body)
         result = await sc.stop_target(
             state,
             caller_session_key=_read_session_key(request),
@@ -625,6 +813,9 @@ async def api_session_control_generate_title(request: web.Request) -> web.Respon
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        # The title is built from the target's rows: a target restored as a
+        # sidebar row loads its window first, ahead of the gate's prewarm.
+        await sc.load_target_window(state, _target(body))
         result = await sc.generate_title_target(
             state,
             caller_session_key=_read_session_key(request),
@@ -663,6 +854,72 @@ async def api_session_control_set_color(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+# ``set_note`` folds to ``other`` the same way ``set_color`` does.
+@_counted("set_note")
+async def api_session_control_set_note(request: web.Request) -> web.Response:
+    """POST /api/session-control/set-note — leave a note on a session the caller created.
+
+    Written by ``POST /api/chat/slots/{slot}/note``'s own code, so its limits,
+    redaction, hold during a running turn and reply are that route's.
+    """
+    from kiro_crew.dashboard import chat_handlers  # circular: it imports this package
+
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        note = body.get("note", "")
+        invalid = chat_handlers._validate_content(note)
+        if invalid is not None:
+            return invalid
+        # The write appends to the target's rows: a target restored as a sidebar
+        # row loads its window first, ahead of the gate's prewarm.
+        await sc.load_target_window(state, _target(body))
+        slot = await sc.authorize_created_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            operation="set_note",
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    # The containment this note is admitted under. No await since the gate, but a
+    # mirror can be linked off the loop after the gate's own read, so a mirror seen
+    # here is refused as the gate refuses it, never recorded as admitted.
+    admission = sc.containment_meta(state, slot)
+    if admission[sc.QUEUED_CONTAINMENT_META_KEY].get("mirrored"):
+        return _refusal(
+            sc.SessionControlError(
+                "sessions mirrored to a channel are not addressable",
+                status=403,
+                code="mirrored_target",
+            )
+        )
+    response = await chat_handlers.write_slot_note(
+        state,
+        slot,
+        content=note,
+        source=sc.SESSION_NOTE_SOURCE,
+        display_source=sc.SESSION_NOTE_SOURCE,
+        max_age=chat_handlers._NOTE_CONTEXT_MAX_AGE,
+        ephemeral=True,
+        caller=_read_session_key(request),
+        admission=admission,
+    )
+    if response.status == 200:
+        sc._audit(
+            caller_session_key=_read_session_key(request),
+            operation="set_note",
+            slot_key=slot.key,
+            outcome="allowed",
+        )
+    return response
+
+
 @_counted("close")
 async def api_session_control_close(request: web.Request) -> web.Response:
     """POST /api/session-control/close — archive another session (tab ✕)."""
@@ -675,6 +932,8 @@ async def api_session_control_close(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "close", body)
         result = await sc.close_target(
             state,
             caller_session_key=_read_session_key(request),
@@ -751,6 +1010,8 @@ async def api_session_control_send(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "send", body)
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise sc.SessionControlError("message is required", code="message_required")
@@ -784,6 +1045,23 @@ async def api_session_control_send(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if (
+        isinstance(result, dict)
+        and result.get("ok") is True
+        and body.get(session_send_receipts.RECEIPT_FIELD) is True
+    ):
+        # What this send delivered, for the caller's own ``session_send`` row:
+        # the outgoing card reads it as typed fields (``session_send_receipts``)
+        # instead of out of the tool's result text. Parked under the target as
+        # the call spelled it, unstripped, since the call's own arguments are
+        # what claim it.
+        session_send_receipts.park(
+            _read_session_key(request),
+            body.get("target"),
+            message,
+            session_send_receipts.outcome_of(result),
+            str(result.get("target") or ""),
+        )
     # The server half of the work-ledger charter: a conductor's answer to a
     # ``blocked`` / ``question`` item is also its ``decide``, so a conductor that
     # forgets the second call does not leave the item waiting on it forever (the
@@ -866,12 +1144,20 @@ async def api_session_control_broadcast(request: web.Request) -> web.Response:
                         "a session key, transcript name, or exact title",
                         code="target_too_long",
                     )
+        # A JSON boolean only. A string such as "false" is truthy in Python, so
+        # reading it loosely would let a malformed value select the whole fleet.
+        all_created = body.get("all", False)
+        if all_created is None:
+            all_created = False
+        if not isinstance(all_created, bool):
+            raise sc.SessionControlError("all must be a boolean", code="invalid_field_type")
         result = await sc.broadcast_to_targets(
             state,
             caller_session_key=_read_session_key(request),
             message=message,
             mode=mode,
             targets=targets,
+            all_created=all_created,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
@@ -977,8 +1263,11 @@ async def api_session_control_read(request: web.Request) -> web.Response:
     # synchronous query parsing (`request.query` is already available and
     # `read_messages` does not await), so there is no suspension to invalidate it.
     # The target's window loads ahead of it, off the loop, for the same reason.
+    if "crew" in request.query:
+        return await crew_routes.handle_crew_call(request, "read", dict(request.query))
     state: DashboardState = request.app["state"]
     await sc.load_target_window(state, request.query.get("target") or "")
+    await sc.prewarm_app_reach(state)
     await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
@@ -1014,8 +1303,9 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
         return refused
     # Same placement as `read`: query parsing is synchronous, and `read_summary`
     # runs its gate before its first await.
-    await sc.prewarm_enabled_check()
     state: DashboardState = request.app["state"]
+    await sc.prewarm_app_reach(state)
+    await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
         if not target:
@@ -1024,6 +1314,44 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=target,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+# ``queue`` is not in ``SESSION_CONTROL_OPS``, so it folds to ``other`` like
+# ``revive`` and ``history``; adding it to the closed list needs no route edit.
+@_counted("queue")
+async def api_session_control_queue(request: web.Request) -> web.Response:
+    """POST /api/session-control/queue — list or move a managed session's queue."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        action = body.get("action", "list")
+        entry = body.get("entry", "")
+        position = body.get("position")
+        if not isinstance(action, str):
+            raise sc.SessionControlError("action must be a string", code="bad_request")
+        if not isinstance(entry, str) or len(entry) > MAX_SHORT_STRING:
+            raise sc.SessionControlError("entry must be a short string", code="bad_request")
+        if position is not None and (isinstance(position, bool) or not isinstance(position, int)):
+            raise sc.SessionControlError("position must be an integer", code="bad_request")
+        target = _target(body)
+        # After the body read, like `summary`: `queue_target` is synchronous from
+        # its gate to its write, so this is the last suspension before the gate.
+        await sc.prewarm_enabled_check()
+        result = await scq.queue_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            action=action,
+            entry=entry.strip(),
+            position=position,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

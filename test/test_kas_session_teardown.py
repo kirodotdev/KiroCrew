@@ -2,10 +2,11 @@
 
 kiro-cli's terminate evicts the session from the multiplexed process and leaves
 the transcript for the caller to unlink. KAS's extension namespace is ``_kiro/``
-(no ``.dev``) and it offers no evict-only verb, so its delete disposes the
-resident AND removes the persisted record. Reusing the kiro verb against KAS
-returns ``-32603``, so the session would never be freed and RSS would grow with
-every background task.
+(no ``.dev``), and its teardown, the delete, disposes the resident AND removes the
+persisted record. Reusing the kiro verb against KAS returns ``-32603``, so the
+session would never be freed and RSS would grow with every background task. KAS's
+evict-only ``session/close`` is sent only to release a session whose record is
+kept for a while (``test_kas_released_sessions.py``).
 """
 
 from __future__ import annotations
@@ -62,11 +63,22 @@ class TestTeardownIsStillBestEffort:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ""])
-    async def test_a_dead_runtime_skips_the_round_trip(self, tmp_path, backend):
+    async def test_a_dead_runtime_skips_the_round_trip(self, tmp_path, backend, monkeypatch):
         runtime = _runtime(tmp_path, backend)
+        runtime._session_queues["sess-1"] = asyncio.Queue()
+        # A process is set, so being dead is the only reason to skip the send.
+        runtime._process = object()  # type: ignore[assignment]
         runtime._dead = True
-        # Never spawned, so a round-trip would raise rather than no-op.
+        sent: list[tuple] = []
+
+        async def record(*args, **_k):
+            sent.append(args)
+
+        monkeypatch.setattr(runtime, "_send_and_await", record)
+        monkeypatch.setattr(runtime, "send_notification", record)
         await runtime.terminate_session("sess-1")
+        assert sent == []
+        assert "sess-1" not in runtime._session_queues
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ""])

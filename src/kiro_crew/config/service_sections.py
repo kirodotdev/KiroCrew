@@ -87,6 +87,8 @@ class MessagingConfig:
             "the namespace in force at boot, so switching namespaces live could "
             "resume a stale session persisted under the other one.",
             restart=True,
+            # __post_init__ reads any other value as per-channel-peer.
+            enum=["per-channel-peer", "unified"],
         ),
     )
     idle_reset_minutes: int = field(
@@ -112,6 +114,8 @@ class MessagingConfig:
             "How a DM that arrives while a turn is running is handled. 'steer' "
             "(default) folds it into the running reply; 'queue' holds it and runs "
             "it after the current turn finishes.",
+            # __post_init__ reads any other value as the field default.
+            enum=["steer", "queue"],
         ),
     )
 
@@ -217,6 +221,9 @@ class HeartbeatConfig:
             "routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' "
             "(dashboard slot + bell only, no Slack). Per-task deliver tags always "
             "override this.",
+            # The loader reads any other value as 'slack', so the write gate
+            # refuses it instead of storing what the reader drops.
+            enum=["slack", "dashboard"],
         ),
     )
 
@@ -226,9 +233,9 @@ class WatchdogConfig:
     """ACP per-session watchdog / liveness-oracle tuning (acp/session_handle_watchdog.py).
 
     Wellness (the liveness oracle) is the primary detector; these windows govern
-    only the UNKNOWN-verdict backstop class. A WORKING verdict is never acted on
-    at any elapsed time, and every watchdog action is non-lethal (auto-recovery,
-    never a silent kill).
+    only the UNKNOWN-verdict backstop class and the hard cap on the WORKING
+    readings that cannot be tied to the work. Every watchdog action is non-lethal
+    (auto-recovery, never a silent kill).
     """
 
     check_after_secs: float = field(
@@ -283,7 +290,9 @@ class WatchdogConfig:
             "probably-thinking window) and for any per-agent "
             "watchdog_tool_stall_* override. Also bounds an opaque MCP tool "
             "whose only WORKING evidence is movement somewhere in the runtime's "
-            "process tree. Every other WORKING reading (a matched shell child, "
+            "process tree, and a Windows shell tool whose only WORKING evidence "
+            "is CPU movement in processes started since its dispatch, and a model "
+            "wait's WORKING reading. Every other WORKING reading (a matched shell child, "
             "a declared wait, a keepalive-pinging core tool) is deferred before "
             "this cap is consulted and is bounded only by the turn's own ceiling. "
             "Default 2h, clamped against the transport's per-prompt timeout like "
@@ -324,6 +333,61 @@ class WatchdogConfig:
             "windows.",
         ),
     )
+    builtin_tool_silence_secs: float = field(
+        default=300.0,
+        metadata=_meta(
+            "Built-in tool silence (s)",
+            "Seconds a non-shell built-in tool call (a file edit, a read, a search, a "
+            "fetch) may go with no frame for it before it is cancelled and the agent "
+            "is told it timed out, so it can retry. Counted from the call's dispatch "
+            "and restarted by any frame for that call; time spent waiting on a person "
+            "(an approval card, an MCP question) is not counted, and the answer "
+            "restarts it. A shell call keeps the liveness-oracle rules instead. This "
+            "and the three bounds below run only while Kiro Crew can see the call's "
+            "activity: a call whose activity may be out of sight (one a frame of an "
+            "unknown kind names, a sub-agent call whose sub-agent's frames may not have "
+            "reached the session) loses its timer, and no call is judged while a KAS "
+            "hook runs or another request is reading the session's frames; such a call "
+            "is left to the liveness oracle and tool_stall_hard_cap_secs. Default 5 "
+            "min; 0 turns the timer off for these calls. Never longer than "
+            "tool_stall_hard_cap_secs. Applies on kiro-cli and KAS, whose tool frames "
+            "say which calls an MCP server served.",
+        ),
+    )
+    mcp_network_silence_secs: float = field(
+        default=300.0,
+        metadata=_meta(
+            "MCP network tool silence (s)",
+            "The same per-call silence bound for a tool on an MCP server the session "
+            "declared with a url. Any frame the harness sends for that call restarts "
+            "it. Default 5 min; 0 turns it off.",
+        ),
+    )
+    mcp_stdio_silence_secs: float = field(
+        default=1800.0,
+        metadata=_meta(
+            "MCP stdio tool silence (s)",
+            "The same per-call silence bound for a tool on any other MCP server, Kiro "
+            "Crew's own included. Kiro Crew's own long tools (wait, ask_question, the "
+            "browser's hand-back) send a heartbeat about every 30 s, so they are never "
+            "cut short while they work. Kiro Crew's sub-agent tools (spawn_run, "
+            "spawn_continue, spawn_sub_agents) are bounded by subagent_silence_secs "
+            "instead. Default 30 min; 0 turns it off.",
+        ),
+    )
+    subagent_silence_secs: float = field(
+        default=600.0,
+        metadata=_meta(
+            "Sub-agent call silence (s)",
+            "The same per-call silence bound for a sub-agent call (the harness's own "
+            "sub-agent tool, spawn_run, spawn_continue, spawn_sub_agents), counted "
+            "from the sub-agent's own activity: its frames, and any tool call it has "
+            "open, which holds the timer while it runs. A kiro-cli sub-agent call has "
+            "no timer once any frame on its runtime may have missed the session this "
+            "turn: while another session shares the runtime, even for a moment, its "
+            "sub-agent's frames are dropped. Default 10 min; 0 turns it off.",
+        ),
+    )
     wellness_sample_secs: float = field(
         default=3.0,
         metadata=_meta(
@@ -336,7 +400,8 @@ class WatchdogConfig:
 
 @dataclass
 class WorkLedgerConfig:
-    """Work-ledger nesting (``work_ledger_records.MAX_DEPTH``, read through ``may_conduct``)."""
+    """Work-ledger nesting (``work_ledger_records.MAX_DEPTH``, read through ``may_conduct``)
+    and the remote-dispatch preview (``dashboard.remote_dispatch_headroom``)."""
 
     max_depth: int = field(
         default=WORK_MAX_DEPTH_DEFAULT,
@@ -351,6 +416,51 @@ class WorkLedgerConfig:
             "is 27), so raise it only where concurrency is already capped per level. "
             "Lowering it does not touch ledgers already open: new ledgers and new items "
             "at the levels it removes are refused.",
+        ),
+    )
+    remote_dispatch: bool = field(
+        default=False,
+        metadata=_meta(
+            "Remote dispatch (preview)",
+            "Preview: lets a conductor on another machine place work items on this "
+            "crew. When true, GET /api/chat/headroom answers this machine's free "
+            "memory, CPU load and free scratch disk to the owner, and an owner session "
+            "create that carries a work item is refused as crew_busy when one of them is short. Off (the "
+            "default): the route answers 404 and no create is checked. Read on every "
+            "request, so no restart is needed.",
+        ),
+    )
+    # Measured defaults (RFC wave 6; method and numbers in
+    # docs/system-specs/modules/session-control.md, "Wave 6: estimate defaults").
+    remote_dispatch_memory_gb: float = field(
+        default=5.0,
+        metadata=_meta(
+            "Remote dispatch memory estimate (GB)",
+            "Free memory one dispatched worker needs. A work-item create is refused "
+            "as crew_busy when less is free. The default covers the largest measured "
+            "worker session process tree. Used only with remote_dispatch on; a "
+            "value that is not a positive number uses the default.",
+        ),
+    )
+    remote_dispatch_disk_gb: float = field(
+        default=5.0,
+        metadata=_meta(
+            "Remote dispatch disk estimate (GB)",
+            "Free scratch disk one dispatched worker needs. A work-item create is "
+            "refused as crew_busy when less is free. The default is about twice the "
+            "measured size of one self-contained clone with its dependencies. Used "
+            "only with remote_dispatch on; a value that is not a positive number "
+            "uses the default.",
+        ),
+    )
+    remote_dispatch_retire_minutes: float = field(
+        default=30.0,
+        metadata=_meta(
+            "Remote dispatch retire timeout (minutes)",
+            "How long a crew a work item is bound to may stay unreachable before the "
+            "conductor's next ledger read retires that binding and leaves the item "
+            "unbound for redispatch on another crew. Used only with remote_dispatch "
+            "on; a value that is not a positive number uses the default.",
         ),
     )
 

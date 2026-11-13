@@ -5,7 +5,7 @@
  * src/test/DrivePageTestUtils.tsx.
  */
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -741,6 +741,83 @@ describe('DrivePage sections: per-install backup attribution', () => {
     await waitFor(() => expect(awsControlApi.installLabel).toHaveBeenCalledWith('Renamed Mac'))
   })
 
+  it('keeps focus on Save name while the write runs and ignores a second press', async () => {
+    // Native `disabled` while the label write is out drops a keyboard user's
+    // focus to the document body for the whole round-trip. The button announces
+    // unavailable with `aria-disabled` instead, stays in the tab order, keeps
+    // focus, and refuses a second press.
+    stubDrivePresent()
+    stubBackup(remoteWith({ otherLabel: 'Alice laptop' }))
+    let finish: (v: { install: { id: string; label: string } }) => void = () => {}
+    vi.mocked(awsControlApi.installLabel).mockReturnValue(
+      new Promise((resolve) => { finish = resolve }) as ReturnType<typeof awsControlApi.installLabel>,
+    )
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-install-rename'))
+    const input = await screen.findByTestId('backup-install-name')
+    fireEvent.change(input, { target: { value: 'Renamed Mac' } })
+
+    const save = screen.getByTestId('backup-install-save')
+    save.focus()
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    await act(async () => finish({ install: { id: INSTALL_ID, label: 'Renamed Mac' } }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('backup-install-name')).not.toBeInTheDocument(),
+    )
+    expect(awsControlApi.installLabel).toHaveBeenCalledTimes(1)
+  })
+
+  it('Enter on the name field does not start a second write while one is out', async () => {
+    // Enter and the Save button share one submission guard: a press then an
+    // Enter (or two Enters) while the first write flies must not fire twice.
+    stubDrivePresent()
+    stubBackup(remoteWith({ otherLabel: 'Alice laptop' }))
+    let finish: (v: { install: { id: string; label: string } }) => void = () => {}
+    vi.mocked(awsControlApi.installLabel).mockReturnValue(
+      new Promise((resolve) => { finish = resolve }) as ReturnType<typeof awsControlApi.installLabel>,
+    )
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-install-rename'))
+    const input = await screen.findByTestId('backup-install-name')
+    fireEvent.change(input, { target: { value: 'Renamed Mac' } })
+    fireEvent.click(screen.getByTestId('backup-install-save'))
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(awsControlApi.installLabel).toHaveBeenCalledTimes(1))
+
+    await act(async () => finish({ install: { id: INSTALL_ID, label: 'Renamed Mac' } }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('backup-install-name')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('keeps Save name usable after a failed write', async () => {
+    // On failure the editor stays open and the button re-enables. The guard must
+    // reset so a corrected name can be saved.
+    stubDrivePresent()
+    stubBackup(remoteWith({ otherLabel: 'Alice laptop' }))
+    vi.mocked(awsControlApi.installLabel).mockRejectedValueOnce(new Error('write failed'))
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-install-rename'))
+    fireEvent.change(await screen.findByTestId('backup-install-name'), { target: { value: 'Renamed Mac' } })
+    fireEvent.click(screen.getByTestId('backup-install-save'))
+    await screen.findByTestId('backup-install-error')
+
+    vi.mocked(awsControlApi.installLabel).mockResolvedValueOnce({
+      install: { id: INSTALL_ID, label: 'Renamed Mac' },
+    })
+    fireEvent.click(screen.getByTestId('backup-install-save'))
+    await waitFor(() => expect(awsControlApi.installLabel).toHaveBeenCalledTimes(2))
+  })
+
   it('Enter saves the install name and Escape abandons it, like the drive rename editors', async () => {
     // Three rename editors on this page commit on Enter and close on Escape. A
     // reader habituated by those presses Enter here, so a name lost to a key that
@@ -873,5 +950,192 @@ describe('DrivePage sections: per-install backup attribution', () => {
     // flight -- the rows, not a skeleton, and not an unmounted panel.
     expect(screen.getByTestId('backup-archive')).toBeTruthy()
     expect(screen.getAllByTestId('backup-archive-row')).toHaveLength(before)
+  })
+})
+
+describe('DrivePage sections: the stored-archive list reaches every row, announced and keyboard-safe', () => {
+  const OTHER = 'c'.repeat(32)
+  const self = (n: number) => ({
+    key: `snapshots/${INSTALL_ID}/2026-09-0${n}.tar`, size: 10, modified: `2026-09-0${n}T00:00:00Z`,
+    install: INSTALL_ID, origin: 'self' as const,
+  })
+
+  function stubArchives(snapshot: RemoteBackup['snapshot']) {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      nightly: false, runs: {}, install: { id: INSTALL_ID, label: 'This Mac' },
+      remote: { ...emptyRemote, snapshot, installs: [{ id: INSTALL_ID, label: 'This Mac', origin: 'self' }] },
+    } as BackupStatus)
+  }
+
+  async function open() {
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    return within(await screen.findByTestId('backup-archive'))
+  }
+
+  it('shows the newest five per kind and offers the rest behind Show all', async () => {
+    stubArchives([1, 2, 3, 4, 5, 6, 7].map(self))
+    const archive = await open()
+    expect(archive.getAllByTestId('backup-archive-row')).toHaveLength(5)
+    const showAll = archive.getByTestId('backup-show-all-archives')
+    expect(showAll).toHaveTextContent('Show all (7)')
+    fireEvent.click(showAll)
+    expect(archive.getAllByTestId('backup-archive-row')).toHaveLength(7)
+    expect(archive.queryByTestId('backup-show-all-archives')).toBeNull()
+    // The control is gone, so focus moves to the first archive it revealed.
+    await waitFor(() => expect(archive.getAllByTestId('backup-restore')[5]).toHaveFocus())
+  })
+
+  it('offers no Show all when every archive is already listed', async () => {
+    stubArchives([1, 2].map(self))
+    const archive = await open()
+    expect(archive.getAllByTestId('backup-archive-row')).toHaveLength(2)
+    expect(archive.queryByTestId('backup-show-all-archives')).toBeNull()
+  })
+
+  it('names each Restore with its archive key', async () => {
+    stubArchives([1, 2].map(self))
+    const archive = await open()
+    const buttons = archive.getAllByTestId('backup-restore')
+    expect(buttons[0]).toHaveAccessibleName(`Restore snapshots/${INSTALL_ID}/2026-09-01.tar`)
+    expect(buttons[1]).toHaveAccessibleName(`Restore snapshots/${INSTALL_ID}/2026-09-02.tar`)
+  })
+
+  it('announces the restored path through a status region', async () => {
+    stubArchives([self(1)])
+    vi.mocked(awsControlApi.backupRestore).mockResolvedValue({
+      downloaded: true, path: '/home/u/.kiro/restore/x', bytes: 10, origin: 'self', install: INSTALL_ID,
+    })
+    const archive = await open()
+    // Mounted empty before the restore: a region inserted already filled is
+    // not announced by every screen reader.
+    const region = screen.getByTestId('backup-restored-status')
+    expect(region).toHaveAttribute('role', 'status')
+    expect(region).toBeEmptyDOMElement()
+    fireEvent.click(archive.getByTestId('backup-restore'))
+    const restored = await screen.findByTestId('backup-restored')
+    expect(region).toContainElement(restored)
+    expect(restored).toHaveTextContent('/home/u/.kiro/restore/x')
+  })
+
+  it('Show all pressed during a restore does not pull focus back once it settles', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([1, 2, 3, 4, 5, 6, 7].map(self))
+    const archive = await open()
+    fireEvent.click(archive.getAllByTestId('backup-restore')[0])
+    await waitFor(() => expect(archive.getAllByTestId('backup-restore')[0]).toBeDisabled())
+    fireEvent.click(archive.getByTestId('backup-show-all-archives'))
+    // The reader goes on to another control while the restore runs.
+    const toggle = archive.getByRole('switch')
+    toggle.focus()
+    finish({ downloaded: true, path: '/tmp/s', bytes: 10, origin: 'self', install: INSTALL_ID })
+    await waitFor(() => expect(archive.getAllByTestId('backup-restore')[5]).toBeEnabled())
+    expect(toggle).toHaveFocus()
+  })
+
+  it('Cancel pressed during another restore does not pull focus back once it settles', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([
+      { key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-02T00:00:00Z', install: OTHER, origin: 'other' },
+      self(1),
+    ])
+    const archive = await open()
+    const foreign = archive.getByRole('button', { name: new RegExp(`${OTHER}/o\\.tar`) })
+    fireEvent.click(foreign)
+    // With the strip still open, the reader restores their own archive instead.
+    fireEvent.click(archive.getByRole('button', { name: /2026-09-01\.tar/ }))
+    await waitFor(() => expect(foreign).toBeDisabled())
+    fireEvent.click(archive.getByTestId('backup-restore-confirm-no'))
+    const toggle = archive.getByRole('switch')
+    toggle.focus()
+    finish({ downloaded: true, path: '/tmp/s', bytes: 10, origin: 'self', install: INSTALL_ID })
+    await waitFor(() => expect(foreign).toBeEnabled())
+    expect(toggle).toHaveFocus()
+  })
+
+  it('moves focus into the confirm strip and back to the row Restore', async () => {
+    stubArchives([{ key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-01T00:00:00Z', install: OTHER, origin: 'other' }])
+    const archive = await open()
+    const restore = archive.getByTestId('backup-restore')
+    restore.focus()
+    fireEvent.click(restore)
+    const no = archive.getByTestId('backup-restore-confirm-no')
+    await waitFor(() => expect(no).toHaveFocus())
+    fireEvent.click(no)
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toHaveFocus())
+  })
+
+  it('after a confirmed restore, focus returns to the row once Restore is enabled again', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([{ key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-01T00:00:00Z', install: OTHER, origin: 'other' }])
+    const archive = await open()
+    fireEvent.click(archive.getByTestId('backup-restore'))
+    fireEvent.click(archive.getByTestId('backup-restore-confirm-yes'))
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toBeDisabled())
+    finish({ downloaded: true, path: '/tmp/o', bytes: 10, origin: 'other', install: OTHER })
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toHaveFocus())
+  })
+
+  it('does not pull focus back after a confirmed restore when the reader moved on meanwhile', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([{ key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-01T00:00:00Z', install: OTHER, origin: 'other' }])
+    const archive = await open()
+    fireEvent.click(archive.getByTestId('backup-restore'))
+    fireEvent.click(archive.getByTestId('backup-restore-confirm-yes'))
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toBeDisabled())
+    // The reader goes on to another control while the restore runs.
+    const toggle = archive.getByRole('switch')
+    toggle.focus()
+    finish({ downloaded: true, path: '/tmp/o', bytes: 10, origin: 'other', install: OTHER })
+    await screen.findByTestId('backup-restored')
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toBeEnabled())
+    expect(toggle).toHaveFocus()
+  })
+})
+
+describe('DrivePage sections: a stored-archive listing cut off at the page cap says so', () => {
+  function stubRemote(remote: Partial<RemoteBackup> & Record<string, unknown>) {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      nightly: false, runs: {}, install: { id: INSTALL_ID, label: 'This Mac' },
+      remote: { ...emptyRemote, installs: [{ id: INSTALL_ID, label: 'This Mac', origin: 'self' }], ...remote },
+    } as BackupStatus)
+  }
+
+  async function open() {
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    return within(await screen.findByTestId('backup-archive'))
+  }
+
+  it('names each kind whose listing was cut off, newest-may-be-missing', async () => {
+    stubRemote({ archives_truncated: ['sessions', 'snapshot'] })
+    const archive = await open()
+    const notes = archive.getAllByTestId('backup-archives-truncated')
+    // In the page order of the kinds, not the order the backend listed them.
+    expect(notes.map((n) => n.textContent)).toEqual([
+      i18nT('apps.awsControl.console.backup_archives_truncated', { kind: i18nT('apps.awsControl.console.backup_kind_snapshot') }),
+      i18nT('apps.awsControl.console.backup_archives_truncated', { kind: i18nT('apps.awsControl.console.backup_kind_sessions') }),
+    ])
+  })
+
+  it('says nothing when every listing was read whole', async () => {
+    stubRemote({ archives_truncated: [] })
+    const archive = await open()
+    expect(archive.queryByTestId('backup-archives-truncated')).toBeNull()
+  })
+
+  it.each([
+    ['absent (an older backend)', undefined],
+    ['a string', 'snapshot'],
+    ['an object', { snapshot: true }],
+    ['an unknown kind', ['unknown-kind']],
+  ])('reads a field that is %s as a complete listing', async (_label, value) => {
+    stubRemote({ archives_truncated: value } as Record<string, unknown>)
+    const archive = await open()
+    expect(archive.queryByTestId('backup-archives-truncated')).toBeNull()
   })
 })

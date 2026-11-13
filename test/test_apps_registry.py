@@ -42,11 +42,8 @@ def test_entry_git_url_tolerates_non_string_values():
 class TestMinimalEnvHonorsWindowsCaseInsensitivity:
     """Windows env names are case-INSENSITIVE and `os.environ` upper-cases keys.
 
-    So `os.environ.items()` yields `SYSTEMROOT`, never the `SystemRoot` spelling
-    Microsoft documents and that the allowlist writes. A literal membership test
-    therefore dropped exactly the variables the list carries for Windows — silently
-    at the boundary, fatally in the child: a Windows process without `SystemRoot`
-    cannot resolve side-by-side assemblies and dies before `main()`.
+    The allowlist writes `SystemRoot`, so a literal membership test would drop it, and a
+    Windows child without `SystemRoot` dies before `main()`.
     """
 
     def test_upper_cased_windows_keys_are_passed_through(self, monkeypatch) -> None:
@@ -60,6 +57,17 @@ class TestMinimalEnvHonorsWindowsCaseInsensitivity:
         assert env["SYSTEMROOT"] == r"C:\Windows"
         assert env["USERPROFILE"] == r"C:\Users\me"
         assert env["TEMP"] == r"C:\Temp"
+
+    def test_programdata_reaches_both_registry_git_envs(self, monkeypatch) -> None:
+        """Win32-OpenSSH exits 255 with no output when `ProgramData` is unset.
+
+        Every ssh:// registry clone on Windows starts from one of these two envs,
+        so without it no ssh:// registry or app repository can be cloned there.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(registry.os, "environ", {"PROGRAMDATA": r"C:\ProgramData"})
+        assert registry.minimal_env().get("PROGRAMDATA") == r"C:\ProgramData"
+        assert registry.anonymous_git_env().get("PROGRAMDATA") == r"C:\ProgramData"
 
     def test_folding_did_not_admit_secrets(self, monkeypatch) -> None:
         """The fold widens CASE, never the key set."""
@@ -645,15 +653,10 @@ class TestApplyTrustFields:
         assert all("_index_author" not in r for r in rows.values())
 
 
-# ---------------------------------------------------------------------------
 # External registries must surface on the ONLINE catalog path.
 #
-# Regression: handle_registry prefers list_catalog_apps when the published
-# catalog is reachable and only falls back to list_registry (the sole path that
-# merged external registries) when the catalog is empty. So a configured
-# external app was silently dropped from the store the moment the catalog came
-# online. list_catalog_apps now appends external-registry rows itself.
-# ---------------------------------------------------------------------------
+# handle_registry prefers list_catalog_apps whenever the catalog is reachable, so
+# list_catalog_apps appends external-registry rows itself.
 _PINNED_SHA = "a" * 40
 
 
@@ -732,8 +735,8 @@ class TestCatalogAppsIncludesExternalRegistries:
     ):
         """Install-status PARITY with the offline path: an external app known ONLY
         via its detectInstalled probe (absent from installed_map) must read
-        installed=True on the ONLINE catalog path too, because that path now runs
-        the same probe and passes the resulting `detected` into enrichment."""
+        installed=True on the ONLINE catalog path too, because that path runs the
+        same probe and passes the resulting `detected` into enrichment."""
         monkeypatch.setattr(
             registry.official_catalog,
             "list_catalog_rows",
@@ -769,7 +772,7 @@ class TestCatalogAppsIncludesExternalRegistries:
 
     @pytest.mark.asyncio
     async def test_external_row_cannot_shadow_filtered_catalog_git_name(self, monkeypatch):
-        """GPT BLOCK regression: a catalog `git` row dropped by the installability
+        """A catalog `git` row dropped by the installability
         filter must still RESERVE its name, so an external row with the same name
         is deduped away and can never become the row install-by-name resolves."""
         catalog_rows = [
@@ -805,15 +808,9 @@ class TestCatalogAppsIncludesExternalRegistries:
         assert rows.get("filtered-git", {}).get("provenance") != "external"
         assert "filtered-git" not in rows
 
-    # -----------------------------------------------------------------------
-    # Regression: the storefront intersected every catalog `git` row with the
-    # BUNDLED SEED, which ships only at release cadence. `inventory` was added so
-    # the catalog itself could supply validated pinned coordinates, and the install
-    # path honours them (`inventory_for_install`) -- but this listing was written a
-    # day earlier and still asked the seed. The two resolvers disagreed: install
-    # accepted a catalog-only app while the store hid it, so a freshly published
-    # app was undiscoverable until a release shipped a new seed.
-    # -----------------------------------------------------------------------
+    # The listing must accept the catalog's pinned coordinates as the install path
+    # does (`inventory_for_install`); asking only the BUNDLED SEED, which ships at
+    # release cadence, would hide an installable freshly published app.
     @pytest.mark.asyncio
     async def test_a_catalog_pinned_git_row_is_listed_without_a_seed_entry(self, monkeypatch):
         """A `git` row the catalog PINS is listed even though the seed omits it."""
@@ -857,11 +854,8 @@ class TestCatalogAppsIncludesExternalRegistries:
     async def test_a_name_only_the_local_cache_claims_is_not_listed(self, monkeypatch):
         """The unlock is authorised by the FRESH document, never by the cache.
 
-        `list_catalog_rows` reads the cache under the data home, which is
-        agent-writable. A planted row there must not BECOME a listed row: it would
-        render with official provenance and dedupe the real same-named external row
-        out of the listing, so a consent prompt would describe an official app while
-        the name grant it produces installs the external one.
+        The cache is agent-writable. A planted row would show as official and hide the
+        real same-named external row, so consent would describe one app and install another.
         """
         monkeypatch.setattr(
             registry.official_catalog,
@@ -979,13 +973,11 @@ class TestCatalogAppsIncludesExternalRegistries:
         )
 
 
-# ---------------------------------------------------------------------------
 # Git-install build step: the interpreter, and where the build runs.
 #
 # Both properties below were broken and NEITHER had a test, which is why they
 # survived — and both fail SILENTLY, reporting a successful install that installed
 # nothing the gateway can import.
-# ---------------------------------------------------------------------------
 
 
 def _build_cmds_for(tmp_path, monkeypatch, files: dict[str, str]) -> list[list[str]]:
@@ -1033,13 +1025,8 @@ def _build_cmds_for(tmp_path, monkeypatch, files: dict[str, str]) -> list[list[s
 def _pin_pip_importable(monkeypatch) -> None:
     """Make the planner see a gateway interpreter that HAS ``pip``.
 
-    ``_run_app_build`` probes ``importlib.util.find_spec("pip")`` on the running
-    interpreter and soft-skips the Python build when it is absent. That probe
-    reads the test host's own packaging: a venv created by ``uv`` (or
-    ``--without-pip``) ships no ``pip`` module, so without this pin every
-    "a pip command is planned" assertion fails on such a host while the same
-    test passes on a stdlib venv. The soft-skip branch has its own test that
-    pins the opposite answer.
+    ``_run_app_build`` probes ``find_spec("pip")`` on the host interpreter, and a ``uv``
+    or ``--without-pip`` venv has none, so without this pin the planning tests fail there.
     """
     import site
 
@@ -1059,24 +1046,14 @@ def _pin_pip_importable(monkeypatch) -> None:
 async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, monkeypatch):
     """A Python app must install into the interpreter that will IMPORT it.
 
-    ``shutil.which("pip")`` resolves to whatever pip is first on PATH, which is
-    routinely NOT the gateway's: ``bin/kirocrew`` execs ``.venv/bin/kirocrew`` without
-    putting the venv's ``bin/`` on PATH, and ``service_path()`` prepends
-    ``~/.local/bin`` ahead of it.
-
-    The failure mode is silent, which is what made it survive. Measured on a host whose
-    first pip was 3.7 and whose gateway venv was 3.12: a *compatible-but-different* pip
-    (3.10) reported "Successfully installed", the build reported success, and the package
-    landed in ``~/.local/lib/python3.10/site-packages`` — invisible to the gateway, and
-    a venv sets ``ENABLE_USER_SITE = False`` so there is no fallback.
-
-    Asserting ``sys.executable`` rather than "not the string 'pip'" so the test states
-    the property (install into THIS interpreter) instead of banning one spelling.
+    The first pip on PATH is routinely not the gateway's (``service_path()`` puts
+    ``~/.local/bin`` first). A different pip reports success but installs where the
+    gateway venv, with ``ENABLE_USER_SITE = False``, can never import it.
     """
     captured = _build_cmds_for(
         tmp_path, monkeypatch, {"pyproject.toml": "[project]\nname='x'\nversion='0'\n"}
     )
-    # A PATH pip that is emphatically not us — the old code would have used it.
+    # A PATH pip that is not the gateway's interpreter.
     monkeypatch.setattr(registry.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     await registry._run_app_build(
@@ -1091,16 +1068,10 @@ async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_python_build_soft_skips_when_the_interpreter_has_no_pip(tmp_path, monkeypatch):
-    """A gateway interpreter without a ``pip`` module must skip the Python build,
-    not abort the whole registry install.
+    """A gateway interpreter without a ``pip`` module skips the Python build with a warning.
 
-    The docstring promises "no npm / no pip" is a soft skip, and the npm branch
-    honours it. Planning ``[sys.executable, "-m", "pip", "install", "."]`` without
-    checking availability breaks that contract: a venv created with
-    ``--without-pip`` (or any minimal runtime) has no ``pip`` module, so ``-m pip``
-    exits non-zero and the install fails with ``build failed (exit N)``.
-    ``importlib.util.find_spec("pip")`` checks the gateway interpreter and lets the
-    build soft-skip with a logged warning when pip is absent, mirroring npm.
+    "No npm / no pip" is a soft skip, as for npm; ``-m pip`` on a ``--without-pip`` venv
+    would otherwise fail the whole install.
     """
     log_lines: list[str] = []
     captured: list[list[str]] = []
@@ -1338,12 +1309,8 @@ class TestCatalogFailureNeverBreaksTheStore:
     """`list_registry` runs inside `GET /api/apps/registry` with no try/except
     above it, so anything escaping the catalog step is a 500 for the whole store.
 
-    The catalog is an ENHANCEMENT to a listing that is already complete without
-    it, which is what makes containment at this seam correct rather than merely
-    defensive: the fallback is not a degraded guess, it is exactly what the store
-    rendered before the catalog existed. Review found three separate escape
-    routes inside the module, each narrower than this seam -- these tests pin the
-    seam so a fourth one cannot reach a user.
+    The listing is complete without the catalog, so falling back to it at this seam is
+    exact, not a degraded guess. Pinning the seam covers every escape route inside it.
     """
 
     async def _rows(self, monkeypatch):
@@ -1407,7 +1374,7 @@ class TestCatalogFailureNeverBreaksTheStore:
         traceback this would hide our own bugs instead of a bad document.
 
         Patched at `fetch_inventory_entries` because that is the source the listing
-        now uses; the cache-fed loader is not on this path at all.
+        uses; the cache-fed loader is not on this path at all.
         """
 
         def boom():

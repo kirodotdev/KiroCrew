@@ -38,6 +38,14 @@ describe('JobLogsView cancel error rendering', () => {
     ).toBeInTheDocument()
   })
 
+  it('gives the Cancel button an at-rest fill on the running banner', async () => {
+    renderWithProviders(<JobLogsView jobId="job-1" isRunning runningSince={null} onCancel={() => {}} />)
+    const cancel = await screen.findByRole('button', { name: 'Cancel' })
+    // The stock transparent danger Btn has no edge on the ok tint until hovered.
+    expect(cancel).toHaveClass('bg-bg-elevated', 'border-border-strong', 'text-danger')
+    expect(cancel).not.toHaveClass('bg-transparent')
+  })
+
   it('does not render an error node when cancelError is null', async () => {
     renderWithProviders(
       <JobLogsView

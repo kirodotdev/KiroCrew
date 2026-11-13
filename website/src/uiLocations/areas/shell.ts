@@ -10,7 +10,8 @@ export const LOCATIONS = {
   // The desktop top bar's Search Everywhere trigger: the only way into the
   // command palette besides ⌘K. While an app claims the quick-search slot the
   // same button opens that app's launcher under another label, hence the
-  // condition. The phone nav drawer's Search row is shell.menu-search below;
+  // condition. The Show search in the top bar display setting can hide it,
+  // hence the gate. The phone nav drawer's Search row is shell.menu-search below;
   // the phone Sessions drawer's rail button names itself from a variable and
   // is not registered.
   'shell.search': {
@@ -34,6 +35,7 @@ export const LOCATIONS = {
       requires: [
         { kind: 'viewport', value: 'desktop' },
         { kind: 'condition', id: 'search_bar_unclaimed' },
+        { kind: 'condition', id: 'topbar_search_shown' },
       ],
     }],
   },
@@ -76,27 +78,6 @@ export const LOCATIONS = {
   // desktop rail, and the drawer under shell.mobile-menu (whose phone and
   // not-Sessions gates travel with it). The phone Sessions page's own drawer
   // rail is a different site and is not registered here.
-  'shell.developer': {
-    kind: 'button',
-    label: { from: 'attr', attr: 'label' },
-    terms: {
-      en: ['developer page', 'developer tools', 'dev tools', 'debug tools', 'logs page'],
-      'zh-CN': ['开发者页面', '开发者工具', '调试工具', '日志'],
-    },
-    placements: [
-      {
-        surface: 'shell', entry: 'rail',
-        requires: [
-          { kind: 'viewport', value: 'desktop' },
-          { kind: 'condition', id: 'developer_mode' },
-        ],
-      },
-      {
-        surface: 'shell', parent: 'shell.mobile-menu', entry: 'menu',
-        requires: [{ kind: 'condition', id: 'developer_mode' }],
-      },
-    ],
-  },
   // A toggle row: it opens or closes the docked terminal panel instead of navigating.
   'shell.terminal': {
     kind: 'toggle',

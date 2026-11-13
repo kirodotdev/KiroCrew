@@ -3,7 +3,7 @@
  * (`mc-app-nav-hidden`, PR3), pinned at the App level — real nav rail, real
  * `readAppNavHidden` derivation, mocked pages.
  *
- * The Library grid's pin badge decides which installed apps appear in the
+ * The Library tiles' Pin/Unpin menu item decides which installed apps appear in the
  * sidebar. The contract this file pins:
  *
  * - an app id present in `mc-app-nav-hidden` has NO sidebar row, while a

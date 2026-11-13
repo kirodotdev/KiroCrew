@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -83,6 +83,12 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
     expect(screen.queryByRole('button', { name: 'Ask the agent' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(onRetryModels).toHaveBeenCalledOnce()
+  })
+
+  it('names a failed load of the session\'s own list in its own words', () => {
+    // A session on another harness reads that harness's list from this machine, not a peer.
+    wrap(<ModelEffortDropdown {...baseProps} modelsFailed modelsFailedMessage="Couldn't load the model list." onRetryModels={vi.fn()} />)
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load the model list.")
   })
 
   it('disables the Retry button while the in-place retry is in flight', () => {
@@ -359,7 +365,7 @@ describe('ModelEffortDropdown — inline effort', () => {
     const toggle = screen.getByRole('switch', { name: 'Use default effort' })
     const options = screen.getAllByRole('option')
     const last = options[options.length - 1]
-    input.focus()
+    act(() => { input.focus() })
     await user.tab()
     expect(help).toHaveFocus()
     await user.tab()
@@ -370,7 +376,7 @@ describe('ModelEffortDropdown — inline effort', () => {
     expect(toggle).toHaveFocus()
     fireEvent.keyDown(toggle, { key: 'ArrowUp' })
     expect(last).toHaveFocus()
-    help.focus()
+    act(() => { help.focus() })
     fireEvent.keyDown(help, { key: 'ArrowUp' })
     expect(last).toHaveFocus()
     expect(onListKeyDown).not.toHaveBeenCalled()

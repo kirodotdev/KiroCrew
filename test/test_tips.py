@@ -14,6 +14,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -825,6 +826,22 @@ class TestCatalogAllowlist:
         assert entries, "runtime scan returned nothing"
         assert {e.doc for e in entries} <= TIP_DOC_ALLOWLIST
 
+    def test_every_allowlisted_doc_has_a_bundled_tip(self) -> None:
+        """A doc added to the allowlist must reach the bundled catalog too.
+
+        The runtime only scans the docs when the bundled file is missing, so a
+        doc listed after the last regeneration never becomes a tip. Fix a
+        failure by running ``python scripts/generate_tips_catalog.py``.
+        """
+        from kiro_crew.tips import _BUNDLED_CATALOG_FILE, _scan_docs_catalog
+
+        data = json.loads(_BUNDLED_CATALOG_FILE.read_text(encoding="utf-8"))
+        bundled = {e["doc"] for e in data["entries"]}
+        scanned = {e.doc for e in _scan_docs_catalog()}
+        assert not (
+            scanned - bundled
+        ), f"allowlisted docs with no bundled tip: {sorted(scanned - bundled)}"
+
 
 class TestStateFilePermissions:
     """Codex round-11 (HIGH): personalized tips state must be owner-only."""
@@ -871,10 +888,13 @@ class TestStateFilePermissions:
         from kiro_crew import platform_compat
 
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring_restrict(target):
-            sizes.append(Path(target).stat().st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(Path(target).stat().st_size)
             return real_restrict(target)
 
         monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)

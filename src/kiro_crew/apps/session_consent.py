@@ -76,6 +76,7 @@ async def _reconcile_after_ready() -> list[str]:
         try:
             await asyncio.to_thread(rebuild_agent_config, refresh_forks="defer")
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning(
                 "agent spec rebuild after session approval reconcile failed", exc_info=True
             )

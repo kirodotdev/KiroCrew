@@ -34,6 +34,22 @@ _MAX_LESSONS_PER_CONSOLIDATION = 10
 # recently updated rows; a table that fits renders exactly as before.
 _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION = 65_536
 
+# Longest value, in characters as the per-turn facts block renders it, that ONE
+# automated consolidation semantic write may carry. A longer value is refused whole,
+# never shortened: a value cut short would read as the fact itself. Owner edits,
+# imports and the dashboard are not held to it; they keep the generic byte ceiling in
+# ``validate_semantic``. The unit is the one every context budget counts in, ``len()``
+# of the text shown: a string as itself, a dict or list as the JSON text the block
+# shows, every non-ASCII character as written. The number:
+# one value plus the longest bare key still fits the per-turn facts block on its own
+# (``context_assembly.budget._SEMANTIC_MEMORY_CAP``, the budget for ALL facts
+# together), so a value over it can never be shown there whole; it equals the
+# episodic text maximum the same prompt states, so the model is asked for one
+# number; and it is more than twice the median value measured above, so only the
+# long tail is refused. Fixed rather than derived from that cap, so a budget retune
+# cannot move write policy silently: a test pins it under the cap instead.
+_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS = 2_000
+
 # Ceiling on episodic rows ONE semantic write may retire, and the reason it needs a
 # ceiling at all. `_retire_stale_episodic` tombstones episodes that reference a value
 # the semantic store just superseded, and consolidation rewrites the same keys every

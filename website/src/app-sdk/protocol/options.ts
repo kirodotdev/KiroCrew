@@ -3,7 +3,9 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { extractInlineThinking } from './inlineThinking'
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -186,6 +188,10 @@ export function deriveFollowUpOptions(
       continue
     }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
+    // A say-nothing reply (a quiet patrol cycle's bare U+200B) is not drawn, so the
+    // question above it is still the newest thing the user reads: its chips stay.
+    // Same rule the transcript and the assistant footer use to skip that row.
+    if (isHiddenInvisibleAssistantRow(m)) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
@@ -199,7 +205,10 @@ export function deriveFollowUpOptions(
       continue
     }
     if (m.role === 'assistant' && m.content) {
-      const { options, multi } = parseOptions(m.content)
+      // A marker inside an inline `<thinking>` block is the model planning
+      // its reply, not an offer: the bubble hides that block, so its choices
+      // must not surface as chips either.
+      const { options, multi } = parseOptions(extractInlineThinking(m.content).cleaned)
       // A failed turn can flush the text it streamed as a real assistant row before the
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.

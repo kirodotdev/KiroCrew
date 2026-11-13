@@ -38,7 +38,6 @@ def _make_app(store, pipeline=None):
         app["knowledge_pipeline"] = pipeline
     # No connector for local_file (matches production registration)
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
-    app["knowledge_fetch_pool"] = MagicMock()
     app.router.add_post("/api/knowledge/sources/{id}/sync", sync_source)
     return app
 
@@ -77,10 +76,8 @@ class TestSyncLocalFile:
         pipeline = MagicMock()
         pipeline.ingest_file = AsyncMock()
         # Guard: the agent URL-fetch path must NOT be used for local_file
-        fetch_spy = AsyncMock(
-            side_effect=AssertionError("local_file must not use fetch_url_content")
-        )
-        monkeypatch.setattr(kh, "fetch_url_content", fetch_spy)
+        fetch_spy = AsyncMock(side_effect=AssertionError("local_file must not use fetch_page"))
+        monkeypatch.setattr(kh, "fetch_page", fetch_spy)
 
         sid = store.add_source(name="doc.md", source_type="local_file", uri=str(test_file))
         # Simulate the prior buggy state (source left in error after a failed agent sync)

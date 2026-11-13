@@ -1,8 +1,14 @@
-"""Installed kiro-cli agents: ``GET /api/agents/installed`` and ``POST /api/agents/sync``, which enrolls installed templates into ``config.json``."""
+"""Installed kiro-cli agents: ``GET /api/agents/installed`` and ``POST /api/agents/sync``.
+
+The sync enrolls installed templates into ``config.json``, except Kiro Crew's own
+runtime specs: the ``kirocrew`` source, every other managed spec
+(``kirocrew_owned``) and the generated internal specs (``is_internal_agent_spec``).
+"""
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
@@ -12,16 +18,19 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
         KiroCrewAgentConfig,
         KiroCrewConfig,
+        PendingEditBlocksSave,
         UnknownMemoryStore,
         _drained_to_thread,
         _get_config_lock,
         _name_would_be_masked,
         _read_agent_spec,
+        _remove_member_leftovers,
         _require_owner,
         _sel,
         _spec_stem_on_disk,
         coerce_dict_section,
         discovery_executor,
+        is_internal_agent_spec,
         kiro_agents_dir_path,
         list_agents,
         logger,
@@ -109,6 +118,9 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     synced: list[str] = []
     pruned: list[str] = []
     prune_candidates: dict[str, dict] = {}
+    # Each candidate's record as the config held it, for the teardown after the
+    # write: the slug and workspace its leftovers sit under are resolved from it.
+    prune_records: dict[str, KiroCrewAgentConfig] = {}
     try:
         discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
@@ -127,6 +139,15 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 # only fires for an ORPHANED copy (owner crew deleted) — which
                 # must not resurrect as a ghost agent.
                 and not disc.private_to
+                # Kiro Crew's own runtime specs are templates the runtime
+                # spawns, not Bots: the managed helper specs discovery labels
+                # ``builtin`` (``kirocrew_owned``) and the generated specs a
+                # side turn or skill view runs under. A row for one would sit
+                # on the shared ``default`` memory store as a Bot nobody
+                # created, and the startup prune never removes a
+                # ``kirocrew_owned`` row.
+                and not disc.kirocrew_owned
+                and not is_internal_agent_spec(disc)
             ):
                 # EXECUTABLE INVARIANT enforcement (mirrors the seam-boundary
                 # LIVENESS bound in platform.capability_bound —
@@ -210,6 +231,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     # so an agent (re)added by a newer sync between this
                     # snapshot and the lock is never deleted on stale evidence.
                     prune_candidates[name] = dataclasses.asdict(agent_cfg)
+                    prune_records[name] = agent_cfg
                     del cfg.agents[name]
                     pruned.append(name)
     except BaseException as exc:
@@ -325,9 +347,12 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 synced[:] = [n for n in synced if n not in deferred_names]
             if (state := request.app.get("state")) is not None:
                 from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
+                from kiro_crew.dashboard.mate_folders import hand_back_home
 
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)
+                    # The pruned mate's home goes back to the person, as on a delete.
+                    await hand_back_home(state, store_name)
         except BaseException as exc:
             if not isinstance(exc, Exception):
                 raise
@@ -341,9 +366,29 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 )
             except Exception:
                 logger.warning("SEL logging failed for config save failure", exc_info=True)
+            if isinstance(exc, PendingEditBlocksSave):
+                # A pending config.json change: the dashboard chain answers it 409.
+                raise
             return web.json_response(
                 {"ok": False, "error": "config save failed", "synced": []}, status=500
             )
+        # A pruned crew's avatar, goal check-ins, worktrees and private template
+        # copy go with its record, by the same teardown DELETE /api/agents/{name}
+        # runs under this same config lock. Each is resolved from the record as
+        # the sync read it, so the config is copied with that record put back.
+        # Best-effort: nothing here undoes the prune.
+        if deleted_names:
+            captured = copy.copy(cfg)
+            captured.agents = {**cfg.agents, **{n: prune_records[n] for n in deleted_names}}
+            crons = getattr(request.app.get("state"), "crons", None)
+            sessions = getattr(request.app.get("state"), "sessions", None)
+            for gone in deleted_names:
+                leftovers = await _remove_member_leftovers(
+                    gone, captured, prune_records[gone].kiro_agent, crons, "agent_sync", sessions
+                )
+                for outcome, kind, _detail in leftovers:
+                    if outcome == "failed":
+                        logger.warning("sync: could not remove the %s of %r", kind, gone)
         try:
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),

@@ -7,6 +7,48 @@ builtin is declared by `kiro_crew.apps.builtins` and mounted by
 `aws_control.backend.routes.register_routes`; the dashboard surface is
 `website/src/apps/aws-control/`.
 
+## Repository boundary
+
+The whole app is meant to leave this repository intact: `backend/`, `hooks.py`,
+`crew/packaging/` (the bundle builder), `crew/runtime/` (the container runtime) and
+`crew/scripts/` (the image producers and planner). Kiro Crew core does not import any
+of it. The three core features that need the app's code ask the seams in
+`kiro_crew.apps.seams` (`app-kit-platform.md`, "A core feature that needs an app's
+code asks a seam"), and `seams.py` at the package root fills all three: `crew_runtime` from `crew/runtime/` and `crew/packaging/build.py`,
+`aws_account_policy` from `backend/accounts.py`, and `transfer_staging` from
+`backend/storage.py`. Each provider method looks its target up on the owning module at
+call time, so a patch of that module reaches core's callers. The package `__init__`
+serves `register_routes` lazily, so importing `seams.py` does not load the backend.
+
+`test_core_aws_control_decoupling.py` keeps it that way. No core module or script
+imports the app. The core string constants that still name the package are pinned in
+`KNOWN_NAME_REFERENCES`, and each is deleted in the change that removes the app. They
+are the `aws_control.conversation_export` row of the sensitive-store read allowlist in
+`hooks.py`, and the `security_posture*.py` rows that exempt or classify the app's
+files. Neither is a seam: an app must not add itself to the read allowlist, and the
+posture tables are core's audit of the app's code.
+
+These leave with the app, and until then this repository runs them at the app's paths:
+
+* `.github/workflows/crew-image-build.yml`, which runs `crew/scripts/crew_image_build_plan.py`
+  and the producers it derives. A recipe cites its producer as `scripts/<name>.sh`, and
+  the planner resolves that against the crew tree, so the recipes' text is unchanged.
+* The `ci.yml` crew-container lane (`container_tests/`, `container/requirements.txt`) and
+  the `--cov` rows for `crew/packaging`.
+* The `setup.cfg` `package_data` rows and the `MANIFEST.in` rules that ship the crew
+  runtime in the wheel, and the `.gitignore` rule for a wheel staged in `vendor/`.
+
+These stay in core because they protect a path on disk, not app code. They are keyed by
+the app's name and are correct only while the app is installed as `aws-control`: the
+`apps/aws-control/data` and `aws-control-staging` sandbox leaves (`sandbox_leaves.py`,
+`security/paths_lists.py`, `sandbox_precreate.py`, `sandbox_aliases.py`), and the `s3` and
+`ce` services in `aws_consent.GATED_SERVICES`.
+
+Two core test files still load the app's planner for its Dockerfile reader
+(`logical_instructions`): `test_docker_wheel_layer_contract.py` and
+`test_docker_kas_bundle.py`, which also check the gateway's own `docker/Dockerfile`.
+Those checks need a core copy of the reader before the app leaves.
+
 ## Access boundary
 
 Every AWS Control route passes `routes._guarded`. It refuses a disabled app and
@@ -53,6 +95,17 @@ within it — healthy first, the default preferred only among the healthy ones,
 which is exactly what `_resolve_target` gives a request-driven operation. The
 nightly backup loop (`hooks.py::_run_once`) calls it and skips the wake on None,
 because a caller about to spend money must read "no working key" as "not now".
+When a nightly IS scheduled (any account has the snapshot or sessions grant on),
+that skip is not silent: the loop records an INSTALL-GLOBAL
+`nightly.record_nightly_no_key_skip` entry the accounts read serves as
+`nightlyNoKeySkip`, and warns once per skip STREAK rather than once per
+half-hourly wake. The record is install-global, not account-keyed, because the
+skip is decided before any account resolves, so there is no account to key it
+under; it carries `since` (the day the streak began), `at` (the latest wake) and
+`consecutive`, and `nightly.clear_nightly_no_key_skip` drops it the moment a key
+resolves again. An install with no nightly scheduled stays silent, and a no-key
+wake there also clears any standing record, so a nightly turned on later starts
+a fresh streak that warns.
 `accounts.resolve_consent_target` is the DISPLAY form the consent handler
 (`dashboard/handlers/aws_consent.py::_effective_target`) calls for S3 and Cost
 Explorer: same resolution, but with no working key it names the registry default
@@ -68,7 +121,11 @@ default has no account to confirm, `Confirm and enable` requires one, and the
 account's healthy sibling key keeps serving every operation — a working account
 with no way to authorize it. The same read in the unattended loop is worse than a
 dead end, because the grant names the healthy key while the loop resolves the
-broken one, so the backup skips on every wake with only a log line.
+broken one, so the backup skips on every wake. That skip is recorded and warned
+once per streak (above): the gateway log carries one WARNING per skip streak and
+the accounts read reports it as `nightlyNoKeySkip`, so an owner who enabled a
+nightly can learn of it before the host loss the backup exists to survive. No
+console panel renders `nightlyNoKeySkip`; the surface is HTTP only.
 `test_aws_control_app.py::TestConsentTargetTracksTheOperation` pins the shared
 resolution as an equality against `resolve_account_profile`, the key the nightly
 loop gates on, the fallback scrub, and each degraded state.
@@ -101,6 +158,17 @@ AWS Control reaches AWS through deploy-engine helpers: account inspection uses
 constructs fixed AWS CLI argument vectors with a profile name and runs the CLI
 through the standard subprocess sandbox. The app does not import an AWS SDK.
 
+The CLI is found on the inherited `PATH`, then in `/opt/homebrew/bin` and
+`/usr/local/bin`. A fallback directory reaches a credential-bearing child's
+`PATH` only when a resolver walk verifies its complete component and link chain
+under the provider executable trust policy; the child receives the verified
+canonical path. Missing, uncheckable, or refused fallback directories stay off
+the child `PATH`. This lets the CLI find a bare `credential_process` helper by
+name when a desktop-launched gateway's minimal `PATH` holds neither fallback.
+Per-user dirs such as `~/.local/bin` are reached only through the inherited
+`PATH`. The child gets none of the gateway's Python interpreter settings
+(`sandbox.without_python_env`), because aws-cli v1 is a Python program.
+
 ## Drive and destructive operations
 
 `storage.find_drive` discovers a drive by its managed tags, validates the bucket
@@ -124,6 +192,8 @@ SSE, and the discovery tags. The order is load-bearing: a partially configured
 bucket is left untagged rather than becoming a usable drive without versioning.
 `test_aws_control_storage.py::TestCreateDrive.test_versioning_is_enabled_before_hardening_tags_land`
 pins the sequence.
+
+Before the discovery tags, `storage.ensure_tls_only_policy` merges a `KiroCrewDenyInsecureTransport` statement (`aws:SecureTransport=false`) into the bucket policy. It rewrites only a statement under its own Sid and keeps every other statement as written, so an owner's own transport rule, however strict, is never removed. It runs in `create_drive` rather than in the shared `_harden_bucket`, because deploy-web later replaces its bucket policy with `put_oac_bucket_policy`. It is best effort: the recommended drive IAM tier deliberately has no `s3:PutBucketPolicy`, since with it the same principal could grant itself reads of the write-only `backup/` prefix, so a denied call is logged and the drive is still created (`TestCreateDrive.test_a_failed_tls_policy_still_creates_the_drive`). A drive created before this statement existed gets it on its first upload in each gateway process; that check runs once per process, is best effort, and never fails the upload. `TestCreateDrive.test_a_new_drive_gets_a_tls_only_bucket_policy_before_its_tags`, `TestEnsureTlsOnlyPolicy` and `test_aws_control_routes.py::TestDriveUpload.test_an_upload_confirms_the_tls_only_policy_once_per_drive` pin this.
 
 Drive objects live beneath the `artifacts/`, `drive/`, and `backup/` prefixes.
 `storage.validate_key` rejects paths that could escape a section. Folder deletion
@@ -151,6 +221,7 @@ a failed copy leaves the drive unchanged. Two invariants are load-bearing: a
 move never silently overwrites (an existing destination refuses with 409,
 pinned by
 `test_aws_control_routes.py::TestDriveMove.test_move_existing_destination_answers_409_and_deletes_nothing`),
+a destination key that still has an unexpired share link refuses with 409 `destination_share_active`, because that link would start serving the moved file (`TestDriveMove.test_move_onto_a_key_with_an_unexpired_share_is_refused`),
 and the section is restricted to `drive` (the `library` and `backup` sections
 are managed surfaces whose objects carry ledger state a move would orphan;
 pinned by
@@ -288,7 +359,7 @@ and `delete_prefix`, `object_exists`, `head_object_meta`, `presign`, `usage` and
 
 | Owner | Holds |
 |---|---|
-| `backend/storage_drive.py` | the bucket naming scheme and tags, `SECTION_PREFIXES` and `section_key`, `find_drive`, `_assert_owned_by` and `create_drive` |
+| `backend/storage_drive.py` | the bucket naming scheme and tags, `SECTION_PREFIXES` and `section_key`, `find_drive`, `_assert_owned_by`, `create_drive` and `ensure_tls_only_policy` |
 | `backend/storage_staging.py` | `STAGING_DIR_LEAF`, `staging_root`, `pinned_staging` and `get_object_head_bytes` |
 | `backend/storage_versions.py` | `validate_version_id`, the batched delete helpers, `DeleteObjectsPartialFailure`, `list_object_versions`, `PartialVersionDelete` and `delete_object_versions` |
 
@@ -1322,7 +1393,14 @@ prefix. Enumerating the OTHER installs' prefixes is opt-in
 `backup.MAX_OTHER_INSTALLS`) because it costs a list call and a label read per
 install; it exists because a replacement machine owns no archives, so a view
 limited to its own prefix would show it nothing on the one occasion the bucket
-holds the only surviving copy.
+holds the only surviving copy. Each of these file listings follows `nextToken`
+(`_section_files`, at most `_MAX_LISTING_PAGES` pages of 500): archive names sort
+oldest first, so a prefix read one page deep loses exactly its newest archives. A
+kind whose walk stops at the cap with keys left is named in the answer's
+`archives_truncated` list, beside `truncated` and `max` for the install roster,
+so a capped listing never reads as complete. The Backup pane says so: each named
+kind it knows gets a line above the archive rows saying its newest archives may be
+missing, and an answer without the field (an older backend) reads as complete.
 
 An install also publishes a human-readable label beside its own archives at
 `<kind>/<install>/_label.json`, written from the upload path and under BOTH kind
@@ -1663,6 +1741,14 @@ why `scheduled_sessions_blocked_reason` covers only the other two conditions.
 A host that cannot produce the archive outranks the account, because naming the
 account would send the operator to a page carrying the same notice.
 
+The snapshot kind carries the same "granted vs will run" split through
+`backup.scheduled_snapshot_blocked_code`, reported as the `nightlyBlocked` status
+field beside the snapshot grant. It has only the account condition -- no
+capability or redaction gate applies to the snapshot payload -- so its
+`scheduled_account` argument is required rather than defaulted: `due_for_nightly`
+reads nothing here, so the only caller is the per-account status route, which
+always answers explicitly.
+
 The scheduled path calls `backup.run_sessions_backup` unchanged, with the same
 arguments the owner-triggered job passes and `CALLER_SCHEDULED`. So the
 archive's CONTENTS, its redaction posture and its size behaviour are not
@@ -1691,9 +1777,9 @@ per responsibility, lowest layer first:
 | `backup_parts/traversal.py` | the descriptor-pinned descent `_add_pinned`, `_CAN_PIN_TRAVERSAL`, and `kind_unavailable_reason` |
 | `backup_parts/ledger.py` | `_record_run`, `_record_skip`, the run identity (`_run_process`, `_run_sequence`), and the projections `uploaded_objects`, `uploaded_versions`, `retention_owned_keys`, `last_runs`, `remembered_archives` |
 | `backup_parts/layer_b.py` | the Layer B grant and its scope marker, `set_sessions_layer_b`, and both Layer B audits |
-| `backup_parts/nightly.py` | the `nightly` and `nightly_sessions` grants, `_NIGHTLY_CONSENT_READERS`, the failure record and its witness, the backoff, and both due checks with `scheduled_sessions_blocked_code` |
+| `backup_parts/nightly.py` | the `nightly` and `nightly_sessions` grants, `_NIGHTLY_CONSENT_READERS`, the failure record and its witness, the backoff, both due checks, and the `scheduled_sessions_blocked_code` / `scheduled_snapshot_blocked_code` reporting predicates |
 | `backup_parts/uploads.py` | `_authorize_upload`, `_refuse_upload`, `_authorize_recovery_read`, the teardown stop, and `_unchanged_baseline` |
-| `backup_parts/catalog.py` | `list_remote_backups`, `other_install_ids`, `_install_folders` and `read_remote_label` |
+| `backup_parts/catalog.py` | `list_remote_backups`, `_section_files`, `other_install_ids`, `_install_folders` and `read_remote_label` |
 | `backup_parts/retention.py` | the keep count and its writer, `_delete_under_the_retention_gate`, `_prune_remote_archives`, its audits and measurements |
 | `backup_parts/archive_inputs.py` | `_open_pinned_archive_fd`, the pinned staged archive both builders fingerprint and upload, and `_add_tree`, the screened walk of one session tree |
 | `backup_parts/conversations.py` | the terminal conversation export: the store lookup `_kiro_cli_conversation_db`, the scratch directory `_conversation_scratch_parent`, the table-scoped copy (`_copy_table`, `_redacted_row`) and `_export_cli_conversations` |
@@ -1763,7 +1849,14 @@ density), so the remove flow, the Reconnect disclosure and the hand-off gating
 exist once. A row carries two controls, the select surface and its overflow
 menu; Reconnect (offered on a degraded resolved row) and Remove are items in
 that menu, and the health word on the row is the cue that the menu holds
-something to do. The bare `/aws-control` path and an unknown pane segment both land on
+something to do. A failing key's Reconnect leads with that key's own probe
+error (`profiles[].detail`, redacted server-side) as an `AwsErrorNotice`, so
+the cause is on screen before any generic guidance. The Refresh button on the
+Overview and Accounts panes re-probes every key (`GET /accounts?refresh=1`,
+which also skips the identity probe's 30-second cache) into the list's one
+cache entry: a plain read is answered from the five-minute snapshot, so a key
+fixed after the page loaded would keep its failure. The bare
+`/aws-control` path and an unknown pane segment both land on
 Overview; every named pane path is unchanged. The month-to-date figure shares the
 Usage pane's cost cache entry and, like it, settles to a dash with a visible
 reason (consent missing, or the read failed) rather than a tooltip. A read that
@@ -1964,7 +2057,13 @@ ledger, the local profile scan) and every mutation whose error was never read
 A failed read must not fall through to the surface's empty state — a failed
 listing is not an empty folder, a failed profile scan is not "nothing left to
 add" — and the tests for each state assert the empty state's absence alongside
-the notice. Two states are deliberately NOT errors: a 403 whose code is
+the notice. A profile scan that fails because the gateway's `aws` is AWS CLI v1,
+which has no `configure list-profiles`, is answered 501 `unsupported_aws_cli_v1`
+by both the listing and the register route (`deploy.profiles.aws_cli_is_v1` asks
+`aws --version` once the scan failed), and its notice names the version and the
+remedy, AWS CLI v2 first on the gateway's PATH, with no Try again, because no
+retry clears it; `kirocrew doctor` names the same cause on its profiles line.
+Two states are deliberately NOT errors: a 403 whose code is
 `app_disabled` renders the disabled-app copy (any other 403 — a non-owner
 caller's `dashboard_owner_required` — is an error to diagnose and goes to the
 notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer

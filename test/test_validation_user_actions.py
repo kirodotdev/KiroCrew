@@ -409,10 +409,10 @@ class TestMcpCronUserActions:
                     "approval_mode": "auto",
                 },
             )
-        assert "appr001" in result
-        # #391: folded into add_job's single locked save (not post-hoc mutation).
-        assert svc.add_job.call_args.kwargs["agent_id"] == "gaia-cr-review"
-        assert svc.add_job.call_args.kwargs["approval_mode"] == "auto"
+        # 'auto' passes validation but is the owner's switch (Schedule page),
+        # so the tool refuses it before anything is written.
+        assert result.startswith("Error: approval_mode 'auto' can only be turned on by the owner")
+        svc.add_job.assert_not_called()
 
     def test_add_with_approval_mode_empty(self):
         with patch("kiro_crew.mcp_cron.CronService") as mock_svc:

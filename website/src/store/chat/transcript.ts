@@ -190,7 +190,96 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
   return changed ? result : merged
 }
 
-/** Carry a settled `card` or `steer` row forward over a stale snapshot copy
+/** Whether `page` carries an older copy of a steer row this tab already shows
+ *  as `superseded`.
+ *
+ *  `superseded` is terminal: the queue drain sets it on a requeued steer's old
+ *  row only AFTER it appended that turn's own row (`superseded_steer.py`
+ *  `_retire_superseded_steer_row`), and nothing moves it back. So a page holding
+ *  the same `(mid, ts)` steer in any other state was captured before that drain,
+ *  and it also lacks the successor row. Merging it would drop the successor the
+ *  tab already shows, so the caller keeps its own newer view, the way an
+ *  ended-turn page is dropped. A switch keeps its view only when that view holds
+ *  the page's first row; otherwise the page applies and
+ *  `preserveSettledUpsertRows` carries `superseded` over. That is safe because
+ *  the transcript hides a superseded row only while its successor is in the same
+ *  list (`isHiddenSupersededSteer`), so a page that lacks it draws the old row. */
+export function pageRegressesSupersededSteer(existing: ChatMessage[], page: ChatMessage[]): boolean {
+  // A `user` steer row is a person's or a peer's steer, a `nudge` one an
+  // automation steer; the role is part of the row identity.
+  const steerKey = (m: ChatMessage): string | undefined => {
+    const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
+    if ((m.role !== 'user' && m.role !== 'nudge') || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([m.role, meta.mid, m.ts ?? null])
+  }
+  const superseded = new Set<string>()
+  for (const m of existing) {
+    const key = steerKey(m)
+    if (key && (m.meta as { steerState?: unknown }).steerState === 'superseded') superseded.add(key)
+  }
+  if (!superseded.size) return false
+  return page.some(m => {
+    const key = steerKey(m)
+    return key !== undefined && superseded.has(key)
+      && (m.meta as { steerState?: unknown }).steerState !== 'superseded'
+  })
+}
+
+/** The queue of a page that `pageRegressesSupersededSteer` reports, without the
+ *  entries that have drained since the page was read.
+ *
+ *  A page that shows the steer `requeued` was read after the requeue and before
+ *  the drain, so its queue still lists the steer's entry. The tab has seen the
+ *  drain pop that entry: the server retires the row only when the entry drained
+ *  alone with exactly the row's text, and the requeue put it at the queue head.
+ *  So the first entry with that text is dropped for each such row. A page that
+ *  shows the steer `written` was read before the requeue, so its queue holds no
+ *  entry for it, and nothing is dropped. Every other entry stays: the page may
+ *  list a send whose `queue_push` this tab never received, even one with the
+ *  same text, and the caller merges the rest with the queued rows it holds. */
+export function queueAfterSupersededDrain<Q extends { content: string; queueId?: string }>(
+  existing: ChatMessage[],
+  page: ChatMessage[],
+  queue: Q[] | undefined,
+): Q[] {
+  if (!queue?.length) return []
+  const steerKey = (m: ChatMessage): string | undefined => {
+    const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
+    if ((m.role !== 'user' && m.role !== 'nudge') || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([m.role, meta.mid, m.ts ?? null])
+  }
+  const unretired = new Set<string>()
+  for (const m of page) {
+    const key = steerKey(m)
+    if (key && (m.meta as { steerState?: unknown }).steerState === 'requeued') unretired.add(key)
+  }
+  // The drained entry, by identity where this tab saw the drain: the live
+  // rebuild of a requeued card names the card's `queue_id` on the row it lands
+  // on (`meta.landedFromSteer`, set by `removeQueuedMessage`). By text where it
+  // did not, for example after a refresh replaced that rebuild with the stored
+  // row. Identity first, so a reordered send with the same text keeps its card.
+  const drainedIds = new Set<string>()
+  const drained = new Map<string, number>()
+  existing.forEach((m, i) => {
+    const key = steerKey(m)
+    if (!key || !unretired.has(key) || (m.meta as { steerState?: unknown }).steerState !== 'superseded') return
+    const landed = existing.slice(i + 1).find(r => r.role === m.role && !(r.meta as { steer?: unknown } | undefined)?.steer
+      && r.content === m.content && typeof (r.meta as { landedFromSteer?: unknown } | undefined)?.landedFromSteer === 'string')
+    const landedId = (landed?.meta as { landedFromSteer?: string } | undefined)?.landedFromSteer
+    if (landedId && queue.some(q => q.queueId === landedId)) drainedIds.add(landedId)
+    else drained.set(m.content, (drained.get(m.content) ?? 0) + 1)
+  })
+  if (!drained.size && !drainedIds.size) return queue
+  return queue.filter(q => {
+    if (q.queueId && drainedIds.has(q.queueId)) return false
+    const left = drained.get(q.content) ?? 0
+    if (!left) return true
+    drained.set(q.content, left - 1)
+    return false
+  })
+}
+
+/** Carry a settled or newer `card` or `steer` row forward over a stale snapshot copy
  *  that would REGRESS it to an earlier lifecycle state (#20833).
  *
  *  Besides `stop_event` (#20818) and `mcp_oauth` (#20904), two more durable
@@ -200,7 +289,7 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *   - a `card` row (`chat_cards._patch_row` -> `slot.update_message`): its
  *     `meta.card.status` advances a LIVE status to a terminal one. A snapshot
  *     captured while it was still live reverts a finished card to "running".
- *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
+ *   - a steer row (`role: "user"` or `"nudge"`, `meta.steer`): `steer_queue`'s
  *     `_mark_steer_row_state` -> `slot.update_message` advances
  *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
  *     while it was still `written` revives the "pending steer" badge on a steer
@@ -213,15 +302,22 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *  stale page copy, since the merge seats `[...olderHead(live), ...page]`.
  *
  *  Like `preserveSettledMcpOauth` (and unlike the stop rule), this runs BEFORE
- *  `deduplicateByMid`: it carries the settled prior row's `content`/`cls`/`meta`
+ *  `deduplicateByMid`: it carries the settled or newer prior row's `content`/`cls`/`meta`
  *  onto any still-earlier merged copy of the same `(role, mid, ts)`, so the
  *  surviving dedup row keeps the terminal state the user already saw. Keyed by
  *  `(role, mid, ts)` — the full row identity `deduplicateByMid` uses, so only
  *  true copies of one row overwrite each other (not two distinct rows that
- *  happen to reuse a `mid`). A row with no settled prior
+ *  happen to reuse a `mid`). A row with no settled or newer prior
  *  copy, and every other role, pass through untouched; returns `merged`
  *  unchanged (same reference) when nothing is carried, so a caller can skip the
  *  write.
+ *
+ *  A card row's REVISION decides first: `chat_cards._patch_row` bumps
+ *  `meta.card.rev` on every in-place patch, so when two copies' revisions
+ *  differ the higher one is kept whichever way the status moved, a guide
+ *  replayed `completed` -> `offered` included (#22795). Copies with EQUAL
+ *  revisions (a steer, a row never patched, or one patched before the field
+ *  existed) fall to the status rule below.
  *
  *  FAIL-SAFE on which statuses anchor a carry-forward: a card status is only a
  *  carry-forward anchor if it is terminal AND cannot legally move back to a
@@ -256,13 +352,15 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // which is not a live status; `cancelled`/`expired`; `undone`) have no edge
   // back to a live status, so they anchor safely.
   const CARD_ANCHOR = new Set(['applied', 'partial', 'cancelled', 'expired', 'undone'])
-  // A steer row advances `written` -> `consumed`/`requeued` and never back
-  // (`steer_queue.py`: the only two transitions; a requeued steer runs later as
-  // its own NEW row, not a rewrite of this one), so both are safe anchors.
-  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted'])
+  // A steer row advances `written` -> `consumed`/`requeued`/`retracted` and never
+  // back (`steer_queue.py`; a requeued steer runs later as its own NEW row, not a
+  // rewrite of this one), so all three are safe anchors. `requeued` then moves to
+  // `superseded` once that row lands (`queue_drain.py`), and nothing moves it back.
+  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted', 'superseded'])
 
   // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
-  // is not one this pass guards. Steer rows ride the `user` role, so they are
+  // is not one this pass guards. Steer rows ride the `user` role (a person's or
+  // a peer's steer) or the `nudge` role (an automation steer), so they are
   // distinguished by `meta.steer` rather than role alone.
   //
   // `ts` is part of the key on purpose, matching `deduplicateByMid`'s own
@@ -283,7 +381,7 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
     // with field content, and no string literal trips the zero-tolerance i18n
     // added-lines gate on this internal identity key.
     if (m.role === 'card') return JSON.stringify(['card', mid, m.ts ?? null])
-    if (m.role === 'user' && (m.meta as { steer?: unknown } | undefined)?.steer) return JSON.stringify(['steer', mid, m.ts ?? null])
+    if ((m.role === 'user' || m.role === 'nudge') && (m.meta as { steer?: unknown } | undefined)?.steer) return JSON.stringify(['steer', m.role, mid, m.ts ?? null])
     return undefined
   }
 
@@ -304,33 +402,45 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // the lifecycle, not merely "not an anchor": a card whose status is unknown
   // to us (neither live nor anchor), or a retryable `failed`, is left exactly
   // as the page sent it rather than overwritten from a prior anchored row.
-  const isEarlier = (m: ChatMessage): boolean => {
+  const isEarlier = (prior: ChatMessage, m: ChatMessage): boolean => {
     if (m.role === 'card') {
       const status = (m.meta as { card?: { status?: unknown } } | undefined)?.card?.status
       return typeof status === 'string' && CARD_LIVE.has(status)
     }
     const steerState = (m.meta as { steerState?: unknown } | undefined)?.steerState
-    return steerState === 'written'
+    // `requeued` is earlier only than `superseded`, the one state that follows it.
+    const priorState = (prior.meta as { steerState?: unknown } | undefined)?.steerState
+    return steerState === 'written' || (steerState === 'requeued' && priorState === 'superseded')
   }
 
-  const settledPrior = new Map<string, ChatMessage>()
+  // A card copy's revision; 0 before the row's first patch.
+  const cardRev = (m: ChatMessage): number => {
+    const rev = (m.meta as { card?: { rev?: unknown } } | undefined)?.card?.rev
+    return typeof rev === 'number' ? rev : 0
+  }
+  const priorWins = (prior: ChatMessage, m: ChatMessage): boolean => {
+    const newer = cardRev(prior) - cardRev(m)
+    return newer ? newer > 0 : isSettled(prior) && isEarlier(prior, m)
+  }
+
+  const priorByKey = new Map<string, ChatMessage>()
   for (const m of existing) {
     const key = upsertKey(m)
-    if (key && isSettled(m)) settledPrior.set(key, m)
+    if (key) priorByKey.set(key, m)
   }
-  if (!settledPrior.size) return merged
+  if (!priorByKey.size) return merged
 
   let changed = false
   const result: ChatMessage[] = []
   for (const m of merged) {
     const key = upsertKey(m)
-    if (key !== undefined && isEarlier(m) && settledPrior.has(key)) {
-      // Carry the settled prior row's rendered state forward in place. Identity
+    const prior = key === undefined ? undefined : priorByKey.get(key)
+    if (prior && priorWins(prior, m)) {
+      // Carry the newer prior row's rendered state forward in place. Identity
       // (`role`, `mid`, `ts`) already matches, so replacing content/cls/meta
       // wholesale keeps the row the same row for `deduplicateByMid`. The prior
       // meta is authoritative: a partial merge could leave a hybrid row still
       // advertising the earlier state.
-      const prior = settledPrior.get(key)!
       result.push({ ...m, content: prior.content, cls: prior.cls, meta: { ...(prior.meta || {}) } })
       changed = true
       continue
@@ -400,16 +510,15 @@ export function preserveSettledStopState(existing: ChatMessage[], merged: ChatMe
   return changed ? result : merged
 }
 
-/** Tail window (rows) for a backward `sendId` scan. Shared by the echo
- *  reconcile and the response-confirm path so the two cannot drift into
- *  disagreeing about which bubbles are still addressable by their send id. */
-export const RECONCILE_WINDOW = 50
-
 /** Reconcile a server echo (carrying both `sendId` and `mid`) against the
  *  optimistic user bubble that was appended client-side at send time.
  *
- *  Scans the bounded tail for an exact `sendId` match, including past newer
- *  steers that may have been appended before this echo arrived.
+ *  Scans the WHOLE transcript backward for an exact `sendId` match, including
+ *  past newer steers that may have been appended before this echo arrived. No
+ *  tail window: any number of rows (a tool burst) can land before the echo,
+ *  and a bubble pushed past a window would be duplicated. `sendId` is unique
+ *  per send, so a full scan cannot mis-hit; the confirm, unconfirmed and steer
+ *  reducers in `messages.ts` scan the same way so all paths agree.
  *  A matching optimistic steer can have raced onto a new turn; the ordinary
  *  user echo then also clears its provisional steer flag.
  *  On match: updates ts/meta and clears the `optimistic` flag. Keep `sendId`
@@ -429,8 +538,7 @@ export function reconcileOptimisticEcho(
   meta: Record<string, unknown>,
   ts?: string,
 ): boolean {
-  const reconcileFloor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-  for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.role === 'queued' && m.meta?.responsiveSend && m.meta?.sendId === echoSendId) {
       // A crewmate send that waits behind a running turn has its row written

@@ -5,12 +5,13 @@
 // file-explorer that run as a separate child process).
 import { i18nT } from '../../i18n/t'
 import {
-  accountQuery, AssigneesConflictError, DEFAULT_REPO_SETTINGS, gitlabGroupError, parseErrorBody,
-  repoBody, repoQuery, SettingsConflictError,
+  accountQuery, AssigneesConflictError, DEFAULT_REPO_SETTINGS, gitlabGroupError,
+  parseErrorBody, repoBody, repoQuery, SettingsConflictError,
 } from './apiTypes'
 import type {
   AccountScope, ApplyLabelsResponse, BulkApplyResponse, BulkPrAction, BulkPrResponse,
-  CiRunsResponse, ConnectResponse, CreateLabelResponse, DepsResponse, GenerateTaggingResponse,
+  CiRunsResponse, CommentBatchItem, CommentBatchResponse, ConnectResponse, CreateLabelResponse,
+  DepsResponse, GenerateTaggingResponse,
   GitLabGroup, GitLabGroupReviewsResponse, GitLabGroupsResponse, InvestigationPatch,
   InvestigationResponse, IssueAiResponse, IssueAssigneesResponse, IssueDetailResponse,
   IssuesResponse, IssueStateResponse, ItemKind, LabelsResponse, MembersResponse, MeResponse,
@@ -69,8 +70,8 @@ function langHint(aiLanguage: string): Record<string, string> {
 // request names its repo; `apiCrewTypes.ts` holds the crew records, phase
 // classifications and event kinds that mirror the backend crew store.
 export {
-  GitLabGroupError, AssigneesConflictError, DEFAULT_REPO_SETTINGS, SettingsConflictError,
-  accountQuery, repoQuery, repoBody,
+  GitLabGroupError, AssigneesConflictError, DEFAULT_REPO_SETTINGS,
+  SettingsConflictError, accountQuery, repoQuery, repoBody,
 } from './apiTypes'
 export type {
   ConnectResponse, Issue, IssuesResponse, PullRequest, PullsResponse, GitLabGroup,
@@ -78,7 +79,8 @@ export type {
   PullDetailResponse, Reactions, DetailLabel, Milestone, IssueDetailData, TimelineEvent,
   IssueDetailResponse, RefSummary, RefSummaryResponse, SuggestedLabel, IssueAiResponse,
   PrAiResponse, ApplyLabelsResponse, IssueStateResponse, IssueAssigneesResponse, PrAction,
-  BulkPrAction, PrMergeResponse, PrStateResponse, PrReviewResponse, PrCommentResponse,
+  BulkPrAction, PrMergeResponse, PrStateResponse, PrReviewResponse, CommentBatchItem,
+  CommentBatchResponse, PrCommentResponse,
   PrAutoMergeResponse, PrWorkflowRun, PrRunsResponse, CiRun, CiRepoRuns, CiRunsResponse,
   PrRunActionResponse, BulkPrResponse, RepoLabel, LabelsResponse, RepoMember, MembersResponse,
   RepoPermissions, RepoSettings, SettingsResponse, RecommendationCategory, LabelRecommendation,
@@ -97,6 +99,10 @@ export type {
   CrewCounts, CrewPatch, CrewSpec, WorkItemPatch, CrewSettingsPatch, CrewsResponse, CrewResponse,
   CrewNamesResponse, CrewDetailResponse, CrewWorkResponse, CrewSettingsResponse,
 } from './apiCrewTypes'
+
+/** The gateway answered a comment write with an error status: nothing was posted.
+ * Any other failure of that call may have reached the forge. */
+export class CommentsRefusedError extends Error {}
 
 export const issueRadarApi = {
   connect: async (url: string): Promise<ConnectResponse> => {
@@ -369,6 +375,34 @@ export const issueRadarApi = {
       body: JSON.stringify({ ...repoBody(ref), number, body }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Post timeline comments and replies on one issue or pull request. A single
+   * comment is a batch of one. */
+  postComments: async (
+    ref: RepoRef, number: number, target: 'issue' | 'pull', items: CommentBatchItem[],
+  ): Promise<CommentBatchResponse> => {
+    const r = await fetch(`${API}/comments`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, target, items }),
+    })
+    if (!r.ok) {
+      // Only the gateway's own error body, which always names a `code`, says that
+      // nothing reached the forge: it reports a partial or uncertain batch as a 200.
+      // Its statuses include 502, so the status cannot tell it from a proxy's error
+      // page, which leaves delivery unknown and is thrown as a plain Error.
+      const text = await r.text().catch(() => '')
+      let body: unknown = null
+      try { body = JSON.parse(text) } catch { /* not the gateway's answer */ }
+      const { error, code } = (body && typeof body === 'object' ? body : {}) as { error?: unknown; code?: unknown }
+      if (typeof code === 'string') {
+        throw new CommentsRefusedError(typeof error === 'string' && error ? error : `HTTP ${r.status}`)
+      }
+      throw new Error(`HTTP ${r.status}`)
+    }
     return r.json()
   },
 
@@ -920,10 +954,17 @@ export const issueRadarApi = {
    * like `/issues`. The backend route lands in a SEPARATE PR (M1), so callers
    * must treat a 404/500/empty answer as "no dependency data yet" and render a
    * designed empty state rather than an error — see GraphView / DepsSection. */
-  deps: async (ref: RepoRef): Promise<DepsResponse> => {
+  deps: async (ref: RepoRef, opts?: { refresh?: boolean }): Promise<DepsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
+    // `refresh=1` is the synchronous rebuild: the route fetches now and answers
+    // the fetch's own outcome, so a failure reaches the caller instead of being
+    // swallowed behind a cached 200 (the user-initiated Refresh/Retry path).
+    if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/deps?${q.toString()}`, { credentials: 'same-origin' })
-    if (!r.ok) throw new Error(await parseErrorBody(r))
+    // Same coded-error envelope as /gitlab-groups: `code` is the route's own
+    // classification (`deps_auth_required`, `deps_fetch_failed`,
+    // `deps_issue_scope_unavailable`, or '' when the body carried none).
+    if (!r.ok) throw await gitlabGroupError(r)
     return r.json()
   },
 }

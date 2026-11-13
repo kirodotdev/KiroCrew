@@ -166,11 +166,11 @@ describe('context-usage readout', () => {
   } as unknown as Parameters<typeof ContextUsageControl>[0]['autoCompactThreshold']
 
   function Host() {
-    const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
+    const { ctxPopoverOpen, setCtxPopoverOpen } = useContextPopover()
     return (
       <>
         <ContextUsageControl contextPct={40} contextWindowTokens={1000} shelfCompact={false}
-          ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef}
+          ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen}
           autoCompactThreshold={autoCompactThreshold} />
         <button type="button">outside</button>
       </>
@@ -193,13 +193,157 @@ describe('context-usage readout', () => {
     expect(popoverShown()).toBe(false)
   })
 
+  it('stays open when the opening press then focuses the button', async () => {
+    // A real browser focuses the button on the mousedown that follows the
+    // pointerdown which opened the card; jsdom does not, so focus it here.
+    render(<Host />)
+    await flush()
+    press(readout())
+    act(() => { readout().focus() })
+    release(readout())
+    await flush()
+    expect(popoverShown()).toBe(true)
+  })
+
   it('still opens on a keyboard click, and a press outside closes it', async () => {
     render(<Host />)
     await flush()
     fireEvent.click(readout())
     expect(popoverShown()).toBe(true)
+    // The shared Popover arms its outside-press listener one tick after it
+    // opens, and dismisses on the release of a press outside.
+    await flush()
     press(screen.getByRole('button', { name: 'outside' }))
+    release(screen.getByRole('button', { name: 'outside' }))
     expect(popoverShown()).toBe(false)
+  })
+})
+
+describe('context-usage readout opened from the keyboard', () => {
+  const autoCompactThreshold = {
+    autoCompactQuery: { isLoading: false, isError: false },
+    autoCompact: { pct: 70, global_pct: 80, agent_pct: null, agent: null, min: 10, max: 95 },
+    autoCompactError: '',
+    setAutoCompactError: () => {},
+    pushAutoCompact: () => {},
+  } as unknown as Parameters<typeof ContextUsageControl>[0]['autoCompactThreshold']
+
+  function Host() {
+    const { ctxPopoverOpen, setCtxPopoverOpen } = useContextPopover()
+    return (
+      <>
+        <ContextUsageControl contextPct={40} contextWindowTokens={1000} shelfCompact={false}
+          ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen}
+          autoCompactThreshold={autoCompactThreshold} />
+        <button type="button">next control</button>
+        <textarea aria-label="composer" />
+      </>
+    )
+  }
+  const readout = () => screen.getByRole('button', { name: /context usage/i })
+
+  it('moves focus into the card, so Tab reaches its controls and the card stays open', async () => {
+    render(<Host />)
+    await flush()
+    readout().focus()
+    // Enter on a focused button: keydown, then a click with detail 0.
+    fireEvent.keyDown(readout(), { key: 'Enter' })
+    fireEvent.click(readout(), { detail: 0 })
+    await flush()
+    const card = screen.getByTestId('context-usage-popover')
+    expect(card.contains(document.activeElement)).toBe(true)
+    // jsdom has no Tab navigation: move focus to the card's next control, the
+    // reset button, as Tab would, and the card must stay open.
+    const reset = screen.getByRole('button', { name: /reset to global/i })
+    act(() => { reset.focus() })
+    await flush()
+    expect(screen.getByTestId('context-usage-popover').contains(document.activeElement)).toBe(true)
+  })
+
+  it('returns focus to the button when Escape closes a keyboard-opened card', async () => {
+    render(<Host />)
+    await flush()
+    readout().focus()
+    fireEvent.keyDown(readout(), { key: 'Enter' })
+    fireEvent.click(readout(), { detail: 0 })
+    await flush()
+    expect(screen.getByTestId('context-usage-popover').contains(document.activeElement)).toBe(true)
+    fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' })
+    await flush()
+    expect(screen.queryByTestId('context-usage-popover')).toBeNull()
+    expect(document.activeElement).toBe(readout())
+  })
+
+  it('leaves focus in the textarea a click outside moved it to', async () => {
+    render(<Host />)
+    await flush()
+    readout().focus()
+    fireEvent.keyDown(readout(), { key: 'Enter' })
+    fireEvent.click(readout(), { detail: 0 })
+    await flush()
+    const textarea = screen.getByRole('textbox', { name: 'composer' })
+    // A real click on the textarea: the press focuses it, the release dismisses the card.
+    press(textarea)
+    act(() => { textarea.focus() })
+    release(textarea)
+    await flush()
+    expect(screen.queryByTestId('context-usage-popover')).toBeNull()
+    expect(document.activeElement).toBe(textarea)
+  })
+})
+
+describe('context-usage readout derives the percentage from used / window', () => {
+  const autoCompactThreshold = {
+    autoCompactQuery: { isLoading: false, isError: false },
+    autoCompact: null,
+    autoCompactError: '',
+    setAutoCompactError: () => {},
+    pushAutoCompact: () => {},
+  } as unknown as Parameters<typeof ContextUsageControl>[0]['autoCompactThreshold']
+
+  function Meter(props: Partial<Parameters<typeof ContextUsageControl>[0]>) {
+    const { ctxPopoverOpen, setCtxPopoverOpen } = useContextPopover()
+    return (
+      <ContextUsageControl
+        contextPct={0}
+        shelfCompact={false}
+        showContextPct
+        ctxPopoverOpen={ctxPopoverOpen}
+        setCtxPopoverOpen={setCtxPopoverOpen}
+        autoCompactThreshold={autoCompactThreshold}
+        {...props}
+      />
+    )
+  }
+  // The ContextBar's accessible name is the tooltip "Context: N%", so the
+  // rendered percentage is observable without opening the popover.
+  const barPct = () => screen.getByLabelText(/^Context: \d+%$/).getAttribute('aria-label')
+
+  it('reads ~60% after a switch: 120k used kept, window now the new model 200k', async () => {
+    // Switch state: the store dropped the stale pct and kept used=120k with no
+    // window, so the caller sets derivePctFromUsed. The window resolves to the
+    // new model's 200k. Pairing the OLD 12% with 200k would read 12%; the
+    // control must derive 120k / 200k = 60%.
+    render(<Meter contextPct={12} contextUsedTokens={120_000} contextWindowTokens={200_000} derivePctFromUsed />)
+    await flush()
+    expect(barPct()).toBe('Context: 60%')
+  })
+
+  it('a normal frame renders the reported pct even when it differs from used/window', async () => {
+    // Not a switch (derivePctFromUsed is false): the backend's own percentage
+    // is shown exactly as on main, even when it is not simply used / window
+    // (overhead counted, or a percentage backfilled against tokens). 88k/200k
+    // would be 44%, but the reported 50% must render.
+    render(<Meter contextPct={50} contextUsedTokens={88_000} contextWindowTokens={200_000} />)
+    await flush()
+    expect(barPct()).toBe('Context: 50%')
+  })
+
+  it('a percentage-only reading (no used) renders the given percentage', async () => {
+    // No `used` to derive from: fall back to the percentage as given.
+    render(<Meter contextPct={45} contextWindowTokens={0} derivePctFromUsed />)
+    await flush()
+    expect(barPct()).toBe('Context: 45%')
   })
 })
 

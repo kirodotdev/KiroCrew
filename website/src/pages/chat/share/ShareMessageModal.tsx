@@ -1,4 +1,4 @@
-import { downloadBlob } from '../../../utils/download'
+import { saveBlob } from '../../../utils/download'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, Copy, Download, Loader2 } from 'lucide-react'
 import {
@@ -7,7 +7,7 @@ import {
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { i18nT } from '../../../i18n/t'
-import { fmtNumber } from '../../../i18n/format'
+import { fmtList, fmtNumber } from '../../../i18n/format'
 import { copyToClipboard } from '../../../utils/clipboard'
 import ShareCard, { CARD_W } from './ShareCard'
 import {
@@ -180,7 +180,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
   const handleDownload = async () => {
     setBusy('download'); setFeedback(null); setExportError(null)
     try {
-      downloadBlob(await exportBlob(), `kiro-crew-share-${Date.now()}.png`)
+      await saveBlob(await exportBlob(), `kiro-crew-share-${Date.now()}.png`)
     } catch {
       setExportError(i18nT('pages.chat.share.export_failed'))
     } finally { setBusy(null) }
@@ -195,7 +195,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
       } else {
         // No clipboard (Firefox, permissions): the image still reaches the
         // user as a download rather than the button silently doing nothing.
-        downloadBlob(blob, `kiro-crew-share-${Date.now()}.png`)
+        await saveBlob(blob, `kiro-crew-share-${Date.now()}.png`)
         setFeedback('copy_unavailable')
       }
     } catch {
@@ -221,7 +221,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
       if (await copyImageWithText(blob, caption)) {
         setFeedback('copied')
       } else {
-        downloadBlob(blob, `kiro-crew-share-${Date.now()}.png`)
+        await saveBlob(blob, `kiro-crew-share-${Date.now()}.png`)
         setFeedback('copy_unavailable')
       }
     } catch {
@@ -300,8 +300,8 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
                 <div role="alert" className="flex items-start gap-2 rounded-lg bg-warn-subtle ring-1 ring-inset ring-warn/30 px-3 py-2 text-[12px] leading-5 text-text">
                   <AlertTriangle size={14} className="shrink-0 mt-0.5 text-warn" aria-hidden="true" />
                   <span>
-                    {cardFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_card', { kinds: cardFindings.map(kindLabel).join(', ') })}</span>}
-                    {captionFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_caption', { kinds: captionFindings.map(kindLabel).join(', ') })}</span>}
+                    {cardFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_card', { kinds: fmtList(cardFindings.map(kindLabel)) })}</span>}
+                    {captionFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_caption', { kinds: fmtList(captionFindings.map(kindLabel)) })}</span>}
                   </span>
                 </div>
               )}

@@ -1,8 +1,10 @@
 """The bytes a dashboard save writes: frozen prefix, live window, foreign lines.
 
 A session file is a frozen prefix (the on-disk lines older than the in-memory
-window, whose count and order a save never changes) followed by the window,
-re-serialized in full on every save. This module owns how those become one
+window, whose count and order a save never changes) followed by the window. A
+save whose older rows and file are unchanged since its own last write appends
+only its new rows (:func:`appendable_tail`); any other save re-serializes the
+whole window. This module owns how those become one
 payload: reading and caching the prefix, bounding the file-change copies the
 prefix's older rows carry, finding the lines another writer appended into the
 window region and merging them back in time order, and archiving what a save
@@ -15,8 +17,11 @@ New rules about what a save keeps from the file it replaces belong here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import marshal
+import os
 import re
 from collections import deque
 from typing import TYPE_CHECKING, Any, Callable
@@ -134,7 +139,10 @@ def _file_changes_keep_turns() -> int:
 
 
 def _file_change_prefix_bound(
-    state: DashboardState, history_key: str, window_entries: list[dict[str, Any]]
+    state: DashboardState,
+    history_key: str,
+    window_entries: list[dict[str, Any]],
+    archived: list[Path | None],
 ) -> Callable[[list[str]], list[str]]:
     """The bound a save applies to its frozen prefix when it reads it from disk.
 
@@ -148,7 +156,7 @@ def _file_change_prefix_bound(
     the compacted lines only once the originals are in the session archive, and
     the prefix as read when that write fails, so a failed archive costs a larger
     file and never a row's only copy. Retried on the next save that re-reads the
-    prefix.
+    prefix. The archive written goes on *archived*.
     """
 
     def bound(lines: list[str]) -> list[str]:
@@ -163,7 +171,11 @@ def _file_change_prefix_bound(
             return lines
         base = state.conversation_log._dir if state.conversation_log else None
         try:
-            _archive_lines(history_key, originals, reason=FILE_CHANGES_ARCHIVE_REASON, base=base)
+            archived.append(
+                _archive_lines(
+                    history_key, originals, reason=FILE_CHANGES_ARCHIVE_REASON, base=base
+                )
+            )
         except Exception:
             logger.warning(
                 "Keeping the file-change copies of %d older row(s) of %s: archiving them failed",
@@ -219,19 +231,20 @@ def _diff_dropped_message_lines(old_lines: list[str], new_lines: list[str]) -> l
 
 def _archive_dropped_lines(
     state: DashboardState, history_key: str, old_lines: list[str], new_lines: list[str]
-) -> None:
+) -> Path | None:
     """Archive on-disk message lines that *new_lines* (full file) would drop.
 
     Used only by the rewrite path (rewind/regenerate/fork), which intentionally
     truncates the in-memory window. The frozen prefix is present unchanged in
     both *old_lines* and *new_lines*, so it is never archived — only the dropped
-    window tail is. No-op in the steady-state superset case.
+    window tail is. No-op in the steady-state superset case. Returns the archive
+    written, or ``None``.
     """
     dropped = _diff_dropped_message_lines(old_lines, new_lines)
     if not dropped:
-        return
+        return None
     base = state.conversation_log._dir if state.conversation_log else None
-    _archive_lines(history_key, dropped, reason="compact", base=base)
+    return _archive_lines(history_key, dropped, reason="compact", base=base)
 
 
 def _foreign_tail_ts(foreign_lines: list[str]) -> str | None:
@@ -318,6 +331,110 @@ def _interleave_foreign_lines(
     return merged
 
 
+def _drop_carried_foreign(foreign: list[str], entries: list[dict]) -> list[str]:
+    """*foreign* without the lines one of *entries* now carries itself.
+
+    A cached foreign line can be a same-process row whose window copy reached
+    the slot only after the save that preserved it took its snapshot: a
+    workflow result appended live and durably while a Regenerate swap's
+    snapshot was held. Once the window carries it, re-emitting the cached line
+    beside the window's own serialization writes the row twice. Identity is the
+    scan's id tier (pass 0): an equal ``meta.mid`` corroborated by
+    ``(role, content)`` or ``ts``, each entry absorbing at most one line. An
+    id-less line is kept, as the scan keeps any line it cannot place.
+    """
+    if not foreign:
+        return foreign
+    by_mid: dict[str, list[dict]] = {}
+    for e in entries:
+        mid = row_mid(e)
+        if mid:
+            by_mid.setdefault(mid, []).append(e)
+    if not by_mid:
+        return foreign
+    kept: list[str] = []
+    for line in foreign:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            kept.append(line)
+            continue
+        mid = row_mid(entry) if isinstance(entry, dict) else None
+        candidates = by_mid.get(mid) if mid else None
+        match = next(
+            (
+                e
+                for e in candidates or ()
+                if (entry.get("role"), entry.get("content", ""))
+                == (e.get("role"), e.get("content", ""))
+                or (entry.get("ts") and entry.get("ts") == e.get("ts"))
+            ),
+            None,
+        )
+        if match is None:
+            kept.append(line)
+        else:
+            candidates.remove(match)  # type: ignore[union-attr]
+    return kept
+
+
+def _written_size(text: str) -> int:
+    """How many bytes ``atomic_write(path, text)`` puts on disk for *text*.
+
+    UTF-8, with each ``\\n`` written as ``os.linesep`` (its ``newline=None``).
+    """
+    size = len(text.encode("utf-8"))
+    return size + text.count("\n") if os.linesep == "\r\n" else size
+
+
+def prefix_range(meta_str: str, prefix: str) -> tuple[int, int]:
+    """Where a save's frozen prefix sits in the file it writes: ``(offset, size)``.
+
+    The save writes ``meta_str + prefix + window``, so the prefix starts right
+    after the metadata line. Recorded in ``slot._frozen_prefix_cache`` instead of
+    the prefix text.
+    """
+    return _written_size(meta_str), _written_size(prefix)
+
+
+def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
+    """The cached frozen prefix: its text, read back from *path* when cached as a range.
+
+    *where* is the cache's prefix entry: the text itself (cached before a write,
+    so a failed write is retried on the same bytes), or the ``(offset, size)`` of
+    the prefix in the file the last save wrote. A range that does not start just
+    after a newline, end on one and decode as UTF-8 returns ``None``, and the
+    caller then reads the whole file.
+    """
+    if isinstance(where, str):
+        return where
+    offset, size = where
+    if size == 0:
+        return ""
+    if offset <= 0:
+        return None
+    # Local: the chat_persistence facade's owners may import at module scope only
+    # what the facade already imports (test_chat_persistence_composition_contract).
+    from kiro_crew.bounded_read import bounded_read
+
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset - 1)
+            data = bounded_read(fh, size + 1)
+    except OSError:
+        return None
+    if len(data) != size + 1 or data[:1] != b"\n" or not data.endswith(b"\n"):
+        return None
+    try:
+        text = data[1:].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # The prefix text a save writes never carries a ``\r`` of its own (the read
+    # that built it folded every line ending to ``\n``), so one read back is a
+    # translated line ending.
+    return text.replace("\r\n", "\n") if "\r" in text else text
+
+
 def _frozen_prefix_and_foreign_appends(
     slot: _ChatSlot,
     path,
@@ -326,9 +443,18 @@ def _frozen_prefix_and_foreign_appends(
     *,
     collect_foreign: bool = True,
     bound_prefix: Callable[[list[str]], list[str]] | None = None,
-    archive_dedup: Callable[[list[str]], object] | None = None,
+    archive_dedup: Callable[[list[str]], object],
+    retired_entries: list[dict] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Return ``(frozen_prefix, foreign_lines, dedup_dropped)`` for a save.
+
+    ``retired_entries`` are the serialized rows a rewrite removes on purpose
+    (a Regenerate's previous reply). They take part in the identity scan as
+    extra candidates, so their disk copies are matched and dropped, but they
+    are never emitted. Every other window-region line the window does not
+    carry is still a foreign append and is kept. Without them a rewrite skips
+    the scan (``collect_foreign=False``), since a truncated tail and a foreign
+    append cannot be told apart.
 
     ``frozen_prefix`` is the bytes of the first *disk_older* on-disk message
     lines — the turns OLDER than the in-memory window. They keep their count and
@@ -378,12 +504,11 @@ def _frozen_prefix_and_foreign_appends(
     those two real events into one; the bounded, timestamp-first identity
     fixes it for id-less lines, and the ``meta.mid`` tier resolves it exactly
     for stamped lines (see also ``docs/system-specs/modules/history.md``).
-    ``dedup_dropped`` returns any fresh-``ts`` content-tiebreak drops. With
-    *archive_dedup*, they are archived here first and returned only once that
-    write landed; when it raises they are kept in ``foreign_lines`` instead.
-    Without it, the caller routes them through the archive — even the residual ambiguous
-    case (an id-less distinct message indistinguishable from an
-    ``append_if_absent`` copy without a stable id) then loses no data
+    ``dedup_dropped`` is the fresh-``ts`` content-tiebreak drops, each archived
+    through *archive_dedup* before this returns; when that write raises they
+    are kept in ``foreign_lines`` instead, so even the residual ambiguous case
+    (an id-less distinct message indistinguishable from an
+    ``append_if_absent`` copy without a stable id) loses no data
     permanently. A corroborated id-matched fold is NOT such a drop: the ids
     plus body/``ts`` agreeing makes it unambiguous, so it does not churn the
     archive.
@@ -415,13 +540,30 @@ def _frozen_prefix_and_foreign_appends(
         # cached foreign lines (a copy, so the caller cannot mutate the cache)
         # keeps the fast path non-destructive: the already-preserved
         # cross-process append is re-emitted instead of silently dropped. No
-        # scan runs, so there are no fresh dedup drops to archive.
-        return (cache[3], list(cache[4]), [])
+        # scan runs, so there are no fresh dedup drops to archive. A cached line
+        # the window now carries itself is left out (_drop_carried_foreign).
+        #
+        # The cache holds where the prefix sits in that file, not its text, so
+        # an idle slot does not keep a copy of its older history in memory. The
+        # range is read back here; a range that does not read back as whole
+        # lines falls through to the full read below.
+        prefix = read_prefix_range(path, cache[3])
+        if prefix is not None:
+            carriers = [*window_entries, *(retired_entries or ())]
+            return (prefix, _drop_carried_foreign(list(cache[4]), carriers), [])
     try:
-        existing = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        # Bytes, so a first line that is not UTF-8 (which the save is about to
+        # rewrite as CORRUPT) does not raise here; the rows decode strictly.
+        # Imported here: an owner's module scope may import only what the
+        # chat_persistence facade already does.
+        from kiro_crew.history_projection import _split_transcript_head
+
+        existing, head_undecodable = _split_transcript_head(path.read_bytes())
     except OSError:
         return ("", [], [])
-    if not existing or '"_type"' not in existing[0]:
+    # An undecodable first line is still the metadata line by position, so the
+    # rows after it stay in the frozen prefix rather than being dropped.
+    if not existing or ('"_type"' not in existing[0] and not head_undecodable):
         return ("", [], [])
     body = existing[1:]  # message lines only (metadata excluded)
     prefix_lines = body[:disk_older] if disk_older > 0 else []
@@ -475,6 +617,10 @@ def _frozen_prefix_and_foreign_appends(
     # genuine window line was mis-classified as a foreign append and DUPLICATED on
     # disk. The bounded multiset below matches them one-for-one regardless of
     # ``ts`` collisions.
+    # Retired rows are matched like window rows; a disk line they absorb is
+    # dropped exactly as a window row's own persisted copy is.
+    if retired_entries:
+        window_entries = [*window_entries, *retired_entries]
     mid_idx: dict[str, "deque[int]"] = {}
     exact_idx: dict[tuple[object, object, object], "deque[int]"] = {}
     ts_idx: dict[object, "deque[int]"] = {}
@@ -666,7 +812,7 @@ def _frozen_prefix_and_foreign_appends(
     # the lines are kept as foreign, in disk order, so the payload carries them:
     # a duplicate row at worst, never a lost one. Decided here, before the
     # cache below, so a cached fast path re-emits the same kept lines.
-    if dedup_at and archive_dedup is not None:
+    if dedup_at:
         try:
             archive_dedup([line for _j, line in dedup_at])
         except Exception:
@@ -702,6 +848,120 @@ def _frozen_prefix_and_foreign_appends(
     return (prefix, foreign, dedup_dropped)
 
 
+def _row_digest(m: dict) -> bytes:
+    """blake2b of *m*'s ``marshal`` bytes, or ``b""`` when it cannot be marshalled.
+
+    Version 0 writes no object references and no interning flags, so the bytes
+    depend only on the values, their types and the dicts' key order. A key-order
+    change reads as a change, which only costs a rebuild.
+    """
+    try:
+        # nosemgrep: python.lang.security.audit.marshal.marshal-usage -- dumps only, an in-process fingerprint; nothing is ever unmarshalled
+        raw = marshal.dumps(m, 0)
+    except ValueError:
+        return b""
+    return hashlib.blake2b(raw, digest_size=16).digest()
+
+
+def row_digests(window: list[dict]) -> list[bytes]:
+    """One digest per window message, over the raw message.
+
+    The next save compares these to tell an unchanged row apart without
+    rebuilding or redacting it, and the entry cache is keyed by them. Raw, not
+    the built entry: a message mutated in place changes its digest. A message
+    that cannot be marshalled gets ``b""``, which never matches or hits.
+    """
+    return [_row_digest(m) for m in window]
+
+
+def first_file_change_row(window: list[dict]) -> int:
+    """Index of the first window message carrying file changes, or ``len(window)``.
+
+    A trim that moves such a row into the prefix must take the full path: only a
+    prefix read applies the file-change bound (:func:`_file_change_prefix_bound`).
+    """
+    return next((i for i, m in enumerate(window) if _is_file_change_row(m)), len(window))
+
+
+def file_identity(path: Path) -> tuple[int, int, int, int] | None:
+    """``(st_ino, st_dev, st_mtime_ns, st_size)`` of *path*, or None when it cannot be read."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_dev, st.st_mtime_ns, st.st_size)
+
+
+def appendable_tail(
+    slot: _ChatSlot,
+    path: Path,
+    history_key: str,
+    window: list[dict],
+    digests: list[bytes],
+    disk_older: int,
+    meta_str: str,
+    *,
+    rewrite: bool,
+    retired_rows: list[dict] | None,
+) -> list[str] | None:
+    """The lines this save may append instead of rewriting the file, or None.
+
+    ``slot._append_basis`` records what the last committed save left on disk:
+    the file's identity, ``disk_older``, the metadata line and the window's
+    digests. When the file is still exactly that file (nobody else wrote it,
+    nothing tore it), the metadata line is unchanged, and every window row that
+    save wrote is still here unchanged -- a trim at the window cap only moves
+    rows without file changes into the prefix -- the file already holds this save's full payload
+    minus the new rows. Only those are built, redacted and serialized. Neither
+    the prefix nor the file is read. Any other case returns None and the save
+    takes the full rewrite, which also repairs a torn tail.
+    """
+    basis = slot._append_basis
+    if basis is None or rewrite or retired_rows is not None:
+        return None
+    where, identity, older, meta, old_digests, first_file_change = basis
+    trimmed = disk_older - older
+    kept = len(old_digests) - trimmed
+    if (
+        where != str(path)
+        or meta != meta_str
+        or trimmed < 0
+        or trimmed > first_file_change
+        or kept < 0
+        or len(window) < kept
+        or digests[:kept] != old_digests[trimmed:]
+        or b"" in digests[:kept]
+        or file_identity(path) != identity
+    ):
+        return None
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    attachments = (path.parent, path.stem)
+    entries = [
+        e
+        for m in window[kept:]
+        if (e := cp._build_message_entry(m, attachments=attachments)) is not None
+    ]
+    lines = [json.dumps(e) + "\n" for e in entries]
+    display_verdicts.note_written_lines(history_key, lines)
+    if entries:
+        slot.note_disk_tail(None, entries[-1].get("ts"))
+    return lines
+
+
+def append_tail(path: Path, lines: list[str]) -> None:
+    """Append *lines* (each ending in a newline) with one write and an fsync.
+
+    Only after :func:`appendable_tail` proved the file is the one the last save
+    wrote, so its tail is that save's newline and needs no read. A failed write
+    is truncated back, leaving the file as it was.
+    """
+    from kiro_crew.atomic_write import append_line
+
+    if lines:
+        append_line(path, "".join(lines)[:-1], fsync=True, check_tail=False)
+
+
 def compose_payload(
     state: DashboardState,
     slot: _ChatSlot,
@@ -712,13 +972,30 @@ def compose_payload(
     meta_str: str,
     *,
     rewrite: bool,
-) -> tuple[str, str, list[str]]:
-    """The file a full save writes: ``(payload, frozen_prefix, foreign_lines)``.
+    retired_rows: list[dict] | None = None,
+    digests: list[bytes] | None = None,
+) -> tuple[str, str, list[str], Callable[[], None]]:
+    """The file a full save writes: ``(payload, frozen_prefix, foreign_lines, drop_archives)``.
 
-    Called under the transcript lock. Archives the ambiguous dedup drops and, for a
-    rewrite, the dropped window tail before the caller's atomic replace.
+    Called under the transcript lock. Archives the ambiguous dedup drops, the rows
+    the file-change bound rewrote and, for a rewrite, the dropped window tail before
+    the caller's atomic replace.
+
+    The caller calls ``drop_archives`` when that replace raises. While the file is
+    unchanged each archive is a second copy of rows it still holds, so it is removed,
+    as compaction and rotation do. The cached prefix goes too: a retry served from it
+    would write the bound's output and leave out the dedup drops without archiving
+    either again.
+
+    ``retired_rows`` names the rows a rewrite removes. With it, the rewrite keeps
+    the foreign-append scan, so a row another writer appended after the caller's
+    snapshot survives the rewrite instead of being dropped with the retired rows.
     """
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.history_rewrite import _drop_unlanded_archive, _file_identity
+
+    before = _file_identity(path)
+    archived: list[Path | None] = []
 
     # ── Frozen prefix (never rewritten) + freshly serialized window ──
     # Read the verbatim bytes of the on-disk lines OLDER than the
@@ -749,30 +1026,59 @@ def compose_payload(
     # ``path`` is this session's transcript, so its directory and stem are
     # what pairs an attachment with the session that will delete it.
     attachments = (path.parent, path.stem)
-    window_entries = [
-        e for m in window if (e := build_entry(m, attachments=attachments)) is not None
-    ]
-    window_lines = [json.dumps(e) + "\n" for e in window_entries]
+    # The newest rows that fit the cache's bounds go through it, keyed by the
+    # save's digests; older rows are built uncached. A save walks the window in
+    # order, so caching more rows than fit would evict each before the next save
+    # reached it, while caching this suffix leaves it as the newest entries.
+    if digests is None:
+        digests = row_digests(window)
+    start, room = max(0, len(window) - cache_max_entries), cache_max_bytes
+    for i in range(len(window) - 1, start - 1, -1):
+        room -= cp._approx_window_payload_bytes(window[i : i + 1])
+        if room < 0:
+            start = i + 1
+            break
+    window_entries: list[dict] = []
+    window_lines: list[str] = []
+    for i, (m, digest) in enumerate(zip(window, digests)):
+        if i >= start and digest:
+            e, line = cp._build_message_line(m, attachments=attachments, digest=digest)
+        else:
+            e = cp._build_message_entry_uncached(m, attachments=attachments)
+            line = "" if e is None else json.dumps(e) + "\n"
+        if e is not None:
+            window_entries.append(e)
+            window_lines.append(line)
     # Rows this transcript has not had its display verdicts recorded for; the
     # save projects them once its write commits (display_verdicts).
     display_verdicts.note_written_lines(history_key, window_lines)
     # A rewrite archives every old line its payload does not repeat, so a bound
     # applied on that save would archive the rewritten rows a second time; the
     # next ordinary save applies it instead.
+    retired_entries = (
+        [e for m in retired_rows if (e := build_entry(m, attachments=attachments)) is not None]
+        if retired_rows is not None
+        else None
+    )
     frozen_prefix, foreign_lines, _dedup_archived = _frozen_prefix_and_foreign_appends(
         slot,
         path,
         disk_older,
         window_entries,
-        collect_foreign=not rewrite,
+        collect_foreign=not rewrite or retired_entries is not None,
+        retired_entries=retired_entries,
         bound_prefix=(
-            None if rewrite else _file_change_prefix_bound(state, history_key, window_entries)
+            None
+            if rewrite
+            else _file_change_prefix_bound(state, history_key, window_entries, archived)
         ),
-        archive_dedup=lambda lines: _archive_lines(
-            history_key,
-            lines,
-            reason="foreign-dedup",
-            base=state.conversation_log._dir if state.conversation_log else None,
+        archive_dedup=lambda lines: archived.append(
+            _archive_lines(
+                history_key,
+                lines,
+                reason="foreign-dedup",
+                base=state.conversation_log._dir if state.conversation_log else None,
+            )
         ),
     )
     # A fresh-``ts`` disk copy folded into the window by the bounded
@@ -813,7 +1119,17 @@ def compose_payload(
     # the caller's replace, so a failed read or archive raises and nothing is
     # written: the slot keeps ``_pending_rewrite`` and the next save retries.
     if rewrite and path.exists():
-        old_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        from kiro_crew.history_projection import _split_transcript_bytes
+
+        old_lines = _split_transcript_bytes(path.read_bytes())
         new_lines = payload.splitlines(keepends=True)
-        _archive_dropped_lines(state, history_key, old_lines, new_lines)
-    return payload, frozen_prefix, foreign_lines
+        archived.append(_archive_dropped_lines(state, history_key, old_lines, new_lines))
+
+    def drop_archives() -> None:
+        if not any(archived):
+            return
+        for archive in archived:
+            _drop_unlanded_archive(archive, path, before)
+        slot._frozen_prefix_cache = None
+
+    return payload, frozen_prefix, foreign_lines, drop_archives

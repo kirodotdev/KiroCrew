@@ -1,15 +1,8 @@
 """The owning app reaches the ``GET /api/crons`` wire, and nothing else does.
 
-A cron job an installed app created is tagged ``created_by = "app:<name>"`` by
-:class:`~kiro_crew.apps.cron_sdk.CronSDK`, but the dashboard could not see it: the
-listing serializer names its fields one by one and ``created_by`` was not among
-them. Without that attribution the dashboard can tell a job is running or has
-failed, yet not whose it is.
-
-``created_by`` is shared with a human creator's Slack user ID, so the wire carries
-the derived app reading instead of the raw field -- the two cases below pin both
-halves of that: an app-owned job reports its app, and a person-owned one reports
-nothing rather than leaking the id.
+``CronSDK`` tags app jobs ``created_by = "app:<name>"``, but the field also holds a
+human creator's Slack user ID, so the wire carries the derived app reading: an app job
+reports its app, a person's job reports nothing.
 
 Harness mirrors test_cron_retry_wire.py.
 """
@@ -112,17 +105,41 @@ class TestAppOwnerName:
 class TestThePauseReasonOnTheWire:
     """A user pause and an execution auto-pause must be distinguishable.
 
-    Both land as ``enabled=False`` (``record_failure`` sets it alongside
-    ``auto_paused``), so ``enabled`` alone cannot tell them apart -- and the
-    difference decides whether a failing job counts as a health signal.
-    ``unhealthy_jobs_from_disk`` skips only user pauses and keeps auto-paused
-    jobs in their own bucket, so the wire has to be able to express that line.
+    Both land as ``enabled=False``, yet ``unhealthy_jobs_from_disk`` skips only user
+    pauses, so the wire must carry the difference.
     """
 
     @pytest.mark.asyncio
     async def test_a_user_paused_job_says_so(self) -> None:
         payload = await _job_payload(enabled=False, user_paused=True)
         assert payload["user_paused"] is True
+        assert payload["parked_after_run"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_fired_one_shot_says_its_run_parked_it(self) -> None:
+        # The park writes the user-pause flags, so `user_paused` alone would hide
+        # a failed one-shot from the rail's health signal.
+        payload = await _job_payload(
+            schedule=CronSchedule(kind="at", at_ts=1_700_000_000.0),
+            enabled=False,
+            user_paused=True,
+            last_run_ts=1_700_000_001.0,
+            last_status="error",
+        )
+        assert payload["user_paused"] is True
+        assert payload["parked_after_run"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_one_shot_the_user_paused_after_its_run_is_not_parked(self) -> None:
+        payload = await _job_payload(
+            schedule=CronSchedule(kind="at", at_ts=1_700_000_000.0),
+            enabled=False,
+            user_paused=True,
+            user_pause_requested=True,
+            last_run_ts=1_700_000_001.0,
+            last_status="error",
+        )
+        assert payload["parked_after_run"] is False
 
     @pytest.mark.asyncio
     async def test_an_auto_paused_job_is_not_reported_as_user_paused(self) -> None:

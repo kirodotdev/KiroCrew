@@ -19,6 +19,8 @@ from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_call
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.testing.wait import default_timeout
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -43,7 +45,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: 70001)
     previous = current_caller()
     set_current_caller(None)
-    state = SimpleNamespace(conversation_log=log, push_refresh=mock.Mock())
+    state = SimpleNamespace(
+        conversation_log=log, push_refresh=mock.Mock(), _slots={}, get_slot=lambda _name: None
+    )
     yield SimpleNamespace(home=tmp_path, state=state, identities=identities)
     set_current_caller(previous)
 

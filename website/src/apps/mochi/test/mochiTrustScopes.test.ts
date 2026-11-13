@@ -133,6 +133,22 @@ describe('permissionApprovalFromFrame carries the scope fields', () => {
     expect(req?.purpose).toBe('Walk around the screen')
   })
 
+  it('reads the gateway purpose of a deferred Tool Search call', () => {
+    // The purpose sits inside the envelope's `arguments`, not at its top level.
+    const req = permissionApprovalFromFrame(
+      frame({
+        request_id: 'r1',
+        tool_title: 'T',
+        tool_input: JSON.stringify({
+          tool_id: 'kirocrew-core::monitor_start',
+          arguments: { __tool_use_purpose: 'Watch the build' },
+        }),
+        tool_purpose: 'Watch the build',
+      }),
+    )
+    expect(req?.purpose).toBe('Watch the build')
+  })
+
   it('extracts the purpose under a model-paraphrased key spelling', () => {
     const req = permissionApprovalFromFrame(
       frame({

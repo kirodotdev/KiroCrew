@@ -15,10 +15,10 @@ import type { PendingApproval } from './index'
 // pinned to the real wire shape: if that shape drifts, `tsc` fails here.
 //
 // Resume identifier: `approval.request_id`. Plain approve/reject resolves through
-// the id-scoped `api.resolveApproval(request_id, action)` → POST
-// /api/approvals/<id>/<action> (components/chat-input/approval.ts). The slot-scoped
-// `api.approveChatSlot(slot, …)` is used ONLY for trust grants, and downgrades to
-// `resolveApproval` for unattended sources — so this layer resumes by
+// the owner-bound `api.decideApproval(target, action)`
+// (components/chat-input/approval.ts). The slot-scoped
+// `api.approveChatSlot(slot, …)` is used ONLY for trust grants, and downgrades to a
+// one-shot `decideApproval` for unattended sources — so this layer resumes by
 // `request_id`, never by inventing a new call. A stale/closed id is a no-op.
 //
 // `ToolInvocationState` mirrors the shape of the Vercel AI SDK `UIToolInvocation`
@@ -53,7 +53,7 @@ export interface PendingDecision {
   slot: string
   /**
    * The verbatim backend approval event. `approval.request_id` is the resume
-   * identifier (`api.resolveApproval`); `approval.tool_input` is the ground-truth
+   * identifier (`api.decideApproval`); `approval.tool_input` is the ground-truth
    * "show raw input" source; `approval.tool` is the display title.
    */
   approval: PendingApproval

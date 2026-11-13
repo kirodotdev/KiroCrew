@@ -78,6 +78,7 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_PI
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.base import SpawnContext
+from kiro_crew.acp.pi_mcp_registration import read_registration
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import ACP_BACKEND_PI, gate_probe_command_for
 from kiro_crew.agent_sdk.drivers.acp import forget_cached_resolution
@@ -516,6 +517,9 @@ def _drive(root: Path) -> dict:
     # drive's root so nothing outlives it.
     child_tmp = root / "tmp"
     child_tmp.mkdir()
+    # The session's scratch window, where the extension writes its MCP receipt.
+    scratch = root / "scratch"
+    scratch.mkdir()
     # The node this lane installed, first on the child's PATH. pi's bin is a
     # `#!/usr/bin/env node` script and pi needs Node 22.19+; the launch tail's PATH
     # augmentation puts well-known directories (``/usr/local/bin`` among them) ahead
@@ -575,6 +579,7 @@ def _drive(root: Path) -> dict:
         forget_cached_resolution(ACP_BACKEND_PI)
         try:
             client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_PI, extra_env=isolated)
+            client._scratch_dir = scratch
             # The session's own MCP composition seam, holding the probe server.
             mp.setattr(client, "_session_mcp_servers", lambda: [dict(element)])
             mp.setattr(client, "_pooled_mcp_servers", lambda: [])
@@ -644,6 +649,8 @@ def _drive(root: Path) -> dict:
             out["handoff_republished"] = Path(launch._mcp_handoff).exists()
             new = adapter.call("session/new", {"cwd": str(work), "mcpServers": [element]})
             out["new"] = new
+            receipt = read_registration(client.work_scratch_dir, nonce)
+            out["receipt"] = receipt._asdict() if receipt else None
             asyncio.run(client._discard_pi_mcp_handoff())
             sid = (new.get("result") or {}).get("sessionId")
             if sid:
@@ -904,6 +911,14 @@ def test_real_pi_mcp_handoff_mounts_crews_server(pi_session):
     assert "tools/list" in methods and "tools/call" in methods, methods
     assert any("ECHO:ping" in result for result in _tool_results(turn["requests"])), ctx
     assert m["handoff_republished"], "the client's republish did not restore the handoff file"
+
+
+@pytest.mark.real_adapter
+def test_real_pi_confirms_its_mcp_registration_before_session_new_returns(pi_session):
+    """pi runs ``session_start`` before pi-acp answers, so the receipt is already there."""
+    m = pi_session
+    expected = {"handoff": "loaded", "registered": m["servers"], "unregistered": {}}
+    assert m["receipt"] == expected, m["_context"]
 
 
 @pytest.mark.real_adapter

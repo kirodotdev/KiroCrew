@@ -27,7 +27,6 @@ import base64
 import io
 import json
 import logging
-import os
 import re
 import shutil
 import uuid
@@ -37,7 +36,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew.apps.builtins.mochi.windows_names import is_windows_reserved
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,10 @@ _DATA_URI_PREFIX = re.compile(r"^data:image/\w+;base64,")
 #: A pack id must be safe to use as a single path segment. Ids we mint are UUID4,
 #: but an overwrite id arrives from the client, so it is validated rather than
 #: trusted — otherwise `../` in an id would let a caller write outside the tree.
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+#: It ends at ``\Z``, not ``$``, which also matches before a trailing newline that
+#: would then reach a directory or file name. ``test/test_regex_anchor_contract.py``
+#: holds this package to that rule.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 
 class PackError(Exception):
@@ -139,6 +141,9 @@ def _staged_pack(pack_dir: Path) -> Iterator[Path]:
     between the two moves leaves the recoverable `.old-` directory rather than
     nothing, and any exception removes the staging tree and leaves the live pack
     untouched.
+
+    Each move retries the Windows window where another process (an indexer, a
+    viewer) holds a file inside the pack; every caller runs off the event loop.
     """
     staging = pack_dir.with_name(pack_dir.name + f".staging-{uuid.uuid4().hex[:8]}")
     try:
@@ -147,12 +152,12 @@ def _staged_pack(pack_dir: Path) -> Iterator[Path]:
         retired: Path | None = None
         if pack_dir.exists():
             retired = pack_dir.with_name(pack_dir.name + f".old-{uuid.uuid4().hex[:8]}")
-            os.replace(pack_dir, retired)
+            replace_with_retry(pack_dir, retired)
         try:
-            os.replace(staging, pack_dir)
+            replace_with_retry(staging, pack_dir)
         except OSError:
             if retired is not None:
-                os.replace(retired, pack_dir)  # put the old pack back
+                replace_with_retry(retired, pack_dir)  # put the old pack back
             raise
         if retired is not None:
             shutil.rmtree(retired, ignore_errors=True)

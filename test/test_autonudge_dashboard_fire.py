@@ -1,17 +1,10 @@
 """Tests for the dashboard auto-nudge fire path.
 
-The defect these pin: the fire path resolved its slot with a bare in-memory
-dict lookup and, on a miss, deleted the loop from ``autonudge.json``. A miss is
-not evidence of a dead session — the registry is empty for any tab the user has
-navigated away from, and empty for EVERY slot immediately after a gateway
-restart, because ``AutoNudgeService.start()`` re-arms timers before the
-dashboard has restored its slots. So closing a browser tab or restarting the
-gateway permanently destroyed a babysit loop, silently abandoning the pull
-request it was watching.
-
-The cron origin-injection path already had the correct behaviour (rehydrate from
-persisted history, and respect a tab the user explicitly closed); this brings
-the nudge path onto the same contract.
+A slot missing from the in-memory registry is not a dead session: the registry is empty
+for a tab navigated away from, and for EVERY slot right after a restart, because
+``AutoNudgeService.start()`` re-arms timers before slots are restored. So the fire path
+rehydrates from persisted history and respects only a tab the user explicitly closed,
+the same contract as the cron origin-injection path.
 """
 
 from __future__ import annotations
@@ -152,13 +145,9 @@ class TestDashboardNudgeSlotResolution:
     async def test_rehydration_uses_the_loop_affine_async_form(self) -> None:
         """Reads go off-loop; slot construction must stay ON the loop.
 
-        Wrapping the whole rehydration in ``asyncio.to_thread`` looks equivalent
-        but is not: slot construction broadcasts through
-        ``asyncio.Queue.put_nowait`` / ``Event.set`` and ``ensure_future``, none
-        of which are thread-safe. Off-loop that raises inside a broad ``except``
-        that marks every connected dashboard client dead and drops it without a
-        close frame, so browsers stop receiving frames — including the output of
-        the very nudge turn this fix exists to run.
+        Slot construction broadcasts through ``asyncio.Queue.put_nowait`` /
+        ``Event.set`` and ``ensure_future``, none thread-safe; off-loop the error marks
+        every connected dashboard client dead.
         """
         orch = _orchestrator()
         loop = _loop()
@@ -512,11 +501,8 @@ class TestDashboardNudgeSlotResolution:
     async def test_monitor_wake_frame_names_the_wake_before_its_row_lands(self) -> None:
         """The frame that first shows the slot running already says it is a wake.
 
-        The wake's ``nudge`` row is written only once the runner accepts the
-        turn, so every frame pushed before that would otherwise show a running
-        slot whose newest opener is an older row -- and the Crewmates page reads
-        that as a turn the user started. Each frame is the real projection,
-        taken at the push.
+        The ``nudge`` row is written only once the runner accepts the turn, so earlier
+        frames would read as a turn the user started on the Crewmates page.
         """
         orch = _orchestrator()
         live = _ChatSlot("chat-1-1785")
@@ -665,14 +651,10 @@ class TestDashboardNudgeSlotResolution:
 class TestStructuralTerminalGuard:
     """A message loop must STOP once its delivered turn is rejected as malformed.
 
-    The defect: ``_fire_dashboard_nudge`` returns True for any DISPATCHED turn
-    regardless of its terminal outcome, so ``_run_fire_cycle`` counts the cycle
-    and re-arms. A prompt the backend rejects for its SHAPE ("Improperly formed
-    request") is deterministic — re-firing the identical context reproduces it —
-    so the loop would burn cycle after cycle (the reported cycles 13, 14, ...)
-    on the same doomed turn. The slot carries the last turn's structural-terminal
-    verdict (``_last_turn_structural_terminal``); the fire path reads it and stops
-    the loop with the REPLACEABLE ``structural_terminal`` reason instead.
+    A SHAPE rejection ("Improperly formed request") is deterministic, and
+    ``_fire_dashboard_nudge`` returns True for any dispatched turn. The fire path reads
+    ``_last_turn_structural_terminal`` and stops with the REPLACEABLE
+    ``structural_terminal`` reason.
     """
 
     @pytest.mark.asyncio
@@ -855,11 +837,8 @@ class TestStructuralTerminalGuard:
 class TestModelRefusedGuard:
     """A message loop must STOP once its own cycle is declined by the model.
 
-    A content refusal is deterministic for one model, and the refusal fallback
-    never runs for an unattended cycle, so the next cycle would send the same
-    prompt to the same model and be declined again. The slot names the loop
-    whose cycle was refused; the fire path stops that loop with
-    ``model_refused`` and notifies the owner once instead of firing.
+    A refusal is deterministic for one model and the fallback never runs unattended,
+    so the fire path stops the loop with ``model_refused`` and notifies the owner once.
     """
 
     @staticmethod
@@ -1079,13 +1058,8 @@ class TestFireScopesTheTurnToTheConfigGeneration:
     for BOTH fire shapes, so the failed-cycle charge and the structural-terminal
     verdict scope to the generation the turn actually fired under.
 
-    The gap this pins: the ``wake_message`` arm captured its own
-    ``_fired_generation = loop.config_generation`` beside the plain-nudge arm,
-    but nothing asserted the captured value reached the runner. Reverting that
-    arm to a literal ``0`` (``_directive_loop_gen = _fired_generation if ... else
-    0``) left every other test green -- a stale completion of a since-revised
-    loop fired this way would then match a generation no revised loop holds and
-    wrongly stop it. These two assert the real generation travels on each shape.
+    A literal ``0`` on the ``wake_message`` arm passes every other test, yet a stale
+    completion of a revised loop would then wrongly stop it.
     """
 
     @staticmethod

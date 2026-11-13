@@ -23,6 +23,7 @@ import pytest
 
 from kiro_crew import sandbox, sandbox_plan, sandbox_seatbelt, sandbox_tiers
 from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
+from kiro_crew.kiro_cli_bundle import BUNDLED_KIRO_DIR_ENV
 from kiro_crew.sandbox_plan import (
     BACKEND_NAMESPACE,
     BACKEND_SEATBELT,
@@ -95,6 +96,8 @@ def test_this_source_checkout_is_not_sealed(monkeypatch: pytest.MonkeyPatch) -> 
     if sandbox.install_root_targets_for(sandbox._gateway_package_dir()):
         pytest.skip("running from a packaged install")
     monkeypatch.delenv(BUNDLED_KAS_DIR_ENV, raising=False)
+    monkeypatch.delenv(BUNDLED_KIRO_DIR_ENV, raising=False)
+    sandbox_tiers._bundled_kiro_cli_targets_cached.cache_clear()
     assert sandbox._resolved_install_root_targets() == []
 
 
@@ -140,6 +143,66 @@ def test_the_bundled_kas_root_is_read_only_on_both_launchers() -> None:
     profile = sandbox_seatbelt.render_seatbelt_profile(seatbelt)
     assert f'(deny file-write* (subpath "{kas_root}"))' in profile
     assert f'(deny file-link (subpath "{kas_root}"))' in profile
+
+
+# --------------------------------------------------------------------------- #
+# The desktop app's bundled kiro-cli directory rides the same seal.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_kiro_cli_module_reads_the_same_env_name() -> None:
+    # One name, defined in ``kiro_cli_bundle``: the resolver and the seal cannot drift.
+    from kiro_crew import kiro_cli
+
+    assert kiro_cli.BUNDLED_KIRO_DIR_ENV == BUNDLED_KIRO_DIR_ENV == "KIROCREW_BUNDLED_KIRO_DIR"
+
+
+@_POSIX_ONLY
+def test_the_bundled_kiro_cli_dir_is_sealed_in_both_spellings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The shell runs its kiro-cli-chat at every gateway start and the gateway spawns
+    # it unsandboxed for every relay session, and it sits OUTSIDE the package
+    # directory, so the package seal does not reach it.
+    real = tmp_path / "Resources" / "backend-dist" / "kiro-cli"
+    real.mkdir(parents=True)
+    link = tmp_path / "app-current"
+    link.symlink_to(tmp_path / "Resources", target_is_directory=True)
+    exported = link / "backend-dist" / "kiro-cli"
+    monkeypatch.setenv(BUNDLED_KIRO_DIR_ENV, f" {exported} ")
+    sandbox_tiers._bundled_kiro_cli_targets_cached.cache_clear()
+    try:
+        targets = sandbox._resolved_install_root_targets()
+        assert str(exported) in targets
+        assert str(real.resolve()) in targets
+        assert targets.index(str(exported)) < targets.index(str(real.resolve()))
+
+        monkeypatch.setenv(BUNDLED_KIRO_DIR_ENV, "  ")
+        sandbox_tiers._bundled_kiro_cli_targets_cached.cache_clear()
+        assert str(exported) not in sandbox._resolved_install_root_targets()
+    finally:
+        sandbox_tiers._bundled_kiro_cli_targets_cached.cache_clear()
+
+
+@_POSIX_ONLY
+def test_the_bundled_kiro_cli_dir_is_read_only_on_both_launchers() -> None:
+    cli_root = "/Applications/Kiro Crew.app/Contents/Resources/backend-dist/kiro-cli"
+    host = _host(install_root_targets=(INSTALL, cli_root))
+    for backend in (BACKEND_NAMESPACE, BACKEND_SEATBELT):
+        plan = plan_confinement(SandboxRequest(tier="standard", backend=backend), host)
+        assert cli_root in plan.readonly, backend
+    seatbelt = plan_confinement(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT), host)
+    profile = sandbox_seatbelt.render_seatbelt_profile(seatbelt)
+    assert f'(deny file-write* (subpath "{cli_root}"))' in profile
+    assert f'(deny file-link (subpath "{cli_root}"))' in profile
+
+
+def test_the_resolver_survives_a_failing_kiro_cli_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_value: str) -> tuple[str, ...]:
+        raise RuntimeError("bad dir")
+
+    monkeypatch.setattr(sandbox_tiers, "_bundled_kiro_cli_targets_cached", _boom)
+    assert isinstance(sandbox._resolved_install_root_targets(), list)
 
 
 @pytest.mark.parametrize(
@@ -255,20 +318,27 @@ def test_the_seatbelt_adapter_guards_every_ancestor_of_the_install_root(
 ) -> None:
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [INSTALL])
     host = sandbox._live_plan_host(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT))
-    assert host.install_root_ancestor_guards == _INSTALL_ANCESTORS
+    # The other seals' parents (under this host's ``$HOME``) are guarded too.
+    assert set(_INSTALL_ANCESTORS) <= set(host.readonly_ancestor_guards)
 
 
 @_POSIX_ONLY
-def test_the_namespace_adapter_needs_no_ancestor_guards(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The read-only bind is on the directory itself and moves with a renamed parent.
+def test_the_namespace_adapter_pins_only_the_parents_this_uid_could_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The read-only bind moves with a renamed parent, so the launcher pins each one the
+    # agent could rename, and re-binds nothing it could not.
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [INSTALL])
+    monkeypatch.setattr(
+        sandbox, "_caller_can_rename", lambda path, uid: os.path.dirname(path).startswith("/opt")
+    )
     host = sandbox._live_plan_host(SandboxRequest(tier="standard"))
-    assert host.install_root_ancestor_guards == ()
+    assert set(host.readonly_ancestor_guards) == set(_INSTALL_ANCESTORS) - {"/opt"}
 
 
 @_POSIX_ONLY
 def test_the_seatbelt_profile_denies_renaming_a_parent_of_the_install_root() -> None:
-    host = _host(install_root_ancestor_guards=_INSTALL_ANCESTORS)
+    host = _host(readonly_ancestor_guards=_INSTALL_ANCESTORS)
     plan = plan_confinement(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT), host)
     profile = sandbox_seatbelt.render_seatbelt_profile(plan)
     for parent in _INSTALL_ANCESTORS:
@@ -367,6 +437,7 @@ _UPDATER_MODULES = (
     "platform/update_provider.py",
     "platform/update_layout.py",
     "platform/wheel_apply.py",
+    "platform/release_apply.py",
     "dep_sync.py",
     "frontend.py",
 )

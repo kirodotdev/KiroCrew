@@ -101,6 +101,13 @@ export interface TranscriptSink {
    */
   acceptsUnowned?: boolean
   /**
+   * Failures of the sessions this subscriber owns are private: they reach only
+   * those sessions' owners, and their held audio is never replayed to anyone
+   * else. A comment box's dictation uses it, so its failure never shows up as a
+   * Retry notice in a chat composer that cannot put the words back.
+   */
+  exclusive?: boolean
+  /**
    * The inbox has let go of the capture of failed request `id`: it was discarded,
    * taken for a retry, or dropped for a new recording. A subscriber offering
    * Retry, Save or Discard for it withdraws the offer and its notice.
@@ -151,12 +158,24 @@ function hold(result: TranscriptResult): void {
   if (held.length > HELD_MAX) held.splice(0, held.length - HELD_MAX)
 }
 
+/** True while `flushHeld` is handing results over; see `deliveringHeld`. */
+let flushing = false
+
 /** Try every held result against the live subscribers; keep what still has no home. */
 function flushHeld(releaseBusy: boolean): void {
   if (!held.length || !sinks.size) return
   const batch = held.splice(0, held.length)
-  for (const r of batch) if (!dispatchSettle(r, releaseBusy)) hold(r)
+  flushing = true
+  try { for (const r of batch) if (!dispatchSettle(r, releaseBusy)) hold(r) } finally { flushing = false }
 }
+
+/**
+ * True while a subscriber's `settle` is receiving a HELD result: one that
+ * settled with no composer for its session on screen and is handed over now (a
+ * subscribe, or `redeliverPending`), so a composer it lands in can say the
+ * dictation was added.
+ */
+export function deliveringHeld(): boolean { return flushing }
 
 /**
  * Deliver one settled result to the live subscribers with single-owner text
@@ -183,10 +202,12 @@ function dispatchSettle(result: TranscriptResult, releaseBusy: boolean): boolean
   const takers = live.filter(s => s.acceptsUnowned)
   const taker = takers.length ? takers[takers.length - 1] : null
   const targets = owner ? new Set([owner]) : new Set(taker ? [taker] : [])
-  // An error has no composer to land in; every subscriber may surface it.
+  // An error has no composer to land in; every subscriber may surface it,
+  // unless an exclusive owner keeps its session's failures to its owners.
   const isError = !result.text
+  const privateError = isError && owners.some(s => s.exclusive)
   for (const s of live) {
-    const deliver = isError || targets.has(s)
+    const deliver = isError ? (!privateError || owners.includes(s)) : targets.has(s)
     if (deliver || releaseBusy) s.settle(result, deliver)
   }
   return isError || targets.size > 0
@@ -222,7 +243,9 @@ export function subscribeTranscripts(next: TranscriptSink): () => void {
   // shown again to the newcomer: its notice is the only way to that audio.
   // Deferred like the hand-over above, and only to this subscriber while it is
   // still live; a failure still in `held` reaches it through the flush instead.
-  if (failed && !held.some(r => r.id === failed!.id)) {
+  const sid = failed?.sessionId ?? null
+  const privateFailure = [...sinks].some(s => s !== next && s.exclusive && s.owns?.(sid) === true)
+  if (failed && !held.some(r => r.id === failed!.id) && (!privateFailure || next.owns?.(sid) === true)) {
     const replay = failed
     queueMicrotask(() => { if (failed === replay && sinks.has(next)) next.settle(replay, true) })
   }

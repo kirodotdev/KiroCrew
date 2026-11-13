@@ -208,6 +208,18 @@ def isolated_group_of(pid: int, start_id: str | None) -> int | None:
     return pgid
 
 
+def _client_identity(client: Any) -> tuple[int | None, str | None]:
+    """The leader ``(pid, start_id)`` an ACP client or provider recorded at spawn, each None when unusable.
+
+    The client's own fields, no syscalls: a pid above 1 and a string start id.
+    """
+    raw_pid = getattr(client, "_pid", None) if client else None
+    raw_start = getattr(client, "_start_time", None) if client else None
+    pid = raw_pid if isinstance(raw_pid, int) and raw_pid > 1 else None
+    start_id = raw_start if isinstance(raw_start, str) else None
+    return pid, start_id
+
+
 def process_handle_of(session: Any) -> ProcessHandle:
     """Read the kill handle off a live session's provider.
 
@@ -219,15 +231,16 @@ def process_handle_of(session: Any) -> ProcessHandle:
     what makes that read safe, since the kernel keeps the pid for a child its
     parent has not reaped. The group id is read from the kernel now either way,
     identity-bracketed, because it must be taken while the leader is alive to
-    be worth anything later.
+    be worth anything later. When that read fails -- the leader has already
+    exited and been reaped -- the group id a turn end verified on the same
+    client for the same ``(pid, start_id)`` (:func:`_retained_group_of`) is
+    used instead, so a leaderless group whose recorded members still vouch for
+    it can be found and signalled.
     """
     provider = getattr(session, "provider", None)
     client = getattr(provider, "_client", None)
-    raw_pid = getattr(client, "_pid", None) if client else None
-    raw_start = getattr(client, "_start_time", None) if client else None
+    pid, start_id = _client_identity(client)
     raw_children = getattr(client, "_child_pids", None) if client else None
-    pid = raw_pid if isinstance(raw_pid, int) and raw_pid > 1 else None
-    start_id = raw_start if isinstance(raw_start, str) else None
     if pid is None:
         for attribute in ("_proc", "_active_proc"):
             proc = getattr(provider, attribute, None)
@@ -241,12 +254,62 @@ def process_handle_of(session: Any) -> ProcessHandle:
                 pid = proc_pid
                 start_id = platform_compat.get_process_start_id(pid)
                 break
+    pgid = isolated_group_of(pid, start_id) if pid else None
+    if pgid is None and pid:
+        pgid = _retained_group_of(client, pid, start_id)
     return ProcessHandle(
         pid=pid,
         start_id=start_id,
-        pgid=isolated_group_of(pid, start_id) if pid else None,
+        pgid=pgid,
         child_pids=dict(raw_children) if isinstance(raw_children, dict) else {},
     )
+
+
+#: Attribute a turn end sets on its client: ``(pid, start_id, pgid)`` of the
+#: leader whose isolated group it verified while that leader was alive.
+_VERIFIED_GROUP_ATTR = "_kc_verified_group"
+
+
+def _retain_verified_group(source: Any) -> None:
+    """Keep the group id of *source*'s leader, verified now while the leader is alive.
+
+    Read with :func:`isolated_group_of` (identity-bracketed, isolated leaders
+    only) and stored with the ``(pid, start_id)`` it was read for, so it is
+    only ever handed back for that same process incarnation: a respawned or
+    recycled leader has another start id and gets nothing from it. A read that
+    fails leaves an earlier retained value as it is, since that value still
+    names the group of the incarnation it was read for.
+    """
+    raw_pid, raw_start = _client_identity(source)
+    if raw_pid is None or raw_start is None:
+        return
+    pgid = isolated_group_of(raw_pid, raw_start)
+    if pgid is None:
+        return
+    try:
+        setattr(source, _VERIFIED_GROUP_ATTR, (raw_pid, raw_start, pgid))
+    except (AttributeError, TypeError):
+        logger.debug("Could not retain the verified process group on %r", type(source).__name__)
+
+
+def _retained_group_of(client: Any, pid: int, start_id: str | None) -> int | None:
+    """The group id a turn end verified for exactly this ``(pid, start_id)``, else None.
+
+    Only a retained value for the same incarnation counts; anything else is a
+    different process's group. The id alone never licenses a signal: a
+    leaderless group is still signalled only while a recorded member verified
+    by start id sits in it (:func:`_group_member_vouches`), as for a group id
+    read at snapshot time.
+    """
+    if client is None or start_id is None:
+        return None
+    retained = getattr(client, _VERIFIED_GROUP_ATTR, None)
+    if not isinstance(retained, tuple) or len(retained) != 3:
+        return None
+    kept_pid, kept_start, kept_pgid = retained
+    if kept_pid != pid or kept_start != start_id or not isinstance(kept_pgid, int):
+        return None
+    return kept_pgid
 
 
 #: Upper bound on the tree walk a teardown runs before it takes its handles.
@@ -273,20 +336,77 @@ async def refresh_live_process_tree(sessions: Any, session_key: str) -> None:
     session = live.get(session_key) if isinstance(live, Mapping) else None
     provider = getattr(session, "provider", None)
     client = getattr(provider, "_client", None)
-    refresh = getattr(client, "refresh_process_tree", None)
+    await _bounded_tree_refresh(
+        getattr(client, "refresh_process_tree", None),
+        label=f"Process tree refresh for {session_key}",
+    )
+
+
+async def _bounded_tree_refresh(refresh: Any, *, label: str) -> None:
+    """Run one ``refresh_process_tree`` coroutine, bounded and best-effort.
+
+    The single bounded, swallowing call to a client's or runtime's guarded
+    tree walk. *refresh* is the bound ``refresh_process_tree`` method (or
+    ``None`` / a non-coroutine, which is a quiet no-op, so a provider whose
+    client has none is skipped). The walk is bounded by
+    :data:`TREE_REFRESH_TIMEOUT`; a timeout or any error is logged under
+    *label* and swallowed, because the two callers -- a teardown taking its
+    kill handle and a turn ending -- must never hang or fail on the walk, and
+    the cost of a skipped walk is a leak the sweep still reports. A
+    cancellation propagates: the teardown caller releases its lease and records
+    the undecided kill in its own ``except CancelledError`` handler, and the
+    turn-end caller runs this as the last statement of its ``finally`` after
+    its resource release, so there is nothing left to protect from the cancel.
+    """
     if not inspect.iscoroutinefunction(refresh):
         return
-    timeout = TREE_REFRESH_TIMEOUT
     try:
-        await asyncio.wait_for(refresh(), timeout=timeout)
+        await asyncio.wait_for(refresh(), timeout=TREE_REFRESH_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning(
-            "Process tree refresh for %s timed out after %.1fs; using the earlier record",
-            session_key,
-            timeout,
+            "%s timed out after %.1fs; using the earlier record", label, TREE_REFRESH_TIMEOUT
         )
     except Exception:
-        logger.warning("Process tree refresh for %s failed", session_key, exc_info=True)
+        logger.warning("%s failed", label, exc_info=True)
+
+
+async def record_live_children_after_turn(source: Any) -> None:
+    """Record the children a finished prompt turn started, while its leader is alive.
+
+    The teardown refresh (:func:`refresh_live_process_tree`) needs the leader
+    alive and verified to walk its tree: a leader that exits on its own before
+    teardown -- a crash, or an exit after a turn forked a long-lived child --
+    leaves nothing to walk, so the children stay unrecorded and the group they
+    keep alive is reported ``kill failed`` and never reaped. Recording at the
+    END of each prompt turn, where the leader is still live, closes that
+    window: the same guarded walk that teardown runs, taken while it can.
+
+    *source* is the turn's own client or provider -- the object the provider's
+    ``stream`` holds, so no session lookup is needed and a torn-down session is
+    never walked. Its ``refresh_process_tree`` does the work (``AcpClient``'s
+    add-only pass, ``AcpSessionProvider``'s runtime snapshot); both walk only a
+    leader that reads back as this run's and record nothing otherwise, so a
+    call on a dead or recycled leader is a quiet no-op rather than a mis-record.
+
+    Shares :func:`_bounded_tree_refresh` with the teardown refresh, so there is
+    one bounded, swallowing call to ``refresh_process_tree``: a turn never
+    fails or hangs on this walk. A cancellation propagates (as it does on the
+    teardown path); a caller running this from a ``finally`` beside a resource
+    release must run that release FIRST, both because this is bounded at
+    :data:`TREE_REFRESH_TIMEOUT` seconds and because a cancel here would
+    otherwise skip a release sequenced after it.
+
+    The leader's group id is retained here too (:func:`_retain_verified_group`),
+    read while the leader is still alive: a leader reaped before teardown no
+    longer answers ``getpgid``, so without it the teardown handle carries no
+    group id and the late children recorded here could never vouch for the
+    group they keep alive.
+    """
+    await _bounded_tree_refresh(
+        getattr(source, "refresh_process_tree", None),
+        label="Recording a turn's late children",
+    )
+    _retain_verified_group(source)
 
 
 def _tree_survived(handle: ProcessHandle) -> bool:
@@ -377,8 +497,10 @@ def _group_member_vouches(handle: ProcessHandle) -> bool:
     whichever tree takes it next -- so a leaderless group may only be signalled
     while it can still name a member verified as this run's: the root itself
     (a zombie still reads its start id and its group), or one of the descendants
-    the client recorded -- at startup, and again when a teardown refreshed the
-    tree just before taking the handle (:func:`refresh_live_process_tree`) --
+    the client recorded -- at startup, at the end of each prompt turn
+    (:func:`record_live_children_after_turn`), and again when a teardown
+    refreshed the tree just before taking the handle
+    (:func:`refresh_live_process_tree`) --
     whose start id reads back and whose group is the retained one. A member
     never recorded, including one started after the last refresh, cannot vouch,
     and a group only such members keep alive is not signalled -- reported, never
@@ -759,8 +881,42 @@ def join_failures(*failures: str | None) -> str | None:
     return "; ".join(named) if named else None
 
 
+def _unrecorded_descendants(
+    child_pids: dict[Any, Any], known: Iterable[Any], get_child_pids: Callable[..., Any]
+) -> dict[int, Any]:
+    """The live descendants of a gone leader's recorded children that no record names.
+
+    A gone leader's children are re-parented, so a walk from the leader finds
+    nothing. Each recorded child still verified as this run's is walked instead,
+    and its start id is read again after the walk: a walk through a pid that
+    exited meanwhile lists another process's children, so it is dropped. What is
+    found outside *known* is kept with its start id for the post-sweep read, and
+    with no basename, so the sweep's guard would refuse it: it is never signalled.
+    """
+    seen = set(known)
+    walked: set[int] = set()
+    found: dict[int, Any] = {}
+    for parent in _verified_children_standing(child_pids):
+        if parent in walked:
+            continue  # inside a subtree an earlier walk already listed
+        descendants = get_child_pids(parent)
+        if platform_compat.get_process_start_id(parent) != _child_start_of(child_pids[parent]):
+            continue
+        walked.update(descendants)
+        for cpid in descendants:
+            if cpid not in seen:
+                found[cpid] = (platform_compat.get_process_start_id(cpid), None)
+        seen.update(descendants)
+    return found
+
+
 async def _sweep_children(
-    child_pids: dict[Any, Any], *, who: str, key: str, kill_escaped_children: Callable[..., Any]
+    child_pids: dict[Any, Any],
+    *,
+    who: str,
+    key: str,
+    kill_escaped_children: Callable[..., Any],
+    unrecorded: dict[int, Any] | None = None,
 ) -> str | None:
     """Run the client's escaped-children sweep, then name every recorded child that survived it.
 
@@ -777,32 +933,72 @@ async def _sweep_children(
     per-run record does not overrule the guard; it refuses to call the run
     reaped over it. Runs the sweep off the loop, as its callers did, and the
     standing reads with it: one read per recorded child.
+
+    *unrecorded* (:func:`_unrecorded_descendants`) is read with them and never
+    swept: each one still running is named too, so a gone leader's tree is not
+    recorded as reaped over descendants nobody recorded.
     """
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(subprocess_executor(), kill_escaped_children, child_pids)
+    watched = {**(unrecorded or {}), **child_pids}
     standing = await loop.run_in_executor(
-        subprocess_executor(), _verified_children_standing, child_pids
+        subprocess_executor(), _verified_children_standing, watched
     )
     for _ in range(_SWEEP_SETTLE_READS):
         if not standing:
             return None
         await asyncio.sleep(_SWEEP_SETTLE_SECS)
         standing = await loop.run_in_executor(
-            subprocess_executor(), _verified_children_standing, child_pids
+            subprocess_executor(), _verified_children_standing, watched
         )
-    if not standing:
-        return None
-    named = ", ".join(str(cpid) for cpid in standing)
-    logger.error(
-        "%s: recorded child pid(s) %s survived the escaped-children sweep for %s; not signalled",
-        who,
-        named,
-        key,
+    failure = join_failures(
+        _named_pids(
+            [cpid for cpid in standing if cpid in child_pids],
+            "recorded child",
+            "survived the escaped-children sweep, identity verified",
+        ),
+        _named_pids(
+            [cpid for cpid in standing if cpid not in child_pids],
+            "unrecorded descendant",
+            "of a recorded child still running after the leader exited",
+        ),
     )
-    plural = "s" if len(standing) > 1 else ""
-    return (
-        f"recorded child pid{plural} {named} survived the escaped-children sweep, identity "
-        "verified; not signalled"
+    if failure is not None:
+        logger.error("%s: %s (%s)", who, failure, key)
+    return failure
+
+
+def _named_pids(pids: list[int], what: str, state: str) -> str | None:
+    """``<what> pid[s] <pids> <state>; not signalled``, or None for no pid."""
+    if not pids:
+        return None
+    plural = "s" if len(pids) > 1 else ""
+    return f"{what} pid{plural} {', '.join(str(cpid) for cpid in pids)} {state}; not signalled"
+
+
+async def _finish_gone_tree(
+    handle: ProcessHandle, *, known: Iterable[Any], who: str, key: str, child_helpers: ChildHelpers
+) -> str | None:
+    """A gone leader's tree: its group decides, its recorded children are swept, and what they lead is named.
+
+    The descendants of the recorded children are listed BEFORE the group signal
+    and the sweep, which re-parent them out of reach (:func:`_unrecorded_descendants`).
+    """
+    _, get_child_pids, kill_escaped_children = child_helpers
+    recorded = dict(handle.child_pids)
+    unrecorded = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _unrecorded_descendants, recorded, known, get_child_pids
+    )
+    failure = await _finish_gone_leader(handle, who=who, key=key)
+    return join_failures(
+        failure,
+        await _sweep_children(
+            recorded,
+            who=who,
+            key=key,
+            kill_escaped_children=kill_escaped_children,
+            unrecorded=unrecorded,
+        ),
     )
 
 
@@ -1100,7 +1296,9 @@ async def kill_verified_process(
     the kill, at either identity read, at the Windows pin, or between the last
     read and the signal. The escaped-children sweep of the recorded children
     still runs in every case, and what survives it with its identity verified
-    is named (:func:`_sweep_children`).
+    is named (:func:`_sweep_children`). Behind a gone leader, the live
+    descendants of its recorded children that no record names are named as
+    well, never signalled (:func:`_finish_gone_tree`).
 
     The escaped-children sweep is POSIX-only by nature: on Windows
     ``_direct_children`` returns ``[]`` and ``_kill_escaped_children`` is a
@@ -1145,15 +1343,11 @@ async def kill_verified_process(
             # The leader already exited. Its group may not have: a late child
             # spawn keeps members under the retained group id, so the group
             # decides. The sweep still runs for recorded children that outlived
-            # it (POSIX only -- on win32 no descendant of a gone root is
-            # reachable at all).
+            # it, and what they lead is named (POSIX only -- on win32 no
+            # descendant of a gone root is reachable at all).
             logger.debug("%s: PID %d already dead for %s", who, pid, key)
-            failure = await _finish_gone_leader(handle, who=who, key=key)
-            return join_failures(
-                failure,
-                await _sweep_children(
-                    child_pids, who=who, key=key, kill_escaped_children=_kill_escaped_children
-                ),
+            return await _finish_gone_tree(
+                handle, known=child_pids, who=who, key=key, child_helpers=child_helpers
             )
         if handle.start_id is None or actual_start is None:
             # A live process whose identity cannot be confirmed as this
@@ -1179,12 +1373,8 @@ async def kill_verified_process(
             # pid now. The group it led decides (the pid is not read through
             # again); only the recorded children are swept.
             logger.warning("%s: PID %d recycled for %s, not signalling it", who, pid, key)
-            failure = await _finish_gone_leader(handle, who=who, key=key)
-            return join_failures(
-                failure,
-                await _sweep_children(
-                    child_pids, who=who, key=key, kill_escaped_children=_kill_escaped_children
-                ),
+            return await _finish_gone_tree(
+                handle, known=child_pids, who=who, key=key, child_helpers=child_helpers
             )
         # The root is ours: snapshot its live child tree before killing --
         # children in different PGIDs survive killpg. The macOS pgrep/ps
@@ -1216,7 +1406,6 @@ async def kill_verified_process(
                 pid,
                 key,
             )
-            failure = await _finish_gone_leader(handle, who=who, key=key)
             unattributed = sorted(p for p in child_pids if p not in handle.child_pids)
             fresh_failure: str | None = None
             if unattributed:
@@ -1235,12 +1424,8 @@ async def kill_verified_process(
                     "be attributed to the run after its leader exited; not signalled"
                 )
             return join_failures(
-                failure,
-                await _sweep_children(
-                    dict(handle.child_pids),
-                    who=who,
-                    key=key,
-                    kill_escaped_children=_kill_escaped_children,
+                await _finish_gone_tree(
+                    handle, known=child_pids, who=who, key=key, child_helpers=child_helpers
                 ),
                 fresh_failure,
             )

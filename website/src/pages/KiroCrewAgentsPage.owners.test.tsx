@@ -82,7 +82,7 @@ const OWNER_HOOKS: Record<string, string> = {}
  *  above. A change that adds, removes or moves a page hook edits this list in
  *  the same commit, at the position the hook registers. */
 const PAGE_HOOKS = [
-  'useQueryClient', 'useQuery', 'useQuery', 'usePreviewFlag', 'useState', 'useState', 'useState', 'useState',
+  'useQueryClient', 'useQuery', 'useQuery', 'useState', 'useState', 'useState', 'useState',
   'useState', 'useState', 'useQuery', 'useRef', 'useGuardedLeave', 'useCrewEditor', 'useRegisterNavigationLeaveGuard',
   'usePublishNavigationStake', 'useEffect', 'useSearchParams', 'useEffect', 'useRef', 'useEffect',
   'useEffect', 'useEffect', 'useGuideSelection', 'useGuidePredicate', 'useGuidePredicate', 'useGuidePredicate',
@@ -91,7 +91,6 @@ const PAGE_HOOKS = [
 describe('KiroCrewAgentsPage owners', () => {
   it('are the files the page is made of', () => {
     expect(OWNERS).toEqual([
-      'KiroCrewAgentsPageFields.tsx',
       'KiroCrewAgentsPageRoster.tsx',
       'kiroCrewAgentsPageRosterLabels.ts',
     ])

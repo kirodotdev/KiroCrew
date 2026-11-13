@@ -49,8 +49,11 @@ def _normalize_newlines(text: str) -> str:
     submitted text is normalized here BEFORE both the hash is taken and the temp
     file is written. Without it a document containing a CR hashes one way on the
     marker and another on its chunks, and the sweep can never match them.
+    Leading U+FEFFs are dropped for the same reason: written as UTF-8 the
+    first becomes a BOM, which the reader's ``utf-8-sig`` decode strips, so
+    the temp file must not start with one at all.
     """
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
 
 
 #: Source type for the aggregate agent-added source. Lets retrieval and the UI

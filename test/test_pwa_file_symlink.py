@@ -8,6 +8,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.dist_file_response import DistFileResponse
 
 
 @pytest.mark.asyncio
@@ -30,7 +31,7 @@ async def test_pwa_file_serves_through_symlinked_dist(tmp_path):
     req.match_info = {"name": "pcm-worklet.js"}
     with patch.object(core, "_DIST_DIR", link):
         resp = await core.pwa_file(req)
-    assert isinstance(resp, web.FileResponse)
+    assert isinstance(resp, DistFileResponse)
 
 
 @pytest.mark.asyncio

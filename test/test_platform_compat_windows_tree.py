@@ -46,8 +46,21 @@ class TestWindowsRecycledDescendantAgeDisproof:
     ROOT_HANDLE = 8001
     ROOT_CREATED = 1_000
 
-    def _install(self, monkeypatch, *, first_map, fresh_map, opens, identities, query_handles):
-        """Drive the Windows branch on any host; return the observed call log."""
+    def _install(
+        self,
+        monkeypatch,
+        *,
+        first_map,
+        fresh_map,
+        opens,
+        identities,
+        query_handles,
+        later_map=None,
+    ):
+        """Drive the Windows branch on any host; return the observed call log.
+
+        *later_map*, when given, answers every scan after the fresh one.
+        """
 
         scans = 0
         closed: list[int] = []
@@ -57,7 +70,11 @@ class TestWindowsRecycledDescendantAgeDisproof:
         def snapshot():
             nonlocal scans
             scans += 1
-            return dict(first_map) if scans == 1 else dict(fresh_map)
+            if scans == 1:
+                return dict(first_map)
+            if scans == 2 or later_map is None:
+                return dict(fresh_map)
+            return dict(later_map)
 
         def open_termination(child_pid, **_kwargs):
             return opens.get(child_pid)
@@ -197,6 +214,315 @@ class TestWindowsRecycledDescendantAgeDisproof:
         assert handles == {101: 9001}
         assert closed == []
         assert query_opens == []
+
+    @pytest.mark.parametrize("strangers_open", [False, True], ids=["refused", "opened"])
+    @pytest.mark.parametrize(
+        "stranger_created", [500, 1_000, 1_050], ids=["older", "same-instant", "later"]
+    )
+    def test_an_older_stranger_naming_a_vanished_candidate_is_not_its_child(
+        self, monkeypatch, strangers_open, stranger_created
+    ):
+        """A console host that exits unopened leaves its recycled PID behind.
+
+        101 is the root's console host: listed by the first scan, gone before its
+        termination handle opens and absent from the fresh scan. 102 and 103 are
+        orphans of an earlier holder of PID 101, so Toolhelp still names 101 as
+        their parent. Existing before the root proves they are not its
+        descendants; a later instant proves nothing and keeps the refusal.
+        """
+
+        strangers = {102: 9002, 103: 9003} if strangers_open else {}
+        queries = {} if strangers_open else {102: 7102, 103: 7103}
+        identities = {self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None)}
+        for child_pid, handle in {**strangers, **queries}.items():
+            identities[handle] = (child_pid, stranger_created, None)
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 101},
+            fresh_map={102: 101, 103: 101},
+            opens=strangers,
+            identities=identities,
+            query_handles=queries,
+        )
+
+        if stranger_created < self.ROOT_CREATED:
+            assert pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE) == {}
+        else:
+            message = "vanished unopened parents" if strangers_open else "handles unavailable"
+            with pytest.raises(OSError, match=message):
+                pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+        assert sorted(closed) == sorted(strangers.values())
+
+    def test_a_reused_pid_under_a_vanished_candidate_keeps_the_refusal(self, monkeypatch):
+        """A disproven first-scan entry does not vouch for a new process on its PID.
+
+        The first scan lists 103 under 102, a stranger older than the root, so the
+        age check drops both. 103 was never opened, so nothing pinned its PID: by
+        the fresh scan a new 103 runs under 101, a candidate that vanished
+        unopened. Its recent creation proves nothing, so the refusal stands.
+        """
+
+        closed, _query_opens, query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: self.ROOT_PID, 103: 102},
+            fresh_map={102: self.ROOT_PID, 103: 101},
+            opens={102: 9002},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                7103: (103, 1_100, None),
+            },
+            query_handles={103: 7103},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert closed == [9002]
+        assert query_closed == [7103]
+
+    def test_an_older_ancestor_does_not_disprove_a_child_of_a_vanished_candidate(self, monkeypatch):
+        """Only the referencing entry's own creation instant can disprove it.
+
+        104 is a genuine descendant whose parent exited; its PID 103 now belongs
+        to a child of 102, a stranger older than the root that names 101 as its
+        parent. 103 refuses its handle and is gone from the fresh scan. 102's
+        age says nothing about 104, which still names the exited parent's PID,
+        so 104 stays a dangling child and the refusal stands.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102, 104: 103},
+            fresh_map={101: self.ROOT_PID, 102: 101, 104: 103},
+            opens={101: 9001, 102: 9002, 104: 9004},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9001: (101, 1_100, None),
+                9002: (102, 500, None),
+                9004: (104, 1_200, None),
+            },
+            query_handles={},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert sorted(closed) == [9001, 9002, 9004]
+
+    def test_an_older_orphan_does_not_vouch_for_a_grandchild_across_a_vanished_pid(
+        self, monkeypatch
+    ):
+        """An orphan's age covers its own children, never what sits below them.
+
+        102 is an orphan older than the root, naming the vanished candidate 101.
+        104 is a genuine descendant whose parent exited; its PID 103 now belongs
+        to a child of 102 that also exited unopened. 102's age proves the new 103
+        is not the root's, but says nothing about 104, so both pairs refuse.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102, 104: 103},
+            fresh_map={102: 101, 104: 103},
+            opens={102: 9002, 104: 9004},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9004: (104, 1_200, None),
+            },
+            query_handles={},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert sorted(closed) == [9002, 9004]
+
+    def test_an_older_orphan_is_skipped_with_its_pinned_childless_child(self, monkeypatch):
+        """An orphan and the console host it spawned are both strangers.
+
+        101, the root's console host, exits before its handle opens. 102 is an
+        orphan older than the root that still names PID 101, and 103 is its own
+        console host. Both handles open, 103 has no child, so both are closed and
+        nothing refuses.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            fresh_map={102: 101, 103: 102},
+            opens={102: 9002, 103: 9003},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9003: (103, 1_100, None),
+            },
+            query_handles={},
+        )
+
+        assert pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE) == {}
+        assert closed == [9002, 9003]
+
+    def test_an_older_orphan_whose_child_pid_was_reused_keeps_the_refusal(self, monkeypatch):
+        """A child handle opened after the first scan may belong to a new process.
+
+        The first scan lists 103 under the orphan 102, but 103 exits and a process
+        of the root takes its PID before its handle opens. The fresh scan, taken
+        after the open, lists 103 under the root, so 102 is not skipped.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            fresh_map={102: 101, 103: self.ROOT_PID},
+            opens={102: 9002, 103: 9003},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9003: (103, 1_100, None),
+            },
+            query_handles={},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert sorted(closed) == [9002, 9003]
+
+    def test_an_older_orphan_whose_child_gained_a_child_keeps_the_refusal(self, monkeypatch):
+        """A child that starts a process between the scans is not childless."""
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            fresh_map={102: 101, 103: 102, 104: 103},
+            opens={102: 9002, 103: 9003},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9003: (103, 1_100, None),
+            },
+            query_handles={},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert sorted(closed) == [9002, 9003]
+
+    def test_an_older_orphan_whose_child_has_a_child_keeps_the_refusal(self, monkeypatch):
+        """A grandchild may name a PID recycled from one of the root's own processes.
+
+        104 is listed by the first scan only, so the refusal does not depend on it
+        still running at the fresh scan.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102, 104: 103},
+            fresh_map={102: 101, 103: 102},
+            opens={102: 9002, 103: 9003, 104: 9004},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9003: (103, 1_100, None),
+                9004: (104, 1_200, None),
+            },
+            query_handles={},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert sorted(closed) == [9002, 9003, 9004]
+
+    def test_an_older_orphan_closes_a_child_only_the_fresh_scan_lists_under_it(self, monkeypatch):
+        """A PID reused by the orphan's child is closed with the orphan.
+
+        The first scan lists 105 under the root, but its handle opens on a new
+        process that the fresh scan lists under the orphan 102. That process is
+        102's child, not the root's, so its handle closes too.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 105: self.ROOT_PID},
+            fresh_map={102: 101, 105: 102},
+            # If 105 stayed open, the later lineage scan would run, and 105 has
+            # exited by then.
+            later_map={102: 101},
+            opens={102: 9002, 105: 9005},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9005: (105, 1_100, None),
+            },
+            query_handles={},
+        )
+
+        assert pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE) == {}
+        assert sorted(closed) == [9002, 9005]
+
+    @pytest.mark.parametrize("child_pin", ["refused", "retained"])
+    def test_an_older_orphan_whose_child_is_not_opened_here_keeps_the_refusal(
+        self, monkeypatch, child_pin
+    ):
+        """Only a child pinned by a handle this call opened is skipped with the orphan.
+
+        A refused child's PID may hold a new process by the fresh scan, and a
+        retained child is one an earlier scan proved belongs to this tree.
+        """
+
+        retained = {103: 9003} if child_pin == "retained" else {}
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            fresh_map={102: 101, 103: 102},
+            opens={102: 9002},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+                9003: (103, 1_100, None),
+                7102: (102, 500, None),
+                7103: (103, 1_100, None),
+            },
+            query_handles={102: 7102, 103: 7103},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, retained, self.ROOT_HANDLE)
+
+        assert closed == [9002]
+
+    def test_an_older_orphan_with_a_child_only_the_fresh_scan_lists_keeps_the_refusal(
+        self, monkeypatch
+    ):
+        """A child that appears between the scans keeps the refusal.
+
+        104 is a genuine descendant whose parent 103 exited before the first scan.
+        102, an orphan older than the root, has no child in that scan. 101 exits
+        unopened, and 102 starts a process that takes PID 103, so the fresh scan
+        lists 104 below 102's new child. That child was never opened, so 102 is
+        not skipped.
+        """
+
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 104: 103},
+            fresh_map={102: 101, 103: 102, 104: 103},
+            opens={102: 9002},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9002: (102, 500, None),
+            },
+            query_handles={},
+        )
+
+        with pytest.raises(OSError, match="vanished unopened parents"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert closed == [9002]
 
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Win32 handle-rights premise")
     def test_a_protected_process_refuses_termination_but_answers_its_creation(self):

@@ -55,10 +55,31 @@ def _type_ok(value: Any, json_type: Any) -> bool:
         return any(_type_ok(value, member) for member in json_type)
     if json_type in ("integer", "number") and isinstance(value, bool):
         return False  # bool is not a number for our purposes
+    if json_type == "integer" and isinstance(value, float):
+        # JSON Schema counts a number with a zero fractional part (3.0) as an
+        # integer; ``is_integer`` is False for inf and nan.
+        return value.is_integer()
     expected = _JSON_TYPES.get(json_type)
     if expected is None:
         return True  # unknown type keyword → don't reject on it
     return isinstance(value, expected)
+
+
+def _json_equal(a: Any, b: Any) -> bool:
+    """JSON-semantics equality for ``enum`` members.
+
+    Python treats ``True == 1`` and ``False == 0``; JSON keeps booleans and
+    numbers apart, so a boolean equals only a boolean. ``1 == 1.0`` holds, as
+    JSON has one number type. Arrays and objects compare member by member
+    under the same rule.
+    """
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_equal(a[k], b[k]) for k in a)
+    return bool(a == b)
 
 
 def validate_against_schema(value: Any, schema: dict, *, path: str = "$") -> list[str]:
@@ -75,7 +96,7 @@ def validate_against_schema(value: Any, schema: dict, *, path: str = "$") -> lis
         errors.append(f"{path}: expected type '{expected_type}', got {type(value).__name__}")
         return errors  # type mismatch — deeper checks would be noise
 
-    if "enum" in schema and value not in schema["enum"]:
+    if "enum" in schema and not any(_json_equal(value, member) for member in schema["enum"]):
         errors.append(f"{path}: {value!r} not in enum {schema['enum']}")
 
     # Container sub-checks key on the VALUE's runtime type, not the ``type``
@@ -190,7 +211,32 @@ def coerce_and_validate(text: str, schema: dict) -> tuple[Optional[Any], list[st
     errors = validate_against_schema(value, schema)
     if errors:
         return None, errors
-    return value, []
+    return _normalize_integers(value, schema), []
+
+
+def _normalize_integers(value: Any, schema: dict) -> Any:
+    """Return *value* with every ``integer``-typed float (``3.0``) as an ``int``.
+
+    Runs on a value that already validated, so a float reaching an
+    ``integer``-only slot has no fraction. A workflow then gets the ``int`` its
+    schema promised: ``3``, not ``3.0``, in an f-string, a ``range`` or an
+    index. A slot that also admits ``number`` keeps the float.
+    """
+    json_type = schema.get("type")
+    names = json_type if isinstance(json_type, (list, tuple)) else [json_type]
+    if isinstance(value, float) and "integer" in names and "number" not in names:
+        return int(value)
+    if isinstance(value, dict):
+        props = schema.get("properties", {})
+        return {
+            key: _normalize_integers(item, props[key]) if isinstance(props.get(key), dict) else item
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            return [_normalize_integers(item, item_schema) for item in value]
+    return value
 
 
 async def run_with_schema(

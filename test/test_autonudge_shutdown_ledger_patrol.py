@@ -1,9 +1,7 @@
 """AutoNudgeService shutdown-drain tests: ledger extension and patrol displacement.
 
-One of the sibling topic modules split from the original
-``test_autonudge_shutdown_drain.py``. These cover shutdown landing in a ledger
-extension (whole or dropped) and a displaced default-patrol wake keeping the row
-removed through closure.
+Covers shutdown landing in a ledger extension (whole or dropped) and a displaced
+default-patrol wake keeping the row removed through closure.
 
 ``_enable`` is autouse (imported from ``autonudge_helpers``); ``svc_fixture``
 registers the ``svc`` fixture.
@@ -41,13 +39,8 @@ async def test_shutdown_during_a_ledger_extension_lands_it_whole_or_drops_it(
 ):
     """A spent bound raised for an open work ledger is one admitted write or none.
 
-    The extension runs inside the timer tick and first detaches the tick from the
-    timer table, so shutdown reaches it through the running-callback registry and
-    cancels it like any running callback. The raise itself goes through ``update``
-    under the tick's lease: cut while that write waits on the service lock, the
-    write is drained and lands; cut while the tick is still reading the ledger, no
-    write starts. Either way the store and the loop in memory agree, and no timer
-    is armed once admission has closed.
+    Cut while the ``update`` waits on the lock, the write drains and lands; cut while
+    the tick reads the ledger, no write starts. Store and memory agree either way.
     """
     from kiro_crew.autonudge_service import firing
 
@@ -144,13 +137,8 @@ async def test_shutdown_during_a_displaced_default_patrol_wake_keeps_the_row_rem
 ):
     """A default patrol displaced mid-wake keeps its tick running, outside the table.
 
-    The agent's own create-only arm, issued while the default patrol's channel turn
-    runs, detaches the firing tick from the timer table instead of cancelling it, so
-    that delivery finishes. The tick is still a running callback: shutdown cancels it
-    while it delivers and drains it once it sits inside its own delivery record. In
-    every case the removed row is not written back (the drained write snapshots the
-    live table, which holds only the replacement), it is never announced as fired, no
-    timer is armed for it, and nothing at all is armed once admission has closed.
+    The replacing arm detaches the tick rather than cancel it, so delivery finishes.
+    The removed row is never written back, announced or re-armed after closure.
     """
     delivering = asyncio.Event()
     turn_done = asyncio.Event()
@@ -268,12 +256,8 @@ async def test_a_failed_displacement_gives_no_tick_back_after_closure(
 ):
     """The give-back of a displaced default patrol's tick never outlives admission.
 
-    When the replacement's store write fails, the arm restores the default patrol and
-    puts its still-running tick back in the timer table. An arm admitted before
-    shutdown reaches that give-back after closure, once the table was emptied; by then
-    the tick is either a running callback shutdown cancelled that is still unwinding,
-    or one shutdown drains through its delivery record. Neither may return to the
-    table, and nothing is armed for the restored row.
+    A failed replacement write puts the tick back in the timer table; reached after
+    closure, that give-back must not refill the emptied table.
     """
     delivering = asyncio.Event()
     turn_done = asyncio.Event()
@@ -391,12 +375,8 @@ async def test_a_displaced_default_patrol_completion_resolves_through_shutdown_u
 ):
     """A completion for the displaced default patrol's wake finds no row and writes nothing.
 
-    The agent's own arm replaces an ACTIVE default patrol even while its wake is in
-    flight, so that wake's completion accounting can arrive after the row is gone.
-    Admitted before closure, it waits on the lock the replacement holds across its
-    write and runs after shutdown closed admission: it charges, writes and announces
-    nothing, and its drained transaction resolves, so shutdown is not left waiting on
-    it. A completion that arrives after closure is refused at admission.
+    Admitted before closure, it charges and writes nothing and its transaction resolves,
+    so shutdown does not wait on it. One arriving after closure is refused.
     """
 
     class _ObservedLock(asyncio.Lock):

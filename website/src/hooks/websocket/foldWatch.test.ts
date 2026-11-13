@@ -29,6 +29,19 @@ describe('fold watch controller', () => {
     expect(watchedBoards(qc)).toEqual(['a'])
   })
 
+  it('lists a mounted root session Overview, so its slot frames reach the tab', () => {
+    const qc = new QueryClient()
+    mountBoard(qc, 'b')
+    const off = new QueryObserver(qc, {
+      queryKey: ['session-dashboard', 'root', 'en', 'live'],
+      queryFn: () => new Promise<never>(() => {}),
+    }).subscribe(() => {})
+    qc.getQueryCache().build(qc, { queryKey: ['session-dashboard', 'closed', 'en', 'live'] }) // no observer
+    expect(watchedBoards(qc)).toEqual(['b', 'root'])
+    off()
+    expect(watchedBoards(qc)).toEqual(['b'])
+  })
+
   it('sends nothing before the hello, then the set and each change', () => {
     const qc = new QueryClient()
     const sent: unknown[] = []

@@ -95,13 +95,10 @@ class TestCronAddThreadTs:
 
 
 class TestCronAddInheritsCallerThread:
-    """A cron scheduled by an agent running IN a Slack thread inherits that
-    thread automatically, with no explicit thread_ts.
+    """A cron scheduled from inside a Slack thread inherits that thread.
 
-    The caller's strict session key is ``slack:<thread_ts>`` (canonical_key of
-    the bare reply_ts), so cron_add can recover the thread from the caller's own
-    identity — no gateway/caller-schema change. Gated on a channel being present,
-    since a thread_ts is meaningless without its channel.
+    The caller's key is ``slack:<thread_ts>``, so cron_add recovers the thread from
+    it. Gated on a channel, since a thread_ts means nothing without one.
     """
 
     @staticmethod
@@ -283,14 +280,10 @@ class TestCronAddInheritsCallerThread:
 class TestCronAddThreadInheritAcrossGateway:
     """The thread inherit must survive the gateway hop.
 
-    The HTTP boundary rebuilds the ``CallerContext`` WITHOUT ``channel_id``
-    (dashboard/handlers/cron_jobs.py), so ``_caller_channel_id()`` is empty on the
-    gateway side and a same-channel comparison made there would always fail.
-    The inherit is therefore resolved on the RUNTIME side in ``_call_tool``
-    (where the caller channel is reliable) and forwarded to the gateway as an
-    explicit ``thread_ts`` argument. These tests drive ``_call_tool`` with a
-    mocked gateway ``_post`` and assert what it forwards -- the exact path the
-    GPT review found the original guard was inert on.
+    The HTTP boundary rebuilds the ``CallerContext`` without ``channel_id``, so a
+    same-channel check on the gateway side always fails. The inherit is resolved in
+    ``_call_tool`` and forwarded as an explicit ``thread_ts``; these tests assert
+    what ``_call_tool`` forwards to a mocked ``_post``.
     """
 
     @staticmethod
@@ -466,13 +459,9 @@ class TestCronAddThreadInheritAcrossGateway:
 class TestCronUpdateThreadTs:
     """Forwarding-only coverage: ``CronService`` is a ``MagicMock`` here.
 
-    These tests pin that ``cron_update`` builds the ``thread_ts`` kwarg, and
-    nothing more — the real ``update_job`` never runs, so they cannot observe
-    whether the value is applied or silently dropped on the next line. The
-    persistence half is pinned by
-    :class:`TestCronUpdateThreadTsPersistence` and
-    :class:`TestCronThreadTsEndToEnd`, which drive a real service and read the
-    value back off disk.
+    They pin only that ``cron_update`` builds the ``thread_ts`` kwarg. Persistence is
+    pinned by :class:`TestCronUpdateThreadTsPersistence` and
+    :class:`TestCronThreadTsEndToEnd`, which read the value back off disk.
     """
 
     def test_update_sets_thread_ts(self, tmp_path: Path, named_cron_caller: str) -> None:
@@ -482,9 +471,8 @@ class TestCronUpdateThreadTs:
             fake_job.id = "abc"
             fake_job.name = "test-job"
             fake_job.schedule = CronSchedule(kind="every", every_secs=300)
-            # The ownership gate now reaches the stored row, so the mock has to
-            # model an owner. A bare MagicMock attribute compares unequal to the
-            # caller's key and the update would be refused.
+            # The ownership gate reads the stored row, so the mock must model an
+            # owner: a bare MagicMock attribute would not match and be refused.
             fake_job.session_key = named_cron_caller
             mock_svc.get_job.return_value = fake_job
             mock_svc.update_job.return_value = fake_job
@@ -503,12 +491,8 @@ class TestCronUpdateThreadTs:
 class TestCronUpdateThreadTsPersistence:
     """``update_job`` must APPLY thread_ts, not just validate it.
 
-    ``add_job`` accepted the field from the start, so a job's reply thread was
-    settable at creation and then frozen: ``_update_job_locked`` length-checked
-    the value and fell through to ``_save()`` without ever assigning it, so the
-    caller was told "Updated" while the cron kept posting to the old thread.
-    The in-memory object is not the contract — every assertion here reloads the
-    store.
+    A check-then-save that never assigns the value still reports "Updated". The
+    in-memory object is not the contract, so every assertion reloads the store.
     """
 
     def test_update_job_applies_thread_ts(self, tmp_path: Path) -> None:

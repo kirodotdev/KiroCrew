@@ -166,22 +166,30 @@ async def _check_missing_deps(self: GatewayOrchestrator) -> None:
     if not proj or self._is_brazil_install(proj):
         return
 
+    # Local import: this body runs on the gateway facade's globals.
+    from kiro_crew.platform.update_provider import _start_installer
+
     logger.warning("Missing deps %s — installing directly", missing)
     print(f"👻 Installing missing dependencies: {', '.join(missing)}")
-    proc = await asyncio.create_subprocess_exec(
-        *platform_compat.isolated_python_argv(
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            *missing,
+    # Through `_start_installer`: a cancel inside a bare spawn await kills pip's
+    # pid alone, before the cancel arm below has a process to group-kill.
+    proc = await _start_installer(
+        asyncio.create_subprocess_exec(
+            *platform_compat.isolated_python_argv(
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                *missing,
+            ),
+            cwd=proj,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            # Own process group (POSIX; no-op on Windows) so a timeout kill
+            # reaches pip's build-backend grandchildren, not just pip itself.
+            start_new_session=platform_compat.IS_POSIX,
         ),
-        cwd=proj,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        # Own process group (POSIX; no-op on Windows) so a timeout kill
-        # reaches pip's build-backend grandchildren, not just pip itself.
-        start_new_session=platform_compat.IS_POSIX,
+        stop=self._kill_startup_child,
     )
     try:
         _, stderr = await asyncio.wait_for(
@@ -263,6 +271,9 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
         return
     venv_py, script, dep_sync_path = probed
 
+    # Local import: this body runs on the gateway facade's globals.
+    from kiro_crew.platform.update_provider import _start_installer
+
     logger.warning("kirocrew console script missing/not executable at %s — reinstalling", script)
     print("👻 Repairing kirocrew install (console script missing)…")
     # Run the stdlib-only module by absolute file path: the target venv may
@@ -316,13 +327,18 @@ async def _check_console_script(self: GatewayOrchestrator) -> None:
         )
         return
     try:
-        proc = await create_subprocess_limited(
-            *argv,
-            cwd=proj,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=platform_compat.IS_POSIX,
+        # Started like the pip repair above, so a cancel during the start still
+        # reaches dep_sync's whole group.
+        proc = await _start_installer(
+            create_subprocess_limited(
+                *argv,
+                cwd=proj,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=platform_compat.IS_POSIX,
+            ),
+            stop=self._kill_startup_child,
         )
         try:
             stdout, stderr = await asyncio.wait_for(

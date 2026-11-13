@@ -222,6 +222,33 @@ async def test_the_collector_reads_the_session_page_the_judge_retains(
     assert seen["pr"] == {"status": "open", "observed_at": 120.5}
 
 
+@pytest.mark.asyncio
+async def test_the_collector_primes_app_reach_before_it_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read gate reads only primed app verdicts, so each read follows a prime."""
+    orch = _orchestrator()
+    orch.dashboard_state = MagicMock()
+    order: list[str] = []
+
+    async def _prime(state: Any) -> None:
+        assert state is orch.dashboard_state
+        order.append("prime")
+
+    def _read_messages(state: Any, **kwargs: Any) -> dict[str, Any]:
+        order.append("read")
+        return {"messages": [], "next_since": None}
+
+    monkeypatch.setattr(session_control, "prewarm_app_reach", _prime)
+    monkeypatch.setattr(session_control, "read_messages", _read_messages)
+    _judge_seams(monkeypatch)
+    wired = await _wire(orch)
+
+    await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1"))
+
+    assert order == ["prime", "read"]
+
+
 @pytest.mark.parametrize(
     ("overrides", "monitor"),
     [

@@ -22,6 +22,7 @@ import type { Reminder } from './types'
 import { ReminderInput } from './ReminderInput'
 import { petBridge } from './petBridge'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 const api = petBridge
 
@@ -335,17 +336,19 @@ export const SettingsView: React.FC = () => {
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '8px 10px', borderTop: `1px solid ${skin.hairline}`,
           }}>
-            <span style={{ flex: 1, fontSize: 11, color: skin.muted }}>{i18nT('apps.crewCompanion.view.everyHowOften')}</span>
+            <span id="cc-panel-every-label" style={{ flex: 1, fontSize: 11, color: skin.muted }}>{i18nT('apps.crewCompanion.view.everyHowOften')}</span>
+            <RadioChipGroup ariaLabelledBy="cc-panel-every-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {BREAK_PRESETS.map((m) => {
               const active = breakMins === m
               return (
                 <button
                   key={m}
+                  type="button"
                   onClick={() => {
                     setBreakMins(m); setCustomDraft(null)
                     api?.updateConfig?.({ breakReminderMins: m })
                   }}
-                  aria-pressed={active}
+                  {...radioChip(active)}
                   style={{
                     minWidth: 30, height: 24, borderRadius: 999, border: 'none',
                     cursor: 'pointer', fontFamily: PANEL_FONT,
@@ -356,6 +359,7 @@ export const SettingsView: React.FC = () => {
                 >{m}</button>
               )
             })}
+            </RadioChipGroup>
             {/*
               Any interval, not just the four presets. It shows the live value when
               that value is custom, so the row always says what is actually set.

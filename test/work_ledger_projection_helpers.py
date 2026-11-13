@@ -35,10 +35,9 @@ _SLOTS: dict[str, _Slot] = {}
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse pin of test_work_ledger_projection.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _isolated(tmp_path, monkeypatch):
+def _isolated(tmp_path, _floor_monkeypatch):
     """An isolated data home and an open route; the gate itself stays live."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     _SLOTS.clear()
     # Each test runs on its own event loop and an ``asyncio.Lock`` binds to the
     # loop it is first contended on, so a lock left from one test would fail the
@@ -48,9 +47,9 @@ def _isolated(tmp_path, monkeypatch):
     async def _recognized(*a: Any, **k: Any) -> None:
         return None
 
-    monkeypatch.setattr(routes, "_recognize_session", _recognized)
-    monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
+    _floor_monkeypatch.setattr(routes, "_recognize_session", _recognized)
+    _floor_monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
+    _floor_monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     yield
     _SLOTS.clear()
 

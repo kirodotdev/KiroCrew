@@ -393,8 +393,7 @@ class TestPlatformSelection:
           "can I make this call here", and answers ``None`` — "ownership unknown", which
           the caller treats as untrusted — rather than raising on a Linux CI runner where
           the module is imported but never used;
-        * ``permissions.py`` is reached directly by the dashboard's ``doctor --json``
-          probe, whose whole point is learning the TCC state WITHOUT loading a
+        * ``permissions.py`` is a public probe a caller can reach WITHOUT loading a
           driver, so it must answer ``unsupported`` on its own;
         * ``overlay.py`` / ``overlay_proc.py`` are Cursor Motion, a COSMETIC
           subsystem that never consults the driver seam at all (it draws a fake

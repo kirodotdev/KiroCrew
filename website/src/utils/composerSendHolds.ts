@@ -3,7 +3,7 @@
  * Attachments are per-window composer state, and completed files land in the
  * producing window's inbox, so another window's composer has nothing to wait for.
  */
-import { useLayoutEffect, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 type Slot = string | null | undefined
 
@@ -56,6 +56,8 @@ class ComposerSync {
   /** Each running upload's current slot, so a hand-over moves exactly the
    *  uploads running at that moment and none started later. */
   private readonly uploadSlots = new Map<AbortController, string>()
+  /** Bytes sent and the body's size, per running upload that has reported any. */
+  private readonly sent = new Map<AbortController, { loaded: number; total: number }>()
   private readonly arrivals = new Map<string, string[]>()
   private readonly listeners = new Set<() => void>()
   private readonly arrivalListeners = new Map<string, Set<() => void>>()
@@ -197,7 +199,31 @@ class ComposerSync {
     if (!live?.delete(controller)) return
     if (live.size === 0) this.controllers.delete(slot)
     this.uploadSlots.delete(controller)
+    this.sent.delete(controller)
     this.notify()
+  }
+
+  reportComposerUploadProgress(controller: AbortController, loaded: number, total: number) {
+    if (!this.uploadSlots.has(controller)) return
+    this.sent.set(controller, { loaded, total })
+    this.notify()
+  }
+
+  /** The slot's running uploads summed: bytes sent, or the bytes they will send. */
+  composerUploadBytes(slot: Slot, field: 'loaded' | 'total'): number {
+    let sum = 0
+    if (slot) this.controllers.get(slot)?.forEach(controller => { sum += this.sent.get(controller)?.[field] ?? 0 })
+    return sum
+  }
+
+  /** Whether a started request still has bytes to send or an unknown total. */
+  composerUploadSending(slot: Slot): boolean {
+    if (!slot) return false
+    for (const controller of this.controllers.get(slot) ?? []) {
+      const sent = this.sent.get(controller)
+      if (sent && (sent.total === 0 || sent.loaded < sent.total)) return true
+    }
+    return false
   }
 
   /** The slot this upload belongs to now: where it started, or where a
@@ -265,6 +291,12 @@ export function registerComposerUpload(slot: Slot, controller: AbortController) 
 export function unregisterComposerUpload(slot: Slot, controller: AbortController) { composerSync.unregisterComposerUpload(slot, controller) }
 export function composerUploadSlot(controller: AbortController) { return composerSync.composerUploadSlot(controller) }
 export function cancelComposerUploads(slot: Slot) { composerSync.cancelComposerUploads(slot) }
+export function reportComposerUploadProgress(controller: AbortController, loaded: number, total: number) {
+  composerSync.reportComposerUploadProgress(controller, loaded, total)
+}
+
+/** How long an upload with bytes left to send may move none before it reads as stalled. */
+export const UPLOAD_STALL_MS = 20_000
 
 export function useComposerSendHeld(slot: Slot) {
   return useSyncExternalStore(
@@ -296,6 +328,25 @@ export function useComposerUploadCount(slot: Slot) {
     () => composerSync.composerUploadCount(slot),
     () => 0,
   )
+}
+
+/** The slot's upload progress: the share of bytes sent (null until a positive
+ *  total is reported), and `stalled` once no byte has moved for `UPLOAD_STALL_MS`
+ *  while bytes are left to send or a started request's total is unknown. A request
+ *  reports its start, at zero bytes, when it is sent, so one that never reaches
+ *  the server stalls too; files still being prepared are not sent yet and do not. */
+export function useComposerUploadProgress(slot: Slot): { ratio: number | null; stalled: boolean } {
+  const loaded = useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploadBytes(slot, 'loaded'), () => 0)
+  const total = useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploadBytes(slot, 'total'), () => 0)
+  const sending = useSyncExternalStore(composerSync.subscribe, () => composerSync.composerUploadSending(slot), () => false)
+  const [stalled, setStalled] = useState(false)
+  useEffect(() => {
+    setStalled(false)
+    if (!sending) return
+    const timer = setTimeout(() => setStalled(true), UPLOAD_STALL_MS)
+    return () => clearTimeout(timer)
+  }, [slot, sending, loaded])
+  return { ratio: total > 0 ? loaded / total : null, stalled: sending && stalled }
 }
 
 /** Independent logical window for deterministic tests. */

@@ -31,7 +31,7 @@ const KIROCREW_MODULE_RE = /^(?:kiro_crew|kirocrew_[a-z0-9][a-z0-9_]*)$/;
 // gates `kirocrew stop` on. Without this the module name alone would authorize a
 // SIGKILL of any process that merely imports a `kirocrew_*` module on our port.
 // Both constants are pinned to their Python twins by
-// `test/test_cli.py::TestDesktopGatewayIdentityParity`; change them together.
+// `test/test_cli_stop.py::TestDesktopGatewayIdentityParity`; change them together.
 const KIROCREW_SERVER_SUBCOMMANDS = new Set(["gateway", "dashboard", "start"]);
 
 // The code the updater's pre-swap stop rejects with when a gateway running from
@@ -122,6 +122,9 @@ function executableSelector(tokens) {
  * `current` junction while Windows reports the running process by the
  * directory the junction resolved to. A path the resolver did not select stays
  * foreign, so a matching basename elsewhere can still never authorize a kill.
+ * The one other Windows executable accepted is a venv's base interpreter, and
+ * only in the exact launch shape `trustedVenvLaunches` pins
+ * (`venvBaseInterpreterShape`).
  */
 function isKirocrewCommand(commandLine, options) {
   return kirocrewCommandShape(commandLine, options) !== null;
@@ -142,14 +145,113 @@ function isKirocrewGatewayCommand(commandLine, options) {
 }
 
 /**
+ * The first `count` arguments of a Windows process identity, or null unless
+ * each is unambiguous under the C runtime's argv rules: a plain run of
+ * non-separator, non-quote characters, or one quoted span with no backslash
+ * before its closing quote, every argument followed by a space, a tab or the
+ * end, and no other control or Unicode space anywhere in them.
+ * `commandLineTokens` splits `"a"b` into two tokens where the runtime reads
+ * one argument, so a shape that turns on argument boundaries reads them here.
+ */
+function strictWindowsArguments(commandLine, count) {
+  const input = String(commandLine || "");
+  // The runtime separates arguments on space and tab only. Any other control
+  // or Unicode space is ordinary argument text to it but a separator to a
+  // regex `\s`, so neither reading is trusted.
+  const separator = (char) => char === " " || char === "\t";
+  const unsafe = /[\u0000-\u0008\u000A-\u001F\u007F-\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/;
+  const args = [];
+  let index = 0;
+  while (args.length < count) {
+    const runStart = index;
+    while (index < input.length && separator(input[index])) index += 1;
+    // `"<ExecutablePath>" <CommandLine>` is joined by exactly one space; more
+    // means CommandLine itself starts with whitespace, which shifts its argv0.
+    if (args.length === 0 && index !== 0) return null;
+    if (args.length === 1 && input.slice(runStart, index) !== " ") return null;
+    if (index >= input.length) return null;
+    let value;
+    if (input[index] === "\"") {
+      const close = input.indexOf("\"", index + 1);
+      if (close < 0) return null;
+      value = input.slice(index + 1, close);
+      if (value.endsWith("\\")) return null;
+      index = close + 1;
+    } else {
+      const start = index;
+      while (index < input.length && !separator(input[index])) {
+        if (input[index] === "\"") return null;
+        index += 1;
+      }
+      value = input.slice(start, index);
+    }
+    if (index < input.length && !separator(input[index])) return null;
+    if (unsafe.test(value)) return null;
+    args.push(value);
+  }
+  return args;
+}
+
+/**
+ * A Windows command line run by a venv's BASE interpreter, which is ours only
+ * as a launch of that venv's own console launcher (`windows-port.js`
+ * `windowsVenvBaseInterpreterLaunches`). The process identity reads
+ * `"<ExecutablePath>" <CommandLine>`, and the shape is exact, nothing between:
+ * the executable is the interpreter the venv's `pyvenv.cfg` names; argv0 names
+ * that interpreter or the venv's own `Scripts\python.exe` redirector; the
+ * script is exactly the venv's `Scripts\kirocrew.exe`; then a server
+ * subcommand. argv0 is required because the process creator picks it freely:
+ * a launcher spelled as argv0 would leave Python running whatever the next
+ * argument names. An interpreter option, another script, another venv's
+ * launcher, a non-server subcommand or an ambiguous argument boundary stays
+ * foreign: the shared interpreter alone never names a Kiro Crew gateway.
+ *
+ * This is command-line attribution, like every other Windows rule here: a
+ * process of this account that starts the interpreter with this exact command
+ * line and its own environment is not told apart.
+ */
+function venvBaseInterpreterShape(commandLine, observed, launches, canonical) {
+  const spellings = (paths) => {
+    const set = new Set();
+    for (const candidate of paths || []) {
+      const normalized = normalizedWindowsAbsolutePath(candidate);
+      if (!normalized) continue;
+      set.add(normalized);
+      const resolved = canonical(normalized);
+      if (resolved) set.add(resolved);
+    }
+    return set;
+  };
+  const names = (token, set) => {
+    const normalized = normalizedWindowsAbsolutePath(token);
+    if (!normalized) return false;
+    if (set.has(normalized)) return true;
+    const resolved = canonical(normalized);
+    return Boolean(resolved) && set.has(resolved);
+  };
+  const args = strictWindowsArguments(commandLine, 4);
+  if (!args) return null;
+  const [, argv0, script, subcommand] = args;
+  for (const launch of launches) {
+    const interpreters = spellings(launch.interpreters);
+    if (!observed.some((candidate) => candidate && interpreters.has(candidate))) continue;
+    if (!names(argv0, interpreters) && !names(argv0, spellings(launch.venvInterpreters))) continue;
+    if (!names(script, spellings(launch.launchers))) continue;
+    if (KIROCREW_SERVER_SUBCOMMANDS.has(subcommand)) return { serverSubcommand: true };
+  }
+  return null;
+}
+
+/**
  * Classify a command line: `null` when it is not a Kiro Crew command, else
  * `{ serverSubcommand }` -- whether argparse's first positional selects a
  * server subcommand. The `-m <module>` shape only ever matches WITH that
  * subcommand, so it is always `true` there.
  */
+
 function kirocrewCommandShape(
   commandLine,
-  { trustedExecutablePaths = [], canonicalizePath = () => "" } = {}
+  { trustedExecutablePaths = [], trustedVenvLaunches = [], canonicalizePath = () => "" } = {}
 ) {
   const tokens = commandLineTokens(commandLine);
   if (!tokens.length) return null;
@@ -172,7 +274,9 @@ function kirocrewCommandShape(
       if (resolved) trusted.add(resolved);
     }
     const observed = [windowsExecutablePath, canonical(windowsExecutablePath)];
-    if (!observed.some((candidate) => candidate && trusted.has(candidate))) return null;
+    if (!observed.some((candidate) => candidate && trusted.has(candidate))) {
+      return venvBaseInterpreterShape(commandLine, observed, trustedVenvLaunches, canonical);
+    }
   }
 
   const selector = windowsExecutablePath
@@ -217,15 +321,17 @@ function kirocrewCommandShape(
   return { serverSubcommand: KIROCREW_SERVER_SUBCOMMANDS.has(tokens[index + 1]) };
 }
 
-// A gateway whose parent is init (PID 1) is owned by the OS service manager —
-// a launchd LaunchAgent on macOS, a systemd unit on Linux — not by this app.
-// It must never be evicted: launchd's KeepAlive (and systemd's Restart=)
-// respawns it within milliseconds, so a "successful" force-stop frees the port
-// only long enough for our retry's bind to race the respawn and fail with a
-// confusing "address already in use". Reuse is always the correct move there.
+// A gateway whose parent is init (PID 1) may be owned by the OS service manager:
+// a launchd LaunchAgent on macOS, a systemd unit on Linux. Such a gateway must
+// never be evicted: launchd's KeepAlive (and systemd's Restart=) respawns it
+// within milliseconds, so a "successful" force-stop frees the port only long
+// enough for our retry's bind to race the respawn and fail with a confusing
+// "address already in use". Reuse is always the correct move there.
 //
-// A process whose parent shell has exited is also reparented to PID 1. Treating
-// that as non-evictable is equally right: it is not our child either.
+// A gateway whose app or shell has exited is reparented to PID 1 too, and
+// nothing restarts it. On macOS the caller passes `isLaunchdJob`, launchd's own
+// job list, which tells that orphan apart from a service; without a readable
+// answer a PID-1 holder is still read as a service.
 const INIT_PPID = 1;
 
 /**
@@ -563,6 +669,47 @@ async function stopGatewayGracefully(
   }
 }
 
+// A check that throws cannot vouch for the port, so it counts as "not free".
+async function bindCheckPasses(port, confirmFree, log) {
+  try {
+    return (await confirmFree(port)) === true;
+  } catch (e) {
+    log(`force-stop: bind check failed on :${port} (${e && e.message})`);
+    return false;
+  }
+}
+
+// A refused bind with no listed owner is also what a socket closing on its own
+// looks like (on Windows a listener that served connections can refuse a new
+// bind for a while after it exits), so the check is repeated until it passes or
+// `waitMs` runs out. `onWait` runs once, when the first refusal starts the wait.
+// `isAborted` ends the wait early, with no further bind and no `onWait`, for a
+// caller that no longer owns the port; it reads as "not free".
+const CONFIRM_FREE_POLL_MS = 1000;
+
+async function confirmedFree(port, { confirmFree, waitMs, sleep, onWait, isAborted, log }) {
+  let waited = 0;
+  for (;;) {
+    if (isAborted && isAborted()) {
+      log(`force-stop: bind wait on :${port} abandoned after ${waited}ms`);
+      return false;
+    }
+    if (await bindCheckPasses(port, confirmFree, log)) {
+      if (waited) log(`force-stop: :${port} became bindable after ${waited}ms`);
+      return true;
+    }
+    if (waited >= waitMs) return false;
+    if (!waited) {
+      log(`force-stop: no LISTEN owner on :${port} and a bind is refused; waiting up to ${waitMs}ms for it to free`);
+      if (onWait) {
+        try { onWait(); } catch (e) { log(`force-stop: wait callback failed (${e && e.message})`); }
+      }
+    }
+    await sleep(CONFIRM_FREE_POLL_MS);
+    waited += CONFIRM_FREE_POLL_MS;
+  }
+}
+
 /**
  * Force-stop whatever KiroCrew process is LISTENing on `port`, then VERIFY the
  * port actually freed before reporting success.
@@ -584,6 +731,14 @@ async function stopGatewayGracefully(
  * With `failClosedOnProbeError`, an unavailable owner probe returns
  * `probeFailed:true, freed:false` instead of throwing or claiming the port is
  * free. Windows uses this because netstat failures must block a blind respawn.
+ * An empty owner list is not proof the port is free: netstat can omit or drop a
+ * held port's row. With `confirmFree`, every empty list that would end in
+ * `freed:true` (the first probe, or the re-probe after a kill) is checked with
+ * a real bind first. A refused (or failed) check is retried every second
+ * for up to `confirmFreeWaitMs`, calling `onConfirmFreeWait`
+ * once when the wait starts, and `isAborted()` can end it early; only a bind
+ * still refused at the end (or an aborted wait) returns
+ * `ownerUnknown:true, freed:false`.
  *
  * All side effects are injected so this is unit-testable without Electron or a
  * real OS process:
@@ -591,8 +746,10 @@ async function stopGatewayGracefully(
  *   - getCommand(pid)     -> Promise<string>     (ps -o command=)
  *   - kill(pid, signal)                          (process.kill; may throw)
  *   - sleep(ms)           -> Promise<void>
+ *   - confirmFree(port)   -> Promise<boolean>   (optional; true = a bind succeeds)
+ *   - getPpid, isLaunchdJob                     (optional; see isServiceManaged)
  *
- * @returns {Promise<{killed:number, freed:boolean, survivors:number[], foreignHolder:boolean, probeFailed?:boolean}>}
+ * @returns {Promise<{killed:number, freed:boolean, survivors:number[], foreignHolder:boolean, probeFailed?:boolean, ownerUnknown?:boolean}>}
  */
 async function forceStopPort(
   port,
@@ -602,13 +759,21 @@ async function forceStopPort(
     kill,
     sleep,
     getPpid = null,
+    isLaunchdJob = null,
     isKirocrew = isKirocrewCommand,
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
     failClosedOnProbeError = false,
+    confirmFree = null,
+    confirmFreeWaitMs = 0,
+    onConfirmFreeWait = null,
+    isAborted = null,
     log = () => {},
   }
 ) {
+  const bindWait = {
+    confirmFree, waitMs: confirmFreeWaitMs, sleep, onWait: onConfirmFreeWait, isAborted, log,
+  };
   let owners;
   try {
     owners = await getListenPids(port);
@@ -621,6 +786,13 @@ async function forceStopPort(
     };
   }
   if (!owners.length) {
+    if (confirmFree && !(await confirmedFree(port, bindWait))) {
+      log(`force-stop: no LISTEN owner found on :${port} but a bind is refused`);
+      return {
+        killed: 0, freed: false, survivors: [], foreignHolder: false,
+        serviceHolder: false, ownerUnknown: true,
+      };
+    }
     log(`force-stop: no LISTEN owner found on :${port}`);
     return { killed: 0, freed: true, survivors: [], foreignHolder: false, serviceHolder: false };
   }
@@ -636,7 +808,7 @@ async function forceStopPort(
       // A service-managed gateway is respawned by launchd/systemd the moment we
       // kill it, so evicting it cannot free the port — it only makes the retry
       // race the respawn. Leave it alone and tell the caller why.
-      if (await isServiceManaged(pid, getPpid)) {
+      if (await isServiceManaged(pid, getPpid, isLaunchdJob)) {
         serviceHolder = true;
         log(`force-stop: SKIP pid=${pid} — service-managed KiroCrew gateway (${cmd.slice(0, 80)})`);
         continue;
@@ -691,6 +863,15 @@ async function forceStopPort(
         serviceHolder, probeFailed: true,
       };
     }
+  }
+
+  // An empty re-probe is the same unproven "no owner" as an empty first probe.
+  if (!remaining.size && confirmFree && !(await confirmedFree(port, bindWait))) {
+    log(`force-stop: no LISTEN owner found on :${port} but a bind is refused`);
+    return {
+      killed, freed: false, survivors: [], foreignHolder: false,
+      serviceHolder, ownerUnknown: true,
+    };
   }
 
   // `freed` means the port is genuinely free, NOT just "our targets died". A
@@ -768,6 +949,7 @@ async function probePortBinding(port, { getListenPids, log = () => {} }) {
  *   "kirocrew" — a local LISTEN owner matching isKirocrewCommand. Only this
  *                value may authorise a takeover.
  *   "foreign"  — a local LISTEN owner exists but is not ours (e.g. `ssh`).
+ *                A holder whose command could not be read is not ours either.
  *   "none"     — nothing is listening locally, yet something answered. A race,
  *                or a socket we cannot see; treat as not ours.
  *   "unknown"  — the probe itself could not run (no lsof / EACCES). Never
@@ -780,11 +962,19 @@ async function probePortBinding(port, { getListenPids, log = () => {} }) {
  * @param {object} deps
  * @param {(port:number)=>Promise<number[]>} deps.getListenPids  lsof -t
  * @param {(pid:number)=>Promise<string>}    deps.getCommand     ps -o command=
- * @returns {Promise<"kirocrew"|"foreign"|"none"|"unknown">}
+ * @param {(pid:number)=>Promise<string>}    [deps.getPpid]      ps -o ppid=; see isServiceManaged
+ * @param {(pid:number)=>Promise<boolean|null>} [deps.isLaunchdJob] macOS only; see isServiceManaged
+ * @param {Array<{pid:number, command:string|null}>} [deps.holders]  on a
+ *        "foreign" verdict, receives every holder found, so a caller can name
+ *        them to the user; `command` is null when it could not be read.
+ * @returns {Promise<"kirocrew"|"service"|"foreign"|"none"|"unknown">}
  */
 async function classifyPortOwner(
   port,
-  { getListenPids, getCommand, getPpid = null, isKirocrew = isKirocrewCommand, log = () => {} }
+  {
+    getListenPids, getCommand, getPpid = null, isLaunchdJob = null,
+    isKirocrew = isKirocrewCommand, log = () => {}, holders = null,
+  }
 ) {
   let pids;
   try {
@@ -797,11 +987,21 @@ async function classifyPortOwner(
     log(`port-owner: no local LISTEN owner on :${port}`);
     return "none";
   }
+  const found = [];
   for (const pid of pids) {
     const cmd = (await getCommand(pid)).trim();
+    if (!cmd) {
+      // The command readers answer "" when the read failed or ran out of
+      // time, and when the holder exited between the two probes. None of
+      // those says what the holder is, so it is reported as unread rather
+      // than as a program positively identified as someone else's.
+      log(`port-owner: :${port} held by pid=${pid}, whose command could not be read; not identified as Kiro Crew`);
+      found.push({ pid, command: null });
+      continue;
+    }
     const ours = isKirocrew(cmd);
     if (ours) {
-      if (await isServiceManaged(pid, getPpid)) {
+      if (await isServiceManaged(pid, getPpid, isLaunchdJob)) {
         log(`port-owner: :${port} held by SERVICE-MANAGED KiroCrew pid=${pid} (${cmd.slice(0, 80)}) — reuse, never evict`);
         return "service";
       }
@@ -809,24 +1009,37 @@ async function classifyPortOwner(
       return "kirocrew";
     }
     log(`port-owner: :${port} held by NON-KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
+    found.push({ pid, command: cmd });
   }
+  if (holders) holders.push(...found);
   return "foreign";
 }
 
 /**
  * Is `pid` owned by the OS service manager rather than by us? See INIT_PPID.
  *
+ * A PID-1 holder is a service unless `isLaunchdJob(pid)` answers exactly
+ * false: launchd's job list does not hold it, so it is an orphan nothing
+ * restarts. With no `isLaunchdJob` (off macOS), a null answer (the job list
+ * could not be read) or a throw, the holder stays a service.
+ *
  * Fails CLOSED (returns true, i.e. "do not touch") when the parent cannot be
  * determined: mistaking a service for a wedge kills a gateway the OS instantly
  * respawns, while mistaking a wedge for a service only costs an eviction we can
  * still explain to the user.
  */
-async function isServiceManaged(pid, getPpid) {
+async function isServiceManaged(pid, getPpid, isLaunchdJob = null) {
   if (!getPpid) return false; // caller opted out of the probe (e.g. Windows)
   try {
     const ppid = parseInt(String(await getPpid(pid)).trim(), 10);
     if (!Number.isInteger(ppid)) return true;
-    return ppid === INIT_PPID;
+    if (ppid !== INIT_PPID) return false;
+  } catch {
+    return true;
+  }
+  if (!isLaunchdJob) return true;
+  try {
+    return (await isLaunchdJob(pid)) !== false;
   } catch {
     return true;
   }

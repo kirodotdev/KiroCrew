@@ -62,6 +62,36 @@ class TestQueueReadIsSizeBounded:
         fp.write_text('{"id": "x", "pad": "' + "a" * (server.MAX_BODY_BYTES + 64) + '"}')
         assert server._read_request(fp) is None
 
+    def test_the_size_is_checked_before_the_file_is_read(self, isolated_queue, monkeypatch):
+        """The stat must come first: reading an oversized file IS the exhaustion.
+
+        Behavioural, at the owner: an over-ceiling record must be refused without
+        ``read_text`` ever being called on it, and a normal one must still be read,
+        so the recorder is shown to see the reader's call at all.
+        """
+        from kiro_crew.apps.builtins.design_tweak.backend import request_state
+
+        reads: list[str] = []
+        real_read_text = Path.read_text
+
+        def recording_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            reads.append(os.fspath(self))
+            return real_read_text(self, *args, **kwargs)
+
+        big = server._request_file(server.QUEUE_DIR, "1700000000000-big001")
+        big.write_text('{"id": "x", "pad": "' + "a" * (server.MAX_RECORD_BYTES + 64) + '"}')
+        ok_rid = "1700000000000-ok0001"
+        ok = server._request_file(server.QUEUE_DIR, ok_rid)
+        server._write_request(ok, {"id": ok_rid, "comments": []})
+
+        monkeypatch.setattr(Path, "read_text", recording_read_text)
+        assert request_state.read_request(server.runtime, big) is None
+        assert reads == [], "the oversized record was read before its size was checked"
+
+        got = request_state.read_request(server.runtime, ok)
+        assert got is not None and got["id"] == ok_rid
+        assert len(reads) == 1, "the recorder did not see the reader's own read"
+
     def test_a_normal_record_still_reads(self, isolated_queue):
         rid = "1700000000000-ok0000"
         fp = server._request_file(server.QUEUE_DIR, rid)
@@ -261,6 +291,106 @@ class TestPreviewSuppliedSourcePathsAreContained:
             {"projectId": "p1", "previewUrl": "/apps/design-tweak/api/proxy/p1//etc/passwd"}
         )
         assert source_file == ""
+
+    def test_url_escapes_in_preview_url_are_decoded_in_source_file(self, tmp_path, monkeypatch):
+        """The static handler serves `my%20page.html` from `my page.html`.
+
+        The source file handed to the agent must name the file that was served,
+        not one spelled with literal URL escapes that does not exist.
+        """
+        proj = tmp_path / "site"
+        proj.mkdir()
+        (proj / "my page.html").write_text("<h1>x</h1>")
+        cfg = {
+            "projects": [{"id": "p1", "path": str(proj), "name": "site"}],
+            "activeId": "p1",
+            "counter": 0,
+        }
+        monkeypatch.setattr(server, "_CFG", cfg)
+        monkeypatch.setattr(server, "_STATIC_SRV", {"p1": {"url": "http://127.0.0.1:43002/"}})
+
+        _pid, _root, source_file = server._resolve_project(
+            {"projectId": "p1", "previewUrl": "http://127.0.0.1:43002/p1/my%20page.html?x=1#top"}
+        )
+        assert source_file == str(Path(os.path.realpath(proj)) / "my page.html")
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            "p1/%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+            "p1/..%2f..%2f..%2fetc%2fpasswd",
+            "p1/%2e%2e%2f%2e%2e%2foutside.txt",
+        ],
+    )
+    def test_encoded_traversal_in_preview_url_yields_no_source_file(
+        self, tmp_path, monkeypatch, encoded
+    ):
+        """Decoding the path must not let an escaped `..` past containment."""
+        proj = tmp_path / "site"
+        proj.mkdir()
+        (tmp_path / "outside.txt").write_text("secret")
+        cfg = {
+            "projects": [{"id": "p1", "path": str(proj), "name": "site"}],
+            "activeId": "p1",
+            "counter": 0,
+        }
+        monkeypatch.setattr(server, "_CFG", cfg)
+        monkeypatch.setattr(server, "_ROOT", str(proj))
+
+        pid, root, source_file = server._resolve_project(
+            {"projectId": "p1", "previewUrl": f"/apps/design-tweak/api/proxy/{encoded}"}
+        )
+        assert pid == "p1"
+        assert root == str(proj)
+        assert source_file == ""
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [("p1/", "index.html"), ("p1/docs/", "docs/index.html"), ("p1/docs", "docs/index.html")],
+    )
+    def test_folder_url_names_the_entry_html_the_static_server_serves(
+        self, tmp_path, monkeypatch, path, expected
+    ):
+        """A folder URL is served as its entry HTML, so that file is the source."""
+        proj = tmp_path / "site"
+        (proj / "docs").mkdir(parents=True)
+        (proj / "index.html").write_text("<h1>Home</h1>")
+        (proj / "docs" / "index.html").write_text("<h1>Docs</h1>")
+        cfg = {
+            "projects": [{"id": "p1", "path": str(proj), "name": "site"}],
+            "activeId": "p1",
+            "counter": 0,
+        }
+        monkeypatch.setattr(server, "_CFG", cfg)
+        monkeypatch.setattr(server, "_STATIC_SRV", {"p1": {"url": "http://127.0.0.1:43002/"}})
+
+        _pid, _root, source_file = server._resolve_project(
+            {"projectId": "p1", "previewUrl": f"http://127.0.0.1:43002/{path}"}
+        )
+        assert source_file == str(Path(os.path.realpath(proj)) / expected)
+
+    def test_folder_url_without_entry_and_dev_server_url_yield_no_source_file(
+        self, tmp_path, monkeypatch
+    ):
+        """No entry HTML means no served file, and a dev-server route is never a file."""
+        proj = tmp_path / "site"
+        (proj / "empty").mkdir(parents=True)
+        (proj / "index.html").write_text("<h1>Home</h1>")
+        cfg = {
+            "projects": [{"id": "p1", "path": str(proj), "name": "site"}],
+            "activeId": "p1",
+            "counter": 0,
+        }
+        monkeypatch.setattr(server, "_CFG", cfg)
+        monkeypatch.setattr(server, "_STATIC_SRV", {"p1": {"url": "http://127.0.0.1:43002/"}})
+
+        _pid, _root, empty_dir = server._resolve_project(
+            {"projectId": "p1", "previewUrl": "http://127.0.0.1:43002/p1/empty/"}
+        )
+        _pid, _root, dev_route = server._resolve_project(
+            {"projectId": "p1", "previewUrl": "http://127.0.0.1:5173/"}
+        )
+        assert (empty_dir, dev_route) == ("", "")
 
     def test_element_source_escape_is_cleared_and_downgraded(self, tmp_path):
         """A hostile `data-kiro-source` cannot name a file outside the root."""

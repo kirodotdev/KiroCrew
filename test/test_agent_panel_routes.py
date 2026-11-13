@@ -1,10 +1,7 @@
 """Tests for the crew-webview HTTP routes.
 
-The property worth guarding hardest: which crew a publish writes to is derived
-from the CALLING SESSION's own crew binding, never from anything the caller
-sends. A body-supplied crew name would let one crew publish a webview that
-presents as another's, and the whole value of a per-crew dashboard is that the
-operator can trust whose state they are reading.
+The crew a publish writes to comes from the calling session's own crew binding, never
+from the request, so one crew cannot publish a webview that presents as another's.
 """
 
 from __future__ import annotations
@@ -53,7 +50,7 @@ def _install_template(template_id: str) -> None:
     (over / f"{template_id}.html").write_text(agent_panel.DATA_MARKER, encoding="utf-8")
 
 
-# ------------------------------------------------------------------ publishing
+# publishing
 
 
 async def test_a_publish_lands_on_the_callers_own_crew(vetted):
@@ -100,14 +97,9 @@ async def test_the_fold_a_page_reads_carries_the_scrubbed_publish_not_the_raw_bo
 async def test_a_publish_keys_on_the_crews_persisted_member_id(vetted):
     """A publish must address the crew the way every READ of it does.
 
-    ``members.member_slug`` returns a crew's persisted ``member_id`` when it has
-    one, and the drawer, the roster and the read route all resolve through it.
-    Memory provisioning suffixes that id on purpose when a deleted crew's stores
-    still hold the name-derived slug, so a crew whose ``member_id`` differs from
-    its name is a state the product's own writer produces rather than a contrived
-    one. Deriving the write key from the NAME in that state stores the record
-    under a slug nothing reads: the publish reports success and the dashboard
-    never appears.
+    Reads resolve through ``members.member_slug``, which can differ from the name when
+    memory provisioning suffixed the id. A name-derived write key stores the record
+    where nothing reads it.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import config_dir
@@ -149,13 +141,8 @@ async def test_a_publish_keys_on_the_crews_persisted_member_id(vetted):
 async def test_a_live_owner_with_a_suffixed_member_id_keeps_its_record(vetted):
     """Liveness must resolve identity the way the publish key does.
 
-    Two crews, one slug. The OWNER's persisted ``member_id`` is the slug the
-    CALLER's name derives -- the state memory provisioning writes when a deleted
-    crew's stores still hold the name-derived slug. Enumerating liveness by NAME
-    skips that owner, because its own name derives something else, so the owner
-    reads as gone; and "gone" is exactly what the store accepts as permission to
-    take a record over. The owner is live here, so the collision must be refused
-    and the owner's bytes must survive untouched.
+    The owner's ``member_id`` equals the slug the caller's name derives. Liveness by
+    name would read the owner as gone, which the store takes as permission to take over.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import config_dir
@@ -199,12 +186,8 @@ async def test_a_live_owner_with_a_suffixed_member_id_keeps_its_record(vetted):
 async def test_a_cookie_only_caller_cannot_publish_as_a_chosen_session(vetted):
     """THE authorization test. The crew is resolved from a caller-CHOSEN header.
 
-    ``X-Session-Key`` is an identity CLAIM, not a lookup key: a caller holding
-    only a dashboard cookie could name any live session, have it resolve to THAT
-    crew, and overwrite the crew's panel. ``vetted`` is applied deliberately --
-    session recognition passing is exactly the condition under which the old code
-    went on to write, so this proves the internal-secret gate refuses FIRST rather
-    than relying on recognition to fail.
+    ``X-Session-Key`` is a claim: a cookie holder could name any live session. ``vetted``
+    makes recognition pass, so this proves the internal-secret gate refuses first.
     """
     async with _client(internal=False) as c:
         resp = await c.post(
@@ -284,12 +267,8 @@ async def test_the_crew_is_not_taken_from_the_body(vetted):
 async def test_a_session_with_no_dashboard_slot_is_told_that_and_nothing_else(vetted):
     """A conductor publishing every cycle into a void looks like a broken feature.
 
-    Three causes, three messages. A caller with no dashboard slot is told THAT --
-    not that its allocation could not be resolved, which for such a caller is
-    false: a subagent inheriting its parent's member selection resolves perfectly
-    well and is refused because publishing is confined to the crew's own thread.
-    Collapsing the two would reintroduce, one case over, the conflation this
-    change exists to remove.
+    Three causes, three messages. A subagent resolves its allocation fine and is refused
+    for having no dashboard slot, so it must be told that.
     """
     async with _client(agent=None) as c:
         resp = await c.post(
@@ -408,7 +387,7 @@ async def test_templates_reports_a_name_matched_template_as_the_default(vetted):
         assert {agent_panel.DEFAULT_TEMPLATE_ID, BESPOKE} <= set(body["templates"])
 
 
-# --------------------------------------------------------------------- reading
+# reading
 
 
 async def test_the_drawer_read_returns_the_composed_document(vetted):
@@ -455,11 +434,8 @@ async def test_the_drawer_read_serves_the_publish_history_the_fold_records(vette
 async def test_the_widened_serializer_still_withholds_the_ownership_digest(vetted):
     """The allow-list serves only classified keys, so it never leaks ``crew_key``.
 
-    ``_panel_owner_record`` carries the digest, and an allow-list classifies it
-    WITHHELD -- a deny-list serving "everything but a few" is what a leak would need.
-    This is the sibling of the route's own crew_key-never-served pin, asserted on a
-    record that also carries history so the served set stays free of the digest even
-    for a rich record.
+    ``_panel_owner_record`` carries the digest, classified WITHHELD. The record also
+    carries history, so the check holds for a rich record.
     """
     async with _client() as c:
         for i in range(2):
@@ -476,13 +452,10 @@ async def test_the_widened_serializer_still_withholds_the_ownership_digest(vette
 
 
 def test_the_drawer_serializer_classifies_every_record_key():
-    """The red-on-unclassified contract: every key ``_panel_owner_record`` produces
+    """Every key ``_panel_owner_record`` produces is classified served or withheld.
 
-    is classified served-or-withheld, and a key in NEITHER set reddens rather than
-    being silently served or silently dropped. Keying the test on the record's OWN
-    keys is what keeps the fold's shape and the drawer's shape from diverging
-    silently: add a field to ``_panel_owner_record`` without classifying it in
-    ``agent_panel_read.py`` and this fails.
+    Keyed on the record's own keys, so a new field not classified in
+    ``agent_panel_read.py`` fails here.
     """
     from kiro_crew.crew_log import projection
 
@@ -503,11 +476,8 @@ def test_the_drawer_serializer_classifies_every_record_key():
 async def test_the_drawer_read_carries_the_raw_data_in_published_order(vetted):
     """The docked summary is rendered natively from this, not from the document.
 
-    A dashboard needs a full page to be legible, so the ~250px drawer shows a
-    few fields instead -- and it must show the ones the CREW put first, which is
-    only possible if the order survives the wire. Asserted on a key set whose
-    alphabetical order differs from the published order, so a serializer that
-    sorted keys reddens here.
+    The drawer shows the fields the crew put first, so order must survive the wire. The
+    keys are not in alphabetical order, so a sorting serializer fails.
     """
     published = {"cycle": 47, "needs_you": "one ruling is waiting on you", "aardvark": 1}
     async with _client() as c:
@@ -609,13 +579,8 @@ async def test_the_publish_routes_are_under_the_strict_internal_prefix():
 async def test_the_response_comes_from_a_single_record_read(vetted, monkeypatch):
     """Both halves from ONE snapshot, so a mid-request publish cannot split them.
 
-    ``render`` + ``read`` as two calls read the record twice; a publish landing
-    between them returned the OLD document beside the NEW summary, and the docked
-    chip would then contradict the expanded view. Counting reads is the property --
-    an interleaving test would depend on winning a race.
-
-    Counted at ``_panel_record``, which is where the one snapshot is taken now that
-    the fold is the record and the file is only its fallback.
+    Two reads could pair an old document with a new summary. Reads are counted at
+    ``_panel_record`` rather than raced, since an interleaving test depends on timing.
     """
     async with _client() as c:
         await c.post(
@@ -675,15 +640,10 @@ async def test_an_edited_template_still_takes_effect_without_republishing(vetted
 
 
 async def test_a_linked_template_dir_is_a_coded_refusal_not_a_500(vetted):
-    """The refusal we added has a code, so the routes must hand the code back.
+    """A refused linked override directory reaches the caller as its code, not a 500.
 
-    ``available_templates`` and ``template_for_crew`` both read the override
-    directory, which REFUSES a linked path rather than following it. Neither
-    route caught that, so an operator who had symlinked the directory got an
-    opaque 500 from the panel tools -- indistinguishable from a bug in the
-    gateway, and silent about the one thing they could act on. Note the actor
-    differs from every other ``PanelError`` on these routes: a bad template id
-    is the crew's to fix on its next cycle, this one is the operator's.
+    ``available_templates`` and ``template_for_crew`` refuse a symlinked directory.
+    Unlike other ``PanelError`` cases, the operator must fix this, not the crew.
     """
     # Built from the data home rather than from ``override_templates_dir()``,
     # because that accessor is itself what refuses -- calling it here would raise
@@ -718,12 +678,9 @@ async def test_a_linked_template_dir_is_a_coded_refusal_not_a_500(vetted):
 def test_the_stub_matches_where_the_real_selection_lives():
     """The double must not be the reason a call site passes.
 
-    ``get_agent_selection`` lives on the SessionManager, reached as
-    ``DashboardState.sessions``. Written against ``state`` directly it raised
-    ``AttributeError`` in production, was swallowed as "not bound to a crew", and
-    would have refused EVERY publish -- while this file stayed green, because the
-    stub had grown the method in the wrong place. So the stub is checked against
-    the real class rather than trusted.
+    ``get_agent_selection`` lives on ``DashboardState.sessions``. A stub with the method
+    in the wrong place would pass while production raised, so it is checked against
+    the real class.
     """
     from kiro_crew.session import SessionManager
 
@@ -740,11 +697,8 @@ def test_the_stub_matches_where_the_real_selection_lives():
 async def test_a_same_named_provider_template_cannot_publish_as_the_crew(vetted):
     """A NAME is not a crew binding, which is the whole of this refusal.
 
-    ``get_slot().agent`` carries the same string whether the allocation selected
-    the crew or the provider TEMPLATE of that name, so a session on the template
-    would otherwise publish into -- and overwrite -- that crew's record, past the
-    ownership check the store applies to everyone else. The allocation's own
-    namespace is the only thing that tells the two apart.
+    ``get_slot().agent`` is the same for the crew and the provider template of that
+    name; only the allocation's namespace tells them apart.
     """
     async with _client(namespace="member") as owner:
         assert (

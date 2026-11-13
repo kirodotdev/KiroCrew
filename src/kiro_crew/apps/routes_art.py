@@ -39,6 +39,7 @@ from kiro_crew.apps.registry import (
     _git_fetch_branch,
     _git_target_is_unsupported,
     _loggable_git_transport_output,
+    _mkdtemp_settled,
     _owner_designated_repo_target,
     _repo_key_owner_count,
     _sel_credential_grant,
@@ -49,6 +50,10 @@ from kiro_crew.apps.registry import (
     minimal_env,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+)
 from kiro_crew.apps.routes_static import _CONTENT_TYPES
 from kiro_crew.dashboard.conditional_get import conditional_response
 from kiro_crew.pinned_fs import (
@@ -126,6 +131,9 @@ def _read_declared_art(name: str, file_path: str) -> tuple[bytes, str] | None:
     stat and read — because every part is a blocking syscall and the gateway runs on
     one event loop (``no-blocking-call-on-event-loop``).
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     if file_path not in _declared_art_paths(name):
         return None
     root = apps_dir() / name
@@ -228,7 +236,7 @@ def _read_declared_art(name: str, file_path: str) -> tuple[bytes, str] | None:
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > _ART_MAX_BYTES:
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(_ART_MAX_BYTES + 1)
+            data = bounded_read(fh, _ART_MAX_BYTES + 1)
     except OSError:
         return None
     finally:
@@ -460,6 +468,9 @@ async def _fetch_git_blob(
         logger.warning("blob clone credential target did not match repository identity")
         return False
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # SSRF gate: a configured external registry's (untrusted) index can list an
     # app ``repo`` pointing at an internal address (e.g. ``https://127.0.0.1/x``)
@@ -480,11 +491,9 @@ async def _fetch_git_blob(
         )
         return False
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-blob-")
+        tmp_root = await _mkdtemp_settled("kirocrew-blob-")
         # Credential posture for the browse-time icon/blob clone.  By default
         # this is an index-originated automatic clone, so it forces the strict
         # sandbox (~/.ssh hidden) and a credential-free env: a trusted-host repo
@@ -518,7 +527,7 @@ async def _fetch_git_blob(
             clone_mode = "strict"
             clone_env = anonymous_git_env()
         clone_root = Path(tmp_root)
-        if credentialed_transport:
+        if isolate_transport:
             # A combined credentialed clone performs fetch and checkout in one
             # process. Repository-controlled filters (and checkout-time hooks)
             # would therefore inherit the one-shot URL rewrite containing the
@@ -568,7 +577,7 @@ async def _fetch_git_blob(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=clone_env,
+                env=_git_network_env(clone_env, git_url),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
@@ -859,10 +868,16 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         outcome="served",
         resources=f"repo={_strip_git_target_userinfo(repo)} path={file_path}",
     )
+    # The same sandbox CSP as the app-art route above, for the same reason: these
+    # bytes come from a registry author's repo, and a top-level open of a scripted
+    # `.svg` would otherwise run as a document on the dashboard's own origin. It
+    # does not apply when the bytes load as an `<img>`, so store rendering is
+    # unchanged.
     return web.FileResponse(  # type: ignore[return-value]
         cache_path,
         headers={
             "Content-Type": content_type,
             "Cache-Control": "public, max-age=86400",  # 24h browser cache
+            "Content-Security-Policy": "default-src 'none'; sandbox",
         },
     )

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
-from kiro_crew import context_omissions
+from kiro_crew import context_omissions, injection_receipts
+from kiro_crew._sqlite_compat import is_cjk_char, script_runs
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 
 
@@ -221,19 +223,123 @@ def tighter_lesson_budget(*budgets: int) -> int:
 _RELEVANCE_MIN_TOKEN = 3
 
 
-def _relevance_tokens(text: str) -> frozenset[str]:
-    """Lowercase word tokens of length >= 3, for a cheap lexical overlap score."""
-    token, tokens = [], set()
-    for char in text.lower():
-        if char.isalnum():
-            token.append(char)
+def split_cjk_word(word: str) -> tuple[list[str], set[str]]:
+    """Split *word* into its non-CJK pieces and the pairs of its CJK runs.
+
+    Chinese and Japanese are written without spaces, so a word-character split
+    keeps a whole sentence -- or a mixed run such as ``检查redis缓存`` -- as ONE
+    token that no other text shares. Each CJK run (the character set
+    ``script_runs`` shares with session search; Hangul is spaced and excluded)
+    instead yields its adjacent two-character pairs, and a one-character run
+    yields none, since a lone character is too common to be evidence. The
+    non-CJK pieces are returned for the caller's own length and stop-word rules.
+
+    A word with no CJK character comes back as itself with no pairs, so Latin
+    text tokenizes exactly as it would without this split.
+    """
+    if word.isascii() or not any(is_cjk_char(ch) for ch in word):
+        return [word], set()
+    pieces: list[str] = []
+    pairs: set[str] = set()
+    for run, cjk in script_runs(word):
+        if cjk:
+            pairs.update(run[i : i + 2] for i in range(len(run) - 1))
         else:
-            if len(token) >= _RELEVANCE_MIN_TOKEN:
-                tokens.add("".join(token))
-            token = []
-    if len(token) >= _RELEVANCE_MIN_TOKEN:
-        tokens.add("".join(token))
+            pieces.append(run)
+    return pieces, pairs
+
+
+def cjk_parts(text: str) -> set[str]:
+    """The ``split_cjk_word`` pieces and pairs of each ``\\w+`` word of *text* holding CJK.
+
+    Empty for text with no CJK character. The vector store's lesson read paths add
+    these to the request and to every lesson; its dedup (``lesson_keywords``) does not.
+    """
+    parts: set[str] = set()
+    if text.isascii():
+        return parts
+    for word in re.findall(r"\w+", text):
+        if word.isascii():  # no CJK, and no per-character scan
+            continue
+        pieces, pairs = split_cjk_word(word)
+        if pieces != [word]:  # a word with no CJK text comes back whole
+            parts.update(pieces)
+            parts |= pairs
+    return parts
+
+
+class _NonAlnumToSpace(dict[int, int]):
+    """``str.translate`` table mapping every non-alphanumeric code point to a space.
+
+    Each code point is classified once, by ``str.isalnum``, the test the tokenizer
+    always used; after that ``translate`` runs in C with no per-character Python.
+    """
+
+    def __missing__(self, cp: int) -> int:
+        self[cp] = cp if chr(cp).isalnum() else 0x20
+        return self[cp]
+
+
+_NON_ALNUM_TO_SPACE = _NonAlnumToSpace()
+
+
+def _cjk_word_tokens(word: str) -> frozenset[str]:
+    """Non-CJK pieces (length rule applied) and CJK pairs of one non-ASCII word."""
+    pieces, pairs = split_cjk_word(word)
+    return frozenset(piece for piece in pieces if len(piece) >= _RELEVANCE_MIN_TOKEN) | pairs
+
+
+# The caches hold stored rows only: a request (a pasted log, say) is tokenized by
+# the uncached ``_relevance_tokens`` and never held here. Every retained key is
+# bounded in length too, so the memory bound is entries x maximum cached length:
+# at most 65,536 x 2,048 chars of row text and 65,536 x 64 chars of word text,
+# plus their token sets. A longer row or word is tokenized afresh on each call
+# and gives the same tokens. The entry count is above the rows one scan reads, so
+# a large store does not evict every entry before the next call reads it.
+# shortcut: the cache keeps each row's text and token set alive; store the tokens
+# with the row if stores grow far past it.
+_MAX_CACHED_ROW_CHARS = 2048
+_MAX_CACHED_WORD_CHARS = 64
+_lru_cjk_word_tokens = functools.lru_cache(maxsize=65536)(_cjk_word_tokens)
+
+
+def _cached_cjk_word_tokens(word: str) -> frozenset[str]:
+    if len(word) > _MAX_CACHED_WORD_CHARS:
+        return _cjk_word_tokens(word)
+    return _lru_cjk_word_tokens(word)
+
+
+def _tokenize(text: str, cjk_word_tokens: Callable[[str], frozenset[str]]) -> frozenset[str]:
+    lowered = text.lower()
+    words = lowered.translate(_NON_ALNUM_TO_SPACE).split()
+    tokens = {word for word in words if len(word) >= _RELEVANCE_MIN_TOKEN}
+    if not lowered.isascii():  # only a non-ASCII word can hold CJK text
+        for word in [w for w in words if not w.isascii()]:
+            tokens |= cjk_word_tokens(word)
     return frozenset(tokens)
+
+
+def _relevance_tokens(text: str) -> frozenset[str]:
+    """Lowercase tokens for a cheap lexical overlap score, never cached.
+
+    The result is a superset of the plain word split: every alphanumeric word
+    of length >= 3 is kept whole, and a word holding CJK text adds its non-CJK
+    pieces (same length rule) and the pairs of its CJK runs (``split_cjk_word``).
+    A word with no CJK character contributes only itself.
+    """
+    return _tokenize(text, _cjk_word_tokens)
+
+
+@functools.lru_cache(maxsize=65536)
+def _lru_row_tokens(text: str) -> frozenset[str]:
+    return _tokenize(text, _cached_cjk_word_tokens)
+
+
+def _row_tokens(text: str) -> frozenset[str]:
+    """``_relevance_tokens`` of one stored row, cached by the row's text when short."""
+    if len(text) > _MAX_CACHED_ROW_CHARS:
+        return _tokenize(text, _cached_cjk_word_tokens)
+    return _lru_row_tokens(text)
 
 
 def order_by_request_relevance(
@@ -271,7 +377,7 @@ def order_by_request_relevance(
         return entries
     # ``sorted`` is stable, so equal-scoring rows keep the caller's newest-first
     # order and a zero-overlap store renders byte-identically to an unordered one.
-    return sorted(entries, key=lambda e: -len(wanted & _relevance_tokens(e[1])))
+    return sorted(entries, key=lambda e: -len(wanted & _row_tokens(e[1])))
 
 
 def any_request_overlap(entries: Sequence[tuple[object, str]], query_text: str) -> bool:
@@ -290,7 +396,14 @@ def any_request_overlap(entries: Sequence[tuple[object, str]], query_text: str) 
     wanted = _relevance_tokens(query_text)
     if not wanted or not entries:
         return False
-    return any(wanted & _relevance_tokens(text) for _, text in entries)
+    return any(wanted & _row_tokens(text) for _, text in entries)
+
+
+#: The injection-receipt tier each omission kind names (:mod:`kiro_crew.injection_receipts`).
+_RECEIPT_KIND = {
+    context_omissions.LESSON_RULES: injection_receipts.LESSONS,
+    context_omissions.LESSON_FINDINGS: injection_receipts.FINDINGS,
+}
 
 
 def render_withheld_tier(
@@ -312,6 +425,8 @@ def render_withheld_tier(
         return ""
     if omission_kind:
         context_omissions.record(omission_kind, "relevance", omitted=total, total=total)
+        if omission_kind in _RECEIPT_KIND:
+            injection_receipts.record(_RECEIPT_KIND[omission_kind], (), omitted=total)
     return header + "\n" + footer + "\n" + notice.format(total=total) + "\n\n"
 
 
@@ -347,9 +462,13 @@ def render_lesson_tier(
         return "", 0
     total = len(entries)
 
-    def note(omitted: int) -> None:
+    def note(kept: Sequence[tuple[object, str]], omitted: int) -> None:
         if not omission_kind:
             return
+        if omission_kind in _RECEIPT_KIND:
+            injection_receipts.record(
+                _RECEIPT_KIND[omission_kind], [row for row, _ in kept], omitted=omitted
+            )
         if omitted:
             context_omissions.record(
                 omission_kind, "budget", omitted=omitted, total=total, budget_chars=budget
@@ -372,7 +491,7 @@ def render_lesson_tier(
 
     full = render(entries, 0)
     if not budget or len(full) <= budget:
-        note(0)
+        note(entries, 0)
         return full, 0
     # Reserve room for the notice at its widest (every entry omitted), so one
     # pass over the rows decides which prefix fits.
@@ -393,5 +512,5 @@ def render_lesson_tier(
             continue
         room -= line
         kept.append(entry)
-    note(total - len(kept))
+    note(kept, total - len(kept))
     return render(kept, total - len(kept)), total - len(kept)

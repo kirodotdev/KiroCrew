@@ -64,18 +64,15 @@ const mdnbApi = mdnbApiStub({ notes: NOTES_LIST, doc: NOTE_DOC })
 
 /**
  * Open the fixture note and photograph it.
- *
- * The shared stub clears localStorage in its own init script, so the active
- * vault is written in a LATER init script to survive it.
  */
 async function shoot(browser, base, { file, edit = false }) {
   const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 2, locale: 'en-US' })
   const page = await context.newPage()
-  await stubDashboardApi(page, { theme: 'dark', extra: mdnbApi })
+  await stubDashboardApi(page, {
+    theme: 'dark', extra: mdnbApi,
+    localStorageEntries: { 'mdnb-active-vault': MDNB_VAULT_ID },
+  })
   logPageProblems(page)
-  await page.addInitScript(vaultId => {
-    localStorage.setItem('mdnb-active-vault', vaultId)
-  }, MDNB_VAULT_ID)
 
   await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
   await page.getByText(NOTE_TITLE).first().waitFor({ timeout: 15000 })

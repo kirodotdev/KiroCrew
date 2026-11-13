@@ -676,6 +676,65 @@ async def test_create_cleanup_keeps_a_quiesced_loop_until_worker_archive_succeed
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mint", [False, True], ids=["free-key", "minted-key"])
+async def test_create_cleanup_puts_a_still_running_orphan_back_only_onto_a_free_key(
+    tmp_path, monkeypatch, mint
+):
+    """A running orphan is put back, but never over a slot minted under its key after the pop."""
+    _redirect_state(monkeypatch, tmp_path)
+    orphan_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="orphan-loop",
+        active=True,
+        slot_key=orphan_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(tmp_path / "old-spec" / "STOP"),
+    )
+    task = types.SimpleNamespace(done=lambda: False)
+    orphan = types.SimpleNamespace(key=orphan_slot, _app=routes.APP_NAME, running=True, task=task)
+    minted = types.SimpleNamespace(key=orphan_slot, _app=None)
+
+    class _State:
+        _slots = {orphan_slot: orphan}
+
+        def get_slot(self, key):
+            return self._slots.get(key)
+
+    state = _State()
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == orphan_slot else None
+
+        async def deactivate_and_wait(self, loop_id, *, stopped_reason=None):
+            loop.active = False
+            return True
+
+        async def remove(self, loop_id, *, stop_reason=""):
+            raise AssertionError("the loop is kept while its worker runs")
+
+    async def _pop_then_mint(*_args, **_kwargs):
+        state._slots.pop(orphan_slot)
+        if mint:
+            state._slots[orphan_slot] = minted
+        return True
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _pop_then_mint)
+    routes._save_index({})
+
+    with pytest.raises(RuntimeError, match="still running"):
+        await routes._remove_orphaned_executions(state)
+
+    assert state._slots[orphan_slot] is (minted if mint else orphan)
+
+
+@pytest.mark.asyncio
 async def test_create_cleanup_loads_durable_loops_when_autonudge_is_disabled(tmp_path, monkeypatch):
     """Disabling timers cannot hide an old loop from Create recovery."""
     _redirect_state(monkeypatch, tmp_path)

@@ -165,6 +165,11 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
   }, [id, detail])
 
   const box = `shrink-0 overflow-hidden rounded-full border border-border bg-bg-elevated ${className}`
+  // `block`, the box the ghost face's `<img>` gets from Tailwind's preflight. An
+  // `inline-block` box sits on its parent's text baseline, so the parent's line
+  // box adds the font's descender under the face, and a ring drawn around that
+  // parent (the crewmate switcher's `ring-2`) comes out as a tall pill (#28531).
+  const boxStyle = { width: size, height: size, display: 'block' } as const
 
   // In place and still mounted — see the header for why unmounting here would
   // make every read failure permanent.
@@ -182,7 +187,7 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
         // `.skeleton` shimmers, so a slow or dead read reads as loading rather
         // than as a blank face for the length of the retry window.
         className={`${box} skeleton`}
-        style={{ width: size, height: size, display: 'inline-block' }}
+        style={boxStyle}
         data-testid="pack-avatar-pending"
       />
     )
@@ -195,7 +200,7 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
       ref={observeBox}
       aria-hidden="true"
       className={box}
-      style={{ width: size, height: size, display: 'inline-block', lineHeight: 0 }}
+      style={{ ...boxStyle, lineHeight: 0 }}
       data-testid={`pack-avatar-${art.format}`}
       data-pack-slot={slot}
       data-pack-playing={playing ? 'true' : 'false'}

@@ -60,17 +60,11 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 // cannot move it. Mock the hook with a mutable flag instead.
 let mockIsMobile = false
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }))
+// Every read the page issues (this mock and `fetch` below) stays pending. These tests are about the
+// sessions toggle, which reads the store; a read that settled would only update the page after the
+// test's last assertion, and its retries keep coming for seconds, so there is no state to wait for.
 vi.mock('../api/client', () => ({
-  api: Object.fromEntries(
-    ['sessions', 'chatSlotDetail', 'createChatSlot', 'deleteChatSlot', 'resumeChatSlot',
-      'deleteSession', 'agentDetail', 'approveChatSlot', 'chatSlotAgent', 'chatSlotModel',
-      'chatSlotWorkspace', 'models', 'planFromChat', 'renameSlot',
-      'resolveApproval', 'screenshot', 'slackChannels', 'slackLink', 'spawnList',
-      'stopChatSlot', 'uploadFiles', 'voiceSynthesize', 'workspaces', 'chatSlots',
-      'notifications', 'status', 'generateTitle'].map(k => [k, vi.fn().mockResolvedValue(
-      k === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 } : {},
-    )]),
-  ),
+  api: new Proxy({}, { get: () => vi.fn(() => new Promise(() => {})) }),
 }))
 
 Object.defineProperty(window, 'matchMedia', {
@@ -81,7 +75,7 @@ Object.defineProperty(window, 'matchMedia', {
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
 })
-globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
+globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'

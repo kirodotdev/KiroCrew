@@ -93,7 +93,6 @@ import hashlib
 import json
 import logging
 import math
-import re
 import ssl
 import time
 import urllib.error
@@ -107,7 +106,7 @@ from kiro_crew import hooks
 # The kiro-cli store is also read in this process through the shim; one SQLite
 # library keeps the other readers' locks when this connection closes.
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.identity_stores import Trust, sqlite_dbs
+from kiro_crew.identity_stores import AUTH_TOKEN_KEYS, Trust, parse_token_expiry, sqlite_dbs
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +123,18 @@ _RTS_ENDPOINT = _RTS_ENDPOINTS[_DEFAULT_RTS_REGION]
 _SVC = "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService"
 _TARGET_GET_USAGE = f"{_SVC}.GetUsageLimits"
 _TARGET_LIST_PROFILES = f"{_SVC}.ListAvailableProfiles"
+#: Pages one profile lookup may read, the same bound as the sign-in listing's.
+_LIST_PROFILES_MAX_PAGES = 20
 _CONTENT_TYPE = "application/x-amz-json-1.0"
 # A Kiro/Q user-agent is required for the IDE-origin code path; without it the
 # API rejects the request.
 _USER_AGENT = "AmazonQ-For-CLI/1.24.0 ua/2.0 os/linux lang/rust KiroCrew"
 _TIMEOUT_SECS = 15
 # Aggregate wall-clock budget across ALL candidate tokens. Each token can cost
-# up to two 15s requests (ListAvailableProfiles + GetUsageLimits), and there can
-# be several candidates, so without this the pill could spin for minutes before
-# falling back to the text scrape. Once exceeded we stop trying tokens and let
-# the caller degrade to the scrape.
+# several 15s requests (paged ListAvailableProfiles + GetUsageLimits), so without
+# this the pill could spin for minutes before falling back to the text scrape.
+# Once exceeded we stop listing pages and trying tokens and let the caller
+# degrade to the scrape.
 _TOTAL_DEADLINE_SECS = 30
 
 # ``auth_state`` values reported by :func:`fetch_usage_limits`, so the
@@ -230,7 +231,7 @@ _CLI_SQLITE_DBS = sqlite_dbs(Trust.TRUSTED)
 # absent. Untrusted either way (``from_cli_store=False``), so this widens what
 # can be READ for credit reporting, never what is believed.
 _OTHER_SQLITE_DBS = sqlite_dbs(Trust.OTHER)
-_SQLITE_TOKEN_KEYS = ("kirocli:odic:token", "codewhisperer:odic:token", "kirocli:social:token", "kirocli:external-idp:token")
+_SQLITE_TOKEN_KEYS = AUTH_TOKEN_KEYS
 
 # SEL audit label for the SQLite live-token read. Not an allowlist entry (that
 # gate is for sensitive-path reads via safe_read_file_internal); this is only
@@ -243,6 +244,8 @@ _SQLITE_AUDIT_READ_ID = "kiro_usage_api.sqlite_token"
 _MAX_CREDITS = 1_000_000.0
 _MAX_BONUS_GRANTS = 32
 _MAX_BONUS_NAME_CHARS = 100
+#: Longest ``days_left`` a nested grant reports, matching the text parser's bound.
+_MAX_BONUS_DAYS_LEFT = 3_650
 
 # Cap the RTS response body so an oversized or indefinitely-streamed response
 # cannot exhaust memory or tie up a shared subprocess worker. The usage JSON is
@@ -341,21 +344,9 @@ def _note_api_outcome(ok: bool, reason: str = "") -> None:
         )
 
 
-def _parse_iso(ts: object) -> datetime | None:
-    """Parse an ISO8601 timestamp (handles trailing Z) to an aware datetime.
-
-    kiro-cli emits nanosecond precision (9 fractional digits); Python 3.10's
-    ``fromisoformat`` accepts at most 6, so the fraction is truncated to
-    microseconds first. Without this the parse fails and an expired token would
-    be treated as non-expiring (fail-open).
-    """
-    try:
-        s = str(ts).replace("Z", "+00:00")
-        s = re.sub(r"(\.\d{6})\d+", r"\1", s)
-        dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
+#: The shared token-expiry parser (``identity_stores.parse_token_expiry``): the sign-in
+#: resolver reads the same rows, so the two readers cannot parse an expiry differently.
+_parse_iso = parse_token_expiry
 
 
 def _expiry_if_unexpired(exp: object, now: datetime) -> datetime | None:
@@ -385,7 +376,7 @@ def _unexpired(exp: object, now: datetime) -> bool:
     return _expiry_if_unexpired(exp, now) is not None
 
 
-def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime] | None:
+def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime, str | None] | None:
     """Return ``(accessToken, expiry)`` from a sanctioned JSON SSO cache read.
 
     The bytes are read via ``hooks.safe_read_file_internal`` (not a direct
@@ -407,10 +398,15 @@ def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime] | None
     if not isinstance(tok, str) or not tok:
         return None
     expiry = _expiry_if_unexpired(exp, now)
-    return (tok, expiry) if expiry is not None else None
+    if expiry is None:
+        return None
+    # IdC userId when the cache file carries it. Bounded; not a secret, not logged.
+    uid_raw = data.get("userId") or data.get("user_id")
+    user_id = uid_raw[:128] if isinstance(uid_raw, str) and uid_raw else None
+    return (tok, expiry, user_id)
 
 
-def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime] | None:
+def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime, str | None] | None:
     """Return ``(access_token, expiry)`` from a kiro-cli/amazon-q SQLite store.
 
     Opened read-only; the token value is never logged. This is the live token
@@ -466,7 +462,10 @@ def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime] | None:
                 # is never returned — the caller degrades to the text scrape.
                 if not hooks.emit_internal_read_audit(_SQLITE_AUDIT_READ_ID, "success"):
                     return None
-                return (tok, expiry)
+                # IdC userId when the blob carries it. Bounded; not a secret.
+                uid_raw = blob.get("userId") or blob.get("user_id")
+                user_id = uid_raw[:128] if isinstance(uid_raw, str) and uid_raw else None
+                return (tok, expiry, user_id)
         # Audit-on-every-outcome: the DB was opened, so record the access even
         # when it yielded no usable token (missing rows / malformed blob / query
         # failure) — otherwise an opened credential store would leave no trail.
@@ -488,11 +487,18 @@ class _Candidate(NamedTuple):
     caches and from other products' stores carry False — they may well be the
     same account, but nothing here proves it, so they are usable only when a
     matching ARN proves it independently.
+
+    ``user_id`` carries the IdC userId read from the token blob when the store
+    includes it (``userId`` / ``user_id`` key). It is an opaque identifier, not
+    a secret: bounded, never logged, used only to compare ownership against the
+    signed-in session's userId. ``None`` means the blob carried no userId — the
+    candidate is kept but ranked below one whose userId is proven to match.
     """
 
     token: str
     expiry: datetime
     from_cli_store: bool
+    user_id: str | None = None
 
 
 def _candidate_tokens() -> list[_Candidate]:
@@ -528,17 +534,20 @@ def _candidate_tokens() -> list[_Candidate]:
     # Deduped by token value, keeping the latest expiry seen for it and ORing the
     # provenance: the same token can appear in more than one store, and if any of
     # them is kiro-cli's own store then it is kiro-cli's credential.
-    freshest: dict[str, tuple[datetime, bool]] = {}
+    freshest: dict[str, tuple[datetime, bool, str | None]] = {}
 
-    def _add(found: tuple[str, datetime] | None, *, from_cli_store: bool) -> None:
+    def _add(found: tuple[str, datetime, str | None] | None, *, from_cli_store: bool) -> None:
         if not found:
             return
-        tok, exp = found
+        tok, exp, uid = found
         current = freshest.get(tok)
         if current is None:
-            freshest[tok] = (exp, from_cli_store)
+            freshest[tok] = (exp, from_cli_store, uid)
         else:
-            freshest[tok] = (max(exp, current[0]), current[1] or from_cli_store)
+            cur_exp, cur_cli, cur_uid = current
+            # OR provenance; prefer first non-None userId (same token = same user).
+            freshest[tok] = (max(exp, cur_exp), cur_cli or from_cli_store,
+                             cur_uid if cur_uid is not None else uid)
 
     for read_id in _JSON_TOKEN_READ_IDS:
         _add(_token_from_json(read_id, now), from_cli_store=False)
@@ -548,7 +557,20 @@ def _candidate_tokens() -> list[_Candidate]:
         _add(_token_from_sqlite(db, now), from_cli_store=False)
     # (from_cli_store, expiry) descending: own-store tokens first, freshest first.
     ranked = sorted(freshest.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)
-    return [_Candidate(tok, exp, own) for tok, (exp, own) in ranked]
+    return [_Candidate(tok, exp, own, uid) for tok, (exp, own, uid) in ranked]
+
+
+def _anchor_user_id(candidates: list[_Candidate]) -> str | None:
+    """The userId of the first kiro-cli store candidate, or ``None``.
+
+    The one selection :func:`fetch_usage_limits` filters candidates by and
+    :func:`signed_in_user_id` re-reads, so the two cannot disagree on stores
+    that did not change.
+    """
+    for candidate in candidates:
+        if candidate.from_cli_store:
+            return candidate.user_id
+    return None
 
 
 def _load_bearer_token() -> str | None:
@@ -655,7 +677,11 @@ def _profile_cache_key(token: str, expected_arn: str | None) -> str:
 
 
 def _list_profile_arn(
-    token: str, *, expected_arn: str | None = None, endpoint: str | None = None
+    token: str,
+    *,
+    expected_arn: str | None = None,
+    endpoint: str | None = None,
+    deadline: float | None = None,
 ) -> str | None:
     """Return the profile ARN this token should use, or None.
 
@@ -684,43 +710,55 @@ def _list_profile_arn(
     key = _profile_cache_key(token, expected_arn)
     if key in _PROFILE_ARN_CACHE:
         return _PROFILE_ARN_CACHE[key]
-    try:
-        r = _post(token, _TARGET_LIST_PROFILES, {}, endpoint=endpoint)
-    except _RequestError:
-        return None
-    if r.status_code != 200:
-        return None
-    try:
-        body = r.json()
-    except ValueError:
-        return None
-    if not isinstance(body, dict):
-        return None
-    profiles = body.get("profiles")
-    if not isinstance(profiles, list):
-        return None
-    arn: str | None = None
-    name: str | None = None
-    for p in profiles:
-        if not isinstance(p, dict):
-            continue
-        candidate = p.get("arn") or p.get("profileArn")
-        if not candidate:
-            continue
-        if expected_arn and candidate != expected_arn:
-            # Anchored mode: only the asked-about profile is an answer.
-            continue
-        arn = candidate
-        # Human label for the signed-in account. Bounded like the plan name
-        # so a hostile/oversized value can't reach the cache/UI unbounded;
-        # only a non-empty string qualifies.
-        pname = p.get("profileName") or p.get("profileDisplayName")
-        if isinstance(pname, str) and pname:
-            name = pname[:100]
-        break
-    if arn is not None:
-        _remember_profile(key, arn, name)
-    return arn
+    # The listing is paged: follow ``nextToken`` like the sign-in listing in
+    # ``auth/login/control_plane.py`` does, under the same page cap and the
+    # caller's monotonic deadline, and stop on a repeated token. A failed or
+    # malformed page, a loop, the cap or an expired deadline is a miss,
+    # re-probed on the next refresh like any other transient failure.
+    seen_tokens: set[str] = set()
+    request: dict[str, object] = {}
+    for _page in range(_LIST_PROFILES_MAX_PAGES):
+        if deadline is not None and time.monotonic() > deadline:
+            return None
+        try:
+            r = _post(token, _TARGET_LIST_PROFILES, request, endpoint=endpoint)
+        except _RequestError:
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            body = r.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        profiles = body.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        for p in profiles:
+            if not isinstance(p, dict):
+                continue
+            candidate = p.get("arn") or p.get("profileArn")
+            if not candidate:
+                continue
+            if expected_arn and candidate != expected_arn:
+                # Anchored mode: only the asked-about profile is an answer.
+                continue
+            # Human label for the signed-in account. Bounded like the plan name
+            # so a hostile/oversized value can't reach the cache/UI unbounded;
+            # only a non-empty string qualifies.
+            name: str | None = None
+            pname = p.get("profileName") or p.get("profileDisplayName")
+            if isinstance(pname, str) and pname:
+                name = pname[:100]
+            _remember_profile(key, candidate, name)
+            return candidate
+        next_token = body.get("nextToken")
+        if not isinstance(next_token, str) or not next_token or next_token in seen_tokens:
+            return None
+        seen_tokens.add(next_token)
+        request = {"nextToken": next_token}
+    return None
 
 
 def _remember_profile(key: str, arn: str, name: str | None) -> None:
@@ -761,6 +799,54 @@ def _bounded(value: object) -> float | None:
     if not math.isfinite(f) or f < 0 or f > _MAX_CREDITS:
         return None
     return f
+
+
+def _nested_bonuses(credit: dict) -> list[dict[str, object]]:
+    """The active bonus grants GetUsageLimits nests under the CREDIT entry (``bonuses``).
+
+    Each grant names itself in ``displayName``; ``bonusCode`` is a redemption code
+    and is never shown. A grant whose ``status`` is present and not ``ACTIVE`` is
+    over. ``days_left`` is the whole days until ``expiresAt`` (epoch seconds), as
+    kiro-cli's ``/usage`` shows it, and is omitted when the time is missing or out
+    of range.
+    """
+    grants = credit.get("bonuses")
+    if not isinstance(grants, list):
+        return []
+    out: list[dict[str, object]] = []
+    for g in grants:
+        if len(out) >= _MAX_BONUS_GRANTS:
+            break
+        if not isinstance(g, dict):
+            continue
+        status = g.get("status")
+        if status is not None and str(status).upper() != "ACTIVE":
+            continue
+        used = _bounded(g.get("currentUsageWithPrecision"))
+        if used is None:
+            used = _bounded(g.get("currentUsage"))
+        limit = _bounded(g.get("usageLimitWithPrecision"))
+        if limit is None:
+            limit = _bounded(g.get("usageLimit"))
+        name = g.get("displayName")
+        if used is None or limit is None or limit <= 0:
+            continue
+        if not isinstance(name, str) or not name or not name.isprintable():
+            continue
+        entry: dict[str, object] = {
+            "name": name[:_MAX_BONUS_NAME_CHARS],
+            "used": used,
+            "total": limit,
+        }
+        try:
+            seconds_left = float(g.get("expiresAt")) - time.time()  # type: ignore[arg-type]
+            days: int | None = math.floor(seconds_left / 86400)
+        except (TypeError, ValueError, OverflowError):
+            days = None
+        if days is not None and 0 <= days <= _MAX_BONUS_DAYS_LEFT:
+            entry["days_left"] = days
+        out.append(entry)
+    return out
 
 
 def _map_response(data: dict) -> dict | None:
@@ -887,8 +973,10 @@ def _map_response(data: dict) -> dict | None:
     # dashboard never branches on source. Retain every bounded grant; the legacy
     # scalar fields mirror the first one for older clients.
     _bonus_markers = ("FREE_TRIAL", "FREETRIAL", "TRIAL", "BONUS", "PROMO", "GIFT", "WELCOME")
-    bonus_credits: list[dict[str, object]] = []
+    bonus_credits: list[dict[str, object]] = _nested_bonuses(credit)
     for b in breakdowns:
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
         if b is credit:
             continue
         rtype = str(b.get("resourceType") or "").upper()
@@ -967,10 +1055,17 @@ class UsageResult(NamedTuple):
     type makes a stale patch fail loudly, where a second name beside it lets such a
     patch keep intercepting a function the caller does not call and pass vacuously
     while the real credential stores are read.
+
+    ``user_id`` is the IdC userId of the token in kiro-cli's own store that this
+    read anchored on (see :func:`fetch_usage_limits`), whether or not the read
+    succeeded; ``None`` when no such token was found or its blob carried none.
+    It names the signed-in user, not a credential, and lets the dashboard tell
+    two users of one Identity Center org apart when email and portal URL match.
     """
 
     usage: dict | None
     auth_state: str
+    user_id: str | None = None
 
 
 class _Attempt(NamedTuple):
@@ -1116,6 +1211,26 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
     # GetUsageLimits hit the same regional host. Unknown/absent region stays
     # on the us-east-1 default (control 1: the URL is still a file literal).
     endpoint = _rts_endpoint(expected_arn)
+    # Apply IdC userId ownership filter when the signed-in user's userId is
+    # available from kiro-cli's own store. This is the third proof of ownership,
+    # beyond ARN-anchored and source-anchored: two accounts on the same IdC org
+    # can share a profile ARN, so the ARN proof cannot tell them apart. Comparing
+    # userId is the discriminating step.
+    #
+    # active_user_id comes from kiro-cli's own store token — it is the signed-in
+    # account's credential by construction, so its userId is the reference. When
+    # the blob carries no userId, active_user_id is None and no filtering is
+    # applied (today's behaviour is preserved rather than failing open).
+    # Anchor userId on the FIRST kiro-cli store candidate — never skip one
+    # whose blob carried no userId. The first from_cli_store token is the
+    # signed-in account's credential by construction (provenance + expiry
+    # ordering in _candidate_tokens). Skipping it to find a later store entry
+    # with a userId would anchor on the wrong identity.
+    active_user_id = _anchor_user_id(candidates)  # None means blob had no userId
+    if active_user_id is not None:
+        # Drop candidates whose userId is known and differs from the signed-in user.
+        candidates = [c for c in candidates
+                      if c.user_id is None or c.user_id == active_user_id]
     reason = "unknown"
     # Set when GetUsageLimits itself answers 401 for some candidate. Tracked
     # separately from ``reason`` (which is prose for the log) because it is the
@@ -1141,7 +1256,9 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
                     "kiro-cli's own auth store"
                 )
                 continue
-            arn = _list_profile_arn(token, expected_arn=expected_arn, endpoint=endpoint)
+            arn = _list_profile_arn(
+                token, expected_arn=expected_arn, endpoint=endpoint, deadline=deadline
+            )
             if expected_arn and (not arn or arn != expected_arn):
                 # ARN-anchored mode: the expected profile is genuinely absent
                 # from this token's own profile list (or the probe failed), so
@@ -1167,10 +1284,30 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
             # point. The ARN still rides back (see _get_usage) because matching
             # on ``None`` -- two Builder ID accounts both present none -- is
             # consistent but not proof; ``_identity_matches_account`` decides
-            # whether an email may sit next to an overage figure.
-            attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
+            # whether an email may sit next to an overage figure, and on the
+            # ARN-less path the billed e-mail below is what proves it.
+            #
+            # Ask for the billed account's e-mail ONLY on the ARN-less path
+            # (``expected_arn is None``). That is the account whose credential
+            # just answered GetUsageLimits -- the billing account itself -- so
+            # ``_fetch_usage_bg`` can attach a whoami e-mail only when it equals
+            # this one, tying the displayed identity to the credential that
+            # supplied the numbers rather than to a whoami that merely stayed
+            # unchanged. The ARN path is unchanged: its ARN match is already the
+            # proof, so it does not ask and this is byte-for-byte as before.
+            want_email = expected_arn is None
+            attempt = _get_usage(
+                token, arn, name_anchor=expected_arn, endpoint=endpoint, want_email=want_email
+            )
+            if want_email and attempt.result is None and attempt.reason == _EMAIL_REJECTED_REASON:
+                # The e-mail is an extra, never a condition of the reading: a 400
+                # may be the service refusing ``isEmailRequired`` for this kind
+                # of sign-in, so ask once more without it before giving up -- the
+                # same fallback the vault path takes. A reading with no billed
+                # e-mail then simply attaches no whoami e-mail downstream.
+                attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
             if attempt.result is not None:
-                return attempt.result
+                return attempt.result._replace(user_id=active_user_id)
             reason = attempt.reason
             saw_unauthorized = saw_unauthorized or attempt.unauthorized
             continue  # try the next candidate token
@@ -1182,7 +1319,25 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
             logger.debug("Kiro usage API: unexpected error for a token candidate", exc_info=True)
             continue
     _note_api_outcome(False, f"all {len(candidates)} candidate credential(s) failed; last: {reason}")
-    return UsageResult(None, AUTH_REJECTED if saw_unauthorized else AUTH_OTHER)
+    return UsageResult(None, AUTH_REJECTED if saw_unauthorized else AUTH_OTHER, active_user_id)
+
+
+def signed_in_user_id() -> str | None:
+    """The IdC userId :func:`fetch_usage_limits` would anchor on now. Synchronous; never raises.
+
+    The same selection as :attr:`UsageResult.user_id`: the first candidate from
+    kiro-cli's own store in :func:`_candidate_tokens`, with the userId that
+    function merges onto it. Read again so a caller can tell whether the
+    signed-in user changed since the usage read; with the stores unchanged the
+    two always agree. Only the userId leaves this function; ``None`` when there
+    is no such candidate or it carries no userId.
+    """
+    try:
+        candidates = _candidate_tokens()
+    except Exception:  # noqa: BLE001 - an unreadable store is an unknown user, not a crash
+        logger.debug("Kiro usage API: signed-in userId read failed", exc_info=True)
+        return None
+    return _anchor_user_id(candidates)
 
 
 def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> UsageResult:
@@ -1206,11 +1361,12 @@ def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> U
     if not token:
         return UsageResult(None, AUTH_NO_CREDENTIAL)
     endpoint = _rts_endpoint(profile_arn)
+    deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     try:
-        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint)
+        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint, deadline=deadline)
         if profile_arn:
             # Fills the display-name cache only; the stored ARN is the answer.
-            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint)
+            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint, deadline=deadline)
         elif arn:
             # A discovered ARN names its own region; send the read there.
             endpoint = _rts_endpoint(arn)

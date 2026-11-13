@@ -145,11 +145,8 @@ class TestInMemoryAuthority:
     def test_append_only_colliding_ts_no_duplicate(self, tmp_path, monkeypatch):
         """Colliding timestamps must not duplicate a genuine message on disk.
 
-        A coarse system clock (notably Windows' ~15ms tick) can stamp a burst of
-        rapid appends with an IDENTICAL ``datetime.now().isoformat()``. The
-        append-safe save must still match each on-disk window-region line to its
-        own window entry one-for-one — never mis-classifying a real window line
-        as a phantom "foreign append" and duplicating it.
+        Windows' ~15ms clock tick can give a burst of appends one identical ts; the save
+        must still match window lines one-for-one, not as phantom foreign appends.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         # Freeze history.py's clock so every on-disk append shares ONE ts,
@@ -196,17 +193,11 @@ class TestInMemoryAuthority:
         assert contents == [f"old msg {i}" for i in range(8)] + ["brand new msg"]
 
     def test_append_only_colliding_ts_edit_preserves_foreign(self, tmp_path, monkeypatch):
-        """Colliding ts + in-place edit + foreign append must NOT drop the
-        foreign line.
+        """Colliding ts + in-place edit + foreign append must NOT drop the foreign line.
 
-        The on-disk window region holds, sharing ONE coarse-clock ts: unchanged
-        ``A``, an acknowledged cross-process foreign append ``X``, and the
-        pre-edit copy of ``B`` — in that adversarial order (foreign BEFORE the
-        pre-edit copy). Memory holds ``A`` and the EDITED ``B'``. A greedy
-        ts-only match would consume ``X`` as if it were ``B``'s in-place edit and
-        silently DROP the acknowledged foreign append. The ambiguity guard must
-        instead preserve ``X`` (favouring a rare stale duplicate over
-        irreversible data loss).
+        Disk holds ``A``, foreign ``X``, old ``B`` on one ts; memory holds ``A`` and ``B'``.
+        A ts-only match would take ``X`` as ``B``'s edit, so the guard keeps ``X`` and
+        accepts a rare stale duplicate over data loss.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         import json as _json
@@ -396,13 +387,10 @@ class TestInMemoryAuthority:
             assert frozen not in content
 
     def test_flush_then_finalized_reply_persists(self, tmp_path, monkeypatch):
-        """#1: a mid-turn flush past a stop_event must not lose the later reply.
+        """A mid-turn flush past a stop_event must not lose the later reply.
 
-        Repro of the boundary-asymmetry bug: a stop happens mid-turn, the 5s
-        flush persists the window ending in the stop_event, then _flush_segment
-        finalizes the assistant reply and moves the stop_event AFTER it. The
-        finalized reply must end up on disk (the old position-counter model
-        committed past the stop_event and dropped the later assistant line).
+        The 5s flush persists a window ending in the stop_event, then _flush_segment
+        moves the stop_event after the finalized reply; that reply must reach disk.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         import json
@@ -538,7 +526,8 @@ class TestSessionReload:
 
     The endpoint's contract: refuse while a turn is in flight (409), otherwise
     tear down via reset(skip_if_busy=True), append the session_reload feed
-    notice, and eagerly re-arm the resume spawn.
+    notice, eagerly re-arm the resume spawn, and append one more row saying how
+    that respawn ended.
     """
 
     @staticmethod
@@ -563,6 +552,8 @@ class TestSessionReload:
         slot = state.get_or_create_slot("s1")
         state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
         state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.has_session = MagicMock(return_value=False)
+        # Eager spawn off: nothing is scheduled.
         eager = MagicMock(return_value=None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
 
@@ -575,12 +566,155 @@ class TestSessionReload:
         state.sessions.reset.assert_awaited_once_with("dashboard:s1", skip_if_busy=True)
         # The feed carries the durable confirmation, tagged so the follow-up
         # options / continuable scans skip it (isSystemNoticeKind frontend twin).
-        notice = slot.messages[-1]
+        notice, outcome = slot.messages[-2:]
         assert notice["role"] == "assistant"
         assert notice["meta"]["kind"] == "session_reload"
         assert "Reloading session" in notice["content"]
+        # Nothing was scheduled, so the row after it says when the agent starts.
+        assert outcome["role"] == "assistant"
+        assert outcome["meta"]["kind"] == "session_reload"
+        assert outcome["content"] == "The reloaded agent starts with the next message."
         eager.assert_called_once()
         assert eager.call_args.kwargs.get("allow_resume") is True
+
+    # A fake AWS access key id: matches (?:AKIA|ASIA)[A-Z0-9]{16}, asserted absent.
+    _TOKEN = "AKIA" + "RELOADROW0123456"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("live", "running", "failure", "expected"),
+        [
+            (True, False, None, "The reloaded agent is ready."),
+            # A running turn with no row after the notice yet claimed what the
+            # respawn registered.
+            (True, True, None, "The reloaded agent is ready."),
+            (False, False, None, "The reloaded agent starts with the next message."),
+            (False, False, RuntimeError(f"spawn failed with {_TOKEN}"), "did not start"),
+            # A running turn is starting the agent itself and reports it.
+            (False, True, RuntimeError("spawn failed"), None),
+        ],
+        ids=["ready", "joined", "stood-down", "failed", "turn-starts-it"],
+    )
+    async def test_the_respawn_ending_closes_the_reload_with_one_row(
+        self, tmp_path, monkeypatch, live, running, failure, expected
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.has_session = MagicMock(return_value=False)
+        eager = MagicMock(return_value=MagicMock(name="respawn"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+        assert resp.status == 200
+        # Scheduled, not ended: the notice is the newest row.
+        assert "Reloading session" in slot.messages[-1]["content"]
+        before = len(slot.messages)
+
+        state.sessions.has_session.return_value = live
+        if running:
+            turn = asyncio.get_running_loop().create_future()
+            slot.task = asyncio.ensure_future(turn)
+        try:
+            eager.call_args.kwargs["on_ended"](failure)
+        finally:
+            if running:
+                turn.set_result(None)
+                await await_until(slot.task, what="the stand-in turn")
+
+        if expected is None:
+            assert len(slot.messages) == before
+            return
+        assert len(slot.messages) == before + 1
+        row = slot.messages[-1]
+        assert row["role"] == "assistant"
+        assert row["meta"]["kind"] == "session_reload"
+        if failure is None:
+            assert row["content"] == expected
+        else:
+            assert row["content"].startswith("⚠️ The reloaded agent did not start.")
+            assert "spawn failed" in row["content"]
+            assert self._TOKEN not in row["content"]
+
+    @pytest.mark.asyncio
+    async def test_a_replaced_slot_gets_no_outcome_row(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        eager = MagicMock(return_value=MagicMock(name="respawn"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+        assert resp.status == 200
+        before = len(slot.messages)
+        state._slots.pop("s1")
+
+        eager.call_args.kwargs["on_ended"](None)
+
+        assert len(slot.messages) == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("written", "failure", "expected"),
+        [
+            # A BACKGROUND respawn queued for its start permit: the person's
+            # send started the agent and was answered before it stood down.
+            ("answered", None, None),
+            ("answered", RuntimeError("spawn failed"), None),
+            ("error-card", None, None),
+            # A send still waiting on the respawn (it joined the load): the
+            # reload closes before that turn's reply.
+            ("sent", None, "The reloaded agent is ready."),
+            # A system notice is not a turn's answer: the reload still closes.
+            ("notice", None, "The reloaded agent is ready."),
+            # The chat was cleared: no notice is left to close.
+            ("cleared", None, None),
+        ],
+        ids=["answered", "answered-then-failed", "error-card", "sent", "notice-between", "cleared"],
+    )
+    async def test_the_closing_row_never_lands_after_a_later_message(
+        self, tmp_path, monkeypatch, written, failure, expected
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.has_session = MagicMock(return_value=False)
+        eager = MagicMock(return_value=MagicMock(name="respawn"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+        assert resp.status == 200
+        assert "Reloading session" in slot.messages[-1]["content"]
+        if written in ("answered", "error-card", "sent"):
+            slot.append("user", "are you back?")
+        if written == "answered":
+            slot.append("assistant", "yes")
+        elif written == "error-card":
+            slot.append("error", "the agent did not answer", "msg msg-err")
+        elif written == "notice":
+            slot.append("assistant", "Model switched.", meta={"kind": "session_switch"})
+        elif written == "cleared":
+            slot.messages = []
+        before = len(slot.messages)
+        state.sessions.has_session.return_value = failure is None
+
+        eager.call_args.kwargs["on_ended"](failure)
+
+        if expected is None:
+            assert len(slot.messages) == before
+            return
+        assert len(slot.messages) == before + 1
+        assert slot.messages[-1]["content"] == expected
+        assert slot.messages[-1]["meta"]["kind"] == "session_reload"
 
     @pytest.mark.asyncio
     async def test_reload_refused_while_turn_in_flight(self, tmp_path, monkeypatch):
@@ -853,14 +987,9 @@ class TestSessionReload:
 class TestCloseBroadcastDurability:
     """A slot-list frame must never omit a slot that is coming back.
 
-    Clients treat a frame omitting a slot as licence to drop that slot's cached
-    per-slot state, including follow-up and folder-suggestion cards that only
-    ever exist in the browser and are never re-sent. So the close may only
-    broadcast once the history save is durable: past that point no rollback can
-    put the slot back, and the omission can never be retracted.
-
-    Every test records the ORDER of the close steps, because asserting only that
-    a broadcast happened passes against any placement and proves nothing.
+    Clients drop a missing slot's browser-only cards, so the close broadcasts only after
+    the history save is durable. Tests record the ORDER of steps, since "a broadcast
+    happened" passes against any placement.
     """
 
     @staticmethod
@@ -898,6 +1027,7 @@ class TestCloseBroadcastDurability:
 
         async def _save(*args, **kwargs):
             calls.append("save")
+            return True
 
         monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _save)
 
@@ -1002,24 +1132,27 @@ class TestCloseBroadcastDurability:
             side_effect=lambda _key: (calls.append("broadcast"), seen.set())
         )
 
+        release = asyncio.Event()
+
         async def _hang(*args, **kwargs):
             calls.append("remove")
-            # flake-ok: the stubbed session remove hangs so the close stays in flight
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed session remove hangs so the close stays in flight
-            await asyncio.sleep(30)
+            await release.wait()  # the teardown never returns; the cleanup below ends it
 
         state.sessions.remove = AsyncMock(side_effect=_hang)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             close = asyncio.get_running_loop().create_task(client.delete("/api/chat/slots/s1"))
-            await await_until(seen, what="the broadcast firing")
-            assert "save" in calls and calls.index("save") < calls.index("broadcast")
-            assert "s1" not in state._slots
-            close.cancel()
             try:
-                await close
-            except asyncio.CancelledError:
-                pass
+                await await_until(seen, what="the broadcast firing")
+                assert "save" in calls and calls.index("save") < calls.index("broadcast")
+                assert "s1" not in state._slots
+                close.cancel()
+                try:
+                    await close
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                release.set()
 
     @pytest.mark.asyncio
     async def test_active_slot_set_is_published_only_after_the_teardown(

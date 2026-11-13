@@ -49,6 +49,7 @@ vi.mock('../apps/mochi/api', async (importOriginal) => {
 
 import * as api from '../apps/mochi/api'
 import MochiPage from '../apps/mochi/MochiPage'
+import { formatDate } from '../apps/mochi/src/shared/statsFormatters'
 
 /** A watch item with every optional field the expanded row can show. */
 function watchItem(over: Partial<WatchItem>): WatchItem {
@@ -241,11 +242,24 @@ describe('MochiPage memories card', () => {
     expect(screen.getByText(/Thought for/)).toBeTruthy()
     expect(screen.getByText(/stayed up till 02:10/)).toBeTruthy()
     expect(screen.getByText(/up at 06:30/)).toBeTruthy()
-    expect(screen.getByText(/Chattiest day: 2026-07-28/)).toBeTruthy()
+    expect(screen.getByText(`Chattiest day: ${formatDate('2026-07-28')} (`, { exact: false })).toBeTruthy()
     expect(screen.getByText(/Longest chat: 40 messages/)).toBeTruthy()
     expect(screen.getByText('Top moods:')).toBeTruthy()
     expect(screen.getByText('Curious 75%')).toBeTruthy()
     expect(screen.getByText('Scared 25%')).toBeTruthy()
+  })
+
+  it('counts a single walk, look, peek, drag and chat message in the singular', async () => {
+    vi.mocked(api.getStats).mockResolvedValue({
+      ...STATS, walkSteps: 1, screenshots: 1, peeks: 1, drags: 1, longestChat: 1,
+    })
+    renderPage()
+    await waitForLive()
+    expect(await screen.findByText(/^1 step$/)).toBeTruthy()
+    expect(screen.getByText('Looked at your screen 1 time')).toBeTruthy()
+    expect(screen.getByText('Peeked 1 time')).toBeTruthy()
+    expect(screen.getByText('Dragged 1 time')).toBeTruthy()
+    expect(screen.getByText('Longest chat: 1 message')).toBeTruthy()
   })
 
   it('drops zero-valued rows and the mood strip when nothing was recorded', async () => {

@@ -1,10 +1,8 @@
 """What ``kirocrew chat``'s permission prompt shows, and the identity it audits.
 
-``TestChatPermissionRequestConsentSurface`` complements ``TestChatPermissionRequest`` in
-``test_cli_chat_permission.py`` and runs on the same harness from ``cli_helpers.py``: terminal
-controls and hostile text never reach the terminal, a request the gate cannot verify is
-refused instead of shown, the prompt discloses targets and MCP identity, the direct client's
-cached parameters stay authoritative, and the canonical MCP identity reaches the shared gate.
+Hostile text never reaches the terminal, an unverifiable request is refused instead of
+shown, and the canonical MCP identity reaches the shared gate. Shares the
+``cli_helpers.py`` harness with ``test_cli_chat_permission.py``.
 """
 
 import asyncio
@@ -651,15 +649,11 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
 
     @pytest.mark.asyncio
     async def test_kindless_mcp_tool_reaches_the_prompt_instead_of_auto_denying(self, monkeypatch):
-        """A backend that omits `kind` on an MCP tool_call must not cost the user
-        the tool. The frame's `_meta.kiro` transport identity earns the
-        _unverifiable_shell escape -- WITHOUT minting a shell classification, so
-        the low-fidelity gates elsewhere keep treating the title as unverified --
-        and the request reaches the normal approval prompt.
+        """An MCP tool_call with no `kind` reaches the prompt instead of being auto-denied.
 
-        Drives the shared-runtime parser rather than hand-building the event: the
-        auto-deny came from the cache write being skipped, which an event built
-        with trusted identity fields would hide.
+        `_meta.kiro` earns the _unverifiable_shell escape without minting a shell
+        classification. Drives the real parser: a hand-built event with trusted
+        identity fields would hide a skipped cache write.
         """
         from kiro_crew.acp._dispatch import _build_tool_call_event, build_permission_event
         from kiro_crew.acp.types import JsonRpcMessage

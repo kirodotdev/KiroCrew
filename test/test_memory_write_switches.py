@@ -234,10 +234,13 @@ class TestWritesSwitch:
         args = argparse.Namespace(
             learn_action="add", rule="Always frobnicate", category="tool", negative=None
         )
-        cli_commands._learn(args)
-        out = capsys.readouterr().out
-        assert "NOT saved" in out
-        assert "memory.writes_enabled" in out
+        with pytest.raises(SystemExit) as exc:
+            cli_commands._learn(args)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "NOT saved" in captured.err
+        assert "memory.writes_enabled" in captured.err
         assert LessonStore().load_all() == []
         assert not (config_dir() / "memory.db").exists()
 

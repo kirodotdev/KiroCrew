@@ -1,10 +1,7 @@
 """Fixtures and fabricated forge payloads shared by the claim preflight tests.
 
-``test_pipeline_conductor_claim_preflight.py`` and its ``_check_detectors`` and
-``_end_to_end`` siblings import these by name: ``mod`` loads the script under test,
-``clean_checks`` fabricates a check set, ``an_issue``, ``a_comment`` and ``a_pull``
-fabricate the payloads the forge returns, and ``Forge`` stands in for the script's
-``run``.
+Imported by name by ``test_pipeline_conductor_claim_preflight.py`` and its siblings.
+``Forge`` stands in for the script's ``run``.
 """
 
 from __future__ import annotations
@@ -35,17 +32,10 @@ def mod_fixture():
 
 
 def naive_claim(checks: dict) -> bool:
-    """The predicate this script replaces: ONE question, and an empty answer
-    read as permission.
+    """A bare open-PR search: ONE question, and an empty answer read as permission.
 
-    The old skill line was `gh pr list --search ... --state open`, so it could
-    see exactly one thing: a same-repo OPEN pull request. It could not see a
-    merged PR (wrong state), a fork PR (the search missed them, and the single
-    field it fell back on measured empty), a claim written in prose, or a symbol
-    that is not on the base.
-
-    Every branch test asserts this returns True, i.e. the old predicate would
-    have burned a dispatch on the item.
+    It sees only a same-repo OPEN pull request. Every branch test asserts this returns
+    True, i.e. the naive predicate would dispatch the item.
     """
     hits = checks.get("open_prs")
     if not isinstance(hits, list):

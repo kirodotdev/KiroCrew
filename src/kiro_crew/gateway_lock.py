@@ -101,6 +101,7 @@ import errno
 import ipaddress
 import logging
 import os
+import shlex
 import socket
 import stat
 import tempfile
@@ -127,7 +128,7 @@ LOCK_FILENAME = "gateway.lock"
 #: serving; there is nothing for a second gateway to do here.
 #: ``service/linux.py`` feeds this value into the unit's
 #: ``RestartPreventExitStatus`` so a ``Restart=always`` unit goes ``failed``
-#: once, with the refusal line in the journal, instead of relaunching every
+#: once, with the refusal in the journal, instead of relaunching every
 #: ``RestartSec`` against a home that is already served. Every other refusal
 #: keeps exit 1 and IS relaunched, because a later attempt can find it cleared
 #: or because the evidence for standing down is not there: a lock file
@@ -510,14 +511,22 @@ class GatewayLock:
     *port* is diagnostic only. When given, a refusal reports whether the holder
     also owns the dashboard port and whether that port answers, which is what
     separates a running gateway from a wedged fork squatting on an inherited fd.
+    *signed_out* is wording only: this home has no sign-in yet (an LTS sign-in
+    screen's start), so the serving refusal names no command that state refuses.
     """
 
     def __init__(
-        self, home: Path, port: int | None = None, bind_address: str | None = None
+        self,
+        home: Path,
+        port: int | None = None,
+        bind_address: str | None = None,
+        *,
+        signed_out: bool = False,
     ) -> None:
         self._home = home
         self._path = home / LOCK_FILENAME
         self._port = port
+        self._signed_out = signed_out
         # The address the serving-holder predicate probes: the one THIS gateway
         # is configured to bind, a wildcard mapped to loopback. Fixed at
         # construction so every fact in one diagnosis is measured at one address.
@@ -955,7 +964,12 @@ class GatewayLock:
         socket bound) or one bound to another address, and a terminal exit
         there would park a supervised unit ``failed`` for good while a wedged
         incumbent dies on its own or is killed, leaving the home unserved with
-        nothing left to relaunch.
+        nothing left to relaunch. The serving shape leads with where that
+        gateway answered and how to sign in to it: whoever starts a second
+        gateway on a served home has usually lost the tab or the URL. On a
+        signed-out home (*signed_out*) ``kirocrew token`` and ``kirocrew stop`` are
+        refused, so it points at the sign-in link the running process printed
+        and names neither.
         """
         facts: list[str] = []
         threads = platform_compat.process_thread_count(pid)
@@ -964,11 +978,34 @@ class GatewayLock:
         facts.extend(self._port_facts(pid, verdict))
         detail = f" ({', '.join(facts)})" if facts else ""
         clause = self._unasserted_clause(verdict)
-        if clause:
+        if verdict.serving:
+            host = verdict.probe_host
+            sign_in, stop = "", "stop it first (kirocrew stop)"
+            if self._signed_out:
+                sign_in = "Open it with the latest sign-in link it printed (its terminal or log).\n"
+                stop = "stop it first"
+            elif host == _LOOPBACK_PROBE_HOST:
+                # `kirocrew token` dials 127.0.0.1 only, so it is named only here.
+                sign_in = f"Open it with a sign-in link from: kirocrew token --port {self._port}\n"
+            if ":" in host:
+                host = f"[{host}]"
+            message = (
+                f"Kiro Crew is already running for this home at http://{host}:{self._port} "
+                f"(pid {pid}).\n" + sign_in + f"To start a separate one instead: {stop}, or set "
+                "KIROCREW_HOME to an isolated directory.\n"
+                f"{self._path} is held by pid {pid}{detail}"
+            )
+        elif clause:
             message = (
                 f"{self._path} is held by pid {pid}{detail} -- it "
                 + clause
                 + " Stop it first (kirocrew stop) or set KIROCREW_HOME to an isolated directory"
+            )
+        elif not verdict.holds_port and _command_line_is_not_a_gateway(pid):
+            message = (
+                f"{self._path} is held by pid {pid}{detail}, which is not a Kiro Crew gateway; "
+                f"see what it is with ps -f -p {pid}, stop it, or set KIROCREW_HOME to an "
+                "isolated directory"
             )
         else:
             message = (
@@ -1511,6 +1548,44 @@ def _release_fd(fd: int) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def _command_line_is_not_a_gateway(pid: int) -> bool:
+    """True only when *pid*'s command line was read AND is not a Kiro Crew server's.
+
+    An unreadable command line (``""``: dead pid, missing ``ps``, WMI error) is
+    no evidence either way, so it answers False and the refusal keeps naming
+    the holder as a gateway.
+
+    This deliberately does not reuse ``kirocrew stop``'s classifier
+    (:func:`kiro_crew.port_resolution._args_look_like_kirocrew`). That one gates
+    a kill, so it is strict and rejects valid launches such as
+    ``kirocrew -v gateway``. This one only chooses the refusal's wording, so any
+    Kiro Crew program counts as possibly a gateway: a ``kirocrew`` token, or a
+    ``-m`` whose module's package is a gateway module root. The helpers are
+    imported here, not at module level, because this module loads before the
+    config stack they pull in.
+    """
+    from kiro_crew.port_resolution import _basename_stem, _gateway_module_roots
+
+    command_line = platform_compat.process_command_line(pid)
+    if not command_line:
+        return False
+    try:
+        tokens = shlex.split(command_line, posix=not platform_compat.IS_WINDOWS)
+    except ValueError:
+        tokens = command_line.split()
+    roots = _gateway_module_roots()
+    for index, token in enumerate(tokens):
+        if _basename_stem(token) == "kirocrew":
+            return False
+        # ``-m <module>`` and Python's attached ``-m<module>`` spelling.
+        module = token[2:] if token.startswith("-m") and len(token) > 2 else ""
+        if token == "-m" and index + 1 < len(tokens):
+            module = tokens[index + 1]
+        if module and module.strip('"').split(".", 1)[0] in roots:
+            return False
+    return True
 
 
 def _port_answers_http(

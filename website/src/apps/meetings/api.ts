@@ -89,6 +89,16 @@ export interface MeetingNote {
   path: string
 }
 
+/**
+ * Where one note save sits among one meeting view's saves. The server
+ * drops a save older than one it already stored for the same `editor`, and says
+ * so with `superseded: true`.
+ */
+export interface NoteSaveOrder {
+  editor: string
+  seq: number
+}
+
 /** One stored note image. `alt` is the meeting's elapsed time, or `''` if not started. */
 export interface NoteImage {
   ok: boolean
@@ -259,10 +269,19 @@ export interface DispatchResponse {
 
 // ── transport ───────────────────────────────────────────────────────────────
 
+/** The fields a 409 start refusal names its blocking meeting with. */
+type BlockingMeetingContext = {
+  blocking_meeting_id?: string
+  blocking_meeting_title?: string
+  blocking_meeting_status?: string
+}
+
 /** An error carrying the backend's status so callers can branch on 409/410/502. */
 export class MeetingsApiError extends Error {
   readonly status: number
   readonly code: string
+  /** Id of the meeting blocking a 409 start, when the server supplied it. */
+  readonly blockingMeetingId: string
   /** Human-readable title of the meeting blocking a 409 start, when the server supplied it. */
   readonly blockingMeetingTitle: string
   /** Status of the meeting blocking a 409 start ('active', 'reviewing', …), when supplied. */
@@ -272,12 +291,13 @@ export class MeetingsApiError extends Error {
     message: string,
     status: number,
     code = '',
-    context: { blocking_meeting_title?: string; blocking_meeting_status?: string } = {},
+    context: BlockingMeetingContext = {},
   ) {
     super(message)
     this.name = 'MeetingsApiError'
     this.status = status
     this.code = code
+    this.blockingMeetingId = context.blocking_meeting_id ?? ''
     this.blockingMeetingTitle = context.blocking_meeting_title ?? ''
     this.blockingMeetingStatus = context.blocking_meeting_status ?? ''
   }
@@ -299,13 +319,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // status text when the body is not JSON (a proxy error page, say).
     let detail = res.statusText
     let code = ''
-    let context: { blocking_meeting_title?: string; blocking_meeting_status?: string } = {}
+    let context: BlockingMeetingContext = {}
     try {
       const body = await res.json()
       if (body?.error) detail = String(body.error)
       if (body?.code) code = String(body.code)
-      // Extract only the two named fields the 409 start-refusal supplies.
-      if (typeof body?.blocking_meeting_title === 'string' || typeof body?.blocking_meeting_status === 'string') {
+      // Extract only the three named fields the 409 start-refusal supplies.
+      if (
+        typeof body?.blocking_meeting_id === 'string' ||
+        typeof body?.blocking_meeting_title === 'string' ||
+        typeof body?.blocking_meeting_status === 'string'
+      ) {
+        context.blocking_meeting_id = typeof body.blocking_meeting_id === 'string' ? body.blocking_meeting_id : ''
         context.blocking_meeting_title = typeof body.blocking_meeting_title === 'string' ? body.blocking_meeting_title : ''
         context.blocking_meeting_status = typeof body.blocking_meeting_status === 'string' ? body.blocking_meeting_status : ''
       }
@@ -434,9 +459,15 @@ export const meetingsApi = {
    * and the browser would refuse it. A body over the cap is sent as a plain fetch,
    * since a keepalive request that large is refused outright.
    */
-  saveNote: (id: string, content: string, { keepalive = false } = {}) => {
-    const body = JSON.stringify({ content })
-    return request<{ ok: boolean } & MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`, {
+  saveNote: (
+    id: string,
+    content: string,
+    { keepalive = false, order }: { keepalive?: boolean; order?: NoteSaveOrder } = {},
+  ) => {
+    // `order` lets the server drop a save older than one this editor already
+    // stored; `superseded` in the answer says it did.
+    const body = JSON.stringify(order ? { content, editor: order.editor, seq: order.seq } : { content })
+    return request<{ ok: boolean; superseded?: boolean } & MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`, {
       method: 'PUT',
       body,
       keepalive: keepalive && new TextEncoder().encode(body).byteLength <= NOTE_KEEPALIVE_MAX_BYTES,

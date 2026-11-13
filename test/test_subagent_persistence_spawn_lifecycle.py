@@ -409,10 +409,10 @@ class TestTombstoneOnAbnormalExit:
         manager._agents["reaped_timeout"] = info
         manager._running_count = 1
 
+        release = asyncio.Event()
+
         async def _hang(*a, **kw):
-            # flake-ok: the stubbed _run_inner hangs so the patched 10 ms run timeout fires; the hang is under test, never a barrier
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed _run_inner's own hang, which the patched run timeout cuts; moved verbatim
-            await asyncio.sleep(999)
+            await release.wait()
 
         with (
             patch.object(manager, "_run_inner", _hang),
@@ -422,8 +422,10 @@ class TestTombstoneOnAbnormalExit:
             patch.object(manager, "_fire_event", new_callable=AsyncMock),
             patch.object(manager, "_on_done", new_callable=AsyncMock),
         ):
-            # flake-ok: _run returns on its patched 10 ms timeout over the hanging stub; that timeout path is under test; moved verbatim
-            await manager._run(info)
+            try:
+                await manager._run(info)
+            finally:
+                release.set()
 
         ts = json.loads(
             (agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8")
@@ -648,10 +650,10 @@ class TestFolderCleanupOnSuccess:
         ctx.hooks.on_tool_call = MagicMock()
         ctx.hooks.auto_approve_subagent_spawn = True
 
+        release = asyncio.Event()
+
         async def _slow_on_done(_info):
-            # flake-ok: the stubbed on_done hangs so the patched 10 ms delivery timeout fires; the hang is under test, never a barrier
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed on_done's own hang, which the patched delivery timeout cuts; moved verbatim
-            await asyncio.sleep(999)
+            await release.wait()
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, on_done=_slow_on_done)
 
@@ -661,7 +663,9 @@ class TestFolderCleanupOnSuccess:
             patch("kiro_crew.subagent.sel"),
         ):
             info = manager.spawn("delivery failure test", parent_session_key="dashboard:default")
-            # flake-ok: the run task returns once the patched 10 ms delivery timeout cuts the hanging on_done; that path is under test; moved verbatim
-            await manager._tasks[info.id]
+            try:
+                await manager._tasks[info.id]
+            finally:
+                release.set()
 
         assert (agent_root / info.id).exists()

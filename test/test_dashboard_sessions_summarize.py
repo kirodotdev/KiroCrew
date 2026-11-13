@@ -22,6 +22,10 @@ from kiro_crew.dashboard.handlers import api_sessions_summarize
 from kiro_crew.dashboard.handlers import sessions as sessions_handlers
 from kiro_crew.history import ConversationLog, HistoryLockTimeout, TranscriptBusy
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 class _FakeBgSession:
     """Minimal stand-in for a background LLM session handle."""

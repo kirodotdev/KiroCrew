@@ -85,7 +85,7 @@ export default function MdNotebookPage() {
     autoSyncMins, autoCommit, syncShortcut, fullWidth, recordingShortcutRef, setAutoSyncPref,
     setAutoSyncMinsPref, toggleFullWidth, columnMaxWidth, headerControls, headerBandWidth,
     headerControlsRef, headerBandRef, titleClearance, stackTitle, setSyncShortcutPref,
-    setAutoCommitPref, trashMsg, setTrashMsg, openTrash, lastSyncByVault, contentRef, mtimeRef,
+    setAutoCommitPref, trashMsg, setTrashMsg, openTrash, lastSyncByVault, contentRef, mtimeRef, hashRef,
     dirtyRef, staleBackend, settingsError, flushSave, openNote, edit, markDirty, startBlockEdit,
     cancelBlockEdit, commitBlockEdit, splitBlockEdit, toggleCheckbox, switchVault, newNote,
     isPinned, tree, moveNote, renameNote, removeNote, forgetVault, savePat, setVaultKnowledge,
@@ -716,6 +716,7 @@ export default function MdNotebookPage() {
                 gap: '4px',
                 padding: '4px',
                 background: 'var(--card)',
+                border: '1px solid var(--border)',
                 borderRadius: '8px',
               }}
             >
@@ -758,10 +759,14 @@ export default function MdNotebookPage() {
                 time in two panes, and one shared key would silently reflow the
                 other. */}
             <ReadingWidthToggle value={fullWidth ? 'full' : 'md'} onToggle={toggleFullWidth} />
+            {/* While syncing: aria-disabled plus the busy guard, NOT native
+                disabled, which drops a keyboard user's focus to the page for
+                the whole run. The cursor and muted look stay in the style. */}
             <button
               type="button"
-              onClick={() => void runSync()}
-              disabled={syncing}
+              onClick={() => { if (!syncing) void runSync() }}
+              aria-disabled={syncing || undefined}
+              aria-busy={syncing || undefined}
               title={
                 activeVault?.localOnly
                   ? i18nT('apps.mdNotebook.sync.localTitle')
@@ -901,6 +906,7 @@ export default function MdNotebookPage() {
                 setContent(fileConflict.disk)
                 contentRef.current = fileConflict.disk
                 mtimeRef.current = fileConflict.mtime
+                hashRef.current = fileConflict.contentHash ?? null
                 setDirty(false)
                 dirtyRef.current = false
                 setFileConflict(null)
@@ -920,9 +926,10 @@ export default function MdNotebookPage() {
             <button
               type="button"
               onClick={() => {
-                // Keep the editor's version: adopt the fresh mtime so the next
-                // save is accepted, then save.
+                // Keep the editor's version: adopt the disk version's tokens so
+                // the next save is accepted against exactly what was shown, then save.
                 mtimeRef.current = fileConflict.mtime
+                hashRef.current = fileConflict.contentHash ?? null
                 setFileConflict(null)
                 void flushSave()
               }}

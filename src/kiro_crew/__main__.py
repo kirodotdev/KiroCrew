@@ -25,8 +25,12 @@ import sys
 from kiro_crew import platform_compat, version_line
 from kiro_crew._llama_lib_path import drop_inherited_lib_path
 from kiro_crew._ssl_compat import _ensure_ssl_certs
+from kiro_crew.desktop_stdio import redirect_desktop_stdio
 from kiro_crew.stdlib_shadow import refuse_if_stdlib_shadowed
 
+# Windows desktop: aim stdout/stderr at the shell's launch log before anything
+# prints, so a traceback from the steps below still reaches it (no-op otherwise).
+redirect_desktop_stdio()
 # Windows: force UTF-8 stdout/stderr before any non-ASCII output (no-op on POSIX).
 platform_compat.ensure_utf8_console()
 _ensure_ssl_certs()

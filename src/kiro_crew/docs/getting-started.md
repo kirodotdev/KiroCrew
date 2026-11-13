@@ -44,16 +44,29 @@ faster one, or `--version X.Y.Z` to pin an exact release. The installer uses
 PyPI. To install with pip directly, point it at a release channel's index:
 
 ```bash
-pip install --pre kirocrew \
+umask 022
+pip install kirocrew \
   --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 ```
+
+Stable versions carry no prerelease suffix, so this needs no `--pre`. The
+`insider` and `nightly` indexes publish only prerelease versions and need
+`pip install --pre`, which also lets pip pick prerelease versions of
+third-party dependencies.
 
 `--extra-index-url` (not `--index-url`) is required, because the channel index
 carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
 
+Create the venv and install under `umask 022`. Under umask `002`, a common
+default on Ubuntu and Fedora, `python -m venv` and pip leave the venv
+group-writable, and `kirocrew service install` then refuses to attach the
+AppArmor profile the agent sandbox needs on hosts that restrict user namespaces.
+`chmod -R g-w <venv>` repairs an existing install.
+
 ### From a source checkout
 
 ```bash
+umask 022                       # see the umask note above
 git clone https://github.com/kirodotdev/KiroCrew.git
 cd KiroCrew
 cd website && npm install && npm run build && cd ..
@@ -76,6 +89,10 @@ kiro-cli login
 On the first dashboard launch, the Set up Kiro page walks through installing the
 CLI and completing sign-in.
 
+Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
+what carries over (agents, MCP servers, steering, your login), why a Crew chat
+behaves differently from `kiro-cli chat`, and how to get CLI-style behaviour.
+
 ## First-Time Setup
 
 ```bash
@@ -89,30 +106,15 @@ directory, timezone, dashboard URL, and the `http://kirocrew.localhost:5476`
 custom domain. It configures no messaging channels: connect them after setup
 from the dashboard, or run `kirocrew setup --slack` for the guided Slack setup.
 
-To browse, install the Playwright agent CLI (needs Node.js 20 or newer):
-
-```bash
-npm install -g @playwright/cli@latest
-playwright-cli install-browser chromium
-playwright-cli install --skills agents --global
-```
-
-`install-browser` downloads a separate Chromium build into your user cache and
-needs no root. It does not install Google Chrome, and it does not install OS
-libraries. If the download reports missing libraries, install them with your own
-package manager; on Debian or Ubuntu `sudo npx playwright install-deps chromium`
-does it. The Settings → Browser page runs the same download on the machine the
-gateway runs on. On a Debian or Ubuntu (apt) host it first tries the download
-with Playwright's `--with-deps`, which also installs the libraries, and retries
-without it if that step is refused. It prints the library command for that
-machine when one is still needed.
-
-Having `playwright-cli` on your `PATH` is what makes browsing available, so
-uninstalling it is how you take the capability away. Note that it covers
-`playwright-cli attach --extension`, which drives your own running Chrome with
-the sessions you are logged into. The dashboard's **Browser** panel shows the
-live session and lets you take over with real mouse and keyboard, which is how
-you complete a CAPTCHA or a 2FA prompt.
+To browse, open **Settings → Browser**. The agent browses through one driver that
+the gateway runs for it, and the page is shown in the chat as a live card you can
+take over with one click. Install the engine (one click, no Node.js), then either
+connect your own Chrome (turn on `chrome://inspect/#remote-debugging` once and
+click **Allow** when Chrome asks) or skip that and let the agent use Kiro's own
+headless Chromium. Logins happen when you take the card over, which is also how
+you complete a CAPTCHA or a 2FA prompt; the agent never types a password. A
+browser CLI directory left under the data home by an earlier version is no
+longer used; `kirocrew doctor` names it so you can delete it.
 
 Use `kirocrew setup --agent-only` to reinstall just the agent config and skip
 the other wizard steps. `--electron-only` installs only the desktop app (macOS),

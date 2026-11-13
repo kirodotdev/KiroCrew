@@ -55,6 +55,9 @@ class _FakeProvider:
     def is_process_alive(self) -> bool:
         return True
 
+    def set_delete_delay(self, seconds: float) -> None:
+        return None
+
 
 class _RecordingSessions:
     """SessionManager double recording every child-session allocation request."""
@@ -87,6 +90,12 @@ class _RecordingSessions:
 
     async def end_children_for(self, key):
         return None
+
+    async def run_identity_check(self):
+        return None
+
+    def is_retiring(self, key):
+        return False
 
 
 class _Decision:

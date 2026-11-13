@@ -53,6 +53,7 @@ from mcp_gateway_backend_coverage_helpers import (
 from kiro_crew.mcp_caller import CALLER_META_KEY, CallerContext
 from kiro_crew.mcp_gateway import backend as backend_mod
 from kiro_crew.mcp_gateway.backend import HEARTBEAT_PING_ID, _PendingRequest
+from kiro_crew.testing.wait import await_until
 
 # --- _route_backend_line ----------------------------------------------------
 
@@ -137,8 +138,9 @@ class TestRouteBackendLine:
             backend_mod._APPS_STUB_SENTINEL, None, "resources/read", apps_future=fut
         )
         await backend._route_backend_line(_line({"id": "gw-1", "result": {"contents": []}}))
-        # flake-ok: pre-existing await of a future the route call above resolved, moved verbatim
-        assert (await fut)["result"] == {"contents": []}
+        assert (await await_until(fut, what="the apps sentinel future the route call resolved"))[
+            "result"
+        ] == {"contents": []}
 
     @pytest.mark.asyncio
     async def test_resolved_apps_future_is_not_re_set(self) -> None:
@@ -149,8 +151,9 @@ class TestRouteBackendLine:
             backend_mod._APPS_STUB_SENTINEL, None, "resources/read", apps_future=fut
         )
         await backend._route_backend_line(_line({"id": "gw-1", "result": {"second": True}}))
-        # flake-ok: pre-existing await of a future the test resolved first, moved verbatim
-        assert await fut == {"first": True}
+        assert await await_until(fut, what="the apps future the test resolved first") == {
+            "first": True
+        }
 
     @pytest.mark.asyncio
     async def test_attributable_notification_goes_to_one_stub(self) -> None:

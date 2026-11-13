@@ -366,10 +366,11 @@ describe('ui.show: point at an indexed location, never click it', () => {
   it('moving a job to a folder has the person tick that one job, never Select all', () => {
     const r = resolveGuideAction({ ...show('schedule.move-to-folder'), params: { location_id: 'schedule.move-to-folder', pick: 'Morning summary' } })
     if (!r.ok) throw new Error(r.reason)
-    const [tick, move] = r.action.steps
+    const [tick, open, move] = r.action.steps
     expect(tick.complete).toMatchObject({ kind: 'select', selection: 'one_job_checked' })
     expect(tick.target).toMatchObject({ kind: 'location', id: 'schedule.job-list', pickName: 'Morning summary' })
     expect(tick.textKey).toBe('components.guideLayer.select_tickjob')
+    expect(open.target).toMatchObject({ kind: 'location', id: 'schedule.batch-actions' })
     expect(move.target).toMatchObject({ kind: 'location', id: 'schedule.move-to-folder' })
     expect(r.action.steps.some(st => st.target.kind === 'location' && st.target.id === 'schedule.select-all')).toBe(false)
   })
@@ -488,7 +489,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(stepBoundHolds(uninstall)).toBe(false)
   })
 
-  it('walks to Delete mate through the editor and its Danger zone row, which it points at', () => {
+  it('walks to Delete bot through the editor and its Danger zone row, which it points at', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     expect(r.action.steps.map(st => st.complete.kind)).toEqual(['select', 'reach', 'ack'])
@@ -538,11 +539,11 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(factVerdict(discover)).toBeNull()
     window.history.pushState({}, '', '/apps/')
     expect(factVerdict(discover)).toBe('done')
-    const mcp = page('MCP Servers', '/capabilities?tab=mcp')
+    const skills = page('Skills', '/capabilities?tab=skills')
     window.history.pushState({}, '', '/capabilities?tab=crews')
-    expect(factVerdict(mcp)).toBeNull()
-    window.history.pushState({}, '', '/capabilities?tab=mcp')
-    expect(factVerdict(mcp)).toBe('done')
+    expect(factVerdict(skills)).toBeNull()
+    window.history.pushState({}, '', '/capabilities?tab=skills')
+    expect(factVerdict(skills)).toBe('done')
     window.history.pushState({}, '', '/chat')
   })
 
@@ -576,8 +577,8 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(r.action.enter.to({ pathname: '/schedule', search: '' })).toBe('/chat')
     const mcp = resolveGuideAction(show('mcp.add-server'))
     if (!mcp.ok) throw new Error('expected ok')
-    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=skills' })).toBe('/capabilities?tab=mcp')
-    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=mcp' })).toBe('/capabilities?tab=mcp')
+    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=skills' })).toBe('/capabilities?tab=mcp-servers')
+    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=mcp-servers' })).toBe('/capabilities?tab=mcp-servers')
     expect(alreadyAt('/chat', { pathname: '/chatter', search: '' })).toBe(false)
   })
 
@@ -720,12 +721,12 @@ describe('ui.show: point at an indexed location, never click it', () => {
     }
   })
 
-  it('the Delete mate guide carries the Danger zone notice as its caution text', () => {
+  it('the Delete bot guide carries the Danger zone notice as its caution text', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     const last = r.action.steps[r.action.steps.length - 1]
     expect(last.cautionKey).toBe('pages.kiroCrewAgentsPage.deleting_a_crew_unbinds_it_from_new_sessions_its')
-    expect(i18nT(last.cautionKey!)).toMatch(/only unbinds/)
+    expect(i18nT(last.cautionKey!)).toMatch(/workspace, memory and past chats are kept/)
     expect(r.action.steps.slice(0, -1).every(st => st.cautionKey === undefined)).toBe(true)
   })
 
@@ -930,7 +931,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
 })
 
 /** The shell's gate fact, as App.tsx reports it. */
-function GateFact({ id, on }: { id: 'developer_mode' | 'terminal_enabled'; on: boolean }) {
+function GateFact({ id, on }: { id: 'terminal_enabled'; on: boolean }) {
   useGuideGate(id, on)
   return null
 }
@@ -1005,46 +1006,43 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   it('the plans resolve a select step at its picker and a gate step that points at nothing', () => {
     const edit = resolveGuideAction(show('members.edit'))
     if (!edit.ok) throw new Error(edit.reason)
-    // The Crewmates preview's gate opens the plan; the pick is the next step.
-    expect(edit.action.steps[0]).toMatchObject({ target: { kind: 'none' }, complete: { kind: 'gate', gate: 'preview_flag:mc-preview-crew' } })
-    expect(edit.action.steps[1]).toMatchObject({
+    expect(edit.action.steps[0]).toMatchObject({
       target: { kind: 'location', id: 'members.roster-list' },
       complete: { kind: 'select', selection: 'crewmate_selected', entity: 'crewmate' },
       textKey: 'components.guideLayer.select_crewmate',
     })
-    const dev = resolveGuideAction(show('shell.developer'))
-    if (!dev.ok) throw new Error(dev.reason)
-    expect(dev.action.steps[0]).toMatchObject({
+    const term = resolveGuideAction(show('shell.terminal'))
+    if (!term.ok) throw new Error(term.reason)
+    expect(term.action.steps[0]).toMatchObject({
       target: { kind: 'none' },
-      complete: { kind: 'gate', gate: 'developer_mode', settingId: 'developer.developer-mode' },
-      textKey: 'components.guideLayer.gate_setting',
+      complete: { kind: 'gate', gate: 'terminal_enabled' },
+      textKey: 'components.guideLayer.gate_terminal_enabled',
     })
-    expect(dev.action.steps[0].textVars?.label).toBe(i18nT('pages.settings.developerPanel.developer_mode'))
   })
 
   it('a mate\'s permission picker is its own ceiling: ui.show has no plan for it', () => {
     expect(resolveGuideAction(show('members.permissions')).ok).toBe(false)
   })
 
-  it('a gate that is off pauses on a blocker naming its setting, reports gate_off, and points at nothing', async () => {
-    pending = [planned('shell.developer', 'desktop')]
+  it('a gate that is off pauses on a blocker saying what it needs, reports gate_off, and points at nothing', async () => {
+    pending = [planned('shell.terminal', 'desktop')]
     walk(pending[0])
-    renderGuide('/chat/slot-A', <><GateFact id="developer_mode" on={false} /><LocTarget id="shell.developer" /></>)
+    renderGuide('/chat/slot-A', <><GateFact id="terminal_enabled" on={false} /><LocTarget id="shell.terminal" /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     const blocker = await screen.findByTestId('guide-gate-blocker')
-    expect(blocker.textContent).toBe(L('gate_setting', { label: i18nT('pages.settings.developerPanel.developer_mode') }))
+    expect(blocker.textContent).toBe(L('gate_terminal_enabled'))
     expect(screen.queryByTestId('guide-arrow')).toBeNull()
     await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1), { timeout: 4000 })
     expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'target_missing', detail: 'gate_off' })
   })
 
   it('a paused gate resumes by itself once the gate is on, and the guide never flips it', async () => {
-    const offered = planned('shell.developer', 'desktop')
+    const offered = planned('shell.terminal', 'desktop')
     pending = [offered]
     walk(offered)
     function Host() {
       const [on, setOn] = useState(false)
-      return <><GateFact id="developer_mode" on={on} /><button type="button" data-testid="turn-on" onClick={() => setOn(true)}>on</button><LocTarget id="shell.developer" /></>
+      return <><GateFact id="terminal_enabled" on={on} /><button type="button" data-testid="turn-on" onClick={() => setOn(true)}>on</button><LocTarget id="shell.terminal" /></>
     }
     renderGuide('/chat/slot-A', <Host />)
     fireEvent.click(await screen.findByTestId('guide-start'))
@@ -1060,7 +1058,6 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   })
 
   it('a select step points at the picker and completes only on the selection fact, never on a visible later control', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     function Host() {
@@ -1079,22 +1076,21 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
     expect(await screen.findByText(L('select_crewmate'))).toBeTruthy()
     expect(await screen.findByTestId('guide-arrow')).toBeTruthy()
     await tickTracker(4)
-    // Only the preview gate (on) has passed; the pick is still waiting.
-    expect(writes('/api/guide/progress')).toHaveLength(1)
+    // The pick is still waiting.
+    expect(writes('/api/guide/progress')).toHaveLength(0)
     fireEvent.click(screen.getByTestId('roster'))
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'observed' })
   })
 
   it('a pick already made when the step starts passes the step at once: no "already open, press Next" stop', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     renderGuide('/members', <><SelectionFact selected available /><LocTarget id="members.roster-list" /><LocTarget id="members.edit" rect={{ top: 400, left: 300, width: 80, height: 28 }} /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
-    // The preview gate passes, then the pick already made passes its step.
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
+    // The pick already made passes its step.
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'observed' })
   })
 
   it('a job already open before a delete step is shown once to confirm, and goes on only on Next', async () => {
@@ -1176,33 +1172,31 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   })
 
   it('a pick already made while its list is folded away passes the step too, never sending the person to the list', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     renderGuide('/members', <><SelectionFact selected available /><LocTarget id="members.edit" rect={{ top: 400, left: 300, width: 80, height: 28 }} /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
-    // The preview gate passes, then the pick already made passes its step.
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
+    // The pick already made passes its step.
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'observed' })
   })
 
   it('an empty picker shows a blocker and reports selection_empty; it never points at a create control', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     renderGuide('/members', <><SelectionFact selected={false} available={false} /><LocTarget id="members.roster-list" /><LocTarget id="members.new" /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     expect((await screen.findByTestId('guide-selection-empty')).textContent).toBe(L('select_empty_crewmate'))
     expect(screen.queryByTestId('guide-arrow')).toBeNull()
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2), { timeout: 4000 })
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'target_missing', detail: 'selection_empty' })
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1), { timeout: 4000 })
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'target_missing', detail: 'selection_empty' })
   })
 
   it('asks for a re-plan when the viewport class changes mid-guide, and not before', async () => {
     const vp = switchableViewport()
-    pending = [planned('shell.developer', 'desktop')]
+    pending = [planned('shell.terminal', 'desktop')]
     walk(pending[0])
-    renderGuide('/chat/slot-A', <><GateFact id="developer_mode" on /><LocTarget id="shell.developer" /></>)
+    renderGuide('/chat/slot-A', <><GateFact id="terminal_enabled" on /><LocTarget id="shell.terminal" /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
     expect(writes('/api/guide/replan')).toHaveLength(0)
@@ -1216,14 +1210,14 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
 
   it('a refused re-plan is not asked again for the same revision, even as the guide is re-read', async () => {
     const vp = switchableViewport()
-    const offered = planned('shell.developer', 'desktop')
+    const offered = planned('shell.terminal', 'desktop')
     pending = [offered]
     walk(offered)
     server.use(http.post('/api/guide/replan', async ({ request }) => {
       calls.push({ path: '/api/guide/replan', body: (await request.json()) as Record<string, unknown>, headers: request.headers })
       return HttpResponse.json({ error: 'the steps walked so far differ in that placement', code: 'replan_not_at_boundary' }, { status: 409 })
     }))
-    renderGuide('/chat/slot-A', <><GateFact id="developer_mode" on /><LocTarget id="shell.developer" /></>)
+    renderGuide('/chat/slot-A', <><GateFact id="terminal_enabled" on /><LocTarget id="shell.terminal" /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
     act(() => vp.toPhone())
@@ -1241,19 +1235,20 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
 
   it('a re-plan that fails for any other reason says so in the guide', async () => {
     const vp = switchableViewport()
-    const offered = planned('shell.developer', 'desktop')
+    const offered = planned('shell.terminal', 'desktop')
     pending = [offered]
     walk(offered)
     server.use(http.post('/api/guide/replan', async ({ request }) => {
       calls.push({ path: '/api/guide/replan', body: (await request.json()) as Record<string, unknown>, headers: request.headers })
       return HttpResponse.json({ error: 'replan store unavailable' }, { status: 503 })
     }))
-    renderGuide('/chat/slot-A', <><GateFact id="developer_mode" on /><LocTarget id="shell.developer" /></>)
+    renderGuide('/chat/slot-A', <><GateFact id="terminal_enabled" on /><LocTarget id="shell.terminal" /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
     act(() => vp.toPhone())
     await waitFor(() => expect(writes('/api/guide/replan')).toHaveLength(1))
-    expect(await screen.findByText('replan store unavailable')).toBeTruthy()
+    expect(await screen.findByText(L('error_generic'))).toBeTruthy()
+    expect(screen.queryByText('replan store unavailable')).toBeNull()
   })
 
   describe('a pick binds every step after it, through the confirm its removal opens', () => {

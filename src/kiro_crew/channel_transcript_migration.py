@@ -19,8 +19,8 @@ Two states exist on an upgraded install:
 Design:
 
 * **Loss-safe ordering.** The merged transcript is written first (atomically, via
-  temp file + ``os.replace``); the leftover is deleted only after that write
-  returns. Any failure leaves BOTH files exactly as they were, so the worst
+  temp file + ``os.replace``, with the file and its directory synced); the
+  leftover is deleted only after that write returns. Any failure leaves BOTH files exactly as they were, so the worst
   outcome is "the leftover is still there", never "messages are gone".
 * **Idempotent.** A successful pass leaves one file, so the next pass finds
   nothing. A pass that merged but failed to delete re-merges to a byte-identical
@@ -47,7 +47,7 @@ import json
 import logging
 from pathlib import Path
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.history import (
     ConversationLog,
     HistoryLockTimeout,
@@ -56,6 +56,7 @@ from kiro_crew.history import (
     transcript_sort_key,
 )
 from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
+from kiro_crew.history_rewrite import rewrite_transcript
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -334,10 +335,16 @@ def _invalidate_consolidation_offset(
 
 
 def _write_merged(path: Path, meta: dict, messages: list[dict]) -> None:
-    """Replace *path* with *meta* followed by *messages*, atomically."""
+    """Replace *path* with *meta* followed by *messages*, atomically and synced.
+
+    The file's data is synced before the rename. The directory entry naming it is
+    synced by :func:`_migrate_one` right before the orphan is deleted, on every
+    path that deletes, including a retry whose merge is unchanged and so skips
+    this write.
+    """
     lines = [json.dumps(meta) + "\n"]
     lines.extend(json.dumps(m) + "\n" for m in messages)
-    atomic_write(path, "".join(lines))
+    rewrite_transcript(path, "".join(lines))
 
 
 def _migrate_one(
@@ -396,6 +403,13 @@ def _migrate_one(
                 channel_stem,
             )
             return False
+        # The orphan holds the only other copy of its rows, so the directory entry
+        # naming the merged file is synced first, on EVERY deleting pass: a retry
+        # whose merge is byte-identical skipped the write above, and an earlier
+        # pass's sync may have failed after its rename. Until it is on disk a power
+        # loss can bring back the old channel transcript with the orphan gone. A
+        # failed sync raises, so the orphan is kept for the next pass.
+        fsync_dir(channel_path.parent)
         return log.delete_session(orphan_stem)
 
 

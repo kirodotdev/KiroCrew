@@ -57,3 +57,29 @@ def test_dm_single_session_row_names_both_preconditions() -> None:
     row = _row("slack.dm_single_session")
     assert "`messaging.use_transport`" in row
     assert "`review` mode" in row
+
+
+def test_stt_rows_name_the_range_the_loader_clamps_into() -> None:
+    from kiro_crew.stt import limits
+
+    idle = _row("stt.idle_evict_secs")
+    assert f"{limits.MIN_IDLE_EVICT_SECS}-{limits.MAX_IDLE_EVICT_SECS} s" in idle
+    timeout = _row("stt.timeout_secs")
+    assert f"{limits.MIN_TIMEOUT_SECS}-{limits.MAX_TIMEOUT_SECS} s" in timeout
+    for row in (idle, timeout):
+        assert "clamped into that range" in row
+
+
+def test_restore_window_row_names_the_settings_range_and_no_limit() -> None:
+    import inspect
+
+    from kiro_crew.dashboard.file_api import dashboard_config
+
+    src = inspect.getsource(dashboard_config)
+    # The Settings save is the one place this key is bounded; the loader keeps it as given.
+    assert re.search(
+        r'max\(\s*0,\s*min\(1440,\s*body_int\(body\["restore_window_minutes"\]\)\s*\)', src
+    )
+    row = _row("dashboard.restore_window_minutes")
+    assert "0-1440" in row
+    assert "`0` = no limit" in row

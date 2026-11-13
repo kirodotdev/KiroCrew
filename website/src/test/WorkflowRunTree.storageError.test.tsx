@@ -11,7 +11,10 @@ const RAW = `Workflow checkpoint could not be saved. ${'diagnostic detail '.repe
 const KEY = 'apps.workflows.workflowRunTree.checkpoint_save_failed'
 
 afterEach(async () => {
-  await i18next.changeLanguage('en')
+  // The switch re-renders any still-mounted notice, so it is an action the test causes.
+  await act(async () => {
+    await i18next.changeLanguage('en')
+  })
   __resetNavSeamForTests()
   sessionStorage.clear()
 })

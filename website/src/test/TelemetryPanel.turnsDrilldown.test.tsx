@@ -9,7 +9,7 @@
  * the drill-down needs no OTEL switch and no extra recording.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
@@ -120,6 +120,21 @@ describe("TelemetryPanel — per-turn drill-down", () => {
     expect(screen.getByText("1.25")).toBeInTheDocument();
     // The second row has no duration/context: unknown renders as a dash, not 0.
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("tags only the turn recorded as delivering no reply", async () => {
+    await mount([
+      { ts: "2026-08-20T10:00:00Z", model: "model-silent", credits: 0.45, delivered: false },
+      { ts: "2026-08-20T10:01:00Z", model: "model-replied", credits: 0.18, delivered: true },
+      // An older row predating the field is unknown, not undelivered.
+      { ts: "2026-08-20T10:02:00Z", model: "model-older", credits: 0.2 },
+    ]);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Show per-turn detail" })[0],
+    );
+    const silent = (await screen.findByText("model-silent")).closest("tr")!;
+    expect(within(silent).getByText("no reply")).toBeInTheDocument();
+    expect(screen.getAllByText("no reply")).toHaveLength(1);
   });
 
   it("keeps an open drill-down on the window on screen while a new pick loads", async () => {

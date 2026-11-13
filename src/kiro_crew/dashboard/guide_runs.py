@@ -48,7 +48,11 @@ Lifecycle::
   selection scope), never which entity anyone picked.
 * One tab owns an active guide, on a lease renewed by heartbeat. A lapsed lease
   returns the guide to ``offered``; another tab takes it over only by an explicit
-  claim (``take_over`` is an explicit human action in the UI).
+  claim (``take_over`` is an explicit human action in the UI). A claim at the
+  revision the lapse moved the guide on from still lands, and a lapse or claim
+  keeps a missing step's reason.
+* The person's Cancel (``cancelled_by_user``) always succeeds, from any tab and
+  at any revision; on a guide that already ended it answers it as it stands.
 * A ``ui`` step advances on the owning tab's report. A ``commit`` step advances
   ONLY through :meth:`GuideStore.begin_commit` / :meth:`GuideStore.finish_commit`,
   called by the real owner-only mutation route after IT succeeded, with the
@@ -118,7 +122,7 @@ TAB_REFUSE_REASONS = frozenset({REASON_BUILD_MISMATCH})
 #: ``target_missing`` because a runtime predicate the step's control needs
 #: (``UI_RUNTIME_PREDICATES``) is unmet, so the control cannot be drawn.
 REASON_PREDICATE_UNMET = "predicate_unmet"
-#: ``target_missing`` on a ``gate`` step: the gate (developer mode, a preview
+#: ``target_missing`` on a ``gate`` step: the gate (the terminal, a preview
 #: flag) is off. The guide carries ``blocker: {kind, gate, setting_id}`` so the
 #: agent can propose turning it on; the guide resumes once it is on.
 REASON_GATE_OFF = "gate_off"
@@ -136,6 +140,9 @@ _MISSING_DETAILS = {
     "selection_empty": REASON_NEEDS_SELECTION,
     "not_found": REASON_NOT_FOUND,
 }
+#: Every reason a ``target_missing`` report can leave on a guide. A claim or a
+#: lease lapse keeps it: it describes the step, not who owns the guide.
+_MISSING_REASONS = frozenset({"target_missing", *_MISSING_DETAILS.values()})
 #: Which step kind each blocker reason may be reported on.
 _DETAIL_STEP_KIND = {
     "gate_off": catalog.STEP_KIND_GATE,
@@ -184,6 +191,10 @@ class _Guide:
     dismissed: bool = False
     intro: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    #: The revision a lease lapse moved the guide on from, while nothing else
+    #: has moved it since; ``None`` otherwise. A claim made at it is answered as
+    #: one made at the current revision (see :meth:`GuideStore.claim`).
+    lapsed_from_revision: int | None = None
 
     def current_step_meta(self) -> dict[str, Any] | None:
         """The current ``ui.show`` step's ``select`` / ``gate`` entry, if it has one."""
@@ -269,6 +280,7 @@ class GuideStore:
 
     def _touch(self, g: _Guide, *, reason: str | None = None) -> None:
         g.revision += 1
+        g.lapsed_from_revision = None
         if reason is not None:
             g.reason = reason
 
@@ -300,11 +312,20 @@ class GuideStore:
             # after a reload) can claim; the revision bump makes the lapsed tab's
             # next write stale. An in-flight commit stays associated: the save it
             # belongs to was submitted under a valid lease.
+            # A missing step keeps WHY it is missing (several controls carry the
+            # name, a gate is off): the tab that takes it over draws that, not a
+            # bare "stopped". Nothing about the step moved, only who owns it.
             g.owner_tab = None
             g.lease_expires_at = None
             if g.status == STATUS_ACTIVE:
                 g.status = STATUS_OFFERED
-            self._touch(g, reason="lease_lapsed")
+            before = g.revision
+            self._touch(g, reason=self._kept_missing_reason(g, "lease_lapsed"))
+            # The lapse is the gateway's own move, made in the same request as
+            # the write that found it (routes sweep before they act), so no tab
+            # could have read it yet: a claim at the revision before it is not
+            # stale. Any later move clears this (:meth:`_touch`).
+            g.lapsed_from_revision = before
             return True
         return False
 
@@ -532,10 +553,26 @@ class GuideStore:
         self._touch(g, reason="")
         return g.to_public()
 
-    def _check_revision(self, g: _Guide, revision: object) -> None:
+    def _check_revision(self, g: _Guide, revision: object, *, lapse_ok: bool = False) -> None:
+        """Refuse a write made at a revision the guide has moved on from.
+
+        *lapse_ok*: the revision the last lease lapse moved the guide on from
+        also passes, while nothing else has moved it (a claim: the lapse only
+        freed the guide, which is what the claim asks for).
+        """
         rev = _clean_revision(revision)
-        if rev != g.revision:
-            raise GuideError(409, "stale_revision", "the guide changed; reload it")
+        if rev == g.revision:
+            return
+        if lapse_ok and g.lapsed_from_revision is not None and rev == g.lapsed_from_revision:
+            return
+        raise GuideError(409, "stale_revision", "the guide changed; reload it")
+
+    @staticmethod
+    def _kept_missing_reason(g: _Guide, otherwise: str) -> str:
+        """*g*'s reason when it says why a missing step is missing, else *otherwise*."""
+        if g.status == STATUS_TARGET_MISSING and g.reason in _MISSING_REASONS:
+            return g.reason
+        return otherwise
 
     def _require_live(self, g: _Guide) -> None:
         if g.status in TERMINAL_STATUSES:
@@ -599,7 +636,10 @@ class GuideStore:
         g = self._get(guide_id)
         tab = _clean_tab(tab_id)
         self._require_live(g)
-        self._check_revision(g, revision)
+        # A reloaded tab takes the guide over at the revision it read; the lease
+        # of the tab it replaces may lapse before the press arrives, which moves
+        # the revision without anything the claim depends on changing.
+        self._check_revision(g, revision, lapse_ok=True)
         if take_over is not True and take_over is not False:
             raise GuideError(400, "invalid_take_over", "take_over must be a boolean")
         if g.owner_tab is not None and g.owner_tab != tab and not take_over:
@@ -612,7 +652,7 @@ class GuideStore:
         g.lease_expires_at = self._clock() + TAB_LEASE_SECONDS
         if g.status == STATUS_OFFERED:
             g.status = STATUS_ACTIVE
-        self._touch(g, reason="")
+        self._touch(g, reason=self._kept_missing_reason(g, ""))
         return g.to_public()
 
     def heartbeat(self, *, guide_id: object, tab_id: object, revision: object) -> dict[str, Any]:
@@ -835,17 +875,30 @@ class GuideStore:
         ``saved_without_guide``: the action's own save went through without the
         guide's association (the tab had not caught up), so the guide has no
         evidence to complete on and ends saying the change was made outside it.
+        It is the owning tab's own automatic close, so it keeps the
+        compare-and-set and the owner check.
+
+        ``cancelled_by_user`` (the default) is the person pressing Cancel, in
+        whichever of their tabs shows the guide, and always succeeds: a guide
+        that already ended is answered as it stands, and neither the revision
+        the tab read nor which tab owns the guide is checked, because a lapsed
+        lease or a reload moves both without the person's intent changing.
         """
         g = self._get(guide_id)
         tab = _clean_tab(tab_id)
-        self._require_live(g)
-        self._check_revision(g, revision)
-        if g.owner_tab is not None:
-            self._require_owner_tab(g, tab)
         if reason is None:
             reason = REASON_CANCELLED_BY_USER
         if not isinstance(reason, str) or reason not in TAB_CANCEL_REASONS:
             raise GuideError(400, "invalid_reason", "unknown cancel reason")
+        if reason == REASON_CANCELLED_BY_USER:
+            _clean_revision(revision)
+            if g.status in TERMINAL_STATUSES:
+                return g.to_public()
+        else:
+            self._require_live(g)
+            self._check_revision(g, revision)
+            if g.owner_tab is not None:
+                self._require_owner_tab(g, tab)
         self._finish(g, STATUS_CANCELLED, str(reason))
         return g.to_public()
 

@@ -32,11 +32,14 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 class TestTimeoutContext:
     """Tests for _timeout_context() helper."""
 
-    def test_basic_with_elapsed(self) -> None:
+    def test_basic_with_elapsed(self, manual_clock, monkeypatch) -> None:
+        from kiro_crew import subagent
         from kiro_crew.subagent import SubagentInfo, _timeout_context
 
-        # flake-ok: pre-existing 60 s offset from the real clock moved verbatim; the whole-second elapsed holds unless a second passes between the two clock reads
-        info = SubagentInfo(id="t1", task="test", turns=5, max_turns=30, started=time.time() - 60)
+        manual_clock.install(monkeypatch, subagent)
+        info = SubagentInfo(
+            id="t1", task="test", turns=5, max_turns=30, started=manual_clock.time() - 60
+        )
         ctx = _timeout_context(info)
         assert "turn 5/30" in ctx
         assert "elapsed: 60s" in ctx
@@ -212,8 +215,7 @@ class TestParentTrustedSpawnApproval:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = manager.spawn("trusted task", parent_session_key="dashboard:chat-1")
             assert info is not None
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await manager._tasks[info.id]
+            await await_until(manager._tasks[info.id], what="the spawned run finishes")
 
         assert info.done is True
         assert info.error == ""
@@ -235,8 +237,7 @@ class TestParentTrustedSpawnApproval:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = manager.spawn("untrusted task", parent_session_key="dashboard:chat-1")
             assert info is not None
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await manager._tasks[info.id]
+            await await_until(manager._tasks[info.id], what="the spawned run finishes")
 
         assert info.done is True
         approval_callback.assert_awaited_once()
@@ -257,8 +258,7 @@ class TestParentTrustedSpawnApproval:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = manager.spawn("no parent task")
             assert info is not None
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await manager._tasks[info.id]
+            await await_until(manager._tasks[info.id], what="the spawned run finishes")
 
         assert info.done is True
         approval_callback.assert_awaited_once()
@@ -675,8 +675,7 @@ class TestSpawnMemoryModeSnapshot:
 
         async def approve(request_id, description, parent):
             entered.set()
-            # flake-ok: pre-existing approval future the test resolves moved verbatim; tracked for a de-flake pass
-            return await approved
+            return await await_until(approved, what="the test resolves the approval")
 
         manager = SubagentManager(
             sessions=_mock_sessions(),

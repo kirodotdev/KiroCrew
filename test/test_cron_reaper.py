@@ -728,12 +728,9 @@ class TestReaperMonotonicDeadline:
     ) -> None:
         """A reaped run's jitter stamp is released by the reap itself.
 
-        ``_run_job_isolated`` stamps the jitter on its claim and its ``finally``
-        releases the claim only while the run still holds it (identity).
-        ``_force_reap`` takes that claim before the finalizer runs, so the fence
-        is False for a reaped run and the finalizer leaves it alone; the reap
-        has to release the claim itself, or a one-shot that is reaped and then
-        removed keeps its entry for the process lifetime.
+        ``_force_reap`` takes the claim before the ``finally`` runs, so the finalizer
+        leaves it alone. Without the reap's release, a reaped then removed one-shot
+        keeps its entry for the process lifetime.
         """
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
@@ -814,16 +811,10 @@ class TestReaperMonotonicDeadline:
 class TestReaperReleasesFinishedTask:
     """A finished task the sweep meets never ran its ``finally``: release it.
 
-    ``_run_job_isolated``'s ``finally`` releases the run's claim before its task
-    ends, so a task that is ``done()`` while its claim is still stored exited
-    without reaching that ``finally``, and the claim -- the job's occupancy --
-    is still standing. The due-scan (``_on_timer``), ``_next_wake_secs`` and
-    ``run_job`` all skip a claimed job, so
-    until something releases it the job silently misses every scheduled fire.
-    The manual-run route releases it only when a user clicks Run; the sweep is
-    the consumer that runs on its own, so it must do the same release -- and
-    on the sweep that meets the finished task, not at the run's deadline,
-    which is at least ``_JOB_TIMEOUT_SECS`` and up to a day away.
+    A task that is ``done()`` with its claim still stored skipped the ``finally``.
+    ``_on_timer``, ``_next_wake_secs`` and ``run_job`` all skip a claimed job, so it
+    would miss every fire. The sweep releases it at once, not at the run's deadline
+    (``_JOB_TIMEOUT_SECS`` or more).
     """
 
     @pytest.mark.asyncio
@@ -891,12 +882,9 @@ class TestReaperReleasesFinishedTask:
 class TestTheScansLeaveTheLoop:
     """The per-child identity and liveness reads never run on the event loop.
 
-    ``process_survived`` walks every recorded child with a synchronous ``/proc``
-    or ``sysctl`` read, as do the post-sweep standing read and the group-member
-    vouch; a client can record thousands of descendants, and on the gateway loop
-    the walk would stall chat and heartbeat mid-reap. The loop-side entries run
-    them on the subprocess executor -- pinned here by the thread the platform
-    read observes.
+    ``process_survived`` and its siblings do a synchronous ``/proc`` or ``sysctl`` read
+    per child, and thousands of children would stall chat and heartbeat. Pinned by the
+    thread the platform read observes.
     """
 
     @staticmethod
@@ -1014,12 +1002,9 @@ class TestTheHandleOfATornDownSession:
 class TestTheHandleOfAnOwnedPopen:
     """A provider that runs its process through its own ``Popen`` still yields a handle.
 
-    The claude harness keeps the process on ``provider._proc`` / ``_active_proc``
-    and records no start id on an ACP client, so the handle would carry no pid
-    at all -- and a hung reset there would be audited ``reaped`` with nothing
-    verified. The pid is read off the live owned handle and its identity read
-    fresh: a ``Popen`` whose ``returncode`` is unset pins the pid for its parent,
-    so the read names the process the provider owns.
+    The claude harness keeps the process on ``provider._proc`` / ``_active_proc`` with
+    no start id, so a hung reset would be audited ``reaped`` unverified. A ``Popen``
+    with ``returncode`` unset pins its pid, so the fresh identity read is safe.
     """
 
     def _session_with_proc(self, pid: int | None, returncode: int | None) -> MagicMock:

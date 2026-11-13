@@ -71,11 +71,8 @@ def _notified(state) -> str:
 async def _run(state) -> None:
     """Run the hook the way the route handler hands it to the runner.
 
-    The handler claims the session key and takes a permit from the process-wide
-    semaphore; the runner's ``finally`` gives both back. Calling the runner
-    without taking them would release a permit that was never taken, and the
-    semaphore is unbounded, so later tests that fill it to get a 429 would
-    find spare permits.
+    The runner's ``finally`` releases the session key and a semaphore permit, so both are
+    taken first; a spare permit would break later tests that fill it to get a 429.
     """
     from kiro_crew.dashboard.handlers import hooks
 
@@ -158,5 +155,37 @@ async def test_a_hook_after_readiness_does_not_wait(tmp_path, monkeypatch, close
     state, sent_to_model = _hook_state(tmp_path, monkeypatch)
     state.memory_startup_task = None
     await _run(state)
+
+    assert sent_to_model == ["deploy finished"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_hook_before_the_task_is_published_waits_for_it(
+    tmp_path, monkeypatch, closed_barrier
+):
+    state, sent_to_model = _hook_state(tmp_path, monkeypatch)
+    from kiro_crew.dashboard.handlers import hooks
+
+    state.memory_startup_task = None  # startup is still restoring sessions
+    waiting = asyncio.Event()
+    real_wait = hooks.wait_for_memory_preparation
+
+    async def observed_wait(task) -> None:
+        waiting.set()
+        await real_wait(task)
+
+    monkeypatch.setattr(hooks, "wait_for_memory_preparation", observed_wait)
+    run = asyncio.create_task(_run(state))
+    await await_until(waiting)
+    await asyncio.sleep(0)
+    assert not run.done()  # today: refused at once as "being restored"
+    assert sent_to_model == []
+
+    async def prepare() -> None:
+        assert closed_barrier.complete()
+
+    state.memory_startup_task = asyncio.create_task(prepare())
+    await await_until(run)
 
     assert sent_to_model == ["deploy finished"]

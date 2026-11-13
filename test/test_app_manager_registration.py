@@ -19,6 +19,7 @@ from kiro_crew.apps.manager import (
     _write_installed,
     register_external_app,
 )
+from kiro_crew.dashboard.token_auth import read_app_secret
 
 # --- item #5: cleanup_migrated_builtin matches by name, no migratedTo needed ---
 
@@ -232,27 +233,17 @@ class TestBootSkillReconcile:
         assert not (skills_root / "old-skill").exists()
 
 
-# ---------------------------------------------------------------------------
 # Builtin app-secret generation for mcpServers-only backends
 #
-# Platform defect: the gateway proxy (handle_app_api_proxy) resolves an app's
-# backend three ways — the third being a fallback that derives a loopback base
-# URL from a manifest's mcpServers entry (self-managed apps whose backend is a
-# separate loopback process, e.g. the Crew Companion desktop app on :7778).
-# register_builtin_apps() must not write a .app_secret ONLY when
-# backend.entryPoint was present, so a builtin declaring only mcpServers
-# resolved a backend fine but was refused a secret — and every proxied request
-# then 502'd with "has no secret". The fix generates the secret whenever a
-# backend is resolvable (entryPoint OR a loopback mcpServers URL), while an app
-# with no backend of any kind still gets none.
-# ---------------------------------------------------------------------------
+# handle_app_api_proxy can derive a loopback backend from an mcpServers URL (e.g. the
+# Crew Companion app on :7778), so a secret is generated whenever a backend is
+# resolvable that way or by entryPoint; without one every proxied request 502s.
 
 
 class TestBuiltinSecretForMcpServers:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- class-scoped delenv of one variable, moved verbatim; no test in this suite calls monkeypatch.undo()
-    def _clean_port_env(self, monkeypatch):
-        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+    def _clean_port_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("KIROCREW_PORT", raising=False)
 
     def _register_only(self, monkeypatch, apps):
         """Run register_builtin_apps() with exactly `apps` as the builtin set."""
@@ -299,7 +290,8 @@ class TestBuiltinSecretForMcpServers:
             "mcpServers": {"mcp-only-app": {"url": "http://127.0.0.1:7778/mcp"}},
         }
         self._register_only(monkeypatch, [mcp_only])
-        assert (app_dir("mcp-only-app") / ".app_secret").is_file()
+        assert read_app_secret("mcp-only-app")
+        assert not (app_dir("mcp-only-app") / ".app_secret").exists()
 
     def test_no_backend_builtin_gets_no_secret(self, tmp_path, app_home, monkeypatch):
         """A builtin with no backend of any kind must NOT get a secret."""
@@ -314,18 +306,15 @@ class TestBuiltinSecretForMcpServers:
             "defaultEnabled": False,
         }
         self._register_only(monkeypatch, [no_backend])
+        assert not read_app_secret("no-backend-app")
         assert not (app_dir("no-backend-app") / ".app_secret").is_file()
 
 
 class TestBuiltinDoesNotClobberUserInstall:
     """A builtin must never take over a user-installed app of the same name.
 
-    Apps live at ``apps/<name>/`` keyed on name alone, so a builtin that shares a
-    name with an externally distributed app would, on every gateway restart:
-    replace the user's manifest, set ``lifecycle="locked"`` (removing their
-    ability to uninstall), and overwrite ``origin`` -- which destroys the only
-    record that the install was ever user-owned. That last part is why this is
-    pinned: after one restart, no corrective release could tell the two apart.
+    Apps are keyed on name alone, and overwriting ``origin`` would erase the only record
+    that the install was user-owned.
     """
 
     def _register_only(self, monkeypatch, apps):
@@ -448,11 +437,8 @@ class TestBuiltinDoesNotClobberUserInstall:
 class TestMalformedMcpUrlIsSkippedNotFatal:
     """A malformed mcpServers URL must be SKIPPED, never raise.
 
-    ``resolve_mcp_backend_url`` runs inside ``register_builtin_apps()`` at gateway
-    startup, and a manifest is user-supplied data. ``urlparse`` accessors are lazy and
-    raise ValueError on malformed input -- ``parsed.port`` does it for ":notaport" --
-    so an escape from here propagates out of registration and the gateway fails to
-    START. One bad manifest would take down every builtin, not just its own app.
+    It runs at gateway startup, and ``parsed.port`` raises ValueError for ":notaport",
+    so one bad manifest would stop the gateway from starting.
     """
 
     BAD_URLS = [
@@ -471,11 +457,8 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
     def test_a_hostless_url_defaults_to_loopback_by_design(self):
         """`http://:7778/mcp` is not an error — it resolves to loopback deliberately.
 
-        `host = parsed.hostname or "127.0.0.1"` treats a missing host as "this
-        machine", which is the only safe default here: the SSRF guard still holds,
-        because the fallback is loopback rather than anything the manifest supplied.
-        Pinned so the malformed-input guard above is never "tightened" into rejecting
-        it.
+        The fallback is loopback, not manifest-supplied, so the SSRF guard still holds;
+        the malformed-input guard must not reject it.
         """
         from kiro_crew.apps.manager import resolve_mcp_backend_url
 
@@ -516,7 +499,7 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
         manager.register_builtin_apps()  # must not raise
 
         # It registers, it just gets no secret — there is no reachable backend.
-        assert not (manager.app_dir("bad-url-app") / ".app_secret").is_file()
+        assert not read_app_secret("bad-url-app")
 
     def test_a_valid_loopback_url_is_unaffected(self):
         from kiro_crew.apps.manager import resolve_mcp_backend_url

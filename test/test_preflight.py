@@ -90,11 +90,18 @@ class TestRunPreflightChecks:
         run_preflight_checks()
         assert calls == ["seam"]
 
-    def test_context_failure_degrades_to_empty(self) -> None:
+    def test_context_failure_degrades_to_empty(self, caplog: pytest.LogCaptureFixture) -> None:
         # A transient adapter failure must never block gateway/token startup:
         # safe_context_call degrades to [] and the runner is a no-op.
         _install_identity(_RaisingIdentity(RuntimeError("adapter broke")))
-        run_preflight_checks()  # should not raise
+        with caplog.at_level("DEBUG", logger="kiro_crew.platform.context"):
+            run_preflight_checks()  # should not raise
+        # The skipped preflight is still written down, with its cause.
+        records = [r for r in caplog.records if r.name == "kiro_crew.platform.context"]
+        assert [r.getMessage() for r in records] == [
+            "identity.preflight_checks unavailable; skipping preflight"
+        ]
+        assert "adapter broke" in str(records[0].exc_info[1])
 
     def test_composition_error_propagates_fail_closed(self) -> None:
         # PlatformCompositionError (a non-standalone host that could not

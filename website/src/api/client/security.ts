@@ -355,8 +355,49 @@ export interface ManagedSecret {
  *  reached none of the recovery `j` runs, so an expired session read a bare
  *  status code with no way to sign back in (#12240).
  */
+/** What a vault entry holds. `secret` is one value (every entry stored before
+ *  item types existed); `login` is a website credential; `note` is text. */
+export type SecretItemType = 'secret' | 'login' | 'note'
+
+/** The fields a typed write carries. Validation lives on the server
+ *  (`secrets/items.py`); a refusal comes back as a 400 with a `code`. Updating
+ *  an item of the same type, a password, `notes` or `text` left out
+ *  keeps its stored value. `notes` sent as `''` is cleared; a password or
+ *  `text` sent as `''` is refused, because both are required. */
+export type SecretItemFields =
+  | { value: string }
+  | { username?: string; password?: string; urls?: string[]; notes?: string }
+  | { text?: string }
+
+/** The typed body of `POST /api/secrets`. */
+export interface SecretItemBody {
+  type: SecretItemType
+  fields: SecretItemFields
+}
+
+/** The part of a login a listing may show. Never a password, seed or note. */
+export interface SecretLoginPublicFields {
+  username: string
+  urls: string[]
+}
+
+/** One stored entry as `GET /api/secrets` lists it. `fields` is present on a
+ *  login only; `corrupt` marks an entry whose ciphertext authenticated but whose
+ *  content is not the object its type promises. */
+export interface SecretListItem {
+  name: string
+  type: SecretItemType
+  revision: string
+  updated_at?: string
+  fields?: SecretLoginPublicFields | Record<string, never>
+  corrupt?: boolean
+}
+
 export interface SecretsListResponse {
   names: string[]
+  /** Every stored entry with its type; `names` is the same set, for callers
+   *  that predate item types. */
+  items?: SecretListItem[]
   managed: ManagedSecret[]
   /** Stored names the gateway currently ignores, with the reason. Absent when
    *  every stored name is live. */
@@ -367,7 +408,38 @@ export interface SecretsListResponse {
   managed_error?: boolean
 }
 
-export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch }: ClientTransport) {
+/** One changed key in a settings file edited outside the dashboard. `before` /
+ *  `after` are present only when the value cannot carry a credential; `redacted`
+ *  marks a value the gateway withheld. */
+export interface ConfigPendingChange {
+  path: string[]
+  change: 'added' | 'removed' | 'changed'
+  before?: unknown
+  after?: unknown
+  redacted?: true
+}
+
+/** A sealed settings file whose on-disk edit is waiting for the owner. */
+export interface ConfigPendingLeaf {
+  leaf: string
+  /** Identity of the reviewed on-disk version; echoed back on Apply/Discard. */
+  signature: string
+  /** False when the edited file is not valid JSON: it can only be discarded. */
+  disk_valid: boolean
+  /** True when the file was deleted (or cannot be read): Discard puts it back. */
+  removed?: boolean
+  changes: ConfigPendingChange[]
+  truncated: boolean
+}
+
+/** GET /api/security/config-pending, and the answer to every write there. */
+export interface ConfigPendingData {
+  enforcing: boolean
+  count: number
+  pending: ConfigPendingLeaf[]
+}
+
+export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch, jConfigPending }: ClientTransport) {
   const posture = {
     // Counts are derived server-side from the controls they describe, so a null
     // means "temporarily unresolvable", never "zero".
@@ -387,6 +459,10 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/security/denied-commands/user', { pattern, note }).then(j) as Promise<DeniedCommandsData>,
     toggleUserDeniedCommand: (id: string, enabled: boolean) =>
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
+    // Same route as the toggle. Sets only the fields given; the server checks
+    // each exactly as an add does.
+    editUserDeniedCommand: (id: string, fields: { pattern?: string; note?: string }) =>
+      patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
     // Redaction cards: the per-workspace allowed-host list (Settings → Security →
@@ -441,7 +517,9 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      * and the server-side ephemeral gate always runs, matching every other method
      * here. */
     secretsList: () => get('/api/secrets').then(j) as Promise<SecretsListResponse>,
-    /** Store a vault secret under *name*, replacing any current value.
+    /** Store a vault secret under *name*, replacing any current value. A string
+     *  stores a plain secret; a `SecretItemBody` stores a typed item (login,
+     *  note) and the server validates its fields.
      *
      *  On this transport rather than the Secrets panel's own `fetch`, which is what
      *  every sibling settings panel already does and what the panel gains by it:
@@ -450,7 +528,8 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  instead of the gateway's cryptographic reason. Raw `fetch` reaches none of
      *  that, so an expired session was shown a bare status code and offered only a
      *  retry that could not succeed (#12240). */
-    secretsSave: (name: string, value: string) => post('/api/secrets', { name, value }).then(j),
+    secretsSave: (name: string, value: string | SecretItemBody) =>
+      post('/api/secrets', typeof value === 'string' ? { name, value } : { name, ...value }).then(j),
     /** Remove a vault secret by name. Same transport reason as `secretsSave`. */
     secretsDelete: (name: string) => del('/api/secrets/' + encodeURIComponent(name)).then(j),
   }
@@ -459,9 +538,17 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
     // Paid-AWS-service consent (Amazon Polly for TTS, Amazon Transcribe for STT).
     // The GET reports what would be billed AND performs the identity probe, so it
     // is the call that surfaces the account before the operator agrees to it.
-    awsConsent: (service: string) =>
-      fetch('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<AwsConsentStatus>,
-    grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }) =>
+    awsConsent: (service: string, target?: { profile: string; region: string }) =>
+      fetch('/api/aws/consent?service=' + encodeURIComponent(service)
+        // bedrock-kb only: the target lives in the add-source form until the
+        // source is saved, so the card probes the requested target explicitly.
+        // Both fields must be real strings — a malformed target is dropped
+        // rather than serialized into the URL.
+        + (target && typeof target.profile === 'string' && typeof target.region === 'string'
+          ? '&profile=' + encodeURIComponent(target.profile) + '&region=' + encodeURIComponent(target.region)
+          : '')
+      ).then(j) as Promise<AwsConsentStatus>,
+    grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }, target?: { profile: string; region: string }) =>
       post('/api/aws/consent', {
         service,
         // Echo back exactly what was on screen. The backend rejects a mismatch, so
@@ -469,6 +556,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
         expectedProfile: shown.profile,
         expectedRegion: shown.region,
         expectedAccount: shown.account,
+        ...(target ? { targetProfile: target.profile, targetRegion: target.region } : {}),
       }).then(j) as Promise<{ ok?: boolean; error?: string; code?: string; identityDetail?: string }>,
     revokeAwsConsent: (service: string) =>
       del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
@@ -481,6 +569,32 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    /** The owner's per-folder choice to run a folder agent's own hooks on KAS.
+     *  Owner only; the handler is the record's only dashboard writer. */
+    setProjectHooksConsent: (folder: string, enabled: boolean) =>
+      put('/api/project-hooks/consent', { folder, enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
+    /** One folder's current project-hooks state, read-only and owner only: the
+     *  owner's Crew choice (`unset` when none) and whether the hooks run now. */
+    getProjectHooksConsent: (folder: string) =>
+      get(`/api/project-hooks/consent?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{
+        state: 'on' | 'off' | 'unset'
+        enabled: boolean
+      }>,
+    /** Reveal one removed credential to the owner. The value lives only in
+     *  gateway memory; a 410 means it is gone (restart or expiry). The caller
+     *  keeps the answer in memory only: never in storage or a query cache. */
+    revealRedactedValue: (slot: string, id: string) =>
+      post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
+
+    // Settings files edited outside the dashboard (Settings > Security). Owner
+    // only. Both writes echo the reviewed `signature` and answer with the
+    // refreshed snapshot; a 409 `pending_changed` means the file moved since.
+    configPending: () =>
+      get('/api/security/config-pending').then(jConfigPending) as Promise<ConfigPendingData>,
+    applyConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/apply', { signature }).then(j) as Promise<ConfigPendingData>,
+    discardConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/discard', { signature }).then(j) as Promise<ConfigPendingData>,
   }
 
   return { posture, policies, secrets, consents }

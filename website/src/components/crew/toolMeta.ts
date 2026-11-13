@@ -1,8 +1,8 @@
 /**
  * Front-end-only metadata for the built-in tools, used by the Built From → Tools
  * read-only inspector to turn bare tool IDs into something a person can read:
- * a friendly name, a one-line description, a category for grouping, and whether
- * the tool is read-only or can modify/run things.
+ * a friendly name, a one-line description, a category, and whether the tool is
+ * read-only or can modify/run things.
  *
  * This is a DISPLAY aid, not a source of truth. The read-only set mirrors the
  * backend's `_HOST_READ_ONLY_BUILTIN_TOOLS` (hooks.py) at the time of writing;
@@ -12,7 +12,7 @@
  *
  * Human-readable copy lives in the i18n catalog under
  * `components.crew.toolMeta.*` and is resolved lazily (at call time, so the
- * active locale wins) by `toolMeta()` and `toolCategoryLabel()` — the table
+ * active locale wins) by `toolMeta()` — the table
  * itself holds only ids and classification, never translatable literals.
  */
 import { i18nT } from '../../i18n/t'
@@ -25,29 +25,6 @@ export interface ToolMeta {
   category: ToolCategory
   /** true = read-only, false = can modify/run, undefined = unknown. */
   readOnly?: boolean
-}
-
-// Order the category groups render in.
-export const TOOL_CATEGORY_ORDER: ToolCategory[] = ['filesystem', 'execution', 'web', 'kirocrew', 'other']
-
-/**
- * Full catalog keys, written as literals (never assembled) so every static
- * tool — the extractor, the dead-key scan, the dynamic-key gate — can see them.
- * An `as const` map indexed by the enum is the codebase's sanctioned shape for
- * "one of N known keys"; `` i18nT(`...${id}`) `` would hide every key from the
- * scan and read as dead. See `i18n/dynamicKeys.test.ts`.
- */
-const CATEGORY_LABEL_KEY: Record<ToolCategory, string> = {
-  filesystem: 'components.crew.toolMeta.category_filesystem',
-  execution: 'components.crew.toolMeta.category_execution',
-  web: 'components.crew.toolMeta.category_web',
-  kirocrew: 'components.crew.toolMeta.category_kirocrew',
-  other: 'components.crew.toolMeta.category_other',
-} as const
-
-/** The display label for a category, resolved against the active locale. */
-export function toolCategoryLabel(category: ToolCategory): string {
-  return i18nT(CATEGORY_LABEL_KEY[category])
 }
 
 // Static classification + full catalog key literals per tool id. The label and

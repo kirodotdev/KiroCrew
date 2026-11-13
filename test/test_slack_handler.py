@@ -209,20 +209,24 @@ class TestHandleMessage:
         assert sum("The answer is 42" in u for u in updates) >= 2, updates
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "emoji",
-        [
-            pytest.param("eyes", id="test_adds_eyes_reaction"),
-            pytest.param("lobster", id="test_adds_checkmark_after"),
-        ],
-    )
-    async def test_adds_phase_reaction(self, emoji):
+    async def test_adds_eyes_reaction(self):
         slack = MockSlackClient()
         sessions = FakeSessionManager()
         await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
 
         reacts = [a for a in slack.actions if a[0] == "react"]
-        assert any(r[1]["emoji"] == emoji for r in reacts)
+        assert any(r[1]["emoji"] == "eyes" for r in reacts)
+
+    @pytest.mark.asyncio
+    async def test_ack_comes_down_with_no_done_reaction(self):
+        slack = MockSlackClient()
+        sessions = FakeSessionManager()
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        await asyncio.sleep(0)
+
+        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
+        unreacts = [a[1]["emoji"] for a in slack.actions if a[0] == "unreact"]
+        assert reacts == ["eyes"] and unreacts == ["eyes"]
 
     @pytest.mark.asyncio
     async def test_thinking_posted_then_updated(self):
@@ -589,10 +593,9 @@ class TestHookIntegration:
         assert not any(r[1]["emoji"] == "eyes" for r in reacts)
 
     @pytest.mark.asyncio
-    async def test_auto_reply_records_agent_in_first_turn(self):
+    async def test_auto_reply_records_agent_in_first_turn(self, tmp_path):
         """Hook auto-reply path forwards the resolved agent to save_conversation_turn."""
-        from unittest.mock import MagicMock
-
+        from kiro_crew.history import ConversationLog
         from kiro_crew.slack.handler import _hydrated_sessions
 
         slack = MockSlackClient()
@@ -601,8 +604,7 @@ class TestHookIntegration:
             auto_replies=[AutoReplyHook(pattern="ping", reply="pong", exact=True)]
         )
         ctx = ContextBuilder(hooks=HookManager(hooks_cfg))
-        log = MagicMock()
-        log.get_metadata.return_value = {}
+        log = ConversationLog(base_dir=tmp_path)
 
         # Set a thread agent override for this session
         _thread_agents["thread1"] = "ops"
@@ -621,31 +623,26 @@ class TestHookIntegration:
                 conversation_log=log,
             )
 
-            # save_conversation_turn should have been called with agent="ops"
-            log.append.assert_any_call(
-                "thread1",
-                "user",
-                "ping",
-                source_thread="thread1",
-                source_user="U1",
-                agent="ops",
-            )
+            # The first turn creates the transcript under the thread's agent override.
+            user_rows = [r for r in log.read_messages("thread1") if r["role"] == "user"]
+            assert [r["content"] for r in user_rows] == ["ping"]
+            assert log.get_metadata("thread1")["agent"] == "ops"
         finally:
             _hydrated_sessions.discard("thread1")
             _thread_agents.pop("thread1", None)
 
     @pytest.mark.asyncio
-    async def test_spawn_command_records_agent_in_first_turn(self):
+    async def test_spawn_command_records_agent_in_first_turn(self, tmp_path):
         """Spawn command intercept forwards the resolved agent to save_conversation_turn."""
         from unittest.mock import MagicMock
 
+        from kiro_crew.history import ConversationLog
         from kiro_crew.slack.handler import _hydrated_sessions
         from kiro_crew.subagent import SubagentManager
 
         slack = MockSlackClient()
         sessions = FakeSessionManager()
-        log = MagicMock()
-        log.get_metadata.return_value = {}
+        log = ConversationLog(base_dir=tmp_path)
 
         # Use channel_agent (simulates per-channel override)
         _hydrated_sessions.add("thread2")
@@ -668,15 +665,10 @@ class TestHookIntegration:
                 channel_agent="research",
             )
 
-            # save_conversation_turn should have been called with agent="research"
-            log.append.assert_any_call(
-                "thread2",
-                "user",
-                "spawn do stuff",
-                source_thread="thread2",
-                source_user="U1",
-                agent="research",
-            )
+            # The first turn creates the transcript under the channel's agent.
+            user_rows = [r for r in log.read_messages("thread2") if r["role"] == "user"]
+            assert [r["content"] for r in user_rows] == ["spawn do stuff"]
+            assert log.get_metadata("thread2")["agent"] == "research"
         finally:
             _hydrated_sessions.discard("thread2")
             _thread_agents.pop("thread2", None)
@@ -1263,13 +1255,9 @@ class TestPerThreadAgent:
     async def test_reroute_to_a_linked_session_keeps_its_agent(self):
         """A reroute must carry the new owner's persisted agent, not the default.
 
-        Hydration at entry runs for the ENTRY key. When the thread turns out to
-        be owned by a linked dashboard session, ``session_key`` is reassigned to
-        that owner — and the agent re-resolution immediately after then reads a
-        key that was never hydrated, so a binding the session's own metadata
-        records correctly is silently replaced by the channel or default agent.
-        ``transport_dispatch._resolve_thread_owner`` re-hydrates in the same
-        breath as the reroute; this asserts the inline handler does too.
+        Hydration at entry runs for the ENTRY key, so after ``session_key`` moves to the
+        linked owner the inline handler must re-hydrate, as
+        ``transport_dispatch._resolve_thread_owner`` does.
         """
         from unittest.mock import MagicMock
 
@@ -1376,15 +1364,10 @@ class TestPerThreadAgent:
 
     @pytest.mark.asyncio
     async def test_a_pinned_reroute_keeps_the_askers_agent(self):
-        """The sibling reassignment, same defect.
+        """A pinned reroute runs under the ASKING conversation's recorded agent.
 
-        ``route_pinned`` substitutes ``asker_key`` for the entry key on the branch
-        immediately above the linked-thread reroute, and feeds the same agent
-        re-resolution. Hydration at entry ran for the ENTRY key, so without a
-        re-hydration here the pinned answer runs under the channel or default
-        agent instead of the binding the ASKING conversation recorded — and a
-        pinned asker is by construction a different conversation, which is the
-        whole reason its key is substituted.
+        ``route_pinned`` substitutes ``asker_key`` for the entry key, which entry
+        hydration never saw, so it must re-hydrate too.
         """
         from unittest.mock import MagicMock
 

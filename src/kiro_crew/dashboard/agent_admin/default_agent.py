@@ -264,9 +264,11 @@ def _spec_lock_or_unlocked_read(agents_dir: Path) -> contextlib.ExitStack:
     read beside it. A plain function (not a generator-based context manager) so
     :func:`kiro_crew._facade_compose.compose` rebinds it onto the handlers' globals.
     """
+    from kiro_crew.platform_compat import open_create_or_existing
+
     held = contextlib.ExitStack()
     try:
-        probe = os.open(agents_dir / ".kirocrew-agents.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        probe = open_create_or_existing(agents_dir / ".kirocrew-agents.lock", os.O_RDWR, 0o600)
     except OSError:
         return held
     os.close(probe)

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import TurnNavigationMinimap, {
   bucketTurns,
@@ -174,7 +174,7 @@ describe('TurnNavigationMinimap', () => {
     expect(markers[1].style.top).toBe(`${(1 / 44) * 100}%`)
     // The newest turn always keeps its own dedicated final tick.
     expect(markers[44].dataset.targetDisplayIndex).toBe(String(79 * 3 + 1))
-    button.focus()
+    act(() => button.focus())
     fireEvent.keyDown(button, { key: 'End' })
     fireEvent.keyDown(button, { key: 'Enter' })
     expect(onNavigate).toHaveBeenLastCalledWith(79 * 3 + 1)
@@ -265,7 +265,7 @@ describe('TurnNavigationMinimap', () => {
     render(<TurnNavigationMinimap items={dense} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 40)
-    button.focus()
+    act(() => button.focus())
     fireEvent.keyDown(button, { key: 'Home' })
     // Bucket 0 of 89 turns over 44 body ticks covers exactly 2 turns.
     expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toContain('Turns 1\u20132 of 89')
@@ -293,7 +293,7 @@ describe('TurnNavigationMinimap', () => {
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 28)
     for (let i = 0; i < 4; i++) await new Promise(resolve => setTimeout(resolve, 20))
-    button.focus()
+    act(() => button.focus())
     expect(screen.queryByRole('tooltip')).toBeNull()
     // Rows for turns 1 and 2 are on screen in the fixture; browsing starts at turn 2.
     fireEvent.keyDown(button, { key: 'ArrowDown' })
@@ -310,7 +310,7 @@ describe('TurnNavigationMinimap', () => {
     const live = screen.getByTestId('turn-navigation-minimap').querySelector('[aria-live="polite"]')!
     await hover(button, 200)
     expect(live).toHaveTextContent('')
-    button.focus()
+    act(() => button.focus())
     fireEvent.keyDown(button, { key: 'ArrowDown' })
     expect(live.textContent).toContain('Third prompt')
     fireEvent.blur(button)
@@ -324,7 +324,7 @@ describe('TurnNavigationMinimap', () => {
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 40)
 
-    button.focus()
+    act(() => button.focus())
     expect(screen.queryByRole('tooltip')).toBeNull()
     fireEvent.keyDown(button, { key: 'Home' })
     expect(screen.getByRole('tooltip')).toHaveTextContent('First prompt')
@@ -354,7 +354,7 @@ describe('TurnNavigationMinimap', () => {
     render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} windowed />)
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 40)
-    button.focus()
+    act(() => button.focus())
     fireEvent.keyDown(button, { key: 'Home' })
     expect(button.getAttribute('aria-label')).toContain('Turn 1 of 3 loaded')
     expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toContain('Turn 1 of 3 loaded')
@@ -366,7 +366,7 @@ describe('TurnNavigationMinimap', () => {
     render(<TurnNavigationMinimap items={dense} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} windowed />)
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 40)
-    button.focus()
+    act(() => button.focus())
     fireEvent.keyDown(button, { key: 'Home' })
     expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toContain('Turns 1\u20132 of 89 loaded')
     expect(button.getAttribute('aria-label')).toContain('Turns 1\u20132 of 89 loaded')
@@ -439,7 +439,7 @@ describe('TurnNavigationMinimap', () => {
     const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 40)
-    button.focus()
+    act(() => button.focus())
     fireEvent.keyDown(button, { key: 'Home' })
     fireEvent.keyDown(button, { key: 'ArrowDown' })
     expect(screen.getByRole('tooltip')).toHaveTextContent('Second prompt')
@@ -538,7 +538,7 @@ describe('TurnNavigationMinimap stays static while breakout tables pass', () => 
     render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
     const button = await screen.findByRole('button')
     await settle()
-    button.focus()
+    act(() => button.focus())
     const rows = scroller.querySelectorAll<HTMLElement>('[data-display-index]')
     appendBreakoutTable(rows[1], 250, 330)
     await settle()

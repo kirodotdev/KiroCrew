@@ -9,7 +9,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 import type { InstanceView } from '../api/client'
+import { createTestStore } from './helpers'
+import { sseConnected } from '../store/dashboardSlice'
 
 const mocks = vi.hoisted(() => ({
   patchConfig: vi.fn(),
@@ -74,19 +77,25 @@ describe('withDefaultFirst', () => {
 })
 
 describe('InstanceSendItems with a default destination', () => {
+  // InstanceSendItems reads the gateway flag from the store, so it renders inside one.
+  function renderInStore(ui: React.ReactElement) {
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    return render(<Provider store={store}>{ui}</Provider>)
+  }
   it('marks only the default row', () => {
-    render(<InstanceSendItems instances={[inst('a'), inst('b')]} states={{}} onSend={vi.fn()} Item={StubItem} defaultId="b" />)
+    renderInStore(<InstanceSendItems instances={[inst('a'), inst('b')]} states={{}} onSend={vi.fn()} Item={StubItem} defaultId="b" />)
     const marks = screen.getAllByTestId('send-to-instance-default')
     expect(marks).toHaveLength(1)
     expect(screen.getByTitle('Crew b (default)')).toContainElement(marks[0])
   })
   it('disables an offline default and keeps the other crews usable', () => {
-    render(<InstanceSendItems instances={[inst('a', 'disconnected'), inst('b')]} states={{}} onSend={vi.fn()} Item={StubItem} defaultId="a" />)
+    renderInStore(<InstanceSendItems instances={[inst('a', 'disconnected'), inst('b')]} states={{}} onSend={vi.fn()} Item={StubItem} defaultId="a" />)
     expect(screen.getByTitle(/^Crew a \(default\) — /)).toBeDisabled()
     expect(screen.getByTitle('Crew b')).not.toBeDisabled()
   })
   it('marks nothing without a default', () => {
-    render(<InstanceSendItems instances={[inst('a')]} states={{}} onSend={vi.fn()} Item={StubItem} />)
+    renderInStore(<InstanceSendItems instances={[inst('a')]} states={{}} onSend={vi.fn()} Item={StubItem} />)
     expect(screen.queryByTestId('send-to-instance-default')).toBeNull()
   })
 })

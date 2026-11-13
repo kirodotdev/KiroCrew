@@ -7,7 +7,8 @@ import { createContext } from 'react'
  * The six exported through `MarkdownRenderer.tsx` are public API: callers wrap
  * the renderer in their providers and the element overrides consume them. Each
  * is created exactly once, here, so a provider and the component reading it can
- * never hold two different objects. The other four carry the renderer root's
+ * never hold two different objects. `ChatProjectDirCtx` is provided by the chat
+ * transcript hosts, which import it from here. The other four carry the renderer root's
  * (and `MdAnchor`'s) state down to overrides that react-markdown instantiates
  * deep inside its own tree, where no prop can reach. The one context kept out of
  * this module, `MediaApprovedCtx`, is private to `remoteMedia.tsx`: its provider
@@ -16,6 +17,19 @@ import { createContext } from 'react'
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
+
+/**
+ * The project folder of the chat whose transcript is being rendered.
+ *
+ * A relative path the agent writes (`run/checkin.sh`) is relative to the chat's
+ * own project, but the backend's `resolve=1` joins it to the gateway-wide
+ * project directory, which in the desktop app is the app bundle. A chat
+ * transcript provides its slot's project here, so path chips and links join
+ * the relative text to it before they probe or open. `null` (the default, and
+ * a chat with no project or one that runs on another machine) keeps the
+ * backend's resolution.
+ */
+export const ChatProjectDirCtx = createContext<string | null>(null)
 
 /**
  * When true, markdown images render as small previews (a compact thumbnail the
@@ -129,13 +143,19 @@ export type InsideLink = false | 'external' | 'local'
 export const InsideLinkCtx = createContext<InsideLink>(false)
 
 /**
- * Whether inline-code chips may issue stat probes.
+ * Whether inline-code chips and path links may issue stat probes on render.
  *
- * False while a message streams. Mid-stream a path arrives one chunk at a time,
- * and the prefixes are themselves valid candidates — `/Users` is a real
- * directory on the way to `/Users/me/project/file.ts` — so probing every chunk
- * would burn requests and briefly render the wrong affordance before settling.
- * Chips stay inert until the text stops moving.
+ * Set per markdown block (`MarkdownBlock`), false only for the text a
+ * streaming message is still typing: its open markdown block, every paragraph
+ * piece of it, while that block ends the message. There a path arrives one
+ * chunk at a time, and the prefixes are themselves valid candidates (`/Users`
+ * is a real directory on the way to `/Users/me/project/file.ts`), so probing
+ * every chunk would burn requests and briefly render the wrong affordance
+ * before settling. A block the assembler has closed (a fence or widget
+ * follows it, open or not) no longer moves, so it probes while the turn still
+ * runs. Where it is false, a path-shaped inline-code span is probed on demand
+ * instead (`InlineCode`): when the pointer comes to it. It becomes the path
+ * chip if it names a file or directory, and until then its click copies.
  */
 export const PathProbeCtx = createContext<boolean>(true)
 

@@ -23,6 +23,7 @@ import {
 } from 'lexical'
 import type { JSX } from 'react'
 import PastePreviewTooltip from './PastePreviewTooltip'
+import { usePreviewScrollDismiss } from './usePreviewScrollDismiss'
 import { PREVIEW_MAX_HEIGHT, PREVIEW_OPEN_DELAY_MS } from './pastePreviewConstants'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { i18nT } from '../i18n/t'
@@ -105,16 +106,7 @@ function PasteTokenChip({ block, nodeKey }: { block: PasteBlock; nodeKey: NodeKe
     if (timerRef.current) clearTimeout(timerRef.current)
   }, [])
 
-  useEffect(() => {
-    if (!anchor) return
-    const close = () => setAnchor(null)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
-    return () => {
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('resize', close)
-    }
-  }, [anchor])
+  usePreviewScrollDismiss(anchor !== null, () => editor.getElementByKey(nodeKey), () => setAnchor(null))
 
   const previewOpen = anchor !== null
   const actionLabel = i18nT(previewOpen ? 'components.pastedChip.hide_paste_preview' : 'components.pastedChip.show_paste_preview')

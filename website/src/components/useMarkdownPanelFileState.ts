@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { store } from '../store'
 import { api } from '../api/client'
 import { fileReadUrl } from '../utils/fileReadUrl'
+import { filePopoutSlot } from '../utils/filePopout'
 import { i18nT } from '../i18n/t'
 import { pathBasename } from '../utils/pathBasename'
 
@@ -181,7 +182,7 @@ export function useFileArtifactState(filePath: string, content: string, onError:
       // restricted-session gate sees the REAL session. With the transport's
       // shared `dashboard:ui` placeholder an incognito session could persist a
       // promoted file its own restriction was meant to refuse.
-      const promoteSlot = store.getState().chat.activeSlot
+      const promoteSlot = filePopoutSlot() ?? store.getState().chat.activeSlot
       const created = await api.createArtifact({
         name,
         content: fresh,
@@ -215,7 +216,7 @@ export function useFileArtifactState(filePath: string, content: string, onError:
     mutationFn: async () => {
       // Read the owning slot ONCE, up front: both branches below pass it as the
       // X-Session-Key so a restricted slot is gated on the pin as well as the save.
-      const saveSlot = store.getState().chat.activeSlot
+      const saveSlot = filePopoutSlot() ?? store.getState().chat.activeSlot
       // Saved == pinned (consistent with the Artifacts tab/page + chat bookmark).
       if (existing) {
         await api.setArtifactPinned(

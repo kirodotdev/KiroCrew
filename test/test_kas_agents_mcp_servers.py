@@ -168,8 +168,8 @@ class TestMcpServersProjection:
     def test_a_relayed_reference_reaches_a_third_party_server(self, relayed_names):
         """KAS starts an MCP child with a minimal environment of its own, so a
         launcher's per-process value reaches the child only through a reference
-        to a name the edition relays. The literal beside it, and a reference
-        wrapped in literal text, do not."""
+        to a name the edition relays. The credential-keyed literal beside it, and
+        a reference wrapped in literal text, do not."""
         out = to_client_custom_agent(
             "a",
             _spec(
@@ -178,7 +178,7 @@ class TestMcpServersProjection:
                         "command": "vendor",
                         "env": {
                             "BROKER_URL": "${LAUNCHER_BROKER_URL}",
-                            "LAUNCH_NONCE": "n0nce",
+                            "LAUNCH_TOKEN": "n0nce",
                             "AUTH": "Bearer ${SECRET}",
                         },
                     }
@@ -284,7 +284,7 @@ class TestMcpServersProjection:
                     mcpServers={
                         "third-party": {
                             "command": "x",
-                            "env": {"REF": "${LAUNCHER_BROKER_URL}", "LIT": "sk-live"},
+                            "env": {"REF": "${LAUNCHER_BROKER_URL}", "LIT_TOKEN": "sk-live"},
                         }
                     }
                 ),
@@ -326,7 +326,11 @@ class TestMcpServersProjection:
         with caplog.at_level("INFO"):
             to_client_custom_agent(
                 "a",
-                _spec(mcpServers={"third-party": {"command": "x", "env": {"K": "sekrit"}}}),
+                _spec(
+                    mcpServers={
+                        "third-party": {"command": "x", "env": {"SERVICE_PASSWORD": "sekrit"}}
+                    }
+                ),
                 "p",
             )
         assert "third-party" in caplog.text
@@ -510,6 +514,120 @@ class TestMutedServersAreNotDeclared:
         assert spec["mcpServers"]["muted"] == {"command": "x", "disabled": True}
 
 
+class TestAMuteInAConfigScopeWithholdsAnAgentDeclaredServer:
+    """The mute for a server the SPEC declares is not in the spec.
+
+    ``POST /api/mcp/toggle`` writes ``disabled: true`` into the kiro global or the
+    crew store, and ``agent.rebuild_agent_config`` is what carries that into the
+    rendered spec. An agent file the user does not own -- an installer wrote it --
+    never receives the stamp, so the declaration keeps saying "launch me" and the
+    scope files are the only place the user's answer lives. Every case here is a
+    real scope file on disk, read through the projection, not the predicate.
+    """
+
+    @pytest.fixture
+    def scopes(self, tmp_path, monkeypatch):
+        """The two core scopes, pinned to this test's own files."""
+        from kiro_crew import mcp_discovery
+
+        store = tmp_path / "crew" / "mcp.json"
+        kiro_global = tmp_path / "kiro" / "settings" / "mcp.json"
+        for path in (store, kiro_global):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            mcp_discovery,
+            "_MCP_SOURCES",
+            ((store, "kirocrew"), (kiro_global, "kiroGlobal")),
+        )
+        monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", None)
+        return store, kiro_global
+
+    @staticmethod
+    def _declared(name="oauth-server", key=None):
+        return to_client_custom_agent(
+            "kirocrew", _spec(mcpServers={key or name: {"command": "x"}}), "p"
+        ).get("mcpServers", {})
+
+    @pytest.mark.parametrize("scope", [0, 1], ids=["crew-store", "kiro-global"])
+    def test_a_mute_in_either_scope_withholds_it(self, scopes, scope):
+        scopes[scope].write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"disabled": True}}}), encoding="utf-8"
+        )
+        assert self._declared() == {}
+
+    def test_an_unmuted_server_is_still_declared(self, scopes):
+        scopes[0].write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"command": "x"}}}), encoding="utf-8"
+        )
+        assert self._declared() == {"oauth-server": {"command": "x"}}
+
+    def test_a_mute_under_the_raw_key_withholds_the_alias_the_spec_declares(self, scopes):
+        """The file keeps the key the installer wrote; the row -- and the spec --
+        carry the canonical alias, so an exact-name lookup misses the flag."""
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {"npm:@playwright/mcp": {"disabled": True}}}),
+            encoding="utf-8",
+        )
+        assert self._declared("playwright-mcp") == {}
+
+    def test_a_canonical_mute_withholds_the_raw_key_the_spec_declares(self, scopes):
+        """The other direction, and the one a toggle actually produces: the row is
+        listed under the alias, so the stub the toggle writes for a server no scope
+        file held is keyed by the alias -- while the spec declares the raw name."""
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {"playwright-mcp": {"disabled": True}}}), encoding="utf-8"
+        )
+        assert self._declared("npm:@playwright/mcp") == {}
+
+    def test_a_commented_scope_file_still_mutes(self, scopes):
+        """JSONC is what the listing accepts, so the gate has to read it too: strict
+        parsing would raise on the comment and lose the mute."""
+        scopes[0].write_text(
+            '{\n  // the one the installer added\n  "mcpServers": '
+            '{"oauth-server": {"disabled": true}},\n}',
+            encoding="utf-8",
+        )
+        assert self._declared() == {}
+
+    @pytest.mark.parametrize("body", ["not json at all", '{"mcpServers": []}', ""], ids=repr)
+    def test_an_unreadable_scope_mutes_nothing(self, scopes, body):
+        """A config this cannot parse must not cost the session the servers the
+        readable scopes declare."""
+        scopes[0].write_text(body, encoding="utf-8")
+        assert self._declared() == {"oauth-server": {"command": "x"}}
+
+    def test_an_absent_scope_file_mutes_nothing(self, scopes):
+        assert not scopes[0].exists() and not scopes[1].exists()
+        assert self._declared() == {"oauth-server": {"command": "x"}}
+
+    def test_a_scope_an_edition_contributes_also_mutes(self, scopes, tmp_path, monkeypatch):
+        """The scope set is whatever the shared reader scans, which includes the
+        provider globals the platform seam contributes -- so the gate and the
+        listing stay on one set of files when an edition ships one."""
+        from kiro_crew import mcp_discovery_config, mcp_discovery_server_info
+
+        provider = tmp_path / "provider.json"
+        provider.write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"disabled": True}}}), encoding="utf-8"
+        )
+        for module in (mcp_discovery_config, mcp_discovery_server_info):
+            monkeypatch.setattr(
+                module, "_extra_scope_sources", lambda: [(provider, "ccGlobal")], raising=False
+            )
+        assert self._declared() == {}
+
+    def test_the_withhold_names_the_scope_rather_than_the_entry(self, scopes, caplog):
+        """The entry carries no ``disabled`` at all, so reporting its value as a
+        non-boolean would name the wrong reason for the withhold."""
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"disabled": True}}}), encoding="utf-8"
+        )
+        with caplog.at_level("INFO", logger="kiro_crew.acp.kas_agents"):
+            self._declared()
+        assert "an MCP config scope disables it" in caplog.text
+        assert "is not a boolean" not in caplog.text
+
+
 class TestAMutedServerCannotArriveThroughThePoolingStub:
     """The mute has to hold on the path that does NOT go through this block.
 
@@ -549,7 +667,9 @@ class TestAMutedServerCannotArriveThroughThePoolingStub:
     def test_a_muted_poolable_server_is_never_stubbed_and_so_is_withheld(
         self, value: object, tmp_path: Path
     ):
-        spec = _spec(mcpServers={"muted": {"command": sys.executable, "disabled": value}})
+        spec = _spec(
+            mcpServers={"muted": {"command": sys.executable, "disabled": value}}, tools=["@muted"]
+        )
         stubbed = self._stub_names(spec, tmp_path)
 
         assert stubbed == frozenset(), "a muted server must not become a live stub"
@@ -601,7 +721,7 @@ class TestAMutedServerCannotArriveThroughThePoolingStub:
 
     def test_an_unmuted_poolable_server_still_takes_its_stub(self, tmp_path: Path):
         """The other direction, so the guard cannot pass by stubbing nothing."""
-        spec = _spec(mcpServers={"live": {"command": sys.executable}})
+        spec = _spec(mcpServers={"live": {"command": sys.executable}}, tools=["@live"])
         stubbed = self._stub_names(spec, tmp_path)
 
         assert stubbed == frozenset({"live"})
@@ -764,10 +884,22 @@ class TestDiscardedRestrictionsAreReported:
         with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
             to_client_custom_agent(
                 "kirocrew",
+                _spec(mcpServers={"srv": {"command": "x", "cwd": "/elsewhere"}}),
+                "p",
+            )
+        assert "cwd" in caplog.text
+
+    def test_a_restriction_carried_elsewhere_is_not_named(self, caplog):
+        """``disabledTools`` reaches the engine as ``excludedTools``, so the log
+        must not say it had no effect."""
+        with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
+            out = to_client_custom_agent(
+                "kirocrew",
                 _spec(mcpServers={"srv": {"command": "x", "disabledTools": ["learn_add"]}}),
                 "p",
             )
-        assert "disabledTools" in caplog.text
+        assert "@srv/learn_add" in out["excludedTools"]
+        assert "accepts and then discards" not in caplog.text
 
     def test_a_key_crew_itself_removed_is_not_blamed_on_the_backend(self, caplog):
         """``autoApprove`` never reaches the wire, so naming it here would report
@@ -992,6 +1124,12 @@ class TestRuntimeSuppliesTheStubbedSet:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
+            withheld_out=None,
+            prompt_unread_out=None,
+            engine_features=frozenset(),
+            forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1015,6 +1153,12 @@ class TestRuntimeSuppliesTheStubbedSet:
             member_dispatch,
             crew_panel=False,
             session_key,
+            skill_scope_rules=(),
+            withheld_out=None,
+            prompt_unread_out=None,
+            engine_features=frozenset(),
+            forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]
@@ -1077,7 +1221,12 @@ class TestRuntimeSuppliesTheStubbedSet:
         out = await rt._kas_custom_agents("kirocrew")
 
         assert seen == [frozenset()]
-        assert out.custom_agents == [{"id": "kirocrew"}]
+        # The mcp.json stamp rides along until the wire envelope applies it.
+        from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+        assert [
+            {k: v for k, v in a.items() if k != CREW_SETTINGS_MCP_KEY} for a in out.custom_agents
+        ] == [{"id": "kirocrew"}]
 
 
 class TestNativeManagedMcpIdentity:
@@ -1152,7 +1301,10 @@ class TestHoistManagedServers:
         spec = _spec(
             mcpServers={
                 "kirocrew-core": {"command": "kc", "args": ["mcp"], "env": {"SECRET": "s"}},
-                "third-party": {"command": "tp", "env": {"TOKEN": "t"}},
+                # No env of its own: a withheld value would route this entry
+                # through the local launcher (test_kas_env_launch), which is not
+                # what the hoist tests are about.
+                "third-party": {"command": "tp"},
                 **servers,
             },
             tools=["@kirocrew-core", "@third-party"],
@@ -1197,6 +1349,32 @@ class TestHoistManagedServers:
         monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", fake)
         monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/managed"})
         return calls
+
+    @staticmethod
+    def _stubs(*names):
+        return [{"name": n, "command": "stub", "args": [n], "env": []} for n in names]
+
+    def test_pooled_managed_stubs_lead_the_array(self):
+        # KAS starts servers in array order, a few at a time, and session start
+        # waits for Crew's own: a user server sorted ahead of them must not delay it.
+        pooled = self._stubs("alpha", "beta", "gamma", "kirocrew-core", "kirocrew-cron", "zz")
+        _, array = hoist_servers_for_session([self._projected()], "kirocrew", pooled)
+        assert [e["name"] for e in array] == [
+            "kirocrew-core",
+            "kirocrew-cron",
+            "alpha",
+            "beta",
+            "gamma",
+            "zz",
+        ]
+        assert pooled[0]["name"] == "alpha", "the caller's list is not reordered in place"
+
+    def test_hoisted_managed_servers_lead_the_caller_entries(self):
+        pooled = self._stubs("alpha", "beta", "zz")
+        _, array = hoist_servers_for_session([self._projected()], "kirocrew", pooled)
+        assert [e["name"] for e in array] == ["kirocrew-core", "alpha", "beta", "zz"]
+        assert array[0]["_meta"] == self._LEGACY["_meta"]
+        assert all("_meta" not in e for e in array[1:]), "user entries keep the host default"
 
     def test_hoisted_elements_carry_the_session_token(self, monkeypatch):
         # The runtime stamps the token before the hoist runs, so these elements
@@ -1267,6 +1445,52 @@ class TestHoistManagedServers:
         )
         assert with_default == with_empty
 
+    def test_pre_resolved_entries_keep_the_hoist_free_of_launcher_lookups(self, monkeypatch):
+        # the launcher lookup probes the filesystem and PATH, so the
+        # runtime hands the hoist entries resolved off the loop and it must not
+        # look anything up itself.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        calls = self._managed(monkeypatch, {"command": "/wrong", "args": []})
+        resolved = {"kirocrew-core": {"command": "/opt/kc", "args": ["mcp-core"]}}
+        _, array = hoist_servers_for_session(
+            [self._projected()],
+            "kirocrew",
+            [],
+            session_token="tok-1",
+            managed_entries=resolved,
+        )
+        assert calls == [], "no lookup when the entry was resolved off the loop"
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert core["command"] == "/opt/kc"
+        assert core["args"] == ["mcp-core"]
+        assert {p["name"]: p["value"] for p in core["env"]}[STUB_SESSION_TOKEN_ENV] == "tok-1"
+
+    def test_a_pre_resolved_none_is_hoisted_without_the_token(self, monkeypatch):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        calls = self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        _, array = hoist_servers_for_session(
+            [self._projected()],
+            "kirocrew",
+            [],
+            session_token="tok-1",
+            managed_entries={"kirocrew-core": None},
+        )
+        assert calls == []
+        assert all(
+            pair["name"] != STUB_SESSION_TOKEN_ENV
+            for element in array
+            for pair in element.get("env", [])
+        )
+
+    def test_resolve_managed_entries_covers_only_the_active_agents_managed_names(self, monkeypatch):
+        calls = self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        other = {"id": "other", "mcpServers": {"kirocrew-cron": {"command": "kc"}}}
+        resolved = kas_agents.resolve_managed_entries([self._projected(), other], "kirocrew")
+        assert resolved == {"kirocrew-core": {"command": "/opt/kc", "args": ["mcp-core"]}}
+        assert calls == [("kirocrew-core", True)], "third-party and inactive names are skipped"
+
     def test_block_key_is_removed_when_nothing_remains(self):
         spec = _spec(mcpServers={"kirocrew-core": {"command": "kc"}})
         projected = to_client_custom_agent("kirocrew", spec, "p")
@@ -1308,28 +1532,52 @@ class TestHoistManagedServers:
         assert agents[1] is other
         assert other["mcpServers"] == {"kirocrew-work": {"command": "w"}}
 
+    def test_a_narrowed_managed_server_is_hoisted_with_its_token(self, monkeypatch):
+        # Its switched-off tools ride the agent's excludedTools, so the entry is
+        # hoistable and gets the session token its other tools need.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        projected = to_client_custom_agent(
+            "kirocrew",
+            _spec(mcpServers={"kirocrew-core": {"command": "kc", "disabledTools": ["learn_add"]}}),
+            "p",
+        )
+        assert "disabledTools" not in projected["mcpServers"]["kirocrew-core"]
+        assert "@kirocrew-core/learn_add" in projected["excludedTools"]
+        agents, array = hoist_servers_for_session([projected], "kirocrew", [], session_token="t")
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert {p["name"]: p["value"] for p in core["env"]}[STUB_SESSION_TOKEN_ENV] == "t"
+        assert "kirocrew-core" not in agents[0].get("mcpServers", {})
+        assert "@kirocrew-core/learn_add" in agents[0]["excludedTools"]
+
     @pytest.mark.parametrize(
         "entry",
         [
-            {"command": "kc", "disabledTools": ["learn_add"]},
             {"command": "kc", "timeout": 5},
             {"command": "kc", "type": "registry"},
             {"url": "https://example.invalid/mcp"},
             {"args": ["mcp"]},
         ],
-        ids=["disabledTools", "timeout", "registry", "remote", "no-command"],
+        ids=["timeout", "registry", "remote", "no-command"],
     )
-    def test_a_restricted_or_unrepresentable_entry_keeps_the_block_path(self, entry):
+    def test_a_restricted_or_unrepresentable_entry_keeps_the_block_path(self, monkeypatch, entry):
         # No ``disabled: true`` case: such an entry is never declared in the first
         # place (see ``TestMutedServersAreNotDeclared``), so it cannot reach here
         # to be hoisted or kept.
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
         projected = to_client_custom_agent(
             "kirocrew", _spec(mcpServers={"kirocrew-core": entry}), "p"
         )
         agents, array = hoist_servers_for_session([projected], "kirocrew", [])
         assert array == []
-        assert agents[0] is projected
-        assert agents[0]["mcpServers"]["kirocrew-core"] == entry
+        if "command" in entry:
+            # Kept in the block, it still launches the managed invocation.
+            launch = {"command": "/opt/kc", "args": ["mcp-core"]}
+            assert agents[0]["mcpServers"]["kirocrew-core"] == {**entry, **launch}
+        else:
+            assert agents[0] is projected
+            assert agents[0]["mcpServers"]["kirocrew-core"] == entry
 
     def test_no_agents_or_no_block_is_a_passthrough(self):
         array = [{"name": "x"}]
@@ -1407,118 +1655,15 @@ class TestHoistManagedServers:
         assert "_meta" not in out[0]
 
 
-class TestHoistAgentServersForResume:
-    """Non-managed agent servers reach the session-level array on session/load.
+class TestUserServersStayInTheBlock:
+    """A user-declared server is never hoisted, on session/new or session/load.
 
-    On session/new kiro-cli reads MCP servers from both the session-level
-    mcpServers array and customAgents[].mcpServers.  On session/load it only
-    re-launches from the session-level array, so user-declared servers must be
-    hoisted there or spec edits that add new MCP tools are silently ignored.
+    KAS launches agent-block servers on a cold session/load too, and only the
+    block carries ``timeout``: a session-level element has no slot for it, so a
+    hoisted server got KAS's 60 s instead of the 120 s the block is given.
     """
 
-    def _projected(self, **servers):
-        spec = _spec(
-            mcpServers={
-                "my-server": {"command": "my-mcp", "args": ["serve"]},
-                **servers,
-            },
-            tools=["@my-server/tool_a"],
-        )
-        return to_client_custom_agent("kirocrew", spec, "p")
-
-    def test_user_declared_server_moves_into_the_array(self):
-        projected = self._projected()
-        before = json.loads(json.dumps(projected))
-        agents, array = hoist_servers_for_session(
-            [projected], "kirocrew", [], include_user_servers=True
-        )
-        assert projected == before, "the projection is not mutated"
-        assert len(array) == 1
-        assert array[0]["name"] == "my-server"
-        assert array[0]["command"] == "my-mcp"
-        assert array[0]["args"] == ["serve"]
-        assert "mcpServers" not in agents[0], "server removed from the agent block"
-
-    def test_tools_list_is_preserved(self):
-        projected = self._projected()
-        agents, _ = hoist_servers_for_session(
-            [projected], "kirocrew", [], include_user_servers=True
-        )
-        assert agents[0]["tools"] == projected["tools"]
-
-    def test_already_claimed_name_is_skipped(self):
-        projected = self._projected()
-        existing = {"name": "my-server", "command": "other-binary"}
-        agents, array = hoist_servers_for_session(
-            [projected], "kirocrew", [existing], include_user_servers=True
-        )
-        # the existing entry wins; the agent block keeps its own entry
-        assert array == [existing]
-        assert "my-server" in agents[0].get("mcpServers", {})
-
-    def test_inactive_agent_blocks_are_not_touched(self):
-        projected = self._projected()
-        other_spec = _spec(
-            mcpServers={"other-server": {"command": "o"}},
-            tools=["@other-server/x"],
-        )
-        other = to_client_custom_agent("other-agent", other_spec, "p")
-        agents, array = hoist_servers_for_session(
-            [projected, other], "kirocrew", [], include_user_servers=True
-        )
-        assert len(array) == 1
-        assert array[0]["name"] == "my-server"
-        assert agents[1]["mcpServers"] == {"other-server": {"command": "o"}}
-
-    def test_entry_with_extra_keys_stays_in_the_block(self):
-        # "url" is outside _HOISTABLE_ENTRY_KEYS -> not hoisted
-        spec = _spec(
-            mcpServers={"remote": {"url": "https://example.com/mcp"}},
-            tools=["@remote/x"],
-        )
-        projected = to_client_custom_agent("kirocrew", spec, "p")
-        agents, array = hoist_servers_for_session(
-            [projected], "kirocrew", [], include_user_servers=True
-        )
-        assert array == []
-        assert "remote" in agents[0].get("mcpServers", {})
-
-    def test_none_and_empty_pass_through(self):
-        assert hoist_servers_for_session(None, "kirocrew", [], include_user_servers=True) == (
-            None,
-            [],
-        )
-        assert hoist_servers_for_session([], "kirocrew", [], include_user_servers=True) == ([], [])
-
-    def test_multiple_servers_sorted_by_name(self):
-        spec = _spec(
-            mcpServers={
-                "z-server": {"command": "z"},
-                "a-server": {"command": "a"},
-            },
-            tools=["@z-server/t", "@a-server/t"],
-        )
-        projected = to_client_custom_agent("kirocrew", spec, "p")
-        _, array = hoist_servers_for_session([projected], "kirocrew", [], include_user_servers=True)
-        assert [e["name"] for e in array] == ["a-server", "z-server"]
-
-    def test_non_managed_server_stays_untokened_when_session_token_is_set(self):
-        # A user-declared server hoisted via include_user_servers=True carries no session
-        # credential: the token is for Crew's own managed servers only.
-        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
-
-        projected = self._projected()
-        _, array = hoist_servers_for_session(
-            [projected], "kirocrew", [], session_token="tok-x", include_user_servers=True
-        )
-        assert len(array) == 1
-        assert array[0]["name"] == "my-server"
-        env_names = [pair["name"] for pair in array[0].get("env", [])]
-        assert STUB_SESSION_TOKEN_ENV not in env_names
-
-    def test_managed_server_still_gets_token_on_resume(self, monkeypatch):
-        # include_user_servers=True combined with a session_token: managed servers receive
-        # the token; user-declared servers do not.
+    def test_user_server_stays_and_managed_server_moves_with_its_token(self, monkeypatch):
         import kiro_crew.agent as agent_mod
         from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
@@ -1536,123 +1681,10 @@ class TestHoistAgentServersForResume:
             tools=["@kirocrew-core", "@my-server/tool_a"],
         )
         projected = to_client_custom_agent("kirocrew", spec, "p")
-        _, array = hoist_servers_for_session(
-            [projected], "kirocrew", [], session_token="tok-x", include_user_servers=True
+        agents, array = hoist_servers_for_session(
+            [projected], "kirocrew", [], session_token="tok-x"
         )
-        by_name = {e["name"]: e for e in array}
-        assert set(by_name) == {"kirocrew-core", "my-server"}
-        core_env = {pair["name"]: pair["value"] for pair in by_name["kirocrew-core"]["env"]}
-        assert (
-            core_env.get(STUB_SESSION_TOKEN_ENV) == "tok-x"
-        ), "managed server receives the session token on resume"
-        user_env_names = [pair["name"] for pair in by_name["my-server"].get("env", [])]
-        assert STUB_SESSION_TOKEN_ENV not in user_env_names, "user-declared server stays untokened"
-
-    def test_global_config_wins_over_spec_on_both_session_paths(self):
-        # Owner ruling: global config wins on name collision for both
-        # session/new and session/load.
-        # session/new (include_user_servers=False): user-declared server stays in agent block;
-        # kiro-cli reads the global entry directly and the global wins.
-        projected = self._projected()
-        agents_new, array_new = hoist_servers_for_session([projected], "kirocrew", [])
-        assert array_new == [], "session/new: user-declared server stays in block"
-        assert "my-server" in agents_new[0].get("mcpServers", {})
-
-        # session/load (include_user_servers=True, reserved_names): the global name is
-        # reserved so the user-declared server is not hoisted -- global wins.
-        agents_load, array_load = hoist_servers_for_session(
-            [projected],
-            "kirocrew",
-            [],
-            include_user_servers=True,
-            reserved_names=frozenset({"my-server"}),
-        )
-        assert array_load == [], "session/load: global-reserved name not hoisted"
-        assert "my-server" in agents_load[0].get("mcpServers", {})
-
-    def test_managed_name_exempt_from_reserved_names_on_resume(self, monkeypatch):
-        # A managed server in reserved_names is still hoisted: the managed hoist
-        # must not break when kirocrew-core appears in global mcp.json (e.g. after
-        # a tool-toggle writes a disabledTools entry there).
-        import kiro_crew.agent as agent_mod
-        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
-
-        monkeypatch.setattr(
-            agent_mod,
-            "managed_mcp_spec_entry",
-            lambda name, *, include_opt_in=False: {"command": "/opt/kc", "args": []},
-        )
-        monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/m"})
-        spec = _spec(
-            mcpServers={
-                "kirocrew-core": {"command": "kc"},
-                "my-server": {"command": "my-mcp", "args": ["serve"]},
-            },
-            tools=["@kirocrew-core", "@my-server/tool_a"],
-        )
-        projected = to_client_custom_agent("kirocrew", spec, "p")
-        # kirocrew-core AND my-server are in reserved_names; only my-server
-        # should stay in the block.  kirocrew-core is managed and must be exempt.
-        _, array = hoist_servers_for_session(
-            [projected],
-            "kirocrew",
-            [],
-            session_token="tok-x",
-            include_user_servers=True,
-            reserved_names=frozenset({"kirocrew-core", "my-server"}),
-        )
-        by_name = {e["name"]: e for e in array}
-        assert "kirocrew-core" in by_name, "managed server hoisted despite reserved_names"
-        core_env = {pair["name"]: pair["value"] for pair in by_name["kirocrew-core"]["env"]}
-        assert (
-            core_env.get(STUB_SESSION_TOKEN_ENV) == "tok-x"
-        ), "managed server still receives session token"
-        assert "my-server" not in by_name, "non-managed reserved name stays in block"
-
-
-class TestSettingsServerNames:
-    """The reservation set covers BOTH settings files kiro-cli reads.
-
-    A name only the global file declares and a name only the workspace file
-    declares are both reserved: a resumed session must resolve a collision with
-    either file the way session/new did, by kiro-cli's own precedence.
-    """
-
-    @pytest.fixture
-    def settings(self, tmp_path, monkeypatch):
-        from kiro_crew import agent as agent_mod
-
-        global_path = tmp_path / "settings-mcp.json"
-        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", global_path)
-        work_dir = tmp_path / "checkout"
-        (work_dir / ".kiro" / "settings").mkdir(parents=True)
-        return global_path, work_dir
-
-    def test_global_and_workspace_names_are_both_reserved(self, settings):
-        from kiro_crew.acp.session_mcp import settings_server_names
-
-        global_path, work_dir = settings
-        global_path.write_text(json.dumps({"mcpServers": {"from-global": {"command": "g"}}}))
-        (work_dir / ".kiro" / "settings" / "mcp.json").write_text(
-            json.dumps({"mcpServers": {"from-workspace": {"command": "w"}}})
-        )
-        assert settings_server_names(work_dir) == frozenset({"from-global", "from-workspace"})
-
-    def test_no_work_dir_reserves_the_global_names_alone(self, settings):
-        from kiro_crew.acp.session_mcp import settings_server_names
-
-        global_path, work_dir = settings
-        global_path.write_text(json.dumps({"mcpServers": {"from-global": {"command": "g"}}}))
-        (work_dir / ".kiro" / "settings" / "mcp.json").write_text(
-            json.dumps({"mcpServers": {"from-workspace": {"command": "w"}}})
-        )
-        assert settings_server_names(None) == frozenset({"from-global"})
-
-    def test_absent_or_malformed_files_contribute_nothing(self, settings):
-        from kiro_crew.acp.session_mcp import settings_server_names
-
-        global_path, work_dir = settings
-        assert settings_server_names(work_dir) == frozenset()
-        (work_dir / ".kiro" / "settings" / "mcp.json").write_text("{not json")
-        global_path.write_text(json.dumps({"mcpServers": {"from-global": {"command": "g"}}}))
-        assert settings_server_names(work_dir) == frozenset({"from-global"})
+        assert [e["name"] for e in array] == ["kirocrew-core"]
+        core_env = {pair["name"]: pair["value"] for pair in array[0]["env"]}
+        assert core_env.get(STUB_SESSION_TOKEN_ENV) == "tok-x"
+        assert list(agents[0]["mcpServers"]) == ["my-server"]

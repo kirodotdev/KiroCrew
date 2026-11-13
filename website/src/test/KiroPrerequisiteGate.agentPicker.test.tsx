@@ -151,7 +151,7 @@ describe('KiroPrerequisiteGate agent picker copy (UX round 5)', () => {
     const badge = await screen.findByText('Check failed')
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     const notice = await screen.findByTestId('other-agent-recheck-error')
-    expect(notice).toHaveTextContent('The check for pi failed. Press Check again.')
+    expect(notice).toHaveTextContent('The check for Pi failed. Press Check again.')
     expect(notice).not.toHaveTextContent(/re-check|Could not/)
     // Same two words carry the verdict in both places.
     expect(badge.textContent).toMatch(/check/i)
@@ -308,7 +308,7 @@ describe('KiroPrerequisiteGate shared probe eligibility', () => {
     })
     render()
     fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
-    expect(await screen.findByRole('radio', { name: 'codex' })).toBeInTheDocument()
+    expect(await screen.findByRole('radio', { name: 'OpenAI Codex' })).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
   })
 })

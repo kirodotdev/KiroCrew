@@ -925,7 +925,54 @@ describe('chatSlice selectors', () => {
     store.dispatch(appendMessage({ role: 'user', content: 'hello' } as ChatMessage))
     expect(selectContinuable(root(store))).toBe(true)
 
-    store.dispatch(appendQueuedMessage({ slot: 'front', content: 'queued', ts: '1', queue_id: 'q-1' }))
+    // A restored queue ('queued' bubbles from hydrateQueuedBubbles) does not
+    // block Resume: the restored items are never auto-drained on boot, so
+    // there is no double-fire risk. The scan skips past restored entries to
+    // find the real conversation content (meta.restored===true required).
+    store.dispatch(appendMessage({ role: 'queued', content: 'queued', cls: 'msg msg-queued', meta: { restored: true } } as ChatMessage))
+    expect(selectContinuable(root(store))).toBe(true)
+  })
+
+  it('offers Resume on an interrupted slot even with a restored queue', () => {
+    // The gateway_restart_interruption + restored-queue case: the Resume
+    // button must not be hidden just because the slot also has queued_prompts
+    // restored from the previous session.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(appendMessage({ role: 'user', content: 'do the thing' } as ChatMessage))
+    store.dispatch(appendMessage({ role: 'error', content: 'This turn was interrupted when the app restarted.', meta: { kind: 'gateway_restart_interruption' } } as ChatMessage))
+    // Use appendMessage with role='queued' and restored=true to simulate a
+    // restored (from-disk) queue entry; appendQueuedMessage does not forward
+    // arbitrary meta fields to the row.
+    store.dispatch(appendMessage({ role: 'queued', content: 'also this', cls: 'msg msg-queued', meta: { restored: true } } as ChatMessage))
+    expect(selectContinuable(root(store))).toBe(true)
+    expect(selectTurnInterrupted(root(store))).toBe(true)
+  })
+
+  it('hides Resume when an interrupted slot has a live (non-restored) queued entry', () => {
+    // A live queue entry (no meta.restored) may drain when its hold clears.
+    // Resume here would race that drain; the backend refuses with 409 case 1b.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(appendMessage({ role: 'user', content: 'do the thing' } as ChatMessage))
+    store.dispatch(appendMessage({ role: 'error', content: 'This turn was interrupted when the app restarted.', meta: { kind: 'gateway_restart_interruption' } } as ChatMessage))
+    // No restored=true: this is a live entry.
+    store.dispatch(appendQueuedMessage({ slot: 'front', content: 'live entry', ts: '2', queue_id: 'q-live' }))
+    expect(selectContinuable(root(store))).toBe(false)
+  })
+
+  it('hides Resume when a synthetic recovery is parked at the queue head', () => {
+    // Mirror of the frontend test: when the first Resume already inserted a
+    // synthetic recovery entry that is parked (memory prep still running),
+    // the composer must not offer a second Resume -- the backend refuses it.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(appendMessage({ role: 'user', content: 'do the thing' } as ChatMessage))
+    store.dispatch(appendMessage({ role: 'error', content: '⟳ This turn was interrupted.', meta: { kind: 'gateway_restart_interruption' } } as ChatMessage))
+    // Parked recovery at queue head -- kind === 'synthetic_recovery'.
+    // Use appendMessage directly so meta.kind reaches the row;
+    // appendQueuedMessage only spreads files/dirs/quote from meta.
+    store.dispatch(appendMessage({ role: 'queued', content: '[Continue — requested by the user]', cls: 'msg msg-queued', meta: { kind: 'synthetic_recovery' } } as ChatMessage))
     expect(selectContinuable(root(store))).toBe(false)
   })
 
@@ -1417,7 +1464,7 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     const result = await store.dispatch(createSlot({ activate: false, project: '/tmp/wt' }))
     expect(result.type).toBe('chat/createSlot/rejected')
-    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('bg-slot')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('bg-slot', undefined)
     expect(chat(store).creatingSlot).toBe(false)
   })
 
@@ -1446,7 +1493,7 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     const result = await store.dispatch(createSlot({ project: '/tmp/wt' }))
     expect(result.type).toBe('chat/createSlot/rejected')
-    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot', undefined)
     expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('fg-slot')
     expect(chat(store).creatingSlot).toBe(false)
   })
@@ -1710,6 +1757,30 @@ describe('chatSlice thunks', () => {
   // pins the close control for as long as that load takes; only the state
   // transitions are ordered, and `switchSlot.pending` completes those
   // synchronously.
+  it('names the dismissed row incarnation on the close', async () => {
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed', { incarnation: 'inc-A' }), slotRow('peer')]))
+
+    await store.dispatch(deleteSlot('doomed'))
+
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed', 'inc-A')
+  })
+
+  it('a successful close erases no key-scoped browser state', async () => {
+    // Naming the DELETE target proves which instance the CALLER meant, never that no
+    // replacement took the key before the reply arrived.
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed', { incarnation: 'inc-A' }), slotRow('peer')]))
+    localStorage.setItem('vc_heights_doomed', '{}')
+
+    await store.dispatch(deleteSlot('doomed'))
+
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed', 'inc-A')
+    expect(localStorage.getItem('vc_heights_doomed')).toBe('{}')
+  })
+
   it('removes the dismissed slot before the peer history fetch resolves', async () => {
     let releasePeer: (v: unknown) => void = () => {}
     const peerFetch = new Promise(resolve => { releasePeer = resolve })

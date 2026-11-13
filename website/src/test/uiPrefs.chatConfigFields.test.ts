@@ -1049,7 +1049,7 @@ describe('uiPrefs', () => {
         CFG,
         JSON.stringify({ pinLastPrompt: true, showTimestamps: false }),
       )
-      localStorage.setItem('mc-dev-mode', 'true') // an unrelated durable plain key
+      localStorage.setItem('mc-agent-scene', 'true') // an unrelated durable plain key
       localStorage.setItem('kc:file-explorer:state:v2', 'too-big') // the oversized offender
       localStorage.setItem(
         SYNCED_KEYS_KEY,
@@ -1171,13 +1171,13 @@ describe('uiPrefs', () => {
       // Warm synced profile: a plain key is synced + rostered, but the stored
       // chat-config blob has only pinLastPrompt (no showTimestamps child); the
       // roster does NOT list any chat child (never stored one).
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       localStorage.setItem(CFG, JSON.stringify({ pinLastPrompt: true }))
       localStorage.setItem(
         SYNCED_KEYS_KEY,
         JSON.stringify({
           [ROSTER_ENTRY]: JSON.stringify([...DURABLE_PREF_KEYS]),
-          'mc-dev-mode': 'devmode.fp',
+          'mc-agent-scene': 'devmode.fp',
         }),
       )
       __resetUiPrefsSyncForTests() // reload: in-memory baseline gone
@@ -1288,7 +1288,7 @@ describe('uiPrefs', () => {
       // across an unrelated ack. Establish the real sync baseline with one
       // successful flush, so the chat child is genuinely "unchanged" (its stored
       // fingerprint matches) before the in-flight scenario begins.
-      localStorage.setItem('mc-dev-mode', 'true') // an unrelated durable plain key
+      localStorage.setItem('mc-agent-scene', 'true') // an unrelated durable plain key
       localStorage.setItem(CFG, JSON.stringify({ showTimestamps: false }))
       localStorage.setItem(
         SYNCED_KEYS_KEY,
@@ -1301,12 +1301,12 @@ describe('uiPrefs', () => {
       )
       __resetUiPrefsSyncForTests() // reload: in-memory baseline gone
       const baseline = mockFetch(() => okJson({ prefs: {} }))
-      await flushUiPrefs() // baselines mc-dev-mode + the chat child at their stored values
+      await flushUiPrefs() // baselines mc-agent-scene + the chat child at their stored values
       baseline.mockReset()
 
       // Now the user changes the UNRELATED plain key; hold its PUT open so a
       // chat edit can land mid-flight.
-      localStorage.setItem('mc-dev-mode', 'false')
+      localStorage.setItem('mc-agent-scene', 'false')
       let release: (() => void) | undefined
       const gate = new Promise<void>((r) => { release = r })
       let calls = 0
@@ -1318,7 +1318,7 @@ describe('uiPrefs', () => {
       })
       vi.stubGlobal('fetch', spy as unknown as typeof fetch)
 
-      const first = flushUiPrefs() // snapshot: only mc-dev-mode changed
+      const first = flushUiPrefs() // snapshot: only mc-agent-scene changed
       // Mid-flight: the user edits the chat field. saveChatConfig marks it dirty.
       const cfg = loadChatConfig()
       cfg.showTimestamps = true
@@ -1327,7 +1327,7 @@ describe('uiPrefs', () => {
       release!()
       await first
 
-      // The first PUT acknowledged ONLY mc-dev-mode. commitSent must not have
+      // The first PUT acknowledged ONLY mc-agent-scene. commitSent must not have
       // cleared the chat child's dirty marker, so the chained flush still forces
       // it up.
       const puts = spy.mock.calls.map((c) =>
@@ -1335,7 +1335,7 @@ describe('uiPrefs', () => {
       )
       // Round 1: just the plain key -- the chat child was edited AFTER this
       // snapshot and must not ride along, nor be dropped by its ack.
-      expect(Object.keys(puts[0])).toEqual(['mc-dev-mode'])
+      expect(Object.keys(puts[0])).toEqual(['mc-agent-scene'])
       // A later round uploads the chat child because its dirty marker survived
       // the unrelated ack.
       const sawChild = puts

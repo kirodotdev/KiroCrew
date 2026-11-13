@@ -47,7 +47,11 @@ from kiro_crew.sandbox_unavailable import (
     SandboxUnavailableError,
     launcher_refusal,
 )
-from kiro_crew.sandbox_wrap import detect_backend, wrap_argv
+from kiro_crew.sandbox_wrap import (
+    _set_inherited_userns_failure,
+    detect_backend,
+    wrap_argv,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -388,6 +392,7 @@ async def wrap_argv_async(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    forward_ssh_auth_sock_out: list[bool] | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -413,6 +418,8 @@ async def wrap_argv_async(
         options["strip_python_env"] = True
     if forward_ssh_auth_sock:
         options["forward_ssh_auth_sock"] = True
+    if forward_ssh_auth_sock_out is not None:
+        options["forward_ssh_auth_sock_out"] = forward_ssh_auth_sock_out
     if extra_hidden_dirs:
         options["extra_hidden_dirs"] = extra_hidden_dirs
     if extra_visible_dirs:
@@ -630,7 +637,8 @@ def sandboxed_spawn_argv(
             spawn gets). ``None`` keeps ``wrap_argv``'s own classification.
         first_party_fixed_argv: Threaded to :func:`wrap_argv`. True ONLY for
             spawns whose full argv is derived inside this package with zero
-            agent/repo/user-config influence; every passing site must be
+            agent/repo/user-config influence, or that run the ACP kiro-cli
+            (``kiro_cli.find_kiro_cli_candidates``) with a fixed argv; every passing site must be
             allowlisted in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``.
             See :func:`wrap_argv` for the no-backend carve-out it gates.
 
@@ -721,6 +729,7 @@ def sandboxed_spawn_argv(
     # -- see ``runtime_reconcile.RuntimeReconciler._unowned``. Stamping it here is
     # therefore safe for any argv: it never decides an exclusion on its own.
     scrubbed[KIROCREW_SANDBOX_TOOL_ENV] = KIROCREW_SANDBOX_TOOL_VALUE
+    _set_inherited_userns_failure(scrubbed)
     return wrapped, scrubbed, cleanup
 
 

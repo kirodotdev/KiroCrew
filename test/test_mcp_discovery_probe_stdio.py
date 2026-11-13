@@ -1,9 +1,9 @@
 """MCP discovery: the stdio probe's protocol handling and process teardown.
 
 The stdio reader skips blank lines, notifications and non-object JSON, and gives up after a
-capped run of non-JSON banner lines; a malformed response or a timeout becomes an error
-rather than a crash, and a child that exits early leaves a bounded, redacted stderr tail
-on its error; and the teardown closes stdin, kills on timeout and reaps the probe's
+capped run of non-JSON banner lines; it reads a line up to the gateway's read ceiling; a
+malformed response or a timeout becomes an error rather than a crash, and a child that exits early leaves a bounded, redacted stderr tail
+on its error, after a tail of the non-JSON stdout lines the reader skipped; and the teardown closes stdin, kills on timeout and reaps the probe's
 process group, on Windows off the event loop and without a traceback for an already-exited
 process.
 """
@@ -11,6 +11,7 @@ process.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fake_child_helpers import read_child_records, reap_recorded_children, write_recording_child
 from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _clear_cache,
     _passthrough_sandbox,
@@ -28,7 +30,7 @@ from stray_line_helpers import too_deep_line
 from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import McpServerInfo, _read_stdio_jsonrpc_response, probe_server
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 
 class TestProbeServerProcessCleanup:
@@ -238,13 +240,15 @@ class TestProbeServerStderrCapture:
         tail is appended to `server.error`."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "broken-server.sh"
+        stub = tmp_path / "broken-server.py"
         stub.write_text(
-            "#!/bin/sh\n" "echo 'ModuleNotFoundError: No module named foo' >&2\n" "exit 1\n"
+            "import sys\n"
+            "print('ModuleNotFoundError: No module named foo', file=sys.stderr)\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="broken", command=str(stub))
+        server = McpServerInfo(name="broken", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
@@ -262,22 +266,24 @@ class TestProbeServerStderrCapture:
         `server.error`."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "noisy-ok-server.sh"
+        stub = tmp_path / "noisy-ok-server.py"
         stub.write_text(
-            "#!/bin/sh\n"
-            "echo 'WARNING: deprecated flag' >&2\n"
-            "while IFS= read -r line; do\n"
-            '  case "$line" in\n'
-            '    *\\"initialize\\"*) '
-            'printf \'{"jsonrpc":"2.0","id":1,"result":{}}\\n\' ;;\n'
-            '    *\\"tools/list\\"*) '
-            'printf \'{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}\\n\' ;;\n'
-            "  esac\n"
-            "done\n"
+            "import json, sys\n"
+            "print('WARNING: deprecated flag', file=sys.stderr, flush=True)\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if request.get('method') == 'initialize':\n"
+            "        result = {}\n"
+            "    elif request.get('method') == 'tools/list':\n"
+            "        result = {'tools': []}\n"
+            "    else:\n"
+            "        continue\n"
+            "    reply = {'jsonrpc': '2.0', 'id': request['id'], 'result': result}\n"
+            "    print(json.dumps(reply), flush=True)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="noisy-ok", command=str(stub))
+        server = McpServerInfo(name="noisy-ok", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 3
@@ -295,17 +301,17 @@ class TestProbeServerStderrCapture:
         dashboard responses."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "verbose-broken.sh"
+        stub = tmp_path / "verbose-broken.py"
         stub.write_text(
-            "#!/bin/sh\n"
-            "for i in $(seq 1 200); do\n"
-            "  echo 'this is a long diagnostic line that repeats many times' >&2\n"
-            "done\n"
-            "exit 1\n"
+            "import sys\n"
+            "line = 'this is a long diagnostic line that repeats many times'\n"
+            "for _ in range(200):\n"
+            "    print(line, file=sys.stderr)\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="verbose", command=str(stub))
+        server = McpServerInfo(name="verbose", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
@@ -314,6 +320,8 @@ class TestProbeServerStderrCapture:
             result = await probe_server(server)
 
         assert result.status == "error"
+        # The bound is measured on a captured tail, not on an error that has none.
+        assert "stderr:" in (result.error or "")
         # 500-char stderr tail + 200-char error head + headers = well under 1KB.
         assert len(result.error or "") < 1024
 
@@ -323,17 +331,17 @@ class TestProbeServerStderrCapture:
         must be scrubbed before they land in `server.error`."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "leaky-server.sh"
+        stub = tmp_path / "leaky-server.py"
         stub.write_text(
-            "#!/bin/sh\n"
-            "echo 'config error: AWS_SECRET_"
+            "import sys\n"
+            "print('config error: AWS_SECRET_"
             "ACCESS_KEY=AKIAIOSFODNN7"
-            "EXAMPLEXXX' >&2\n"
-            "exit 1\n"
+            "EXAMPLEXXX', file=sys.stderr)\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="leaky", command=str(stub))
+        server = McpServerInfo(name="leaky", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
@@ -342,6 +350,8 @@ class TestProbeServerStderrCapture:
             result = await probe_server(server)
 
         assert result.status == "error"
+        # The redaction is checked on a captured tail, not on an error that has none.
+        assert "stderr:" in (result.error or "")
         # The literal secret must not appear verbatim in the error field.
         assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
 
@@ -384,6 +394,52 @@ class TestProbeServerStderrCapture:
         assert len(result.error or "") <= _PROBE_ERROR_MAX_CHARS
         # The credential is redacted before it reaches server.error.
         assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
+
+
+class TestProbeStdioReadLimit:
+    """The probe reads a stdio line up to the gateway's read ceiling."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "env_limit,status,tools",
+        [
+            pytest.param(None, "ok", ["big"], id="default-ceiling"),
+            pytest.param("1048576", "error", [], id="env-ceiling"),
+        ],
+    )
+    async def test_tools_list_line_follows_the_read_ceiling(
+        self, tmp_path, monkeypatch, env_limit, status, tools
+    ) -> None:
+        if env_limit is None:
+            monkeypatch.delenv("KIROCREW_MCP_READ_LIMIT", raising=False)
+        else:
+            monkeypatch.setenv("KIROCREW_MCP_READ_LIMIT", env_limit)
+        stub = tmp_path / "large-tools-server.py"
+        stub.write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if request.get('method') == 'initialize':\n"
+            "        result = {}\n"
+            "    elif request.get('method') == 'tools/list':\n"
+            "        result = {'tools': [{'name': 'big', 'description': 'x' * (2 << 20)}]}\n"
+            "    else:\n"
+            "        continue\n"
+            "    reply = {'jsonrpc': '2.0', 'id': request['id'], 'result': result}\n"
+            "    print(json.dumps(reply), flush=True)\n",
+            encoding="utf-8",
+        )
+
+        server = McpServerInfo(name="large-tools", command=sys.executable, args=[str(stub)])
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
+            mock_cfg = MagicMock()
+            mock_cfg.dashboard.mcp_probe_timeout_secs = 10
+            mock_cls.load.return_value = mock_cfg
+
+            result = await probe_server(server)
+
+        assert result.status == status, result.error
+        assert result.tools == tools
 
 
 class TestProbeStdioMalformedResponse:
@@ -677,6 +733,32 @@ class TestReadStdioJsonrpcResponse:
         with pytest.raises(asyncio.TimeoutError):
             await _read_stdio_jsonrpc_response(reader, timeout=0.05)
 
+    @pytest.mark.asyncio
+    async def test_skipped_keeps_every_non_json_line(self) -> None:
+        """``skipped`` collects every banner line, never a blank line or a
+        notification; the probe redacts them all before it takes the tail."""
+        from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINES
+
+        count = _STDOUT_TAIL_LINES + 3
+        banners = [f"launcher step {n}\n".encode() for n in range(count)]
+        notif = b'{"jsonrpc":"2.0","method":"notifications/message","params":{}}\n'
+        stream = _make_stream([*banners, b"\n", notif])
+        skipped: list[str] = []
+        resp = await _read_stdio_jsonrpc_response(
+            stream, timeout=FALLBACK_TIMEOUT_SECS, skipped=skipped
+        )
+        assert resp is None
+        assert skipped == [f"launcher step {n}" for n in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_skipped_holds_a_bounded_slice_of_each_line(self) -> None:
+        from kiro_crew.mcp_discovery import _STDOUT_LINE_HELD_CHARS
+
+        stream = _make_stream([b"x" * (_STDOUT_LINE_HELD_CHARS + 10) + b"\n"])
+        skipped: list[str] = []
+        await _read_stdio_jsonrpc_response(stream, timeout=FALLBACK_TIMEOUT_SECS, skipped=skipped)
+        assert skipped == ["x" * _STDOUT_LINE_HELD_CHARS]
+
 
 class TestProbeServerBannerTolerance:
     """probe_server tolerates a banner that precedes the handshake."""
@@ -711,6 +793,164 @@ class TestProbeServerBannerTolerance:
         assert result.status == "ok"
         assert result.tools == ["read"]
         assert "Expecting value" not in result.error
+        assert "stdout:" not in result.error
+
+
+_INIT_OK = b'{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}\n'
+_LAUNCHER_FAILURE = b"launcher: uvx not found on PATH\n"
+
+
+class TestProbeServerLauncherStdout:
+    """A failed probe's error carries the non-JSON stdout lines the reader skipped.
+
+    A launcher that cannot start the server it fronts prints why on stdout and
+    exits, so without those lines the error says only "no response" and the
+    failure streak quarantines the server with no cause anywhere a person sees.
+    """
+
+    async def _probe(self, stdout: list[bytes | BaseException]) -> McpServerInfo:
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdin.close = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.stdout = AsyncMock()
+        proc.stdout.readline = AsyncMock(side_effect=stdout)
+        proc.stderr = MagicMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
+        server = McpServerInfo(name="launched", command="launcher")
+        with (
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/launcher"),
+        ):
+            return await probe_server(server)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stdout,head",
+        [
+            pytest.param([_LAUNCHER_FAILURE, b""], "no response", id="eof-before-initialize"),
+            pytest.param(
+                [_INIT_OK, _LAUNCHER_FAILURE, b""],
+                "tools/list: no response after a successful initialize",
+                id="eof-before-tools-list",
+            ),
+            pytest.param(
+                [_LAUNCHER_FAILURE, asyncio.TimeoutError()], "timeout", id="timeout-after-a-line"
+            ),
+        ],
+    )
+    async def test_launcher_stdout_reaches_the_error(self, stdout, head) -> None:
+        result = await self._probe(stdout)
+
+        assert result.status == "error"
+        first, _, rest = result.error.partition("\n")
+        assert first == head
+        assert rest == "stdout: launcher: uvx not found on PATH"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(b"", id="no-answer"),
+            pytest.param(b'{"jsonrpc":"2.0","id":2,"error":{"message":"boom"}}\n', id="error"),
+            pytest.param(b'{"jsonrpc":"2.0","id":2,"result":{}}\n', id="malformed"),
+        ],
+    )
+    async def test_a_tools_list_failure_caches_the_stdout_tail(self, answer) -> None:
+        """``GET /api/mcp`` renders the cached row, so a tools/list failure caches the
+        error only after the stdout tail is on it."""
+        from kiro_crew.mcp_discovery import _probe_cache
+
+        _probe_cache.pop("launched", None)
+        try:
+            result = await self._probe([_INIT_OK, _LAUNCHER_FAILURE, answer, b""])
+
+            assert result.error.endswith("\nstdout: launcher: uvx not found on PATH")
+            assert _probe_cache["launched"].error == result.error
+        finally:
+            _probe_cache.pop("launched", None)
+
+    @pytest.mark.asyncio
+    async def test_a_banner_flood_keeps_only_its_last_lines(self) -> None:
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES, _STDOUT_TAIL_LINES
+
+        lines = [f"launcher line {n}\n".encode() for n in range(_MAX_BANNER_LINES + 1)]
+        result = await self._probe(lines)
+
+        assert result.status == "error"
+        kept = range(_MAX_BANNER_LINES + 1 - _STDOUT_TAIL_LINES, _MAX_BANNER_LINES + 1)
+        assert result.error == "no response\nstdout: " + "\n".join(
+            f"launcher line {n}" for n in kept
+        )
+
+    @pytest.mark.asyncio
+    async def test_launcher_stdout_is_redacted_before_it_is_cut(self) -> None:
+        """stdout is untrusted output: both redactors run on whole lines, and a line
+        is cut to its shown width only afterwards, so a credential straddling that
+        width cannot leave its head behind."""
+        from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINE_CHARS
+
+        # Synthetic credentials, each split so no scanner reads it as one literal.
+        key_line = ("launcher: key " + "AKIAIOSFODNN7" "EXAMPLE" + " rejected\n").encode()
+        url = "https://collector.example.net/c?d=" + base64.b64encode(b"x" * 80).decode()
+        url_line = f"launcher: GET {url} failed\n".encode()
+        token = "gh" + "p_" + "Q7x9Kd2mLp4Rt8Vw1Zb6Nc3Hf5Jg0Ys2Ae4X"
+        prefix = "launcher: auth "
+        # The token starts five characters before the shown width ends.
+        pad = "." * (_STDOUT_TAIL_LINE_CHARS - len(prefix) - 5)
+        straddle_line = (prefix + pad + token + "\n").encode()
+
+        result = await self._probe([key_line, url_line, straddle_line, b""])
+
+        assert result.status == "error"
+        assert "AKIAIOSFODNN7" "EXAMPLE" not in result.error
+        assert "launcher: key [REDACTED: credential] rejected" in result.error
+        assert "collector.example.net/c?d=" not in result.error
+        assert "[REDACTED: suspicious URL to collector.example.net]" in result.error
+        assert token[:5] not in result.error
+        shown = (prefix + pad + "[REDACTED: credential]")[:_STDOUT_TAIL_LINE_CHARS]
+        assert result.error.splitlines()[-1] == shown
+
+    @pytest.mark.asyncio
+    async def test_a_key_longer_than_the_tail_is_redacted_whole(self) -> None:
+        """A PEM block longer than the kept tail is redacted while its BEGIN line is
+        still held, so no body line, even one too short for the base64 scan, is shown."""
+        from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINES
+
+        # Synthetic key material, deterministic; the short last line is the one only
+        # the PEM matcher catches.
+        body = [base64.b64encode(bytes([n]) * 48).decode() for n in range(_STDOUT_TAIL_LINES)]
+        short = "Qk9HVVNfVEFJTF9GUkFHTUVO"
+        pem = ["-----BEGIN " + "PRIVATE KEY-----", *body, short, "-----END " + "PRIVATE KEY-----"]
+        lines = [(line + "\n").encode() for line in [*pem, "launcher: failed"]]
+
+        result = await self._probe([*lines, b""])
+
+        assert result.status == "error"
+        assert short not in result.error
+        assert result.error.endswith("launcher: failed")
+
+    @pytest.mark.asyncio
+    async def test_a_line_cut_for_holding_withholds_the_whole_tail(self) -> None:
+        """A line longer than the held width may have lost a key's BEGIN line, so
+        nothing of the stdout tail is shown rather than a body line it left bare."""
+        from kiro_crew.mcp_discovery import _STDOUT_LINE_HELD_CHARS
+
+        short = "Qk9HVVNfVEFJTF9GUkFHTUVO"
+        begin = "-----BEGIN " + "PRIVATE KEY-----"
+        long_line = "d" * (_STDOUT_LINE_HELD_CHARS - 6) + " " + begin
+        body = base64.b64encode(b"k" * 48).decode()
+        end = "-----END " + "PRIVATE KEY-----"
+        lines = [(line + "\n").encode() for line in [long_line, body, short, end]]
+
+        result = await self._probe([*lines, b""])
+
+        assert result.status == "error"
+        assert short not in result.error
+        assert result.error == "no response\nstdout: [withheld: a line was too long to redact]"
 
 
 # ── Probe process-group reap tests ───────────
@@ -733,52 +973,70 @@ class TestProbeGroupReap:
         return proc
 
     @pytest.mark.asyncio
-    async def test_spawn_uses_start_new_session_on_posix(self) -> None:
+    async def test_spawn_uses_start_new_session_on_posix(self, monkeypatch, tmp_path) -> None:
         """The probe child must be its own session/process-group leader."""
-        from kiro_crew import platform_compat
-
         if not platform_compat.IS_POSIX:
             pytest.skip("POSIX-only spawn flag")
-        proc = self._make_mock_proc()
-        server = McpServerInfo(name="test", command="echo")
+        monkeypatch.chdir(tmp_path)
+        child = write_recording_child(tmp_path / "child")
+        server = McpServerInfo(name="test", command=sys.executable, args=[str(child.script)])
 
-        with (
-            patch(
-                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
-                return_value=proc,
-            ) as mock_exec,
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-            patch("kiro_crew.mcp_discovery.os.killpg"),
-        ):
+        try:
             await probe_server(server)
+        finally:
+            reap_recorded_children(child)
 
-        assert mock_exec.call_args.kwargs.get("start_new_session") is True
+        records = read_child_records(child)
+        assert len(records) == 1
+        # A sandbox launcher may stand between the spawn and the child, so the
+        # child is not required to BE the leader: it must sit in a new session
+        # whose group is the session's own, never in the test's.
+        assert records[0]["sid"] != os.getsid(0)
+        assert records[0]["pgid"] == records[0]["sid"]
 
     @pytest.mark.asyncio
-    async def test_teardown_reaps_process_group(self) -> None:
+    async def test_teardown_reaps_process_group(self, monkeypatch, tmp_path) -> None:
         """Even after a graceful leader exit, the whole group is SIGKILLed —
         a leader-only kill leaves npx/node grandchildren alive (the leaked
         MCP-tree accumulation)."""
-        import signal as _signal
-
-        from kiro_crew import platform_compat
-
         if not platform_compat.IS_POSIX:
             pytest.skip("killpg is POSIX-only")
-        proc = self._make_mock_proc(pid=5151)
-        server = McpServerInfo(name="test", command="echo")
+        monkeypatch.chdir(tmp_path)
+        grandchild_pid_file = tmp_path / "grandchild.pid"
+        # The leader starts a grandchild in its own group, then exits at once
+        # without answering: the graceful-exit path, which never calls proc.kill().
+        launcher = tmp_path / "leader.py"
+        launcher.write_text(
+            "import pathlib, subprocess, sys\n"
+            "grandchild = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(300)'],\n"
+            "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            f"pathlib.Path({str(grandchild_pid_file)!r}).write_text(str(grandchild.pid))\n",
+            encoding="utf-8",
+        )
+        server = McpServerInfo(name="test", command=sys.executable, args=[str(launcher)])
 
-        with (
-            patch(
-                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
-                return_value=proc,
-            ),
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-            patch("kiro_crew.mcp_discovery.os.killpg") as mock_killpg,
-        ):
-            await probe_server(server)
+        result = await probe_server(server)
 
-        mock_killpg.assert_called_once_with(5151, _signal.SIGKILL)
+        gc_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
+
+        def _gone(pid: int) -> bool:
+            # A killed orphan stays a zombie where PID 1 does not reap; it has exited.
+            if platform_compat.pid_liveness(pid) == platform_compat.PID_DEAD:
+                return True
+            return platform_compat.pid_is_zombie(pid) is True
+
+        try:
+            assert result.status == "error"
+            await async_wait_until(
+                lambda: _gone(gc_pid),
+                describe=lambda: "grandchild outlived its leader's probe",
+            )
+        finally:
+            if not _gone(gc_pid):
+                platform_compat.kill_pid(gc_pid, platform_compat.SIGKILL)
+        assert _gone(gc_pid)
 
     @pytest.mark.asyncio
     async def test_teardown_tolerates_empty_group(self) -> None:
@@ -841,7 +1099,8 @@ class TestProbeGroupReap:
         # modeling a launcher shim wedged mid-cold-start.
         script = tmp_path / "fake_launcher.sh"
         script.write_text(
-            "#!/bin/sh\n" "sleep 300 &\n" f"echo $! > {grandchild_pid_file}\n" "sleep 300\n"
+            "#!/bin/sh\n" "sleep 300 &\n" f"echo $! > {grandchild_pid_file}\n" "sleep 300\n",
+            encoding="utf-8",
         )
         script.chmod(0o755)
 

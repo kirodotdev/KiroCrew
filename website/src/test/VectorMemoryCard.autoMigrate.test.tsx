@@ -58,7 +58,7 @@ describe('VectorMemoryCard — automatic migration (no manual buttons)', () => {
 
     // Active view renders (the Inspector tab button is unique to it).
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Inspector/i })).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: /Inspector/i })).toBeInTheDocument()
     )
     expect(screen.queryByText(/Migrate/i)).not.toBeInTheDocument()
   })

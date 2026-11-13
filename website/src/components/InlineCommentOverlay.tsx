@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useState } from 'react'
 import type { ArtifactComment } from '../types'
-import { indexTextNodes, rangeForAnchor } from '../hooks/useMarkdownCommentHighlights'
+import { indexTextNodes, rangesForAnchor, unselectableSpans } from '../hooks/useMarkdownCommentHighlights'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -89,20 +89,24 @@ export function InlineCommentOverlay({
     const compute = () => {
       const sRect = scroller.getBoundingClientRect()
       const idx = indexTextNodes(textRoot)
+      // Once per pass: the text under `select-none` (a table's Copy buttons),
+      // which a quote that runs past a table holds but the reader never selected.
+      const skip = anchored.length ? unselectableSpans(textRoot, idx.nodes) : []
       const nb: Box[] = []
       const nbubbles: Bubble[] = []
       for (const c of anchored) {
-        const r = rangeForAnchor(idx, {
+        const pieces = rangesForAnchor(idx, {
           id: c.id, quote: c.anchor!.quote ?? '', prefix: c.anchor!.prefix ?? '', suffix: c.anchor!.suffix ?? '',
           startOffset: c.anchor!.start_offset,
-        })
-        if (!r) continue
-        const raw = Array.from(r.getClientRects()).map(rc => ({
+        }, skip)
+        if (!pieces.length) continue
+        // Per piece: merging across pieces would bridge, on a shared line, the
+        // unselectable text `rangesForAnchor` cut out between them.
+        const rects = pieces.flatMap(r => mergeByLine(Array.from(r.getClientRects()).map(rc => ({
           x: rc.left - sRect.left + scroller.scrollLeft,
           y: rc.top - sRect.top + scroller.scrollTop,
           w: rc.width, h: rc.height,
-        }))
-        const rects = mergeByLine(raw)
+        }))))
         if (!rects.length) continue
         nb.push({ id: c.id, rects })
         // One bubble per thread, at the topmost line of its anchor.

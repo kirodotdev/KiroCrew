@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from aiohttp import web
@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         sel,
         session_agent_selection_name,
         session_switch_notice,
+        slot_history_key,
         slot_not_found,
         switch_announcement,
         warm_project_agent_names,
@@ -150,6 +151,17 @@ class SlotAgentSwitchCaller(NamedTuple):
     #: Append the session-switch boundary row on commit. Off for a caller that
     #: writes its own ``/agent`` announcement line, so the switch is marked once.
     notice: bool = True
+    #: The Crew Mode migration (``dashboard/crew_mode_migration.py``) moving a Crew
+    #: Mode root onto the configured conductor. Its move turns nothing on, so it is
+    #: not counted as Crew Mode turning on.
+    crew_mode_migration: bool = False
+    #: The caller's own admission, re-checked at the commit (synchronous, in the
+    #: no-await section before the selection is published). A channel caller
+    #: whose gates can close during the awaits above (an operator turning the
+    #: channel off, archiving it, removing the user) passes it, so a closed gate
+    #: refuses the switch instead of committing it. None for the dashboard's
+    #: own doors, whose per-request checks already ran.
+    still_permitted: Callable[[], bool] | None = None
 
     @classmethod
     def for_request(cls, request: web.Request) -> SlotAgentSwitchCaller:
@@ -168,6 +180,13 @@ class SlotAgentSwitchCaller(NamedTuple):
         # own request could do, never widened to the dashboard's.
         # The in-turn command appends its own announcement line, so no notice.
         return cls(app=slot._app or "", remote="", owner=False, own_turn=True, notice=False)
+
+    @classmethod
+    def for_crew_mode_migration(cls) -> SlotAgentSwitchCaller:
+        # The gateway itself, applying the owner's own ``agent.crew_mode_agent``:
+        # owner authority (the config is the owner's), no app scope, and the
+        # boundary row so the transcript shows where the conductor changed.
+        return cls(app="", remote="crew_mode_migration", owner=True, crew_mode_migration=True)
 
     @property
     def scope(self) -> web.Request | Mapping[str, Any]:
@@ -253,6 +272,107 @@ def agent_switch_outcome(resp: web.Response) -> tuple[bool, dict[str, Any]]:
     return resp.status == 200 and bool(body.get("ok")), body
 
 
+#: The refusal code for a switch that would take a Crew Mode root off Crew Mode.
+CREW_MODE_LOCKED = "crew_mode_locked"
+
+
+def _has_user_message(slot: _ChatSlot) -> bool:
+    """Whether *slot*'s transcript has a user message: in its window, or trimmed to disk."""
+    if getattr(slot, "_disk_older_count", 0):
+        return True
+    return any(isinstance(row, dict) and row.get("role") == "user" for row in slot.messages)
+
+
+def _crew_mode_lock_refusal(
+    slot: _ChatSlot, agent_name: str, agent_kind: Any, caller: SlotAgentSwitchCaller
+) -> web.Response | None:
+    """409 ``crew_mode_locked`` when *slot* is a Crew Mode root and this switch moves it.
+
+    Until the chat's first user message, Crew Mode can be turned off again: a
+    switch onto a template that is not a conductor passes. From the first message
+    on it is locked: a Crew Mode root never moves to another agent, whoever asks
+    (the picker, the in-turn ``/agent`` command, a session-control send of
+    ``/agent``). A re-pick of the agent it is on is a session reset and passes.
+    The one other move allowed is onto the configured conductor
+    (``agent.crew_mode_agent``) in the template namespace, whoever asks: the Crew
+    Mode migration, or a person moving a root the migration never visited. Read under
+    the slot lock, so a switch that turned Crew Mode on just before this one is seen.
+    """
+    from kiro_crew import crew_mode
+
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        return None
+    # A re-pick of the agent the root is on, in the namespace it is on: a session
+    # reset. The namespace must be spelled: a name-only pick resolves to a crewmate
+    # of the same name first, which would be Crew Mode off.
+    same = (
+        agent_name == slot.agent
+        and agent_kind != ""
+        and agent_kind in ("template", slot.agent_kind)
+    )
+    if same:
+        return None
+    if (
+        agent_kind in ("", "template")
+        and not crew_mode.stamp_for_switch(agent_name, "template")
+        and not _has_user_message(slot)
+    ):
+        return None
+    if agent_name == crew_mode.crew_mode_agent() and agent_kind == "template":
+        # Onto the configured conductor, in the template namespace: still Crew Mode,
+        # on the conductor the config names. The migration's move, and a person's
+        # own move of a root the migration never visited (reopened after it finished,
+        # or stamped with a conductor an update retired). The namespace must be
+        # spelled: a name-only pick resolves to a crewmate of the same name first,
+        # which would be Crew Mode off.
+        return None
+    sel().log_api_access(
+        caller=caller.remote or caller.app or "dashboard",
+        operation="chat.slot_agent",
+        outcome="denied",
+        source=CREW_MODE_LOCKED,
+        resources=f"slot={slot.key}",
+        error="an Ultra Mode chat stays on its own agent",
+    )
+    return web.json_response(
+        {
+            "error": "this chat is in Ultra Mode, which stays on its own agent",
+            "code": CREW_MODE_LOCKED,
+        },
+        status=409,
+    )
+
+
+def _channel_pin_refusal(slot: _ChatSlot, agent_name: Any, agent_kind: Any) -> web.Response | None:
+    """409 when *slot* is linked to a thread of a Slack channel that names its own
+    agent and *agent_name* in *agent_kind* is not that agent, else ``None``.
+
+    Switching it away would hand the thread's replies, queued ones included, to
+    another agent. Unlinking the thread lifts it. No awaits, so a caller can
+    place it in a no-await commit window.
+    """
+    if not getattr(slot, "_slack_linked", False):
+        return None
+    linked_channel = getattr(slot, "_slack_channel", "") or ""
+    if not linked_channel:
+        return None
+    from kiro_crew.slack.handler import channel_agent_mismatch
+
+    required = channel_agent_mismatch(linked_channel, str(agent_name or ""), str(agent_kind or ""))
+    if required is None:
+        return None
+    _emit_agent_assignment(slot.key, str(agent_name or ""), outcome="denied_channel_agent")
+    named = f"the {required} agent" if required != "<unknown>" else "its own agent"
+    return web.json_response(
+        {
+            "error": f"this session is linked to a Slack channel served by {named};"
+            " unlink it to switch agents",
+            "code": "channel_agent_pinned",
+        },
+        status=409,
+    )
+
+
 async def switch_slot_agent(
     state: DashboardState,
     slot: _ChatSlot,
@@ -329,6 +449,11 @@ async def switch_slot_agent(
             {"error": "member thread agent is pinned", "code": "member_thread_agent_pinned"},
             status=409,
         )
+    # A session linked to a thread of a Slack channel that names its own agent
+    # is served only by that agent; checked again in the commit window below.
+    pinned = _channel_pin_refusal(slot, agent_name, agent_kind)
+    if pinned is not None:
+        return pinned
     refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
@@ -346,6 +471,7 @@ async def switch_slot_agent(
     # slot._lock, then the session lock. An ExitStack because the session
     # lock's KEY is only known after the in-lock read below, and locking on
     # any earlier read could leave this holding the wrong session lock.
+    crew_turned_on = False
     async with contextlib.AsyncExitStack() as _stack:
         await _stack.enter_async_context(slot._lock)
         # Re-authorize after the await above (see _slot_replaced_while_queued):
@@ -361,6 +487,26 @@ async def switch_slot_agent(
         # kept the old agent. Resolved INSIDE the lock: the binding can land
         # while this request waits on it.
         session_key = effective_session_key(slot)
+        # The transcript the agent metadata is written to. A channel-born slot's
+        # conversation lives in the channel transcript (``slot_history_key``),
+        # which the restore scan and the Slack thread hydration both read; the
+        # ``dashboard:`` spelling names a file neither reads. Every other slot
+        # keeps its own ``dashboard:`` transcript, linked cron/workflow tabs
+        # included. Resolved once, so a rollback restores the file it wrote.
+        transcript_key = slot_history_key(slot) if slot.channel_origin else _history_key_for(name)
+
+        def _forget_slack_thread_agent() -> None:
+            """After a refusal restored the channel transcript, have Slack re-read it.
+
+            Slack hydration reads ``transcript_key`` too: a thread message landing
+            between this switch's metadata write and its restore cached the refused
+            agent. Called once the restore write has returned.
+            """
+            if slot.channel_origin and session_key.startswith("slack:"):
+                from kiro_crew.slack.handler import adopt_dashboard_thread_agent
+
+                adopt_dashboard_thread_agent(session_key, None)
+
         # Now serialize against every OTHER alias slot on this same session.
         # slot._lock is created per _ChatSlot and so is DISJOINT across
         # aliases. Keyed on the value resolved just above -- the same one the
@@ -379,6 +525,28 @@ async def switch_slot_agent(
         denied = _app_cancel_denied(caller.scope, slot, "chat.slot_agent", session_key)
         if denied is not None:
             return denied
+        # The lock reads the transcript for a user message; a restored row that was
+        # never opened still has its window on disk, so load it off the loop first.
+        # A failed load leaves the window pending, and the lock's read would then
+        # load it inline on the loop, so the switch is refused (retryable) instead.
+        try:
+            await load_window_off_loop(slot)
+        except Exception:
+            logger.warning(
+                "agent switch: transcript window of %s could not be loaded off the loop",
+                slot.key,
+                exc_info=True,
+            )
+            return web.json_response(
+                {
+                    "error": "Could not read the chat's transcript. Try again.",
+                    "code": "history_unavailable",
+                },
+                status=503,
+            )
+        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
+        if locked is not None:
+            return locked
         owner_request = caller.owner
         if not owner_request:
             # Permitted chat users keep template and legacy V1 choices, but
@@ -386,6 +554,11 @@ async def switch_slot_agent(
             # before any slot, provider or history mutation.
             try:
                 choice_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                # The switch decides Crew Mode by this config's conductor, so the
+                # remembered name is refreshed from the same read.
+                from kiro_crew import crew_mode as _crew_mode
+
+                _crew_mode.remember(choice_cfg)
                 await warm_project_agent_names(
                     slot.project or None, operation="api_chat_slot_agent", source="dashboard"
                 )
@@ -476,20 +649,16 @@ async def switch_slot_agent(
         pre_await_project = slot.project
         pre_await_memory_store = slot.memory_store
 
-        # Resolve workspace from agent bindings. The response value is seeded
-        # from the slot's CURRENT workspace, not a "default" literal: if
-        # resolution below fails, the response still names this value, and
-        # the acting tab writes it into its store — a fabricated
-        # "default" would pin the chip to a workspace the slot does not hold
-        # (the websocket rebroadcast corrects it only when the socket is up,
-        # which is exactly when the optimistic write is load-bearing).
-        workspace = slot.workspace or "default"
+        # Resolve workspace from agent bindings.
         assignment_resolved = False
         new_agent_kind = ""
         committed_agent: str | None = None
         committed_agent_kind: str | None = None
         try:
             cfg = KiroCrewConfig.load()
+            from kiro_crew import crew_mode as _crew_mode
+
+            _crew_mode.remember(cfg)
             # Resolve by the name being STORED, which is exactly the name dispatch
             # will resolve later (`chat_runner` -> resolve_agent_bindings(
             # slot.agent)). Looking it up as an alias first and taking THAT
@@ -522,6 +691,25 @@ async def switch_slot_agent(
                     selection_kind=choice.selection_kind,
                     validate_memory_files=False,
                 )
+            from kiro_crew.config.loader_snapshots import rescan_before_refusal
+
+            if (
+                agent_kind != "member"
+                and not bindings.requested_resolved
+                and await rescan_before_refusal()
+            ):
+                # The snapshot may lack a template whose file is on disk (a
+                # member comes from the config just loaded). The rebind and
+                # compare-and-set checks below cover the extra await.
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    agent_name,
+                    pre_await_project or None,
+                    validate_memory_files=False,
+                    selection_kind=agent_kind,
+                )
+            if not owner_request:
                 selected_store = cfg.memory_stores.get(bindings.memory_store_name)
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No
@@ -533,7 +721,6 @@ async def switch_slot_agent(
             new_agent_kind = bindings.selection_kind if assignment_resolved else ""
             ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             new_workspace = ws_name
-            workspace = ws_name
             new_memory_store = bindings.memory_store_name
             # A project-scope agent exists only inside slot.project: kiro-cli
             # resolves --agent against $PWD/.kiro/agents, so resetting the
@@ -631,7 +818,7 @@ async def switch_slot_agent(
                     # Either way the agent expressed no workspace preference,
                     # and retargeting on a fallback discards the directory the
                     # user chose and runs the next turn's tools elsewhere.
-                    new_project = default_project_dir(workspace)
+                    new_project = default_project_dir(ws_name)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -685,10 +872,56 @@ async def switch_slot_agent(
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
             )
+        # The Crew Mode lock, read again in this same no-await window: the check
+        # above ran before agent resolution, and a send that lands while resolution
+        # awaits (a slash command completes without either switch lock) gives an
+        # empty root its first user message, which is what locks it.
+        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
+        if locked is not None:
+            return locked
+        # The channel pin, read again in this no-await window with the resolved
+        # namespace: a link made while resolution awaited must hold too.
+        pinned = _channel_pin_refusal(slot, agent_name, new_agent_kind)
+        if pinned is not None:
+            return pinned
+        # The caller's own gates, at the commit: nothing above re-checks them.
+        if caller.still_permitted is not None and not caller.still_permitted():
+            return web.json_response(
+                {"error": "the caller is no longer permitted", "code": "caller_not_permitted"},
+                status=403,
+            )
         slot.agent = _CommitToken(agent_name)
         slot.agent_kind = _CommitToken(new_agent_kind)
         committed_agent = slot.agent
         committed_agent_kind = slot.agent_kind
+        # Crew Mode turning on stamps the agent it turned on with, so the chat stays
+        # in Crew Mode on that conductor after ``agent.crew_mode_agent`` changes. A
+        # re-pick of the stamped agent keeps it; any other pick clears it.
+        from kiro_crew import crew_mode
+
+        prior_crew_stamp = getattr(slot, crew_mode.STAMP_FIELD, "") or ""
+        new_crew_stamp = crew_mode.stamp_for_switch(agent_name, new_agent_kind) or (
+            prior_crew_stamp if agent_name == prior_crew_stamp else ""
+        )
+        if caller.crew_mode_migration and not prior_crew_stamp:
+            # The migration moves a conductor chat from before Crew Mode had a
+            # switch; it turns nothing on, so the chat keeps its folders and its
+            # History the way it had them. A stamped root's stamp follows the move.
+            new_crew_stamp = ""
+        slot.crew_mode_agent = new_crew_stamp
+        # Counted below, once the switch has committed: Crew Mode turning on is a
+        # move from an agent that is not a conductor onto one.
+        # The migration moving a root between conductors turns nothing on, even when
+        # the conductor it leaves is absent from the config.
+        crew_turned_on = (
+            bool(new_crew_stamp)
+            and not caller.crew_mode_migration
+            and prior_agent not in crew_mode.conductor_agents()
+            and str(prior_agent or "") != prior_crew_stamp
+        )
+        # The metadata line carries the stamp only when this switch moves one, so a
+        # chat that never turned Crew Mode on keeps the line it had.
+        crew_stamp_moves = bool(new_crew_stamp or prior_crew_stamp)
         # The resolved namespace decides, not the request's spelling alone: a
         # name-only pick can still change member/template (the member lookup
         # answered by the shared template, or the reverse), which is a rebind
@@ -770,6 +1003,7 @@ async def switch_slot_agent(
             if slot.agent is committed_agent and slot.agent_kind is committed_agent_kind:
                 slot.agent = prior_agent
                 slot.agent_kind = prior_agent_kind
+                slot.crew_mode_agent = prior_crew_stamp
                 if (
                     committed_active_fallback_model is not None
                     and slot._active_fallback_model is committed_active_fallback_model
@@ -782,8 +1016,10 @@ async def switch_slot_agent(
                     slot._fallback_pick_gen = prior_fallback_pick_gen
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
-            if committed_project is not None and slot.project is committed_project:
-                slot.project = pre_await_project
+            if committed_project is not None:
+                from kiro_crew.dashboard.transcript_binding import rollback_project
+
+                rollback_project(slot, committed_project, pre_await_project)
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's
@@ -806,7 +1042,16 @@ async def switch_slot_agent(
         # Children guard, shared with reload/model: the reset tears down the
         # runtime attached sub-agents run on, so a parent that is idle but
         # still has children must refuse rather than discard their work.
-        children_409 = await _subagents_attached_response(state, slot, session_key, "slot_agent")
+        # A cancel (the migration's task, a dropped request) landing in any await
+        # between the commit and the metadata write unwinds the commit, so a slot is
+        # never left on the new agent with nothing reset and nothing persisted.
+        try:
+            children_409 = await _subagents_attached_response(
+                state, slot, session_key, "slot_agent"
+            )
+        except asyncio.CancelledError:
+            _rollback_switch()
+            raise
         if children_409 is not None:
             _rollback_switch()
             return children_409
@@ -846,7 +1091,7 @@ async def switch_slot_agent(
             reset_verdict = await _reset_slot_session_or_warn(
                 state, slot, session_key, switch_kind="agent"
             )
-        except Exception:
+        except BaseException:
             # The identity probe proved the pop never happened: the old
             # session is still alive on the old binding, so the committed
             # values describe a switch that did not take — and the acting tab
@@ -888,7 +1133,7 @@ async def switch_slot_agent(
                     reset_verdict = await _reset_slot_session_or_warn(
                         state, slot, session_key, switch_kind="agent"
                     )
-                except Exception:
+                except BaseException:
                     _rollback_switch()
                     state.push_slots_update()
                     raise
@@ -927,7 +1172,7 @@ async def switch_slot_agent(
         # agent after a gateway restart. INSIDE the lock: two racing switches
         # otherwise interleave their metadata writes, and a stalled earlier
         # write finishing last would restore the older agent on restart.
-        # Deliberately ``_history_key_for``, NOT ``session_key``: this names
+        # Deliberately ``transcript_key``, NOT ``session_key``: this names
         # the slot's TRANSCRIPT (the .jsonl the restart scan reads), not the
         # live session the reset above addressed — the same history-vs-session
         # split ``_cancel_target`` documents.
@@ -939,14 +1184,23 @@ async def switch_slot_agent(
                 try:
                     await drained_to_thread(
                         conversation_log.update_metadata,  # type: ignore[union-attr]
-                        _history_key_for(name),
-                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
+                        transcript_key,
+                        {
+                            "agent": str(slot.agent),
+                            "agent_kind": slot.agent_kind,
+                            **(
+                                {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                if crew_stamp_moves
+                                else {}
+                            ),
+                        },
                     )
                 except Exception:
                     logger.warning(
                         "Failed to restore agent metadata for slot %s", name, exc_info=True
                     )
                 finally:
+                    _forget_slack_thread_agent()
                     state.push_slots_update()
 
             try:
@@ -956,8 +1210,16 @@ async def switch_slot_agent(
                 # chat/WS/heartbeat).
                 await drained_to_thread(
                     conversation_log.update_metadata,
-                    _history_key_for(name),
-                    {"agent": agent_name, "agent_kind": new_agent_kind},
+                    transcript_key,
+                    {
+                        "agent": agent_name,
+                        "agent_kind": new_agent_kind,
+                        **(
+                            {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                            if crew_stamp_moves
+                            else {}
+                        ),
+                    },
                 )
             except asyncio.CancelledError:
                 # Drain the writer before restoring history, and retain both
@@ -975,6 +1237,15 @@ async def switch_slot_agent(
                     status=503,
                 )
 
+        # The object that holds this switch's choice. An unlocked writer
+        # (openai_compat) can store the same name as a new object; that is still
+        # this choice. One identity for every re-check below: the selection
+        # guards, the owner pick and the member grant all compare against it.
+        held_agent = (
+            slot.agent
+            if slot.agent == committed_agent and slot.agent_kind == committed_agent_kind
+            else committed_agent
+        )
         if effective_session_key(slot) != session_key:
             # A binding can land during the metadata await too — the rebound
             # guard above ran BEFORE that await, so it must be re-validated
@@ -992,21 +1263,145 @@ async def switch_slot_agent(
                 try:
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
-                        _history_key_for(name),
-                        {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
+                        transcript_key,
+                        {
+                            "agent": str(slot.agent),
+                            "agent_kind": slot.agent_kind,
+                            **(
+                                {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                if crew_stamp_moves
+                                else {}
+                            ),
+                        },
                     )
                 except Exception:
                     logger.warning(
                         "Failed to restore agent metadata for slot %s", name, exc_info=True
                     )
+            _forget_slack_thread_agent()
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
             )
 
+        async def _guarded_selection(
+            held: Any, held_name: str, held_bindings: Any, *, raced: bool
+        ) -> Any:
+            """Run the member guards, then record the selection for ``held``.
+
+            One guard sequence for the owner's choice and for a different agent
+            that won the race: nothing durable is written unless every guard
+            passes, and each await is followed by the slot/session re-check
+            against the same ``held`` identity.
+            """
+            from kiro_crew.execution_context import read_session_execution
+
+            def _still_held() -> bool:
+                return (
+                    state._slots.get(slot.key) is slot
+                    and slot.agent is held
+                    and effective_session_key(slot) == session_key
+                )
+
+            # Validate the old conversation BEFORE publishing its new
+            # canonical identity; otherwise that publication would conceal
+            # template history from the member-selection guard.
+            selected_memory = cfg.memory_stores.get(held_bindings.memory_store_name)
+            initial_execution = await asyncio.to_thread(read_session_execution, session_key)
+            if raced and initial_execution is not None and initial_execution.member_id is not None:
+                # The conversation belongs to its member: another agent's win
+                # does not move it (the owner's pick is refused up front).
+                raise _MemberMemoryRequiresNewConversation(
+                    "This conversation belongs to its original member."
+                )
+            changed_member = initial_execution is None or initial_execution.member_id != getattr(
+                selected_memory, "owner_member_id", None
+            )
+            if (
+                selected_memory is not None
+                and selected_memory.memory_version == 2
+                and changed_member
+            ):
+                if raced and await caller.require_owner("chat.slot_agent") is not None:
+                    raise PermissionError("member memory needs the owner")
+                if slot.messages:
+                    raise _MemberMemoryRequiresNewConversation(
+                        "Open a new conversation to choose member memory."
+                    )
+                await release_prewarmed_session(state, session_key, held_name, cfg)
+                await pin_private_agent_store(
+                    state,
+                    session_key,
+                    held_name,
+                    cfg,
+                    memory_mode=slot.memory_mode,
+                    validate_only=True,
+                )
+                if not _still_held() or slot.messages:
+                    raise ValueError("The conversation changed during member selection.")
+            return await _record_explicit_agent_selection(
+                session_key,
+                held_name,
+                held_bindings,
+                config=cfg,
+                memory_mode=slot.memory_mode,
+                app=slot._app or "",
+            )
+
+        # The durable selection this switch committed, with the agent object it
+        # was recorded for: what a Slack thread hydrating from the transcript
+        # would run, so the live thread entry below is published from it.
+        thread_selection: tuple[Any, Any] | None = None
+        if slot.agent is not held_agent:
+            # A different agent won the race and keeps its write; this answer
+            # stays 200. Its durable selection is recorded only when the same
+            # guards the owner's choice runs all pass, and names the agent the
+            # slot holds now, so the record never names an agent the slot is not
+            # running. A refusal writes nothing durable.
+            raced_agent = slot.agent
+            raced_name = str(raced_agent or "")
+            raced_change = None
+            try:
+                raced_bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    raced_name,
+                    slot.project or None,
+                    validate_memory_files=False,
+                    selection_kind=str(slot.agent_kind or ""),
+                )
+                if raced_bindings.requested_resolved:
+                    raced_change = await _guarded_selection(
+                        raced_agent, raced_name, raced_bindings, raced=True
+                    )
+                    if (
+                        state._slots.get(slot.key) is not slot
+                        or slot.agent is not raced_agent
+                        or effective_session_key(slot) != session_key
+                    ):
+                        await drained_to_thread(restore_agent_selection, session_key, raced_change)
+                    else:
+                        thread_selection = (raced_agent, raced_change)
+                        if state.conversation_log and not slot.is_restricted:
+                            await drained_to_thread(
+                                state.conversation_log.update_metadata,
+                                transcript_key,
+                                {"agent": raced_name, "agent_kind": str(slot.agent_kind or "")},
+                            )
+            except asyncio.CancelledError:
+                if raced_change is not None:
+                    await drained_to_thread(restore_agent_selection, session_key, raced_change)
+                raise
+            except Exception:
+                logger.warning(
+                    "Left the agent selection of slot %s unrecorded for %r",
+                    name,
+                    raced_name,
+                    exc_info=True,
+                )
         # Every authorized choice must update both durable records. Only an
         # owner choice can also admit an unbound restored member.
-        if slot.agent is committed_agent and assignment_resolved:
+        elif assignment_resolved:
             selection_change = None
             selection_error = None
 
@@ -1017,58 +1412,27 @@ async def switch_slot_agent(
                 finally:
                     # The protected drain may re-raise cancellation. History
                     # must still settle before the slot/session locks release.
-                    if state.conversation_log and not slot.is_restricted:
-                        await drained_to_thread(
-                            state.conversation_log.update_metadata,
-                            _history_key_for(name),
-                            {"agent": str(slot.agent), "agent_kind": slot.agent_kind},
-                        )
+                    try:
+                        if state.conversation_log and not slot.is_restricted:
+                            await drained_to_thread(
+                                state.conversation_log.update_metadata,
+                                transcript_key,
+                                {
+                                    "agent": str(slot.agent),
+                                    "agent_kind": slot.agent_kind,
+                                    **(
+                                        {"crew_mode_agent": str(slot.crew_mode_agent or "")}
+                                        if crew_stamp_moves
+                                        else {}
+                                    ),
+                                },
+                            )
+                    finally:
+                        _forget_slack_thread_agent()
 
             try:
-                # Validate the old conversation BEFORE publishing its new
-                # canonical identity; otherwise that publication would conceal
-                # template history from the member-selection guard.
-                selected_memory = cfg.memory_stores.get(bindings.memory_store_name)
-                from kiro_crew.execution_context import read_session_execution
-
-                initial_execution = await asyncio.to_thread(read_session_execution, session_key)
-                changed_member = (
-                    initial_execution is None
-                    or initial_execution.member_id
-                    != getattr(selected_memory, "owner_member_id", None)
-                )
-                if (
-                    selected_memory is not None
-                    and selected_memory.memory_version == 2
-                    and changed_member
-                ):
-                    if slot.messages:
-                        raise _MemberMemoryRequiresNewConversation(
-                            "Open a new conversation to choose member memory."
-                        )
-                    await release_prewarmed_session(state, session_key, agent_name, cfg)
-                    await pin_private_agent_store(
-                        state,
-                        session_key,
-                        agent_name,
-                        cfg,
-                        memory_mode=slot.memory_mode,
-                        validate_only=True,
-                    )
-                    if (
-                        state._slots.get(slot.key) is not slot
-                        or slot.agent is not committed_agent
-                        or effective_session_key(slot) != session_key
-                        or slot.messages
-                    ):
-                        raise ValueError("The conversation changed during member selection.")
-                selection_change = await _record_explicit_agent_selection(
-                    session_key,
-                    agent_name,
-                    bindings,
-                    config=cfg,
-                    memory_mode=slot.memory_mode,
-                    app=slot._app or "",
+                selection_change = await _guarded_selection(
+                    held_agent, agent_name, bindings, raced=False
                 )
             except asyncio.CancelledError:
                 await _rollback_owner_selection()
@@ -1077,7 +1441,7 @@ async def switch_slot_agent(
                 selection_error = exc
             if selection_error is not None or (
                 state._slots.get(slot.key) is not slot
-                or slot.agent is not committed_agent
+                or slot.agent is not held_agent
                 or effective_session_key(slot) != session_key
             ):
                 await _rollback_owner_selection()
@@ -1105,8 +1469,9 @@ async def switch_slot_agent(
                 )
             # A non-owner choice preserves the recorded session assignment.
             slot._memory_assignment_from_history = not owner_request
+            thread_selection = (held_agent, selection_change)
 
-        owner_pick = slot.agent is committed_agent and assignment_resolved and caller.owner
+        owner_pick = slot.agent is held_agent and assignment_resolved and caller.owner
         if owner_pick:
             slot._memory_assignment_from_history = False
 
@@ -1139,7 +1504,7 @@ async def switch_slot_agent(
 
             if (
                 state._slots.get(slot.key) is slot
-                and slot.agent is committed_agent
+                and slot.agent is held_agent
                 and effective_session_key(slot) == pin_key
                 and not slot.messages
             ):
@@ -1156,7 +1521,7 @@ async def switch_slot_agent(
                     await release_prewarmed_session(state, pin_key, agent_name, pin_cfg)
                     if (
                         state._slots.get(slot.key) is not slot
-                        or slot.agent is not committed_agent
+                        or slot.agent is not held_agent
                         or effective_session_key(slot) != pin_key
                         or slot.messages
                     ):
@@ -1178,7 +1543,7 @@ async def switch_slot_agent(
                     return _store_unavailable_response(slot.memory_store, exc)
                 # Agent committed: a raced message uses the new agent and confirms its grant.
                 if assigned_store and (
-                    state._slots.get(slot.key) is not slot or slot.agent is not committed_agent
+                    state._slots.get(slot.key) is not slot or slot.agent is not held_agent
                 ):
                     # No unwind: the owner's grant on this slot's own key is valid and immutable.
                     return web.json_response(
@@ -1191,27 +1556,79 @@ async def switch_slot_agent(
                 if assigned_store and slot.memory_store != assigned_store:
                     slot.memory_store = assigned_store
 
-        # Snapshot the response's workspace LAST, immediately before leaving
-        # the lock: the metadata await above yields the event loop, so a
-        # concurrent /workspace pick can land after the commit — the response
-        # (which the acting tab writes into its store) must name the slot's
-        # newest reality, not a pre-await snapshot.
-        workspace = slot.workspace or "default"
+        # A channel-born Slack tab's next Slack message starts the session the
+        # reset tore down, on the agent Slack keeps for the thread, not on
+        # ``slot.agent``. Hand Slack the agent the slot holds now (a raced
+        # writer's win included), with no await since the last re-check. The
+        # name is the one hydration reads back from the transcript: the
+        # committed execution record's template (a crewmate alias is not an
+        # agent the runtime can launch), else the bare name when no record
+        # was written for the agent the slot holds.
+        if (
+            slot.channel_origin
+            and session_key.startswith("slack:")
+            and state._slots.get(slot.key) is slot
+            and effective_session_key(slot) == session_key
+        ):
+            from kiro_crew.execution_context import EXECUTION_CONTEXT_KEY
+            from kiro_crew.messaging.session_resume import session_agent_from_metadata
+            from kiro_crew.slack.handler import adopt_dashboard_thread_agent
+
+            thread_agent = str(slot.agent or "")
+            if thread_selection is not None and thread_selection[0] is slot.agent:
+                change = thread_selection[1]
+                if change is not None:
+                    # The record as the metadata line carries it, so the name is
+                    # the one hydration's own reader returns.
+                    recorded = {EXECUTION_CONTEXT_KEY: change.published}
+                    thread_agent = session_agent_from_metadata(recorded) or thread_agent
+            adopt_dashboard_thread_agent(session_key, thread_agent)
+
         # The switch is committed and the session reset: mark the boundary in
         # the transcript, still inside both locks. A re-pick of the bound agent
         # changes nothing the row could name, so it appends none.
         if caller.notice and agent_changed:
             await _append_session_switch_notice(slot, "agent", agent_name)
+    # Crew Mode is a chat on the conductor TEMPLATE. Landing on it puts the work-ledger
+    # board on a ROOT session's own page (its side panel Overview), so the board lives
+    # there and the per-turn [DASHBOARD] block names it. Only a page nothing was adopted
+    # on yet; leaving the conductor changes nothing on the page.
+    from kiro_crew.dashboard_agentic import adopt_crew_mode_board_on_switch
+
+    if crew_turned_on:
+        from kiro_crew import crew_mode as _cm
+        from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+        crew_mode_metrics.record_turned_on("switch", repeat=bool(_cm.known_roots() - {slot.key}))
+    # The migration moving a chat that never turned Crew Mode on changes nothing on
+    # its page either; a stamped root's move keeps the board it has (nothing is
+    # adopted over a page already chosen).
+    if not (caller.crew_mode_migration and not prior_crew_stamp):
+        await adopt_crew_mode_board_on_switch(slot, agent_name, state)
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
     schedule_eager_spawn(state, slot, start_priority=person_priority(caller.owner))
+    # On a chat with no row the welcome page shows the new agent's greeting, and
+    # the pick writes none there (the boundary notice above is withheld).
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
     state.push_slots_update()
+    # The acting tab writes this answer into its store, even after a slots frame
+    # from a newer switch that committed while this one awaited (the greeting read
+    # above runs after both locks are released). So the answer is read from the
+    # slot here, after the last await and with none between the reads: the agent,
+    # namespace and workspace the slot holds now, as one binding. A slot replaced
+    # under this name meanwhile answers the 404 a missing one gets, so the tab
+    # never writes this binding over the new slot's row.
+    if state._slots.get(name) is not slot:
+        return slot_not_found()
     resp_body: dict = {
         "ok": True,
-        "agent": agent_name,
+        "agent": slot.agent or "",
         "agent_kind": slot.agent_kind,
-        "workspace": workspace,
+        "workspace": slot.workspace or "default",
     }
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response

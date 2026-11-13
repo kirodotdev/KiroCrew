@@ -82,3 +82,29 @@ def test_crystallize_gates_on_recurrence_like_the_auto_pass():
             f"crystallize must name {shape!r} as a do-not-crystallize shape, "
             f"matching the auto pass's return-null list"
         )
+
+
+def test_crystallize_names_the_only_layout_approval_accepts():
+    """crystallize must tell the agent which entries a candidate folder may hold.
+
+    Approval refuses any top-level entry outside ``_ALLOWED_CANDIDATE_TOP``, so an
+    agent following the common ``SKILL.md`` + ``references/`` convention stages a
+    candidate that can never go live. The skill has to name the closed set, each
+    entry the guard allows, and where reference material goes instead.
+    """
+    from pathlib import Path
+
+    import kiro_crew
+
+    body = (
+        Path(kiro_crew.__file__).parent / "builtin_skills" / "crystallize" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    text = " ".join(body.split())
+
+    assert "nothing else" in text and "`references/`" in text, (
+        "crystallize must say the candidate folder is a closed set and name the "
+        "references/ folder approval refuses"
+    )
+    for entry in SkillsLoader._ALLOWED_CANDIDATE_TOP:
+        assert f"`{entry}" in text, f"crystallize must name the allowed entry {entry!r}"
+    assert "Put reference material in `SKILL.md` itself" in text

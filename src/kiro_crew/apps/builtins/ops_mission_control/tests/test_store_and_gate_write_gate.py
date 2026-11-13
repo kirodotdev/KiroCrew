@@ -134,9 +134,14 @@ class TestTheWriteGateConsultsEveryRotation(_HomeIsolated):
             ShiftStatus,
         )
 
+        # Set by the test in its cleanup. The source never sets it: a hang ends when the
+        # caller's own timeout cancels the coroutine, not when a clock runs out.
+        hold = _asyncio.Event()
+
         class _AsyncSrc:
             id = source_id
             is_fallback = False
+            release = hold
 
             def configured(self):
                 return True
@@ -145,8 +150,7 @@ class TestTheWriteGateConsultsEveryRotation(_HomeIsolated):
                 if raises:
                     raise RuntimeError("provider down")
                 if hangs:
-                    # flake-ok: pre-existing hang stub, cut by the patched timeout; moved verbatim
-                    await _asyncio.sleep(3600)
+                    await self.release.wait()
                 return ShiftStatus(on_shift=on_shift, unknown=unknown)
 
         return _AsyncSrc()
@@ -209,7 +213,9 @@ class TestTheWriteGateConsultsEveryRotation(_HomeIsolated):
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
 
-        self._install(self._async_only_source("companion-rota", on_shift=False, hangs=True))
+        src = self._async_only_source("companion-rota", on_shift=False, hangs=True)
+        self.addCleanup(src.release.set)
+        self._install(src)
         with mock.patch.object(rotation, "_ASYNC_SHIFT_TIMEOUT_SECS", 0.05):
             self.assertTrue(rotation._definitely_off_shift())
 

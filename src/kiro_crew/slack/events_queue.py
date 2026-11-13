@@ -21,8 +21,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import weakref
-from typing import TYPE_CHECKING, Any, AsyncIterator, Coroutine
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Coroutine
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig
 from kiro_crew.messaging.link import legacy_key
@@ -82,7 +83,7 @@ def _queue_tags(sender_id: str, channel: str) -> dict[str, Any]:
 class _StopHold:
     """The Slack ``!stop``s in flight on one session key, and what they detached."""
 
-    __slots__ = ("count", "held", "dropping")
+    __slots__ = ("count", "held", "dropping", "dropping_in")
 
     def __init__(self) -> None:
         self.count = 0
@@ -94,11 +95,37 @@ class _StopHold:
         #: are theirs to drop: a message sent after one's own ``!stop`` is newer
         #: intent, even when another member's overlapping stop detached it.
         self.dropping: dict[str, int] = {}
+        #: The same, for a Stop aimed at PART of a key that serves several threads (a
+        #: single-session DM, whose dashboard-linked threads share its flat key):
+        #: ``(owner, addresses, upto)``, *addresses* reading an entry's kwargs.
+        self.dropping_in: list[tuple[str, Callable[[Any], bool], int]] = []
 
 
 #: Per orchestrator, the stops in flight on each session key. Overlapping stops share
 #: one hold, so the queue is put back, and drained, only when the LAST one settles.
 _stops_in_flight: weakref.WeakKeyDictionary[Any, dict[str, _StopHold]] = weakref.WeakKeyDictionary()
+
+#: The thread each router task was started for. A single-session DM runs every
+#: thread's turn under its one flat key, so a Stop aimed at one dashboard-linked
+#: thread reads this to tell whether that key's task is the thread's own.
+_router_task_threads: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+
+
+def _track_router_task(
+    orch: GatewayOrchestrator, session_key: str, task: Any, thread_ts: Any
+) -> None:
+    """Register *task* as *session_key*'s router task, noting the thread it serves."""
+    orch._session_tasks[session_key] = task
+    if thread_ts:
+        _router_task_threads[task] = str(thread_ts)
+
+
+def router_task_thread(task: Any) -> str | None:
+    """The thread a router task was started for, or None when it named none."""
+    try:
+        return _router_task_threads.get(task)
+    except TypeError:  # a test double that cannot be weakly referenced
+        return None
 
 
 def _key_busy(orch: GatewayOrchestrator, session_key: str) -> bool:
@@ -123,13 +150,20 @@ async def _settle_stop_hold(orch: GatewayOrchestrator, session_key: str, hold: _
     if sessions is None:
         return
     owned = [(entries_queued_by(owner), upto) for owner, upto in hold.dropping.items()]
+    owned_in = [
+        (entries_queued_by(owner), addresses, upto) for owner, addresses, upto in hold.dropping_in
+    ]
 
     def _dropped(index: int, kwargs: Any) -> bool:
-        return any(index <= upto and by(kwargs) for by, upto in owned)
+        if any(index <= upto and by(kwargs) for by, upto in owned):
+            return True
+        return any(
+            index <= upto and by(kwargs) and addresses(kwargs) for by, addresses, upto in owned_in
+        )
 
     queued = [(i, entry) for i, (entries, _) in enumerate(hold.held) for entry in entries]
     pending = [(i, entry) for i, (_, entries) in enumerate(hold.held) for entry in entries]
-    if hold.dropping:
+    if hold.dropping or hold.dropping_in:
         # Only once a stop went through: a declined one drops nothing.
         sessions.clear_queue(
             session_key, only=tuple(entry for i, entry in queued if _dropped(i, entry[2]))
@@ -154,22 +188,49 @@ async def _settle_stop_hold(orch: GatewayOrchestrator, session_key: str, hold: _
 
 @contextlib.asynccontextmanager
 async def slack_stop_in_flight(
-    orch: GatewayOrchestrator | None, session_key: str
-) -> AsyncIterator[None]:
-    """Read *session_key* as busy for a Stop that detaches nothing of its own.
+    orch: GatewayOrchestrator | None,
+    session_key: str,
+    *,
+    owner: str | None = None,
+    detach: bool = False,
+    addresses: Callable[[Any], bool] | None = None,
+) -> AsyncIterator[Callable[..., None]]:
+    """Read *session_key* as busy while a Stop is in flight.
 
-    The Stop buttons let ``stop_turn(owned_by=...)`` drop the presser's entries and
-    leave everyone else's queued. Without this, the running turn can end while
-    ``stop_turn`` awaits the cancel, its turn-end drain starts one of those kept
-    entries, and an escalation to a hard reset then aborts it after it left the
-    queue. Joining the shared hold keeps every drain off the key until the last
-    overlapping Stop -- ``!stop`` included -- settles, then drains once.
+    Without this, the running turn can end while ``stop_turn`` awaits the cancel,
+    its turn-end drain starts a kept entry, and an escalation to a hard reset then
+    aborts it after it left the queue. Joining the shared hold keeps every drain
+    off the key until the last overlapping Stop -- ``!stop`` included -- settles,
+    then drains once.
+
+    The context yields ``went_through(reset=False)``, the call a Stop makes once it
+    ended a turn. With *owner* it joins the hold's drop set, so the last release
+    drops that owner's entries in every snapshot detached up to this press,
+    whichever Stop detached them, and puts everyone else's back; ``!stop`` takes
+    the same rule. Never calling it (a declined, failed or forced stop) puts
+    everything back.
+
+    *detach* also takes what was queued at the press -- the session queue and the
+    pre-session stash (``_pending_queue``) -- into the hold, as ``!stop`` does, so
+    the release cannot dispatch the presser's own messages queued behind the
+    stopped turn or a cold session start; the caller's ``stop_turn`` then takes
+    ``preserve_queue``, since a message admitted after the press is newer intent.
+    ``reset=True`` is an escalated stop that reset the session: as ``!stop``'s,
+    everything this press detached goes, for everybody, with its files. The Stop
+    buttons pass neither *owner* nor *detach*: the live queue is their
+    ``stop_turn(owned_by=...)`` to clear, as on main.
+
+    *addresses* narrows a Stop to part of a key that serves several threads -- a
+    single-session DM, whose router task and queue also carry its dashboard-linked
+    threads: it reads an entry's kwargs and says whether this Stop is about it.
+    The presser's entries are dropped, and a reset drops everybody's, only where
+    it says yes.
 
     No orchestrator (a handler double, or a call before the gateway wired one) has
     no drain to hold, so nothing is held.
     """
     if orch is None:
-        yield
+        yield lambda reset=False: None
         return
     # The router keys its tasks, holds and drains by the BARE thread ts, while a
     # button can carry the canonical ``slack:<ts>``: a hold under the canonical
@@ -177,15 +238,66 @@ async def slack_stop_in_flight(
     # an overlapping ``!stop``'s count.
     session_key = legacy_key(session_key) or session_key
     hold = _stops_in_flight.setdefault(orch, {}).setdefault(session_key, _StopHold())
+    # The last snapshot that exists at this press: this Stop's own when it
+    # detaches, else whatever an earlier overlapping Stop detached.
+    upto = len(hold.held) - 1
+    held: tuple[list[Any], list[Any]] | None = None
+
+    def went_through(reset: bool = False) -> None:
+        if reset and held is not None:
+            # A scoped reset drops only the entries this Stop addresses: the key's
+            # other threads belong to a session the reset did not touch.
+            def _in_scope(entry: Any) -> bool:
+                return addresses is None or addresses(entry[2])
+
+            gone_q = [e for e in held[0] if _in_scope(e)]
+            gone_p = [e for e in held[1] if _in_scope(e)]
+            held[0][:] = [e for e in held[0] if not _in_scope(e)]
+            held[1][:] = [e for e in held[1] if not _in_scope(e)]
+            try:
+                if orch.sessions is not None:
+                    orch.sessions.clear_queue(session_key, only=tuple(gone_q))
+            except Exception:
+                logger.warning("stop hold: dropping a reset's entries failed", exc_info=True)
+            for item in gone_p:
+                try:
+                    unlink_queued_temp_paths(item[2])
+                except Exception:
+                    logger.warning("stop hold: a reset entry's files were kept", exc_info=True)
+        # A reset drops at least what a soft stop would: the presser's entries an
+        # earlier overlapping Stop detached too.
+        if owner is not None and upto >= 0:
+            if addresses is None:
+                hold.dropping[owner] = max(hold.dropping.get(owner, -1), upto)
+            else:
+                hold.dropping_in.append((owner, addresses, upto))
+
     hold.count += 1
     try:
-        yield
+        if detach:
+            # Both queues, in the shared hold, so an overlapping Stop's snapshot
+            # indexes agree on what was queued before which press.
+            queued = orch.sessions.detach_queue(session_key) if orch.sessions else ()
+            held = (list(queued), list(orch._pending_queue.pop(session_key, None) or ()))
+            hold.held.append(held)
+            upto += 1
+        if addresses is not None:
+            # Asked about every entry this press can drop -- its own snapshot and
+            # those earlier overlapping Stops hold -- before any await, so a caller
+            # that remembers its answers judges them as they stood at the press.
+            for queued_entries, pending_entries in hold.held[: upto + 1]:
+                for entry in (*queued_entries, *pending_entries):
+                    addresses(entry[2])
+        yield went_through
     finally:
         hold.count -= 1
         if hold.count <= 0:
             _stops_in_flight.get(orch, {}).pop(session_key, None)
-            await _settle_stop_hold(orch, session_key, hold)
-            await _drain_slack_queue(orch, session_key)
+            try:
+                await _settle_stop_hold(orch, session_key, hold)
+            finally:
+                # Whatever the settle put back must still have a dispatcher.
+                await _drain_slack_queue(orch, session_key)
 
 
 # Strong references to fire-and-forget asyncio.Tasks scheduled from
@@ -227,6 +339,156 @@ def _on_tracked_done(task: asyncio.Task[object]) -> None:
         logger.debug("Tracked slash task failed: %s", exc)
 
 
+#: Session keys whose queue drain was held because Slack had no published
+#: client (a reconnect between closing the old socket and publishing the new
+#: one). Keyed weakly by orchestrator, like ``_stops_in_flight``.
+_held_while_slack_down: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
+
+
+def hold_if_slack_down(orch: GatewayOrchestrator, session_key: str) -> bool:
+    """Hold *session_key*'s queue while a reconnect has no client published.
+
+    A drain dequeues before it dispatches, so dispatching into the client a
+    reconnect cleared would lose the entry: the turn fails at its first post
+    and nothing retries it. Returns True (the entry stays queued) while
+    ``orch.slack`` is cleared and either a reconnect runs or a failed one
+    retired a published client (``reconnect.client_lost_to_reconnect``).
+    :func:`resume_held_slack_drains` starts the held keys again on the next
+    published client; :func:`give_up_held_slack_work` ends the hold with a
+    notice per held message when none comes. A gateway no reconnect took a
+    client from returns False, so a send with no client goes on as before.
+    """
+    # Lazy: reconnect imports this module's helpers inside its own functions.
+    from kiro_crew.slack.reconnect import client_lost_to_reconnect, reconnect_in_progress
+
+    if orch.slack is not None:
+        return False
+    if not (reconnect_in_progress(orch) or client_lost_to_reconnect(orch)):
+        return False
+    _held_while_slack_down.setdefault(orch, set()).add(session_key)
+    return True
+
+
+def resume_held_slack_drains(orch: GatewayOrchestrator) -> None:
+    """Start every queue drain held while Slack was down. Call with a client published."""
+    for session_key in sorted(_held_while_slack_down.pop(orch, set())):
+        _spawn_tracked(_drain_slack_queue(orch, session_key), owner=orch)
+
+
+def _take_queued(orch: GatewayOrchestrator, session_key: str) -> list[tuple[str, str, dict]]:
+    """Remove and return every entry queued for *session_key* (session queue, then stash)."""
+    taken: list[tuple[str, str, dict]] = []
+    if orch.sessions:
+        while True:
+            entry = orch.sessions.dequeue(session_key)
+            if not entry:
+                break
+            taken.append(entry)
+    taken.extend(orch._pending_queue.pop(session_key, []))
+    return taken
+
+
+#: How much of a message the undelivered notice quotes.
+_NOTICE_PREVIEW_CHARS = 80
+#: Slack markup (``<@U1>``, ``<#C1|general>``, ``<https://x|label>``).
+_SLACK_MARKUP = re.compile(r"<([^<>]*)>")
+
+
+def _notice_channel(orch: GatewayOrchestrator, channel: str) -> str:
+    """Where the message was sent, in words: a tracked channel's saved name, else generic."""
+    if channel.startswith("D"):
+        return "a direct message"
+    cfg = getattr(orch, "_cfg", None)
+    tracked = getattr(getattr(cfg, "slack", None), "tracking_channels", None) or []
+    for entry in tracked:
+        if isinstance(entry, dict) and entry.get("channel_id") == channel:
+            name = str(entry.get("name") or "").strip().lstrip("#")
+            if name:
+                return f"#{name}"
+    return "a Slack channel"
+
+
+def _unmark(match: re.Match[str]) -> str:
+    target, _, label = match.group(1).partition("|")
+    if target.startswith("#"):
+        return f"#{label}" if label else "#channel"
+    if target.startswith("@"):
+        return f"@{label}" if label else "@someone"
+    if target.startswith("!"):
+        return f"@{label or target[1:]}"
+    return label or target
+
+
+def _notice_subject(kwargs: dict) -> str:
+    """What was sent, in words: the start of its text, else the kind of attachment."""
+    text = " ".join(_SLACK_MARKUP.sub(_unmark, str(kwargs.get("spool_text") or "")).split())
+    if text:
+        if len(text) > _NOTICE_PREVIEW_CHARS:
+            text = text[:_NOTICE_PREVIEW_CHARS].rstrip() + "..."
+        return f'your message "{text}"'
+    if int(kwargs.get("spool_voice_memos") or 0) > 0:
+        return "a voice memo"
+    if int(kwargs.get("spool_attachments") or 0) > 0:
+        return "an attachment"
+    return "a message"
+
+
+def give_up_held_slack_work(orch: GatewayOrchestrator) -> int:
+    """End the hold after Slack did not come back: notify for each held message.
+
+    Called when a failed reconnect's give-up window ends with no client
+    published. Every message still queued for a held key, a stashed key or a
+    running session is taken out of its queue, its deferred temp files are
+    unlinked, and the owner gets one dashboard notification
+    (``dashboard_state.notify``) so none is dropped silently. The notice names
+    the channel in words (:func:`_notice_channel`) and quotes the start of the
+    message, or says it was a voice memo or an attachment
+    (:func:`_notice_subject`); Slack ids stay in ``meta``. Returns the number
+    of messages noticed.
+    """
+    keys = set(_held_while_slack_down.pop(orch, set()))
+    keys.update(orch._pending_queue)
+    keys.update(orch._session_tasks)
+    count = 0
+    for session_key in sorted(keys):
+        for msg_ts, _text, kwargs in _take_queued(orch, session_key):
+            count += 1
+            unlink_queued_temp_paths(kwargs)
+            notify_slack_undelivered(orch, session_key, msg_ts, kwargs)
+    return count
+
+
+def notify_slack_undelivered(
+    orch: GatewayOrchestrator, session_key: str, msg_ts: str, kwargs: dict
+) -> None:
+    """Tell the owner one Slack message was not delivered because Slack did not reconnect.
+
+    One dashboard notification (``dashboard_state.notify``) naming the channel
+    in words and what was sent (:func:`_notice_subject`). Used by
+    :func:`give_up_held_slack_work` for held messages, and by the router for an
+    attachment message a failed reconnect left with no client to fetch its
+    files with.
+    """
+    channel = str(kwargs.get("channel", "") or "")
+    logger.warning("Slack did not reconnect: message %s in %s was not delivered", msg_ts, channel)
+    state = orch.dashboard_state
+    if state is None:
+        return
+    try:
+        state.notify(
+            "agent",
+            "Slack: message not delivered",
+            (
+                f"Slack did not reconnect, so {_notice_subject(kwargs)} in "
+                f"{_notice_channel(orch, channel)} was not delivered to the agent. "
+                "Reconnect Slack in Settings, then send it again."
+            ),
+            meta={"channel": channel, "msg_ts": msg_ts, "session_key": session_key},
+        )
+    except Exception:
+        logger.warning("Could not post the Slack undelivered notice", exc_info=True)
+
+
 async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> None:
     """Start the next queued message when no turn's own tail will drain it.
 
@@ -240,6 +502,8 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
     session_key = legacy_key(session_key) or session_key
     if _key_busy(orch, session_key) or not orch.sessions:
         return
+    if hold_if_slack_down(orch, session_key):
+        return
     _next = orch.sessions.dequeue(session_key)
     if not _next:
         # The pre-session stash, as the turn-end drains read it.
@@ -249,8 +513,10 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
         _next = _pq.pop(0)
         if not _pq:
             del orch._pending_queue[session_key]
-    task = asyncio.ensure_future(_dispatch_queued(orch, session_key, *_next))
-    orch._session_tasks[session_key] = task
+    # The client is read in the same step as the dequeue, so a reconnect that
+    # clears ``orch.slack`` later cannot leave the entry with no client.
+    task = asyncio.ensure_future(_dispatch_queued(orch, session_key, *_next, slack=orch.slack))
+    _track_router_task(orch, session_key, task, (_next[2] or {}).get("thread_ts"))
     orch._handler_tasks.add(task)
 
     def _after(done: asyncio.Task) -> None:  # type: ignore[type-arg]
@@ -285,8 +551,16 @@ async def _dispatch_queued(
     msg_ts: str,
     text: str,
     kwargs: dict,
+    *,
+    slack: Any = None,
 ) -> None:
-    """Dispatch a queued message — remove ⏳ reaction and call handle_message."""
+    """Dispatch a queued message — remove ⏳ reaction and call handle_message.
+
+    *slack* is the client the drain read when it dequeued the entry; the turn
+    uses it throughout, so a reconnect clearing ``orch.slack`` mid-dispatch
+    cannot hand the turn a ``None`` client. Omitted, ``orch.slack`` is read once.
+    """
+    client = slack if slack is not None else orch.slack
     channel = kwargs.get("channel", "")
     thread_ts = kwargs.get("thread_ts")
     from_trusted_bot = bool(kwargs.get("from_trusted_bot", False))
@@ -296,9 +570,11 @@ async def _dispatch_queued(
     if not isinstance(_q_spool_text, str):
         _q_spool_text = None
     _q_spool_attachments = int(kwargs.get("spool_attachments") or 0)
-    if orch.slack:
+    # Whether the queued message was a voice memo, so it is still answered in kind.
+    _q_had_voice_input = bool(kwargs.get("had_voice_input", False))
+    if client:
         try:
-            await orch.slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
+            await client.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
         except Exception:
             pass
     # Route the queued follow-up through the SAME gate as the initial message so
@@ -314,7 +590,7 @@ async def _dispatch_queued(
     try:
         if _use_transport:
             await handle_message_transport(
-                orch.slack,  # type: ignore[arg-type]
+                client,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 text,
@@ -347,10 +623,11 @@ async def _dispatch_queued(
                 start_priority=person_priority(not from_trusted_bot),
                 spool_text=_q_spool_text,
                 spool_attachments=_q_spool_attachments,
+                had_voice_input=_q_had_voice_input,
             )
             return
         await handle_message(
-            orch.slack,  # type: ignore[arg-type]
+            client,  # type: ignore[arg-type]
             orch.sessions,  # type: ignore[arg-type]
             channel,
             text,
@@ -368,6 +645,7 @@ async def _dispatch_queued(
             channel_agent=kwargs.get("agent_override"),
             user_display_name=kwargs.get("user_display_name"),
             from_trusted_bot=from_trusted_bot,
+            had_voice_input=_q_had_voice_input,
             spool_text=_q_spool_text,
             spool_attachments=_q_spool_attachments,
             start_priority=person_priority(not from_trusted_bot),

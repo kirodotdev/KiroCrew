@@ -94,15 +94,16 @@ class TestAgentPassthrough:
 
         ctx.build_message.assert_called_once()
         call_kwargs = ctx.build_message.call_args
-        assert call_kwargs.kwargs.get("agent") == "siads-etl-test", (
-            f"Expected agent='siads-etl-test', got call: {call_kwargs}"
-        )
+        assert (
+            call_kwargs.kwargs.get("agent") == "siads-etl-test"
+        ), f"Expected agent='siads-etl-test', got call: {call_kwargs}"
 
     @pytest.mark.asyncio
     async def test_no_agent_passes_none(self):
         slack, sessions, ctx = _make_mocks()
 
         from kiro_crew.slack import handler
+
         handler._cached_default_agent = ""
 
         with patch("kiro_crew.slack.handler.publish_turn_identity"):

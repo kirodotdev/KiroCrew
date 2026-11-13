@@ -84,9 +84,9 @@ class TestSharedScratchWindow:
     def test_a_failed_refresh_refuses_only_a_tree_the_sweep_could_take(
         self, scratch_root: Path, monkeypatch
     ) -> None:
-        """Without the mtime hold a dead-owner tree can be swept under the mount,
-        so it is refused; a live-owner or unowned tree is never swept and is
-        still handed out."""
+        """Without the mtime hold a dead-owner tree can be swept, and an unowned
+        one moved into the quarantine, under the mount, so both are refused; a
+        live-owner tree is never swept, so it is still handed out."""
         dead = sc.allocate_scratch("runtime")
         sc.record_owner(dead, 1001)
         live = sc.allocate_scratch("runtime")
@@ -101,8 +101,8 @@ class TestSharedScratchWindow:
         monkeypatch.setattr(sc.os, "utime", refuse)
         assert sc.shared_scratch_window(dead) is None
         assert sc.shared_scratch_window(live) == live
-        assert sc.shared_scratch_window(unowned) == unowned
-        assert dead.exists()  # refused, not removed
+        assert sc.shared_scratch_window(unowned) is None
+        assert dead.exists() and unowned.exists()  # refused, not removed
 
     def test_a_file_at_the_name_is_refused(self, scratch_root: Path) -> None:
         scratch_root.mkdir(parents=True)
@@ -260,7 +260,7 @@ class TestAdoptOwner:
 
     def test_an_unowned_tree_stays_unowned_when_joined(self, scratch_root: Path) -> None:
         """A marker naming only the joiner would make the allocator's tree
-        reclaimable the hour after the joiner exits; unowned is never swept."""
+        reclaimable the hour after the joiner exits; unowned waits a week."""
         tree = sc.allocate_scratch("runtime")
         (tree / sc.OWNER_FILENAME).unlink()
         assert sc.adopt_owner(tree, 2002) == "recorded"
@@ -277,8 +277,8 @@ class TestAdoptOwner:
 
         monkeypatch.setattr(sc, "atomic_write", boom)
         assert sc.adopt_owner(tree, 2002) == "unwritable"
-        # Unowned is never swept; predecessor-only would be swept the hour
-        # after the predecessor exits, under the live successor.
+        # Unowned waits a week with no write; predecessor-only would be swept
+        # the hour after the predecessor exits, under the live successor.
         assert not (tree / sc.OWNER_FILENAME).exists()
 
     def test_the_sweep_still_reclaims_a_single_dead_owner(self, scratch_root: Path, monkeypatch):
@@ -747,17 +747,26 @@ class TestSpawnsOnBehalfOfAParent:
             p.cwd = ""
             return p
 
-        factory = MagicMock(side_effect=lambda *a, **kw: _provider())
+        built: list[MagicMock] = []
+
+        def _build(*_a: object, **_kw: object) -> MagicMock:
+            built.append(_provider())
+            return built[-1]
+
+        factory = MagicMock(side_effect=_build)
         with patch("kiro_crew.session.default_project_dir", return_value=""):
             mgr = SessionManager(cfg, provider_factory=factory)
-        mgr._drain_and_claim = AsyncMock(return_value=_provider())
+        pooled = _provider()
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
         mgr._schedule_replenish = MagicMock()
         tree = tmp_path / "scratch" / "runtime-abcdef01"
         try:
-            await mgr.get_or_create("subagent:s1", agent="kirocrew", shared_scratch=tree)
+            got = await mgr.get_or_create("subagent:s1", agent="kirocrew", shared_scratch=tree)
         finally:
             await mgr.close_all()
 
+        # The session runs on a freshly built provider, never the pooled one.
+        assert got[0] is built[0] and got[0] is not pooled
         mgr._drain_and_claim.assert_not_awaited()
         factory.assert_called_once()
         assert factory.call_args.kwargs["shared_scratch"] == tree
@@ -1000,6 +1009,9 @@ class TestBgRuntimeSuccessorInheritsTheTree:
 
         assert ctor.call_count == 1
         assert ctor.call_args.kwargs["shared_scratch"] == tree
+        # The stale runtime drains while its successor takes the slot.
+        assert mgr._bg_runtime is fresh
+        assert mgr._draining_bg_runtimes == [stale]
         mgr._draining_bg_runtimes = []
         await mgr.close_all()
 
@@ -1035,6 +1047,7 @@ class TestBgRuntimeSuccessorInheritsTheTree:
 
         assert ctor.call_count == 1
         assert ctor.call_args.kwargs["shared_scratch"] == tree
+        assert mgr._bg_runtime is fresh
         await mgr.close_all()
 
     @pytest.mark.asyncio

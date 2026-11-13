@@ -8,6 +8,7 @@ that a launch WITHOUT either flag produces exactly the stock deploy argv.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 
 import pytest
@@ -196,6 +197,74 @@ class TestValidation:
         ami = _allowed_pattern("CustomAmiId")
         assert ami.fullmatch("") and ami.fullmatch("ami-0123456789abcdef0")
         assert not ami.fullmatch("ami-0abc;x")
+
+
+class TestAmiArchitectureCheck:
+    """An --ami built for the other architecture is refused before the stack exists."""
+
+    def _launch(self, monkeypatch, image_arch: str) -> tuple[int, list, list]:
+        from kiro_crew.cloud.launch_state import LaunchState
+
+        def fake_run(args, profile="", region="", **kw):
+            if args[:2] == ["cloudformation", "describe-stacks"]:
+                # The failed launch looks for a stack it left; there is none.
+                return 254, "", "ValidationError: Stack with id x does not exist"
+            assert args[:4] == ["ec2", "describe-images", "--image-ids", "ami-0abc1234"]
+            images = [{"ImageId": "ami-0abc1234", "Architecture": image_arch}]
+            return 0, json.dumps({"Images": images}), ""
+
+        deployed: list = []
+        asked: list = []
+
+        def fake_deploy(**kw):
+            deployed.append(kw)
+            raise aws.AWSError("stopped after the deploy call", missing_action="x:Y")
+
+        monkeypatch.setattr(wizard.LaunchState, "load", classmethod(lambda cls, *a: LaunchState()))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: None)
+        monkeypatch.setattr(wizard, "_clear_prior_pointer", lambda *a: True)
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        monkeypatch.setattr(wizard, "_deploy_with_progress", fake_deploy)
+        monkeypatch.setattr(wizard.ui, "confirm", lambda q, **k: asked.append(q) or True)
+        rc = wizard.launch(
+            profile="dev",
+            region="us-west-2",
+            size_key="balanced",
+            ami_id="ami-0abc1234",
+        )
+        return rc, deployed, asked
+
+    def test_other_architecture_is_refused_before_the_question(self, monkeypatch, capsys):
+        rc, deployed, asked = self._launch(monkeypatch, "x86_64")
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert deployed == [] and asked == []
+        assert "AMI ami-0abc1234 is built for x86_64" in out
+        assert "m7g.2xlarge) runs arm64" in out
+        assert "--size light-x86 / balanced-x86 / power-x86" in out
+
+    def test_matching_architecture_proceeds_to_deploy(self, monkeypatch):
+        rc, deployed, asked = self._launch(monkeypatch, "arm64")
+        assert rc == 1  # the fake deploy stops the launch
+        assert len(asked) == 1
+        assert [kw["ami_id"] for kw in deployed] == ["ami-0abc1234"]
+
+    def test_a_failed_read_raises_nothing(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (254, "", "Throttling"))
+        tier = sizes.get_tier("balanced")
+        assert ec2.assert_ami_matches_tier("ami-0abc1234", tier, "dev", "us-west-2") is None
 
 
 class TestUserDataSizeWithPackages:

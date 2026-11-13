@@ -99,9 +99,10 @@ def _report_queued_stop(
     row_settled: bool = False,
     error: str = "",
     report_owed: bool = False,
+    gate: "asyncio.Future[bool] | None" = None,
 ) -> "asyncio.Task[bool] | None":
     return self._cancellation._report_queued_stop_impl(
-        params, row_settled=row_settled, error=error, report_owed=report_owed
+        params, row_settled=row_settled, error=error, report_owed=report_owed, gate=gate
     )
 
 
@@ -248,6 +249,7 @@ async def cancel_for_teardown(
     *,
     parent_session_key: str,
     verb: str = "",
+    reason: str = "",
 ) -> int:
     """Stop the snapshotted runs without reporting them to a retired parent.
 
@@ -265,6 +267,7 @@ async def cancel_for_teardown(
             agent_ids,
             parent_session_key=parent_session_key,
             verb=verb,
+            reason=reason,
             accepted_since=fence,
         )
     finally:

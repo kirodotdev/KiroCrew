@@ -42,11 +42,12 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 # Module scope, not function-local: these are the only package imports this file
-# can safely make at import time. dep_sync and stdlib_shadow import the standard
-# library only (each asserted by a test) and `version_line` needs nothing beyond
+# can safely make at import time. dep_sync, desktop_stdio and stdlib_shadow import
+# the standard library only (each asserted by a test) and `version_line` needs nothing beyond
 # the package itself (`kiro_crew.__init__` imports only the standard library), so
 # none can raise the ModuleNotFoundError this file exists to heal.
 from kiro_crew import dep_sync, version_line
+from kiro_crew.desktop_stdio import redirect_desktop_stdio
 from kiro_crew.stdlib_shadow import refuse_if_stdlib_shadowed
 
 _PIP_TIMEOUT_SECS = 300
@@ -112,6 +113,9 @@ def _self_heal(missing: str) -> bool:
 
 def main() -> None:
     """Import the real CLI, self-healing a stale editable install once."""
+    # Windows desktop: aim stdout/stderr at the shell's launch log before
+    # anything below prints or raises (no-op otherwise).
+    redirect_desktop_stdio()
     # A stdlib name resolving from the launch directory, PYTHONPATH or a
     # site-packages tree is refused here, before `--version` and before the
     # CLI import: the shadow is already loaded (`kiro_crew.__init__` imports

@@ -117,7 +117,7 @@ def probe() -> PermissionProbe:
 
 
 def probe_dict() -> dict[str, str]:
-    """The probe as a plain dict, for the dashboard payload and ``doctor --json``.
+    """The probe as a plain, JSON-safe dict.
 
     A separate function rather than ``dataclasses.asdict`` so the wire key names
     are stated once, here, and cannot drift when a field is renamed.

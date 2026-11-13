@@ -11,20 +11,24 @@ engine is spawned; the runtime is a fake that records the verbs.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     METHOD_SESSION_CLOSE,
 )
+from kiro_crew.testing.wait import await_until, until_parked
 
 _SID = "sess-live-1"
 
@@ -39,17 +43,24 @@ def _handle(**overrides: object) -> SimpleNamespace:
         keep_transcript=False,
         memory_mode="persistent",
         child_fidelity_aware=False,
+        delete_delay_secs=0.0,
+        keepalive_routed=False,
         set_model=AsyncMock(),
+        # Each handle has its own report, as each session/load does.
+        mcp_session_report=MagicMock(return_value=McpSessionReport()),
     )
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
-def _runtime(backend: str = ACP_BACKEND_KAS, *, alive: bool = True) -> SimpleNamespace:
+def _runtime(
+    backend: str = ACP_BACKEND_KAS, *, alive: bool = True, cloud: bool = False
+) -> SimpleNamespace:
     new_handle = _handle(model="")
     kept: list[str] = []
     runtime = SimpleNamespace(
         acp_backend=backend,
+        is_cloud_sandbox=cloud,
         _agent="kirocrew",
         is_alive=lambda: alive,
         evict_session=AsyncMock(),
@@ -79,6 +90,12 @@ def _provider(
     return provider
 
 
+async def _passthrough(message, send, _incarnation, *, requests_model=True):
+    """An essential delivery that hands the message straight to the send."""
+    async for event in send(message):
+        yield event
+
+
 class TestTheMark:
     def test_kas_declares_and_takes_the_mark(self) -> None:
         provider = _provider(_runtime())
@@ -93,6 +110,43 @@ class TestTheMark:
         provider = _provider(_runtime(ACP_BACKEND_KIRO))
         assert provider.mcp_config_wire_reinject is False
         provider.mark_mcp_config_changed()
+        assert provider._mcp_reinject_pending is False
+
+
+class TestACloudSession:
+    """A Kiro Cloud session sends no MCP servers, so a local MCP edit has nothing
+    to change in it. Re-loading it anyway would run outside the cloud start's
+    resume hold, and the approvals KAS replays on that load would be rejected
+    as unroutable instead of reaching the user's approval card."""
+
+    def test_it_ignores_the_mark(self) -> None:
+        provider = _provider(_runtime(cloud=True))
+        provider.mark_mcp_config_changed()
+        assert provider._mcp_reinject_pending is False
+
+    @pytest.mark.asyncio
+    async def test_it_never_reloads_even_with_a_mark_pending(self) -> None:
+        runtime = _runtime(cloud=True)
+        provider = _provider(runtime)
+        old = provider._handle
+        provider._mcp_reinject_pending = True
+        await provider.apply_pending_mcp_reinjection()
+        runtime.evict_session.assert_not_awaited()
+        runtime.load_session.assert_not_awaited()
+        assert provider._handle is old
+        assert provider._mcp_reinject_pending is False
+
+    def test_the_writer_neither_resets_nor_marks_it(self) -> None:
+        """The dashboard writer's gate: a cloud session must not force a reset of
+        every live session, and the mark it hands out must not stick."""
+        from kiro_crew.mcp_hot_reload import (
+            live_sessions_apply_mcp_live,
+            mark_reinjecting_providers,
+        )
+
+        provider = _provider(_runtime(cloud=True))
+        assert live_sessions_apply_mcp_live([provider]) is True
+        mark_reinjecting_providers([provider])
         assert provider._mcp_reinject_pending is False
 
 
@@ -207,22 +261,71 @@ class TestTheApply:
         runtime = _runtime()
         provider = _provider(
             runtime,
-            _handle(keep_transcript=True, memory_mode="ephemeral", child_fidelity_aware=True),
+            _handle(
+                keep_transcript=True,
+                memory_mode="ephemeral",
+                child_fidelity_aware=True,
+                delete_delay_secs=1800.0,
+                keepalive_routed=True,
+            ),
         )
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
         assert runtime.new_handle.keep_transcript is True
         assert runtime.new_handle.memory_mode == "ephemeral"
+        # A delayed record kept across the swap: the new handle's 0 would delete it
+        # at once when the session ends.
+        assert runtime.new_handle.delete_delay_secs == 1800.0
         # This turn's admission opted the OLD handle in; the new one must not fall
         # back to the fail-closed default mid-turn.
         assert runtime.new_handle.child_fidelity_aware is True
+        # The registry /api/session-keepalive reads still holds this provider, so the
+        # new handle keeps timing its calls on Kiro Crew's own servers.
+        assert runtime.new_handle.keepalive_routed is True
+
+    @pytest.mark.asyncio
+    async def test_a_handle_no_keepalive_reaches_stays_unrouted_across_the_swap(self) -> None:
+        runtime = _runtime()
+        provider = _provider(runtime, _handle(keepalive_routed=False))
+        provider.mark_mcp_config_changed()
+        await provider.apply_pending_mcp_reinjection()
+        assert runtime.new_handle.keepalive_routed is False
+
+    @pytest.mark.asyncio
+    async def test_whoever_follows_the_mcp_report_follows_the_reloaded_one(self) -> None:
+        # The load opens a new report for the same session. A reader that set
+        # its hook on the old one is moved to the new one and told at once: the
+        # server set the report describes has changed.
+        runtime = _runtime()
+        provider = _provider(runtime)
+        old_report = provider.mcp_session_report()
+        calls: list[int] = []
+        provider.set_mcp_report_changed_hook(lambda: calls.append(1))
+        provider.mark_mcp_config_changed()
+
+        await provider.apply_pending_mcp_reinjection()
+
+        new_report = provider.mcp_session_report()
+        assert new_report is runtime.new_handle.mcp_session_report()
+        assert new_report is not old_report
+        assert calls == [1]
+        assert old_report.on_change is None
+        new_report.on_change()
+        assert calls == [1, 1]
 
     @pytest.mark.asyncio
     async def test_a_pinned_model_is_re_applied(self) -> None:
         runtime = _runtime()
         provider = _provider(runtime, _handle(model="some-pinned-id"))
+
+        async def _set_model(model: str) -> None:
+            runtime.new_handle.model = model
+
+        runtime.new_handle.set_model = AsyncMock(side_effect=_set_model)
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
+        assert provider._handle is runtime.new_handle
+        assert provider._handle.model == "some-pinned-id"
         runtime.new_handle.set_model.assert_awaited_once_with("some-pinned-id")
 
     @pytest.mark.asyncio
@@ -231,6 +334,9 @@ class TestTheApply:
         provider = _provider(runtime, _handle(model=""))
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
+        assert provider._handle is runtime.new_handle
+        assert provider._handle.model == ""
+        assert provider._mcp_reinject_pending is False
         runtime.new_handle.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -269,6 +375,8 @@ class TestTheApply:
         provider.reclaim = MagicMock()  # type: ignore[method-assign]
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
+        assert provider._handle is runtime.new_handle
+        assert provider._mcp_reinject_pending is False
         assert runtime.load_session.await_args.kwargs["member_session_key"] == "member:m1"
 
 
@@ -292,6 +400,87 @@ class TestTheTurnBoundary:
             async for _ in provider.stream("hello"):
                 pass
         assert released == ["claim-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_gate_refusal_after_the_apply_sends_nothing(self, monkeypatch) -> None:
+        """The channel's gate reaches the session through the outer provider and is
+        handed to the handle the apply swapped in; its refusal sends no prompt."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        runtime = _runtime()
+        inner = _provider(runtime)
+        inner.mark_mcp_config_changed()
+        prompted: list[str] = []
+
+        async def _prompt(message: str, *, prompt_gate: Any = None, **_kw: object):
+            # The real handle asks the gate after its last await (see the handle test).
+            prompt_gate()
+            prompted.append(message)
+            if False:
+                yield None
+
+        runtime.new_handle.prompt = _prompt
+        released: list[object] = []
+        monkeypatch.setattr(inner, "_claim_shared_turn", lambda: "claim-1")
+
+        async def _end(claim: object) -> None:
+            released.append(claim)
+
+        monkeypatch.setattr(inner, "_end_shared_turn", _end)
+        inner.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = inner
+        outer.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        asked_on: list[object] = []
+
+        def _refuse() -> None:
+            asked_on.append(inner._handle)
+            raise PermissionError("sender no longer admitted")
+
+        with pytest.raises(PermissionError):
+            async for _ in outer.stream("hello", prompt_gate=_refuse):
+                pass
+        assert asked_on == [runtime.new_handle]
+        assert prompted == [] and released == ["claim-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_direct_client_asks_the_gate_under_the_write_lock(self) -> None:
+        """The direct client builds the prompt and waits for the write lock; a sender
+        revoked during that wait is refused under the lock, nothing is written, and the
+        turn is released."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.providers.acp import AcpProvider
+
+        client = AcpClient()
+        client.ensure_ready = AsyncMock()  # type: ignore[method-assign]
+        client._settle_orphan_steers = AsyncMock()  # type: ignore[method-assign]
+        client._process = MagicMock()
+        client._process.stdin.write = MagicMock()
+        client._process.stdin.drain = AsyncMock()
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = client
+        outer._ready_confirmed_session = AsyncMock()  # type: ignore[method-assign]
+        outer.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        admitted = [True]
+
+        def _gate() -> None:
+            if not admitted[0]:
+                raise PermissionError("sender no longer admitted")
+
+        async def _drive() -> None:
+            async for _ in outer.stream("hello", prompt_gate=_gate):
+                pass
+
+        lock = client._stdin_write_lock()
+        await lock.acquire()  # another frame (a permission answer) holds the pipe
+        turn = asyncio.ensure_future(_drive())
+        await until_parked(lock)
+        admitted[0] = False
+        lock.release()
+        with pytest.raises(PermissionError):
+            await await_until(turn, what="the direct client's gated prompt")
+        client._process.stdin.write.assert_not_called()
+        assert client._turn_done.is_set()
 
 
 class TestKeepRecordOnTeardown:
@@ -382,26 +571,30 @@ class TestEvict:
         runtime.unregister_session.assert_called_once_with(_SID)
 
     @pytest.mark.asyncio
-    async def test_a_refused_close_still_unregisters(self) -> None:
+    async def test_a_refused_close_still_unregisters(self, tmp_path) -> None:
+        import asyncio
+
         from kiro_crew.acp.runtime_class import AcpRuntime
 
-        runtime = object.__new__(AcpRuntime)
-        runtime._dead = False
-        runtime._process = object()
+        runtime = AcpRuntime(work_dir=tmp_path, sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+        runtime._session_queues[_SID] = asyncio.Queue()
+        runtime._process = object()  # type: ignore[assignment]
         runtime._send_and_await = AsyncMock(side_effect=RuntimeError("no such session"))  # type: ignore[method-assign]
-        runtime.unregister_session = MagicMock()  # type: ignore[method-assign]
-        await AcpRuntime.evict_session(runtime, _SID)
-        runtime.unregister_session.assert_called_once_with(_SID)
+        await runtime.evict_session(_SID)
+        assert _SID not in runtime._session_queues
 
     @pytest.mark.asyncio
-    async def test_a_dead_runtime_sends_nothing(self) -> None:
+    async def test_a_dead_runtime_sends_nothing(self, tmp_path) -> None:
+        import asyncio
+
         from kiro_crew.acp.runtime_class import AcpRuntime
 
-        runtime = object.__new__(AcpRuntime)
+        runtime = AcpRuntime(work_dir=tmp_path, sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+        runtime._session_queues[_SID] = asyncio.Queue()
+        # A process is set, so being dead is the only reason to skip the close.
+        runtime._process = object()  # type: ignore[assignment]
         runtime._dead = True
-        runtime._process = None
         runtime._send_and_await = AsyncMock()  # type: ignore[method-assign]
-        runtime.unregister_session = MagicMock()  # type: ignore[method-assign]
-        await AcpRuntime.evict_session(runtime, _SID)
+        await runtime.evict_session(_SID)
         runtime._send_and_await.assert_not_awaited()
-        runtime.unregister_session.assert_called_once_with(_SID)
+        assert _SID not in runtime._session_queues

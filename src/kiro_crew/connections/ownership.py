@@ -1,6 +1,6 @@
 """The Disconnect ownership oracle: who owns an MCP entry and its grant.
 
-Relocated verbatim from ``kiro_crew.dashboard.handlers.connections`` so the
+Kept apart from ``kiro_crew.dashboard.handlers.connections`` so the
 destructive-decision logic — the spec census, the entry/grant identity
 judgement, and the single-lock purge-and-revoke transaction — is owned and
 evolved apart from the HTTP layer. The handler keeps the route-facing concerns
@@ -15,15 +15,15 @@ module on the import path of every ``from kiro_crew.connections import …``,
 and the census helpers are collaborators of one destructive endpoint, not
 package API. Import them from this module directly.
 
-The docstrings and comments below carry the safety reasoning that shaped this
-code across the disconnect review rounds; they moved with it unchanged. The
-behavior is pinned by ``test/test_connections_disconnect.py``: the census
+The docstrings and comments below carry the safety reasoning behind this code.
+The behavior is pinned by ``test/test_connections_disconnect.py``: the census
 helpers directly, the judge and transaction through the disconnect endpoint.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -32,18 +32,73 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from kiro_crew import agent as agent_mod
 from kiro_crew.agent import SharedAgentHomeRefused
+from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
 from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
     is_agent_spec_name,
     is_markdown_spec,
     opens_frontmatter_fence,
     parse_agent_spec_text,
 )
+from kiro_crew.platform import PlatformCompositionError
 
 logger = logging.getLogger(__name__)
 
 _MIRROR_PREFIX = "mirror:"
-_RENDERED_AGENT_FILE = "kirocrew.json"
+_DEFAULT_AGENT = Path(AGENT_FILENAME).stem
+_WORKER_AGENT = Path(WORKER_AGENT_FILENAME).stem
+
+
+def _is_crew_worker_spec(path: Path) -> bool:
+    """Whether the worker spec at *path* is one its installer wrote and would rewrite."""
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    return isinstance(spec, dict) and agent_mod._foreign_worker_spec_reason(spec) is None
+
+
+def _is_mirror_spec(path: Path) -> bool:
+    """Whether the agent spec at *path* reflects only what this Disconnect clears.
+
+    A mirror is an entry the transaction removes or re-derives from the purged
+    default agent, so it can never keep a grant alive on its own:
+
+    * ``kirocrew.json``, which ``_purge_server_config`` strips and
+      ``rebuild_agent_config`` writes again;
+    * the worker spec, which that rebuild derives from the default agent again, and
+      only when its installer would accept it (``_foreign_worker_spec_reason``): a
+      file at the name that the installer did not write survives untouched;
+    * a ``kirocrew-skill-view-*.json`` view whose ownership record binds the file
+      as it is now and names the default agent, re-projected from it by the next
+      session. A record that outlived its file proves nothing about a spec someone
+      wrote at the same name later, so that spec is a sharer;
+    * such a view whose record names the worker, while the worker spec beside it is
+      one its installer wrote (the same ``_foreign_worker_spec_reason`` test): the
+      worker is re-derived from the default agent, and its view from the worker.
+
+    Every other spec is a sharer, the other ``OWNED_KIRO_AGENT_FILES`` included:
+    their installers keep an entry from an ``agent.json`` override or a customized
+    copy that the purge never edits. Anything that cannot be confirmed (an
+    unreadable file, no recorded source, a check that raises) is a sharer, the
+    census's fail-closed reading.
+    """
+    name = path.name
+    try:
+        if name == AGENT_FILENAME:
+            return True
+        if name == WORKER_AGENT_FILENAME:
+            return _is_crew_worker_spec(path)
+        if name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+            from kiro_crew.agent_sdk.drivers.acp_skill_views import skill_view_owned_source
+
+            source = skill_view_owned_source(path)
+            if source == _WORKER_AGENT:
+                return _is_crew_worker_spec(path.parent / WORKER_AGENT_FILENAME)
+            return source == _DEFAULT_AGENT
+    except Exception:
+        logger.debug("could not confirm %s is a Kiro Crew render", path, exc_info=True)
+    return False
+
 
 # Never a sha256 hexdigest and never None, so the comparisons that read it cannot
 # confuse it with either real answer of :func:`_module_artifact_key`.
@@ -147,6 +202,18 @@ class DisconnectScope:
     # declined (this instance may not write the shared agent home) or raised: new
     # sessions may still load the entry this Disconnect removed from the config.
     agent_spec_rewritten: bool
+    # The owned urls whose sign-in saved for KAS chats (Crew's grant vault) the
+    # caller may remove: those no surviving entry reads it at, by the engine's own
+    # identity (:func:`_kas_sign_in_split`). Not ``attempted_urls``: kiro-cli's
+    # sharing proves nothing about the vault's in either direction.
+    kas_sign_in_urls: tuple[str, ...]
+    # What deleting those sign-ins did, done INSIDE the lock the census was taken
+    # under: after release, a holder added at once would have its shared sign-in
+    # deleted from a census that stopped describing the config.
+    # ``kas_sign_ins_removed`` counts the urls whose entries were removed;
+    # ``kas_sign_ins_unproven`` names those that may still be in the vault.
+    kas_sign_ins_removed: int = 0
+    kas_sign_ins_unproven: tuple[str, ...] = ()
 
 
 def _json_spec_names(spec_dir: Path) -> list[str] | None:
@@ -221,7 +288,7 @@ def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, P
     # Disconnect count its own reflection as a sharer and never revoke anything.
     sources.extend(
         (
-            f"{_MIRROR_PREFIX}{name}" if name == _RENDERED_AGENT_FILE else f"agent:{name}",
+            f"{_MIRROR_PREFIX}{name}" if _is_mirror_spec(agents_dir / name) else f"agent:{name}",
             agents_dir / name,
         )
         for name in names
@@ -335,6 +402,51 @@ def spec_census(
     return specs, tuple(sorted(set(unreadable)))
 
 
+def _kas_sign_in_split(
+    owned: tuple[str, ...], holders: tuple[tuple[str, object], ...]
+) -> tuple[tuple[str, ...], dict[str, set[str]]]:
+    """``(owned urls whose KAS saved sign-in no holder reads, holder names per kept url)``.
+
+    The engine keys a saved sign-in by ``mcp_grant_kas.kas_connection_hash``: the
+    whole url trimmed and lowercased, query kept. kiro-cli keys its pair by
+    ``grant_key``: path case kept, query dropped. So an entry at ``/MCP`` holds no
+    kiro-cli pair of ours yet reads our saved sign-in, and one at ``?workspace=x``
+    shares our pair yet reads a sign-in of its own. *holders* are ``(name, url)``
+    of the entries that survive this Disconnect. A url that is not an ASCII string
+    is one the engine's hash is not mirrored for, so that holder holds every owned
+    url; an entry with no url holds none. Pure.
+    """
+    from kiro_crew.mcp_grant_kas import kas_connection_hash
+
+    def _identity(url: object) -> str | None:
+        return kas_connection_hash(url) if isinstance(url, str) and url.isascii() else None
+
+    every: set[str] = set()
+    held: dict[str, set[str]] = {}
+    for name, url in holders:
+        identity = _identity(url)
+        if identity is not None:
+            held.setdefault(identity, set()).add(name)
+        elif url is not None:
+            every.add(name)
+    forget: list[str] = []
+    kept: dict[str, set[str]] = {}
+    seen: set[str] = set()
+    for url in owned:
+        # A non-ASCII owned url is passed on as itself: the caller's forget then
+        # answers that it cannot tell, which is reported, not kept silently.
+        identity = _identity(url) or url
+        if identity in seen:
+            continue
+        seen.add(identity)
+        names = held.get(identity, set()) | every
+        if names:
+            kept[url] = names
+        else:
+            forget.append(url)
+    return tuple(forget), kept
+
+
 async def remove_provider_entry(
     slug: str, mcp_url: str, project_dirs: tuple[Path, ...]
 ) -> DisconnectScope:
@@ -370,7 +482,9 @@ async def remove_provider_entry(
     a trailing-slash variant is the same endpoint but a different artifact pair.
     Testing the credential with the endpoint comparator would delete a shared
     grant in the first case and strand a live one (reported as a deliberate keep)
-    in the second.
+    in the second. The sign-in a KAS chat saved in Crew's grant vault is a third
+    identity again (:func:`_kas_sign_in_split`), judged over the same holders and
+    returned as ``kas_sign_in_urls`` for the caller to remove.
 
     The sweep reads the RAW specs, not the probe view: ``list_servers`` is a
     MERGED read that loses each row's provenance, and a user's switched-off
@@ -405,6 +519,7 @@ async def remove_provider_entry(
     when NO owned artifact survived, because a half-removed pair reads as a
     definitive absence and would have the pool initiate consent over residue.
     """
+    from kiro_crew.connections.endpoint_migration import retired_urls
     from kiro_crew.connections.tool_aliases import normalized_endpoint
     from kiro_crew.dashboard.handlers.mcp import (
         _get_mcp_lock,
@@ -413,6 +528,7 @@ async def remove_provider_entry(
     )
     from kiro_crew.mcp_discovery import list_servers
     from kiro_crew.mcp_grant import grant_key, revoke_local_grant, surviving_grant_artifacts
+    from kiro_crew.mcp_grant_kas import kas_grant_presence
 
     wanted = normalized_endpoint(mcp_url)
     wanted_key = grant_key(mcp_url)
@@ -429,14 +545,20 @@ async def remove_provider_entry(
         dict[str, str],
         dict[str, set[str]],
         tuple[str, ...],
+        tuple[str, ...],
+        tuple[tuple[str, object], ...],
+        tuple[tuple[str, object], ...],
     ]:
         """``(owned scopes, sharers PER KEY, unprovable names, owned url per key,
-        mirrored-slug sharers PER KEY, mirrored-slug unprovable names)``.
+        mirrored-slug sharers PER KEY, mirrored-slug unprovable names, every owned
+        url as spelled, holders, mirrored-slug holders)``.
 
-        The last two elements name the mirrored ``slug`` entries left out of the
-        sharer set because the purge is expected to remove them; the caller folds
-        them back in (as sharers, and as unprovable holders) when the purge is
-        refused and they survive.
+        The two mirrored-slug elements name the mirrored ``slug`` entries left out
+        of the sharer set because the purge is expected to remove them; the caller
+        folds them back in (as sharers, and as unprovable holders) when the purge is
+        refused and they survive. The last three feed :func:`_kas_sign_in_split`:
+        a holder is ``(name, raw url)`` of every entry the sharer test reads, and
+        the mirrored-slug holders are folded in on the same refusal.
 
         All answers come out of the same walk over the same census, so they
         cannot be taken from two different readings of the store. Only mcp.json
@@ -462,6 +584,18 @@ async def remove_provider_entry(
         """
         owned: list[str] = []
         owned_urls: dict[str, str] = {wanted_key: mcp_url}
+        # Raw, not keyed: spellings ``grant_key`` folds into one pair can still be
+        # different KAS identities (an explicit default port, say).
+        owned_spellings: list[str] = [mcp_url]
+        # A URL the registry retired for this provider: its pair is this card's
+        # leftover sign-in, which the startup migration leaves on disk. It takes
+        # the same per-key sharer test below, so an entry that still names it --
+        # in any source, an open project's spec included -- keeps it.
+        for retired in retired_urls(slug):
+            retired_key = _artifact_key(retired)
+            if isinstance(retired_key, str) and retired_key != _UNPROVABLE:
+                owned_urls.setdefault(retired_key, retired)
+                owned_spellings.append(retired)
         unprovable: set[str] = set()
         others: list[tuple[str, str, object]] = []
         mirrored_slug: list[tuple[str, str, object]] = []
@@ -479,6 +613,7 @@ async def remove_provider_entry(
                 unprovable.add(holder)
             elif key is not None and isinstance(url, str):
                 owned_urls.setdefault(key, url.strip())
+                owned_spellings.append(url)
 
         for label, entries in specs.items():
             for name, spec in entries.items():
@@ -545,11 +680,13 @@ async def remove_provider_entry(
         # so a refusal keeps every owned pair the census could not clear them from.
         mirror_sharers_by_key: dict[str, set[str]] = {}
         mirror_unprovable: set[str] = set()
+        mirror_holders: list[tuple[str, object]] = []
         for label, name, url in mirrored_slug:
             if not purge_will_run:
                 others.append((label, name, url))  # nothing purges it; a real holder
                 continue
             holder = f"{label}/{name}"
+            mirror_holders.append((holder, url))
             candidate = url.strip() if isinstance(url, str) else url
             if normalized_endpoint(candidate) == wanted:
                 _collect_owned(url, holder)
@@ -579,6 +716,9 @@ async def remove_provider_entry(
             owned_urls,
             mirror_sharers_by_key,
             tuple(sorted(mirror_unprovable)),
+            tuple(owned_spellings),
+            tuple((name, url) for _label, name, url in others),
+            tuple(mirror_holders),
         )
 
     async with _get_mcp_lock():
@@ -591,6 +731,9 @@ async def remove_provider_entry(
             owned_urls,
             mirror_sharers_by_key,
             mirror_unprovable,
+            owned_spellings,
+            kas_holders,
+            mirror_kas_holders,
         ) = _judge(configured, specs)
         census_gap = bool(unreadable or unprovable)
         shared = tuple(sorted({name for names in sharers_by_key.values() for name in names}))
@@ -632,6 +775,7 @@ async def remove_provider_entry(
                 # holder.
                 for key, holders in mirror_sharers_by_key.items():
                     sharers_by_key.setdefault(key, set()).update(holders)
+                kas_holders += mirror_kas_holders
                 if mirror_unprovable:
                     unprovable = tuple(sorted(set(unprovable) | set(mirror_unprovable)))
                     census_gap = True
@@ -643,6 +787,17 @@ async def remove_provider_entry(
                 "Disconnect left the %r entry alone: no scope configures it at this endpoint",
                 slug,
             )
+        # The KAS saved sign-in, by the engine's identity over the same holders and
+        # snapshot. A census gap keeps all of it, as it keeps every native pair. A
+        # holder is named only while the vault may hold what it keeps, so a machine
+        # whose chats never saved one is not told a sign-in was kept for it.
+        kas_urls: tuple[str, ...] = ()
+        kas_kept: dict[str, set[str]] = {}
+        if not census_gap:
+            kas_urls, kas_kept = _kas_sign_in_split(owned_spellings, kas_holders)
+        for kept_url, holders in kas_kept.items():
+            if await asyncio.to_thread(kas_grant_presence, kept_url) is not False:
+                shared = tuple(sorted(set(shared) | holders))
         removed: list[str] = []
         attempted: list[str] = []
         # Whether any artifact this transaction OWNS is still on disk when it ends. The
@@ -676,12 +831,15 @@ async def remove_provider_entry(
                     # Endpoint-keyed grant, more than one entry using it. Deleting
                     # it would deauthorize a server this Disconnect was never asked
                     # to touch, and the refresh token is not recoverable locally.
-                    logger.info(
-                        "Disconnect kept %r's stored grant at %s: %s still use it",
-                        slug,
-                        owned_url,
-                        ", ".join(sorted(key_sharers)),
-                    )
+                    # Silent when kiro-cli holds no pair there: nothing was kept.
+                    if await asyncio.to_thread(surviving_grant_artifacts, owned_url):
+                        logger.info(
+                            "Disconnect kept kiro-cli's native grant for %r at %s: "
+                            "%s still use it",
+                            slug,
+                            owned_url,
+                            ", ".join(sorted(key_sharers)),
+                        )
                     residue = True
                     continue
                 # Shielded for the same reason the purge is, and for one more: a
@@ -700,6 +858,20 @@ async def remove_provider_entry(
                 if await asyncio.to_thread(surviving_grant_artifacts, owned_url):
                     residue = True
 
+        # The KAS sign-in deletion rides the same census, so it runs here, shielded,
+        # before the lock is released.
+        kas_removed = 0
+        kas_unproven: list[str] = []
+        if kas_urls:
+            from kiro_crew.connections.mint_kas import forget_kas_sign_in
+
+            for kas_url in kas_urls:
+                forgotten = await _offload_config_write(forget_kas_sign_in, kas_url)
+                if forgotten is True:
+                    kas_removed += 1
+                elif forgotten is None:
+                    kas_unproven.append(kas_url)
+
         # INSIDE the lock, and shielded. A post-lock rebuild snapshots the config
         # before another Disconnect's purge and can write last, resurrecting an
         # entry whose grant that other transaction just deleted -- a configured
@@ -710,8 +882,12 @@ async def remove_provider_entry(
         # different flocks and reentrancy never arises.
         try:
             from kiro_crew.agent import rebuild_agent_config_reporting
+            from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 
             _spec_path, spec_rewritten = await _offload_config_write(rebuild_agent_config_reporting)
+        except PlatformCompositionError:
+            logger.error(COMPOSITION_REFUSED_LOG, f"disconnect of {slug}", exc_info=True)
+            spec_rewritten = False
         except Exception:  # noqa: BLE001 — the config write already landed
             logger.warning("agent config rebuild failed after disconnect", exc_info=True)
             spec_rewritten = False
@@ -747,6 +923,9 @@ async def remove_provider_entry(
         census_unreadable=tuple(_census_source_name(label) for label in unreadable),
         attempted_urls=tuple(attempted),
         agent_spec_rewritten=spec_rewritten,
+        kas_sign_in_urls=kas_urls,
+        kas_sign_ins_removed=kas_removed,
+        kas_sign_ins_unproven=tuple(kas_unproven),
     )
 
 

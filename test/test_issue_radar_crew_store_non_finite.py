@@ -1,11 +1,8 @@
 """A non-finite or fractional number never becomes a value the crew store holds.
 
-This file pins the numeric coercions the store makes on settings, crew records and work
-items: ``Infinity``, ``NaN`` and an overflowing ``1e309``, read from a file or sent in a
-patch, end as the default, the value already stored or ``None``, so none reaches a
-payload a strict JSON parser refuses; a fractional TTL is refused rather than truncated
-while an integral float is accepted; and a legitimate number still round-trips. The
-crew records and settings themselves live in ``test_issue_radar_crew_store.py``.
+``Infinity``, ``NaN`` and ``1e309`` end as the default, the stored value or ``None``; a
+fractional TTL is refused, not truncated; a legitimate number round-trips. Crew records
+and settings themselves are in ``test_issue_radar_crew_store.py``.
 """
 
 import json
@@ -27,17 +24,9 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 
 # ── non-finite numbers ──────────────────────────────────────────────────────
 #
-# Python's `json` decodes `Infinity`, `-Infinity` and `NaN` by default, and it
-# also produces them from a literal that looks ordinary: `1e309` overflows to
-# `inf` SILENTLY. `int()` accepts neither (`OverflowError` / `ValueError`), so
-# every numeric coercion in this store is a crash the store's contract does not
-# allow — a malformed STORED value must read as the default.
-#
-# Storing one instead of crashing would be worse, not better, which is why none of
-# these tests asserts a clamp: `json.dumps` writes a bare `Infinity`, which is not
-# JSON, so a single poisoned record makes the whole payload unparseable for the
-# dashboard — and a bound compared against it (`open_count >= inf`) is simply False
-# for every count, so the cap disappears without raising anything.
+# `json` decodes `Infinity` and `NaN`, and `1e309` overflows to `inf` silently; `int()`
+# refuses both, but a malformed STORED value must read as the default. Storing one is
+# worse: `json.dumps` writes non-JSON `Infinity`, and `open_count >= inf` disables a cap.
 
 #: Every literal a JSON body or a stored file can carry that decodes non-finite.
 #: `1e309` is here because it is the one that arrives without anybody writing
@@ -49,13 +38,8 @@ NON_FINITE_LITERALS = ("1e309", "-1e309", "Infinity", "-Infinity", "NaN")
 def test_a_fractional_ttl_is_refused_rather_than_truncated(tmp_path, literal):
     """A value the operator never asked for must not be stored silently.
 
-    REGRESSION: ``_finite_int`` ended in a bare ``int(value)``, which TRUNCATES, so
-    ``47.9`` stored as ``47`` and the form reported success. That is the same silent
-    substitution the frontend's ``Number.isInteger`` guard refuses one layer up —
-    refusing in both places means neither can invent a value on its own.
-
-    Asserted through the PATCH path: the previous value has to stand, exactly as it
-    does for a non-finite number or an over-long ``commit_trailer``.
+    A bare ``int(value)`` TRUNCATES ``47.9`` to ``47``; the frontend's ``Number.isInteger``
+    guard refuses it too. Through the PATCH path, the previous value must stand.
     """
     cs.write_settings(OWNER, REPO, {"claim_ttl_hours": 48}, tmp_path)
 

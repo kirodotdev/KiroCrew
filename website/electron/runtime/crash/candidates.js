@@ -1,7 +1,7 @@
 "use strict";
 
 // Which files are crash candidates, and what inspecting one concluded. Minidumps
-// come from both Crashpad queues; `.ips` reports are selected by NAME before any
+// come from the Crashpad database; `.ips` reports are selected by NAME before any
 // file is opened. Each inspection reads a bounded head of the file and returns
 // exactly one of four outcomes, because they are acknowledged differently.
 
@@ -94,10 +94,11 @@ function fileReader(filePath, { fs }) {
 function listMinidumps(crashDumpsDir, { fs, log = () => {} } = {}) {
   const found = [];
   if (!crashDumpsDir) return found;
-  // Crashpad moves a dump from pending/ to completed/ once its handler has
-  // finished with it, so a dump we care about can be in either. `Crashpad/` is
-  // the layout Electron's crashDumps path already points at.
-  for (const sub of ["pending", "completed"]) {
+  // macOS and Linux move a dump from pending/ to completed/; Windows keeps every
+  // dump in reports/ and tracks its state in `metadata`. Missing folders are
+  // skipped, so one list serves every platform. `Crashpad/` is the layout
+  // Electron's crashDumps path already points at.
+  for (const sub of ["pending", "completed", "reports"]) {
     const dir = path.join(crashDumpsDir, sub);
     let names = [];
     try {

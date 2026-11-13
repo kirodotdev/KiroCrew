@@ -47,7 +47,7 @@ async def test_add_sets_and_persists_deadline(svc, tmp_path):
     loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
     after = time.time()
     assert before + 100 <= loop.next_due_ts <= after + 100
-    raw = json.loads((tmp_path / "autonudge.json").read_text())
+    raw = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
     assert raw["loops"][0]["next_due_ts"] == loop.next_due_ts
     svc.stop()
 
@@ -104,12 +104,67 @@ async def test_delivered_fire_clears_deadline_then_turn_end_starts_fresh(svc, mo
     assert loop.next_due_ts == 0.0  # cleared on delivery
     # Persisted too — a restart during the nudge turn must not resume a spent
     # countdown.
-    raw = json.loads((svc._path).read_text())
+    raw = json.loads((svc._path).read_text(encoding="utf-8"))
     assert raw["loops"][0]["next_due_ts"] == 0.0
     # The nudge turn's end starts the next full cycle.
     before = time.time()
     svc.notify_turn_complete("chat-1-123")
     assert loop.next_due_ts >= before + 100
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_after_fire_announces_the_new_deadline(svc):
+    """The ``fired`` frame carries a cleared deadline; the re-arm must publish one.
+
+    Without a frame the dashboard keeps the 0 and reads "not yet scheduled" until reload.
+    Resuming an unchanged countdown after a user turn publishes nothing.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    svc._on_fire = on_fire
+    events: list[tuple[str, float]] = []
+    svc.subscribe(lambda event, loop: events.append((event, loop.next_due_ts if loop else -1)))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    svc._arm_timer(loop, delay=0)
+    await svc._timers[loop.id]
+    assert ("fired", 0.0) in events
+    events.clear()
+    svc.notify_turn_complete("chat-1-123")
+    assert events == [("updated", loop.next_due_ts)]
+    assert loop.next_due_ts > 0
+    events.clear()
+    svc.notify_user_input("chat-1-123")
+    svc.notify_turn_complete("chat-1-123")
+    assert events == []
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_deferred_turn_end_rearm_announces_the_new_deadline(svc):
+    """A turn that ends inside the fire window is re-armed when the window closes.
+
+    That deferred re-arm sets the deadline too, so it must publish it as well.
+    """
+    events: list[tuple[str, float]] = []
+
+    async def on_fire(loop):
+        # The nudge turn ends while the fire window is still open.
+        svc.notify_turn_complete("chat-1-123")
+        return True
+
+    svc._on_fire = on_fire
+    svc.subscribe(lambda event, loop: events.append((event, loop.next_due_ts if loop else -1)))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    events.clear()
+    svc._arm_timer(loop, delay=0)
+    await svc._timers[loop.id]
+    assert loop.next_due_ts > 0
+    assert events[-1] == ("updated", loop.next_due_ts)
     svc.stop()
 
 
@@ -121,12 +176,12 @@ async def test_restart_resumes_persisted_countdown(tmp_path):
     await svc1.add(slot_key="chat-1-123", message="go", idle_secs=200)
     svc1.stop()
     # Simulate elapsed downtime by rewriting the persisted deadlines.
-    raw = json.loads((tmp_path / "autonudge.json").read_text())
+    raw = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
     raw["loops"][0]["next_due_ts"] = time.time() + 42
     raw["loops"].append(
         dict(raw["loops"][0], id="deadbeef", slot_key="chat-2-456", next_due_ts=time.time() - 99)
     )
-    (tmp_path / "autonudge.json").write_text(json.dumps(raw))
+    (tmp_path / "autonudge.json").write_text(json.dumps(raw), encoding="utf-8")
 
     svc2 = AutoNudgeService(base_dir=tmp_path)
     delays = _capture_arm_delays(svc2)
@@ -136,6 +191,84 @@ async def test_restart_resumes_persisted_countdown(tmp_path):
     assert in_future is not None and 40 <= in_future <= 43
     assert overdue == float(_OVERDUE_REARM_SECS)
     svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_loops_overdue_at_boot_wake_one_stagger_apart(tmp_path):
+    """Overdue loops do not all wake their sessions at once after a restart.
+
+    The n-th overdue loop is held n stagger gaps before its overdue beat; a loop
+    whose deadline is still ahead keeps its own countdown and takes no hold.
+    """
+    from kiro_crew.autonudge import _BOOT_WAKE_STAGGER_SECS
+
+    svc1 = AutoNudgeService(base_dir=tmp_path)
+    await svc1.start()
+    await svc1.add(slot_key="chat-1-123", message="go", idle_secs=200)
+    svc1.stop()
+    raw = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+    first = raw["loops"][0]
+    # Fixed instants, so the test reads no clock: 1.0 is long past, 4102444800 is 2100.
+    raw["loops"] = [
+        dict(first, id="a1", slot_key="chat-1-1", next_due_ts=1.0),
+        dict(first, id="b2", slot_key="chat-2-2", next_due_ts=4102444800.0),
+        dict(first, id="c3", slot_key="chat-3-3", next_due_ts=1.0),
+        dict(first, id="d4", slot_key="chat-4-4", next_due_ts=1.0),
+    ]
+    (tmp_path / "autonudge.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    holds: dict[str, float] = {}
+
+    class _RecordedHolds(dict):
+        def __setitem__(self, key: str, value: float) -> None:
+            holds[key] = value
+            super().__setitem__(key, value)
+
+    svc2 = AutoNudgeService(base_dir=tmp_path)
+    svc2._boot_holds = _RecordedHolds()
+    delays = _capture_arm_delays(svc2)
+    await svc2.start()
+    beat, gap = float(_OVERDUE_REARM_SECS), float(_BOOT_WAKE_STAGGER_SECS)
+    # Every countdown is the loop's own; the spacing is a hold ahead of it, so a
+    # countdown that ends early on a subject read cannot undo it.
+    assert delays == [beat, 200.0, beat, beat]
+    assert holds == {"c3": gap, "d4": 2 * gap}
+    svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_boot_hold_naps_before_the_countdown(svc, monkeypatch):
+    """The hold is a plain nap ahead of the countdown, used once.
+
+    The countdown may end early on a subject read; the nap cannot, so a held loop
+    never fires before its place in the boot spacing.
+    """
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.autonudge_service import firing
+
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    svc._cancel_timer(loop.id)
+    calls: list[tuple[str, float]] = []
+
+    async def _nap(secs: float) -> None:
+        calls.append(("hold", secs))
+
+    async def _countdown(_svc, _loop, secs: float) -> None:
+        calls.append(("countdown", secs))
+        raise _asyncio.CancelledError
+
+    monkeypatch.setattr(
+        firing, "asyncio", SimpleNamespace(sleep=_nap, CancelledError=_asyncio.CancelledError)
+    )
+    monkeypatch.setattr(firing, "sleep_until_cycle", _countdown)
+    svc._boot_holds[loop.id] = 30.0
+    await svc._timer(loop, delay=10.0)
+    assert calls == [("hold", 30.0), ("countdown", 10.0)]
+    assert loop.id not in svc._boot_holds
+    svc.stop()
 
 
 @pytest.mark.asyncio
@@ -155,7 +288,8 @@ async def test_legacy_store_entry_without_deadline_starts_fresh(tmp_path):
                     }
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     svc = AutoNudgeService(base_dir=tmp_path)
     delays = _capture_arm_delays(svc)
@@ -281,7 +415,8 @@ async def test_malformed_persisted_deadline_degrades_to_fresh(tmp_path):
                     },
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     svc = AutoNudgeService(base_dir=tmp_path)
     await svc.start()  # must not raise
@@ -366,6 +501,6 @@ async def test_turn_complete_fresh_deadline_is_persisted(svc, monkeypatch):
     assert loop.next_due_ts >= before + 100
     for task in list(svc._inflight_adds):
         await task
-    raw = json.loads((svc._path).read_text())
+    raw = json.loads((svc._path).read_text(encoding="utf-8"))
     assert raw["loops"][0]["next_due_ts"] == loop.next_due_ts
     svc.stop()

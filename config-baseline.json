@@ -20,6 +20,7 @@
         "role_models": {},
         "role_efforts": {},
         "model_context_tokens": {},
+        "spec_pins": {},
         "fallback_model": "auto",
         "refusal_fallback_model": "",
         "reasoning_effort": "",
@@ -28,21 +29,34 @@
         "mcp_quarantine_after_failures": 3,
         "acp_backend": "kas",
         "member_acp_backend": "kas",
+        "acp_failover": {},
         "kas_bundle": false,
-        "kas_persist_mcp_sign_in": false,
+        "kas_persist_mcp_sign_in": true,
+        "kas_repair_kiro_cli_extract": true,
+        "kas_refuse_plain_http_mcp_headers": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
+        "native_skill_projection": true,
         "default_agent": "",
-        "crew_mode_agent": "kirocrew-conductor",
+        "crew_mode_agent": "kirocrew-team-lead",
         "deepseek_env": {},
+        "strands_env": {},
+        "strands_project": "",
+        "strands_project_sha256": "",
+        "strands_provider": "bedrock",
+        "strands_model": "auto",
         "sweep_agents_backups": false,
         "sandbox": "auto",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
+        "sandbox_readonly_paths": [],
+        "sandbox_readonly_exceptions": [],
         "apps_allow_third_party": false,
         "apps_trusted": [],
         "apps_trusted_local": [],
         "apps_trusted_repositories": {},
         "apps_default_installs_applied": [],
+        "apps_builtin_adoption": {},
+        "apps_builtin_adoption_nav": {},
         "apps_ui_stream_timeout_secs": 30,
         "jail": "auto",
         "dangerously_skip_permissions": false,
@@ -53,6 +67,8 @@
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
         "session_sharing": true,
+        "chat_runtime_sharing_max_sessions": 10,
+        "agent_started_turns": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
         "spawn_min_memory_gb": 2.0,
@@ -86,13 +102,17 @@
         "dependency_wake_spacing_secs": 1.0,
         "interactive_command_policy": "cancel",
         "workflow_run_timeout_secs": 3600,
+        "kas_workflows": false,
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
         "session_control": true,
         "session_manager_chain": false,
+        "peer_steer_loss_recovery": false,
         "member_dispatch": true,
+        "member_branch_prefix": "crew/",
+        "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
@@ -247,6 +267,34 @@
       "defaultValue": null
     },
     {
+      "path": "agent.spec_pins",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent spec pins",
+      "help": "Which file an agent name runs when two or more specs in the agents directory declare it, as {\"<agent name>\": \"<file name>\"}, for example {\"helper\": \"PkgA-helper.json\"}. A bare .json or .md file name, never a path, so a pin survives the package's updates. Set it with 'kirocrew agent pin <name> <file>' or the chat's chooser. With no pin, differing specs under one name are refused; a pin naming none of them is refused too and never falls back to another file. New sessions run the pinned file; a running session's later spec reads follow the current pin.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.spec_pins.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "agent.fallback_model",
       "kind": "core",
       "type": "string",
@@ -361,11 +409,25 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Crew member ACP backend",
-      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Crewmates run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
+      "label": "Bot ACP backend",
+      "help": "Legacy backend for bot DM sessions and their workers. Omitted or '': Bots follow agent.acp_backend, or run on 'kas' when that is a harness bots cannot run on. A stored value (claude, codex, kas, ...) still wins over agent.acp_backend; a bot's own agents.<name>.acp_backend wins over both. Bots run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"
+    },
+    {
+      "path": "agent.acp_failover",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "ACP backend failover",
+      "help": "Opt-in, off-by-default policy that starts a sub-agent on another backend when the one it asked for cannot start. An object with 'enabled' (bool), 'chain' (ordered list of distinct backend names, spelled as spawn_run spells them, e.g. 'codex', 'claude', 'kiro') and optional 'triggers' (which refusals cause a hop: backend_not_installed, backend_restart_required; both when omitted). A hop only goes to a later chain member that can start, never a silent Kiro fallback, and the spawn result names the backend that ran and the one it replaced. A hop moves the prompt and its context to that backend's vendor and bill. A name that is not selectable is skipped. Absent means no failover.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
     },
     {
       "path": "agent.kas_bundle",
@@ -376,7 +438,7 @@
       "sensitive": false,
       "tags": [],
       "label": "KAS: run Kiro Crew's own engine bundle",
-      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. A true value with nothing installed refuses the spawn and names the install command.",
+      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a Nightly build turns it on and every other build leaves it off (config.loader_document.kas_bundle_build_default(), read from the build's own stamp, not the update channel). A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -391,11 +453,39 @@
       "sensitive": false,
       "tags": [],
       "label": "KAS: keep remote MCP sign-ins across sessions",
-      "help": "When true, the 'kas' backend lets Kiro Crew keep a remote MCP server's OAuth sign-in (client registration and tokens) in a dedicated encrypted vault under the data home (kas/mcp-grants/), so new sessions, subagents and crons reuse it until the refresh token expires or is revoked. The vault is not the Secrets vault: it is not listed there and cannot be granted to a cron, and the agent cannot read it. When false (the default), the engine keeps each sign-in in memory and a new session asks again.",
+      "help": "When true (the default), the 'kas' backend lets Kiro Crew keep a remote MCP server's OAuth sign-in (client registration and tokens) in a dedicated encrypted vault under the data home (kas/mcp-grants/), so new sessions, subagents and crons reuse it until the refresh token expires or is revoked, as the 'kiro' backend does with its own sign-in cache. The vault is not the Secrets vault: it is not listed there and cannot be granted to a cron, and the agent cannot read it. When false, the engine keeps each sign-in in memory and a new session asks again. Only a JSON true turns it on: any other stored value, or a config file that cannot be read, keeps sign-ins in memory.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false,
+      "defaultValue": true,
       "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_repair_kiro_cli_extract",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: repair kiro-cli's broken engine copy",
+      "help": "When true (the default) and a KAS start through kiro-cli's relay exits with 'failed to canonicalize KAS server path', Kiro Crew moves kiro-cli's incomplete unpacked engine (kas/<version> under kiro-cli's data directory, never anything else) out of kas/ to '<version>.kas-broken-<UTC time>' beside it, and starts once more, so kiro-cli unpacks a fresh copy. Nothing is deleted. When false, or when the second start fails the same way, the start fails with one message naming the directory and the mv command, and the warm pool stops respawning until the directory is moved.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.kas_refuse_plain_http_mcp_headers",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: refuse MCP headers over plain http",
+      "help": "When true, the 'kas' backend no longer relays an MCP server's headers to a plain http:// url on another host, so they are never sent unencrypted; the server does not run and the session notice names it. When false (the default), Kiro Crew's local bridge sends the headers to that url as before. Only a JSON true turns it on. Read when a session starts.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.kas_bundle_url",
@@ -410,6 +500,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "https://kas.crew.kiro.dev"
+    },
+    {
+      "path": "agent.native_skill_projection",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Native skill views for kiro-cli",
+      "help": "When true (the default), the 'kiro' backend launches each agent under a Kiro Crew managed view (kirocrew-skill-view-*.json in the kiro agents directory) that serves skills through Kiro Crew's skill search, and overlays the workspace's .kiro/settings/cli.json while it runs. When false, agents launch under their authored names, no view is written, the workspace overlay is rolled back, and kiro-cli loads skill metadata natively again. Same effect as KIROCREW_NATIVE_SKILL_PROJECTION=0, which still disables projection whatever this says.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "agent.default_agent",
@@ -433,11 +538,11 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Crew Mode conductor",
-      "help": "The conductor template a chat runs when Crew Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
+      "label": "Ultra Mode agent",
+      "help": "The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew-conductor"
+      "defaultValue": "kirocrew-team-lead"
     },
     {
       "path": "agent.deepseek_env",
@@ -466,6 +571,98 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "agent.strands_env",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Strands provider keys",
+      "help": "Model-provider settings handed to the Strands harness ('strands' backend) as environment variables at spawn, mapping an environment-variable NAME to a 'secret://<vault name>' reference, the same shape as agent.deepseek_env. Store the value under Settings > Secrets, then map it here, e.g. {\"ANTHROPIC_API_KEY\": \"secret://my-anthropic-key\"}. Only the names the Strands CLI reads for its providers are accepted: AWS_REGION, AWS_DEFAULT_REGION and AWS_BEARER_TOKEN_BEDROCK (Bedrock and Bedrock Mantle), ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OLLAMA_HOST, OLLAMA_MODEL, LITELLM_BASE_URL, LITELLM_API_KEY and LITELLM_MODEL. Kiro Crew withholds every mapped name from the shells and code the Strands agent runs. A plaintext value is REFUSED at write time, and any other name refuses the Strands session before it starts with a message naming the key. The harness runs sandboxed and cannot read ~/.aws, so Bedrock needs AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) and AWS_REGION mapped here. Ignored by every other backend.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.strands_env.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "agent.strands_project",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Strands project",
+      "help": "The Strands Python project the 'strands' backend runs: the path of its agent.py, or of a folder holding one. Empty runs Kiro Crew's bundled minimal project. Either way Kiro Crew loads it through its own gate module, which makes every Strands Agent the project builds ask Kiro Crew before each tool call, so a project needs no change of its own. Its imports must be installed in the Python environment Kiro Crew runs Strands with. A project of yours runs only as the version recorded in agent.strands_project_sha256. Takes effect for new Strands sessions. Ignored by every other backend.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agent.strands_project_sha256",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Strands project fingerprint",
+      "help": "The fingerprint of the agent.strands_project version you confirmed: a sha256 over every file in the project's folder. The project's code runs with your provider keys and outside the tool gate, so a Strands session on your project starts only when the folder still matches it; a refused session prints the current value and the command that records it. Set it yourself after reviewing the files (kirocrew config set agent.strands_project_sha256 <value>); Kiro Crew never records it on its own. Packages the project imports from outside its folder are not covered. Ignored for the bundled project and by every other backend.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agent.strands_provider",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Strands provider",
+      "help": "The model provider a new Strands session ('strands' backend) runs on. With agent.strands_model it builds the Strands CLI's --model '<provider>/<model>' argument; with agent.strands_model 'auto' no --model is passed. A model picked for the chat wins over both. Any value outside the list refuses the session before it starts. Its key comes from agent.strands_env. Ignored by every other backend.",
+      "hasChildren": false,
+      "enumValues": [
+        "bedrock",
+        "bedrock-mantle",
+        "anthropic",
+        "openai",
+        "google",
+        "ollama",
+        "litellm"
+      ],
+      "defaultValue": "bedrock"
+    },
+    {
+      "path": "agent.strands_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Strands model",
+      "help": "The model a new Strands session runs when the chat picks none, as an id for agent.strands_provider: Kiro Crew launches the Strands CLI with --model '<provider>/<model>'. 'auto' (or empty) passes no --model, so the provider's CLI default runs. Ignored by every other backend.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "auto"
     },
     {
       "path": "agent.sweep_agents_backups",
@@ -526,6 +723,62 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.sandbox_readonly_paths",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sandbox Read-Only Paths",
+      "help": "Absolute directories (a leading ~ is expanded) the sandboxed agent may read but never write, enforced by the OS sandbox: a read-only bind mount in the Linux namespace (WSL2 included), a write deny in the macOS Seatbelt profile. Filesystems mounted below an entry are made read-only too. Empty (the default) changes nothing. Kiro Crew's own masks and seals are applied on top and always win, so an entry can never expose a hidden or sealed Kiro Crew path. An entry that does not exist, is relative, is /, or holds /run/user/<uid> or /dev/shm (where the Linux sandbox builds its masks) is skipped with a SECURITY warning. Making the project directory, the Kiro Crew data home or the agent's own state directories read-only breaks the agent there. Not enforced where Kiro Crew applies no sandbox of its own: agent.sandbox 'off', a macOS spawn delegated to kiro-cli's internal sandbox, and Windows, which logs a SECURITY warning. A change applies to sessions started after it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "agent.sandbox_readonly_paths.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "agent.sandbox_readonly_exceptions",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sandbox Read-Only Exceptions",
+      "help": "Absolute directories inside a sandbox_readonly_paths entry that stay writable, e.g. /mnt/c read-only with /mnt/c/Users/<you>/Documents writable. Each must lie strictly inside an entry; one that does not, that does not exist, or that would re-open a Kiro Crew mask or seal is skipped with a SECURITY warning. A filesystem mounted below an exception stays read-only.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "agent.sandbox_readonly_exceptions.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.apps_allow_third_party",
@@ -654,6 +907,62 @@
       "defaultValue": null
     },
     {
+      "path": "agent.apps_builtin_adoption",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adopted Built-in Apps",
+      "help": "Former built-in apps this gateway moved to their own repository. A name here is never registered as a built-in again, so uninstalling the app sticks. Written by the gateway; do not edit.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.apps_builtin_adoption.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "agent.apps_builtin_adoption_nav",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adopted Built-in App Navigation",
+      "help": "The navigation route and icon each adopted former built-in app had as a built-in, so its sidebar entry, order, pin and hidden setting stay the same. Written by the gateway; do not edit.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.apps_builtin_adoption_nav.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "agent.apps_ui_stream_timeout_secs",
       "kind": "core",
       "type": "integer",
@@ -759,7 +1068,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli applies it through the agent overlay; KAS receives it in the ACP initialize request, enabled only when the spawn agent's spec grants the tool_search loader. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any other executable, an older or unknown version keeps them resident. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on any other ACP backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli applies it through the agent overlay; KAS receives it in the ACP initialize request, enabled only when the spawn agent's spec grants the tool_search loader. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0, or runs a KIROCREW_KIRO_BIN override or a kiro-cli found only on PATH that is itself >= 2.27.0 (and, when named kiro-cli on macOS or Linux, >= 3.0.0); a PATH install is checked inside the sandbox, which Windows lacks. Any other executable, an older or unknown version keeps them resident, and so does every spawn after a request is refused for a changed tool list, until restart. On Kiro Crew's own KAS engine bundle they always defer: that engine keeps its tools array fixed when a tool loads. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on any other ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -801,7 +1110,35 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Sharing",
-      "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh backend process per subagent. Reduces startup from ~3-5s to ~200ms and memory from ~400MB to near-zero per subagent. Default ON for the eligible backends (kiro-cli and codex); every other ACP backend ignores it and runs a dedicated process per subagent. Set false to opt an eligible backend back onto per-subagent processes.",
+      "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh backend process per subagent. Reduces startup from ~3-5s to ~200ms and memory from about 0.55 GB to near-zero per subagent. Default ON for the eligible backends (kiro-cli and codex); every other ACP backend ignores it and runs a dedicated process per subagent. Set false to opt an eligible backend back onto per-subagent processes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.chat_runtime_sharing_max_sessions",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Chat Runtime Sharing: max sessions per process",
+      "help": "How many dashboard chat sessions one shared agent process may serve before the next session starts another, while the chat_runtime_sharing feature preview is on. This is the blast radius of one process dying: a larger value pools more sessions onto one process and loses more of them at once. Has no effect while the preview is off, which keeps one process per session. Clamped to 1..64.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10
+    },
+    {
+      "path": "agent.agent_started_turns",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent-started Turns",
+      "help": "Show a reply the agent starts on its own between your messages, such as Claude Code answering when a background command finishes, as its own message in the dashboard chat, with its tool calls and permission prompts. Only the claude backend starts such turns. Set false to turn it off: that reply then shows under your next message. Applies from the next turn.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -885,7 +1222,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Posture Admission Gate",
-      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by admit_wait_secs, until memory frees. Subagent spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. Manually triggered cron runs and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only.",
+      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by admit_wait_secs, until memory frees. Background helper turns (titles, labels, summaries, history consolidation) are skipped while it lasts. Subagent spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. Manually triggered cron runs and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -930,7 +1267,11 @@
       "label": "Task Store Journal Mode",
       "help": "SQLite journal mode for tasks.db: 'auto' picks WAL only on a volume DETECTED local, and DELETE both on a detected network filesystem and when detection cannot tell -- WAL needs local shared memory, which SMB/NFS does not provide, so an undecidable volume takes the slower correct mode rather than risking the store. 'wal' or 'delete' force one and skip the detection, so a local disk whose mount table is unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "auto",
+        "wal",
+        "delete"
+      ],
       "defaultValue": "auto",
       "requiresRestart": true
     },
@@ -1059,7 +1400,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Start Concurrency",
-      "help": "How many ACP session/new requests may be outstanding at once per gateway event loop (the SessionStartGate). session/new blocks while the backend initializes the session's MCP servers, so a burst of subagent starts on one shared runtime slows every start until the budget is hit; queued starts a person is waiting on are served first, except that a waiting background start is let through after a bounded run of them so it is never starved, and FIFO within each class. Queue time is not charged to the start budget or the startup deadline, but a subagent start that stays queued past the start-queue cap ends as never started, unless its subagent timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn gate and the execution-cap controller. \"auto\" (the default) sizes it once at gateway start as min(cpus // 4, available GB // 3) clamped to 2..16, with cpus the affinity count capped by a cgroup cpu.max quota; the gateway logs the value in force at boot, and kirocrew doctor shows what auto picks for the host now. An integer sets it explicitly, clamped to 1..64.",
+      "help": "How many ACP session/new requests may be outstanding at once per gateway event loop (the SessionStartGate). session/new blocks while the backend initializes the session's MCP servers, so a burst of subagent starts on one shared runtime slows every start until the budget is hit; queued starts a person is waiting on are served first, except that a waiting background start is let through after a bounded run of them so it is never starved, and FIFO within each class. Queue time is not charged to the start budget or the startup deadline, but a subagent start that stays queued past the start-queue cap ends as never started, unless its subagent timeout ends it first. Not adaptive: the adaptive loop is the MCP gateway spawn gate and the execution-cap controller. \"auto\" (the default) sizes it at gateway start as min(cpus // 4, available GB // 3) clamped to 2..16, with cpus the affinity count capped by a cgroup cpu.max quota, and widens it when a later reading finds more memory available; it never narrows and never passes what the cores give. The gateway logs the value in force at boot and each time it widens, and kirocrew doctor shows what auto picks for the host now. An integer sets it explicitly, clamped to 1..64, and is fixed until a restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto",
@@ -1074,7 +1415,7 @@
       "sensitive": false,
       "tags": [],
       "label": "kiro-cli Child Env Defaults",
-      "help": "Environment variables given to every spawned kiro-cli process (chat sessions, background sessions and subagents) ONLY when the variable is not already set in the environment it inherits. Empty by default. kiro-cli sizes its thread pools by core count, so on a many-core host running dozens of kiro-cli processes they can be capped, e.g. {\"TOKIO_WORKER_THREADS\": \"4\", \"RAYON_NUM_THREADS\": \"4\"}. Only TOKIO_WORKER_THREADS and RAYON_NUM_THREADS are accepted, each a decimal integer string from 1 to 1024; any other entry is ignored with a warning. Kiro Crew's own agent environment scrub still applies. Every process the agent runs (tools, MCP servers, your own programs) inherits these variables too. Takes effect on the next spawn.",
+      "help": "Environment variables given to every spawned kiro-cli process (chat sessions, background sessions and subagents) ONLY when the variable is not already set in the environment it inherits. kiro-cli sizes its thread pools by core count, and every thread counts against the agent slice's task ceiling, so where that ceiling is in force (Linux with the agents slice) a name left out of this map defaults to min(cpus, 4) for TOKIO_WORKER_THREADS and RAYON_NUM_THREADS; on other hosts no default is set. kirocrew doctor shows the value in force. A value set here wins, e.g. {\"TOKIO_WORKER_THREADS\": \"8\"}. Only TOKIO_WORKER_THREADS and RAYON_NUM_THREADS are accepted, each a decimal integer string from 1 to 1024; any other entry is ignored with a warning. Kiro Crew's own agent environment scrub still applies. Every process the agent runs (tools, MCP servers, your own programs) inherits these variables too. Takes effect on the next spawn.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -1326,6 +1667,20 @@
       "defaultValue": 3600
     },
     {
+      "path": "agent.kas_workflows",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Workflows on Kiro Agent",
+      "help": "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by default. This build has no surface that reads it yet, so setting it changes nothing. No effect unless the backend is Kiro Agent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.subagent_mem_buffer_pct",
       "kind": "core",
       "type": "integer",
@@ -1390,7 +1745,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Control",
-      "help": "Let one chat session open a new session, and stop, read or send to another session of yours. Reading returns a transcript tail, stopping cancels an in-flight turn, a created session starts empty for you to type into, and a send runs text as the target's next turn. On by default, because the grant that decides who can do this is the agent config: the tools come from the kirocrew-dashboard MCP server, so an agent that does not mount it never has them, exactly like any other MCP server. Turn this off to withdraw the capability from every agent at once without editing each spec. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable, and a crew member or a scheduled run reaches only sessions it created itself.",
+      "help": "Let one chat session open a new session, and stop, read or send to another session of yours. Reading returns a transcript tail, stopping cancels an in-flight turn, a created session starts empty for you to type into, and a send runs text as the target's next turn. On by default, because the grant that decides who can do this is the agent config: the tools come from the kirocrew-dashboard MCP server, so an agent that does not mount it never has them, exactly like any other MCP server. Turn this off to withdraw the capability from every agent at once without editing each spec, except Bot DM sessions and the Conductor in your own dashboard tab, which keep dispatching workers unless Member Dispatch is also off. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable, and a Bot, a scheduled run, or a Conductor admitted with this off reaches only sessions it created itself.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1410,6 +1765,20 @@
       "defaultValue": false
     },
     {
+      "path": "agent.peer_steer_loss_recovery",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Peer Steer Loss Recovery",
+      "help": "Let a steer that is not typed into the session's own composer (another session's session_send or session_broadcast steer, or an automation's) cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. Those harnesses can drop a steer they accepted, so it counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. While it is on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. Off by default: such a steer queues for the next turn, and only the composer steers these harnesses.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.member_dispatch",
       "kind": "core",
       "type": "boolean",
@@ -1418,7 +1787,35 @@
       "sensitive": false,
       "tags": [],
       "label": "Member Dispatch",
-      "help": "Let a crew member's DM session open and drive worker sessions it creates, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers back under the Session Control switch, so an operator who withdrew session control keeps member DM threads chat-only without disabling the member. When on, a member's reach is still bounded to sessions it created itself (creator ownership), the same fence that binds it when Session Control is on.",
+      "help": "Let a Bot's DM session, and the Conductor in your own dashboard tab, open and drive worker sessions they create, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers and the Conductor back under the Session Control switch, so an operator who withdrew session control keeps them chat-only without disabling them. When on, their reach is still bounded to sessions they created themselves (creator ownership), the same fence that binds a member when Session Control is on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.member_branch_prefix",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Bot branch prefix",
+      "help": "The start of the git branch a bot's new worktree is cut on, before <bot>/<repo>: 'alice/' gives alice/reviewer/myservice. Each part between slashes may use only letters, digits, '.', '_' and '-', may not start or end with '.' or '-', has no '..' and no '.lock' ending, and is at most 40 characters; an empty or rejected value uses crew/. The first part must not be the name of a branch the repository has, such as main. Takes effect live for the next new worktree; one that exists keeps its branch, and one made again after its folder was deleted takes the current prefix.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "crew/"
+    },
+    {
+      "path": "agent.conductor_own_child_verbs",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Conductor Own-Child Sends",
+      "help": "Let the Conductor and the Ultra Mode team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1432,7 +1829,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Crew Dashboard",
-      "help": "Let a crew member publish its own webview, shown in that member's drawer on the Crew page. A member sends a JSON object and names a template that renders it, so a long-running crew can say what it is holding, which worker is stuck and what needs a decision, to someone who is not reading its transcript. On by default, because a crew that cannot be watched is the thing this surface exists to fix. The tools come from the kirocrew-panel MCP server, so the grant follows the same rule as every other MCP server: an agent that does not mount it never has them. Turn this off to withdraw the capability from every member at once without editing each spec, and the withdrawal is immediate: the publish route reads this switch on every call, so a member whose session was already running loses the panel too. A member writes only its OWN panel: the server resolves the publishing crew from the calling session and takes no crew or session argument, and a subagent has no panel to write.",
+      "help": "Let a Bot publish its own webview, shown in that member's drawer on the Crew page. A member sends a JSON object and names a template that renders it, so a long-running crew can say what it is holding, which worker is stuck and what needs a decision, to someone who is not reading its transcript. On by default, because a crew that cannot be watched is the thing this surface exists to fix. The tools come from the kirocrew-panel MCP server, so the grant follows the same rule as every other MCP server: an agent that does not mount it never has them. Turn this off to withdraw the capability from every member at once without editing each spec, and the withdrawal is immediate: the publish route reads this switch on every call, so a member whose session was already running loses the panel too. A member writes only its OWN panel: the server resolves the publishing crew from the calling session and takes no crew or session argument, and a subagent has no panel to write.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1694,6 +2091,8 @@
         "empty_response_max_continues": 1,
         "autocompact_pct": 70.0,
         "context_cap": true,
+        "idle_compaction": false,
+        "idle_compaction_min_context_pct": 50.0,
         "compact_wait_secs": 0.0,
         "pool_size": 0,
         "pool_agent": "",
@@ -1701,8 +2100,13 @@
         "eager_spawn": true,
         "archive_retention_days": 30,
         "file_changes_keep_turns": 0,
-        "watchdog_rss_max_mb": 0,
-        "reconcile_max_kills": 5
+        "kas_delete_delay_secs": 0,
+        "search_scan_window": 2000,
+        "watchdog_rss_max_mb": 4096,
+        "watchdog_end_leftovers_mid_turn": false,
+        "harness_background_hold_secs": 3600,
+        "reconcile_max_kills": 5,
+        "max_per_creator": 50
       }
     },
     {
@@ -1728,7 +2132,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Idle-Exempt Sessions",
-      "help": "Session keys the idle timeout never ends, for a chat that automation wakes hours apart. A dashboard chat's key is dashboard: followed by the sid in its URL, e.g. dashboard:chat-12-1790000000, unless the tab is linked to a cron job or a channel thread, which uses that link's key instead, e.g. cron:<job id>. Closing a dashboard or cron tab still ends its process; a channel thread's session belongs to the channel, so closing its viewer does not. The Watchdog RSS Limit, when set, still applies. A listed session with no tab, such as a cron job that runs without one, keeps running even after its job is deleted, so take a deleted job's key off the list. The RSS limit or a gateway restart still ends it. On the kiro-cli or KAS backend, a Kiro sign-out from the dashboard ends it at once, whatever account it signed in with. After any other switch or sign-out of the Kiro account it signed in with, the next dashboard chat turn ends it, and so does the next agent cron run unless Kiro Crew then cannot tell which account is signed in, as with a social login. A session that is mid-turn then ends later instead, when its next turn starts or at a later dashboard chat turn or agent cron run. At most 10 keys are kept.",
+      "help": "Session keys the idle timeout never ends, for a chat that automation wakes hours apart. A dashboard chat's key is dashboard: followed by the sid in its URL, e.g. dashboard:chat-12-1790000000, unless the tab is linked to a cron job or a channel thread, which uses that link's key instead, e.g. cron:<job id>. Closing a dashboard or cron tab still ends its process; a channel thread's session belongs to the channel, so closing its viewer does not. The Watchdog RSS Limit, when set, still applies. A listed session with no tab, such as a cron job that runs without one, keeps running even after its job is deleted, so take a deleted job's key off the list. The RSS limit or a gateway restart still ends it. On the kiro-cli or KAS backend, a Kiro sign-out from the dashboard ends it at once, whatever account it signed in with. After any other switch or sign-out of the Kiro account it signed in with, the next dashboard chat turn ends it, and so does the next session start or reuse elsewhere, such as an agent cron run, a channel reply or a task step, unless Kiro Crew then cannot tell which account is signed in, as with a social login. A session that is mid-turn then ends later instead, when its next turn starts or at a later dashboard chat turn or session start. At most 10 keys are kept.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -1802,6 +2206,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session.idle_compaction",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Compact Idle Chats Before Cache Expiry",
+      "help": "When a dashboard chat has been idle for slightly less than its backend's prompt-cache lifetime, compact it once so your next turn re-sends a summary instead of the full history. It saves credits only on large chats you come back to: each idle compaction is an extra model call that costs credits even if you never return, if you return just after it starts you wait for it to finish, up to the compaction wait limit plus about 20 seconds (5 minutes by default), and the summary loses detail from earlier in the conversation. Only chats whose context is at least Idle Compaction Minimum Context full are compacted. Backends with an unknown cache lifetime are skipped.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "session.idle_compaction_min_context_pct",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Idle Compaction Minimum Context",
+      "help": "Context usage percentage below which an idle chat is left alone. Below about 40% a compaction costs more than re-sending the history it replaces, so values below 40 are raised to 40 (40-90).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50.0
     },
     {
       "path": "session.compact_wait_secs",
@@ -1903,6 +2335,34 @@
       "defaultValue": 0
     },
     {
+      "path": "session.kas_delete_delay_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS Session Record Delete Delay (seconds)",
+      "help": "On the kas backend, seconds a task-runner session's record, and a reused workflow worker's previous conversation, stay on disk after the session ends before Kiro Crew deletes them. The session leaves the engine's memory when it ends either way. 0 (the default) deletes the record when the session ends. Incognito and temporary sessions are deleted when they end whatever this says. A record that comes due while another backend is selected waits until kas is selected again. Other backends ignore it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "session.search_scan_window",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Search Scan Window",
+      "help": "How many of the most recently changed session transcripts a session search reads: the dashboard search, search_chat_history and a chat channel's session picker. An older session is not searched, and the results say how many were searched out of how many there are. A larger window makes each search read more transcripts. Clamped to 100..100000. Read at each search, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 2000
+    },
+    {
       "path": "session.watchdog_rss_max_mb",
       "kind": "core",
       "type": "integer",
@@ -1911,10 +2371,38 @@
       "sensitive": false,
       "tags": [],
       "label": "Watchdog RSS Limit (MiB)",
-      "help": "Recycle a session when its process tree resident memory exceeds this many MiB. 0 disables (the default); the internal background runtime still recycles at 1536 MiB. Busy sessions (turn in flight) are never recycled.",
+      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled. A process above the limit when the watchdog takes its size, at its second reading of it, is left running and recycled only once it doubles: so with many MCP servers or a long first turn. Not so for a process read under the limit more than about twelve minutes before, or for a chat recycled in the last 24 hours.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 4096
+    },
+    {
+      "path": "session.watchdog_end_leftovers_mid_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "End Leftover Processes During a Turn",
+      "help": "When a session is over the Watchdog RSS Limit during a turn and the memory is held by processes its commands left running outside the agent's process tree (for example a job a timed-out shell command started), end those processes at once instead of only reporting them. Off by default: such a process can be work the agent started on purpose. Linux only. Read every cleanup tick, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "session.harness_background_hold_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Background Work Hold (seconds)",
+      "help": "On the Claude backend, how long after the agent starts background work (a Workflow or a backgrounded command) the idle timeout and the Watchdog RSS Limit still leave its session running (default 3600, 300-86400). Claude Code does not report when that work ends, so after this time the work is treated as finished and the session can be ended; the chat then says the work may have been stopped. Raise it for work that runs longer. Twice the Watchdog RSS Limit still ends a session inside the hold.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3600
     },
     {
       "path": "session.reconcile_max_kills",
@@ -1929,6 +2417,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5
+    },
+    {
+      "path": "session.max_per_creator",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sessions per Creator",
+      "help": "How many live sessions one creator may hold: a Bot's own chat, a conductor, or any session that opens other sessions (10-450). A creator that holds this many cannot open another until it closes one. The chats you open yourself do not count. All sessions together still stop at 500. Read at each session create, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
     },
     {
       "path": "taskrunner",
@@ -2066,7 +2568,10 @@
       "label": "DM Session Scope",
       "help": "How direct-message conversations map to sessions. 'per-channel-peer' (default) keeps one session per (channel, user), so the same person on Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one shared session per agent for cross-surface continuity. Takes effect at the next restart: each conversation's generation counter is seeded from the namespace in force at boot, so switching namespaces live could resume a stale session persisted under the other one.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "per-channel-peer",
+        "unified"
+      ],
       "defaultValue": "per-channel-peer",
       "requiresRestart": true
     },
@@ -2109,7 +2614,10 @@
       "label": "DM Queue Mode",
       "help": "How a DM that arrives while a turn is running is handled. 'steer' (default) folds it into the running reply; 'queue' holds it and runs it after the current turn finishes.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "steer",
+        "queue"
+      ],
       "defaultValue": "steer"
     },
     {
@@ -2202,11 +2710,18 @@
       "defaultValue": {
         "embedding_provider": "llama_cpp",
         "embedding_dim": 1024,
+        "ollama_url": "http://127.0.0.1:11434",
+        "ollama_model": "",
+        "ollama_allow_remote": false,
         "embedding_threads": 4,
         "embedding_bulk_threads": 1,
         "embedding_bulk_duty": 0.2,
         "embedding_idle_evict_secs": 3600,
+        "embedding_weight_repack": true,
         "embedding_child_process": false,
+        "consolidation_write_child_process": false,
+        "recall_pool_processes": 0,
+        "recall_pool_worker_max_mb": 3072,
         "embed_model_url": "",
         "embed_model_path": "",
         "embed_model_id": "",
@@ -2219,6 +2734,8 @@
         "episodic_max_count": 10000,
         "decay_rates": {},
         "semantic_keys": [],
+        "session_affinity": 0.0,
+        "recency_boost": 0.0,
         "history_idle_hours": 3.0,
         "history_max_days": 365,
         "backup_enabled": true,
@@ -2226,6 +2743,14 @@
         "persistence_enabled": true,
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
+        "kind_routing": "off",
+        "lesson_origin_gate": "off",
+        "lesson_tier_policy": "off",
+        "lesson_fold": "off",
+        "rule_authority_order": "off",
+        "member_lesson_dedup": "off",
+        "relevance_rule": "off",
+        "dream": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -2243,12 +2768,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Provider",
-      "help": "Vector embedding backend (always-on). In-process via vendored llama-cpp-python. Legacy configs with 'ollama' or 'none' are auto-migrated to 'llama_cpp'.",
+      "help": "Vector embedding backend (always-on). 'llama_cpp' runs the model in-process via vendored llama-cpp-python. 'ollama_http' sends memory and knowledge text to the Ollama server at memory.ollama_url; set memory.ollama_model and memory.embedding_dim to match its model. Legacy configs with 'ollama' or 'none' are auto-migrated to 'llama_cpp'. Switching changes the vector space, so stored embeddings are regenerated in the background.",
       "hasChildren": false,
       "enumValues": [
-        "llama_cpp"
+        "llama_cpp",
+        "ollama_http"
       ],
-      "defaultValue": "llama_cpp"
+      "defaultValue": "llama_cpp",
+      "requiresRestart": true
     },
     {
       "path": "memory.embedding_dim",
@@ -2266,6 +2793,51 @@
       "requiresRestart": true
     },
     {
+      "path": "memory.ollama_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Ollama URL",
+      "help": "Base URL of the Ollama server used when embedding_provider is 'ollama_http'. A loopback address keeps text on this machine; any other host needs ollama_allow_remote and an https:// URL. Credentials, query strings and redirects are refused.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "http://127.0.0.1:11434",
+      "requiresRestart": true
+    },
+    {
+      "path": "memory.ollama_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Ollama Embedding Model",
+      "help": "Name of the embedding model the Ollama server serves, as listed by its /api/tags (for example 'nomic-embed-text'). Required for 'ollama_http'. It names the vector space, so changing it regenerates stored embeddings.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "memory.ollama_allow_remote",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Allow Remote Ollama Server",
+      "help": "Permit a non-loopback memory.ollama_url. Memory and knowledge text then leaves this machine, so it is off by default and the URL must use https://.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
       "path": "memory.embedding_threads",
       "kind": "core",
       "type": "integer",
@@ -2274,7 +2846,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Threads",
-      "help": "CPU threads for an explicit memory query or user-started re-embedding. Defaults to 4, capped one core below the CPUs this process may run on -- never below one thread, so a single-core host still embeds -- to leave the event loop a core wherever there is one to spare; 4 means that default, so pinning threads where the process may use 4 or fewer CPUs takes another number. Any other setting is honoured up to that count, which a CPU-set restriction (--cpuset-cpus, taskset) narrows; a CFS quota (--cpus, cpu.max) sets no mask and is not seen, while a limit a scheduler turns into an exclusive cpuset is. All memory stores share one model and inference worker. V2 message context does not run an embedding search; V1 retains its session-start retrieval.",
+      "help": "CPU threads for an explicit memory query or user-started re-embedding. Defaults to 4, capped one core below the CPUs this process may run on -- never below one thread, so a single-core host still embeds -- to leave the event loop a core wherever there is one to spare, and 6 where the process may use 12 or more CPUs; 4 means that default, so 4 cannot be pinned where the process may use 4 or fewer, or 12 or more CPUs (there a 4 runs 6; set 3 or 5 to stay low). Any other setting is honoured up to that count, which a CPU-set restriction (--cpuset-cpus, taskset) narrows; a CFS quota (--cpus, cpu.max) sets no mask and is not seen, while a limit a scheduler turns into an exclusive cpuset is. All memory stores share one model and inference worker. V2 message context does not run an embedding search; V1 retains its session-start retrieval.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4
@@ -2322,6 +2894,20 @@
       "defaultValue": 3600
     },
     {
+      "path": "memory.embedding_weight_repack",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Repack Embedding Model Weights",
+      "help": "Keep a CPU-optimised second copy of the embedding model's weights, which makes background embedding faster. Turning it off saves about 450 MB while the model is loaded; background embedding gets slower, and new vectors differ very slightly from ones already stored. Applies the next time the model loads.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "memory.embedding_child_process",
       "kind": "core",
       "type": "boolean",
@@ -2334,6 +2920,48 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "memory.consolidation_write_child_process",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Run Consolidation Memory Writes in a Child Process",
+      "help": "Run the memory writes that history consolidation makes (extracted facts, episodes and lessons) in a separate low-priority process, so they never compete with turn context building for the gateway's interpreter lock. Off by default: the writes run inside the gateway. Takes effect at the next consolidation pass.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "memory.recall_pool_processes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Recall Worker Processes",
+      "help": "Number of child processes that answer the memory reads of a turn's context (facts, episodes, lessons), so several sessions can build their context at the same time instead of taking turns on the gateway's interpreter lock. 0 (the default) keeps those reads inside the gateway. Each process holds its own copy of the store's search data, so it uses memory in proportion to the store; see Recall Worker Memory Limit. If a process cannot start or fails, the read runs in the gateway instead. Takes effect within a second.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "memory.recall_pool_worker_max_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Recall Worker Memory Limit (MB)",
+      "help": "Memory limit for one recall worker process. A worker is not started while less than this is free on the host, and a worker whose resident memory passes it after a read exits and is replaced by the next read. Only used when Recall Worker Processes is above 0.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3072
     },
     {
       "path": "memory.embed_model_url",
@@ -2562,6 +3190,34 @@
       "defaultValue": null
     },
     {
+      "path": "memory.session_affinity",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Session Affinity",
+      "help": "V2 only. Additive boost for memories from the current conversation in recall ranking (0 = disabled; 0.10 = recommended). When a query is ambiguous, same-session episodes score higher than identically relevant episodes from other sessions. The boost is a flat lift added after the recency term, only to entries already admitted on relevance, so it can rank a same-session entry above one from another session that scores up to 0.10 higher. Clamped to 0..0.10.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
+      "path": "memory.recency_boost",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Recency Boost",
+      "help": "V2 only. Maximum multiplicative boost for recent memories in recall ranking, falling off hyperbolically: half at 7 days, a third at 14 days (0 = disabled, preserving the default age-neutral ranking; 0.15 = a 15% boost for today's entries). A recent entry can outrank an older one that scores up to (1 + boost) times higher. Clamped to 0..1.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
       "path": "memory.history_idle_hours",
       "kind": "core",
       "type": "number",
@@ -2658,6 +3314,149 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.kind_routing",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Consolidation Kind Routing",
+      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (a PR, CI or branch status that GitHub, git or the work ledger already holds) and writes facts and events as before. Stored facts are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_origin_gate",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Origin Gate",
+      "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_tier_policy",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Tier Policy",
+      "help": "Which tier a new lesson from consolidation gets. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, which new lessons the policy would store as on_topic findings, and how often you later teach one of them again. 'enforce' asks the model for your own words behind each 'always' lesson and stores a lesson as an on_topic finding unless those words are found in one of your messages. Your own learn_add and dashboard writes, and stored lessons, are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_fold",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Fold",
+      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids would fold into which. 'enforce' keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. Rules you taught are never folded and no stored lesson is changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.rule_authority_order",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Rule Authority Order",
+      "help": "How the session-start rule block orders its rules. 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids the new order would add or drop. 'enforce' lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.member_lesson_dedup",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Private Lesson Dedup",
+      "help": "Whether a private memory store folds a consolidation lesson into a stored copy of the same rule (same scope and tier, the same text, or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the fold would do. 'enforce' skips a textual copy and retires a new near-copy with a saved revision before a dashboard turn has been given it; turning the flag off restores those rows. Lessons you taught are never folded.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.relevance_rule",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relevance Rule",
+      "help": "Which word matches let past findings, task facts and the activity block (projects, history) into a new session. 'off' (default) keeps today's blocks. 'shadow' keeps today's blocks and only records, in the injection receipt and within fixed size caps, which rows the new rule would add or drop. 'enforce' counts only words of 3 or more letters or digits and two-character pairs of Chinese or Japanese text, and admits a task fact only with the evidence the private store already asks for. The rule block is unchanged and no stored row is changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.dream",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dreaming",
+      "help": "Whether an offline pass looks over stored lessons and facts for copies, near-copies, work status and old untagged rules while no chat turn is running. 'off' (default) schedules and reads nothing. 'propose' runs at most once a day per store, 200 rows and 10 minutes at a time, and writes an approval list (kirocrew memory dream list); nothing in it is applied, and lessons you taught are never proposed for change.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "propose"
+      ],
+      "defaultValue": "off"
     },
     {
       "path": "memory.inject_memory",
@@ -2933,7 +3732,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Doc-Ingest Host Allowlist",
-      "help": "Exact hostnames whose links may be fetched by KIROCREW ITSELF and ingested, for an edition that wires a server-side doc-link scanner. Empty = fetch nothing (SSRF-safe deny-by-default). This governs only that server-fetch path -- it does NOT gate 'Auto-Add Documents' above, where the agent has already fetched the content under its own approval and Kiro Crew fetches nothing. Applying it there would make the feature ingest nothing on a default config while its toggle reads on.",
+      "help": "Exact hostnames whose pages Kiro Crew ITSELF may fetch and ingest: a web-page source added under Knowledge -> Add Source. https only, port 443, no subdomain matching; the host must resolve to public addresses and a redirect may not leave it. Empty = fetch nothing (SSRF-safe deny-by-default). This governs only that server-fetch path -- it does NOT gate 'Auto-Add Documents' above, where the agent has already fetched the content under its own approval and Kiro Crew fetches nothing. Applying it there would make the feature ingest nothing on a default config while its toggle reads on.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -3167,7 +3966,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Skill Approval Required",
-      "help": "When true, auto-generated skill candidates land in a pending queue for human review instead of going live. Prose-only skills may auto-publish when this is false; skills that bundle scripts ALWAYS require approval regardless of this flag.",
+      "help": "When true, auto-generated skill candidates land in a pending queue for human review instead of going live. New prose-only skills may auto-publish when this is false; skills that bundle scripts, and any update to an existing skill, ALWAYS require approval regardless of this flag. The exception is auto_refine_on_deviation (off by default): when on, it rewrites a live auto-generated skill in place without review.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -3418,6 +4217,9 @@
       "defaultValue": {
         "coder_url": "",
         "profiles": [],
+        "sprites_profiles": [],
+        "boxd_profiles": [],
+        "kiro_cloud_profiles": [],
         "default_profile": "",
         "stop_on_shutdown": true
       }
@@ -3535,6 +4337,90 @@
       "defaultValue": true
     },
     {
+      "path": "session_environments.sprites_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sprites Profiles",
+      "help": "Named Fly.io Sprites profiles (at most 20), each {id, name, token_secret, workdir}. token_secret names the Settings > Secrets entry that holds the Sprites API token; the token itself is never stored here.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.sprites_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "session_environments.boxd_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "boxd Profiles",
+      "help": "Named boxd machine profiles (at most 20), each {id, name, snapshot, vcpu, workdir}. The gateway machine's own boxd auth login authenticates; no credential is stored.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.boxd_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "session_environments.kiro_cloud_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Cloud Sessions Profiles",
+      "help": "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, repositories}. The session runs in a Kiro Cloud Sessions sandbox through Kiro Agent, without Kiro Crew's tools, MCP servers or governance gate; the gateway's Kiro sign-in authenticates.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.kiro_cloud_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "session_environments.default_profile",
       "kind": "core",
       "type": "string",
@@ -3581,6 +4467,11 @@
         "retention_days": 0,
         "max_total_mb": 0,
         "otlp_endpoint": "",
+        "otlp_endpoints": [],
+        "traces_enabled": false,
+        "traces_otlp_endpoint": "",
+        "traces_otlp_headers_secret": {},
+        "traces_otlp_headers_env": {},
         "beacon_enabled": true,
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
@@ -3664,10 +4555,122 @@
       "sensitive": true,
       "tags": [],
       "label": "OTLP Endpoint",
-      "help": "Opt-in OpenTelemetry OTLP/HTTP metrics endpoint (e.g. http://localhost:4318/v1/metrics). EMPTY = no network egress (default). When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires the OTLP exporter from the otlp package extra to be installed.",
+      "help": "Opt-in OpenTelemetry OTLP/HTTP metrics endpoint (e.g. http://localhost:4318/v1/metrics). EMPTY = no network egress (default). When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires the OTLP exporter from the otlp package extra to be installed. Kept for compatibility: when set it is the first entry of the OTLP Endpoints list below.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "telemetry.otlp_endpoints",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "OTLP Endpoints",
+      "help": "Opt-in list of OpenTelemetry OTLP/HTTP metrics collectors, each its own destination, sent to IN ADDITION to the local JSONL sink and to OTLP Endpoint above. EMPTY = no network egress (default). Each entry is {endpoint, name, enabled, headers_env, temporality, allow, point_attributes, resource_allow}: endpoint is an http(s) URL; headers_env maps a header name to an environment variable that holds its value, so no secret is stored here (there is no key for a literal header value, and an entry with one is skipped). An entry sends only those headers: the OTEL_EXPORTER_OTLP_HEADERS variables apply to OTLP Endpoint above, not to these entries. temporality is '' (core default), 'cumulative' or 'delta'; allow is a list of metric names or the preset 'PRODUCT_METRICS', and without it the collector gets every metric; point_attributes adds fixed labels from a reviewed key set (ClientType); resource_allow keeps only the named resource keys. Set enabled to false to turn an entry off. Every entry obeys the 'enabled' switch above and the capabilities.telemetry otlp_hosts policy. A malformed entry is skipped with a warning. See docs/guides/telemetry-otlp-export.md.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "telemetry.otlp_endpoints.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "telemetry.traces_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Traces Enabled",
+      "help": "Record OpenTelemetry traces of agent turns: one trace per turn, with the model, credits, tokens where reported, and one span per tool call. Off by default, and off loads nothing. When on, spans go to a local JSONL sink under ~/.kiro/crew/traces, pruned by the Retention and Max Total Size settings above, which the traces directory gets as its own budget; they leave the host only when Traces OTLP Endpoint below (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT) names a collector. Never records prompt or reply text, tool arguments or output, file paths, or MCP server and tool names. Independent of the metrics 'enabled' switch.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "telemetry.traces_otlp_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Traces OTLP Endpoint",
+      "help": "Opt-in OTLP/HTTP traces URL, the full path included (e.g. https://cloud.langfuse.com/api/public/otel/v1/traces or https://xray.us-east-1.amazonaws.com/v1/traces). EMPTY = spans stay on this host (default). Read only while Traces Enabled is on; then it wins over the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and OTEL_EXPORTER_OTLP_ENDPOINT variables. Must be https:// unless the host is loopback, and carries no user:password or query. Obeys the capabilities.telemetry otlp_hosts policy, and an LTS build ignores it. Requires the otlp package extra.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_secret",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Traces OTLP Headers (vault)",
+      "help": "Header name -> the name of a Settings -> Secrets entry holding that header's whole value, e.g. {\"Authorization\": \"LANGFUSE_OTLP_AUTH\"} where the entry holds 'Basic <base64 public:secret>', or an X-Ray API key as 'Bearer <key>'. Read when the exporter is built; no value is stored here or logged. An entry that is missing, or a value that is not an entry name, turns export off. Sent to Traces OTLP Endpoint only, never to an endpoint from the environment.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_secret.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_env",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Traces OTLP Headers (environment)",
+      "help": "Header name -> the environment variable holding its value, as headers_env does for a metrics destination. Read when the exporter is built, never logged; an unset variable turns export off. Sent to Traces OTLP Endpoint only.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_env.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "telemetry.beacon_enabled",
@@ -3724,7 +4727,9 @@
         "threads": 0,
         "endpointing": false,
         "submit_on_release": false,
+        "slide_to_send": false,
         "dictation_panel": true,
+        "dictation_note": false,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
         "transcribe_profile": "",
@@ -3755,12 +4760,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Provider",
-      "help": "Where speech is recognised. `local` runs on this machine and needs no account (it downloads one model the first time you dictate), `apple` uses the on-device recogniser built into macOS 26 and later, and `transcribe` sends your audio to AWS Transcribe, which bills your AWS account. `off` runs no recogniser at all, the same as turning speech input off.",
+      "help": "Where speech is recognised. `local` runs on this machine and needs no account (it downloads one model the first time you dictate), `apple` uses the on-device recogniser built into macOS 26 and later, and `transcribe` sends your audio to AWS Transcribe, which bills your AWS account. `codex` sends audio to OpenAI through an existing Codex ChatGPT login (experimental; requires voice access and voice-codex). `off` runs no recogniser at all, the same as turning speech input off.",
       "hasChildren": false,
       "enumValues": [
         "local",
         "apple",
         "transcribe",
+        "codex",
         "off"
       ],
       "defaultValue": "local"
@@ -3940,6 +4946,20 @@
       "defaultValue": false
     },
     {
+      "path": "stt.slide_to_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Slide up and right to send",
+      "help": "On the phone's hold-to-talk bar, slide up and to the right before you let go to send what you said, or to steer the agent while it works. Sliding straight up or to the left still cancels. Only while 'Send when I stop recording' is off; with it on, letting go already sends. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "stt.dictation_panel",
       "kind": "core",
       "type": "boolean",
@@ -3952,6 +4972,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "stt.dictation_note",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tell the agent this was dictated",
+      "help": "Add one line to the end of a message that holds dictated text, telling the agent it may contain transcription errors, odd typos, misplaced words or punctuation. Messages you only typed never get it. The line is part of the message, so it shows in the transcript too. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "stt.timeout_secs",
@@ -4235,6 +5269,7 @@
         "stub_overrides": {},
         "pool_identity_env": [],
         "prewarm_count": 0,
+        "keep_alive_servers": [],
         "read_buffer_limit_bytes": 67108864,
         "response_spill_threshold_bytes": 262144
       }
@@ -4425,7 +5460,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Initialize Timeout",
-      "help": "Seconds a freshly spawned backend has to answer its first MCP initialize once the session sends it. A backend that stays silent is failed and reaped so its slot frees; the broker holds the spawn permit for this same window. Raise it for servers whose startup is legitimately slow (large runtimes, remote resolution). On Windows the effective deadline is floored at 30 seconds (a cold-start floor): a configured value below it is lifted, a value above it is used as is.",
+      "help": "Seconds a freshly spawned backend has to answer its first MCP initialize once the session sends it. A backend that stays silent is failed and reaped so its slot frees; the broker holds the spawn permit for this same window. Raise it for servers whose startup is legitimately slow (large runtimes, remote resolution). The effective deadline is floored at 30 seconds (a cold-start floor): a configured value below it is lifted, a value above it is used as is.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 10,
@@ -4608,6 +5643,35 @@
       "requiresRestart": true
     },
     {
+      "path": "mcp_gateway.keep_alive_servers",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Keep-Alive Servers",
+      "help": "MCP server names whose shared backend is kept for the whole gateway run instead of being drained after idle_timeout_secs. For a server that keeps its sign-in only in memory, this makes it sign in once per run instead of again after each idle drain. Applies only to a server that is stubbed (stub_servers) and shared (enabled); a server not named here keeps the idle drain. The max_backends cap and a credential-file change can still restart it. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "mcp_gateway.read_buffer_limit_bytes",
       "kind": "core",
       "type": "integer",
@@ -4692,7 +5756,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Honour MCP autoApprove",
-      "help": "Keep an ``autoApprove`` list you wrote yourself -- one hand-added to ``mcp.json`` or to an agent file -- in the agent config Kiro Crew writes. On by default: an ``autoApprove`` is a deliberate choice about your own tools and is respected, so those verbs run without an approval card. Know what it costs before writing one: the agent runtime approves such a call locally and emits no permission request, so Kiro Crew's own tool gate never runs for it. Turn this OFF to drop every verb no server spec declares, which puts those tools back through the gate. A governance ceiling strips the key whatever this says, and a verb a spec declares is kept either way. Applies at restart, when the spec is rebuilt, so a change does not retract or restore a grant already in the file.",
+      "help": "Keep an ``autoApprove`` list in ``mcp.json`` or in an agent file when Kiro Crew writes the agent config, so those verbs run without an approval card. On by default. Kiro Crew does not check who wrote a list: one the agent wrote into ``mcp.json`` is honoured the same as yours. An app's own ``autoApprove`` lists are never kept. Know what it costs: the agent runtime approves such a call locally and emits no permission request, so Kiro Crew's own tool gate never runs for it. Turn this OFF to drop every verb no server spec declares, which puts those tools back through the gate. A governance ceiling strips the key whatever this says, and a verb a spec declares is kept either way. Applies at restart, when the spec is rebuilt, so a change does not retract or restore a grant already in the file.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true,
@@ -4712,6 +5776,7 @@
       "enumValues": null,
       "defaultValue": {
         "enabled": false,
+        "crew_reads_enabled": false,
         "warm_set_cap": 0,
         "default_destination": "",
         "tunnel_base_port": 7778,
@@ -4737,6 +5802,20 @@
       "enumValues": null,
       "defaultValue": false,
       "requiresRestart": true
+    },
+    {
+      "path": "instances.crew_reads_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent Crew Reads",
+      "help": "Let the agent read another crew's sessions with the crew= scope of search_chat_history, list_sessions and get_chat_session. Default off: a peer's transcripts enter the agent's context as untrusted text, so this is a separate opt-in on top of Enabled. Read per call; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "instances.warm_set_cap",
@@ -4819,7 +5898,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Mint Timeout (secs)",
-      "help": "How long to wait for the remote `kirocrew token` mint to return before failing a connect. When unset, SSH uses 30s and SSM uses 90s (its dispatch latency is higher). The mint runs over the same ssh transport as the tunnel, so a host behind a ProxyCommand or jump host pays the proxy handshake here too. An explicit value applies to both transports, so size it for the slowest transport you use. Clamped to [10, 120].",
+      "help": "How long to wait for the remote `kirocrew token` mint to return before failing a connect. When unset, SSH uses 30s and SSM uses 90s (its dispatch latency is higher). The mint runs over the same ssh transport as the tunnel, so a host behind a ProxyCommand or jump host pays the proxy handshake here too. An explicit value applies to both transports, so size it for the slowest transport you use. A value below 10, or one that is not a number, is discarded with a warning and the transport default is used; a value above 120 is clamped to 120.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -4834,7 +5913,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Recovery Attempts",
-      "help": "Consecutive self-heal attempts before a dropped tunnel is left disconnected. A rebuild that fails outright spans a ~2 min window under the capped-exponential backoff (enough to outlast a transient drop such as a screen lock or proxy warmup); a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (probe_failure_threshold x probe_interval), so handoff to diagnosis takes roughly attempts x (90s + backoff) ~= 16 min at the default 8. Size this against the longer window.",
+      "help": "Consecutive self-heal attempts before a dropped tunnel is left disconnected. A rebuild that fails outright spans a ~2 min window under the capped-exponential backoff (enough to outlast a transient drop such as a screen lock or proxy warmup); a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (probe_failure_threshold x probe_interval), so handoff to diagnosis takes roughly attempts x (30s + backoff) ~= 6 min at the default 8. Size this against the longer window.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 8
@@ -4894,7 +5973,10 @@
       "label": "Default delivery",
       "help": "Where a heartbeat completion with no inline <!-- deliver:... --> tag is routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' (dashboard slot + bell only, no Slack). Per-task deliver tags always override this.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "slack",
+        "dashboard"
+      ],
       "defaultValue": "slack"
     },
     {
@@ -4941,6 +6023,260 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "browser",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser",
+      "help": "Which browser the agent drives and how its live view streams into the chat. Settings -> Browser edits every key; nothing here is gated by it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "choice": "auto",
+        "live": {
+          "enabled": true,
+          "quality": "auto",
+          "max_fps": 60,
+          "mask_passwords": true
+        },
+        "credentials": {
+          "enabled": null,
+          "domains": []
+        },
+        "recording": {
+          "enabled": true,
+          "max_session_mb": 200,
+          "max_total_mb": 1024
+        }
+      }
+    },
+    {
+      "path": "browser.choice",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser",
+      "help": "Which browser the agent drives. `auto` picks your Chrome (with your logins, once you allow remote debugging in it), then Edge on Windows, then Kiro's own Chromium without a window on a machine with no display. `user_chrome` and `kiro_chromium` pin one of those; `headless` runs Kiro's Chromium without a window even on a desktop.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "user_chrome",
+        "kiro_chromium",
+        "headless"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "path": "browser.live",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Live view",
+      "help": "The live view of the agent's browser in chat.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": true,
+        "quality": "auto",
+        "max_fps": 60,
+        "mask_passwords": true
+      }
+    },
+    {
+      "path": "browser.live.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show live view in chat",
+      "help": "When the agent uses the browser, the turn shows a live card of the page in the chat. Click the picture to take over. Off hides the card; the agent still browses.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.live.quality",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Quality",
+      "help": "`auto` adapts frame rate and picture quality to your link, lowering the frame rate first and the picture only when even the lowest frame rate does not fit; a still page gets one sharp frame. A fixed value pins the picture quality and leaves only the frame rate adaptive.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "high",
+        "medium",
+        "low"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "path": "browser.live.max_fps",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max frame rate",
+      "help": "Frames per second the live view never exceeds: 15, 30 or 60. 60 is the most this machine streams. No frames are sent while the card is off screen.",
+      "hasChildren": false,
+      "enumValues": [
+        15,
+        30,
+        60
+      ],
+      "defaultValue": 60
+    },
+    {
+      "path": "browser.live.mask_passwords",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mask password fields",
+      "help": "Cover password boxes in the live picture. Passwords are only ever typed by you, during a takeover; they never pass through the agent and, with this on, never appear in a frame.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.credentials",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sign-in for Kiro's Chromium",
+      "help": "Whether the edition's sign-in is put into Kiro's own Chromium, and for which domains.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": null,
+        "domains": []
+      }
+    },
+    {
+      "path": "browser.credentials.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Use your organisation's sign-in",
+      "help": "Let Kiro's own Chromium start signed in to the sites below, using the sign-in your edition of Kiro Crew provides. Unset follows the edition's default; with no edition provider it does nothing. Your own Chrome is never changed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "browser.credentials.domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sign-in domains",
+      "help": "The sites that sign-in may be used for, such as `example.com` (which covers its subdomains). Only a domain both listed here and served by the edition is used. Empty follows the edition's default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "browser.credentials.domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "browser.recording",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Turn replay",
+      "help": "The per-turn replay of the agent's browsing, and how much of it is kept.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": true,
+        "max_session_mb": 200,
+        "max_total_mb": 1024
+      }
+    },
+    {
+      "path": "browser.recording.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Record browser turns for replay",
+      "help": "Keep a replay of each turn the agent browses: masked pictures of the page and the clicks, typing and scrolls, so you can play the turn back later. Password fields are covered before a picture is kept, and typed secrets are kept as a length only. Kept only on this machine, and removed with the chat.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.recording.max_session_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Replay space per chat (MB)",
+      "help": "The most replay one chat keeps. Past it the chat's oldest turns are removed first.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 200
+    },
+    {
+      "path": "browser.recording.max_total_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Replay space in total (MB)",
+      "help": "The most replay all chats keep together. Past it the oldest turns are removed first, whichever chat they belong to.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1024
     },
     {
       "path": "decisions",
@@ -5078,7 +6414,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Endpoint",
-      "help": "Full URL of the evaluation endpoint. Override only to point at a compatible proxy — the request and response field names are fixed by the TypeSafe API, not by this setting.",
+      "help": "Full URL of the evaluation endpoint. Override only to point at a compatible proxy — the request and response field names are fixed by the TypeSafe API, not by this setting. 'sagemaker://<endpoint-name>?region=<region>[&profile=<profile>]' sends the same request to an Amazon SageMaker endpoint, signed with this machine's AWS credentials instead of an API key (needs boto3).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "https://api.typesafe.ai/v1/systemone"
@@ -5204,6 +6540,10 @@
         "tool_stall_hard_cap_secs": 7200.0,
         "model_silent_probe_secs": 1800.0,
         "remote_flat_probe_secs": 0.0,
+        "builtin_tool_silence_secs": 300.0,
+        "mcp_network_silence_secs": 300.0,
+        "mcp_stdio_silence_secs": 1800.0,
+        "subagent_silence_secs": 600.0,
         "wellness_sample_secs": 3.0
       }
     },
@@ -5258,7 +6598,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Hard cap (s)",
-      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window) and for any per-agent watchdog_tool_stall_* override. Also bounds an opaque MCP tool whose only WORKING evidence is movement somewhere in the runtime's process tree. Every other WORKING reading (a matched shell child, a declared wait, a keepalive-pinging core tool) is deferred before this cap is consulted and is bounded only by the turn's own ceiling. Default 2h, clamped against the transport's per-prompt timeout like the suspect window.",
+      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window) and for any per-agent watchdog_tool_stall_* override. Also bounds an opaque MCP tool whose only WORKING evidence is movement somewhere in the runtime's process tree, and a Windows shell tool whose only WORKING evidence is CPU movement in processes started since its dispatch, and a model wait's WORKING reading. Every other WORKING reading (a matched shell child, a declared wait, a keepalive-pinging core tool) is deferred before this cap is consulted and is bounded only by the turn's own ceiling. Default 2h, clamped against the transport's per-prompt timeout like the suspect window.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 7200.0
@@ -5292,6 +6632,62 @@
       "defaultValue": 0.0
     },
     {
+      "path": "watchdog.builtin_tool_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Built-in tool silence (s)",
+      "help": "Seconds a non-shell built-in tool call (a file edit, a read, a search, a fetch) may go with no frame for it before it is cancelled and the agent is told it timed out, so it can retry. Counted from the call's dispatch and restarted by any frame for that call; time spent waiting on a person (an approval card, an MCP question) is not counted, and the answer restarts it. A shell call keeps the liveness-oracle rules instead. This and the three bounds below run only while Kiro Crew can see the call's activity: a call whose activity may be out of sight (one a frame of an unknown kind names, a sub-agent call whose sub-agent's frames may not have reached the session) loses its timer, and no call is judged while a KAS hook runs or another request is reading the session's frames; such a call is left to the liveness oracle and tool_stall_hard_cap_secs. Default 5 min; 0 turns the timer off for these calls. Never longer than tool_stall_hard_cap_secs. Applies on kiro-cli and KAS, whose tool frames say which calls an MCP server served.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300.0
+    },
+    {
+      "path": "watchdog.mcp_network_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "MCP network tool silence (s)",
+      "help": "The same per-call silence bound for a tool on an MCP server the session declared with a url. Any frame the harness sends for that call restarts it. Default 5 min; 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300.0
+    },
+    {
+      "path": "watchdog.mcp_stdio_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "MCP stdio tool silence (s)",
+      "help": "The same per-call silence bound for a tool on any other MCP server, Kiro Crew's own included. Kiro Crew's own long tools (wait, ask_question, the browser's hand-back) send a heartbeat about every 30 s, so they are never cut short while they work. Kiro Crew's sub-agent tools (spawn_run, spawn_continue, spawn_sub_agents) are bounded by subagent_silence_secs instead. Default 30 min; 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1800.0
+    },
+    {
+      "path": "watchdog.subagent_silence_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sub-agent call silence (s)",
+      "help": "The same per-call silence bound for a sub-agent call (the harness's own sub-agent tool, spawn_run, spawn_continue, spawn_sub_agents), counted from the sub-agent's own activity: its frames, and any tool call it has open, which holds the timer while it runs. A kiro-cli sub-agent call has no timer once any frame on its runtime may have missed the session this turn: while another session shares the runtime, even for a moment, its sub-agent's frames are dropped. Default 10 min; 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 600.0
+    },
+    {
       "path": "watchdog.wellness_sample_secs",
       "kind": "core",
       "type": "number",
@@ -5318,7 +6714,11 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "max_depth": 2
+        "max_depth": 2,
+        "remote_dispatch": false,
+        "remote_dispatch_memory_gb": 5.0,
+        "remote_dispatch_disk_gb": 5.0,
+        "remote_dispatch_retire_minutes": 30.0
       }
     },
     {
@@ -5334,6 +6734,62 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2
+    },
+    {
+      "path": "work_ledger.remote_dispatch",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch (preview)",
+      "help": "Preview: lets a conductor on another machine place work items on this crew. When true, GET /api/chat/headroom answers this machine's free memory, CPU load and free scratch disk to the owner, and an owner session create that carries a work item is refused as crew_busy when one of them is short. Off (the default): the route answers 404 and no create is checked. Read on every request, so no restart is needed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "work_ledger.remote_dispatch_memory_gb",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch memory estimate (GB)",
+      "help": "Free memory one dispatched worker needs. A work-item create is refused as crew_busy when less is free. The default covers the largest measured worker session process tree. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5.0
+    },
+    {
+      "path": "work_ledger.remote_dispatch_disk_gb",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch disk estimate (GB)",
+      "help": "Free scratch disk one dispatched worker needs. A work-item create is refused as crew_busy when less is free. The default is about twice the measured size of one self-contained clone with its dependencies. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5.0
+    },
+    {
+      "path": "work_ledger.remote_dispatch_retire_minutes",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch retire timeout (minutes)",
+      "help": "How long a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 30.0
     },
     {
       "path": "power",
@@ -5384,13 +6840,16 @@
       "defaultValue": {
         "max_open_files": null,
         "max_processes": null,
+        "max_user_processes": null,
         "max_memory_mb": null,
+        "max_address_space_mb": null,
         "max_cpu_seconds": null,
         "cpu_weight": null,
         "max_cpu_percent": null,
         "max_total_memory_mb": null,
         "max_total_processes": null,
         "scope_memory_high_pct": null,
+        "slice_reclaim_trigger_pct": null,
         "xdist_auto_cap": null
       }
     },
@@ -5418,7 +6877,22 @@
       "sensitive": false,
       "tags": [],
       "label": "Max processes",
-      "help": "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_NPROC it caps processes for the child's real UID, and 0 leaves the inherited limit unchanged (the default -- see the per-UID caveat in security._RLIMIT_DEFAULTS). As the cgroup TasksMax it counts TASKS (threads) in the scope, where 0 is rejected by systemd, so 0 or unset means the module default.",
+      "help": "Per-scope TASK budget: the cgroup TasksMax on Linux, which counts TASKS (threads), and the Job object ActiveProcessLimit on Windows. 0 is rejected by systemd, so 0 or unset means the module default. It sets no POSIX rlimit; the per-user process cap is the separate max_user_processes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.max_user_processes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max user processes",
+      "help": "RLIMIT_NPROC on the tool and build processes the gateway spawns, opt-in; the ACP session host and what it starts keep the inherited limit. The kernel counts every process and thread of the gateway's user, not one spawn's tree, so a cap below what that user already runs stops those spawns from forking. 0 or unset leaves the inherited limit unchanged (the default). Set it only when the gateway runs as its own dedicated user. Not used by the cgroup path.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -5433,7 +6907,22 @@
       "sensitive": false,
       "tags": [],
       "label": "Max memory (MB)",
-      "help": "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_AS it caps virtual address space, and 0 leaves the inherited limit unchanged (the default -- Node/V8 reserve huge VSZ, see the caveat in security._RLIMIT_DEFAULTS). As the cgroup MemoryMax it is the per-scope resident ceiling, where 0 is rejected by systemd, so 0 or unset means the host-proportional module default.",
+      "help": "Per-scope RESIDENT memory ceiling: the cgroup MemoryMax on Linux and the Job object JobMemoryLimit on Windows. 0 is rejected by systemd, so 0 or unset means the host-proportional module default. It sets no POSIX rlimit; the virtual address-space cap is the separate max_address_space_mb.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.max_address_space_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max address space (MB)",
+      "help": "RLIMIT_AS: VIRTUAL address space per spawned process, opt-in. 0 or unset leaves the inherited limit unchanged (the default). Node/V8 (kiro-cli, npx MCP servers) and GraalVM native binaries reserve far more address space than they touch and can fail to start below about 64 GiB, so use max_memory_mb to cap resident memory. Not used by the cgroup path.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -5508,7 +6997,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max total processes",
-      "help": "cgroup TasksMax for the whole agents SLICE, counting tasks (threads) across every agent tree. 0 or unset uses the module default; the aggregate ceiling is never left unset where a systemd user manager is available (Linux); not enforced on Windows/macOS.",
+      "help": "cgroup TasksMax for the whole agents SLICE, counting tasks (threads) across every agent tree. 0 or unset sizes it from the host: 512 tasks for every 512 MB of the slice's memory ceiling plus one scope ceiling, so legitimate load reaches max_total_memory_mb first. Capped at half the tightest of kernel.pid_max, kernel.threads-max and the user slice's TasksMax, but never below 32768 unless that tightest limit is itself lower; kirocrew doctor shows the value and its inputs. The aggregate ceiling is never left unset where a systemd user manager is available (Linux); not enforced on Windows/macOS.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -5524,6 +7013,21 @@
       "tags": [],
       "label": "Scope memory soft ceiling (%)",
       "help": "cgroup MemoryHigh for EACH agent runtime scope, as a percent of that scope's own MemoryMax. A runtime that grows past it reclaims its own page cache and is throttled alone, before the shared slice ceiling slows every runtime. Unset or out of range (1-100) uses the default (90); 0 emits no MemoryHigh at all. Linux only.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.slice_reclaim_trigger_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Slice page-cache reclaim trigger (%)",
+      "help": "The gateway writes the agents SLICE's memory.reclaim once memory.current reaches this percent of the slice memory.high and clean page cache is at least half of it, so cached files alone do not hold the slice at its ceiling and throttle every agent. Unset uses 95, 0 turns it off for this gateway only (the slice is shared by every gateway of the user), 50-99 is accepted and anything else uses 95. Never runs inside a pod. Linux with cgroup v2 only.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -5575,7 +7079,17 @@
         "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": "",
-        "auto_link_sessions": false
+        "auto_link_sessions": false,
+        "agent_sessions": false,
+        "code_channel_dispatch": false,
+        "code_channels": false,
+        "code_channel_defaults": {
+          "folder": null,
+          "agent": null,
+          "model": null,
+          "reasoning_effort": null,
+          "approval_mode": null
+        }
       }
     },
     {
@@ -5766,7 +7280,7 @@
         "slack"
       ],
       "label": "Reactions",
-      "help": "Override phase reaction emojis. Valid keys: queued, thinking, coding, browsing, tool, done, error. Set a value to null to suppress that phase entirely.",
+      "help": "Override the status reaction emojis. Valid keys: queued (the ack shown while a turn runs where Slack shows no native thread status; removed when the reply lands) and error (a failed turn). Set a value to null to suppress it. Keys of the retired per-phase trail (thinking, coding, browsing, tool, done) are accepted and ignored.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -5797,7 +7311,7 @@
         "slack"
       ],
       "label": "Reactions Enabled",
-      "help": "Show phase-aware emoji reactions on Slack messages during processing.",
+      "help": "Ack a Slack message with a reaction while it is being answered (where Slack shows no native thread status) and mark a failed turn with the error reaction.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -5913,6 +7427,165 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "slack.agent_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Agent Sessions",
+      "help": "Run Slack threads as Slack agent sessions: threads show a live status and title, and Slack's native Stop button cancels the turn. Adds the agent view (features.agent_view), the assistant:write scope and the agent-session events to the generated app manifest; an installed app needs that manifest update and a reinstall before it takes effect, and until then Slack behaves as before. Slack cannot switch an app back from agent_view to assistant_view. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.code_channel_dispatch",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Code Channel Dispatch",
+      "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; turning that on does not turn this on. Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off by default, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.code_channels",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Code Channels",
+      "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.code_channel_defaults",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Code Channel Defaults",
+      "help": "Folder, agent, model, reasoning effort and approval mode a new code-channel session starts with. Takes effect on the next new code channel; no restart.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "folder": null,
+        "agent": null,
+        "model": null,
+        "reasoning_effort": null,
+        "approval_mode": null
+      }
+    },
+    {
+      "path": "slack.code_channel_defaults.folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Folder",
+      "help": "Sidebar folder (id, or a 'Parent/Child' path) new code-channel sessions are filed in. The session inherits that folder's project directory, default agent and steering. A folder deleted after it was chosen is ignored: sessions are then unfiled and the other defaults still apply.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.agent",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Agent",
+      "help": "Agent new code-channel sessions run. Wins over the folder's default agent. Empty uses the folder's agent, else the agent Slack already uses.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Model",
+      "help": "Model id new code-channel sessions start on (as listed by the model picker). Empty keeps the agent's own model.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.reasoning_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Reasoning Effort",
+      "help": "Reasoning effort new code-channel sessions start with: low, medium, high, xhigh or max. Empty keeps the agent's own effort. Ignored on models that do not support effort.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.approval_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Approval Mode",
+      "help": "Tool approval mode new code-channel sessions start in: ask (the default: look-ups such as file reads, web searches and read-only shell commands run on their own, everything else asks), trust_reads (also searches of memory, past chats, skills and the knowledge library) or trust (every tool runs without asking). Trust lets anyone allowed to talk to the bot in the channel drive an agent whose tools run unprompted, and sessions it spawns inherit that. The mode can still be changed on the session afterwards.",
+      "hasChildren": false,
+      "enumValues": [
+        "ask",
+        "trust_reads",
+        "trust"
+      ],
+      "defaultValue": null,
+      "nullable": true
     },
     {
       "path": "publish",
@@ -6168,7 +7841,8 @@
         "voice_replies": false,
         "forum_activation": "always",
         "accounts": {},
-        "session_folder": ""
+        "session_folder": "",
+        "max_text_inject_kb": 50
       }
     },
     {
@@ -6498,6 +8172,22 @@
       "defaultValue": ""
     },
     {
+      "path": "telegram.max_text_inject_kb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Attachment Text Limit (KiB)",
+      "help": "How much of an attached text file or document reaches the model, in KiB of characters (at least 1); the rest is cut with a truncation marker.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
+    },
+    {
       "path": "weixin",
       "kind": "core",
       "type": "object",
@@ -6703,7 +8393,8 @@
         "db_path": "",
         "soft_threshold_pct": 80,
         "hard_threshold_pct": 95,
-        "session_folder": ""
+        "session_folder": "",
+        "auto_reply_to_voice": false
       }
     },
     {
@@ -6749,7 +8440,7 @@
         "whatsapp"
       ],
       "label": "Allowed WhatsApp IDs",
-      "help": "Phone numbers (digits only, country code, no '+') permitted to address the agent besides the linked account: in direct chats when dm_policy='allowlist', and in every configured group regardless of dm_policy (a group member not listed here is dropped silently, even when they @-mention the agent or the group is in 'rules' mode). Empty adds nobody beyond the linked account.",
+      "help": "Phone numbers (digits only, country code, no '+') permitted to address the agent besides the linked account: in direct chats when dm_policy='allowlist', and in every configured group that has no allowed_wa_ids of its own, regardless of dm_policy (a group member not on the group's allowlist is dropped silently, even when they @-mention the agent or the group is in 'rules' mode). Empty adds nobody beyond the linked account.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -6779,7 +8470,7 @@
         "whatsapp"
       ],
       "label": "Group Rules",
-      "help": "Per-group participation rules. Each entry: {'jid': group JID (…@g.us), 'name': display label, 'mode': 'mention' (reply only when @-mentioned or quoted, the default) | 'rules' (also speak unprompted when the entry's rules say the agent can genuinely help) | 'off', 'rules': free-text guidance for when to speak, 'cooldown_s': minimum seconds between unprompted replies (default 120)}. Groups not listed are ignored entirely. Listing a group lets the agent speak there; it does not admit its members: only you and the numbers in allowed_wa_ids can make the agent reply.",
+      "help": "Per-group participation rules. Each entry: {'jid': group JID (…@g.us), 'name': display label, 'mode': 'mention' (reply only when @-mentioned or quoted, the default) | 'rules' (also speak unprompted when the entry's rules say the agent can genuinely help) | 'off', 'rules': free-text guidance for when to speak, 'cooldown_s': minimum seconds between unprompted replies (default 120), 'allowed_wa_ids': optional list of phone numbers (digits only) admitted in THIS group in place of the global allowed_wa_ids; omit it to use the global list, and an empty list admits nobody but you}. Groups not listed are ignored entirely. Listing a group lets the agent speak there; it does not admit its members: only you and the numbers on the group's allowlist (its own allowed_wa_ids, else the global one) can make the agent reply or have their attachments opened.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -6862,6 +8553,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "whatsapp.auto_reply_to_voice",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Reply to Voice Notes by Voice",
+      "help": "Answer a voice note with a voice note as well as the text, spoken with the voice_reply settings. Needs voice_reply.provider 'polly', which writes the Ogg/Opus a WhatsApp voice note plays; other providers are skipped. Off by default: Polly is a billed AWS service.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "feishu",
@@ -7488,7 +9195,8 @@
       "defaultValue": {
         "enabled": false,
         "api_base_url": "",
-        "send_heartbeats": false
+        "send_heartbeats": false,
+        "oauth_client_id": ""
       }
     },
     {
@@ -7538,6 +9246,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "wakatime.oauth_client_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "OAuth Client ID",
+      "help": "WakaTime OAuth app client ID, from https://wakatime.com/apps. Required to read stats, summaries, and durations after WakaTime makes API keys write-only on 1 November 2026. The matching client secret and the user's access and refresh tokens are stored in the secrets vault, not here. Empty keeps the integration on API-key auth, which still works before the cutoff and for self-hosted backends.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "teams",
@@ -7878,10 +9602,22 @@
           "bind_refresh_chains": true,
           "keep_awake": true
         },
+        "shared_crew": {
+          "admission_enabled": false,
+          "principal_concurrency": 4,
+          "crew_concurrency": 0,
+          "containment_enabled": true,
+          "hard_limits": false,
+          "tailnet_direct": false,
+          "ssm": false,
+          "ssm_port": 5477,
+          "typing_idle_seconds": 10
+        },
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
+        "feature_previews": {},
         "qr_session_until_restart": true,
         "qr_session_persist_across_restart": false,
         "restore_window_minutes": 30,
@@ -7899,11 +9635,11 @@
         "chat_entry_cache_max_bytes": 33554432,
         "cautious_boot": true,
         "default_memory_mode": "persistent",
+        "new_chat_crew_mode": false,
         "widget_density": "more",
-        "use_builtin_browser": true,
         "browser_local_origins": [],
-        "browser_view_port": 0,
         "verbosity": "answer_only",
+        "preferred_language": "",
         "link_previews": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
@@ -7920,6 +9656,10 @@
         "terminal": {
           "enabled": true
         },
+        "remote_editor": {
+          "editor": "",
+          "host": ""
+        },
         "default_project": "",
         "session_folder_root": "",
         "default_session_folder": "",
@@ -7928,6 +9668,7 @@
         "theme_color": "",
         "language": "",
         "recent_tint_count": 0,
+        "show_unread_dot": true,
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "update_nudge": {},
@@ -7935,6 +9676,7 @@
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": false,
         "user_role": "",
         "user_role_other": "",
@@ -7942,7 +9684,9 @@
         "tips_enabled": true,
         "feature_videos_enabled": false,
         "feature_videos_cache_max_mb": 500.0,
+        "milestones_enabled": true,
         "folder_suggestions_enabled": true,
+        "project_tags_enabled": true,
         "topic_tags_enabled": false,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -8033,7 +9777,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Allowed Tailnet Logins",
-      "help": "Tailscale logins permitted when trust_identity is on. Mandatory: a shared tailnet can have hundreds of members, so identity trust without an allowlist would hand each of them the dashboard. A verified peer whose login is not listed is denied.",
+      "help": "Tailscale logins permitted when trust_identity is on. Mandatory: a shared tailnet can have hundreds of members, so identity trust without an allowlist would hand each of them the dashboard. A verified peer whose login is not listed is denied. Under the Shared Crew preview (requires KIROCREW_SHARED_CREW_PREVIEW=1) this list only seeds, at the first start, who may get in alongside you and accepted Crew invites; after that adding a login admits nobody, and removing one removes that person at the next start.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": [],
@@ -8098,6 +9842,161 @@
       "defaultValue": true
     },
     {
+      "path": "dashboard.shared_crew",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Shared Crew",
+      "help": "Fair admission, per-person limits and the direct tailnet link for a shared Crew. Read only while Shared Crew is turned on in Feature Previews; otherwise every value reads as its default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "admission_enabled": false,
+        "principal_concurrency": 4,
+        "crew_concurrency": 0,
+        "containment_enabled": true,
+        "hard_limits": false,
+        "tailnet_direct": false,
+        "ssm": false,
+        "ssm_port": 5477,
+        "typing_idle_seconds": 10
+      },
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.admission_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fair Admission",
+      "help": "Charge every turn, subagent, task, workflow and cron run to the person who started it, and admit work through per-person and Crew-wide limits with a fair queue. Off by default: a single-operator Crew keeps its current behaviour and reports queueing as unavailable. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.shared_crew.principal_concurrency",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Active Work Per Person",
+      "help": "Root executions (turns, tasks, workflows, cron runs) one person may run at once, across all tabs, devices and sessions. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 4
+    },
+    {
+      "path": "dashboard.shared_crew.crew_concurrency",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Active Work Crew-Wide",
+      "help": "Root executions the whole Crew runs at once. 0 uses the session start gate's automatic width for this host. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "dashboard.shared_crew.containment_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Per-Person Slices",
+      "help": "While fair admission is on, start each person's agent runtimes in that person's own systemd slice so their CPU, memory and process counts are bounded together. Linux with cgroup v2 delegation only. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "dashboard.shared_crew.hard_limits",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Require Enforced Limits",
+      "help": "Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable user bus, or memory and pids delegation is missing, instead of running without per-person limits. Needs fair admission on: with fair admission off, no agent runtime starts. Off by default. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.shared_crew.tailnet_direct",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Direct Tailnet Link",
+      "help": "Off by default. On: while Tailscale runs, also listen on this machine's own Tailscale addresses (100.x and fd7a:) on the dashboard port, and let in every person Tailscale names, without a dashboard token. Tailscale (the tailnet ACL and device sharing) decides who can reach it. Never binds any other address. Off keeps the loopback-only listener. A value that is not true or false reads as off. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Link",
+      "help": "Off by default. On: also listen on 127.0.0.1 at the SSM port, for teammates who reach this machine with an AWS Systems Manager port forward. Only people holding a Crew invite get in, and this port never treats a connection as the owner. A value that is not true or false reads as off. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Port",
+      "help": "Loopback port the SSM link listens on, 1024 to 65535. It is separate from the dashboard port so a forwarded connection is never mistaken for a local one. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5477,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.typing_idle_seconds",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Typing Lock Idle Window",
+      "help": "Seconds a collaborator may pause typing before the other collaborators' composers unlock. While someone types in a shared session, everyone else's composer is read-only until that person sends, clears the draft, or stays idle this long. 3 to 60. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10,
+      "requiresRestart": true
+    },
+    {
       "path": "dashboard.restore_sessions",
       "kind": "core",
       "type": "boolean",
@@ -8134,8 +10033,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Reply threads on mate chat messages",
-      "help": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
+      "label": "Reply threads on Bot chat messages",
+      "help": "Let any message in a Bot's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8148,8 +10047,246 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Mates in the chat agent picker",
-      "help": "List mates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a mate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any mate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
+      "label": "Bots in the chat agent picker",
+      "help": "List Bots in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a Bot (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any Bot no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature previews",
+      "help": "Which unreleased dashboard features are turned on under Settings > Developer > Feature previews, by name, each true or false. Kept here so a switch stays as set on every browser, device and dashboard address of this gateway. A name that is absent reads as off. Takes effect on the next dashboard read; no restart.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "dashboard.feature_previews.artifact_deploy",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: artifact_deploy",
+      "help": "Turn on the 'artifact_deploy' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.bridge_approvals",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: bridge_approvals",
+      "help": "Turn on the 'bridge_approvals' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.chat_runtime_sharing",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: chat_runtime_sharing",
+      "help": "Turn on the 'chat_runtime_sharing' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.crew_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_mode",
+      "help": "Turn on the 'crew_mode' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.crew_oauth",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_oauth",
+      "help": "Turn on the 'crew_oauth' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.dashboard_stale_fields",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: dashboard_stale_fields",
+      "help": "Turn on the 'dashboard_stale_fields' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.dashboard_stale_wake",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: dashboard_stale_wake",
+      "help": "Turn on the 'dashboard_stale_wake' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.explore",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: explore",
+      "help": "Turn on the 'explore' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.folder_conductor",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: folder_conductor",
+      "help": "Turn on the 'folder_conductor' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.layout_harness",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: layout_harness",
+      "help": "Turn on the 'layout_harness' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.mate_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: mate_sessions",
+      "help": "Turn on the 'mate_sessions' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.remote_crew_chat",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: remote_crew_chat",
+      "help": "Turn on the 'remote_crew_chat' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.secrets_vault",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: secrets_vault",
+      "help": "Turn on the 'secrets_vault' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.session_environments",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: session_environments",
+      "help": "Turn on the 'session_environments' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.session_harness",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: session_harness",
+      "help": "Turn on the 'session_harness' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.webhooks",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: webhooks",
+      "help": "Turn on the 'webhooks' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8403,6 +10540,20 @@
       "defaultValue": "persistent"
     },
     {
+      "path": "dashboard.new_chat_crew_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Start new chats in Ultra Mode",
+      "help": "Open each new dashboard chat with Ultra Mode already on. It can still be turned off before the first message. Applies only where Ultra Mode is offered: a Persistent chat on the default agent, with the Ultra Mode preview on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.widget_density",
       "kind": "core",
       "type": "string",
@@ -8420,20 +10571,6 @@
       "defaultValue": "more"
     },
     {
-      "path": "dashboard.use_builtin_browser",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Use Built-in Browser",
-      "help": "When on, the browser tool opens pages in Kiro Crew's built-in panel (desktop app only). When off, the agent browses via playwright-cli.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": true
-    },
-    {
       "path": "dashboard.browser_local_origins",
       "kind": "core",
       "type": "array",
@@ -8441,8 +10578,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Built-in Browser Local Origins",
-      "help": "Loopback origins the browser tool may open in the built-in panel, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
+      "label": "Local Preview Origins",
+      "help": "Loopback origins the browser tool and the side panel's Preview tab may open, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside address is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped; at most 32 are kept. Edited on Settings -> Browser -> Local preview, or by the Preview tab's own Allow button. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -8462,20 +10599,6 @@
       "defaultValue": null
     },
     {
-      "path": "dashboard.browser_view_port",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Browser Live-View Port",
-      "help": "Pin the browser live-view server (playwright-cli show) to this loopback port. 0 (the default) picks a fresh OS-assigned ephemeral port on every start. Set a fixed port when the dashboard is viewed remotely through an SSH tunnel that forwards a fixed set of ports, so the Browser panel can always reach the view. The server binds loopback-only either way. A value outside 1-65535 is treated as unset. A changed pin applies the next time the view server (re)starts; an already-running server keeps its current port.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 0
-    },
-    {
       "path": "dashboard.verbosity",
       "kind": "core",
       "type": "string",
@@ -8492,6 +10615,34 @@
         "answer_only"
       ],
       "defaultValue": "answer_only"
+    },
+    {
+      "path": "dashboard.preferred_language",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Preferred Reply Language",
+      "help": "Language the agent replies in, as one of the dashboard's language codes (e.g. 'zh-CN'). Empty (the default) replies in the language of the user's message. A set language holds even when a message mixes languages, until the user asks for another one in chat. Code, commands and identifiers stay as they are, and text written for other readers (commit messages, PR text, code comments, public posts) keeps the project's own language. Separate from 'language', which sets only the dashboard UI.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "en",
+        "zh-CN",
+        "hi",
+        "es",
+        "fr",
+        "bn",
+        "pt",
+        "ru",
+        "de",
+        "ja",
+        "ko",
+        "it"
+      ],
+      "defaultValue": ""
     },
     {
       "path": "dashboard.link_previews",
@@ -8729,10 +10880,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Max terminal sessions",
-      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this; a session beyond the ceiling is refused.",
+      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this. At the ceiling, opening a terminal ends the shell that has had no browser attached the longest (at least a minute) and posts a notice; with none, the open is refused.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 12
+    },
+    {
+      "path": "dashboard.terminal.orphan_timeout_s",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Detached terminal timeout (seconds)",
+      "help": "How long a terminal's shell keeps running with no browser attached, for example while your laptop sleeps, before it and everything running in it are ended. Default 43200 (12 hours); values below 60 count as 60. Run jobs that must outlive this inside tmux.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 43200
     },
     {
       "path": "dashboard.terminal.cwd",
@@ -8826,6 +10991,54 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
+    },
+    {
+      "path": "dashboard.remote_editor",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote editor",
+      "help": "Open a file shown in the side panel in your local editor over your own SSH session, for a gateway on another machine. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "editor": "",
+        "host": ""
+      }
+    },
+    {
+      "path": "dashboard.remote_editor.editor",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Editor",
+      "help": "The local editor to open remote files in. Empty = off.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "vscode"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.remote_editor.host",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SSH host",
+      "help": "How your machine reaches the gateway over SSH: a hostname or a ~/.ssh/config alias, with no port or path.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "dashboard.default_project",
@@ -8945,6 +11158,20 @@
       "defaultValue": 0
     },
     {
+      "path": "dashboard.show_unread_dot",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show Unread Dot on Session Cards",
+      "help": "Show the unread dot on a sidebar session card when the agent finished and you have not read the result. Folder and aggregate unread counts are not affected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.folder_sort",
       "kind": "core",
       "type": "string",
@@ -8993,7 +11220,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Update Nudge",
-      "help": "Per-version state for the proactive update popup. Written by the dashboard when the user snoozes or skips a release; a record only suppresses the popup for the version it names. Validated as one atomic record by the PATCH allowlist (dashboard.update_nudge); no Settings control reads it, so it carries no schema properties.",
+      "help": "Per-version state for the proactive update popup. Written by the dashboard when the user snoozes or skips a release; a snooze only suppresses the popup for the version it names, and every skipped version stays in skipped_versions. Validated as one atomic record by the PATCH allowlist (dashboard.update_nudge); no Settings control reads it, so it carries no schema properties.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -9059,6 +11286,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.privacy_ack_version",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Privacy Notice Version Acknowledged",
+      "help": "The version of the Privacy chapter text, the one saying local metric recording is on, that the user last acknowledged (0 = none). When the dashboard's notice version is higher, the chapter is shown once more at the next dashboard load, but only while local recording is on. Written by the Privacy chapter and by kirocrew telemetry enable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
       "path": "dashboard.crewmates_onboarded",
       "kind": "core",
       "type": "boolean",
@@ -9066,8 +11307,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Mates Onboarded",
-      "help": "Whether the user has finished or dismissed the first-run Meet Mates flow (the four-step introduction that creates the first mate). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Mates page.",
+      "label": "Bots Onboarded",
+      "help": "Whether the user has finished or dismissed the first-run Meet Bots flow (the four-step introduction that creates the first Bot). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Bots page.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9157,6 +11398,20 @@
       "defaultValue": 500.0
     },
     {
+      "path": "dashboard.milestones_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Milestones Enabled",
+      "help": "Show the milestones indicator, panel, new-chat feature cards and quiet notices. Off hides them; counting continues, so turning it back on shows true progress.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.folder_suggestions_enabled",
       "kind": "core",
       "type": "boolean",
@@ -9166,6 +11421,20 @@
       "tags": [],
       "label": "Folder Suggestions Enabled",
       "help": "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "dashboard.project_tags_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Project Tags Enabled",
+      "help": "Tag a new chat session with the last folder name of its project path, such as my-app. Off creates and adds no project tag; tags already on a session stay.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -9521,7 +11790,16 @@
       "defaultValue": {
         "enabled": false,
         "name_mode": "username",
-        "name_override": ""
+        "name_override": "",
+        "relay_enabled": false,
+        "relay_lease_url": "",
+        "relay_lease_credential": "",
+        "relay_lease_token_type": "",
+        "relay_handle_email_domains": [],
+        "relay_viewer_enabled": false,
+        "relay_viewer_cps_url": "",
+        "relay_viewer_credential": "",
+        "relay_viewer_relay_domain": ""
       }
     },
     {
@@ -9573,6 +11851,151 @@
       "requiresRestart": true
     },
     {
+      "path": "tunnel.relay_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Relay",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Off by default. It connects only when Relay Lease Service URL and Relay Lease Credential are set, so the Crew can hold a lease. Without them no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Service URL",
+      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) means no host token source, so the relay client cannot connect. Must be https:// (http:// only for a loopback port-forward).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_credential",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Relay Lease Credential",
+      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, or the absolute path of a file holding it. Never the credential itself; it is read for each call and never logged.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_token_type",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Token Type",
+      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center, Builder ID or Kiro sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Any other value keeps Remote Control from starting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Handle Email Domains",
+      "help": "Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "tunnel.relay_viewer_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer",
+      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "tunnel.relay_viewer_cps_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer Control Plane URL",
+      "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) means not set up. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "tunnel.relay_viewer_credential",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Relay Viewer Credential",
+      "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "tunnel.relay_viewer_relay_domain",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer Relay Domain",
+      "help": "The relay's domain, for example us-east-1.relay.example.invalid. When set, the viewer lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the default) keeps the check without a domain: the address's host must start with the Crew's endpoint ID. Any other value matches no Crew address, so no Crew is listed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "hooks",
       "kind": "core",
       "type": "object",
@@ -9600,6 +12023,34 @@
       "enumValues": null,
       "defaultValue": null,
       "requiresRestart": true
+    },
+    {
+      "path": "hooks.batch_write_guard",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Batch write guard",
+      "help": "On by default; set false to turn it off. Refuses a write-class tool call issued in the same parallel tool batch as a read-class call, so the model cannot write arguments that quote a read it has not seen returned yet. A discipline guard, not a security control: the security floor runs first and is unchanged.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "hooks.batch_write_guard_commands",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Batch write guard commands",
+      "help": "Empty by default. Extra write-command prefixes (e.g. \"myctl apply\") that the batch write guard treats as write-class for tools only a local install knows. Matched on the command's program and subcommand words, never on argument text. Has no effect unless the batch write guard is on.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
     },
     {
       "path": "slack_channels",
@@ -9840,7 +12291,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Worker Model",
-      "help": "Model for the sessions this mate dispatches through session_create when the call names none. Empty copies the mate's model pin when set; with both fields empty, no session model is pinned and the worker's own agent or the global default decides. Unlike 'model', 'auto' is a real pin here: workers run on the backend's own default, which is how a mate on a costly model keeps its workers cheap. An explicit model on the call wins.",
+      "help": "Model for the sessions this Bot dispatches through session_create when the call names none. Empty copies the Bot's model pin when set; with both fields empty, no session model is pinned and the worker's own agent or the global default decides. Unlike 'model', 'auto' is a real pin here: workers run on the backend's own default, which is how a Bot on a costly model keeps its workers cheap. An explicit model on the call wins.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -9854,7 +12305,21 @@
       "sensitive": false,
       "tags": [],
       "label": "Worker Reasoning Effort",
-      "help": "Reasoning effort for the sessions this mate dispatches through session_create when the call names none. Empty means: while the workers run the mate's own model (worker_model empty and no model on the call) they take the mate's own effort (the field above); under any other model no level is pinned and the worker's agent decides as usual (its own crew pin if it runs as a mate, else agent.reasoning_effort, else the model default). Set, one of the five standard levels. An explicit effort on the call wins.",
+      "help": "Reasoning effort for the sessions this Bot dispatches through session_create when the call names none. Empty means: while the workers run the Bot's own model (worker_model empty and no model on the call) they take the Bot's own effort (the field above); under any other model no level is pinned and the worker's agent decides as usual (its own crew pin if it runs as a Bot, else agent.reasoning_effort, else the model default). Set, one of the five standard levels. An explicit effort on the call wins.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agents.*.acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Harness",
+      "help": "Agent harness for this Bot's own chat and the worker sessions it opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty inherits agent.member_acp_backend. A harness this gateway cannot start refuses the session with the reason instead of running another one. The model and worker_model pins are judged against this harness.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -9868,7 +12333,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Dynamic capabilities",
-      "help": "Preview, per crewmate: this crewmate can find new skills or tools for its worker and ask for them on a card in its chat. Off (the default): only you add them, in this crewmate's advanced settings, and it tells you when its worker lacks one. Read per request, so a change reaches the crewmate's next session.",
+      "help": "Preview, per Bot: this Bot can find new skills or tools for its worker and ask for them on a card in its chat. Off (the default): only you add them, in this Bot's advanced settings, and it tells you when its worker lacks one. Read per request, so a change reaches the Bot's next session.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9882,7 +12347,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Approval Mode",
-      "help": "Tool approval for this mate's own Mates-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
+      "help": "Tool approval for this Bot's own Bots-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -9952,7 +12417,35 @@
       "sensitive": false,
       "tags": [],
       "label": "Starred",
-      "help": "Marks this crew as a favourite on the Crew Members page. Purely a roster preference: the page's star filter shows only starred crews, so the dozens of package-installed crews the agent sync writes here can be collapsed behind the few you actually drive. Never read by routing, spawning, or the orchestrator.",
+      "help": "Marks this crew as a favourite on the Bots page. Purely a roster preference: the page's star filter shows only starred crews, so the dozens of package-installed crews the agent sync writes here can be collapsed behind the few you actually drive. Never read by routing, spawning, or the orchestrator.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agents.*.star_order",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Star order",
+      "help": "Position of this starred crew in the dashboard's left dock, set by dragging its row there. 1 is the top; 0 means not placed yet, which sorts after every placed crew. Cleared when the crew is unstarred. Purely a display preference, like starred.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "agents.*.dashboard_card_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dashboard card send (preview)",
+      "help": "Preview, off by default. When on, a button on this crewmate's Dashboard tab may send its reply straight into the crewmate's own thread with one click. Off (the default), such a button only puts the reply in the chat box and the person presses send, which is what every card did before. A card-sent turn is tagged '[Dashboard card]', is never an approval, and is refused while the thread has an open approval or question.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9980,7 +12473,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Tool stall hard cap override (s)",
-      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies to UNKNOWN verdicts and to an opaque MCP tool whose only WORKING evidence is movement in the runtime's process tree; every other WORKING session is never acted on.",
+      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies to UNKNOWN verdicts and to the WORKING readings that key bounds; every other WORKING session is never acted on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
@@ -10050,7 +12543,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Imported",
-      "help": "Provenance stamp of a mate imported from a .crewmate file: {'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty for a mate made here. The sender label is self-declared; nothing reads the stamp to reach the sender.",
+      "help": "Provenance stamp of a Bot imported from a .kirobot file: {'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty for a Bot made here. The sender label is self-declared; nothing reads the stamp to reach the sender.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -10176,7 +12669,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Owner Member",
-      "help": "Display label of the Crew Member owning this memory store.",
+      "help": "Display label of the Bot owning this memory store.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -10283,6 +12776,20 @@
       "defaultValue": ""
     },
     {
+      "path": "apps.*.mute_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mute sessions this app opens",
+      "help": "Mute the chat sessions this app opens, as a session's own mute does: a finished turn plays no chime, shows no toast and marks nothing unread, and the notes those sessions post arrive silenced. A tool approval, a question for you and a failed turn still reach you. Your own sessions are unaffected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "auto_update",
       "kind": "core",
       "type": "boolean",
@@ -10291,7 +12798,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto Update",
-      "help": "Where the install can apply updates, true installs them once no work is running and restarts; false only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
+      "help": "Where the install can apply updates, true downloads and prepares them automatically and they take effect the next time you restart Kiro Crew; nothing restarts by itself. False only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -10319,7 +12826,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Timezone",
-      "help": "IANA timezone name (e.g. 'America/Los_Angeles'). Used to display cron schedules in local time.",
+      "help": "IANA timezone name (e.g. 'America/Los_Angeles'), or 'local' to follow this computer's time zone wherever it travels. The default zone for cron jobs that name none and for the agent's sense of 'now'. Empty means 'local'.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

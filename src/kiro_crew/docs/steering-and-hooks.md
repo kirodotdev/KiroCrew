@@ -29,11 +29,31 @@ retype every conversation.
 Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
-directory. On the Claude Code backend, which does not read an agent spec's
-`resources` array, the gateway loads the global root explicitly —
+directory. On the Claude Code and Codex backends, which do not read an agent
+spec's `resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
-`src/kiro_crew/context_assembly/agent_spec.py` glob the agent config's
-`file://.kiro/steering/**/*.md` resource against `$HOME`.
+`src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
+way kiro-cli does: a relative glob such as the shipped
+`file://.kiro/steering/**/*.md` at the chat's project (at `$HOME` when none is
+bound), `~/` at `$HOME`, and an absolute path at its own glob-free prefix. They
+add what kiro-cli inherits by default: the global root `~/.kiro/steering`
+always (the host tree, which is the one folder steering skips as delivered),
+and the project's steering root and `AGENTS.md` when a project is bound. Codex
+reads the project's `AGENTS.md` itself from its working directory, so on Codex
+the gateway leaves that file out. A hit is
+admitted only when its resolved target stays under its entry's anchor, so a
+project steering link to a file outside the project is not read. An entry that
+cannot be globbed skips only itself.
+
+KAS loads both roots itself and honours `inclusion: manual` and `fileMatch`. So
+on a KAS session the shipped `file://.kiro/steering/**/*.md` entry is not sent
+when KAS already loads every file it names; otherwise those files would load on
+every turn, and twice. When the workspace tree may hold `inclusion: auto` files,
+Crew sends just those files, each by its own path, in the entry's place. The entry
+itself is still sent when the tree holds a link or a folder Crew cannot read, or
+when KAS might read those paths otherwise or not load them all in full. The tree
+is checked when the session starts, so such a file added during a session loads
+from the next session (`src/kiro_crew/acp/kas_steering.py`).
 
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
@@ -67,23 +87,31 @@ description: How this service names endpoints and shapes errors
 Endpoints are plural nouns. Errors carry a stable `code` field.
 ```
 
-**Kiro Crew reports and edits the declaration; it does not decide delivery from
-it.** What a mode causes is kiro-cli's behaviour, it differs from the Kiro IDE,
-and it has changed between releases — so this page does not restate a
-per-version measurement. The one row every measurement agrees on is `manual`:
+**On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
+delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
+Claude Code and Codex global-root load, apply one rule
+(`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
+declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
+stripped from every document they deliver. What a mode causes on kiro-cli is the
+harness's behaviour, it differs from the Kiro IDE, and it has changed between
+releases — so this page does not restate a per-version measurement. The one row every measurement agrees on is `manual`:
 there is no way to bring such a document into a turn over ACP. For the rest,
 read the harness's own steering documentation rather than trusting a mode name to
 mean what it sounds like.
 
 So "always on" is the default, not a guarantee: a mode can withhold a document,
-and the gateway's own CC-backend load reaches the global root only. Treat a
+and the gateway's own CC-backend load reaches the workspace root only for a
+chat bound to a project. Treat a
 steering file as reliably reaching a session when it declares `always` (or
 declares nothing) and lives in a root that session loads.
 
 The Steering files tab reads, creates, edits and deletes these documents. The
 inclusion mode is a segmented control in the editor, and the rewrite happens
 server-side so your body text is preserved byte for byte. An entry that is a
-symlink is listed and readable but never editable, and a workspace write must
+symlink is listed and readable but never editable. A symlink that points
+outside the folders the dashboard may read (for global steering, outside your
+home folder) is listed as "linked, not shown": sessions can still load it, but
+the dashboard never opens it or shows where it points. A workspace write must
 echo the project it was listed under — a chat slot's project can move, and a
 delete issued from a stale listing would otherwise unlink the same-named file in
 a different project.
@@ -124,7 +152,7 @@ the harness's decision, not something this product reimplements.
 A hook is a shell command bound to an event. It can inject context, inspect a
 tool call before it runs, or block it outright.
 
-### The five events
+### The six events
 
 | Event | Fires | Exit 0 does |
 |---|---|---|
@@ -133,6 +161,16 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
+
+A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
+(with the task its parent wrote) before its prompt is sent, and their exit-0
+stdout is added to that prompt the same way.
+
+On KAS, a compaction summarizes the session's history, and the `AgentSpawn`
+stdout with it. kiro-cli sends that stdout with every request, so on a dashboard
+chat the first turn after a compaction sends the stdout the session's first turn
+kept, once more. The hook does not run again.
 
 `PreToolUse` is the only event whose exit code can decide anything — and only
 on the path where the gateway is the one approving the call:
@@ -144,7 +182,9 @@ on the path where the gateway is the one approving the call:
   execute, and a plain exit 1 — the gate did not decide, so it resolves to
   **deny** and the tool is blocked. This is deliberate: breaking or deleting a
   deny hook must not silently disable the policy it enforces, and there is no
-  per-hook opt-out.
+  per-hook opt-out. That is the Hooks tab's rule; a hook from an agent spec,
+  `agent.kiro_hooks` included, keeps kiro-cli's instead (see
+  [kiro-cli hooks that survive an update](#kiro-cli-hooks-that-survive-an-update)).
 
 **A `PreToolUse` hook does not always get a vote.** Where kiro-cli has already
 approved the call and the gateway is only being notified that it is starting, the
@@ -152,6 +192,13 @@ tool is running by the time hooks fire, so the same hook is informational there
 — it can log, audit, or trigger a side effect, and no exit code stops the call.
 Write a `PreToolUse` hook as a policy that holds where it is consulted, not as a
 guarantee the tool can never run.
+
+**Approving a call does not run its `PreToolUse` hooks again.** The approval
+card adds no run of its own. On a backend that also reports a call's start to
+the gateway, as kiro-cli does, a Hooks-tab hook also gets the informational run
+at that notice, described just above, so a hook that counts, rate-limits or
+audits calls sees a call that asks for approval twice there: once at the notice
+and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
 the hook with its error, and the turn continues.
@@ -276,17 +323,45 @@ environment, and the hook-event JSON on stdin. `KIROCREW_HOOK_CONTEXT` is capped
 at 500 characters on every event. Read the full text from stdin instead: `prompt`
 on `UserPromptSubmit`, `assistant_text` on `Stop`.
 
+In a dashboard chat, and on a channel turn that runs the Hooks page's hooks (your
+own conversation, such as a Slack 1:1 DM), `prompt` is your message, not the
+prompt Kiro Crew builds for the model: it has none of the agent prompt, rules,
+memory or session context. A dashboard turn can still put Kiro Crew text before
+yours, and that text can be long. It can be background context an app queued for
+the chat, a `[from: ...]` line in a shared chat, or the request a Stop cut off and
+the reply so far. Two cases differ. On the other channel turns (a Slack channel
+or group DM, a room or guest conversation, an autonudge or monitor wake) the
+Hooks page's hooks do not run, and an agent spec's own `userPromptSubmit` hook
+reads the prompt the backend receives, Kiro Crew's context included. And on
+kiro-cli's older v2 engine kiro-cli runs an agent spec's `userPromptSubmit` hook
+itself, on that same prompt, wherever the turn comes from; see
+[kiro-cli hooks that survive an update](#kiro-cli-hooks-that-survive-an-update).
+
 The stdin JSON names who fired the event, each key only when known, so read
 them with a default: `session_key` is the firing session's own key (a dashboard
 chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
-An agent spec's own `hooks` that Kiro Crew runs for a KAS chat session also get
-the session's ACP id, as `KIRO_SESSION_ID` in the environment and
-`acp_session_id` on stdin, the same `KIRO_SESSION_ID` kiro-cli gives them. Before
-the session has an id, both are left out. Hooks-page hooks and subagent events do
-not get it.
+An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
+subagent or the task runner) also get the session's ACP id, as
+`KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
+names kiro-cli uses. The older stdin key `acp_session_id` carries the same
+value. A subagent's hooks get the subagent's own id. Before the session has an
+id, all of them are left out. Hooks-page hooks never get it. Kiro Crew runs up
+to 64 of one spec's own hooks; any past that are named in one warning and do
+not run.
+
+When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
+Kiro Crew runs in the harness's place (as on KAS) also get
+`KIROCREW_SESSION_MODEL`: the model that session runs on, read when the hook
+fires, so a model switch shows from the next hook on. It is left out while the
+session has not reported a model, as on Auto, where the server picks one per
+turn. When the engine falls back to another model inside a turn, the turn's
+tool and Stop hooks name the model it fell back to, even on Auto. Spec hooks kiro-cli runs itself, channel turns and subagent runs do not
+get it.
+
+The agent spec hooks Kiro Crew runs in kiro-cli's place also read kiro-cli's own stdin names, so a script written for kiro-cli takes the same branch: `hook_event_name` in camelCase (`preToolUse`, `stop`), `tool_name` as kiro-cli names the tool (`shell`, `read`, `write`, or `@server/tool` for an MCP tool), `tool_tags`, and `assistant_response` on `stop`. `assistant_text` stays beside it. A `write` call's `tool_input` also carries kiro-cli's keys beside the KAS ones: `command` `create` with `content`, or `command` `strReplace` with `replaceAll`. Hooks-page hooks and `~/.kiro/hooks` files keep the names above.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead
@@ -300,7 +375,7 @@ A hook's fields:
 
 | Field | Means |
 |---|---|
-| `event` | one of the eleven above |
+| `event` | one of the twelve above |
 | `matcher` | what the hook filters on; empty means every call, or every message |
 | `matcher_mode` | `glob` (default), `regex`, or `contains` — read only for the message events, never for a tool matcher |
 | `command` | the shell line |
@@ -314,8 +389,16 @@ a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
 `*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
-or the final assistant text, and there `matcher_mode` decides: `glob`, a
-case-insensitive `regex`, or `contains` as pipe-delimited substrings.
+or the final assistant text, and on `SessionLaneChanged` against the lane tokens
+the transition produced (`added:<id>;` and `removed:<id>;`); in all four
+`matcher_mode` decides: `glob`, a case-insensitive `regex`, or `contains` as
+pipe-delimited substrings.
+
+For a lane matcher that means a bare lane id matches NOTHING, because `glob`
+compares the whole string: write `*added:<id>;*` to catch a session entering that
+lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
+the leading `:` and the trailing `;` — without them a selector also matches a lane
+whose id merely contains yours, and runs your hook on somebody else's session.
 
 ### Creating, testing, enabling and deleting one
 
@@ -394,6 +477,55 @@ the rest stays in your config. A `timeout` is the one of those three that asked
 for less, so it says so: the command still runs, under kiro-cli's own bound
 rather than yours, and a line names the hook when that happens.
 
+**These hooks follow kiro-cli's exit codes, not the Hooks tab's.** On the
+kiro-cli backend, kiro-cli runs them itself. Where Kiro Crew runs them in its
+place (a Kiro Agent session, goose, opencode, Strands), a `preToolUse` exit 2
+blocks the call, and so does a policy refusing to run the hook. Anything else —
+a plain exit 1, a crash, a timeout, a command that will not execute — logs a
+warning and the tool runs, as on kiro-cli, so one broken hook cannot stop every
+tool call.
+
+**A policy can let only named hooks run.** The `capabilities.script_hooks` row
+of a policy or profile, such as the one bound to scheduled jobs, takes an inner
+`hooks` list beside `events`:
+
+```json
+{"capabilities": {"script_hooks": {"enabled": true, "scopes": {
+  "hooks": {"mode": "allow", "allow": ["my-agent/PreToolUse/2"]}}}}}
+```
+
+An agent spec's hook is named `<agent>/<Event>/<n>`, where `n` is the `#n` in
+the name the log gives it (`my-agent spec hook (PreToolUse #2)`). A Hooks-page
+hook is named by its name. The refusal prints the exact name to copy. A hook
+the list leaves out is refused, and a refused `preToolUse` hook blocks the
+call. With no `hooks` list every hook runs. The list only decides whether a
+hook runs: a listed hook still meets the blocked-commands list and the sandbox,
+as in a chat. The number is the hook's place in the spec, so reordering the
+spec's hooks changes which one a name means. The list applies where Kiro Crew
+fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
+backend kiro-cli runs them itself.
+
+**On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
+session runs on that older engine when a Kiro CLI choice meets a kiro-cli without
+its v3 engine (the gateway log then says Kiro Crew "keeps running kiro-cli's v2
+engine"), and on the other paths where Kiro Crew falls back to kiro-cli. There
+kiro-cli runs the agent spec's `userPromptSubmit` hooks itself, on the text Kiro
+Crew sends the model, with your message inside it. A session's first message
+carries the full session-start context: the agent prompt, the critical rules,
+memory and session context. The first message after a compaction carries part of
+it again (the agent prompt, the memory index, skills and lessons), and later
+messages carry Kiro Crew's per-turn context instead. A room or guest conversation
+gets less at both points, without the rules or memory. In every case that hook's
+stdin `prompt` is not the message you typed, and a hook that checks `prompt` for
+words also checks text you did not write. A Hooks-tab `UserPromptSubmit` hook
+never gets the agent prompt, rules or memory, wherever it runs. Nor does the agent
+spec's hook on KAS, as a Kiro CLI choice runs after `kiro-cli update` and a
+restart of Kiro Crew, in a dashboard chat and on a channel turn that runs the
+Hooks page's hooks (your own conversation, such as a Slack 1:1 DM). On the other
+channel turns it reads the prompt the backend receives, on KAS too; see
+[What a hook runs](#what-a-hook-runs). kiro-cli is removing its v2 engine, and
+until then this is how that engine behaves, not something Kiro Crew changes.
+
 `enabled` and `confirm` are the two that change what runs, so they are not
 dropped. `enabled: false` means the hook is off, and `confirm: true` asks you
 first — a kiro-cli hook cannot ask. Either one keeps the hook out of the kiro-cli
@@ -416,6 +548,13 @@ from the same function that builds the kiro-cli spec
 now, while the rows above them are the spec as last written, so an edit you have
 not refreshed yet shows on this list first. A hook that fails validation is not
 listed; the log and the security event log name it.
+
+Both the hooks directory and `agent.kiro_hooks` are read when Kiro Crew writes
+the agent config: at start, and after a dashboard change that rewrites it, such as
+installing a skill or an MCP server. To pick up a script you just added, or an
+edit to `agent.kiro_hooks`, without a restart, press **Rescan hooks folder** on
+that card. New chats use the list it then shows; a script that is not on it was
+rejected, and the Logs page says why. Only the dashboard owner can rescan.
 
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.
@@ -458,6 +597,38 @@ To use one, type `@` in the composer and pick it by name — the same mention
 syntax skills use. From the Prompts tab, **Send to** picks the destination
 instead: a new chat, or one of your open sessions. Either way the prompt's name
 lands in the composer as `@<name>` and sends.
+
+A global prompt can also be a slash command. Add `slash_command: true` to its
+frontmatter and `~/.kiro/prompts/review-cr.md` answers to `/review-cr`, with a row
+in the composer's `/` menu (its `description:`, or else its first line). It works
+wherever the message reaches Kiro Crew as text, such as the dashboard, Telegram, a
+cron job or a subagent. Slack and Discord keep a leading `/` for their own
+commands, so it does not reach Kiro Crew from there. Webex answers a name made
+only of letters (`/standup`) as an unknown command, but passes one with a hyphen
+(`/review-cr`). Text typed after the command replaces `{arg}` in the prompt, or
+is added at the end when the prompt has no `{arg}`:
+
+```markdown
+---
+description: Review a code change
+slash_command: true
+---
+Review the change at {arg}. List blocking issues first.
+```
+
+The file name starts with a letter and holds only lowercase letters, digits and
+hyphens. A name some surface already uses as a command (`/help`, `/new`,
+`/review`, a channel's own commands) is not turned into one, so the command
+means the same thing everywhere.
+
+Built-in names win, including ones added after you saved the prompt. When an
+update makes a built-in command of a name you already use, such as `/fork`, the
+file stays where it is but stops answering to that name: its row leaves the `/`
+menu, and typing the name runs the built-in command. `kirocrew doctor` names
+each such file under **Saved prompts**. Rename the file to get the command
+back; `@<name>` still finds it under its old name. The reserved names
+are listed in `_RESERVED_TOKENS` in `src/kiro_crew/quick_prompts.py`, and each
+channel's own commands are on its integration page.
 
 The difference from a steering file is when it applies. A steering document is
 loaded without you asking for it, as far as its mode and backend allow; a

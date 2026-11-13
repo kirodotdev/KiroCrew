@@ -53,12 +53,48 @@ _KIRO_INTERNAL_SANDBOX_KEY = "sandbox"
 # would spam warm-pool refills); every delegated spawn is still SEL-audited.
 _kiro_delegation_warned = False
 
+# One warning per process for a settings file holding several JSON values.
+_kiro_settings_concat_warned = False
+
+
+def _first_json_value(text: str) -> object:
+    """The file's first JSON value, the way kiro-cli reads it.
+
+    kiro-cli takes the first object of a file that holds several JSON values
+    one after another (seen on a host whose file read ``{"sandbox": true}``
+    followed by two ``{"sandbox": false}`` lines: kiro-cli started its own
+    sandbox). ``json.loads`` rejects such a file, which read the switch as off
+    while kiro-cli had it on, so both sandboxes engaged and every spawn died on
+    the nesting EPERM. Only a run of whole JSON values is accepted this way;
+    anything else after the first value still raises ``ValueError``, so a
+    damaged file keeps resolving toward Kiro Crew's own sandbox.
+    """
+    global _kiro_settings_concat_warned
+    decoder = json.JSONDecoder()
+    first, end = decoder.raw_decode(text, len(text) - len(text.lstrip()))
+    rest = text[end:].lstrip()
+    if not rest:
+        return first
+    while rest:
+        _value, end = decoder.raw_decode(rest)
+        rest = rest[end:].lstrip()
+    if not _kiro_settings_concat_warned:
+        _kiro_settings_concat_warned = True
+        logger.warning(
+            "%s holds more than one JSON value; reading only the first, as "
+            "kiro-cli does. Rewrite it as a single object.",
+            _KIRO_INTERNAL_SETTINGS_PATH,
+        )
+    return first
+
 
 def kiro_internal_sandbox_enabled() -> bool:
     """True when kiro-cli's own internal agent sandbox is enabled.
 
     Reads the ``"sandbox"`` key from ``~/.kiro/settings/amazon-internal.json``
-    (kiro-cli >= 2.13). Absent file, missing key, or parse failure all return
+    (kiro-cli >= 2.13). A file holding several JSON values is read by its
+    first, as kiro-cli reads it (:func:`_first_json_value`). Absent file,
+    missing key, or parse failure all return
     False, which keeps Kiro Crew's own sandbox engaged — failure resolves
     toward our audited isolation layer, never toward no isolation.
 
@@ -75,7 +111,7 @@ def kiro_internal_sandbox_enabled() -> bool:
     from kiro_crew.hooks import safe_read_file
 
     try:
-        data = json.loads(safe_read_file(_KIRO_INTERNAL_SETTINGS_PATH))
+        data = _first_json_value(safe_read_file(_KIRO_INTERNAL_SETTINGS_PATH))
         if not isinstance(data, dict):
             # Valid-but-non-object JSON ([], "str", null, 123) must also
             # resolve toward Kiro Crew's own sandbox, not raise.
@@ -223,7 +259,8 @@ def delegated_workspace_exposes_sealed_target(
     image a Fargate launch runs and therefore the image the task's execution role hands
     the model credential to. The gateway's packaged install tree
     (:func:`_resolved_install_root_targets`) is a target too: it is the code the
-    gateway runs on its next start.
+    gateway runs on its next start, and so is the default home's ``run/``, where the
+    run-dir pointer token mint follows lives.
 
     A spawn delegated to kiro-cli's internal sandbox (macOS with that sandbox
     enabled, every first-party Windows spawn) never passes through that launcher,
@@ -256,12 +293,15 @@ def delegated_workspace_exposes_sealed_target(
     )
     if not delegated:
         return None
+    from kiro_crew.instances import run_marker
+
+    default_run = str(run_marker._DEFAULT_RUN_DIR)
     install_targets = _resolved_install_root_targets()
-    targets = _resolved_kiro_agents_targets() + [
-        os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS
-    ]
-    if not targets and not install_targets:
-        return None
+    targets = (
+        _resolved_kiro_agents_targets()
+        + [os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS]
+        + [default_run]
+    )
 
     def _reason(target: str, how: str) -> str:
         # Named per target: the consequences differ, and an operator reading this needs to
@@ -285,6 +325,14 @@ def delegated_workspace_exposes_sealed_target(
                 "the agent could change the code the gateway runs on its next start",
             )
             remedy = f"Choose a workspace outside '{target}'."
+        if named is None and target == default_run:
+            named = (
+                "default run dir",
+                (
+                    "the agent could plant the run-dir pointer whose launcher token mint "
+                    "runs outside the sandbox"
+                ),
+            )
         if named is not None:
             what, consequence = named
         else:
@@ -469,9 +517,14 @@ def _delegate_to_kiro_internal_sandbox(
             tool_name=_command_log_label(argv),
             tool_kind="subprocess",
             outcome="delegated",
+            # The Windows branch delegates on the caller's classification alone and
+            # does not read the internal-sandbox setting (a fresh install has no
+            # settings file; see test_windows_fail_closed_optin.py), so the record
+            # names isolation as left to kiro-cli rather than claiming it is on.
             resources=(
-                "Windows Kiro backend delegation: kiro internal sandbox owns "
-                "this spawn; Kiro Crew has no native Windows sandbox backend"
+                "Windows Kiro backend delegation: isolation left to kiro-cli's "
+                "built-in sandbox (kiro_internal_sandbox unconfirmed); Kiro Crew "
+                "has no native Windows sandbox backend"
                 if sys.platform == "win32"
                 else "macOS sandbox mutual exclusion: kiro internal sandbox on -> "
                 "Kiro Crew seatbelt off for this kiro-cli spawn"

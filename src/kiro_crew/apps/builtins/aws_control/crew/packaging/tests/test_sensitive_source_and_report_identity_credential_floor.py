@@ -151,7 +151,7 @@ def test_both_credential_predicates_fold_case(tmp_path: pathlib.Path) -> None:
     """This module has TWO path predicates, and both must fold. One did not.
 
     ``_looks_sensitive_standalone`` was fixed to casefold and the membership test in
-    ``_inside_credential_dir`` was left comparing raw components against lowercase literals
+    ``refused_by_location`` was left comparing raw components against lowercase literals
     -- so ``~/.AWS/credentials`` passed one fence and failed the other. Fixing one predicate
     and leaving its twin is the failure this test exists to catch: it drives BOTH.
     """

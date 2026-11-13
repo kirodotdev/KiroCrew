@@ -215,6 +215,9 @@ def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatc
             try:
 
                 class Model:
+                    def set_delete_delay(self, seconds):
+                        return None
+
                     async def stream(self, message):
                         child.stdin.write(b"call\n")
                         await child.stdin.drain()
@@ -284,6 +287,9 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
         def __init__(self, key):
             self.key = key
 
+        def set_delete_delay(self, seconds):
+            return None
+
     class Sessions:
         pids = {"chain-A": 4101, "wf-pool:run:0": 4102, "wf-unpooled:run:0": 4103}
 
@@ -298,6 +304,12 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
 
         async def destroy(self, key):
             pass
+
+        async def run_identity_check(self):
+            pass
+
+        def is_retiring(self, key):
+            return False
 
     async def exercise():
         agent_fn, pool = build_pooled_agent_fn(

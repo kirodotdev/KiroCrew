@@ -1,35 +1,13 @@
 """The crew-image publish path must stay usable, and must stay out of the fork lane.
 
-``cloud/fargate/taskdef.py`` refuses a movable tag and requires
-``<repository>@sha256:<64 hex>``, and a digest exists only after a push. The
-build lane already pushes -- to a throwaway registry on ``127.0.0.1`` that dies
-with the job, which is what lets it run on a fork pull request with no secrets at
-all. ``scripts/publish_crew_base_image.sh`` is the durable half.
+``cloud/fargate/taskdef.py`` requires ``<repository>@sha256:<64 hex>``, which exists only
+after a push; the aws-control app's ``crew/scripts/publish_crew_base_image.sh`` makes it.
+Pinned: the repository has no default, the reference matches ``taskdef``'s pattern at
+the push, and the fork lane names no secret and never calls this script.
 
-Three properties are worth a ratchet, because breaking any of them is a small,
-plausible edit that nothing else would report:
-
-* **The repository has no default.** A default would either name someone's
-  account in the tree or quietly publish to the wrong one.
-* **The reference is held to the shape taskdef accepts, at the push.** Checking
-  it later means a refusal arrives far from the push that caused it, so the
-  script's own check is compared against ``taskdef``'s pattern by BEHAVIOUR.
-* **The fork lane names no secret and does not call this script.** Wiring
-  publishing into it would either break that lane on a fork or make it skip
-  silently, and a skipped gate reads exactly like a passing one.
-
-Static and offline: nothing here builds an image, runs Docker or reaches a
-network. The tests that execute the script pass no ``--repository`` or an invalid
-one, so it exits during argument handling and never reaches a build; the two that
-execute a fragment inline the selection loop alone. Every one of them is bounded
-by ``REFUSAL_TIMEOUT_SECONDS``, so a guard removed by a mutation cannot fall
-through into a real multi-gigabyte build -- it runs out of time and reds.
-
-The tests that execute it take ``publish_shell``, which comes from the shared
-``posix_test_shell`` fixture, so the Windows shard runs them under Git Bash rather
-than skipping them; the rest read the script's text and need no shell at all.
-Nothing is resolved while this file is IMPORTED, because an import runs before the
-environment scrub that every test body gets.
+Offline: runs that execute the script exit in argument handling or use stubs, bounded by
+``REFUSAL_TIMEOUT_SECONDS`` so a removed guard cannot fall into a real build. Nothing is
+resolved at import, which runs before the per-test environment scrub.
 """
 
 from __future__ import annotations
@@ -48,8 +26,8 @@ from kiro_crew.cloud.fargate.taskdef import _DIGEST_REF_RE
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "publish_crew_base_image.sh"
-PRODUCER = ROOT / "scripts" / "build_crew_base_image.sh"
+SCRIPT = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/publish_crew_base_image.sh"
+PRODUCER = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_base_image.sh"
 FORK_LANE = ROOT / ".github" / "workflows" / "crew-image-build.yml"
 
 #: A repository with no account id and no real namespace, so the fixture cannot
@@ -71,16 +49,11 @@ REFUSAL_TIMEOUT_SECONDS = 15
 def _shell_for_the_script(posix_shell: str) -> str:
     """Bash, given whatever the shared POSIX-shell fixture resolved. Runs nothing.
 
-    A path already naming bash is taken AS IS. That matters most on Windows, where
-    the shared fixture has done the work of finding Git Bash and a second lookup by
-    name would find ``C:\\Windows\\System32\\bash.exe`` instead -- the WSL launcher,
-    which with no distro installed prints a UTF-16 banner, exits 1 and runs nothing.
+    A path naming bash is kept: on Windows a lookup by name finds the WSL launcher
+    ``C:\\Windows\\System32\\bash.exe``, which runs nothing without a distro.
 
-    On a POSIX host the fixture answers ``sh``, and this script cannot run under it:
-    its shebang is ``env bash``, it reads ``${BASH_SOURCE[0]}`` -- an array reference
-    -- and it sets ``pipefail``, none of which POSIX ``sh`` has. So bash is resolved
-    by name there. A host with a POSIX shell but no bash at all FAILS rather than
-    skipping, because a host that cannot run a bash script cannot report on one.
+    On POSIX the fixture gives ``sh``, but the script needs bash (``BASH_SOURCE``,
+    ``pipefail``). No bash at all fails rather than skips.
     """
     if Path(posix_shell).stem.lower() == "bash":
         return posix_shell
@@ -230,11 +203,8 @@ def test_an_inherited_bash_env_hook_does_not_fire_when_this_file_is_imported(
 ) -> None:
     """The property above, measured against the condition that motivates it.
 
-    ``BASH_ENV`` names a file every non-interactive bash sources before it runs
-    anything, so a shell started while this file is imported would execute it with
-    nothing scrubbed. The hook here only leaves a marker; a real one is free to
-    write into the checkout, which is why the import is held to starting no shell
-    at all rather than to starting a harmless one.
+    Every non-interactive bash sources ``BASH_ENV`` first, and import runs before the
+    scrub, so the import must start no shell at all.
     """
     marker = tmp_path / "hook-fired"
     hook = tmp_path / "bash_env_hook.sh"
@@ -266,13 +236,8 @@ _SKIP_CALLS = frozenset({"skip", "skipif", "xfail"})
 def test_this_file_adds_no_skip_of_its_own() -> None:
     """A skip added here would report a pass for tests a shard never ran.
 
-    The one skip in this path belongs to ``posix_test_shell``, and it is the
-    repository's, applied the same way across every suite that needs a POSIX shell.
-    A condition written HERE is this file's own, and the shard it fires on is
-    usually the one whose coverage was the reason to have these tests -- Windows,
-    where the executable contract is least like the author's machine.
-
-    Read from this file's own text, so it holds wherever it runs.
+    The only allowed skip is the shared ``posix_test_shell`` one; a local skip would
+    most likely fire on Windows, the shard these tests matter most on.
     """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
     skips = [
@@ -372,15 +337,9 @@ def test_a_repository_carrying_a_tag_or_digest_is_refused(
 ) -> None:
     """Refused rather than trimmed, and refused by ITS OWN guard.
 
-    ``repo:1.2`` is a tag or a port on a registry host and the two readings are
-    not distinguishable here, so dropping the wrong half publishes somewhere the
-    caller did not name.
-
-    The expected message is matched exactly per case, not loosely. A digest
-    reference's last segment also contains a colon, so the TAG guard refuses it
-    too -- which means a test asserting only "must not carry" passes with the
-    digest guard deleted. Measured: that mutation was the one hole in this file's
-    first draft.
+    ``repo:1.2`` may be a tag or a registry port, so trimming could publish elsewhere.
+    The message is matched per case: the tag guard also refuses a digest (its last
+    segment has a colon), so a loose match would pass with the digest guard deleted.
     """
     result = _run(publish_shell, "--repository", repository)
     assert result.returncode != 0, f"{repository!r} must be refused"
@@ -459,11 +418,8 @@ def test_the_scripts_reference_check_accepts_exactly_what_taskdef_accepts(
 def _selection_block() -> str:
     """The script's repository-selection logic, from the loop to its refusal.
 
-    The end marker is the heredoc's CLOSING ``EOF``, found AFTER the ``done <<EOF``
-    line -- that line itself ends in ``EOF``, so searching for the first one
-    truncates the block mid-heredoc and the loop then reads nothing. That
-    silently turns both tests below into "the selection returned empty", which
-    looks exactly like the defect they exist to catch.
+    The end is the closing ``EOF`` after ``done <<EOF``, which itself ends in ``EOF``;
+    stopping there would make the selection return empty, like the defect itself.
     """
     text = _script()
     start = text.index('REFERENCE=""')
@@ -476,14 +432,8 @@ def _selection_block() -> str:
 def test_the_digest_is_selected_by_repository_not_by_position(publish_shell: str) -> None:
     """``RepoDigests[0]`` can name a DIFFERENT repository.
 
-    The list accumulates per image ID across pushes, so content already pushed to
-    another repository on the same daemon leaves that repository's entry in the
-    list -- possibly first. A shape check alone passes it, and the script then
-    prints a reference naming a registry the task cannot pull from.
-
-    This runs the script's ACTUAL selection block against a fabricated candidate
-    list, rather than asserting on its text, so a rewrite that keeps the wording
-    and loses the property still reds.
+    The list collects every repository the image was pushed to on that daemon.
+    Runs the script's actual selection block against a fabricated list.
     """
     block = _selection_block()
     assert "RepoDigests" not in block, "the selection block should not re-read the daemon"
@@ -540,16 +490,8 @@ def test_a_short_repository_name_is_refused_before_anything_is_built(
 ) -> None:
     """A short name is rewritten by Docker, so the digest read-back cannot match it.
 
-    ``myuser/myrepo`` comes back out of ``RepoDigests`` in Docker's familiar form,
-    which is not the string this script was handed. The exact-prefix match then
-    finds nothing and the run dies AFTER a successful push -- reporting failure for
-    work that landed.
-
-    Refused rather than normalized, deliberately: matching Docker's rewriting means
-    keeping a second copy of its reference-parsing rules here, and a second copy of
-    somebody else's table drifts silently. The decided delivery is a public
-    registry, whose references are always fully qualified, so the refusal costs
-    nothing real.
+    Otherwise the exact-prefix match fails after a successful push. Refused, not
+    normalized: a copy of Docker's parsing rules would drift.
     """
     result = _run(publish_shell, "--repository", repository)
     assert result.returncode != 0, f"{repository!r} must be refused"
@@ -567,16 +509,8 @@ def test_a_docker_hub_repository_is_refused_before_anything_is_built(
 ) -> None:
     """Fully qualified and rewritten anyway, which is the same defect by another name.
 
-    ``docker.io`` and ``index.docker.io`` carry a dot, so the host guard's accept arm
-    would take them. Docker's reference parser reads both as the official registry and
-    drops the prefix, so ``RepoDigests`` reports ``acme/base@sha256:...`` -- not the
-    string the script was handed. The exact-prefix match finds nothing and the run
-    dies AFTER a successful push, reporting failure for work that landed.
-
-    That is the outcome the fully-qualified guard exists to prevent, reached through a
-    host that satisfies it, so the guard has to name these two or its own reasoning is
-    only nearly true. Refused rather than normalized, for the reason the short-name
-    test gives: a second copy of Docker's parsing rules drifts.
+    ``docker.io`` and ``index.docker.io`` pass the dot check, but Docker drops the prefix
+    in ``RepoDigests``, so the match fails after a successful push.
     """
     result = _run(publish_shell, "--repository", repository)
     assert result.returncode != 0, f"{repository!r} must be refused"
@@ -641,13 +575,8 @@ def test_the_tag_built_pushed_and_inspected_is_unique_per_invocation() -> None:
 def test_no_shared_tag_is_written_at_all() -> None:
     """Not ``latest``, not any other fixed name.
 
-    A movable name is what every failure mode in this script came back to: used for
-    the build and the read-back it lets another run's image be reported, and moved
-    afterwards a concurrent publish can still point it at the wrong image.
-    Serializing that move needs a lock across machines sharing one registry, which
-    is a lot of machinery for a name nothing reads -- a task definition is
-    registered against the digest. So the convenience is absent by design, and this
-    asserts it stays absent.
+    A movable name lets a concurrent run's image be reported or retagged, and nothing
+    reads it: task definitions use the digest.
     """
     text = _script()
     assert "docker tag" not in text, "the script re-tags an image, reintroducing a movable name"
@@ -674,21 +603,11 @@ def test_the_dry_run_stops_before_the_push() -> None:
 def test_the_published_digest_says_it_names_the_base_and_stdout_stays_one_line() -> None:
     """What is handed over is the BASE, and nothing may share stdout with it.
 
-    A task registered against this digest alone stops at ``install_bundle``'s
-    fail-closed check (``bundle.py``) before the backend starts, and the bundle
-    directory cannot be redirected at runtime -- ``SMC_BUNDLE_DIR`` is in
-    ``runtask.py``'s ``REFUSED_ENV``. So the reference is the input to composing a
-    crew, not a launchable artifact, and saying so belongs where it is printed
-    rather than only in a pull request.
+    The base alone stops at ``install_bundle``'s fail-closed check (``bundle.py``), and
+    ``SMC_BUNDLE_DIR`` is in ``runtask.py``'s ``REFUSED_ENV``, so it is not launchable.
 
-    It goes to STDERR because stdout is a machine interface: exactly one line, the
-    reference, so a caller can capture it without parsing prose out of it. Both
-    halves are asserted, since a caveat moved to stdout breaks that capture and a
-    caveat deleted leaves the digest looking launchable.
-
-    The scan covers the WHOLE script, not the part after the push. Reading only the
-    tail is what let progress lines sit on stdout from the first step onwards while
-    this file reported the property as held.
+    The caveat goes to stderr: stdout is exactly one line, the reference. The stdout
+    scan covers the whole script, since progress lines can appear from the first step.
     """
     text = _script()
     tail = text[text.index('step "Published"') :]
@@ -708,13 +627,8 @@ def test_the_published_digest_says_it_names_the_base_and_stdout_stays_one_line()
 def _echoes_that_reach_stdout(text: str) -> list[str]:
     """Every ``echo`` in the script that is neither redirected nor the reference.
 
-    The search runs anywhere on a line rather than at its start, which is what
-    reaches the one inside a one-line helper -- and ``step`` is exactly that, so a
-    scan anchored at the start of the line reads the whole success path as clean
-    while every step lands on stdout.
-
-    Splitting on a semicolon has to ignore one inside a quoted string, or a caveat
-    line containing prose punctuation is cut in half and its redirect goes missing.
+    Searched anywhere on a line, to reach one-line helpers such as ``step``. Semicolons
+    inside quotes are not split on, or a caveat's redirect would be cut off.
     """
     loose: list[str] = []
     for line in text.splitlines():
@@ -802,16 +716,8 @@ def _publish_offline(
 ) -> subprocess.CompletedProcess[str]:
     """Run the script to COMPLETION with the two things it shells out to stubbed.
 
-    The script is copied so its ``SCRIPT_DIR`` lands beside a stub producer -- it
-    calls the producer by that path, so a PATH entry could not stand in for it. The
-    copy is byte-for-byte, so what runs is the shipped script.
-
-    Nothing here builds or pushes an image: the producer is a two-line shell script
-    and ``docker`` is another, so the same short cap a refusal gets is enough.
-
-    ``no_digests`` makes the stub registry report an image with no repository
-    digests, which is what a push that did not land looks like -- a condition no real
-    registry produces on demand, and the input to a fail-closed path.
+    A byte-for-byte copy, so ``SCRIPT_DIR`` sits beside the stub producer (called by
+    path, not PATH). ``no_digests`` mimics a push that did not land.
     """
     scripts = tmp_path / "scripts"
     scripts.mkdir()
@@ -845,14 +751,8 @@ def test_a_successful_publish_puts_the_reference_and_nothing_else_on_stdout(
 ) -> None:
     """Captured the way the caller captures it, which is the only reading that counts.
 
-    Every text property above can hold while the run still prints progress on
-    stdout, because a property read off the source is a claim about the lines
-    someone thought to look at. This one runs the whole success path and compares
-    stdout to the reference exactly, so a progress line anywhere in it fails here.
-
-    The stub reports a DIFFERENT repository's digest first, so the reference on
-    stdout is also the evidence the selection matches by repository rather than
-    taking position zero.
+    Stdout must equal the reference exactly. The stub lists another repository's digest
+    first, so this also pins selection by repository, not position.
     """
     done = _publish_offline(tmp_path, publish_shell, "--repository", SAMPLE_REPOSITORY)
     assert done.returncode == 0, done.stderr
@@ -904,16 +804,8 @@ def test_a_push_that_left_no_repository_digest_is_reported_as_a_failure(
 def test_a_nonce_that_could_not_be_read_stops_the_run_before_it_builds() -> None:
     """An empty nonce is refused rather than folded into the tag.
 
-    The tag is unique because of the nonce, so a nonce that silently came back empty
-    leaves a tag made of time and pid -- the collision two containers on one daemon
-    can reach, and the one this name exists to prevent.
-
-    Read from the text rather than produced. Producing it means replacing ``od``, and
-    a stub cannot reliably win that name: Git Bash carries its own ``od`` in
-    ``/usr/bin`` and puts it ahead of an inherited PATH entry, so on Windows the real
-    one answers and the refusal never fires. Measured on the Windows shard. A stub
-    ``docker`` is not shadowed that way -- Git Bash ships no ``docker`` -- which is
-    why the three offline runs above stay behavioural and this one does not.
+    Without the nonce, two containers on one daemon can collide on time and pid.
+    Read from the text: Git Bash puts its own ``od`` ahead of PATH, so a stub cannot win.
     """
     lines = [line.strip() for line in _script().splitlines()]
     read = next(
@@ -932,8 +824,9 @@ def test_a_nonce_that_could_not_be_read_stops_the_run_before_it_builds() -> None
 
 #: The producer stages its wheel into ONE fixed directory in the checkout, so the
 #: unique tag above does not make two publishes independent. The lock is scoped to
-#: exactly what is shared -- this checkout -- and sits beside that directory.
-PUBLISH_STAGING_RELATIVE = Path("src/kiro_crew/apps/builtins/aws_control/crew/runtime")
+#: exactly what is shared -- this checkout -- and sits beside that directory. Relative
+#: to the crew tree the script's ``scripts/`` sits in, which is ``tmp_path`` for a copy.
+PUBLISH_STAGING_RELATIVE = Path("runtime")
 PUBLISH_LOCK_NAME = ".publish-crew-base-image.lock"
 
 
@@ -942,14 +835,8 @@ def test_a_second_publish_in_the_same_checkout_is_refused_before_it_builds(
 ) -> None:
     """Two publishes from one checkout would race on the producer's wheel staging.
 
-    ``build_crew_base_image.sh`` empties ``runtime/vendor`` on entry and again in its
-    EXIT trap, and copies its own wheel in before the build reads it through the bind
-    mount. So the second run's ``rm`` can delete the first run's staged wheel, and the
-    first build fails on a missing wheel with nothing pointing at the run that took
-    it. The unique tag does not help: it isolates the image name, not the directory.
-
-    Held here as REFUSAL rather than queueing, and the refusal has to land before the
-    producer is invoked -- after it, the wheel is already gone.
+    ``build_crew_base_image.sh`` empties ``runtime/vendor`` on entry and exit, so a second
+    run can delete the first run's wheel. The refusal must come before the producer runs.
     """
     staging = tmp_path / PUBLISH_STAGING_RELATIVE
     staging.mkdir(parents=True)
@@ -978,12 +865,8 @@ def test_the_lock_is_released_however_the_run_ends(
 ) -> None:
     """A lock a finished run keeps is a checkout no later publish can use.
 
-    Both endings are exercised, because the failing one exits through ``die`` rather
-    than off the end of the script -- a release written as a final line would hold on
-    the success path and leak on every refusal after the lock is taken.
-
-    The staging directory is asserted to EXIST, so this cannot pass by looking for the
-    lock somewhere the script never puts one.
+    The failing run exits through ``die``, so a release on the last line would leak.
+    The staging directory must exist, or the lock check would look in the wrong place.
     """
     done = _publish_offline(
         tmp_path, publish_shell, "--repository", SAMPLE_REPOSITORY, no_digests=no_digests
@@ -1003,12 +886,8 @@ def test_the_lock_is_released_however_the_run_ends(
 def test_the_lock_is_taken_before_the_producer_is_invoked() -> None:
     """Ordering, because a lock taken after the build guards nothing.
 
-    The two runs collide inside the producer. A guard placed after the invocation
-    would let both enter the staging directory and then serialize what is already
-    broken, and both orderings look equally deliberate when read out of sequence.
-
-    The trap is checked too: armed before the acquisition, a refused run would delete
-    the lock the run it lost to is still holding.
+    The runs collide inside the producer. The trap must be armed after acquisition, or a
+    refused run would delete the winner's lock.
     """
     lines = [line.strip() for line in _script().splitlines()]
 

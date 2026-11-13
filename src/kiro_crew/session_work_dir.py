@@ -181,13 +181,14 @@ _DERIVED_SESSION_SHAPES: tuple[tuple[str, tuple[str | tuple[str, str], ...]], ..
 )
 
 
-def _derived_shape(separator: str) -> str:
+def _derived_shape(separator: str, only: str | None = None) -> str:
     form = 0 if separator == ":" else 1
     return "|".join(
         re.escape(prefix)
         + separator
         + separator.join(c if isinstance(c, str) else c[form] for c in components)
         for prefix, components in _DERIVED_SESSION_SHAPES
+        if only is None or prefix == only
     )
 
 
@@ -195,6 +196,7 @@ _DISPOSABLE_SESSION_KEY_RE = re.compile(rf"^(?:{_derived_shape(':')})$")
 #: Used as the sweep's candidate filter and to COUNT unmarked leftovers for the
 #: doctor; it authorizes no deletion on its own.
 DERIVED_NAME_RE = re.compile(rf"^(?:{_derived_shape('_')})$")
+_SUBAGENT_NAME_RE = re.compile(rf"^(?:{_derived_shape('_', only='subagent')})$")
 
 
 #: Mirrors agent_scratch's bounded owner-marker discipline. The marker is inside
@@ -246,6 +248,28 @@ def is_disposable_session_key(session_key: str | None) -> bool:
     if _DISPOSABLE_SESSION_KEY_RE.fullmatch(session_key) is None:
         return False
     return _shape_runs_on_this_walk(session_key, ":")
+
+
+def is_subagent_work_dir(path: str | Path) -> bool:
+    """Whether *path* is a sub-agent run directory this data home created.
+
+    Such a directory is the run's scratch space, never a checkout, so a caller
+    that finds it recorded as a run's cwd must not treat it as a project. The
+    name (the ``subagent`` rows of the shape table) and the parent only narrow
+    the candidates; the :data:`RUN_DIR_MARKER` naming this home is what says
+    Crew made it, so a person's ``subagent_<hex>`` checkout stays a project.
+    """
+    from kiro_crew.config.loader_locations import workspace_root
+
+    try:
+        candidate = Path(os.path.realpath(path))
+        root = Path(os.path.realpath(workspace_root(create=False)))
+    except (OSError, ValueError):
+        return False
+    if candidate.parent != root or _SUBAGENT_NAME_RE.match(candidate.name) is None:
+        return False
+    marker = _read_run_dir_marker(candidate)
+    return marker is not None and marker.home == data_home_id()
 
 
 def _is_disposable_dir_name(name: str) -> bool:

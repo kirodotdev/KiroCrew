@@ -35,7 +35,7 @@ LIGHT_TOKENS: Final[dict[str, str]] = {
     "--card-fg": "#18181b",
     "--text": "#3f3f46",
     "--text-strong": "#18181b",
-    "--muted": "#71717a",
+    "--muted": "#6d6d75",
     "--muted-strong": "#52525b",
     "--border": "#e4e4e7",
     "--border-strong": "#d4d4d8",

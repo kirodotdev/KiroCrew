@@ -33,47 +33,24 @@ _CLOSING_REF = _CLOSING_VERB + r"[ \t]*:?[ \t]+" + _ISSUE_TARGET
 #   target  := '#123' | 'owner/repo#123' | 'https://host/owner/repo/issues/123'
 #   sep     := ',' | ';' | 'and'
 #
-# Two properties are load-bearing.
+# (1) The trailer must occupy the WHOLE visible line, so prose that mentions a
+# past close ("Fixed #123 in an earlier release") is not a declaration. Trailing
+# blanks, one '.'/';', a CR and a trailing HTML comment stay accepted.
 #
-# (1) The trailer must occupy the WHOLE visible line. An unanchored substring
-# match also accepted prose that merely MENTIONS a past close -- "Fixed #123 in
-# an earlier release; this PR only adds tests." -- and then told the author the
-# keyword was fine and the NUMBER was wrong, the one reading that is never true
-# for that line. A declaration is a trailer, not a mention. (Trailing
-# whitespace, one sentence-ending '.'/';', a CR from a CRLF body, and a trailing
-# HTML comment stay accepted, since none of them make the line prose.)
+# (2) Qualified and URL targets are accepted: this classifier runs only when the
+# host resolved nothing, and "the verb is fine, check the reference" is correct
+# for any repository.
 #
-# (2) Qualified and URL targets are accepted. The host resolves them, so a body
-# carrying one is NOT a body that forgot the verb. No reconciliation against the
-# host's own repository identity is needed to accept them here: this classifier
-# is only ever reached when the host resolved NOTHING, and the message it
-# produces ("the verb is fine, check the reference") is correct whether the
-# reference names this repository or another one.
+# Every regex here runs against the MASKED body from ``_visible_markdown_prose``:
+# GitHub resolves no closure from code or HTML comments, and that is where our
+# body template keeps its examples.
 #
-# Every regex here runs against the MASKED body from
-# ``_visible_markdown_prose``, never the raw one: a fenced block, an indented
-# code block, an inline code span and an HTML comment are the surfaces GitHub
-# itself does not resolve a closure from, and they are exactly where our own body
-# template keeps its worked examples. Matching them would let a copied template
-# read as a declaration the author never made.
-#
-# (3) INDENTATION IS CAPPED AT THREE COLUMNS, and the cap is the load-bearing
-# half of that. Four columns is CommonMark's own code boundary, so this single
-# bound refuses every code-indented example without the classifier needing to
-# know which block type precedes it. Earlier revisions allowed any indent here
-# and leaned entirely on the mask to tell code from prose, which required
-# tracking whether a paragraph was open -- and that tracker was wrong for an ATX
-# heading, a blockquote, a thematic break and a setext underline, each of which
-# closes its block so the next indented line IS code. Enumerating block types
-# converges on writing a Markdown parser; bounding the indent does not. A tab is
-# refused for the same reason (it advances to the four-column stop).
-#
-# What the cap costs: a trailer indented four or more columns that GitHub WOULD
-# resolve as lazy paragraph continuation is not credited as a declaration.
-# That is the cheap direction -- it prints an advisory notice on an odd body,
-# where the opposite error credits an EXAMPLE and silently suppresses a real
-# unrelated-closure warning -- and a trailer is written as a whole line of its
-# own, never as indented code.
+# (3) Indentation is capped at three columns (a tab is refused too): four is
+# CommonMark's code boundary, so the cap refuses every code-indented example
+# without tracking block state, which would need a Markdown parser. The cost, a
+# lazy-continuation trailer at four columns is not credited, is the cheap
+# direction: an advisory notice instead of crediting an example and suppressing
+# a real warning.
 _CLOSING_KW_RE = re.compile(
     r"^ {0,3}(?:[-*+][ \t]+)?"
     + _CLOSING_REF
@@ -82,18 +59,11 @@ _CLOSING_KW_RE = re.compile(
     + r")*[ \t]*[.;]?[ \t]*(?:<!--.*?-->[ \t]*)?\r?$",
     re.IGNORECASE | re.MULTILINE,
 )
-# A resolved closure with no matching explicit trailer may come from prose or a
-# manual link in the host UI, so every host-resolved issue number needs human
-# confirmation unless the body DECLARES it. Declared numbers are read with the
-# same grammar the accept path uses -- find each whole-line trailer with
-# ``_CLOSING_KW_RE``, then read every reference on that line -- so one grammar
-# governs both directions. Deriving them separately is what would report a
-# legitimate trailer (bulleted, qualified ``owner/repo#n``, an issue URL, or
-# several references on one line) as missing.
-# The slug is CAPTURED, not merely matched: reconciling a host closure against
-# a trailer on the number alone lets a stale ``Fixes other/repo#7`` vouch for a
-# closure of THIS repository's own #7, which suppresses the very warning this
-# function exists to print.
+# A host-resolved closure needs human confirmation unless the body DECLARES it.
+# Declared numbers use the accept path's grammar (whole-line trailers from
+# ``_CLOSING_KW_RE``, then every reference on that line), so one grammar governs
+# both directions. The slug is CAPTURED: matching on the number alone would let a
+# stale ``Fixes other/repo#7`` vouch for a closure of this repository's #7.
 _CLOSING_REF_RE = re.compile(
     _CLOSING_VERB + r"[ \t]*:?[ \t]+"
     r"(?:(?P<slug>" + _REPO_SLUG + r")?#(?P<number>\d+)"
@@ -116,13 +86,8 @@ _BARE_REF_RE = re.compile(
 # word boundaries keep their source positions. Fences allow up to three leading
 # spaces; a backtick fence's info string cannot itself contain a backtick.
 #
-# Markdown's OTHER code block -- four or more columns of indentation -- is NOT
-# tracked here, deliberately. Recognising it requires knowing whether a paragraph
-# is open, which is a Markdown parser's job: an approximation of that state was
-# wrong for an ATX heading, a blockquote, a thematic break and a setext underline,
-# each of which closes its block so the next indented line IS code. The bound in
-# ``_CLOSING_KW_RE`` covers every one of those shapes without consulting block
-# state, so the state machine is not needed and is not here.
+# Indented code blocks are deliberately NOT tracked: that needs paragraph state
+# (a Markdown parser), and the indent bound in ``_CLOSING_KW_RE`` covers them.
 _FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 
 
@@ -332,16 +297,12 @@ def _undeclared_closing_numbers(declared, closing_refs):
       One unqualified trailer cannot honestly vouch for two closures of the same
       number in two different repositories, so the second is reported.
 
-    A host reference carrying no ``repository`` object is covered by any
-    declaration of its number: nothing there can be reconciled in either
-    direction, and inventing a mismatch would fire this advisory on a body that
-    is fine.
+    A host reference with no ``repository`` object is covered by any
+    declaration of its number, since nothing there can be reconciled.
 
-    Deliberately absent: a "the same number resolved twice" notice. An earlier
-    revision had one, and once matching became repository-aware it fired on a
-    fully correct body -- ``Fixes #7`` plus ``Fixes other/repo#7`` with both
-    closures resolved and both matched. Genuine ambiguity is already the
-    undeclared case above, so the branch was redundant as well as wrong.
+    There is deliberately no "same number resolved twice" notice: it would fire
+    on a correct ``Fixes #7`` plus ``Fixes other/repo#7``, and real ambiguity is
+    already the undeclared case.
     """
     known: dict = {}
     wildcards: dict = {}
@@ -404,22 +365,14 @@ def _declared_closing_numbers(visible_body, base_repo=None):
     return declared, well_formed
 
 
-# The DECLARATION grammar: what a PR body says it is for. A declaration is a
-# closing verb (the host auto-closes the issue on merge) OR a non-closing
-# ``Refs`` / ``Part of`` (the issue stays open: partial work, a follow-up of
-# several), each followed by one of the three issue targets. It STARTS a
-# visible line (three columns of indent at most, an optional bullet) and what
-# follows the reference on that line is free. Everything ``_CLOSING_KW_RE``
-# refuses for being code or quotation -- four-column indent, a ``>``
-# blockquote, a mid-sentence mention -- this refuses too, since none of them
-# can start a line this way; what it accepts that ``_CLOSING_KW_RE`` does not
-# is a trailer followed by prose (``Fixes #7 (the Windows half)``) and the
-# non-closing verbs, which GitHub renders as links and never resolves as a
-# closure -- the NOTICE path has no use for them, a gate that asks "which issue
-# is this work for" does. Every verb is read at a word start: the line-start
-# regex consumes the bullet/indent for the first one, and the lookbehind in
-# ``_DECLARING_REF_RE`` guards the rest of the line, so ``unresolved: #2`` in
-# the free tail is not ``resolved #2``.
+# The DECLARATION grammar: what a PR body says it is for. A closing verb or a
+# non-closing ``Refs`` / ``Part of``, then one of the three issue targets,
+# STARTING a visible line (indent of three columns at most, optional bullet);
+# the rest of the line is free. It refuses everything ``_CLOSING_KW_RE`` refuses
+# as code or quotation, and also accepts a trailer followed by prose
+# (``Fixes #7 (the Windows half)``) and the non-closing verbs. The lookbehind in
+# ``_DECLARING_REF_RE`` keeps ``unresolved: #2`` in the tail from reading as
+# ``resolved #2``.
 _DECLARING_VERB = r"(?:" + _CLOSING_VERB[3:-1] + r"|refs?|part of)"
 _DECLARING_LINE_START_RE = re.compile(
     r"^ {0,3}(?:[-*+][ \t]+)?(?=" + _DECLARING_VERB + r"[ \t]*:?[ \t]+)",
@@ -442,19 +395,14 @@ _DECLARING_REF_RE = re.compile(
 def declared_issue_numbers(body, repo):
     """Return (numbers declared for ``repo``, well_formed) -- the public grammar.
 
-    The ONE entry point other surfaces use to read which issues a PR body
-    declares it is for (`.github/scripts/issue_gate_refs.py`, the Issue Gate's
-    adapter, is its caller), so the masking and the reference grammar are never
-    re-derived elsewhere: a semantic change here reaches every caller, where a
-    caller rewrapping a private pattern drifts from it unnoticed.
+    The ONE entry point for other surfaces (`.github/scripts/issue_gate_refs.py`,
+    the Issue Gate's adapter), so callers never re-derive the masking or grammar
+    and drift from it.
 
-    ``body`` is masked with ``_visible_markdown_prose`` first, then read with
-    ``_DECLARING_LINE_START_RE`` / ``_DECLARING_REF_RE`` (stated above): a
-    declaration starts a line and the rest of that line is free, every reference
-    on it is read. A closing verb and a non-closing ``Refs`` / ``Part of`` both
-    declare; only the former closes on merge. This is a different question from
-    the one ``closing_link_reason`` answers (why the HOST resolved no closure),
-    which keeps its own whole-line, closing-verbs-only classifier.
+    ``body`` is masked with ``_visible_markdown_prose``, then every reference on
+    each declaration line is read. This differs from ``closing_link_reason``
+    (why the HOST resolved no closure), which keeps its own whole-line,
+    closing-verbs-only classifier.
 
     Only references naming ``repo`` are returned (an unqualified ``#<n>`` can
     only mean the PR's own repository). ``well_formed`` is False when a
@@ -487,20 +435,14 @@ def closing_link_reason(body, closing_refs, repo=None):
     issue-less PR is legitimate, and a green PR should not be held on
     bookkeeping.
 
-    ``closing_refs`` is the host's OWN resolution of the body (the
-    ``closingIssuesReferences`` field), so it is the truth about what will
-    actually close. The body regexes classify *why* it resolved to nothing --
-    which is what makes the message actionable -- and, when it DID resolve
-    something, whether every resolved issue is backed by an explicit trailer or
-    whether a closure needs human confirmation. The accepted explicit-trailer
-    grammar is stated in full above ``_CLOSING_KW_RE``: a whole visible line
-    carrying one or more ``<verb> <target>`` references, where a target may be
-    ``#123``, ``owner/repo#123`` or an issue URL.
+    ``closing_refs`` is the host's OWN resolution of the body
+    (``closingIssuesReferences``), the truth about what will close. The body
+    regexes classify *why* it resolved to nothing, or whether a resolved closure
+    lacks an explicit trailer (grammar above ``_CLOSING_KW_RE``).
 
-    ``repo`` is the viewed PR's own ``owner/name`` when the caller knows it. It
-    is what an unqualified ``#<n>`` trailer resolves to, so supplying it lets a
-    resolved closure be matched by REPOSITORY AND NUMBER rather than by number
-    alone. Optional, and omitting it only widens the match.
+    ``repo`` is the PR's own ``owner/name`` when known: an unqualified ``#<n>``
+    resolves to it, so closures match by repository and number. Omitting it
+    only widens the match.
     """
     body = body or ""
     visible_body = _visible_markdown_prose(body)

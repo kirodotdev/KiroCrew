@@ -10,19 +10,46 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.session_control_parts.app_reach import (
+    app_admits_reach,
+    app_reach_caller_refusal,
+)
 from kiro_crew.dashboard.session_control_parts.caller_access import (
+    LINEAGE_UNAVAILABLE,
+    LINEAGE_UNAVAILABLE_MESSAGE,
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
     _app_owned_cron_refusal,
     _caller_is_ownership_fenced,
     _channel_link_of,
+    _conductor_fenced,
     _cron_caller,
-    _member_bypass,
+    _dispatch_bypass,
     _member_caller,
     _outside_reach,
     _sel_off_loop,
     caller_slot_key,
+    code_channel_root,
     session_control_enabled,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    _NOT_A_CODE_CHANNEL,
+    CREATE_OPERATION,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    TRANSCRIPT_OPERATIONS as CHANNEL_TRANSCRIPT_OPERATIONS,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    admits as channel_admits,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    judge_code_channel,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    transcript_read_hint as channel_transcript_read_hint,
+)
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    withheld_clause as channel_withheld_clause,
 )
 from kiro_crew.dashboard.session_control_parts.delivery_containment import (
     _has_channel_mirror,
@@ -474,7 +501,9 @@ def _refuse_moved_caller_identity(
         )
 
 
-def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot") -> None:
+def _refuse_ineligible_creator(
+    state: "DashboardState", caller_slot: "_ChatSlot", *, operation: str = "create"
+) -> bool:
     """Refuse a caller that may not manufacture a session.
 
     A caller that may not CONTROL a peer may not manufacture one either --
@@ -490,6 +519,13 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
     and a dashboard-born session can be given an outbound mirror link at any
     moment -- so an eligibility decided before a suspension point says nothing
     about eligibility at the moment of allocation.
+
+    *operation* names the creating verb (``create`` unless told otherwise; the fork
+    paths pass ``fork``). Only ``create`` (``create_session``) may be admitted through
+    the code-channel dispatch exemption; a fork copies the channel's own transcript
+    into a new session and is refused as before. Returns True when the caller was
+    admitted through that exemption, so ``create_session`` can file the worker in the
+    channel's folder.
     """
     if getattr(caller_slot, "_app", ""):
         # An app-scoped session is confined to its own app's slots. Creating a
@@ -511,6 +547,20 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
             "incognito and temporary sessions cannot create sessions",
             code="ephemeral_caller",
         )
+    if (root := code_channel_root(state, caller_slot)) == LINEAGE_UNAVAILABLE:
+        raise SessionControlError(
+            LINEAGE_UNAVAILABLE_MESSAGE, code="code_channel_lineage_unavailable"
+        )
+    if root:
+        # A worker a code channel's conductor dispatched (at any depth) works; it
+        # does not dispatch. The exemption that let its conductor create it is one
+        # level deep by design, so channel words cannot fan out into a tree of
+        # sessions none of which the channel can see.
+        raise SessionControlError(
+            "sessions dispatched from a Slack code channel cannot create sessions; "
+            "code-channel dispatch is one level deep",
+            code="code_channel_worker_caller",
+        )
     # The channel link and mirror refusals share ONE exemption with
     # `authorize_target`'s caller half: :func:`owner_dm_refusal` answering ``""``,
     # a 1:1 DM whose only human is the configured owner -- the DM the session lives
@@ -525,7 +575,19 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
     # flag is that row's fail-closed reading, so the gate never probes the store a
     # second time to decide what the first read already saw.
     verdict = judge_owner_dm(state, caller_slot)
+    admission = verdict.admission
+    via_code_channel = False
     if why := verdict.refusal:
+        # The code-channel dispatch exemption, for ``create`` alone (see the
+        # docstring and :mod:`.code_channel_exemption`).
+        if not _channel_link_of(caller_slot) and verdict.mirrored:
+            channel = judge_code_channel(state, caller_slot, operation=operation)
+            if operation == CREATE_OPERATION and channel_admits(channel):
+                why, via_code_channel = "", True
+                admission = channel.admission or admission
+            else:
+                why += channel_withheld_clause(channel)
+    if why:
         if _channel_link_of(caller_slot):
             # A cron tab's link is its own run transcript, not a channel thread,
             # and is exempt -- see CRON_LINK_PREFIX. Everything else is a channel
@@ -547,7 +609,8 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
     # so this is the ONE gate such a turn passes: record the audience here too, from
     # the row this verdict judged. Applied twice per creation (entry and allocation),
     # the second write is the no-op the audience-keyed record makes it.
-    record_audience_admission(caller_slot, verdict.admission)
+    record_audience_admission(caller_slot, admission)
+    return via_code_channel
 
 
 def _resolve_slot(
@@ -729,7 +792,32 @@ def _deny_factory(*, caller_session_key: str, operation: str, target: str) -> De
         )
         return SessionControlError(reason, status=status, code=code)
 
+    # The verb this gate judges, and whether the caller-side gate admitted the
+    # caller through the code-channel dispatch exemption: per call, never per
+    # slot, so the fence that follows reads THIS call's admission rather than
+    # re-deriving it from a store that may have changed in between. See
+    # :func:`_code_channel_admitted`.
+    setattr(deny, _DENY_OPERATION, operation)
+    setattr(deny, _DENY_TARGET, target)
+    setattr(deny, _DENY_CODE_CHANNEL, False)
     return deny
+
+
+_DENY_OPERATION = "_session_control_operation"
+_DENY_TARGET = "_session_control_target"
+_DENY_CODE_CHANNEL = "_code_channel_admitted"
+
+
+def _deny_operation(deny: Deny) -> str:
+    """The verb *deny* was built for (``""`` for a stand-in without one)."""
+    return str(getattr(deny, _DENY_OPERATION, "") or "")
+
+
+def _code_channel_admitted(deny: Deny) -> bool:
+    """Whether :func:`refuse_caller_surface` admitted this call's caller as a code
+    channel's conductor -- which binds it to the creator fence for the rest of the
+    call, whatever a later read of the store would say."""
+    return getattr(deny, _DENY_CODE_CHANNEL, False) is True
 
 
 def refuse_caller_identity(
@@ -765,10 +853,12 @@ def refuse_caller_identity(
     # (default true = today's behaviour) is on. Turn that ceiling off and the
     # member falls back under the switch. The member's reach stays bounded by
     # the ownership check below, which restricts it to slots it created itself.
+    # The Conductor in the owner's own tab bypasses on the same terms
+    # (`_conductor_bypass`), and is fenced the same way while it does.
     if (
         not skip_enabled_check
         and not session_control_enabled()
-        and not _member_bypass(state, caller_key)
+        and not _dispatch_bypass(state, caller_key)
     ):
         raise deny(
             "session control is disabled in config (agent.session_control)",
@@ -824,7 +914,30 @@ def refuse_caller_surface(
     # ``mirrored`` flag and the ``admission`` recorded below come from the row the
     # clauses judged, so nothing here probes the store a second time.
     verdict = judge_owner_dm(state, caller_slot)
+    admission = verdict.admission
     if why := verdict.refusal:
+        # The second exemption, for the one mirrored slot the owner-DM predicate
+        # cannot admit: a Slack code channel's own session, judged for THIS verb
+        # (a transcript read is never admitted). Consulted only after owner-DM
+        # refused, and only for a slot whose identity is a code channel's; every
+        # other caller meets exactly the refusals below. Admission binds the call
+        # to the creator fence (:func:`_code_channel_admitted`).
+        channel = (
+            _NOT_A_CODE_CHANNEL
+            if _channel_link_of(caller_slot)
+            else judge_code_channel(state, caller_slot, operation=_deny_operation(deny))
+        )
+        if channel_admits(channel):
+            setattr(deny, _DENY_CODE_CHANNEL, True)
+            why = ""
+            admission = channel.admission or admission
+        else:
+            why += channel_withheld_clause(channel)
+            if channel.applies and _deny_operation(deny) in CHANNEL_TRANSCRIPT_OPERATIONS:
+                why += channel_transcript_read_hint(
+                    state, caller_slot, str(getattr(deny, _DENY_TARGET, "") or "")
+                )
+    if why:
         if _channel_link_of(caller_slot):
             # The exfiltration direction, and the reason this is not merely the
             # mirror of the target-side check: a linked caller's own conversation
@@ -861,7 +974,7 @@ def refuse_caller_surface(
     # resolved live. Record the audience it was admitted under -- the row the
     # verdict judged, not a fresh read -- here at the one gate every verb passes
     # rather than per verb, so no read path can miss it.
-    record_audience_admission(caller_slot, verdict.admission)
+    record_audience_admission(caller_slot, admission)
     return caller_slot
 
 
@@ -895,7 +1008,9 @@ def _check_caller_slot_fields(
     return caller_slot
 
 
-def _live_target_refusal(slot: "_ChatSlot") -> tuple[str, str] | None:
+def _live_target_refusal(
+    slot: "_ChatSlot", *, app_reachable: bool = False
+) -> tuple[str, str] | None:
     """The target-side containment refusal a LIVE slot earns, or ``None``.
 
     One spelling of the four fields that decide whether a live session may be
@@ -905,6 +1020,11 @@ def _live_target_refusal(slot: "_ChatSlot") -> tuple[str, str] | None:
     drift. The outbound-mirror probe and the workspace compare sit beside it in
     each caller: the first needs the state and a thread choice, the second the
     caller's slot.
+
+    *app_reachable* skips the app-scope clause alone, for a target whose app lets
+    the owner's chats run this operation on it (:func:`app_admits_reach`). The
+    clauses after it still run, so an app session that is also channel-linked is
+    refused as linked. Revive never passes it.
 
     A channel-linked session's conversation is mirrored to Slack/Telegram, so
     reaching it crosses a surface boundary in both directions: a message would
@@ -919,7 +1039,7 @@ def _live_target_refusal(slot: "_ChatSlot") -> tuple[str, str] | None:
         return ("unattended sessions (scheduled runs) cannot be controlled", "unattended_target")
     if getattr(slot, "memory_mode", "persistent") != "persistent":
         return ("incognito and temporary sessions are not addressable", "ephemeral_target")
-    if getattr(slot, "_app", ""):
+    if getattr(slot, "_app", "") and not app_reachable:
         return ("app-scoped sessions are not addressable", "app_scoped_target")
     if getattr(slot, "linked_session_key", ""):
         return ("channel-linked sessions are not addressable", "linked_session_target")
@@ -944,7 +1064,12 @@ def _not_creator_reason(
     elif precomputed_ownership_fenced is not None:
         return "this session can only control sessions it created itself"
     elif _member_caller(state, caller_key):
-        return "a crew member can only control worker sessions it created itself"
+        return "a Bot can only control worker sessions it created itself"
+    elif _conductor_fenced(state, caller_key):
+        return (
+            "with agent.session_control off, the Conductor can only control worker "
+            "sessions it created itself"
+        )
     else:
         return "an agent-created session can only control sessions it created itself"
 
@@ -1030,7 +1155,9 @@ def authorize_target(
 
     if slot.key == caller_key and not allow_self:
         raise deny("a session cannot control itself", "self_target")
-    if (refusal := _live_target_refusal(slot)) is not None:
+    # Reads the verdict `prewarm_app_reach` resolved off the loop, never a file.
+    app_reachable = app_admits_reach(slot, operation)
+    if (refusal := _live_target_refusal(slot, app_reachable=app_reachable)) is not None:
         raise deny(refusal[0], refusal[1])
     if _has_channel_mirror(state, slot):
         # Same boundary as the channel-link refusal, reached by the other
@@ -1040,6 +1167,14 @@ def authorize_target(
         raise deny("sessions mirrored to a channel are not addressable", "mirrored_target")
 
     caller_slot = refuse_caller_surface(state, caller_key=caller_key, deny=deny)
+
+    if app_reachable and (why := app_reach_caller_refusal(state, caller_key, caller_slot)):
+        # After the caller-side gate, so a caller it refuses keeps that refusal's code.
+        # The opt-in reaches the owner's own chats and no other caller it admits.
+        raise deny(
+            f"app-scoped sessions are not addressable from this session: {why}",
+            "app_scoped_target",
+        )
 
     if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
         # Workspaces are the memory boundary; reaching across one would let a
@@ -1054,7 +1189,7 @@ def authorize_target(
         _caller_is_ownership_fenced(state, caller_key)
         if precomputed_ownership_fenced is None
         else precomputed_ownership_fenced
-    )
+    ) or _code_channel_admitted(deny)
     # A caller addressing ITSELF is not reaching a peer, so the fence has nothing to
     # protect and is waived -- reachable only under ``allow_self``, since the
     # self-target refusal above denies this case for every other verb. Without the

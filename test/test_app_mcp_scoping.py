@@ -1,11 +1,8 @@
 """App MCP servers land in KiroCrew's agent config, never the shared kiro file.
 
-The shared ``~/.kiro/settings/mcp.json`` is read by everything else under
-``~/.kiro`` — Kiro IDE and any other kiro-cli agent — so registering an app's
-MCP servers there leaked private app tools into surfaces that never installed
-the app. These tests pin the fix: registration targets the agent config, the
-shared file is left alone, and a ``clean`` rebuild re-derives app entries from
-the enabled apps' manifests (the shared file does not supply them).
+The shared ``~/.kiro/settings/mcp.json`` is read by Kiro IDE and every kiro-cli agent,
+so app tools there would reach surfaces that never installed the app. A ``clean``
+rebuild re-derives app entries from the enabled apps' manifests.
 """
 
 from __future__ import annotations
@@ -57,11 +54,8 @@ def _manifest(servers: dict[str, Any], entry_point: str = "") -> Any:
 class TestGrantVersusGovernance:
     """A grant says "the user allows this"; the ceiling says "it may run".
 
-    Auto-approve (``allowedTools``) is the one path kiro-cli never asks about, so
-    it never reaches ``hooks.on_tool_call`` where the governance deny runs. A
-    ceiling-denied server must therefore stay OUT of the auto-approve list — it
-    remains granted (in ``tools``), which forces every call through
-    ``session/request_permission``, where the gate denies it.
+    Auto-approve (``allowedTools``) never reaches ``hooks.on_tool_call``, so a
+    ceiling-denied server stays granted in ``tools`` but out of ``allowedTools``.
     """
 
     def _policy(self, monkeypatch: pytest.MonkeyPatch, denied: bool):
@@ -94,14 +88,10 @@ class TestGrantVersusGovernance:
     def test_a_governed_host_builtin_loses_auto_approve(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`fs_read` in ``allowedTools`` bypassed the filesystem ceiling entirely.
+        """`fs_read` in ``allowedTools`` would bypass the filesystem ceiling entirely.
 
-        The earlier reasoning was that a bare tool name "is governed by its own
-        scope at the gate" — the same mistake the per-tool MCP case made. A tool in
-        ``allowedTools`` is auto-approved, so a ``filesystem.read`` deny never ran
-        for ANY path. When the ceiling constrains the scope a builtin is evaluated
-        under, the shortcut has to be declined so the call reaches the gate, which
-        decides with the real path.
+        When the ceiling constrains a builtin's scope, the shortcut is declined so the
+        call reaches the gate, which decides with the real path.
         """
         from kiro_crew.apps import bridges as bmod
 
@@ -191,13 +181,8 @@ class TestGrantVersusGovernance:
     def test_a_per_tool_rule_also_declines_auto_approve(self) -> None:
         """A per-tool ceiling rule must block the server-wide shortcut.
 
-        The regression this pins: auto-approve has only SERVER granularity, and
-        the original check probed a sentinel tool (``@srv/probe``). An
-        ``@srv/delete`` deny matches only itself, so the probe passed, the whole
-        server entered ``allowedTools``, and ``delete`` was auto-approved —
-        meaning it never reached the gate that was supposed to deny it. The
-        claim that "the gate still denies it" was hollow precisely because
-        auto-approve is the one path the gate never sees.
+        Auto-approve has only SERVER granularity, and a sentinel probe (``@srv/probe``)
+        does not match an ``@srv/delete`` deny, so ``delete`` would skip the gate.
         """
         from types import SimpleNamespace
 
@@ -443,15 +428,8 @@ class TestRebuildSurvival:
 class TestCeilingProbesFailClosed:
     """A probe that cannot answer must decline the auto-approve shortcut.
 
-    These helpers decide who SKIPS the PreToolUse gate, so "keep the entry on
-    error" is not a deferred decision — an entry in `allowedTools` is
-    auto-approved and none of its calls ever reach the gate. Keeping it on a
-    failed probe would silently bypass the ceiling on a host that has one. The
-    cost of failing closed is one permission prompt; no capability is lost.
-
-    An ungoverned host (no ceiling at all) is a different answer and still keeps
-    its grants — otherwise every ordinary user pays a prompt for a ceiling they
-    do not have.
+    An entry in `allowedTools` never reaches the PreToolUse gate, so keeping it on a
+    failed probe would bypass the ceiling. An ungoverned host (no ceiling) keeps its grants.
     """
 
     def test_mcp_probe_declines_when_the_evaluator_raises(
@@ -523,13 +501,8 @@ def _doctor_source() -> str:
 class TestBothWritePointsConsultTheCeiling:
     """`allowedTools` is written in TWO places; one predicate governs both.
 
-    Auto-approve is the only path that never reaches `hooks.on_tool_call`, so a
-    list written without consulting the ceiling is a set of tools the ceiling
-    cannot refuse. Closing that in app-agent materialization
-    (`apps/bridges_agents.py`) left the OTHER writer — the host agent's shared-MCP sync
-    in `agent.py` — appending every user-installed server's `@ref` unconditionally,
-    so on a governed host the primary agent kept the whole bypass. These pin that
-    both writers route through `governance.may_skip_gate`.
+    App-agent materialization (`apps/bridges_agents.py`) and the host agent's shared-MCP
+    sync in `agent.py` must both route through `governance.may_skip_gate`.
     """
 
     def test_the_predicate_is_the_only_implementation(self) -> None:
@@ -636,12 +609,8 @@ class TestBothWritePointsConsultTheCeiling:
 class TestAnEmptyAllowlistIsTheStrictestCeiling:
     """`mode="allow"` with an EMPTY allow list denies everything.
 
-    Counting patterns inverts the answer in exactly the strictest case: a ruleset
-    with no patterns at all reads as "no opinion" and hands out the auto-approve
-    exemption, when under allow-mode it is deny-all. `ScopedRuleset`'s own
-    docstring says so ("An absent/empty `allow` under allow-mode is the empty set
-    (deny-all)"), which is what makes the pattern-count reading a bug rather than
-    a judgement call.
+    Counting patterns would read it as "no opinion" and grant auto-approve;
+    `ScopedRuleset` defines an empty `allow` under allow-mode as deny-all.
     """
 
     def _ceiling(self, scope: str, ruleset: Any) -> Any:
@@ -692,12 +661,8 @@ class TestAnEmptyAllowlistIsTheStrictestCeiling:
 class TestManifestAutoApproveCannotSelfGrantAnExemption:
     """`autoApprove` is a second, more direct route to the same bypass.
 
-    kiro-cli approves an autoApproved MCP tool locally and emits NO permission
-    request, so `hooks.on_tool_call` never runs for it — `agent.py`'s managed-server
-    block states the rule outright ("DELIBERATELY NO autoApprove KEY, and none may
-    ever be added"). App-contributed specs were copied verbatim, so the grant was
-    declared by an app MANIFEST — content that can come from outside this repo —
-    rather than by KiroCrew or the user.
+    kiro-cli approves an autoApproved MCP tool locally, so `hooks.on_tool_call` never
+    runs. An app MANIFEST can come from outside this repo, so it may not grant that.
     """
 
     def test_a_governed_server_loses_autoapprove_but_keeps_its_tools(
@@ -759,12 +724,8 @@ class TestManifestAutoApproveCannotSelfGrantAnExemption:
 class TestATighteningReachesAnExistingConfig:
     """A re-derived app spec must REPLACE the previous rebuild's, not lose to it.
 
-    `_collect_app_mcp_servers` re-derives every app's MCP spec on each rebuild —
-    that is what applies the current ceiling, and what lets a clean rebuild keep
-    app servers at all. Merging it with `setdefault` made that re-derivation
-    inert for any app already in the config: a spec whose `autoApprove` had just
-    been stripped lost to the stale entry that still carried it, so the
-    tightening reached only fresh installs and those tools kept skipping the gate.
+    `_collect_app_mcp_servers` re-derives each spec to apply the current ceiling. A
+    `setdefault` merge would keep the stale entry, still carrying `autoApprove`.
     """
 
     def test_the_app_key_is_assigned_not_setdefault(self) -> None:
@@ -849,11 +810,8 @@ def _pin_honour_auto_approve(monkeypatch: pytest.MonkeyPatch, honour: bool) -> N
 class TestAutoApproveIsFilteredAtTheWriteChokepoint:
     """One map-level pass, not one patch per source.
 
-    `autoApprove` reaches a written agent config from at least four places — an
-    app manifest, a per-agent MCP policy, a materialized managed ref, and an entry
-    preserved from the previous file (plus an imported config from another tool).
-    Patching one source at a time leaves the rest, so the filter runs once on the
-    final map, at the position both writers hand it to disk.
+    `autoApprove` arrives from manifests, per-agent policies, managed refs and preserved
+    entries, so the filter runs once on the final map both writers hand to disk.
     """
 
     def test_a_governed_server_loses_the_key_and_keeps_the_server(
@@ -899,14 +857,9 @@ class TestAutoApproveIsFilteredAtTheWriteChokepoint:
 class TestOnlyTheOwnersOwnAutoApproveIsHonoured:
     """The opt-in respects the OWNER's statement, not any writer's.
 
-    "Owner-written" was first implemented as "undeclared by any spec", and the
-    declared set covers only the managed registry and the edition's contribution.
-    An app's own ``<app>:<server>`` entry is in neither, so an installed app that
-    shipped ``autoApprove`` inherited the exemption on every default-config host --
-    a third party exempting its own tools from the gate with no card, which is the
-    opposite of the decision the opt-in records. The wrong SHAPE is the sibling
-    hole: the strict floor coerces a non-list to ``[]``, and preserving one writes
-    a spec kiro-cli rejects, with no self-heal for an invalid file.
+    An app's own ``<app>:<server>`` entry is not owner-written, so its ``autoApprove``
+    must not inherit the exemption. A non-list value is coerced to ``[]``, since
+    kiro-cli rejects the spec otherwise.
     """
 
     @staticmethod
@@ -971,11 +924,8 @@ class TestOnlyTheOwnersOwnAutoApproveIsHonoured:
     ) -> None:
         """No key of it is honoured, and a DECLARED verb still survives.
 
-        Naming an app's keys is an enumeration that goes stale: the manifest's
-        servers, the shipped agent spec's own un-namespaced keys and the per-agent
-        policy's `servers` keys were each found only after the previous one was
-        covered. A writer whose whole map is an app's therefore declines the opt-in
-        instead of listing what it knows about today.
+        A list of an app's keys goes stale, so a writer whose whole map is an app's
+        declines the opt-in outright.
         """
         from kiro_crew.platform import governance as gov
 
@@ -1014,15 +964,10 @@ class TestOnlyTheOwnersOwnAutoApproveIsHonoured:
 
 
 class TestAnUngovernedHostDoesNotKeepAutoApprove:
-    """The ungoverned host was the hole, and no ceiling could close it.
+    """An ungoverned host strips ``mcp.json`` ``autoApprove`` too.
 
-    ``may_skip_gate_now`` is always true where no ceiling is installed, so a
-    ``mcp.json`` entry's own ``autoApprove`` was copied verbatim into the written
-    spec. kiro-cli then approves those tools locally and emits no permission
-    request, so ``hooks.on_tool_call`` never runs and there is no card left to
-    fall through to -- against the dashboard's own "auto-approve reads, ask for
-    writes" promise. The floor is local and fail-closed; the opt-in is the way
-    back, and a ceiling still wins over it.
+    ``may_skip_gate_now`` is always true with no ceiling, so only this local floor keeps
+    those tools reaching a card. The opt-in lifts it; a ceiling still wins.
     """
 
     ENTRY = {"mail": {"command": "mail-mcp", "autoApprove": ["email_reply"]}}
@@ -1222,12 +1167,8 @@ class TestBuiltinAutoApprovalsGoThroughTheFinalPass:
     """A governed HOST builtin (fs_read, execute_bash, …) must lose its blanket
     auto-approve too — not just MCP servers.
 
-    The per-writer checks apply the ceiling to entries THEY add, but a builtin
-    auto-approve arrives straight from the agent TEMPLATE into ``allowedTools``
-    and no writer re-touches it. Under a ``filesystem.read`` ceiling ``fs_read``
-    would stay on the blanket list and kiro-cli would approve reads without ever
-    reaching the gate. ``rebuild_agent_config`` runs a LAST pass over the whole
-    ``allowedTools`` list through the same predicate to close that.
+    Builtins come straight from the agent TEMPLATE, which no writer re-touches, so
+    ``rebuild_agent_config`` runs a last pass over the whole ``allowedTools`` list.
     """
 
     def test_rebuild_filters_the_allowed_list_through_the_predicate(self) -> None:
@@ -1285,13 +1226,8 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
     """The template's ``allowedTools`` is ceiling-filtered inside
     ``build_agent_config`` itself, so every derived spec inherits the filter.
 
-    ``rebuild_agent_config``'s final pass covers only ``kirocrew.json``. A
-    sibling installer that derives from ``build_agent_config`` and writes its
-    own file (``_install_research_agent``) shipped the template's floor-gated
-    builtins (``fs_read``, ``code``, …) on a blanket auto-approve list —
-    ``code`` auto-approved means unrestricted edits that never reach the
-    PreToolUse gate. Filtering at the constructor holds the invariant
-    by the predicate rather than by each installer's author remembering it.
+    ``rebuild_agent_config``'s final pass covers only ``kirocrew.json``; installers such
+    as ``_install_research_agent`` write their own file from this constructor.
     """
 
     @staticmethod
@@ -1338,15 +1274,10 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
     def test_every_crew_spec_writer_filters_or_inherits(self) -> None:
         """Writer parity: the NEXT installer cannot reintroduce the gap.
 
-        Every Crew-authored agent-spec writer in ``agent.py`` and its ``agent_parts``
-        owners, or in the ``agent_materialization`` modules it is composed from, must either
-        derive from ``build_agent_config`` (which filters), hand its own
-        assembled spec to ``_apply_allowed_tools_ceiling`` (the same filter the
-        constructor runs, pinned by the case above) or to the shared
-        ``write_governed_spec`` tail (which runs it), filter what it writes
-        through ``_may_auto_approve``, or not write an ``allowedTools`` key at
-        all. ``_install_research_agent`` failed this before the fix: it derived
-        from a then-unfiltered constructor.
+        Each agent-spec writer in ``agent.py``, ``agent_parts`` or ``agent_materialization``
+        must derive from ``build_agent_config``, call ``_apply_allowed_tools_ceiling`` or
+        ``write_governed_spec``, filter through ``_may_auto_approve``, or write no
+        ``allowedTools`` key.
         """
         import importlib
         import inspect
@@ -1388,10 +1319,8 @@ class TestTheCodeToolIsGovernedForWrites:
     """`code` edits files and runs formatters, so a write/commands/tools ceiling
     must withhold its blanket auto-approve.
 
-    Missing from BUILTIN_TOOL_SCOPES it defaulted to auto-approved — a
-    ``filesystem.write`` ceiling could not reach it, so the model could edit
-    freely with no permission request. It is mapped to all three scopes it
-    touches so any of those ceilings forces it through the gate.
+    A tool missing from BUILTIN_TOOL_SCOPES defaults to auto-approved, so `code` maps to
+    all three scopes it touches.
     """
 
     def _ceiling(self, scope, ruleset):
@@ -1458,11 +1387,8 @@ class TestAppServersAreMounted:
 class TestProfileOnlyGovernanceWithholdsAutoApprove:
     """A Level-2 PROFILE can govern a ref even with NO policy ceiling.
 
-    `may_skip_gate(ref, ceiling)` alone only consults the POLICY ceiling, so on a
-    host with no ceiling but a profile that denies `@srv/delete`, a blanket
-    auto-approve of `@srv` would bypass that profile. `may_skip_gate_now` must
-    withhold whenever any configured profile could govern the ref — the runtime
-    gate then applies the specific one.
+    `may_skip_gate(ref, ceiling)` reads only the POLICY ceiling, so `may_skip_gate_now`
+    withholds whenever any profile could govern the ref; the gate applies the specific one.
     """
 
     def test_a_profile_deny_withholds_even_without_a_ceiling(self, monkeypatch) -> None:

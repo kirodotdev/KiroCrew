@@ -129,13 +129,10 @@ async def test_only_a_merged_subject_is_recorded_as_a_success(
 
 @pytest.mark.asyncio
 async def test_the_marker_writes_do_not_release_the_lock_mid_write(tmp_path, monkeypatch):
-    """A cancellable write can let a stale snapshot overwrite newer state.
+    """The terminal marker writes use the writer that never releases ``_lock`` mid-write.
 
-    ``_persist_locked`` releases ``_lock`` if its awaiting task is cancelled while the
-    executor write is still in flight, so a pause or retarget landing there could have
-    the marker's stale snapshot land on top of the update that just wrote. The
-    settlements already use the non-releasing writer; these marker writes were left
-    behind, and nothing pinned which writer they used.
+    ``_persist_locked`` releases ``_lock`` on cancel while the executor write is in
+    flight, so a stale marker snapshot could land on top of a newer update.
     """
     import kiro_crew.autonudge as _an
 
@@ -182,11 +179,8 @@ async def test_the_marker_writes_do_not_release_the_lock_mid_write(tmp_path, mon
 async def test_the_revalidation_does_not_consume_the_ticks_dedupe_identity(tmp_path, monkeypatch):
     """A poll whose answer is discarded must not be able to swallow a signal.
 
-    ``identity`` is the kernel's dedupe key -- ``poll``'s contract says it replaces the
-    cron job id in the state digest so two drivers keep independent memories. The
-    revalidation shared the tick's key while returning only a bool, so a reopened subject
-    with a fresh comment observed HERE was marked reported and the next real tick read it
-    as unchanged, losing the signal until the streak floor.
+    ``identity`` is the kernel's dedupe key. Sharing the tick's key would mark a fresh
+    comment seen here as reported, and the next real tick would read it as unchanged.
     """
     import kiro_crew.autonudge as _an
 
@@ -228,12 +222,8 @@ async def test_the_revalidation_does_not_consume_the_ticks_dedupe_identity(tmp_p
 async def test_a_changed_terminal_classification_does_not_settle(tmp_path, monkeypatch):
     """A pull request can be closed, reopened and MERGED inside one channel turn.
 
-    The revalidation added last round accepted any terminal, so the merge would have been
-    settled under the stale "blocked" marker and announced as an unmerged close -- the
-    delivered news and the persisted outcome disagreeing about the same event.
-
-    When the classification changes, the owed terminal is simply gone: the debt is dropped
-    and the watch stays alive so the next tick records the real one.
+    Settling under the stale "blocked" marker would announce the merge as an unmerged
+    close. A changed classification drops the debt and keeps the watch alive.
     """
     import kiro_crew.autonudge as _an
 
@@ -272,15 +262,10 @@ async def test_a_changed_terminal_classification_does_not_settle(tmp_path, monke
 async def test_a_settlement_revalidates_before_it_deactivates(
     tmp_path, monkeypatch, state, stays_alive
 ):
-    """The window between the terminal reading and the turn landing had no evidence.
+    """The settlement re-asks before it deactivates; only a fresh terminal reading settles.
 
-    Every earlier guard for a reopened subject runs on the NEXT TICK -- the debt
-    clearing and the forced re-observation -- and this settlement happens
-    before any tick can. A channel turn runs inline and can take minutes, which is long
-    enough for a pull request to be reopened, so the settlement re-asks.
-
-    Only a fresh terminal reading settles. Anything else keeps the watch alive, because
-    settling is the one action here that stops work silently.
+    A channel turn runs inline and can take minutes, long enough for a reopen, and the
+    other reopen guards run only on the next tick.
     """
     import kiro_crew.autonudge as _an
 
@@ -322,9 +307,7 @@ async def test_a_settlement_revalidates_before_it_deactivates(
 async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatch):
     """Absence of evidence must not retire a watch.
 
-    A failed fetch, a probe defect or a binding that does not resolve cannot CONFIRM
-    that the subject is finished, and settling on that would be the silent stop this whole
-    design resolves away from.
+    A failed fetch or probe cannot CONFIRM the subject is finished.
     """
     import kiro_crew.autonudge as _an
 
@@ -359,10 +342,8 @@ async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatc
 async def test_a_retarget_does_not_overwrite_a_future_version_monitor(tmp_path):
     """A record this gateway cannot read must not be replaced by it either.
 
-    The revival guard already refuses to touch a future-version monitor, because the
-    stored intent belongs to the newer gateway that wrote it. That guard runs AFTER the
-    message retarget, so a downgraded gateway destroyed the payload before the rule
-    protecting it ever applied. Same rule, second surface.
+    The future-version monitor belongs to the newer gateway. The revival guard runs
+    after the retarget, so the retarget needs the same rule.
     """
     from kiro_crew.monitoring.models import MONITOR_STATE_VERSION
 
@@ -395,10 +376,8 @@ async def test_a_retarget_does_not_overwrite_a_future_version_monitor(tmp_path):
 async def test_a_retarget_releases_the_floor_claim_too(tmp_path):
     """A floor claim earned by the OLD subject must not charge the new one.
 
-    The retarget released the wake claim and forgot this one, so an in-flight floor
-    delivery completing after a retarget incremented ``floor_ticks`` on a monitor that
-    had never hit a floor. It is the third time this review has found a claim released
-    in one set and forgotten in another.
+    An in-flight floor delivery landing after a retarget would charge ``floor_ticks`` on
+    a monitor that never hit a floor.
     """
 
     async def on_fire(loop):
@@ -430,13 +409,8 @@ async def test_a_retarget_releases_the_floor_claim_too(tmp_path):
 async def test_a_retarget_drops_the_labelled_judge_history(tmp_path):
     """Labels earned answering the old instruction must not judge the new one.
 
-    Every judge reset sat behind the ``judge`` field, so an update that changed only
-    the message advanced the config generation and released both subject claims while
-    the labelled history stayed. Those rows supersede the single last verdict, so the
-    next tick read a hit rate for a question nobody was asking any more -- and on a
-    changed subject, about a subject nobody was watching. The reset does not turn on
-    whether the subject changed: a reworded instruction is a changed question either
-    way, which is the same ground the criteria path resets on.
+    A message-only update resets the judge history too: a reworded instruction is a
+    changed question whether or not the subject changed.
     """
 
     service = AutoNudgeService(base_dir=tmp_path)
@@ -470,17 +444,10 @@ async def test_a_retarget_drops_the_labelled_judge_history(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatch):
-    """A rollback here would restore a debt a live observation just disproved.
+    """A failed clearing write does not restore a debt a live observation disproved.
 
-    Restoring ``terminal_pending`` when its clearing write fails keeps memory
-    and disk in agreement. That is the right instinct almost everywhere and the wrong one
-    here: the next delivered turn would settle a terminal state that does not hold and
-    silently stop a watch whose subject is alive -- the exact harm this feature's gating
-    default is designed to avoid.
-
-    The divergence is safe in one direction only, so it is allowed to stand: memory saying
-    "no debt" keeps the watch running, and a restart before the write lands brings the
-    stale debt back, where the re-observation forced for outstanding debt clears it again.
+    Restoring it would let the next turn settle a live subject. Memory saying "no debt"
+    keeps the watch running; after a restart the forced re-observation clears it again.
     """
     import kiro_crew.autonudge as _an
 
@@ -531,15 +498,10 @@ async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_cancelled_settlement_still_counts_the_delivered_turn(tmp_path, monkeypatch):
-    """A re-raise leaves by the same door an early return would.
+    """A cancelled settlement write still counts the turn that was delivered.
 
-    The settlement block carries a comment forbidding an early RETURN precisely so the
-    fire cycle's accounting still runs. But the terminal write DRAINS before propagating
-    a cancellation and then re-raises, which skipped the same code -- committing the loop
-    as finished while the turn that carried the news went uncounted.
-
-    Recording a delivery that has already happened cannot be wrong, so the accounting now
-    precedes the settlement.
+    The terminal write re-raises a cancellation, so the delivery accounting runs before
+    the settlement.
     """
 
     import kiro_crew.autonudge as _an
@@ -548,9 +510,8 @@ async def test_a_cancelled_settlement_still_counts_the_delivered_turn(tmp_path, 
         return True
 
     def _still_terminal(identity, message, probe):
-        # The settlement now revalidates before deactivating, so this test has to let
-        # that check CONFIRM the terminal -- otherwise the settlement is skipped and the
-        # cancellation this test is about never happens.
+        # The settlement revalidates before deactivating; confirm the terminal, or the
+        # settlement is skipped and the cancellation never happens.
         probe.observation = _reading("MERGED")
         return _an.irq.Verdict(_an.irq.Outcome.QUIET, "merged")
 
@@ -593,11 +554,8 @@ async def test_a_cancelled_settlement_still_counts_the_delivered_turn(tmp_path, 
 async def test_terminal_debt_is_re_observed_rather_than_spending_a_free_tick(tmp_path, monkeypatch):
     """The follow-up allowance must not jump over the reopened-subject check.
 
-    The allowance skips observation to protect work already in progress after a wake.
-    A subject carrying terminal debt is FINISHED, so there is no work to protect, and
-    the retry's correctness depends on it still being finished. Because the clearing
-    for a reopened subject lives AFTER the poll, the bypass jumped straight over it
-    and the retried delivery settles a terminal state the reopen has invalidated.
+    A subject with terminal debt has no work in progress to protect, and the clearing
+    for a reopen lives after the poll, so the debt is re-observed.
     """
     import kiro_crew.autonudge as _an
 
@@ -648,17 +606,10 @@ async def test_terminal_debt_is_re_observed_rather_than_spending_a_free_tick(tmp
 async def test_a_reopened_subject_clears_the_owed_terminal_turn(
     tmp_path, monkeypatch, outcome, expect_cleared
 ):
-    """A channel loop's terminal debt is durable, so it must be revocable.
+    """A channel loop's terminal debt is durable, so a reopened subject clears it.
 
-    Settlement is deferred for a channel loop because only a delivered turn can carry
-    the news, and the fire that would deliver it is routinely refused. If the subject
-    is REOPENED in that window, the next delivered turn would claim the stale debt and
-    deactivate a watch whose subject is live again. Nothing cleared the marker: it was
-    written once and read at settlement.
-
-    Only a TRUSTWORTHY observation clears it. A FALLBACK means the subject was not
-    observed at all, and letting an unobserved tick erase real debt would lose the
-    terminal news permanently -- the opposite of "failure resolves toward spending".
+    Otherwise the next delivered turn would deactivate a live watch. A FALLBACK means
+    nothing was observed, so it keeps the debt rather than lose the terminal news.
     """
     import kiro_crew.autonudge as _an
 
@@ -699,13 +650,9 @@ async def test_a_reopened_subject_clears_the_owed_terminal_turn(
 
 @pytest.mark.asyncio
 async def test_a_failed_retarget_write_hands_the_wake_claim_back(tmp_path, monkeypatch):
-    """The rollback has to restore everything the retarget took, not just the fields.
+    """A failed retarget write hands back the wake claim the retarget dropped.
 
-    Replacing the monitor drops the loop's pending wake claim, because a claim earned
-    by the OLD subject must not be spent on the new one. If the write then FAILS the
-    retarget did not happen -- so the claim belongs to the loop again, and leaving it
-    discarded costs the delivered wake its accounting and its follow-up turn. Same
-    incomplete-restore shape as the terminal transition's missing field.
+    The retarget did not happen, so the claim belongs to the loop again.
     """
 
     async def on_fire(loop):
@@ -752,10 +699,8 @@ async def test_a_retarget_during_lock_acquisition_does_not_crash_the_settlement(
 ):
     """Waiting for the lock is an await, so the monitor can vanish in that gap.
 
-    An instruction edited to name no subject clears ``loop.monitor``. Dereferencing
-    it afterwards raises out of the fire cycle, which leaves the retargeted loop
-    ACTIVE with no timer -- a watch that never ticks again. The earlier re-read
-    checked the debt and the registration but not the object itself.
+    An instruction edited to name no subject clears ``loop.monitor``; dereferencing it
+    would raise and leave the loop ACTIVE with no timer.
     """
     import kiro_crew.autonudge as _an
 
@@ -801,13 +746,10 @@ async def test_a_retarget_during_lock_acquisition_does_not_crash_the_settlement(
 
 @pytest.mark.asyncio
 async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path, monkeypatch):
-    """Announce only what the record holds -- at this site too.
+    """Announce only what the record holds: persist the settlement before the emit.
 
-    The gate's own settlement already persisted before announcing. This one was added
-    two rounds later and did not inherit the rule: the delivered path reaches a write
-    further down, but AFTER the emit, so a failed write left memory reporting a finish
-    while the record still said active-and-owed, and the restart delivered the final
-    turn twice.
+    A failed write after the emit would report a finish the record lacks, and a restart
+    would deliver the final turn twice.
     """
     import kiro_crew.autonudge as _an
 
@@ -838,11 +780,8 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
 
     async def _fail_the_settlement_write(payload=None, **kwargs):
         nonlocal settlement_write_failed
-        # Three writes use this writer in this flow -- the gate's in-flight marker,
-        # the channel's terminal marker, and the settlement -- so the settlement is
-        # isolated by the one state only IT has: its staged row deactivates the
-        # loop. Counting calls, or testing terminal_delivered, both catch a marker
-        # write instead, which then rolls itself back and the settlement never runs.
+        # Two marker writes share this writer, so pick the settlement by the state only
+        # it has: its staged row deactivates the loop. Counting calls hits a marker.
         if _writes_the_settlement(payload, loop.id):
             settlement_write_failed = True
             raise OSError("disk full")
@@ -926,11 +865,8 @@ async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
 ):
     """The expiry notification only reaches the dashboard bell.
 
-    A loop armed in a Slack thread or a Discord DM would otherwise finish with
-    nothing said where its user is actually watching -- and monitor_start advertises
-    those surfaces as first-class. Returning False for a channel key delivers one
-    final turn so the agent reports into the thread; a dashboard loop already got the
-    bell and does not need to pay for a turn.
+    So a channel loop gets one final turn to report into its thread, and a dashboard
+    loop does not pay for one.
     """
     import kiro_crew.autonudge as _an
 
@@ -962,12 +898,9 @@ async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
             assert loop.monitor.outcome is not None
             assert loop.monitor.terminal_pending == ""
         else:
-            # Channel: the news rides a delivered TURN, so the loop must stay LIVE
-            # until that turn lands. An earlier version of this test asserted
-            # active is False here; committing the settlement first is exactly what
-            # loses the message when the thread is busy, because an inactive loop
-            # has nothing to re-arm. No outcome yet either, so a restart in this
-            # window finds a plain live loop rather than one refused revival.
+            # Channel: the news rides a delivered TURN, so the loop stays LIVE until it
+            # lands; an inactive loop has nothing to re-arm when the thread is busy.
+            # No outcome yet, so a restart here finds a plain live loop.
             assert loop.active is True
             assert loop.monitor.outcome is None
             assert loop.monitor.terminal_pending == "success"
@@ -979,11 +912,8 @@ async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
 async def test_the_terminal_settlement_is_serialized_against_update(tmp_path, monkeypatch):
     """A retarget must not land a new subject onto a just-deactivated loop.
 
-    ``update`` takes the MAINTENANCE lock and awaits inside it, so without holding
-    that same lock the settlement could deactivate the old subject in the middle of
-    a retarget -- leaving the new subject bound to an inactive loop, a watch that
-    never ticks. ``_lock`` alone would not close this: it is not the lock ``update``
-    contends for.
+    The settlement takes the MAINTENANCE lock ``update`` holds; ``_lock`` alone is not
+    the lock ``update`` contends for.
     """
     import kiro_crew.autonudge as _an
 
@@ -1119,11 +1049,8 @@ async def test_a_retarget_does_not_hand_the_old_wake_to_the_new_subject(tmp_path
 async def test_a_failed_terminal_write_keeps_the_watch_alive(tmp_path, monkeypatch):
     """A write failure must not take the timer down with the loop still active.
 
-    The gate is awaited from ``_timer`` with no guard around it, so an exception
-    escaping here kills the timer task while the record still says the loop is
-    running: a dead watch that looks exactly like a calm one. The marks are undone
-    and the tick fires instead, so the user gets a turn and the next observation
-    can try again.
+    ``_timer`` awaits the gate unguarded, so an escape would leave a dead watch that
+    looks calm. The marks are undone and the tick fires instead.
     """
     import kiro_crew.autonudge as _an
 
@@ -1157,10 +1084,8 @@ async def test_a_failed_terminal_write_keeps_the_watch_alive(tmp_path, monkeypat
         assert loop.monitor is not None
         assert loop.monitor.outcome is None, "an uncommitted finish must not be recorded"
         assert loop.monitor.stopped_reason in (None, "")
-        # The LOOP's reason, not just the monitor's. A live loop left tagged as
-        # terminated is worse than a lost mark: the fallback delivery that follows
-        # would persist it, so the record would claim the watch had finished while
-        # it was still running.
+        # The LOOP's reason too: the fallback delivery would persist a terminal tag on a
+        # watch that is still running.
         assert loop.stopped_reason in (None, ""), "the loop must not stay tagged terminal"
     finally:
         service.stop()
@@ -1212,18 +1137,9 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
 ):
     """The finish must reach the user, not be lost to a self-cancel.
 
-    ``update`` runs its mutation as a separate shielded task, so its cancel does
-    not see this timer as the current task and cancels it -- and the gate runs in
-    that timer, outside the firing window that would have deferred the cancel. So
-    anything sequenced AFTER the await can be dropped, and that is the
-    notification.
-
-    The notification is emitted only after the settlement is durable, and the
-    tick makes two fsync'd store writes before it gets there (the in-flight
-    marker, then the settlement). On a shared Windows runner each of those can
-    take hundreds of milliseconds, the rename retry alone allowing ~0.45s, so a
-    fixed wall-clock wait reads a slow disk as a lost notification. The
-    ``slow-disk`` case pins that: it holds every write for ``write_secs``.
+    ``update`` cancels this timer from a separate shielded task, so the notification
+    after the await can be dropped. It follows two fsync'd writes, slow on Windows
+    runners; ``slow-disk`` holds each write so a fixed wait would misread it.
     """
     import kiro_crew.autonudge as _an
 
@@ -1271,10 +1187,7 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
         # direct call registers no timer and cannot see it.
         service._arm_timer(loop, delay=0)
         timer = service._timers[loop.id]
-        # Wait for the timer task itself to end, not for a fixed time. A
-        # self-cancel ends it at once with nothing emitted, so the assertion
-        # below still fails fast on the defect; a slow disk only delays it.
-        # The timeout is a hang guard, never the expected path.
+        # Wait for the timer task to end, not a fixed time; the timeout is a hang guard.
         await asyncio.wait({timer}, timeout=30)
         assert timer.done(), "the terminal tick must finish, not hang"
         assert "expired" in events, "the user must be told the watch finished"

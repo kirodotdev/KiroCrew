@@ -290,9 +290,10 @@ some future class genuinely must end a turn from out of band, it routes through
 the same stop-reason seam and therefore the same budget check — never a direct
 `queue_insert`.
 
-**Hold the existing non-lethality bar.** Every in-band probe is designed so a
-wrong verdict costs a regeneration and never a session: a stale probe's cancel
-ack is reclassified to `STOP_REASON_STALE_RECOVER` precisely so an oracle
+**Hold the existing session non-lethality bar.** Every in-band probe is designed so a
+wrong verdict costs a regeneration, plus the stalled command's own process tree
+when the tool-stall path can attribute one, and never a session: a stale probe's
+cancel ack is reclassified to `STOP_REASON_STALE_RECOVER` precisely so an oracle
 mistake cannot surface as a silent user cancellation. Out of band must match
 that. A wrong unblock costs one auto-declined tool approval, which the user can
 retry. Killing a healthy long turn is not an acceptable failure mode, which is

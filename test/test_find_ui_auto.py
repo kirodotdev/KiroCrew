@@ -325,7 +325,7 @@ def built(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     ``--out`` keeps the committed index untouched (its freshness is
     ``gen:ui --check``'s job). Needs node and ``website/node_modules``: without
     them it skips, except where ``KIROCREW_UI_GENERATOR_REQUIRED`` is set (the
-    CI frontend-lint job, which has both), where a skip would hide a broken
+    CI frontend-ratchets job, which has both), where a skip would hide a broken
     toolchain and so fails instead.
     """
     node = shutil.which("node")

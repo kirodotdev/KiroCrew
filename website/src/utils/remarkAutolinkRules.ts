@@ -13,7 +13,7 @@
  */
 import { autolinkHref, getAutolinkRules, configScanBudgetExhausted, drainConfigScanBudget } from './autolinkRules'
 
-type MdNode = {
+export type MdNode = {
   type: string
   value?: string
   url?: string
@@ -21,7 +21,7 @@ type MdNode = {
 }
 
 /** Types whose descendants are never prose, so the walk stops at them. */
-const OPAQUE = new Set([
+export const OPAQUE = new Set([
   'code',
   'inlineCode',
   'math',
@@ -47,7 +47,7 @@ type TagKind = 'open' | 'close' | undefined
  * Classify a raw inline HTML node. remark has already tokenized the tag, so
  * this reads the node's own value rather than re-scanning prose for `<`.
  */
-function tagKind(value: string): TagKind {
+export function tagKind(value: string): TagKind {
   const m = /^<(\/?)([a-zA-Z][\w:-]*)/.exec(value)
   if (!m) return undefined
   if (m[1]) return 'close'

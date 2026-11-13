@@ -7,6 +7,7 @@ import AskAgentButton from './AskAgentButton'
 import { buildCronRunReport, isFailedRunStatus } from '../utils/cronRunReport.prompt'
 import { api } from '../api/client'
 import { errMessage } from '../utils/thunkError'
+import { isRunPartlyBlocked } from '../utils/cronPartlyBlocked'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
@@ -17,6 +18,7 @@ export interface LogEntryData {
   duration_ms?: number | null
   trigger: 'scheduled' | 'manual'
   summary?: string
+  error?: string
 }
 
 function fmtDuration(ms?: number | null) {
@@ -40,6 +42,7 @@ export default function LogEntry({ entry, jobId, jobName }: { entry: LogEntryDat
   })
 
   const statusBadge = entry.status === 'success' ? <Badge variant="ok">{i18nT('components.logEntry.ok')}</Badge>
+    : isRunPartlyBlocked(entry) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${entry.error}`}>{i18nT('pages.schedulePage.partial')}</Badge>
     : entry.status === 'failure' ? <Badge variant="err">{i18nT('components.logEntry.error')}</Badge>
     : entry.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.logEntry.cancelled')}</Badge>
     : <Badge variant="warn">{i18nT('components.logEntry.timeout')}</Badge>
@@ -54,9 +57,10 @@ export default function LogEntry({ entry, jobId, jobName }: { entry: LogEntryDat
     <div className="border-b border-border last:border-b-0">
       <button
         onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
         className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-bg-hover transition-colors cursor-pointer bg-transparent border-none"
       >
-        <ChevronRight size={14} className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight size={14} aria-hidden="true" className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
         {statusBadge}
         <span className="text-[12px] text-muted shrink-0">{fmtDateTimeNumeric(entry.started_at)}</span>
         <span className="text-[12px] text-muted shrink-0">{fmtDuration(entry.duration_ms)}</span>

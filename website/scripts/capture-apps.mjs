@@ -13,8 +13,8 @@
  *   discover.png           spotlight + feature duo + category rail + rows
  *   discover-category.png  category-filtered view (editorial layer collapses)
  *   sources.png            Sources popover (registries + install from path)
- *   library.png            Library launchpad grid (pin badges + updates hint row)
- *   library-hover.png      a pinned tile hovered so its action bar is visible
+ *   library.png            Library launchpad grid (sections + updates hint row)
+ *   library-hover.png      a pinned tile hovered with its overflow menu open
  *   updates.png            Discover Updates sub-tab with a pending update row
  *   updates-empty.png      Updates sub-tab everything-up-to-date state
  *
@@ -123,10 +123,10 @@ const installedApps = [
     },
   }),
   // One UNPINNED tile (its nav id is seeded into mc-app-nav-hidden below) so
-  // the Library shot proves the hollow-plus badge + "Not in sidebar" caption.
+  // the Library shot proves the "Not in sidebar" caption.
   I('oncall-radar', 'Oncall Radar', 'registry', { manifest: { ...I('oncall-radar', 'Oncall Radar', 'registry').manifest, ui: { pages: [{ route: '/oncall', label: 'Oncall', icon: 'Bell' }] } } }),
-  // One DISABLED tile so the shot proves the greyscale dimming, the
-  // "Disabled" caption, and the suppressed pin badge.
+  // One DISABLED tile so the shot proves the Disabled section, the greyscale
+  // dimming and the Enable button.
   I('issue-radar', 'Issue Radar', 'registry', { enabled: false, manifest: { ...I('issue-radar', 'Issue Radar', 'registry').manifest, ui: { pages: [{ route: '/issues', label: 'Issues', icon: 'Radar' }] } } }),
 ]
 
@@ -223,15 +223,13 @@ await page.goto(`http://127.0.0.1:${PORT}/apps/library`, { waitUntil: 'domconten
 await settle(1400)
 await page.screenshot({ path: `${OUT}/library.png` })
 
-// ---- Library hover: a real pointer hover over a PINNED tile reveals its
-// in-flow action row (Open + the overflow menu). Research Lab is a pinnable
-// builtin with a UI page, so its pin badge renders filled on the icon corner.
-// Open the overflow menu too so the shot documents the full verb set
-// (Details / Unpin / Disable / Uninstall) behind the two-button row.
+// ---- Library hover: a real pointer hover over a PINNED tile shows its hover
+// background. Research Lab is a pinnable builtin with a UI page, so its
+// caption reads "In sidebar". Open the overflow menu too so the shot documents
+// the full verb set (Details / Unpin / Disable / Uninstall).
 const hoverTile = page.getByTestId('launchpad-tile-auto-research')
 await hoverTile.hover()
-await hoverTile.getByRole('toolbar').getByRole('button', { name: /Open/ }).waitFor({ state: 'visible' })
-await page.waitForTimeout(400) // opacity transition
+await page.waitForTimeout(400) // hover background transition
 await hoverTile.getByRole('toolbar').getByRole('button', { name: /More actions/ }).click()
 await page.getByRole('menuitem', { name: /Details/ }).waitFor({ state: 'visible' })
 await page.waitForTimeout(250) // menu open transition

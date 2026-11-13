@@ -21,10 +21,9 @@ GATEWAY = "gateway"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_crew_log_projection*.py modules calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, _floor_monkeypatch):
     """Every test writes into its own data home, never the live one."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     yield
 
 
@@ -80,23 +79,11 @@ def _tool(
 
 # --- writing a fixture that has to be LONG --------------------------------- #
 #
-# A bound in the projection tests is a bound on retained state, so reaching one costs as
-# many entries as the bound itself, and the largest fixture they build runs past 2048
-# entries. One ``append`` per entry is one cross-process lock,
-# one tail scan and one ``os.fsync`` EACH, which measures 76-90 ms per entry on
-# the Windows CI runner: that puts a 2049-entry fixture at 156-185 s against a
-# 180 s per-test cap. A breach there does not fail one test. Windows has no
-# SIGALRM, so pytest-timeout falls back to the thread method and terminates the
-# whole xdist worker, and the shard runs ``--max-worker-restart=0`` deliberately,
-# so one fixture can fail a shard of 1600 tests in a file its author never opened.
-#
-# So a fixture past a few hundred entries is written with ``append_many``, the
-# production group write: the same validation, the same consecutive seqs, the same
-# file, one fsync per group. A group shares one ``time`` -- which is what a
-# production group write does as well -- and no bound they pin is a bound on wall
-# clock. ``test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes`` (in
-# ``test_crew_log_projection_bounds.py``) pins that equivalence, so this stays a
-# change in what the fixture COSTS.
+# Fixtures run past 2048 entries. One ``append`` costs a lock, a tail scan and an
+# ``os.fsync`` (76-90 ms on Windows CI), which nears the 180 s cap; on Windows a timeout
+# kills the whole xdist worker and fails the shard. So long fixtures use ``append_many``,
+# one fsync per group. ``test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes``
+# (in ``test_crew_log_projection_bounds.py``) pins that the result is the same log.
 
 _GROUP_ENTRIES = 512
 

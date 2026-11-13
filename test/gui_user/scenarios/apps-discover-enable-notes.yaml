@@ -2,9 +2,9 @@
 # runs in the Library, not Discover: Discover lists published catalog rows and
 # the registry fetch fails closed on the target, so nothing there is guaranteed.
 # The Library lists what is on the machine, including the default-off builtins
-# the wheel ships, behind a "Show N disabled apps" toggle. "Notes" is such a
-# builtin, needs nothing external and skips the third-party trust prompt, so its
-# tile reads "Disabled" and its overflow menu offers "Enable".
+# the wheel ships, in a "Disabled" section below the enabled apps. "Notes" is
+# such a builtin, needs nothing external and skips the third-party trust
+# prompt, so its tile shows an "Enable" button.
 name: apps-discover-enable-notes
 tier: smoke
 feature: apps
@@ -13,20 +13,19 @@ user_story: >-
   from its tile, so that the app appears in my dashboard without installing
   anything.
 docs_url: docs/system-specs/modules/app-kit-platform.md
-summary: Open the Library, reveal disabled apps and enable the Notes builtin from its tile
+summary: Open the Library, find Notes in the Disabled section and enable it from its tile
 preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /apps/library
 steps:
   - You are on the Apps page, on its "Library" tab (heading "Library"). If a notice says the store or registry could not be reached, ignore it.
-  - If the page says "No enabled apps" or you cannot see a tile named "Notes", click the small toggle that reads "Show N disabled apps" (N is a number, e.g. "Show 12 disabled apps"). The grid of app tiles now includes the disabled ones; its label changes to "Show enabled only".
-  - Find the tile named "Notes" (a grid tile with an icon and the name "Notes"; its caption reads "Disabled" if it is still off, or a sidebar state such as "In sidebar" if an earlier attempt already enabled it).
-  - Make sure the Notes app ends up enabled. If its caption still reads "Disabled", hover the tile, click its "More actions for Notes" button (a small "..." at the tile's corner) and click "Enable" in the menu that opens. If the caption already shows a sidebar state (it is enabled from an earlier attempt), leave it as it is and do not click "Disable".
+  - Find the tile named "Notes" (a grid tile with an icon and the name "Notes"). If it is still off it sits under the "Disabled" heading, below the enabled apps, with an "Enable" button under its name; if an earlier attempt already enabled it, it sits among the enabled apps with a sidebar caption such as "In sidebar". Scroll down if you do not see it.
+  - Make sure the Notes app ends up enabled. If its tile shows an "Enable" button, click it. If the tile already shows a sidebar caption (it is enabled from an earlier attempt), leave it as it is and do not click "Disable".
   - Wait two seconds for the tile to update.
 expectations:
-  - The "Notes" tile's caption no longer reads "Disabled"; it reads "In sidebar", "Not in sidebar" or "No sidebar page".
+  - The "Notes" tile shows no "Enable" button; its caption reads "In sidebar", "Not in sidebar" or "No sidebar page".
   - No red error message about failing to enable the app is visible.
-  - The "Notes" tile is still in the grid (enabling it may move it among the enabled apps; it is not removed).
+  - The "Notes" tile is listed among the enabled apps, not under the "Disabled" heading.
 max_steps: 14
 max_seconds: 300

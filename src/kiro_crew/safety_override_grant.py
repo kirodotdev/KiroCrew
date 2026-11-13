@@ -81,6 +81,8 @@ class SafetyOverride:
     # in config (``dangerouslySkipPermissions``), as opposed to one toggled ad hoc
     # mid-session. A declared grant does not expire — see ``activate_declared``.
     _DECLARED_SOURCE: str = "config"
+    # ``gateway --approval yolo``'s grant: dashboard chats only (``is_cli_launch``).
+    _CLI_SOURCE: str = "cli"
 
     # Class-level default lock for instances created via object.__new__() (e.g. tests).
     # Each real instance gets its own lock in __init__; this is just a safe fallback.
@@ -326,6 +328,17 @@ class SafetyOverride:
         the governance ceiling refused to make permanent is timed.
         """
         return bool(self._active) and self._source == self._DECLARED_SOURCE
+
+    @property
+    def is_cli_launch(self) -> bool:
+        """True when the grant (live, or lapsed but still renewable) is ``gateway --approval yolo``'s.
+
+        It is for dashboard chats only. Slack and channel-linked dashboard turns
+        ignore it, so they ask exactly as they did before the flag armed a grant;
+        every other channel already auto-approves under the flag itself. A
+        ``deactivate`` zeroes ``_expires_at``, so an ended grant is not one.
+        """
+        return self._source == self._CLI_SOURCE and (bool(self._active) or self._expires_at > 0)
 
     # ── Public API ───────────────────────────────────────────────────────────
 

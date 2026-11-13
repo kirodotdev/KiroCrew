@@ -98,13 +98,14 @@ export default function CrewmateLiveActivity({
               child margins, which is the wrapper, so the paragraph keeps its
               `my-1`, as a real reply's does. One invisible zero-width character
               gives the paragraph its line; the dots sit on that line. */}
+          {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
           <div
             className={`message-bubble mc-message-font-scope msg-content leading-relaxed ${crewmateBubbleClass('single')}`}
             style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}
           >
             <div className="group">
               <div>
-                <p className="my-1 leading-6 flex items-center text-muted">
+                <p className="my-0 leading-normal flex items-center text-muted">
                   <span className="invisible w-0">{'\u200B'}</span>
                   <TypingDots />
                 </p>

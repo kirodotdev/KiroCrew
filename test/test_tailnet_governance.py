@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import governance_capability_checks
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -70,17 +71,8 @@ def _install_policy(monkeypatch, doc: dict | None) -> None:
 # ── The catalog row ───────────────────────────────────────────────────────
 
 
-class TestScopeCatalog:
+class TestScopeCatalog(governance_capability_checks.RowIsRegisteredAsADefaultOnCapability):
     """Adding the scope must be a DATA change: one row, nothing else."""
-
-    def test_row_is_registered_as_a_default_on_capability(self) -> None:
-        from kiro_crew.platform.governance import CAPABILITY, SCOPE_CATALOG
-
-        spec = SCOPE_CATALOG[_SCOPE]
-        assert spec.kind == CAPABILITY
-        # Default True or a policy that governs some OTHER capabilities.* row
-        # would silently forbid a feature it never mentioned.
-        assert spec.capability_default is True
 
     def test_a_policy_can_actually_express_the_pin(self) -> None:
         """The loader parses the row without a matcher/scale registry entry."""

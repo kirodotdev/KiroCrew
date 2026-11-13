@@ -77,6 +77,7 @@ def sessions_fixture():
     sm.stop_turn = AsyncMock(return_value="soft")
     sm.try_acquire = AsyncMock(return_value=False)
     sm.has_session = MagicMock(return_value=False)
+    sm.is_retiring = MagicMock(return_value=False)
     sm.set_slack_link = MagicMock()
     sm.set_approval_policy = MagicMock()
     sm._session_map = None

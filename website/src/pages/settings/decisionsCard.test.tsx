@@ -137,6 +137,30 @@ describe('Decisions (Jev) preview card', () => {
     })
   })
 
+  it.each([false, true])('marks SageMaker in use only with effective consent: permits=%s', async permits => {
+    const endpoint = 'sagemaker://us-west-2/decision-model'
+    stubGateway(consentOf(true, {
+      endpoint: permits ? endpoint : ENDPOINT,
+      configured_endpoint: endpoint,
+      permits,
+      points: pointsOf(permits),
+    }))
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'sagemaker', loopback: false, configured_endpoint: endpoint,
+      sagemaker_available: true,
+      sagemaker: { endpoint_name: 'decision-model', region: 'us-west-2', profile: '' },
+    })
+    renderSection()
+    // The picker is behind the lazy DecisionsProviderPicker boundary.
+    const option = await screen.findByRole('radio', { name: /SageMaker/ }, { timeout: 5000 })
+    await waitFor(() => {
+      expect(option).toBeChecked()
+      expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
+      expect(option.closest('label')?.textContent?.includes('In use')).toBe(permits)
+    })
+  })
+
   it('stays closed to input until the write is reflected in a fresh read', async () => {
     // The window this closes: react-query holds a mutation pending only while
     // `onSettled` has an unresolved promise outstanding. Started-but-not-returned,
@@ -217,7 +241,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
-    expect(screen.getByText(/the built-in rule decides instead/i)).toBeInTheDocument()
+    expect(screen.getByTitle(/the built-in rule decides instead/i)).toBeInTheDocument()
   })
 
   it('holds the switch and says why while no decision model is chosen', async () => {
@@ -233,6 +257,97 @@ describe('Decisions (Jev) preview card', () => {
     expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
     expect(screen.queryByText(/^Sent to/)).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('names a refused hosted default and holds the switch while no consent is recorded', async () => {
+    // The gateway reports `active: "none"` for the hosted default a ceiling refuses,
+    // while `configured_endpoint` still names the hosted address. The card must not
+    // present that address as where messages go, and an enabling write would be a 403.
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'https://api.example/v1/systemone', hosted_permitted: false,
+    } as never)
+    const enable = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue({ enabled: true } as never)
+    renderSection()
+    // The refusal text is behind the lazy DecisionsProviderPicker boundary.
+    await waitFor(() => {
+      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/No decision model is chosen/)).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('https://api.example/v1/systemone')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(decisionsSwitch())
+    expect(enable).not.toHaveBeenCalled()
+  })
+
+  it('reads a SageMaker address the ceiling refuses as no model and names no destination', async () => {
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'sagemaker://decision-model-a?region=us-west-2',
+      hosted_permitted: true, sagemaker_permitted: false, configured_refused: true,
+      sagemaker_available: true,
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('reads a SageMaker address as no model when its own region is refused though another region is permitted', async () => {
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'sagemaker://decision-model-a?region=us-west-2',
+      hosted_permitted: true, sagemaker_permitted: true, configured_refused: true,
+      sagemaker_available: true,
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('shows a recorded consent as on under a refused default and lets it be withdrawn', async () => {
+    // A surface-bound profile can refuse the hosted host on the dashboard while another
+    // surface still sends under the recorded consent: the switch reports the record,
+    // not the dashboard's refusal, and stays revocable.
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'https://api.example/v1/systemone', hosted_permitted: false,
+    } as never)
+    const revoke = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue({ enabled: false } as never)
+    renderSection()
+    // The refusal text is behind the lazy DecisionsProviderPicker boundary.
+    await waitFor(() => {
+      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
+    expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+    fireEvent.click(decisionsSwitch())
+    await waitFor(() => {
+      expect(revoke.mock.calls[0][0]).toBe(false)
+    })
   })
 
   it('keeps a standing consent revocable after switching to no model', async () => {
@@ -304,6 +419,7 @@ describe('Decisions (Jev) preview card', () => {
       expect.stringContaining('Which tool calls a compaction would keep'),
       expect.stringContaining('Which recalled memories reach the prompt'),
       expect.stringContaining('Quiet check-ins: wake or skip'),
+      expect.stringContaining('Browser steps: pick and check'),
     ])
     expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
   })
@@ -437,8 +553,8 @@ describe('Decisions (Jev) preview card', () => {
 
     // End and Home are the ends of the PROJECTED list, whatever the gateway sent.
     fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'End' })
-    await waitFor(() => expect(panel()).toContain('nudge.wake'))
-    fireEvent.keyDown(pointRow('Quiet check-ins: wake or skip'), {
+    await waitFor(() => expect(panel()).toContain('browser.step'))
+    fireEvent.keyDown(pointRow('Browser steps: pick and check'), {
       key: 'Home',
     })
     await waitFor(() => expect(panel()).toContain('skills.select'))
@@ -731,6 +847,24 @@ describe('Decisions (Jev) preview card', () => {
       })
     }
 
+    it('withholds ceiling edits until consent permits the configured endpoint', async () => {
+      const ceiling = vi.spyOn(api, 'saveDecisionsHistoryBudget')
+      stubGateway(consentOf(true, {
+        configured_endpoint: 'sagemaker://us-west-2/decision-model',
+        permits: false,
+        points: pointsOf(false),
+      }))
+      await openShared()
+      await waitFor(() => {
+        expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
+        expect(decisionsSwitch()).not.toHaveAttribute('aria-disabled', 'true')
+      })
+      expect(budgetBox()).toBeDisabled()
+      fireEvent.change(budgetBox(), { target: { value: '4000' } })
+      fireEvent.blur(budgetBox())
+      expect(ceiling).not.toHaveBeenCalled()
+    })
+
     it('writes the KEYSTONE ceiling, never the config path', async () => {
       // The config value is what the seam asks for and an agent may raise it; the
       // ceiling that clamps it is on the keystone, behind the owner-only route.
@@ -927,6 +1061,22 @@ describe('Decisions (Jev) preview card', () => {
         expect(screen.queryByText(/cannot be undone/i)).toBeNull()
       })
       expect(del).not.toHaveBeenCalled()
+    })
+
+    it('moves focus to Keep it on arm, and back to Remove key on Keep it', async () => {
+      // Arming unmounts the focused Remove key and Keep it unmounts itself, so
+      // each step would drop keyboard focus to the page. Keep it is the safe
+      // choice, so a held Enter cannot land on Delete key.
+      stubSetKey()
+      const remove = await openShared()
+      remove.focus()
+      fireEvent.click(remove)
+      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }))
+      await waitFor(() => expect(keep).toHaveFocus())
+      fireEvent.click(keep)
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Remove key' })).toHaveFocus()
+      })
     })
 
     it('deletes only from the confirm control', async () => {

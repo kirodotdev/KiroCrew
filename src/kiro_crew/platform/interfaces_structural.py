@@ -86,8 +86,9 @@ class AppRegistryPolicy(Protocol):
 class AppsLoader(Protocol):
     """Discovery of bundled (builtin) apps + manifest sources.
 
-    Public default = the open-source ``apps/builtins/`` set (``auto_research``,
-    ``file_explorer``).  The companion bundles the internal feature apps.
+    Public default = the open-source ``apps/builtins/`` set, found by scanning that
+    directory, so it declares no names.  The companion bundles the internal feature
+    apps.
     """
 
     def bundled_app_names(self) -> List[str]: ...

@@ -1,16 +1,10 @@
 """Switch-free session identity: the token on the element, and the resolver.
 
-:mod:`kiro_crew.session_token_sig` proves the mapping is trustworthy; these tests
-prove it is WIRED — that the token reaches a control-plane MCP element, that the
-resolvers prefer it over an env key a warm-pool rekey has made stale, and that
-nothing about the wiring depends on ``stub_servers``, on gatewayd or on a config
-switch.
+These prove the token is WIRED: it reaches a control-plane MCP element, and resolvers
+prefer it over an env key a warm-pool rekey made stale, with no config switch.
 
-The precedence test is the load-bearing one. Both sources are present in the
-failure this exists to fix (a recycled process whose children were spawned for the
-previous session), and the ONLY thing that makes the resolution correct is reading
-the file first — so a test that asserted the token works with no env key set would
-pass on the broken ordering too.
+The precedence test sets BOTH sources, as a recycled process has; a test with no env key
+would pass on the wrong ordering too.
 """
 
 from __future__ import annotations
@@ -76,12 +70,8 @@ def _path_for(cfg, token: str):
 def cfg(tmp_path, monkeypatch):
     """Isolated mapping dir + trust root, with the resolver's OTHER sources off.
 
-    ``current_caller`` is the source the resolvers consult ABOVE the token.
-    It is pinned to "absent"
-    so these tests measure the token-vs-env decision rather than whichever of
-    them the host process happens to satisfy — a real gateway-injected caller
-    context outranking the token is correct behaviour and is covered by the
-    existing strict-resolver tests.
+    ``current_caller`` outranks the token, so it is pinned "absent" to measure only the
+    token-vs-env decision; its precedence is covered by the strict-resolver tests.
     """
     key_path = tmp_path / "sel_hmac.key"
     key_path.write_bytes(b"\x02" * 32)
@@ -286,12 +276,8 @@ class TestElementCarriage:
     def test_a_warm_pool_child_is_spawned_WITH_the_token_and_no_key(self):
         """THE pooled case, and the reason the two values are not symmetric.
 
-        A warm-pool client is spawned with no session key — that is what makes it
-        poolable — and a child's env is fixed at spawn. Withholding the token there
-        would strip it from exactly the children whose identity has to survive a
-        ``rekey()``, and nothing could add it back afterwards. The token is minted in
-        ``__init__`` and its mapping is published once the key is known, so a child
-        holding a token and no key still resolves.
+        A child's env is fixed at spawn, so a pooled (keyless) client must still pass the
+        token, minted in ``__init__``; its mapping is published once the key is known.
         """
         from kiro_crew.acp.client import AcpClient
 
@@ -651,12 +637,8 @@ def test_native_settings_sources_repeated_permissive_reads_do_not_hide_a_restric
 ):
     """Two passes that read the same permissive value are not a coherent snapshot.
 
-    During each of the first two reads a permissive copy is swapped in and the
-    restrictive file swapped back straight after, so both passes see identical
-    permissive values while the file on disk restricts ``kirocrew-core``.
-    Comparing values would accept that pair; each swap moves the file's identity,
-    so both passes are voided and the third, undisturbed pass returns the
-    restriction.
+    The first two reads each see a swapped-in permissive copy. Comparing values would accept
+    them; each swap moves the file's identity, so the third pass returns the restriction.
     """
     permissive = json.dumps({"mcpServers": {}}).encode("utf-8")
     saved = {}
@@ -790,16 +772,11 @@ def test_native_settings_sources_refuses_when_no_identity_can_be_taken(tmp_path,
 def test_kiro_identity_projection_repairs_a_stale_reserved_name_command(
     tmp_path, monkeypatch, declared, where
 ):
-    """Toolbox-shim report: a reserved name launches the MANAGED invocation, whatever the
-    spec (or a settings override of the same name) spelled.
+    """A reserved name launches the MANAGED invocation, whatever the spec spelled.
 
-    Skipping the entry, as before, left a session that granted ``@kirocrew-core``
-    with a server that mounted from the spec, carried no identity, and refused
-    every call ``identity_unattested``. Repairing it is also the safe direction:
-    the third-party command under a reserved name never runs -- ours does -- so a
-    squatter gets no token for its own binary. Everything the spec restricts
-    (mute, ``disabledTools``, the grant itself) is still honoured by the
-    parametrized test above; only the invocation is re-derived."""
+    Skipping the entry would mount a server with no identity that refuses every call
+    ``identity_unattested``. A squatter's command never runs, so it gets no token; spec
+    restrictions still apply (parametrized test above)."""
     from kiro_crew.acp import session_mcp
 
     managed = {"command": "test-crew", "args": ["mcp"]}
@@ -1075,14 +1052,9 @@ def test_kiro_identity_projection_accepts_utf8_bom_in_global_settings(tmp_path, 
 def test_the_control_plane_element_env_matches_the_spec_writing_consumer(tmp_path, monkeypatch):
     """The projected element's env is the one the disk path writes, and then the token.
 
-    ``kiro_control_plane_servers`` re-declares Crew's OWN managed servers, and a
-    session-injected element outranks the spec's same-named entry at launch -- so
-    this ``env`` is the whole environment that shim receives, on the one element
-    that also carries this session's identity token. It is held to
-    ``agent._enforce_managed_mcp_ownership``'s result for the same input: EQUAL, not
-    merely safe. Equality is what makes this refuse both directions -- a
-    launcher-exec or home-deriving name reaching the element, and an ordinary user
-    variable dropped here while the disk path keeps it.
+    This element outranks the spec at launch, so its ``env`` is the shim's whole
+    environment. It must EQUAL ``agent._enforce_managed_mcp_ownership``'s result, which
+    catches both an unsafe name added and a user variable dropped.
     """
     from kiro_crew import agent as agent_mod
     from kiro_crew.acp import session_mcp
@@ -1169,13 +1141,9 @@ class TestSweep:
 class TestSettingsReadRaceKeepsIdentity:
     """A transiently refused settings read must not cost a kiro session its identity.
 
-    The gated read of ``~/.kiro/settings/mcp.json`` fails transiently in two ways:
-    another tool renames a new file over the one we opened (the descriptor check
-    then names the unlinked inode), and the sensitive-path resolver pool misses its
-    budget under load and refuses fail-closed. Without a retry, either one makes
-    ``kiro_control_plane_servers`` return ``[]``. kiro-cli then mounts Crew's
-    servers from the spec with no session token, and every Crew tool call is
-    refused ``identity_unattested`` for the life of the session.
+    The read of ``~/.kiro/settings/mcp.json`` fails transiently on a rename-over or a
+    resolver pool timeout. Without a retry ``kiro_control_plane_servers`` returns ``[]``
+    and every Crew call is refused ``identity_unattested`` for the session.
     """
 
     def test_a_refused_read_that_succeeds_on_retry_returns_the_settings(

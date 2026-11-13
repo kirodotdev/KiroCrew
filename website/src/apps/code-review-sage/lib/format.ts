@@ -267,13 +267,13 @@ export function failureReason(run: {
   // Three strings rather than one, because each names a different missing thing
   // with a different remedy: `review_pool.runtime_preflight` returns either "no
   // kiro-cli executable was found" or "the ACP runtime … is not importable", and
-  // `routes.py::_first_change_error` renders a third, generic sentence for a
+  // `routes_parts/review_runs.py::_first_change_error` renders a third, generic sentence for a
   // record that kept only the `runtime_unavailable` reason.
   //
   // Matched on the specific phrase, NOT on the word `kiro-cli`: a missing agent
   // spec also names it ("Agent spec '…' is not installed: kiro-cli found no
   // '….json' in … — repair with `kirocrew setup --agent-only --clean`", from
-  // acp/runtime.py) and reaches this function through the pool's spawn error. A
+  // acp/runtime_reader_loop.py) and reaches this function through the pool's spawn error. A
   // bare /kiro-cli/ branch would replace that message — which already carries
   // the exact repair command — with "install kiro-cli", losing the fix.
   if (/no kiro-cli executable/.test(lower)) {
