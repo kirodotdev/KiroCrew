@@ -382,19 +382,28 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                         subprocess_executor(), stop_app_backend, name
                     )
                     await _deregister_app_off_loop(name)
-                await asyncio.to_thread(disable_app, name)
+                disabled = await asyncio.to_thread(disable_app, name)
+                # `disable_app` fails closed (an unrecorded disable, an unrevoked
+                # host-exec grant), so only its result may say the app is off.
+                if disabled.ok:
+                    error = "onEnable script failed — app remains disabled"
+                else:
+                    error = _redact_warning(
+                        "onEnable script failed and the app could not be disabled: "
+                        + (disabled.error or "unknown error")
+                    )
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_enable",
                     outcome="failed",
                     resources=name,
-                    error="onEnable script failed",
+                    error="onEnable script failed" if disabled.ok else error,
                 )
                 return web.json_response(
                     {
                         "ok": False,
                         "name": name,
-                        "error": "onEnable script failed — app remains disabled",
+                        "error": error,
                         "script_output": on_enable["output"],
                         "code": "on_enable_failed",
                     },
