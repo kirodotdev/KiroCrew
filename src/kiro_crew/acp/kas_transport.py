@@ -109,6 +109,8 @@ METHOD_KAS_AUTH_GET_ACCESS_TOKEN = "_kiro/auth/getAccessToken"
 #: ``-32000`` "not signed in ... Please sign in and retry"
 #: (``ModelRegistryUnauthenticatedError`` / ``TokenExpiredError``), which is
 #: the auth-failure vocabulary the runtime already maps to a sign-in prompt.
+#: Engine 0.66.104 (measured) sends ``SignInRequiredError`` in ``data``
+#: instead, read by :mod:`kiro_crew.acp.sign_in_required_errors`.
 KAS_AUTH_CALLBACK_ERROR_CODE = -32000
 
 
@@ -169,9 +171,9 @@ def build_kas_bundle_argv(node_bin: str, acp_server: str) -> list[str]:
     Crew is ALWAYS the auth owner on this route -- there is no kiro-cli to hand
     the credential to -- so the plan built from this argv carries
     ``host_auth=True`` unconditionally, and a vault with no identity surfaces as
-    the engine's own "not signed in" prompt failure (the same vocabulary the
-    runtime already maps to a sign-in prompt), never as a silent fallback to a
-    credential store Crew does not own.
+    the engine's own prompt failure (its structured ``SignInRequiredError``,
+    which :mod:`kiro_crew.acp.sign_in_required_errors` maps to a sign-in
+    prompt), never as a silent fallback to a credential store Crew does not own.
 
     No ``--agent`` and no ``--model``, for the reasons :func:`build_kas_argv`
     gives: both travel over the wire per session.

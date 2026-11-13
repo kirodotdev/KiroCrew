@@ -378,6 +378,18 @@ the frame's "Please try again" still gives it the retryable verdict and the
 `http_5xx` classifier kind, which match the engine's own `SERVER_ERROR`, bounded by
 the ladder.
 
+The engine's **sign-in refusal** is read the same way. With no usable Kiro sign-in,
+KAS 0.66.104 answers `session/prompt` with `-32000` "Sign in to Kiro to send a
+prompt." and `data.errorType` `SignInRequiredError`, carrying no 401/403 and no
+expiry wording. `acp/sign_in_required_errors.py` compares that field exactly (JSON
+text parsed first; the message is never matched), and `_raise_acp_error` treats a
+match as the session-expiry arm does: the harness's signed-out message, the
+`sign_in_needed` tag and `auth_required` for a harness in
+`ACP_BACKENDS_HOST_AUTH_CALLBACK`. A Bedrock credential exception or a usage-limit
+answer in the same frame still takes its own branch first. The verdict is terminal
+because the frame carries no retry wording, so `_is_transient_raw_error` reaches its
+unknown fall-through; the frame's test pins it.
+
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
