@@ -531,18 +531,50 @@ def test_a_refused_entry_is_dropped_at_once_and_the_pass_continues_past_it(units
     assert writer.stats().dropped == 1
 
 
-def test_a_refusal_on_the_inline_path_is_counted_but_owes_no_marker(units, clock):
-    """Preserved divergence: the batch path's refusal owes a marker (above), the inline
-    path's does not, though the emitter spec states the marked behaviour as intended."""
+def test_an_inline_refusal_owes_a_marker_a_refusing_log_does_not_hold_flush_on(units, clock):
+    """An inline refusal owes a marker like the batch path's. While the log refuses the
+    marker too, the debt stays owed without holding flush, the refused marker is not
+    itself a lost append, and the first append that lands is preceded by the marker."""
     units.create(UNIT)
-    units.fault = _failing(_is_step(1), exc=_refusal)
+    units.fault = _failing(lambda unit, kind, data: True, exc=_refusal)
+    writer = _writer(units, clock)
+    writer.submit(UNIT, _step(units, UNIT, 1, nbytes=9))
+    writer.submit(UNIT, _step(units, UNIT, 2, nbytes=4))
+    assert writer.flush(timeout=None), "a marker the log refuses held flush"
+    assert units.attempts[(UNIT, "write/dropped")] == 1, "the queued append did not retry it"
+    assert (writer.stats().dropped, writer.loss_markers_owed()) == (2, 1)
+    assert not writer.owes(UNIT), "parked debt was read as work a pass will still do"
+
+    units.fault = None
+    writer.submit(UNIT, _step(units, UNIT, 3))
+    assert writer.flush(timeout=None)
+    assert units.entries(UNIT) == [
+        ("write/dropped", {"dropped_count": 2, "dropped_bytes": 13}),
+        ("step/started", {"turn": 1, "step": 3}),
+    ]
+    assert writer.stats().dropped == 2, "recovery counted a further loss"
+
+
+def test_parked_debt_keeps_no_retry_from_a_marker_that_failed_first(units, clock):
+    """A marker that fails, then is refused, parks its debt with nothing retained, so the
+    unit stops reading as owed, carries no spent attempt into its next marker, and leaves
+    the shutdown drain complete while the marker stays owed."""
+    units.create(UNIT)
+    step_refused = _failing(_is_step(1), exc=_refusal)
+    marker_fails = _failing(_is_marker, times=1)
+    marker_refused = _failing(_is_marker, exc=_refusal)
+    units.fault = lambda u, k, d: (
+        step_refused(u, k, d) or marker_fails(u, k, d) or marker_refused(u, k, d)
+    )
     writer = _writer(units, clock)
     writer.submit(UNIT, _step(units, UNIT, 1))
-    stats = writer.stats()
-    assert (stats.dropped, writer.loss_markers_owed()) == (1, 0)
-    assert not writer.owes(UNIT)
     writer.submit(UNIT, _step(units, UNIT, 2))
-    assert units.entries(UNIT) == [("step/started", {"turn": 1, "step": 2})]
+    assert writer.flush(timeout=None), "a refused marker held flush"
+    assert units.attempts[(UNIT, "write/dropped")] == 2, "the marker was not failed, then refused"
+    assert (writer.stats().dropped, writer.loss_markers_owed()) == (2, 1)
+    assert not writer.owes(UNIT), "a stale retry kept parked debt in owes()"
+    report = writer.drain_for_shutdown(timeout=0)
+    assert (report.drained, report.loss_markers_owed) == (True, 1), "parked debt held the drain"
 
 
 # --------------------------------------------------------------------------- #

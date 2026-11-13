@@ -381,16 +381,29 @@ would be a second, unobserved claim.
 
 ### Writer loss is admitted before appending resumes
 
-Every writer loss but the inline refusal below creates one per-session pending-loss record:
+Every writer loss creates one per-session pending-loss record:
 `{dropped_count, dropped_bytes}`. Retry exhaustion, a hard buffer-ceiling rejection and a permanent
 refusal all feed the same record. `dropped_bytes` is the size hint the producer supplied for the
 rejected jobs.
 
-A refusal on the inline path is the exception: it is counted in `dropped_writes()` but creates no
-record, so no `write/dropped` marker follows it and a reader of the log cannot see that hole
-(`_INLINE_REFUSAL_OWES_MARKER` in `crew_log/writer.py`). Owing one would first need a rule for a
-marker the log itself refuses: a log another process owns, or one whose creation failed, refuses the
-marker as well, and a refused marker's debt is carried into the next one.
+A refusal on the inline path owes its marker like one on the batch path: it starts a pass when none
+is coming, as a queued entry does, and with no executor the next `flush()` runs that pass.
+Debt whose marker the log refused as well (a log another process owns, or one whose creation
+failed, refuses every append) has no pass that could write it, and the writer PARKS it. Parked
+debt is still owed and counts in `loss_markers_owed`. The session's next entry takes it back and queues
+behind it, as an entry for a session that owes a marker always does, so the marker is written
+ahead of that entry and a synchronous caller's next entry lands through a pass rather than inline.
+Parked debt holds neither `flush()` nor the shutdown drain, which no pass could satisfy, is not
+retried in the background, so a log another process owns is not reopened for it, and does not
+count in `owes()`, which reports what a pass will still write and which the child-repair probe
+reads. A marker the log refused is not itself counted in `dropped_writes()`, since its debt is
+carried, so each later entry on a refusing log adds only itself. The loss was already named
+when it happened, so a parked marker left at exit is counted in the shutdown report but does not
+make the drain incomplete. A marker that FAILS (an error that may clear) is not parked and still
+holds `flush()`. When the log refuses a marker and the session's next job is its opening (the
+session was opened again after the cause was repaired), the opening is tried first and the marker
+right behind it, because only the opening can create a log whose creation failed. If the opening
+is refused too, its loss merges into the marker's debt, which parks as before.
 
 The record carries no reason code, deliberately. The only site that knows a cause cannot separate
 the ones that matter: the writer's refusal check collapses a malformed entry and a well-formed entry refused
@@ -405,9 +418,11 @@ bytes merge into it. If the marker itself reaches the write-attempt ceiling, its
 back into the next marker along with ordinary jobs that could not pass it. The session is not
 poisoned: a later append retries the marker and can resume once it lands.
 
-For every loss but the inline refusal above, the ordering invariant is: **no entry is ever appended
-after a loss until a marker naming that loss
-has been appended.** Jobs emitted before a concurrent loss may already be in flight; every ordinary
+The ordering invariant is: **no entry is ever appended after a loss until a marker naming that
+loss has been appended**, with one exception: an opening goes ahead of a marker the log refused,
+because only it can create a log whose creation failed, so that file reads header,
+`session/opened`, `write/dropped`. On a log another process owns, that opening is refused too or
+writes nothing. Jobs emitted before a concurrent loss may already be in flight; every ordinary
 job still waiting behind that observation is requeued behind the marker without spending its retry
 budget. `seq` remains contiguous because lost jobs never acquired a seq. A reader detects the hole
 from `write/dropped`, not from a numeric gap, and can fold later entries normally after admitting the
@@ -738,8 +753,8 @@ log's tail is short by them -- and the warning names the buffered count, how man
 sessions are still owed a `write/dropped` marker, and whether a batch was in flight, so
 the gap is attributable rather than silent.
 
-The owed-marker count reads both places a session's loss debt lives. It sits in the
-pending-loss map while no marker job exists for that session; once one is built the debt
+The owed-marker count reads every place a session's loss debt lives. It sits in the
+pending-loss map, or parked, while no marker job exists for that session; once one is built the debt
 travels INSIDE the job, because building the marker takes the debt out of the map to
 serialize it and a failed append hands the job back to the retained batch. A marker
 waiting to be retried is therefore owed while the map is empty, and that is a state a

@@ -216,27 +216,40 @@ def test_a_refused_oversize_write_is_dropped_and_counted_and_named_once(caplog):
     """A refusal is a loss NOW, not a retry, and it is admitted rather than hidden.
 
     A refusal happens before any byte is written and would repeat on every retry, so
-    the entry is dropped at once and counted.
+    the entry is dropped at once and counted, and a ``write/dropped`` marker admits it.
+    The second refusal queues behind the first one's marker, so it lands through a pass:
+    the pass the first refusal starts is held in its batching pause until the drain.
     """
+    emit.reset_caches(limits=WriterLimits(batch_deadline_seconds=20.0))  # flake-ok: not waited
     _open_session()
     before = len(_entries())
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         emit.on_tool_called(SESSION, 1, name="x" * (70 * 1024), call_id="tc-big")
         emit.on_tool_called(SESSION, 1, name="y" * (70 * 1024), call_id="tc-big2")
-    assert len(_entries()) == before, "a refused write must not land"
+        assert_drained()
+    landed = [e["type"] for e in _entries()[before:]]
+    assert landed == [
+        "write/dropped",
+        "write/dropped",
+    ], f"a refusal landed or went unadmitted: {landed}"
     assert emit.dropped_writes() == 2, "both losses are counted"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     # One for the storage failure, one for the loss -- and the SECOND refusal adds
-    # neither, because a failing crew log names itself once rather than per entry.
-    assert len(warnings) == 2, f"expected the failure and the loss once each: {warnings}"
+    # neither, because a failing crew log names itself once rather than per entry --
+    # plus one when the first marker lands and the log is writing again.
+    assert (
+        len(warnings) == 3
+    ), f"expected the failure, the loss and the recovery once each: {warnings}"
     assert any("gave up on" in record.getMessage() for record in warnings)
+    assert any("landing again" in record.getMessage() for record in warnings)
 
 
 def test_a_refused_write_does_not_break_the_next_good_write():
     _open_session()
     emit.on_tool_called(SESSION, 1, name="z" * (70 * 1024), call_id="tc-big")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert _body()[-1]["type"] == "turn/completed"
+    assert_drained()
+    assert [e["type"] for e in _body()][-2:] == ["write/dropped", "turn/completed"]
 
 
 def test_a_storage_layer_that_raises_never_breaks_a_caller(monkeypatch):
@@ -1172,6 +1185,49 @@ def test_a_permanently_failed_creation_counts_later_discards_as_loss():
     assert emit.dropped_writes() == dropped_before + 1, (
         "a discarded entry for a creation-failed session was a silent no-op, " "not counted as loss"
     )
+
+
+@pytest.mark.parametrize("queued", [False, True], ids=["inline", "queued"])
+def test_a_reopened_session_creates_its_log_ahead_of_its_refused_marker(queued):
+    """Once the creation's cause is repaired, re-opening the session creates its log.
+
+    The failed opening owes a marker the log refuses (there is no file), so that debt is
+    parked, and the re-open queues behind it. Only the opening can create the file, so it
+    is tried first and the marker lands right behind ``session/opened``.
+    """
+
+    def _run(step) -> None:
+        if queued:
+
+            async def _in_loop() -> None:
+                step()
+
+            asyncio.run(_in_loop())
+        else:
+            step()
+        assert_drained()
+
+    real_create = lg.CrewLog.create
+
+    def _refuse_create(kind, unit_id, *args, **kwargs):
+        if unit_id == SESSION:
+            raise lg.CrewLogError("refused at create", code=lg.CODE_ALREADY_OWNED)
+        return real_create(kind, unit_id, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lg.CrewLog, "create", _refuse_create)
+        _run(_open_session)
+    assert SESSION in emit._creation_failed and not _log_path().is_file()
+
+    def _reopen_and_turn() -> None:
+        _open_session()
+        emit.on_turn_started(SESSION, 1, "user")
+
+    _run(_reopen_and_turn)
+
+    assert _log_path().is_file(), "the repaired session never created its log"
+    assert [e["type"] for e in _body()] == ["session/opened", "write/dropped", "turn/started"]
+    assert _body()[1]["data"]["dropped_count"] == 1, "the marker did not name the one lost opening"
 
 
 def test_a_session_that_was_never_opened_stays_a_silent_no_op():

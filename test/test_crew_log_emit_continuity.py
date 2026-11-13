@@ -532,10 +532,13 @@ def test_a_claim_that_cannot_own_the_log_writes_nothing_and_counts_the_loss():
         ), "the entries this process could not write are not counted"
 
     # Ownership released: the same emitter writes again, so the refusal was about
-    # the moment rather than a state it latched.
+    # the moment rather than a state it latched, and the marker admitting both lost
+    # entries leads that write.
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", duration_ms=5)
     assert_drained()
-    assert [e["type"] for e in _body()][-1] == "turn/completed"
+    tail = _body()[-2:]
+    assert [e["type"] for e in tail] == ["write/dropped", "turn/completed"]
+    assert tail[0]["data"]["dropped_count"] == 2
 
 
 def test_a_claim_does_not_take_back_a_pin_a_queued_closer_still_owes(monkeypatch):
