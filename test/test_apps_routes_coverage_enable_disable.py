@@ -729,7 +729,11 @@ class TestRecordReadsRunOffTheLoop:
             open_reads, reads[:] = list(reads), []
             assert (await client.post(f"/api/apps/{APP}/disable")).status == 200
             disable_reads = list(reads)
-        assert enable_reads == [("get_app", False), ("app_enabled_state", False)]
+        assert enable_reads == [
+            ("get_app", False),
+            ("app_enabled_state", False),
+            ("get_app", False),
+        ]
         assert open_reads == [("get_app", False)]
         assert disable_reads == [("get_app", False), ("app_enabled_state", False)]
 
