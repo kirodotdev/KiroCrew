@@ -21,7 +21,11 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 300
  *  Sizing: localStorage gives ~5 MB per origin, SHARED across all keys. The two
  *  byte-capped stores are `mc-chat-drafts` and `mc-chat-paste-drafts`; at 2 MB
  *  each that's 4 MB worst case, leaving ~1 MB for the uncapped localStorage
- *  siblings (`mc-comment-drafts`, `mc-paste-store-v1`). A per-store budget can't
+ *  siblings (`mc-comment-drafts`, `mc-paste-store-v1`). The prompt stash
+ *  (`mc-prompt-stash:*`, one key per kept draft) draws on that same ~1 MB and
+ *  is never reclaimed under quota pressure, so `utils/promptStash.ts` bounds it
+ *  with its own cross-slot `PROMPT_STASH_MAX_BYTES` (512 KB) and refuses a
+ *  write past it rather than evicting. A per-store budget can't
  *  by itself guarantee the origin total stays under quota, but if a write does
  *  blow the shared quota `setItem` throws and the store no-ops that cycle
  *  (caught, DEV-warned) rather than corrupting. `mc-chat-file-drafts` is

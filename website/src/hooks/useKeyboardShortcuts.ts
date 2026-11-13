@@ -311,6 +311,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'upload-file': 'components.chatInput.upload_file',
   'list-indent': 'hooks.useKeyboardShortcuts.indent_list_line',
   'list-outdent': 'hooks.useKeyboardShortcuts.outdent_list_line',
+  'stash-prompt': 'components.promptStash.shortcut_label',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
   'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',

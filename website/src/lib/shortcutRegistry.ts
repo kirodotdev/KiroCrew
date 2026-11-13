@@ -248,6 +248,9 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // handler (chat-input/keyboard.ts); listed for the reference.
   { id: 'list-indent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab' }) },
   { id: 'list-outdent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab', shift: true }) },
+  // Dispatched by ChatInput's composer (usePromptStash), not the global handler;
+  // listed for the reference. Claimed only while the composer has focus.
+  { id: 'stash-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 's', mod: true }) },
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention (`ctrl`, not `mod`, on both).
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },
