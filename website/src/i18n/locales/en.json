@@ -9207,6 +9207,7 @@
       "schedule_in": "Runs in {{time}}",
       "schedule_none": "Nothing wakes this bot on its own yet.",
       "schedule_none_self_waking": "No schedules yet.",
+      "schedule_none_check_ins": "No schedules yet. This bot's goal check-ins (Goals tab) also wake it.",
       "schedule_state_on": "Active",
       "schedule_state_paused": "Paused",
       "schedule_state_running": "Running",

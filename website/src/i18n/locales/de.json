@@ -21911,6 +21911,7 @@
       "schedule_in": "Läuft in {{time}}",
       "schedule_none": "Noch nichts weckt diesen Bot von selbst.",
       "schedule_none_self_waking": "Noch keine Zeitpläne.",
+      "schedule_none_check_ins": "Noch keine Zeitpläne. Die Ziel-Check-ins dieses Bots (Tab „Ziele“) wecken ihn ebenfalls.",
       "schedule_state_on": "Aktiv",
       "schedule_state_paused": "Pausiert",
       "schedule_state_running": "Läuft",
