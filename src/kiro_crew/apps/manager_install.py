@@ -241,6 +241,8 @@ def install_app(
     hold_app_record_lock(name)
     existing = _read_installed(name)
     if existing:
+        from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
         sel().log_api_access(
             caller="app_install",
             operation="install",
@@ -252,8 +254,12 @@ def install_app(
             ok=False,
             name=name,
             error=f"app {name!r} is already installed (v{existing.version}). "
-            f"Update it in place instead (from the app's page, or "
-            f"`kirocrew app update {name}`), or uninstall first.",
+            + (
+                MARKET_OVERWRITE_HINT
+                if is_market_source(existing.source)
+                else f"Update it in place instead (from the app's page, or "
+                f"`kirocrew app update {name}`), or uninstall first."
+            ),
         )
 
     source_repository = _effective_source_repository(source_repository)
@@ -595,6 +601,28 @@ def update_app(
     existing = _read_installed(name, manifest=old_manifest)
     if not existing:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+
+    # A marketplace record's ``market:<ref>@<n>`` source and zip sha256 are its
+    # provenance and its trust coordinate; the record write below would replace
+    # them with the folder path. shortcut: refused outright until a marketplace
+    # update path (resolve, verify, re-confirm) exists; upgrade then.
+    from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
+    if is_market_source(existing.source):
+        error = f"{name!r} cannot be updated from a folder. {MARKET_OVERWRITE_HINT}"
+        sel().log_api_access(
+            caller="app_update",
+            operation="provenance",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=error,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=error,
+            error_code="app_update_market_source",
+        )
 
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(name, repository=source_repository)

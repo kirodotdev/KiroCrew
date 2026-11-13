@@ -17,6 +17,13 @@ import re
 
 MARKET_SOURCE_PREFIX = "market:"
 
+#: What a refused folder update or self-registration over a marketplace app
+#: tells the person: why, and the steps that work today.
+MARKET_OVERWRITE_HINT = (
+    "This app came from the marketplace, and updating it from a folder would "
+    "overwrite it. Uninstall it first, or install the folder under another name."
+)
+
 _SEGMENT = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 #: A listing ref: ``<namespace>/<name>``, both lowercase kebab segments.
 LISTING_REF_RE = re.compile(rf"^{_SEGMENT}/{_SEGMENT}$")
