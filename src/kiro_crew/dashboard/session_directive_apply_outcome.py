@@ -64,7 +64,7 @@ class DirectiveOutcome:
 # admitted by the dispatcher's user-surface provenance gate, then separately requires
 # the current turn to own the slot it would mutate. (``ask_question`` is not a
 # directive: it blocks and returns the answers as its own tool result.)
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup"})
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "section_marker"})
 # ``_USER_SURFACE_DIRECTIVES`` (set_project, reset_conversation, chat_tag) and the
 # provenance set ``_USER_ORIGIN_DIRECTIVES`` live in kiro_crew.directive_origin, so
 # the prompt guidance reads the same gate without importing the dashboard.

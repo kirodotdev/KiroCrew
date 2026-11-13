@@ -16,10 +16,10 @@ from kiro_crew.session_surface import has_dashboard_surface
 #: context, its board tags.
 USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
 
-#: The provenance gate's set: the user-surface directives plus ``suggest_followup``,
-#: whose surface gate alone only asks whether a tab exists -- which a cron or
-#: sub-agent turn riding a user's slot satisfies.
-USER_ORIGIN_DIRECTIVES = USER_SURFACE_DIRECTIVES | frozenset({"suggest_followup"})
+#: The provenance gate's set: the user-surface directives plus ``suggest_followup``
+#: and ``section_marker``, whose surface gate alone only asks whether a tab exists
+#: -- which a cron or sub-agent turn riding a user's slot satisfies.
+USER_ORIGIN_DIRECTIVES = USER_SURFACE_DIRECTIVES | frozenset({"suggest_followup", "section_marker"})
 
 
 def has_user_surface(session_key: str) -> bool:

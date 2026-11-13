@@ -556,6 +556,21 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                     session_key,
                     event.tool_call_id,
                 )
+            # The SEL row and the warnings above reach an operator. A
+            # directive tool whose identity this backend dropped returns
+            # only its own non-committal text, so the AGENT would read a
+            # directive this build cannot carry as one that landed. A
+            # shell's stdout or another server's result is shown as is.
+            _seen_server, _seen_name = _seen_tool_identity.get(event.tool_call_id, ("", ""))
+            if not _seen_server and _seen_name in session_directive.DIRECTIVE_TOOLS:
+                _out = _redact_tool_field(
+                    session_directive.strip_marker(_out)
+                    + (
+                        "\n\n[Not applied: the tool call carried no verifiable "
+                        "identity, so nothing changed.]"
+                    )
+                )
+                _dir_consumed_out[event.tool_call_id] = _out
     if not _dir_tool and event.tool_call_id in _dir_consumed_out:
         # A LATER frame for a directive we already consumed: replay
         # the output we produced instead of letting the raw marker
