@@ -125,8 +125,18 @@ def _discord_install_line(application_id: str, *, dm_only: bool) -> None:
     print(f"{render._INDENT}({shape}: re-run it to update scopes or permissions)")
 
 
+#: Printed in place of a credential verdict when the credentials file could not be
+#: read: the value may be in that file, so its absence from *creds* proves nothing.
+_CREDS_UNKNOWN = "⏭  unknown — credentials not readable from this shell"
+
+
 def _doctor_discord(
-    cfg: KiroCrewConfig, creds: dict[str, str], port: int | None, issues: list[str]
+    cfg: KiroCrewConfig,
+    creds: dict[str, str],
+    port: int | None,
+    issues: list[str],
+    *,
+    creds_unreadable: bool = False,
 ) -> None:
     """Report the Discord channel: config, grants, and the live connection.
 
@@ -155,6 +165,8 @@ def _doctor_discord(
     token = creds.get(cli_doctor.CRED_DISCORD_BOT_TOKEN, "") or dc.bot_token
     if token:
         print("  token:       ✅ present")
+    elif creds_unreadable:
+        print(f"  token:       {_CREDS_UNKNOWN}")
     else:
         print("  token:       ❌ missing, so the channel never starts")
         print(f"{render._INDENT}Fix: paste the bot token in")
@@ -282,7 +294,12 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
 
 
 def _doctor_slack(
-    cfg: KiroCrewConfig, creds: dict[str, str], has_slack: bool, issues: list[str]
+    cfg: KiroCrewConfig,
+    creds: dict[str, str],
+    has_slack: bool,
+    issues: list[str],
+    *,
+    creds_unreadable: bool = False,
 ) -> None:
     """Render the ``Slack Integration`` section.
 
@@ -315,13 +332,21 @@ def _doctor_slack(
                 print("  workspace:   ❌ not in configured workspace allowlist")
                 print("               The gateway will refuse to connect.")
                 issues.append("slack workspace: not in allowlist")
+    elif creds_unreadable:
+        print(f"  status:      {_CREDS_UNKNOWN}")
     else:
         print("  status:      ⏭  not configured (optional)")
         print("  setup:       run 'kirocrew setup --slack', or connect any channel")
         print("               (Slack, Discord, Telegram, …) from the dashboard")
 
 
-def _doctor_other_channels(cfg: KiroCrewConfig, creds: dict[str, str], issues: list[str]) -> None:
+def _doctor_other_channels(
+    cfg: KiroCrewConfig,
+    creds: dict[str, str],
+    issues: list[str],
+    *,
+    creds_unreadable: bool = False,
+) -> None:
     """Render the ``Other Channels`` section: every channel without its own section.
 
     One loop over the roster rather than a section per channel: the doctor knows
@@ -374,10 +399,16 @@ def _doctor_other_channels(cfg: KiroCrewConfig, creds: dict[str, str], issues: l
             # an account id in config.json. One combined line would send the
             # operator to the wrong file.
             parts = []
-            if row.missing_credentials:
+            # A credential missing from an unreadable file is unknown, not missing;
+            # missing config is still read from config.json and still counts.
+            if row.missing_credentials and creds_unreadable:
+                print(f"  {name + ':':12} credentials {_CREDS_UNKNOWN}")
+            elif row.missing_credentials:
                 parts.append(", ".join(row.missing_credentials))
             if row.missing_config:
                 parts.append(", ".join(f"{name}.{attr}" for attr in row.missing_config))
+            if not parts:
+                continue
             missing = " and ".join(parts)
             print(f"  {name + ':':12} ❌ enabled but missing {missing}")
             print(

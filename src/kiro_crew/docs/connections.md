@@ -500,10 +500,11 @@ env names only, never their values. A row's state is one of:
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
 | **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
 
-A paused row's switch reads off, and pressing it takes you to its approve button
-instead of approving anything. A row that cannot share but still carries a mark has
-**Remove** in place of a switch, which takes the mark off. **Enable all shareable**
-lists the servers it would share by name, and shares them only when you confirm.
+A paused row has no switch. It offers its approve button and **Don't share this
+server**, which takes the mark off and approves nothing. A row that cannot share
+but still carries a mark has **Remove** in place of a switch, which takes the mark
+off. **Enable all shareable** lists the servers it would share by name, and shares
+them only when you confirm.
 
 **Pre-install npm servers** installs each server started with `npx` (or
 `npm exec`) that has Share on and is not paused, ahead of time, so a chat starts it
