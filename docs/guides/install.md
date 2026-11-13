@@ -91,8 +91,11 @@ hatches exist for mirrored or airgapped installs:
 - `KIROCREW_EMBED_MODEL_PATH` (or `memory.embed_model_path`) runs a local GGUF
   of your own instead. In that mode the default model is never downloaded.
 
-`memory.embedding_provider` accepts only `llama_cpp`; any other value in an old
-config is coerced to it on load.
+`memory.embedding_provider` accepts `llama_cpp` (the default, in-process) and
+`ollama_http`, which sends memory and knowledge text to the Ollama server at
+`memory.ollama_url` (set `memory.ollama_model` and `memory.embedding_dim` to
+match its model). Any other value in an old config, `ollama` and `none`
+included, is coerced to `llama_cpp` on load.
 
 Global V1 retains its existing session-start memory retrieval. Crew Member V2
 injects current persona, permanent rules and admitted project guides every turn;
@@ -653,7 +656,7 @@ Linux, `.\make.ps1 <target>` on Windows.
 | `make backend` | Backend only: `.venv` + editable install with the `dev` extra |
 | `make wheel` | Self-contained pip wheel with the dashboard bundled, into `dist/` |
 | `make backend-bin` | Frozen standalone backend binary (host arch only) |
-| `make desktop` | Full desktop app: DMG on macOS, AppImage on Linux, NSIS installer on Windows |
+| `make desktop` | Full desktop app: DMG on macOS, AppImage plus `.deb` and `.rpm` on Linux, NSIS installer on Windows |
 | `make test` | Build, then run the `pytest` suite |
 | `make clean` | Remove build artifacts, dists, and caches |
 

@@ -171,8 +171,8 @@ unreadable line the reader deliberately skipped.
 A declared entry type's `data` object is structurally wrong: a required field is
 absent, a value has the wrong JSON type, an undeclared key is present, or a value is
 outside a closed enum. `field` names the full path, such as `data.tokens.input`.
-Undeclared crew types and app guest namespaces have no per-field declaration and do
-not raise this code.
+Member-kind types, undeclared crew types and app guest namespaces have no per-field
+declaration and do not raise this code.
 
 **Caller action** — Fix the producer to match the declaration in
 `kiro_crew.crew_log.entry_types`. The refusal happens before any byte is written.

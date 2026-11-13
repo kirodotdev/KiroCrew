@@ -105,18 +105,19 @@ personal account.
 
 Kiro Crew ships eleven servers (`_MANAGED_MCP_SERVERS` in `src/kiro_crew/agent.py`
 is the authoritative map), and the registry filter applies to every one of them.
-Five are emitted on every install; the other six are assignable sets an agent
+Five are emitted for every agent (`kirocrew-computer` only once Computer Use is
+on and the host has a driver); the other six are assignable sets an agent
 carries only when granted them — but any agent that IS granted one loses it the
 same way if the registry omits it. They must appear in the registry file under
 **exactly** these names:
 
-Always emitted, on every install:
+Emitted for every agent:
 
 | Server | What is lost without it |
 |---|---|
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
-| `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
+| `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (left out of the spec until Computer Use is turned on; once it is, filtered like the rest) |
 | `kirocrew-guide` | the platform guide set: where-is answers (`find_ui`), the packaged docs (`search_docs`), dashboard guides and change cards |
 | `kirocrew-mate` | a Bot's tools over its own record (name, description, face; goal and tools asked through a change card) |
 
@@ -485,9 +486,8 @@ Two properties to internalise before you design a rollout:
   locally does not quietly lose that tightening at its next successful poll.
 - **The fetched document outranks every local file.** A local policy — including one
   named by `KIROCREW_SECURITY_POLICY` — can only *tighten* what you published; it
-  cannot loosen a single clause. That reverses the older behaviour, where a local
-  file beat the central one and the fleet ceiling was therefore advisory: anyone who
-  could set an environment variable could point it at a permissive file. It is the
+  cannot loosen a single clause, so anyone who can set an environment variable
+  still cannot point it at a permissive file. It is the
   top rung: no local file can override rather than narrow — there is no such channel.
   Recovery from a bad push is by republishing a good document at the source; see
   [Rolling back a bad push](#rolling-back-a-bad-push).

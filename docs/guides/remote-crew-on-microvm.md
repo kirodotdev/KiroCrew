@@ -24,6 +24,17 @@ publishes no provisioner row, which is deliberate: a row whose every launch is
 refused is worse than no row, so a half-finished edit leaves the lane absent from
 `GET /api/cloud/provisioners` rather than present and failing.
 
+## The base stack
+
+Deploy
+[`src/kiro_crew/cloud/templates/kirocrew-microvm-base.yaml`](../../src/kiro_crew/cloud/templates/kirocrew-microvm-base.yaml)
+once per account and region with `aws cloudformation deploy`. It holds the lane's
+key, the recipe bucket, and the build, activation and execution roles. Its outputs
+(`LaneKmsKeyArn`, `RecipeBucketName`, `ImageBuildRoleArn`,
+`HybridActivationRoleArn`, `ExecutionRoleArn`) are the values the block below
+names. Its `SecretPathPrefix` parameter must equal the block's
+`secret_path_prefix`.
+
 ## The `microvm` block
 
 Add a top-level `"microvm"` object to `~/.kiro/crew/cloud.json`.
@@ -37,7 +48,7 @@ Add a top-level `"microvm"` object to `~/.kiro/crew/cloud.json`.
 | `image_identifier`, `image_version` | no | a **prebuilt** image to launch instead of building one, if you manage images yourself. Both or neither: an identifier with no version means "newest at call time", so a build landing mid-launch would retarget your launch onto an image nobody chose |
 | `kms_key_id` | yes | `LaneKmsKeyArn` from the stack above. The key your crew's per-crew control secret is encrypted under. Required rather than defaulted: that secret is what authenticates your gateway to your crew, and a key you hold is the only one you can revoke |
 | `activation_role_arn` | yes | `HybridActivationRoleArn` from the stack above. Required: `ssm:CreateActivation` refuses the call without a role, so a block that omits it is a lane whose every launch fails at its first AWS call. Either the ARN or the bare role name works — the lane reduces an ARN to the name the API wants, because `iamRole`'s own pattern has no colon in it |
-| `identity_secret_ref` | yes | the Secrets Manager name or ARN of the crew's **model credential**, which you create yourself. Configured rather than derived: a launch with no tag is given `kc-<random>`, so a path built from the tag cannot exist before the launch that invents it, and the crew would stop at its secrets stage while the VM billed to its wall |
+| `identity_secret_ref` | yes | the Secrets Manager name or ARN of the crew's **model credential**, which you create yourself. Create it under `secret_path_prefix`: the base stack lets the guest read only `<SecretPathPrefix>/*`, so a secret anywhere else stops the crew at its secrets stage. Configured rather than derived: a launch with no tag is given `kc-<random>`, so a path built from the tag cannot exist before the launch that invents it, and the crew would stop at its secrets stage while the VM billed to its wall |
 | `secret_path_prefix` | no | Secrets Manager path prefix for per-crew control secrets. Defaults to `kirocrew/crew` |
 | `wall_seconds` | no | the VM lifetime to ask for, in seconds. Omitted takes **one hour**, not the platform maximum: the home is not kept past the wall, so the default is how much conversation you can lose by walking away. The platform's own maximum is the ceiling and is not adjustable |
 | `execution_role_arn` | with `log_group`, yes | `ExecutionRoleArn` from the stack above — the role the platform runs the VM as. `run-microvm` refuses `--logging` without it, so a block that sets `log_group` and omits this gets no guest logs at all |
@@ -53,7 +64,8 @@ Add a top-level `"microvm"` object to `~/.kiro/crew/cloud.json`.
     "recipe_bucket": "kirocrew-microvm-recipes-123456789012-us-east-1",
     "bundle_dir": "/home/you/.kiro/crew/bundles/my-crew",
     "kms_key_id": "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555",
-    "activation_role_arn": "arn:aws:iam::123456789012:role/kirocrew-microvm-crew"
+    "activation_role_arn": "arn:aws:iam::123456789012:role/kirocrew-microvm-crew",
+    "identity_secret_ref": "kirocrew/crew/my-crew-identity"
   }
 }
 ```

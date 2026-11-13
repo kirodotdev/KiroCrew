@@ -4,10 +4,10 @@ When the cloud launcher provisions an EC2 box for you, it also registers that bo
 in the **Instances** registry so the dashboard's **Settings → Remote Crew** page can
 manage it — open a tunnel, mint a short-lived dashboard token, keep it warm, and
 self-heal a dropped connection. This page explains **how** that managed connection
-is made, and why the launcher now uses the **native SSM transport** instead of the
+is made, and why the launcher uses the **native SSM transport** instead of the
 older SSH-over-`ProxyCommand` workaround.
 
-> TL;DR — a launched box is now reachable through Instances with **no SSH key, no
+> TL;DR — a launched box is reachable through Instances with **no SSH key, no
 > inbound port, and no `~/.ssh/config` edits**. Reachability is an IAM decision
 > (grant/revoke `ssm:StartSession`, CloudTrail-audited), not a networking decision
 > gated by a key someone holds.
@@ -20,7 +20,7 @@ for ECS task targets and is outside this comparison. Both EC2 methods end at the
 same place — a loopback-bound gateway on the remote — but they get there very
 differently.
 
-### Native SSM (`connection_method="ssm"`) — the new default for launched boxes
+### Native SSM (`connection_method="ssm"`) — the default for launched boxes
 
 The gateway builds an `aws ssm start-session` port-forward directly
 (`AWS-StartPortForwardingSession`) and mints the dashboard token over
@@ -64,7 +64,7 @@ connect at all.
 
 ## Side-by-side
 
-| | **Native SSM** (new) | **Legacy SSH-over-ProxyCommand** |
+| | **Native SSM** (default) | **Legacy SSH-over-ProxyCommand** |
 |---|---|---|
 | `connection_method` | `ssm` | `ssh` |
 | Registry field for the target | `ssm_target` (`i-…`/`mi-…`) | `ssh_host` (instance id, resolved by ssh config) |

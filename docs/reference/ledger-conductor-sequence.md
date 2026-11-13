@@ -78,7 +78,7 @@ sequenceDiagram
 
 **`work_ask_record` records what an item needs from the person.** When the conductor relays an item's question to the person, it loads and calls this deferred tool in the same turn to record what it needs, why only they can do it, each option with what it leads to, and its pick with the reason. The store stamps `written_at`; `decide` and `close` clear the record. The event kind is `ask`, never `decision`, so recording why a question waits never reads as its answer. The warm welcome shows the record as written.
 
-`work_report` takes exactly one `status`, and the four are `progress`, `blocked`, `question`, and `done`. `blocked` and `question` differ by who must act: `blocked` names an external dependency, `question` needs the conductor's own decision.
+`work_report` takes exactly one `status`, and the four are `progress`, `blocked`, `question`, and `done`; with `work_ledger.remote_dispatch` on, a fifth, `reply`, answers a follow-up the conductor sent and claims nothing finished. `blocked` and `question` differ by who must act: `blocked` names an external dependency, `question` needs the conductor's own decision.
 
 **`done` is a claim.** A worker calling `work_report status=done` says it believes the acceptance condition is met and puts its evidence in `artifacts` and `pr`. It has no parameter that writes a verdict, a state, or an acceptance condition.
 

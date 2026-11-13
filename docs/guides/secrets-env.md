@@ -325,8 +325,9 @@ kirocrew config set agent.env '{"HTTPS_PROXY": "http://proxy.example:3128", "NO_
   execute code the command did not name: `LD_*`, `DYLD_*`, `PYTHON*`,
   `NODE_OPTIONS`, `BASH*`, `SHELLOPTS`, `PS4`, `ZDOTDIR`, `IFS`, `SSH_*`, `GIT_*`
   (except `GIT_TERMINAL_PROMPT` and `GIT_SSL_CAINFO`), and any name ending in
-  `PATH`, `LIB`, `OPT`, `OPTS`, `OPTIONS`, `FLAGS`, `COMMAND`, `SHELL`,
-  `EXECUTABLE`, `EDITOR`, `PAGER`, `ASKPASS` or `BROWSER`. That includes the
+  `PATH`, `LIB`, `LIBS`, `MODULE`, `MODULES`, `OPT`, `OPTS`, `OPTIONS`,
+  `FLAGS`, `_PRELOAD`, `COMMAND`, `SHELL`, `EXECUTABLE`, `EDITOR`, `PAGER`,
+  `ASKPASS`, `BROWSER`, `_RSH`, `WRAPPER` or `RUNNER`. That includes the
   location of a config file a tool may read a program from: `KUBECONFIG`,
   `AWS_CONFIG_FILE`, and any name ending in `CONFIG`, `CONFIG_DIR`,
   `CONFIG_FILE` or `CONFIG_HOME` (`GH_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`). This
