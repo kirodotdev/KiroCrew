@@ -562,7 +562,20 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     )
     if action == "decide" and resp.status == 200:
         resp = await _forward_remote_decide(state, key, cleaned, resp)
+    elif resp.status == 200 and cleaned.get("item_id"):
+        await _revoke_closed_remote_trust(state, key, str(cleaned["item_id"]))
     return resp
+
+
+async def _revoke_closed_remote_trust(state: DashboardState, key: str, item_id: str) -> None:
+    """A write that closed a REMOTE item also ends its worker's remote grant (RFC §4)."""
+    from kiro_crew.dashboard.handlers.work_ledger_read import _remote_dispatch_on
+
+    if not await asyncio.to_thread(_remote_dispatch_on):
+        return
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    await remote_ingest.revoke_if_closed(state, key, item_id)
 
 
 async def _forward_remote_decide(
