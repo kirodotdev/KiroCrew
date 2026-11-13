@@ -7279,7 +7279,10 @@ text; users enter an address in the ordinary search field. This uses the same
 visible query and selection state as other searches. Search
 matches normalized query terms against keys, decoded values, tags and fact
 classification. Every record includes a content/revision fingerprint and
-record metadata. `POST /api/memory/records/refresh` resolves up to 500 exact
+record metadata. The total counts every match, but only the records of the
+requested page are assembled (`memory_edit._rows(..., page=...)`): a match
+outside the page has no fingerprint computed, and with no search term its
+metadata and its value are not read either. `POST /api/memory/records/refresh` resolves up to 500 exact
 identities after a concurrent change without discarding the user's draft. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
 under the same normalized selector and selection caps as preview; deleted or

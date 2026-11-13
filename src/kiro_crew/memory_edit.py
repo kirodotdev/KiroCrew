@@ -177,7 +177,21 @@ def _record(row: Any) -> dict:
     return value
 
 
-def _rows(store: Any, query: dict, identities: list[tuple[str, str]] | None = None):
+def _rows(
+    store: Any,
+    query: dict,
+    identities: list[tuple[str, str]] | None = None,
+    *,
+    page: range | None = None,
+):
+    """Yield every record *query* matches, in ``kind, id`` order.
+
+    With *page*, only the matches whose position is in it are assembled; each
+    other match is yielded as ``None``, so a caller that pages still counts
+    them. A match outside the page skips its fingerprint, and with no search
+    term it skips its metadata and its decoded value too, since nothing but the
+    kind decides it. That keeps a page's cost near the page, not the store.
+    """
     from kiro_crew.memory_record_metadata import get_record_metadata, record_identity_or_none
 
     # A UNION over the compatibility relations preserves both physical schemas.
@@ -207,12 +221,18 @@ def _rows(store: Any, query: dict, identities: list[tuple[str, str]] | None = No
         sql = f"SELECT b.*, '' AS derived_from FROM ({sql}) b ORDER BY b.kind,b.id"
     tokens = _normalized(query["q"]).split()
     cursor = store.db.execute(sql, sem_ids + epi_ids)
+    matched = -1
     try:
         for row in cursor:
             if identities is not None and (row["kind"], row["id"]) not in identities:
                 continue
             if query["kind"] != "all" and row["kind"] != query["kind"]:
                 continue
+            if not tokens:
+                matched += 1
+                if page is not None and matched not in page:
+                    yield None
+                    continue
             record_id = record_identity_or_none(row["kind"], row["id"])
             meta = get_record_metadata(store.db, record_id) if record_id is not None else {}
             text = row["text"]
@@ -223,8 +243,13 @@ def _rows(store: Any, query: dict, identities: list[tuple[str, str]] | None = No
                     pass
             searchable = f"{row['key'] or ''} {text} {row['tags']} {meta.get('category', '')} {meta.get('subject', '')} {meta.get('predicate', '')}"
             folded = _normalized(searchable)
-            if tokens and not all(token in folded for token in tokens):
-                continue
+            if tokens:
+                if not all(token in folded for token in tokens):
+                    continue
+                matched += 1
+                if page is not None and matched not in page:
+                    yield None
+                    continue
             record = dict(row)
             record["source"] = record.pop("_source", record["source"] or meta.get("source_ref", ""))
             record["updated_at"] = record.pop("_updated", record["updated_at"])
@@ -247,8 +272,8 @@ def list_records(store: Any, query: dict, *, limit: int = 50, offset: int = 0) -
         raise MemoryEditError("Use a page size of 1–100 and a non-negative offset.")
     entries, total = [], 0
     with store._db_lock:
-        for row in _rows(store, query):
-            if offset <= total < offset + limit:
+        for row in _rows(store, query, page=range(offset, offset + limit)):
+            if row is not None:
                 _conflict_count(store, row)
                 entries.append(row)
             total += 1
