@@ -87,6 +87,7 @@ def _reorder_queued_rows(messages: list[dict], order: list[str]) -> None:
     route and ``session_queue``'s move, so the two cannot disagree about where a
     moved entry's row lands.
     """
+    order = list(dict.fromkeys(order))  # one row per id, at its first place
     queued_msgs = [m for m in messages if m.get("role") == "queued"]
     other_msgs = [m for m in messages if m.get("role") != "queued"]
     queued_by_id: dict[str, dict] = {}
