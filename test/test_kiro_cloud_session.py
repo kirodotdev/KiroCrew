@@ -1586,9 +1586,8 @@ async def test_cloud_teardown_never_deletes_the_sandbox(stub, crew_agent, tmp_pa
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
-@pytest.mark.parametrize("failure", ["permission_routing", "snapshot"])
 async def test_cloud_reload_cleanup_never_deletes_the_loaded_session(
-    stub, crew_agent, tmp_path, monkeypatch, failure
+    stub, crew_agent, tmp_path, monkeypatch
 ):
     runtime = _runtime(tmp_path)
     try:
@@ -1597,10 +1596,7 @@ async def test_cloud_reload_cleanup_never_deletes_the_loaded_session(
         async def refuse(*_a, **_k):
             raise RuntimeError("local setup failed")
 
-        if failure == "permission_routing":
-            monkeypatch.setattr(sh.AcpSessionHandle, "apply_session_permission_routing", refuse)
-        else:
-            monkeypatch.setattr(runtime, "_snapshot_descendants", refuse)
+        monkeypatch.setattr(sh.AcpSessionHandle, "apply_session_permission_routing", refuse)
         with pytest.raises(RuntimeError, match="local setup failed"):
             await _held_load(runtime, "old-cloud", cwd=tmp_path / "ws")
         assert "old-cloud" not in runtime._session_queues
@@ -1612,7 +1608,7 @@ async def test_cloud_reload_cleanup_never_deletes_the_loaded_session(
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
-@pytest.mark.parametrize("failure", ["permission_routing", "snapshot"])
+@pytest.mark.parametrize("failure", ["permission_routing", "drain_init"])
 async def test_a_refused_cloud_start_deletes_the_sandbox_it_minted(
     stub, crew_agent, tmp_path, monkeypatch, failure
 ):
@@ -1627,7 +1623,7 @@ async def test_a_refused_cloud_start_deletes_the_sandbox_it_minted(
         if failure == "permission_routing":
             monkeypatch.setattr(sh.AcpSessionHandle, "apply_session_permission_routing", refuse)
         else:
-            monkeypatch.setattr(runtime, "_snapshot_descendants", refuse)
+            monkeypatch.setattr(sh.AcpSessionHandle, "drain_init", refuse)
         with pytest.raises(RuntimeError, match="local setup failed"):
             await runtime.create_session(cwd=tmp_path / "ws")
         assert runtime._unclaimed_new_sessions == set()
@@ -1715,11 +1711,14 @@ async def test_replayed_cloud_permission_reaches_the_normal_approval_path(
         reached = asyncio.Event()
         release = asyncio.Event()
 
-        async def snapshot():
+        drain_init = sh.AcpSessionHandle.drain_init
+
+        async def held_drain(handle_self, **kwargs):
             reached.set()
             await asyncio.wait_for(release.wait(), 30)
+            return await drain_init(handle_self, **kwargs)
 
-        monkeypatch.setattr(runtime, "_snapshot_descendants", snapshot)
+        monkeypatch.setattr(sh.AcpSessionHandle, "drain_init", held_drain)
         load = asyncio.create_task(_held_load(runtime, "old-cloud", cwd=tmp_path / "ws"))
         try:
             await asyncio.wait_for(reached.wait(), 30)

@@ -99,6 +99,8 @@ class AcpRuntime:
     _root_identity = _rt_tree._root_identity
     _root_identity_holds = _rt_tree._root_identity_holds
     refresh_process_tree = _rt_tree.refresh_process_tree
+    wait_tree_recorded = _rt_tree.wait_tree_recorded
+    _record_tree_in_background = _rt_tree._record_tree_in_background
     _snapshot_descendants = _rt_tree._snapshot_descendants
     _rescan_descendants_later = _rt_tree._rescan_descendants_later
     _signal_tree = _rt_tree._signal_tree
@@ -624,6 +626,9 @@ class AcpRuntime:
         # The one deferred scan a spawn schedules when its own saw no
         # descendant (_snapshot_descendants). Cancelled by the kill.
         self._descendant_rescan_task: asyncio.Task[None] | None = None
+        # The background descendant passes still running
+        # (_record_tree_in_background). Every kill waits for them.
+        self._start_tree_scans: set[asyncio.Task[None]] = set()
         # Two independent clocks so a failure never extends the life of an old
         # success: ``_result_at`` is stamped ONLY when a non-empty result is
         # stored (that result may be replayed until it expires), while
@@ -1041,6 +1046,15 @@ class AcpRuntime:
     #: just answered ``initialize`` and may fork a moment later. One is enough
     #: because every later session start scans again. Nothing waits on it.
     _DESCENDANT_RESCAN_DELAY = EMPTY_WALK_RETRY_DELAY
+
+    #: How long a kill waits for a background descendant pass still running
+    #: (``wait_tree_recorded``) before it gives up on it, cancels it and acts on
+    #: the record the earlier passes wrote, as a kill that ran before the pass
+    #: did. One pass at 64 MCP servers takes about 1 s on macOS, but its walk
+    #: is a ``pgrep`` per process and a ``ps`` per pid, each bounded at 2 s, so
+    #: a hung one has no useful bound of its own. Equal to the pre-teardown
+    #: refresh's bound (``process_identity.TREE_REFRESH_TIMEOUT``).
+    _KILL_TREE_WAIT_SECS = 3.0
 
     #: Why a teardown reached nothing, per ``_root_identity`` verdict. "holds" is
     #: reachable here too: the tree kill ran and the root exited under it, which
