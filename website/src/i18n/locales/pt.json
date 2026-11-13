@@ -18116,6 +18116,28 @@
         "this_store_is_declared_but_its_database_could_no": "Não foi possível abrir este banco. Nenhum conteúdo de outro armazenamento é exibido.",
         "unknown": "desconhecido"
       },
+      "memoryFailuresCard": {
+        "chats": "Chats",
+        "days": "Dias",
+        "draft_lesson": "Rascunhar lição",
+        "draft_for": "Lição para",
+        "draft_text": "{{failure}} continua falhando. Verifique a causa antes de tentar de novo.",
+        "empty_hint": "Nada falhou em dois ou mais chats, nem em dois ou mais dias, nesta semana.",
+        "empty_title": "Nenhuma falha repetida",
+        "failure": "Falha",
+        "hint": "Chamadas de ferramentas que continuaram falhando nesta semana, em mais de um chat ou em mais de um dia. Transforme uma em lição para que o agente pare de repeti-la. Nada é salvo até você pressionar Salvar lição.",
+        "lesson_saved": "Lição salva",
+        "lesson_text": "Texto da lição",
+        "load_failed": "Não foi possível ler as falhas repetidas",
+        "save_lesson": "Salvar lição",
+        "saved_refresh_failed": "Lição salva, mas não foi possível atualizar a lista de lições",
+        "times": "Vezes",
+        "title": "Falhas repetidas",
+        "trend": "Tendência",
+        "trend_growing": "Crescendo",
+        "trend_new": "Nova",
+        "trend_steady": "Estável"
+      },
       "memoryRetiredCard": {
         "actions": "Ações",
         "memory": "Memória",

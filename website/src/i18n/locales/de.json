@@ -17659,6 +17659,28 @@
         "this_store_is_declared_but_its_database_could_no": "Diese Datenbank konnte nicht geöffnet werden. Inhalte anderer Speicher werden nicht angezeigt.",
         "unknown": "unbekannt"
       },
+      "memoryFailuresCard": {
+        "chats": "Chats",
+        "days": "Tage",
+        "draft_lesson": "Lektion entwerfen",
+        "draft_for": "Lektion für",
+        "draft_text": "{{failure}} schlägt immer wieder fehl. Prüfe die Ursache, bevor du es erneut versuchst.",
+        "empty_hint": "Diese Woche ist nichts in zwei oder mehr Chats oder an zwei oder mehr Tagen fehlgeschlagen.",
+        "empty_title": "Keine wiederholten Fehler",
+        "failure": "Fehler",
+        "hint": "Tool-Aufrufe, die diese Woche immer wieder fehlschlugen, in mehr als einem Chat oder an mehr als einem Tag. Mach daraus eine Lektion, damit der Agent den Fehler nicht wiederholt. Gespeichert wird erst, wenn du auf Lektion speichern drückst.",
+        "lesson_saved": "Lektion gespeichert",
+        "lesson_text": "Text der Lektion",
+        "load_failed": "Wiederholte Fehler konnten nicht gelesen werden",
+        "save_lesson": "Lektion speichern",
+        "saved_refresh_failed": "Lektion gespeichert, aber die Liste der Lektionen konnte nicht aktualisiert werden",
+        "times": "Anzahl",
+        "title": "Wiederholte Fehler",
+        "trend": "Trend",
+        "trend_growing": "Steigend",
+        "trend_new": "Neu",
+        "trend_steady": "Gleichbleibend"
+      },
       "memoryRetiredCard": {
         "actions": "Aktionen",
         "memory": "Erinnerung",

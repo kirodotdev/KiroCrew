@@ -17202,6 +17202,28 @@
         "this_store_is_declared_but_its_database_could_no": "无法打开此数据库。不会显示其他存储的内容。",
         "unknown": "未知"
       },
+      "memoryFailuresCard": {
+        "chats": "对话",
+        "days": "天数",
+        "draft_lesson": "起草经验",
+        "draft_for": "经验对应",
+        "draft_text": "{{failure}} 一直失败。请先查明原因再重试。",
+        "empty_hint": "本周没有在两个及以上对话中或两天及以上反复失败的调用。",
+        "empty_title": "没有重复失败",
+        "failure": "失败",
+        "hint": "本周在多个对话中或多天内反复失败的工具调用。把其中一个转成经验，让智能体不再重复。按下“保存经验”之前不会保存任何内容。",
+        "lesson_saved": "经验已保存",
+        "lesson_text": "经验内容",
+        "load_failed": "无法读取重复失败",
+        "save_lesson": "保存经验",
+        "saved_refresh_failed": "经验已保存，但无法刷新经验列表",
+        "times": "次数",
+        "title": "重复失败",
+        "trend": "趋势",
+        "trend_growing": "上升",
+        "trend_new": "新出现",
+        "trend_steady": "持平"
+      },
       "memoryRetiredCard": {
         "actions": "操作",
         "memory": "记忆",

@@ -18116,6 +18116,28 @@
         "this_store_is_declared_but_its_database_could_no": "No se pudo abrir esta base de datos. No se muestra contenido de otro almacén.",
         "unknown": "desconocido"
       },
+      "memoryFailuresCard": {
+        "chats": "Chats",
+        "days": "Días",
+        "draft_lesson": "Redactar lección",
+        "draft_for": "Lección para",
+        "draft_text": "{{failure}} sigue fallando. Revisa la causa antes de volver a intentarlo.",
+        "empty_hint": "Esta semana no falló nada en dos o más chats ni en dos o más días.",
+        "empty_title": "Sin fallos repetidos",
+        "failure": "Fallo",
+        "hint": "Llamadas a herramientas que siguieron fallando esta semana, en más de un chat o en más de un día. Conviértelas en una lección para que el agente deje de repetirlas. No se guarda nada hasta que pulses Guardar lección.",
+        "lesson_saved": "Lección guardada",
+        "lesson_text": "Texto de la lección",
+        "load_failed": "No se pudieron leer los fallos repetidos",
+        "save_lesson": "Guardar lección",
+        "saved_refresh_failed": "Lección guardada, pero no se pudo actualizar la lista de lecciones",
+        "times": "Veces",
+        "title": "Fallos repetidos",
+        "trend": "Tendencia",
+        "trend_growing": "En aumento",
+        "trend_new": "Nuevo",
+        "trend_steady": "Estable"
+      },
       "memoryRetiredCard": {
         "actions": "Acciones",
         "memory": "Memoria",
