@@ -11,6 +11,7 @@ app-specific fields.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import posixpath
@@ -188,6 +189,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     lifecycle_timeout_seconds,
     logger,
 )
+from kiro_crew.apps.package_signature import FILES_KEY as _SIGNED_FILES_KEY
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
@@ -527,6 +529,9 @@ class AppManifest:
 
     # --- Forward compatibility ---
     extra: dict[str, Any] = field(default_factory=dict)
+    # The app.json object as parsed, which signature scheme 2 signs whole
+    # (apps.package_signature). Never serialized.
+    document: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     # -----------------------------------------------------------------
     # Validation
@@ -1142,8 +1147,10 @@ class AppManifest:
             d["tags"] = self.tags
         if self.jobFamilies:
             d["jobFamilies"] = self.jobFamilies
-        # Preserve unknown fields for forward compatibility
-        d.update(self.extra)
+        # Preserve unknown fields for forward compatibility. The signature-scheme-2
+        # file inventory stays out: it is verification input, not app metadata, and
+        # would otherwise ride along in every app listing.
+        d.update({k: v for k, v in self.extra.items() if k != _SIGNED_FILES_KEY})
         return d
 
     def to_json(self) -> str:
@@ -1323,6 +1330,7 @@ class AppManifest:
                 if j
             ],
             extra=extra,
+            document=copy.deepcopy(data),
         )
 
     @classmethod

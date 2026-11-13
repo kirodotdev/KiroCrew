@@ -513,6 +513,7 @@ async def _run_uninstall(
                     "PURGE_DATA": "0" if keep_data else "1",
                 },
                 action="on_uninstall",
+                manifest=manifest,
             )
             if script_output.get("output"):
                 from kiro_crew.security import redact

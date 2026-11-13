@@ -1178,12 +1178,10 @@ class TestAppAdmission:
     def test_register_external_admits_signed_manifest(self, tmp_path, app_home):
         # register_external_app now passes its self-reported manifest to
         # admission, so a correctly-signed app self-registers under
-        # require_signature (denied when no manifest is passed).
-        import hashlib
-        import hmac
-
+        # require_signature (denied when no manifest is passed). A self-registered
+        # app ships no files here, so its scheme-2 inventory is empty.
         from kiro_crew.apps.manager import register_external_app
-        from kiro_crew.apps.manifest import AppManifest
+        from kiro_crew.apps.package_signature import package_signature
 
         secret = "s3cr3t"
         manifest_data = {
@@ -1193,11 +1191,10 @@ class TestAppAdmission:
             "description": "signed external app",
             "author": "tester",
             "signer": "acme",
+            "signatureScheme": 2,
+            "signedFiles": {},
         }
-        m = AppManifest.from_dict(manifest_data)
-        manifest_data["signature"] = hmac.new(
-            secret.encode(), m.signing_payload(), hashlib.sha256
-        ).hexdigest()
+        manifest_data["signature"] = package_signature(secret, manifest_data)
         self._write_policy(
             app_home,
             {
@@ -1239,23 +1236,9 @@ class TestAppAdmission:
         assert _read_installed("ext-unsigned") is None
 
     def test_signature_required_admits_valid_signature(self, tmp_path, app_home):
-        import hashlib
-        import hmac
-
-        from kiro_crew.apps.manifest import AppManifest
+        from kiro_crew.apps.package_signature import sign_app_directory
 
         secret = "s3cr3t"
-        m = AppManifest.from_dict(
-            {
-                "name": "signed-app",
-                "version": "1.0.0",
-                "displayName": "Signed",
-                "description": "signed app",
-                "author": "tester",
-                "signer": "acme",
-            }
-        )
-        sig = hmac.new(secret.encode(), m.signing_payload(), hashlib.sha256).hexdigest()
         self._write_policy(
             app_home,
             {
@@ -1265,12 +1248,8 @@ class TestAppAdmission:
                 "trust_keys": {"acme": secret},
             },
         )
-        src = _make_app_source(
-            tmp_path,
-            name="signed-app",
-            signer="acme",
-            signature=sig,
-        )
+        src = _make_app_source(tmp_path, name="signed-app")
+        sign_app_directory(src, "acme", secret)
         result = install_app(src)
         assert result.ok
 
@@ -1289,13 +1268,20 @@ class TestAppAdmission:
         assert not result.ok
         assert "blocked by admission policy" in result.error
 
-    def test_enable_builtin_exempt_under_require_signature(self, tmp_path, app_home):
+    def test_enable_builtin_exempt_under_require_signature(self, tmp_path, app_home, monkeypatch):
         # Builtins ship unsigned with defaultEnabled=False; a require_signature
         # policy must NOT strand them (they are trusted first-party code). The
-        # admission gate governs third-party enable, not builtins.
+        # admission gate governs third-party enable, not builtins. Under a
+        # signature policy the exemption needs a shipped package for the name.
+        from kiro_crew.apps import execution
         from kiro_crew.apps.manager import _write_installed
 
         src = _make_app_source(tmp_path, name="builtin-app")
+        monkeypatch.setattr(
+            execution,
+            "shipped_builtin_app_root",
+            lambda name: src if name == "builtin-app" else None,
+        )
         assert install_app(src).ok
         meta = _read_installed("builtin-app")
         assert meta is not None

@@ -31,6 +31,7 @@ from kiro_crew.apps.bridges import (
     retire_app_crons_for_reload,
 )
 from kiro_crew.apps.context import AppContext, build_app_context, http_app_for_manifest
+from kiro_crew.apps.execution import NO_MANIFEST as _NO_MANIFEST
 from kiro_crew.apps.execution import (
     app_execution_denied,
     shipped_builtin_app_root,
@@ -240,7 +241,7 @@ def manifest_declares_hooks(app_info: dict[str, Any]) -> bool:
     return bool((app_info.get("manifest", {}) or {}).get("backend", {}).get("hooks", {}))
 
 
-def hook_enable_denied(app_name: str) -> str | None:
+def hook_enable_denied(app_name: str, manifest: object = _NO_MANIFEST) -> str | None:
     """Non-empty reason string when the gateway must NOT run this app's hooks.
 
     Wraps ``app_execution_denied`` with the same action/root the enable and boot
@@ -250,13 +251,15 @@ def hook_enable_denied(app_name: str) -> str | None:
     teardown, and without this re-check a lock-free reconciler could observe the
     still-``enabled`` metadata and re-run the app's startup hooks/routes after
     trust was revoked. Returning the reason here keeps that resurrection from
-    happening.
+    happening. *manifest* is the app-info manifest the reconciler would enable
+    with, so the signed-package check judges what would run.
     """
     return app_execution_denied(
         app_name,
         action="hook_reconcile_register",
         app_root=_app_hook_root(app_name),
         caller="gateway",
+        manifest=manifest,
     )
 
 
@@ -431,11 +434,14 @@ async def on_app_enable(
     Returns dict with hook results to include in the enable response.
     """
     result: dict[str, Any] = {}
-    denied = app_execution_denied(
+    # Off the loop: under the signature policy the gate hashes the package.
+    denied = await asyncio.to_thread(
+        app_execution_denied,
         app_name,
         action="hook_enable_register",
         app_root=_app_hook_root(app_name),
         caller="gateway",
+        manifest=app_info.get("manifest", {}),
     )
     if denied:
         logger.warning(
@@ -864,11 +870,13 @@ async def on_gateway_startup(
     # route handlers (and vice versa), matching the on_app_enable approach.
     for app_info in sorted(enabled, key=lambda a: a.get("name", "")):
         name = app_info.get("name", "")
-        denied = app_execution_denied(
+        denied = await asyncio.to_thread(
+            app_execution_denied,
             name,
             action="hook_boot_register",
             app_root=_app_hook_root(name),
             caller="gateway",
+            manifest=app_info.get("manifest", {}),
         )
         if denied:
             logger.warning(

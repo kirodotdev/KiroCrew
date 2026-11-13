@@ -21,18 +21,21 @@ Usage:
 from __future__ import annotations
 
 import base64
+import contextlib
+import hashlib
 import importlib as _importlib
 import json
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import sys as _sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from kiro_crew import _facade_mirror, platform_compat
 from kiro_crew.config.loader import config_dir
@@ -81,6 +84,156 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.security import redact
+
+
+def _script_app(script_file: str, *, resolve: bool = True) -> str | None:
+    """The app whose folder holds *script_file*, or None outside every app folder.
+
+    *resolve* False judges the path as spelled (``abspath``, no link followed),
+    against the apps folder as spelled and as resolved.
+    """
+    # Deferred: the cron runner loads without the app layer until an app script runs.
+    from kiro_crew.apps.manager import apps_dir
+
+    if resolve:
+        roots = [os.path.realpath(apps_dir())]
+        path = os.path.realpath(script_file)
+    else:
+        roots = [os.path.abspath(apps_dir()), os.path.realpath(apps_dir())]
+        path = os.path.abspath(script_file)
+    for root in roots:
+        try:
+            rel = Path(path).relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if rel.parts and not rel.parts[0].startswith("."):
+            return rel.parts[0]
+    return None
+
+
+def _persisted_script_file(script_path: str) -> str:
+    """The file part of a persisted ``<path>:<func>`` spec, split drive-aware."""
+    # Aliased: the facade serves the owner's name, so a local import of it would
+    # shadow the manifest entry.
+    from kiro_crew.cron_script_paths import _split_script_spec as split_spec
+
+    try:
+        return split_spec(script_path)[0]
+    except ValueError:
+        return script_path
+
+
+def _read_signed_script(app: str, file_path: str) -> tuple[bytes | None, str | None]:
+    """``(body, None)`` when *file_path* is *app*'s listed file with its signed digest.
+
+    Opened once, without following a link at the file, and read through that one
+    descriptor; the bytes returned are the bytes checked, and the launcher runs them.
+    """
+    from kiro_crew.apps.admission import verified_signed_inventory
+    from kiro_crew.apps.manager import app_dir
+
+    try:
+        rel = Path(file_path).relative_to(os.path.realpath(app_dir(app))).as_posix()
+    except ValueError:
+        return None, "the script resolves outside its app's folder"
+    expected = (verified_signed_inventory(app) or {}).get(rel)
+    if expected is None:
+        return None, f"the script {rel!r} is not a signed file of the app"
+    try:
+        # ``O_NOFOLLOW`` on POSIX, the reparse-refusing open on Windows; one handle,
+        # hashed and read.
+        fd = platform_compat.open_file_no_reparse(file_path, nonblocking=True, links_only=True)
+    except OSError:
+        return None, f"the script {rel!r} is missing or a link"
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, f"the script {rel!r} is not a regular file"
+        chunks: list[bytes] = []
+        while chunk := os.read(fd, 1 << 20):
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    body = b"".join(chunks)
+    if hashlib.sha256(body).hexdigest() != expected:
+        return None, f"the script {rel!r} does not match the signed inventory"
+    return body, None
+
+
+def _app_script_owner(
+    script_path: str, file_path: str
+) -> tuple[str | None, bytes | None, str | None]:
+    """``(owner app, verified body, refusal)`` for a cron script about to run.
+
+    Without the fleet signature policy: the app that holds the resolved file, no
+    body, no refusal, as before. Under it, ownership comes from the persisted path
+    AND the resolved file: a path spelled under an app must resolve to that same
+    app's listed regular file, so a signed ``job.py`` swapped for a link elsewhere is
+    refused. The owner's package is then checked, and the resolved file's bytes are
+    read once and checked against its signed digest (:func:`_read_signed_script`).
+    """
+    resolved_owner = _script_app(file_path)
+    from kiro_crew.apps.admission import signed_packages_required
+
+    if not signed_packages_required():
+        return resolved_owner, None, None
+    spelled_owner = _script_app(_persisted_script_file(script_path), resolve=False)
+    if spelled_owner is None and resolved_owner is None:
+        return None, None, None
+    if spelled_owner is not None and resolved_owner != spelled_owner:
+        return spelled_owner, None, "the script resolves outside its app's folder"
+    owner = spelled_owner or resolved_owner
+    assert owner is not None
+    from kiro_crew.apps.admission import admission_refusal_text, installed_package_refusal
+    from kiro_crew.apps.manager import app_dir, get_app_manifest
+
+    refusal = installed_package_refusal(owner, app_dir(owner), get_app_manifest(owner))
+    if refusal is not None:
+        return owner, None, admission_refusal_text(refusal)
+    body, why = _read_signed_script(owner, file_path)
+    return owner, body, why
+
+
+def _app_pycache_dir(app: str | None) -> str | None:
+    """A fresh bytecode cache dir for *app*'s script child; None for no app or no policy."""
+    from kiro_crew.apps.admission import new_pycache_dir
+
+    return None if app is None else new_pycache_dir(app)
+
+
+def _app_python_flags(pycache_dir: str | None) -> list[str]:
+    """``admission.signed_pycache_flags`` for this run's dir; empty without one."""
+    from kiro_crew.apps.admission import signed_pycache_flags
+
+    return signed_pycache_flags(pycache_dir)
+
+
+def _app_python_args(app: str | None, args: list[str]) -> list[str]:
+    """*args* for *app*'s script child, behind the signed-first shim under the policy.
+
+    Unchanged for no app and without the fleet signature policy
+    (``admission.signed_first_python_args``).
+    """
+    from kiro_crew.apps.admission import signed_first_python_args
+
+    return args if app is None else signed_first_python_args(app, args)
+
+
+@contextlib.contextmanager
+def _signed_first_pipe(
+    app: str | None, argv: list[str], script: bytes | None, hidden: tuple[str, ...]
+) -> Iterator[tuple[dict[str, str], dict[str, Any]]]:
+    """``admission.signed_first_pipe`` for *app*'s script; both empty for no app.
+
+    *hidden* are the directories this spawn hides from the child: their listed files
+    were checked by the gateway at this spawn, and the child cannot read them.
+    """
+    if app is None:
+        yield {}, {}
+        return
+    from kiro_crew.apps.admission import signed_first_pipe
+
+    with signed_first_pipe(app, argv, script=script, hidden_dirs=hidden) as handed:
+        yield handed
 
 
 def _new_envelope_tag() -> str:
@@ -145,6 +298,14 @@ def run_script_sandboxed(
     # A PERSISTED spec (see resolve_script_path): an app cron's stored path
     # points into its bundle, which no authoring path may name.
     file_path_str, func_name = resolve_script_path(script_path, allow_bundle_roots=True)
+    # Under the fleet signature policy an app's script is checked again at every
+    # fire, against the signed inventory: a file changed since activation refuses
+    # this run. None outside every app folder and without the policy.
+    script_owner, verified_body, refusal = _app_script_owner(script_path, file_path_str)
+    if refusal is not None:
+        return {"status": "error", "error": f"Refusing to run app cron script: {refusal}"}
+    if verified_body is not None:
+        from kiro_crew.apps.signed_first import VERIFIED_SCRIPT_ATTR
 
     import_dir_str = os.path.dirname(file_path_str)
     resolved_secret_env: dict[str, str] = {}
@@ -157,7 +318,10 @@ def run_script_sandboxed(
     _default_temp_dir()
     if secret_env:
         try:
-            script_body = _read_script_body(file_path_str)
+            # The bytes checked against the signed digest, under the policy.
+            script_body = (
+                verified_body if verified_body is not None else _read_script_body(file_path_str)
+            )
         except ValueError as exc:
             return {"status": "error", "error": f"Script unreadable: {exc}"}
         resolved_secret_env, secret_err = _secret_env_precheck(
@@ -269,9 +433,17 @@ def run_script_sandboxed(
         # file the operator knows.
         "if _payload:\n"
         f"    _src = base64.b64decode(_payload['body_b64'])\n"
-        "else:\n"
-        f"    with open({file_path_str!r}, 'rb') as f:\n"
-        "        _src = f.read()\n"
+        + (
+            # Under the fleet signature policy: the bytes the gateway checked against
+            # the signed digest, handed over by the signed-first shim; the file is not
+            # read again. A launch without them fails here rather than read the file.
+            f"else:\n    _src = sys.__dict__.pop({VERIFIED_SCRIPT_ATTR!r})\n"
+            if verified_body is not None
+            else "else:\n"
+            f"    with open({file_path_str!r}, 'rb') as f:\n"
+            "        _src = f.read()\n"
+        )
+        +
         # The stream and writer the status envelope goes out on, bound before
         # the script body runs so a body that rebinds ``sys.stdout`` cannot
         # swallow it. The envelope line opens with a newline (a body that left
@@ -341,6 +513,8 @@ def run_script_sandboxed(
     # exists, after which the sweep -- not this function -- reclaims it.
     cron_scratch: Path | None = None
     cron_scratch_used = False
+    # This run's own bytecode cache dir, removed in the finally below.
+    pycache_dir: str | None = None
     try:
         try:
             # Tighten the DACL BEFORE writing the secret bytes so the file is
@@ -369,11 +543,23 @@ def run_script_sandboxed(
         # cannot execute before the launcher and capture the secrets it loads.
         # The launcher prelude seeds the trusted kiro_crew package parent
         # explicitly, so imports survive isolation on dev checkouts too.
-        argv = (
-            [sys.executable, "-I", launcher_path]
-            if stdin_payload is not None
-            else [sys.executable, launcher_path]
-        )
+        # An app's script under the fleet signature policy: bytecode never read from
+        # the app folder. Interpreter options, since this child may run with -I.
+        # And the signed-first shim at the launch target, which reads the app's
+        # checked list from a pipe at the spawn below (never from a file).
+        pycache_dir = _app_pycache_dir(script_owner)
+        app_flags = _app_python_flags(pycache_dir)
+        argv = [
+            sys.executable,
+            *_app_python_args(
+                script_owner,
+                (
+                    [*app_flags, "-I", launcher_path]
+                    if stdin_payload is not None
+                    else [*app_flags, launcher_path]
+                ),
+            ),
+        ]
         # A granted child must never see the LIVE crons dir OR the script's
         # own parent directory: the launcher's empty-sys.path isolation stops
         # accidental sibling imports, but the verified script itself could
@@ -516,19 +702,27 @@ def run_script_sandboxed(
                 "error": "Another run of this job is already starting or running",
             }
         try:
-            proc = popen_limited(
-                sandboxed_argv,
-                stdin=subprocess.PIPE if stdin_payload is not None else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=clean_env,
-                start_new_session=True,
-                abort_retry=lambda: _spawn_cancelled(job_id),
-                # Locale decoding, on purpose: an arbitrary command writes in
-                # the host's encoding, and forcing UTF-8 with errors="replace"
-                # would turn every other byte into U+FFFD before delivery.
-                text=True,  # subprocess-encoding: locale
-            )
+            # Empty unless the argv carries the signed-first shim (an app's script
+            # under the fleet signature policy): then the checked list goes over a
+            # pipe only this child inherits.
+            with _signed_first_pipe(script_owner, list(sandboxed_argv), verified_body, hidden) as (
+                sf_env,
+                sf_spawn,
+            ):
+                proc = popen_limited(
+                    sandboxed_argv,
+                    stdin=subprocess.PIPE if stdin_payload is not None else None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env={**clean_env, **sf_env},
+                    start_new_session=True,
+                    abort_retry=lambda: _spawn_cancelled(job_id),
+                    # Locale decoding, on purpose: an arbitrary command writes in
+                    # the host's encoding, and forcing UTF-8 with errors="replace"
+                    # would turn every other byte into U+FFFD before delivery.
+                    text=True,  # subprocess-encoding: locale
+                    **sf_spawn,
+                )
         except Exception:
             # No child exists, so a cancel recorded against this spawn can never
             # be signalled -- clear it here rather than let it leak into the next
@@ -651,6 +845,8 @@ def run_script_sandboxed(
             _discard_unused_cron_scratch(cron_scratch)
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
+        if pycache_dir:
+            shutil.rmtree(pycache_dir, ignore_errors=True)
 
 
 _MAX_COMMAND_OUTPUT = 65536  # 64KB cap

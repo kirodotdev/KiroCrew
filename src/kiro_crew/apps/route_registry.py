@@ -19,7 +19,11 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew.apps.context import AppContext
-from kiro_crew.apps.module_loader import load_app_module, unload_app_modules
+from kiro_crew.apps.module_loader import (
+    load_app_module,
+    signed_load_off_loop,
+    unload_app_modules,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -179,7 +183,10 @@ class RouteRegistry:
         Sets health_status to degraded on failure.
         """
         try:
-            register_fn = load_app_module(app_name, app_dir, hook_path)
+            # The signed-first preparation (inventory read, importer-cache scan) runs
+            # off the loop; the load itself stays here, as before.
+            async with signed_load_off_loop(app_name, app_dir):
+                register_fn = load_app_module(app_name, app_dir, hook_path)
         except (ImportError, ValueError) as exc:
             logger.error("Failed to load route module for app %s: %s", app_name, exc)
             ctx.health.mark_degraded(f"Route module load failed: {exc}")

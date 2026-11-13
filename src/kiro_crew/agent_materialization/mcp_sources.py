@@ -118,6 +118,35 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
             manifest = get_app_manifest(name)
             if not manifest or not manifest.mcpServers:
                 continue
+            # Under the fleet signature policy, the registration's own signed-package
+            # check, so a rebuild never restores a server it refused (live spec or
+            # manifest fallback alike). A builtin is known only from this build's own
+            # package (``shipped_builtin_app_root``), never from the data home or the
+            # app folder; it skips the check and its servers come from that shipped
+            # manifest (``_registration_source``), never the installed copy.
+            from kiro_crew.apps.admission import (
+                installed_package_refusal,
+                mcp_pycache_dir,
+                signed_packages_required,
+                signed_pycache_env,
+                signed_pycache_flags,
+            )
+            from kiro_crew.apps.bridges import _registration_source, _signed_stdio_launch
+            from kiro_crew.apps.execution import shipped_builtin_app_root
+            from kiro_crew.apps.manager import app_dir
+
+            signed = signed_packages_required()
+            if signed and shipped_builtin_app_root(name) is not None:
+                manifest = _registration_source(name)[0]
+                if not manifest or not manifest.mcpServers:
+                    continue
+            elif signed and installed_package_refusal(name, app_dir(name), manifest) is not None:
+                continue
+            # The registration's own bytecode cache dir, so the rebuilt spec and the
+            # registered one name the same dir.
+            pycache_dir = mcp_pycache_dir(name, renew=False) if signed else None
+            flags = signed_pycache_flags(pycache_dir)
+            child_env = signed_pycache_env(pycache_dir)
             for server_name, spec in manifest.mcpServers.items():
                 if not isinstance(spec, dict):
                     continue
@@ -136,7 +165,9 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
                         continue
                     chosen = dict(spec)
                 else:
-                    chosen = dict(spec)  # stdio/command: nothing to resolve
+                    # stdio/command: nothing to resolve, but under the fleet signature
+                    # policy the same signed-launch preparation as registration.
+                    chosen = _signed_stdio_launch(name, spec, dict(spec), flags, child_env)
                 servers[ref] = auto_approve._ceiling_filtered_spec(ref, chosen, audit=audit)
         except Exception:  # noqa: BLE001 — one bad app must not poison the rest
             agent_mod.logger.warning("Skipping MCP servers for app %s (manifest error)", name)

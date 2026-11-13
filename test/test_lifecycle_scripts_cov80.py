@@ -10,6 +10,7 @@ temp-file cleanup in ``finally``.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -116,6 +117,29 @@ async def test_extra_env_is_merged_into_the_minimal_env(admit, tmp_path) -> None
     assert calls[0]["kwargs"]["cwd"] == str(tmp_path / "demo-app")
     assert calls[0]["argv"][:2] == ["/bin/bash", "-c"]
     assert calls[0]["argv"][2].startswith("set -euo pipefail\n")
+
+
+@pytest.mark.asyncio
+async def test_the_signature_policy_keeps_the_script_off_in_folder_bytecode(
+    admit, monkeypatch, tmp_path
+) -> None:
+    """Under the policy the script's env names an out-of-folder bytecode prefix; without
+    it the env is the plain minimal one."""
+    from kiro_crew.apps import admission
+
+    (tmp_path / "demo-app").mkdir()
+    calls = admit(_Process(output=b"ok\n"))
+    await lifecycle_scripts.run_lifecycle_script("demo-app", "echo ok")
+    off_env = calls[-1]["kwargs"]["env"]
+    assert "PYTHONPYCACHEPREFIX" not in off_env and "PYTHONDONTWRITEBYTECODE" not in off_env
+
+    monkeypatch.setattr(admission, "signed_packages_required", lambda: True)
+    await lifecycle_scripts.run_lifecycle_script("demo-app", "echo ok")
+    on_env = calls[-1]["kwargs"]["env"]
+    expected = admission.signed_pycache_env(on_env["PYTHONPYCACHEPREFIX"])
+    assert {k: on_env[k] for k in expected} == expected
+    assert {k: v for k, v in on_env.items() if k not in expected} == off_env
+    assert not Path(expected["PYTHONPYCACHEPREFIX"]).is_relative_to(tmp_path / "demo-app")
 
 
 @pytest.mark.asyncio

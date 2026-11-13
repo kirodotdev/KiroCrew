@@ -9,7 +9,6 @@
 #   python3 scripts/check_black_formatting.py --update-baseline
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/app_storage.py
-src/kiro_crew/apps/backend.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_data_home_isolation.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py
@@ -237,7 +236,6 @@ test/test_app_config_self_heal.py
 test/test_app_context.py
 test/test_app_dev_mode.py
 test/test_app_e2e.py
-test/test_app_execution.py
 test/test_app_manager.py
 test/test_app_mcp_scoping.py
 test/test_app_proxy_auth.py

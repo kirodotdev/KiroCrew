@@ -22,6 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.admission import admission_audit_error, admission_audit_resources
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
@@ -282,8 +283,8 @@ async def handle_registry_install(request: web.Request) -> web.Response:
                 caller="dashboard",
                 operation="app_registry_install",
                 outcome="failed",
-                resources=name,
-                error=result.get("error", ""),
+                resources=admission_audit_resources(result.get("error", ""), name),
+                error=admission_audit_error(result.get("error", "")),
             )
             return web.json_response(result, status=400)
 
@@ -505,8 +506,8 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             caller="dashboard",
             operation="app_registry_install_stream",
             outcome="failed",
-            resources=name,
-            error=result.get("error", ""),
+            resources=admission_audit_resources(result.get("error", ""), name),
+            error=admission_audit_error(result.get("error", "")),
         )
         await _send_sse("done", json.dumps(result))
         await _finish_stream()

@@ -422,7 +422,7 @@ async def test_a_bom_manifest_passes_the_pre_build_identity_gate(monkeypatch, tm
     monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
     admitted: list[object] = []
 
-    def _record_and_deny(name, *, manifest=None, action=""):
+    def _record_and_deny(name, *, manifest=None, action="", **_k):
         admitted.append(manifest)
         return "stop here"
 
@@ -451,7 +451,7 @@ async def test_cloned_manifest_admission_is_revalidated_before_build(monkeypatch
 
     admission_calls: list[object] = []
 
-    def _deny_cloned(name, *, manifest=None, action=""):
+    def _deny_cloned(name, *, manifest=None, action="", **_k):
         admission_calls.append(manifest)
         return "signature required but manifest is unsigned"
 
@@ -471,6 +471,50 @@ async def test_cloned_manifest_admission_is_revalidated_before_build(monkeypatch
     assert "admission" in result["error"]
     assert build_calls == []  # refused before the build
     assert len(admission_calls) == 1  # the cloned manifest was what got checked
+
+
+@pytest.mark.asyncio
+async def test_the_cloned_gate_checks_the_checkout_and_audits_only_a_class(monkeypatch, tmp_path):
+    """The cloned-manifest gate is handed the checkout as the package to check, and a
+    signed-package refusal is audited as its classification, with no name or path."""
+    from kiro_crew.apps.admission import PACKAGE_MISMATCH, PackageRefusal
+
+    src = tmp_path / "app-sources" / "demoapp"
+    monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+    audit = MagicMock()
+    monkeypatch.setattr(registry, "sel", lambda: audit)
+
+    async def _fake_clone(git_url, branch, dest, log_lines, **kwargs):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "app.json").write_text(json.dumps({"name": "demoapp"}), encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
+    roots: list[object] = []
+    detail = "app 'demoapp' package does not match its signature: packaged file 'x.py'"
+
+    def _deny(name, *, manifest=None, action="", app_root=None, **_k):
+        roots.append(app_root)
+        return PackageRefusal(detail, PACKAGE_MISMATCH)
+
+    monkeypatch.setattr(registry, "app_admission_denied", _deny)
+
+    async def _fake_run_build(build_dir, app_name, log_lines):
+        raise AssertionError("refused before the build")
+
+    monkeypatch.setattr(registry, "_run_app_build", _fake_run_build)
+
+    result = await registry._clone_build_app("https://example.com/demo.git", "demoapp", [])
+
+    assert result["ok"] is False
+    assert len(roots) == 1 and os.path.realpath(str(roots[0])) == os.path.realpath(src)
+    rows = [
+        c.kwargs
+        for c in audit.log_api_access.call_args_list
+        if c.kwargs.get("operation") == "admission_cloned"
+    ]
+    assert rows and rows[0]["error"] == PACKAGE_MISMATCH
+    assert "demoapp" not in rows[0]["resources"] and "x.py" not in rows[0]["error"]
 
 
 @pytest.mark.asyncio
@@ -800,6 +844,80 @@ async def test_postbuild_admission_rejection_deletes_fresh_clone(monkeypatch, tm
     assert result["ok"] is False
     assert "admission policy" in result["error"]
     assert not src.exists()  # fresh clone removed — retry starts clean
+
+
+@pytest.mark.asyncio
+async def test_postbuild_admission_refuses_build_that_changes_signed_file(monkeypatch, tmp_path):
+    """Under ``require_signature`` the post-build gate checks the built tree against the
+    signed inventory: a build that rewrites a signed file is refused before ``onInstall``."""
+    from kiro_crew.apps import admission
+    from kiro_crew.apps.manifest import AppManifest
+    from kiro_crew.apps.package_signature import sign_app_directory
+
+    home = tmp_path / "kirocrew-home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
+    (home / "app_admission.json").write_text(
+        json.dumps({"mode": "enforce", "require_signature": True, "trust_keys": {"acme": "k"}}),
+        encoding="utf-8",
+    )
+    src = tmp_path / "app-sources" / "demoapp"
+    (src / "backend").mkdir(parents=True)
+    (src / "app.json").write_text(
+        json.dumps({"name": "demoapp", "version": "1.0.0", "setup": {"onInstall": "true"}}),
+        encoding="utf-8",
+    )
+    (src / "backend" / "app.py").write_text("print('publisher')\n", encoding="utf-8")
+    sign_app_directory(src, "acme", "k")
+    # The signed tree is admitted as published, so only the build's rewrite can refuse it.
+    signed = AppManifest.from_json_file(src / "app.json")
+    assert (
+        admission.app_admission_denied("demoapp", manifest=signed, action="install", app_root=src)
+        is None
+    )
+    monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+    monkeypatch.setattr(
+        registry,
+        "get_registry_app",
+        lambda n: {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"},
+    )
+    monkeypatch.setattr(
+        registry,
+        "_fetch_app_manifest",
+        AsyncMock(return_value={"name": "demoapp", "version": "1.0.0"}),
+    )
+
+    async def _build_rewrites_signed_file(git_url, app_name, log_lines, branch="main", **kwargs):
+        (src / "backend" / "app.py").write_text("print('build')\n", encoding="utf-8")
+        return {"ok": True, "pkg_dir": src, "_checkout_preexisted": False, "_pre_pull_commit": ""}
+
+    monkeypatch.setattr(registry, "_clone_build_app", _build_rewrites_signed_file)
+    calls: list[dict] = []
+
+    def _real_after_prefetch(name, **kwargs):
+        calls.append(kwargs)
+        # The prefetch sees only the registry's unsigned summary; every later gate is real.
+        return None if len(calls) == 1 else admission.app_admission_denied(name, **kwargs)
+
+    monkeypatch.setattr(registry, "app_admission_denied", _real_after_prefetch)
+    spawned: list[list[str]] = []
+
+    async def _no_spawn(*argv, **kwargs):
+        spawned.append(list(argv))
+        raise AssertionError("onInstall must not run")
+
+    monkeypatch.setattr(registry, "create_subprocess_limited", _no_spawn)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is False
+    assert "admission policy" in result["error"]
+    assert calls[1].get("app_root") == src
+    assert spawned == []
 
 
 @pytest.mark.asyncio

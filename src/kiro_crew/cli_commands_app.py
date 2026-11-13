@@ -1,4 +1,4 @@
-"""``kirocrew app``: install, import, list, enable, update, disable, uninstall and inspect apps.
+"""``kirocrew app``: install, import, sign, list, enable, update, disable, uninstall and inspect apps.
 
 ``_handle_app`` dispatches every verb, ``dev``, ``info``, ``init`` and ``mcp`` (serve an
 app's MCP server, ``_run_app_mcp_server``) included. An ``install`` source that is a git
@@ -506,6 +506,39 @@ def _run_app_mcp_server(app_name: str) -> None:
     runner()
 
 
+#: Where ``kirocrew app sign`` reads the publisher's HMAC key: never argv, so the
+#: key stays out of the process list and shell history.
+_APP_SIGNING_KEY_ENV = "KIROCREW_APP_SIGNING_KEY"
+
+
+def _handle_app_sign(args: argparse.Namespace) -> None:
+    """Sign an app directory with signature scheme 2 (``apps.package_signature``).
+
+    Rewrites ``app.json`` with ``signer``, ``signatureScheme``, the ``signedFiles``
+    inventory and ``signature``. Any later change to a listed file or to the
+    manifest needs a new signature on a fleet that sets ``require_signature``.
+    """
+    import os
+
+    from kiro_crew.apps.package_signature import FILES_KEY, sign_app_directory
+
+    secret = os.environ.get(_APP_SIGNING_KEY_ENV, "")
+    signer = str(args.signer or "").strip()
+    if not secret or not signer:
+        print(
+            f"❌ set {_APP_SIGNING_KEY_ENV} to the signer's key and pass --signer",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    root = Path(args.source).expanduser().resolve()
+    try:
+        document = sign_app_directory(root, signer, secret)
+    except (OSError, ValueError) as exc:
+        print(f"❌ cannot sign {root}: {safe_terminal_line(str(exc))}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ signed {root / 'app.json'}: {len(document[FILES_KEY])} file(s) as {signer!r}")
+
+
 def _handle_app_import(args: argparse.Namespace) -> None:
     """Convert a manifest-declared plugin package into an app directory.
 
@@ -631,6 +664,10 @@ def _handle_app(args: argparse.Namespace) -> None:
 
     if action == "import":
         _handle_app_import(args)
+        return
+
+    if action == "sign":
+        _handle_app_sign(args)
         return
 
     if action == "install":

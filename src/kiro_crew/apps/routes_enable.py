@@ -22,6 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.apps.admission import admission_audit_error, admission_audit_resources
 from kiro_crew.apps.backend import start_app_backend, stop_app_backend
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
@@ -316,8 +317,8 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 caller="dashboard",
                 operation="app_enable",
                 outcome="failed",
-                resources=name,
-                error=result.error,
+                resources=admission_audit_resources(result.error, name),
+                error=admission_audit_error(result.error),
             )
             return web.json_response(result.to_dict(), status=400)
 
@@ -673,11 +674,14 @@ async def handle_open_app(request: web.Request) -> web.Response:
     if not open_cmd:
         return web.json_response({"error": "app has no openCommand"}, status=400)
 
-    denied = app_execution_denied(
+    # Off the loop: under the signature policy the gate hashes the package.
+    denied = await asyncio.to_thread(
+        app_execution_denied,
         name,
         action="open_command",
         app_root=apps_dir() / name,
         caller="dashboard",
+        manifest=manifest,
     )
     if denied:
         return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
@@ -753,16 +757,32 @@ async def handle_open_app(request: web.Request) -> web.Response:
         # takes it back out, together with the AWS secret/session pair, the GPG
         # home and the askpass hook.
         launch_env = scrub_env(minimal_env())
+        # Under the fleet signature policy: no bytecode read from the app folder,
+        # through a fresh cache dir removed when the launched process exits.
+        from kiro_crew.apps.admission import (
+            new_pycache_dir,
+            release_pycache_dir_after,
+            remove_pycache_dir,
+            signed_pycache_env,
+        )
+
+        pycache_dir = await asyncio.to_thread(new_pycache_dir, name)
+        launch_env.update(signed_pycache_env(pycache_dir))
         for desktop_key in _OPEN_COMMAND_DESKTOP_ENV_KEYS:
             desktop_value = session.get(desktop_key, os.environ.get(desktop_key))
             if desktop_value is not None:
                 launch_env[desktop_key] = desktop_value
-        proc = await create_subprocess_limited(
-            *sandboxed_cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=launch_env,
-        )
+        try:
+            proc = await create_subprocess_limited(
+                *sandboxed_cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=launch_env,
+            )
+        except BaseException:
+            await asyncio.to_thread(remove_pycache_dir, pycache_dir)
+            raise
+        release_pycache_dir_after(proc, pycache_dir)
         # Don't wait — launch is fire-and-forget
         sel().log_api_access(
             caller="dashboard",

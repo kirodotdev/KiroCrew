@@ -466,7 +466,7 @@ async def _run_on_enable_script(
         setup.get("onEnableTimeout"), app_name=name, field_name="onEnableTimeout"
     )
     script_output = await _run_lifecycle_script(
-        name, on_enable, timeout=timeout, action="on_enable"
+        name, on_enable, timeout=timeout, action="on_enable", manifest=manifest
     )
     cleaned, _ = redact_credentials(script_output.get("output", ""))
     failed = bool(script_output.get("failed", False))

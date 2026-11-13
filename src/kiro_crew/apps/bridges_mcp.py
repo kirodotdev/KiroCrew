@@ -42,6 +42,7 @@ from kiro_crew.apps.interpreter import (
 )
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.apps.manifest import AppManifest, has_stdio_mcp_server, is_module_style_entry_point
+from kiro_crew.apps.package_signature import is_python_interpreter as _is_python_interpreter
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
@@ -536,6 +537,50 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
     return cfg
 
 
+def _signed_stdio_launch(
+    app_name: str,
+    declared: object,
+    cfg: dict,
+    flags: list[str],
+    child_env: dict[str, str],
+) -> dict:
+    """*cfg* prepared as a signed stdio launch under the fleet signature policy.
+
+    *flags* and *child_env* are ``admission.signed_pycache_flags`` and
+    ``signed_pycache_env`` for the app's current dir, both empty without the policy, which
+    leaves *cfg* as it is. Under it, a Python launch gets the interpreter flags and
+    the signed-first shim, and every stdio launch gets the bytecode environment plus
+    the checked list the shim reads (``signed_first_launch_env``). Registration and
+    the agent-config rebuild's manifest fallback both prepare a spec here.
+    """
+    from kiro_crew.apps.admission import signed_first_launch_env, signed_first_python_args
+
+    if flags and _launches_python(declared, cfg):
+        args = [*flags, *(cfg.get("args") or [])]
+        cfg = {**cfg, "args": signed_first_python_args(app_name, args)}
+    if child_env:
+        launch_env = signed_first_launch_env(app_name, cfg.get("args") or [])
+        cfg = {**cfg, "env": {**(cfg.get("env") or {}), **child_env, **launch_env}}
+    return cfg
+
+
+def _launches_python(declared: object, cfg: dict) -> bool:
+    """Whether a resolved stdio entry's command is a Python interpreter itself.
+
+    Only then are interpreter options added (``package_signature.is_python_interpreter``:
+    ``python``, ``python3.12``, ``pythonw`` or the running interpreter). A console
+    script (``python-lsp-server``), ``node`` or a shell is left as authored. The host
+    CLI (``kirocrew``, pinned to the gateway's own interpreter) runs Kiro Crew's code,
+    not the app's, so it is left alone too.
+    """
+    if isinstance(declared, dict) and declared.get("command") == _HOST_CLI_COMMAND:
+        return False
+    command = cfg.get("command")
+    return isinstance(command, str) and (
+        command == sys.executable or _is_python_interpreter(command)
+    )
+
+
 def _strip_deps_pythonpath(cfg: dict, deps_dir: Path) -> None:
     """Drop the deps dir from a shimmed server's PYTHONPATH, in place.
 
@@ -1011,6 +1056,18 @@ def _register_mcp_servers(
         return []
     resolved_port = _live_port_for(app_name, live_port)
     _maybe_provision_backendless_deps(app_name, manifest)
+    # Under the fleet signature policy a stdio server keeps no bytecode in the app
+    # folder (admission.signed_pycache_env); empty otherwise.
+    from kiro_crew.apps.admission import (
+        mcp_pycache_dir,
+        signed_pycache_env,
+        signed_pycache_flags,
+    )
+
+    # A fresh bytecode cache dir per registration, replacing the previous one.
+    pycache_dir = mcp_pycache_dir(app_name, renew=True)
+    pycache_env = signed_pycache_env(pycache_dir)
+    pycache_flags = signed_pycache_flags(pycache_dir)
     registered: list[str] = []
     skipped: list[str] = []
     # Reconcile guard OUTSIDE _mcp_lock: that order is fixed everywhere, so a health
@@ -1065,6 +1122,9 @@ def _register_mcp_servers(
                     if isinstance(env, dict):
                         _warn_unresolved_secret_refs(app_name, server_name, env)
                         cfg = {**cfg, "env": emit_env(env)}
+                    cfg = _signed_stdio_launch(
+                        app_name, server_config, cfg, pycache_flags, pycache_env
+                    )
             servers[namespaced] = cfg
             registered.append(namespaced)
         # LAST governance pass before this map hits disk. A verb an entry here
@@ -1134,6 +1194,7 @@ def reregister_app_mcp_servers(
         app_name,
         action="mcp_register",
         app_root=app_root,
+        manifest=manifest,
     ):
         _deregister_mcp_servers(app_name)
         return []
@@ -1223,7 +1284,7 @@ def scrub_backend_mcp_url(app_name: str, unreconciled: list[str] | None = None) 
     # The admission gate that `reregister_app_mcp_servers` applies is kept explicitly: a
     # denied app gets a FULL removal rather than the selective keep-stdio treatment,
     # because nothing of a denied app should stay reachable.
-    if _registration_denied(app_name, action="mcp_register", app_root=app_root):
+    if _registration_denied(app_name, action="mcp_register", app_root=app_root, manifest=manifest):
         _deregister_mcp_servers(app_name)
         return []
     return _register_mcp_servers(app_name, manifest, live_port=None)
@@ -1266,6 +1327,12 @@ def _scrub_legacy_shared_mcp(app_name: str) -> int:
 
 def _deregister_mcp_servers(app_name: str) -> int:
     """Remove an app's MCP servers from the agent config (and the legacy shared file)."""
+    from kiro_crew.apps.admission import release_pycache_dir, remove_signed_first_list
+
+    # The registration's bytecode cache dir and checked list go with the servers
+    # that named them.
+    release_pycache_dir(f"mcp:{app_name}")
+    remove_signed_first_list(app_name)
     prefix = f"{app_name}:"
     with _health_reconcile_guard(), _mcp_lock():
         mcp_data = _read_mcp_json_unlocked(strict=True)

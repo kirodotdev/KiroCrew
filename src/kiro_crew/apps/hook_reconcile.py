@@ -366,7 +366,7 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             # load it; if still denied, stay quiet (no per-tick churn).
             if loaded_hook_manifest(name) is not None:
                 return
-            if await asyncio.to_thread(hook_enable_denied, name):
+            if await asyncio.to_thread(hook_enable_denied, name, current.get("manifest", {})):
                 return
             # Now admitted with unchanged hooks -> load them (fall through).
             logger.info("hook reconcile: loading now-admitted app %s", name)
@@ -374,7 +374,7 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
             return
         # Re-check admission UNDER the lock before running any app code: an app
         # mid-trust-withdrawal (or already denied) must never be revived here.
-        denied = await asyncio.to_thread(hook_enable_denied, name)
+        denied = await asyncio.to_thread(hook_enable_denied, name, current.get("manifest", {}))
         if denied:
             # A loaded app reinstalled out-of-process from a source that no
             # longer matches its execution grant lands here (sig changed +

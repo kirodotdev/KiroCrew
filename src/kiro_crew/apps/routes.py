@@ -313,6 +313,10 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.admission import (  # noqa: F401
+        admission_audit_error,
+        admission_audit_resources,
+    )
     from kiro_crew.apps.bridges import (  # noqa: F401
         _prune_stale_app_resources,
         _registration_source,

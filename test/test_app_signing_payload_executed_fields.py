@@ -13,6 +13,10 @@ signature still verifying:
 Each key is added under a NON-EMPTY guard, so a manifest declaring none of them hashes
 as before (``test_a_manifest_without_them_produces_the_pre_change_payload``). The tests
 use production symbols only and never re-implement the gate's HMAC.
+
+These are scheme-1 checks, read through ``verified_signer`` (provenance). A fleet that
+sets ``require_signature`` admits only signature scheme 2, which signs the whole
+manifest and every packaged file (``test_app_package_signature.py``).
 """
 
 from __future__ import annotations
@@ -132,19 +136,22 @@ def test_a_manifest_without_them_produces_the_pre_change_payload():
 
 
 def test_a_signature_issued_under_the_pre_change_payload_still_verifies(enforcing_fleet):
-    """A publisher's existing signature on a non-declaring manifest is admitted."""
+    """A publisher's existing signature on a non-declaring manifest still names its signer.
+
+    A signing fleet does not ADMIT it: scheme 1 binds no packaged file, so the
+    gate asks for a scheme-2 re-sign.
+    """
     manifest = _carrying_signature_of(PUBLISHED_PLAIN, PUBLISHED_PLAIN)
-    assert app_admission_denied(APP, manifest=manifest) is None
+    assert "re-sign" in (app_admission_denied(APP, manifest=manifest) or "")
     assert verified_signer(manifest) == SIGNER
 
 
-def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing_fleet):
-    """PRECONDITION for every tamper test below: the real thing is admitted.
+def test_precondition_a_declaring_manifest_verifies_when_untampered(enforcing_fleet):
+    """PRECONDITION for every tamper test below: the real thing names its signer.
 
     Without this a later denial would prove only that the fixture is broken.
     """
     manifest = _carrying_signature_of(PUBLISHED, PUBLISHED)
-    assert app_admission_denied(APP, manifest=manifest) is None
     assert verified_signer(manifest) == SIGNER
 
 
@@ -175,9 +182,8 @@ def test_tampering_a_newly_covered_field_is_denied(enforcing_fleet, label, tampe
     """The publisher's signature must not carry an attacker-chosen program."""
     manifest = _carrying_signature_of(PUBLISHED, tampered)
     assert (
-        app_admission_denied(APP, manifest=manifest) is not None
+        verified_signer(manifest) == ""
     ), f"a rewritten {label} is admitted under the publisher's signature"
-    assert verified_signer(manifest) == ""
 
 
 # Control 5 -- tampering an ALREADY covered field is still denied
@@ -194,7 +200,7 @@ def test_tampering_an_already_covered_field_is_still_denied(enforcing_fleet, lab
     """The fields the payload already covered keep failing, unchanged."""
     manifest = _carrying_signature_of(PUBLISHED, tampered)
     assert (
-        app_admission_denied(APP, manifest=manifest) is not None
+        verified_signer(manifest) == ""
     ), f"a rewritten {label} must still invalidate the signature"
 
 
@@ -224,7 +230,11 @@ def test_no_shipped_builtin_carries_a_signature(manifest_path, enforcing_fleet):
 
 
 def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path, monkeypatch):
-    """An unsigned builtin stays enableable on a fleet demanding signatures."""
+    """An unsigned builtin stays enableable on a fleet demanding signatures.
+
+    The exemption needs the name to be a package this build ships, so the record
+    names a real shipped builtin rather than a synthetic one.
+    """
     from kiro_crew.apps.manager import InstalledApp, _write_installed, enable_app
 
     home = tmp_path / "kirocrew-home"
@@ -241,10 +251,11 @@ def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path,
         ),
         encoding="utf-8",
     )
+    shipped = AppManifest.from_json_file(_shipped_builtin_manifests()[0]).name
     _write_installed(
-        "builtin-demo",
+        shipped,
         InstalledApp(
-            name="builtin-demo",
+            name=shipped,
             version="1.0.0",
             displayName="Builtin Demo",
             enabled=False,
@@ -252,7 +263,7 @@ def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path,
             lifecycle="locked",
         ),
     )
-    result = enable_app("builtin-demo")
+    result = enable_app(shipped)
     # Other gates may still refuse this synthetic entry; the ADMISSION gate
     # must not, or an enforcing fleet would make every core app un-enableable.
     assert "blocked by admission policy" not in (result.error or ""), result.error
