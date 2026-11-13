@@ -147,6 +147,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // the hand-written `security.config-pending` entry stays anchored to its source.
   'SecurityPanelConfigPending.tsx': 'security',
   'OAuthAppPanel.tsx': 'connections',
+  // The MCP sign-ins switch SettingsPage mounts under the Connections page.
+  'McpSignInsSection.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
   // Draws the tab while the Secrets vault redesign preview is off.
   'SecretsPanelLegacy.tsx': 'secrets',

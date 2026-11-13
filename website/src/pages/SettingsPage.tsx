@@ -28,6 +28,7 @@ import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanelLegacy } from './settings/SecretsPanelLegacy'
+import { McpSignInsSection } from './settings/McpSignInsSection'
 import { useConnectionsUiEnabled, useConnectionsUiPending } from '../hooks/useConnectionsUi'
 import SettingsSearch from './settings/SettingsSearch'
 import { Btn, ContentSkeleton } from '../components/ui'
@@ -365,6 +366,7 @@ export default function SettingsPage() {
             {connectionsUiPending
               ? <ContentSkeleton rows={6} />
               : <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
+            <McpSignInsSection />
           </Suspense>
         )}
         {tab === 'secrets' && (

@@ -20746,6 +20746,11 @@
         "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
       },
       "connectionsPanel": {
+        "sign_ins_title": "MCP 登录",
+        "remember_sign_ins": "跨会话记住 MCP 登录",
+        "remember_sign_ins_hint": "让你在 Kiro Agent 后端的新对话中保持登录 MCP 服务器。在此 {{productName}} 上运行对话的每个人都能使用已保存的登录；你共享给的人也可以。更改在 {{productName}} 下次重启后生效；对话和历史记录会保留。",
+        "remember_sign_ins_save_failed": "无法保存 MCP 登录设置。",
+        "remember_sign_ins_load_failed": "无法加载 MCP 登录设置。",
         "loading": "加载中…",
         "none": "此安装中的所有提供方都会自行注册 OAuth 客户端，因此这里无需配置。",
         "load_failed": "无法加载 OAuth 应用",

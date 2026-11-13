@@ -217,6 +217,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # How many live sessions one creator may hold: a higher number lets an agent
     # that opens sessions hold more of them without asking.
     "session.max_per_creator": tuple(range(MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX + 1)),
+    # On, a new KAS session reuses a stored remote MCP sign-in without asking.
+    "agent.kas_persist_mcp_sign_in": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

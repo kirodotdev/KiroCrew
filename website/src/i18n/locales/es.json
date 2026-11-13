@@ -21780,6 +21780,11 @@
         "could_not_read_webhook_status": "No se pudo leer el estado del webhook — comprueba que el gateway esté en ejecución"
       },
       "connectionsPanel": {
+        "sign_ins_title": "Inicios de sesión de MCP",
+        "remember_sign_ins": "Recordar los inicios de sesión de MCP entre sesiones",
+        "remember_sign_ins_hint": "Mantiene tu sesión iniciada en tus servidores MCP en los chats nuevos del backend Kiro Agent. Todas las personas cuyos chats se ejecutan en este {{productName}} pueden usar un inicio de sesión guardado, incluidas aquellas con quienes lo compartes. Los cambios se aplican la próxima vez que {{productName}} se reinicie; tus chats y su historial se conservan.",
+        "remember_sign_ins_save_failed": "No se pudo guardar el ajuste de inicio de sesión de MCP.",
+        "remember_sign_ins_load_failed": "No se pudo cargar el ajuste de inicio de sesión de MCP.",
         "loading": "Cargando…",
         "none": "Todos los proveedores de esta instalación registran su propio cliente OAuth, así que aquí no hay nada que configurar.",
         "load_failed": "No se pudieron cargar las aplicaciones OAuth",
