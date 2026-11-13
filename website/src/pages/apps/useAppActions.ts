@@ -22,6 +22,7 @@ import type { TrustAppTarget } from '../../components/appstore/TrustAppModal'
 import { desktopRequestOf } from '../../components/appstore/desktopRequest'
 import { consentTierFor } from '../../components/appstore/registryTier'
 import { appActionNotice } from '../../components/appstore/backendRefused'
+import { trustGrants } from '../../components/appstore/trustGrants'
 import type { AppsData } from './useAppsData'
 
 type AppActionsInput = Pick<
@@ -67,10 +68,7 @@ export function useAppActions({
       trustRepository: installed.trustRepository,
       origin: installed.origin,
       _registry: row?._registry,
-      sessionApproval: installed.manifest.permissions?.sessionApproval === true,
-      memberThreads: installed.manifest.permissions?.memberThreads === true,
-      workerAutoApprove: installed.manifest.permissions?.workerAutoApprove === true,
-      reachableByUserSessions: installed.manifest.permissions?.reachableByUserSessions,
+      ...trustGrants(installed.manifest.permissions),
       desktop: desktopRequestOf(installed.manifest),
     }
     if (row) return {
@@ -79,10 +77,7 @@ export function useAppActions({
       trustRepository: row.trustRepository,
       origin: row.origin,
       _registry: row._registry,
-      sessionApproval: row.manifest?.permissions?.sessionApproval === true,
-      memberThreads: row.manifest?.permissions?.memberThreads === true,
-      workerAutoApprove: row.manifest?.permissions?.workerAutoApprove === true,
-      reachableByUserSessions: row.manifest?.permissions?.reachableByUserSessions,
+      ...trustGrants(row.manifest?.permissions),
       desktop: desktopRequestOf(row.manifest),
     }
     return { name }

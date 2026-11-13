@@ -119,6 +119,7 @@ interface AppPermissions {
   sessionApproval?: boolean
   memberThreads?: boolean
   workerAutoApprove?: boolean
+  chatSlots?: boolean
   reachableByUserSessions?: string[]
   [key: string]: unknown
 }

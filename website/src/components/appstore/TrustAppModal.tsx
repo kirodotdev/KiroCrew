@@ -67,6 +67,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   sessionApproval?: boolean
   /** The app declares `permissions.workerAutoApprove`: its own background sessions may auto-approve. */
   workerAutoApprove?: boolean
+  /** The app declares `permissions.chatSlots`: it runs chat sessions of its own. */
+  chatSlots?: boolean
   /** The `permissions.reachableByUserSessions` verbs: what your chats may do to the sessions it runs. */
   reachableByUserSessions?: string[]
   /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
@@ -783,6 +785,19 @@ export default function TrustAppModal({
               </div>
               <p className="text-text leading-relaxed">
                 {i18nT('components.appstore.trustAppModal.worker_auto_approve_desc')}
+              </p>
+            </div>
+          )}
+          {/* A manifest-declared request too: the app opens and drives chats of its
+              own, which a person sees in the sidebar under it. */}
+          {app.chatSlots && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-chat-slots">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <MessagesSquare size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.chat_slots_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.chat_slots_desc')}
               </p>
             </div>
           )}

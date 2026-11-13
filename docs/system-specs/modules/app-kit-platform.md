@@ -6888,8 +6888,8 @@ any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
 manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
-an app's windows (§35), and the exact `permissions.api` entry (§ Scoped frontend HTTP
-transport). Several seams share level 7, so an app that needs one
+an app's windows (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
+transport), and `ctx.chat_slots` (§41). Several seams share level 7, so an app that needs one
 feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7050,9 +7050,8 @@ manifest declares `agentTurns`, so an installed copy gets the same
 seam from `ctx.turns`. The session manager it hands the SDK is still the one its
 routes read off `request.app["state"]`.
 
-**Not here.** Spec Builder's turns are dashboard chat-slot turns (`_run_chat`, the
-slot queue, restore and archive), which need an app-owned chat slot API rather than
-a background turn. Protected subdirectories (Meetings' `edits/` and `notes/`, Spec
+**Not here.** Dashboard chat-slot turns (`_run_chat`, the slot queue, restore and
+archive) are the app-owned chat slot seam (§41), not a background turn. Protected subdirectories (Meetings' `edits/` and `notes/`, Spec
 Builder's decision record under `trust/`) stay core rows: a manifest-declared HIDDEN
 leaf under the app's own data directory is the credential-mask seam, and a
 write-only fence an app declares for itself is not yet an approved seam.
@@ -7223,11 +7222,12 @@ ties the shipped pins to the structural route registry (`route_registry._route_f
 level field, so the tool never picks a level above 1 itself. It reads the pinned tree
 for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
 `permissions.agentTurns` and `permissions.workerAutoApprove` in `app.json` (level 2),
-`credentialMasks` (level 3), `agentReadOnlyDirs` and an exact `permissions.api` entry
-(level 7), and `ctx.turns`,
+`credentialMasks` (level 3), `agentReadOnlyDirs`, an exact `permissions.api` entry and
+`permissions.chatSlots` (level 7), and `ctx.turns`,
 `ctx.untrusted`, `ctx.lifecycle` or
 `ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
-`conftest.py` (level 2), and `ctx.app_token` or `ctx.gateway_origin` there (level 5), read as an attribute of a context-named receiver or as a
+`conftest.py` (level 2), `ctx.app_token` or `ctx.gateway_origin` there (level 5), and
+`ctx.chat_slots` there (level 7), read as an attribute of a context-named receiver or as a
 `getattr`/`hasattr` of that name on any receiver, and the backend SDK package in
 any form in such a file (level 7): the file names both `kiro_crew` and the word
 `backend_sdk`, which catches a dotted import, `from kiro_crew.apps import
@@ -7317,7 +7317,7 @@ after STAGE is never executed), then:
 | E10 no `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on; an `mcpServers` entry only as a stdio server started from the tree within the wheel copy's declaration (below) | `pinned_feature_unsupported` | never |
 | E3/E5 host version, `APP_SDK_LEVEL`, `platform.os` | `host_too_old`, `host_sdk_too_old`, `platform_mismatch` | every STAGE pass |
 | E4 admission (`action="update"`, no exemption) | `admission_denied` | every STAGE pass |
-| E9 permission parity: nothing held back, no new `sessionApproval` | `permission_widening` | every STAGE pass |
+| E9 permission parity: nothing held back, no new `sessionApproval` or `chatSlots` | `permission_widening` | every STAGE pass |
 | E6 trust: a grant to another repository is never overwritten | `trust_conflict`, `trust_overlay_owned`, `config_unreadable` | every STAGE pass |
 | a transient failure (the config or the disk) | `config_unreadable`, `disk_full` | every STAGE pass, from the kept staged artifact |
 
@@ -8350,6 +8350,146 @@ Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py` (`_seam_level_uses`).
 Pinned by `test/test_app_backend_sdk.py` and `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
+
+## 41. App-owned chat slots (seam level 7)
+
+Level 7 (`APP_SDK_LEVEL = 7`) publishes what a built-in whose worker is a visible
+dashboard chat (Spec Builder) reached privately: `chat_runner._run_chat` and
+`_start_next_queued_turn`, `turn_dispatch.bounded_chat_turn`,
+`session_control.containment_meta`, `chat_persistence.rehydrate_slot_from_history_async`
+and `save_slot_off_loop`, `chat_utils._history_key_for`,
+`session_lifecycle.compaction_in_flight`, the slot registry and background-task set on
+the dashboard state, and AutoNudge's service, maintenance view and
+`authorize_and_add_nudge`. Owner ruling 4 of 2026-11-13 (#26967, comment 6841699202)
+asked for it as a generic seam. Nothing in it names an app, and it widens neither the
+sandbox nor governance: a turn runs through the same runner, ceiling, admission,
+approval and stop paths a typed dashboard message takes.
+
+**One level for the batch.** Level 7 is the level of every seam in the open batch
+(#26967, comment 6844003956), as `strictSession` joined level 2 before level 2 shipped
+(§30.1): whichever merges first raises `APP_SDK_LEVEL` from 6 to 7 and the rest keep
+it. A nightly host can therefore report 7 without this seam, so an app tests for
+`ctx.chat_slots` itself, never the level alone.
+
+**Declaration.** `permissions.chatSlots`, the literal `true` (`Permissions.chatSlots`,
+`manifest_sections.py`). `build_app_context` then sets `ctx.chat_slots` to a
+`ChatSlotSDK` (`apps/chat_slot_sdk.py`) for `ctx.name`, holding `ctx.http_app` so the
+AutoNudge calls can default to the dashboard state; otherwise `None`. It is shown
+on the trust prompt (`TrustAppModal`, from `trustGrants`, which every entry point that
+opens the prompt reads), in the catalog's pre-install disclosure
+(`official_catalog._DISCLOSED_PERMISSIONS`), in the CLI install summary
+(`permissions.format_permissions_summary`) and on the detail page (`ChatSlotsBox`).
+It is not a grant family: an installed app's Python already runs trusted in the
+gateway and could reach these functions by name, so the flag adds no reach. It names
+the seam so "which apps run chats of their own" is answerable from the manifest. E9
+(§33) still refuses an adopted manifest that declares it when the wheel copy does
+not, so adoption never shows the owner a declaration the copy they run lacked.
+
+**Identity.** A key is `<app>-<id>` (`agent_turn_sdk._KEY_ID_RE`, the `ctx.turns`
+grammar) no longer than the length the slot registry folds a long key to
+(`_SLOT_KEY_KEEP_CHARS + 1 + _SLOT_KEY_HASH_CHARS`, 193), checked before the state is
+read: a key the registry folds names another slot and transcript, so a lookup by the
+spelled one would miss, and a longer unfolded key's transcript, `.lock` and archive file
+names would not fit 255 bytes. The prefix alone proves nothing (app
+`notes` spells every key of app `notes-tools`), so a slot is the app's when
+`slot._app == ctx.name` (`ChatSlotSDK.owns`); the chat runner hands that name to the
+tool gate, so `POLICY ∩ PROFILE` resolves with the app's profile. `open` refuses a
+slot already under the key that is not the app's (another app's, or an unscoped chat a
+person opened) and leaves it untouched. With no live slot, `open` and `restore` first
+read the saved transcript's metadata off the event loop (`_saved_meta`): `restore`
+rehydrates only a transcript whose `app` is `ctx.name`, so another owner's chat never
+reaches the dashboard, and `open` refuses a key whose saved transcript records any other
+owner, a person's included. A new slot is then created by
+`get_or_create_slot(name=key, app=ctx.name)` with no await after the last lookup, and one
+the folded key lands on that is not the app's is refused too. `open` and `restore` read a
+restored sidebar row's window in with `load_window_off_loop`, and `send` raises
+`RuntimeError` on a slot whose window is still pending. Every call that acts on a slot
+(`send`, `reserve`, `discard_queued`,
+`set_title`, `stop_turn`, `archive`, `arm_nudge`) raises `ChatSlotRefused`, a
+`PermissionError`, for any other slot, before touching it. The ones the gateway carries
+out by key (`send`, `reserve`, `set_title`, `stop_turn`, `arm_nudge`) also require the
+object to be the live slot under its key (`_require_live`): an object the app kept
+after archiving still carries its stamp, while the key may hold another app's slot. `get`, `restore` and
+`transcript` answer only the app's own slot: a restored transcript another owner holds
+is not returned, a foreign live slot's transcript is `[]`, and a saved transcript is
+read (off the loop) only when its metadata's `app` is `ctx.name`. `set_title` stores the
+title after `ScrubSDK.outbound`, because `push_slot_title` broadcasts it unredacted, and
+withholds it when redaction fails; a stored title marks the slot `_dirty`, since the
+periodic flush saves only a dirty slot and the title lives on the metadata line.
+
+**Turns.** `send` on an idle slot delivers a note hold a restart restored
+(`slot_buffers.flush_restored_hold`, as every direct turn starter does), appends the user
+row (with `meta`), starts
+`_run_chat` with `_directive_user_origin=user_origin`, `_message_is_typed=typed`,
+`_turn_actor="app"` (the actor an app's own `/api/chat` send carries, so admission
+charges the automation budget and the crew log records the app) and
+the two consumption callbacks, under `state.run_background_turn` (the operator's
+unattended-turn cap, as for an app's own `/api/chat` turn; inert while a person drives
+the slot), started by `turn_dispatch.spawn_guarded_turn`, the start `/api/chat` uses
+(the session's own ceiling, the state's background tasks, a failure card the dashboard
+shows, and the hand-off of a queue that a turn the cap abandoned before it started
+leaves behind), records it as `slot.task`, and pushes the slot list. `user_origin` defaults to
+`False` and `typed` to `True`, the answers a template-composed turn must not claim
+against. On a running slot it queues: `queue_append` with the caller's `meta` merged
+with `containment_meta`, the `turnActor: "app"` stamp the drain reads the actor from
+(after the caller's `meta`, so it cannot be overridden), and
+`directive_user_origin=user_origin and typed` (the drain
+runs every entry as typed, so a composed message keeps no person's origin there), the stamp every plain queue producer records so the drain
+re-checks the constraints that hold at delivery, then a `queued` row carrying the
+message after `ScrubSDK.outbound`, because `queued` is not a role the slot keeps off
+the global push; a redaction failure withholds it (`QUEUED_TEXT_WITHHELD`); a queued
+message carries no consumption callbacks, and `send` answers `None`. `reserve` makes the
+calling task the slot's `task` so every other starter queues, and its done callback
+releases only its own reservation and hands a non-empty queue to
+`_start_next_queued_turn`. `send(..., reservation=r)` clears `slot.task` while it is
+still `r` and starts the turn in the same synchronous step.
+
+**Stop and archive.** Both call `discard_queued` first (the queue, unconsumed steers
+and a pending synthesis), because `_run_chat`'s end-of-turn block runs on a cancel and
+would start the next prompt. `stop_turn` asks `sessions.stop_turn(force=False)` unless
+`compaction_in_flight` says a compaction holds the session (it would decline), then
+cancels the task it read before that await, never a successor that took `slot.task`
+meanwhile, and waits `TURN_CANCEL_WAIT_SECS` (2s). `archive` acts only while the
+registry still holds that slot object, then hands it to `chat_handlers.close_slot`, the
+close a tab's close button runs: it retires the AutoNudge loop, notifies a slot-close
+hook the app registered, cancels the turn, persists the slot as closed and tears the
+session down, and it owns the races of that sequence (a refused save, a session deleted
+meanwhile, a same-key slot opened during the close, which gets the hand-over drain and
+keeps its own metadata), so the seam carries no second copy of them. A close that raises did not
+commit and has rolled itself back, so `archive` answers `False`.
+
+**AutoNudge.** `nudges()` (live service) and `nudge_maintenance()` (the store view,
+serialized with startup and peers) return an `AppNudges` view that lists, finds,
+removes and pauses only loops on a slot the app owns; acting on any other id raises
+`ChatSlotRefused`. A loop record names no owner, so ownership is the slot's: the live
+slot's `_app`, which `nudges()` reads without blocking, and for a key with no live slot,
+in `nudge_maintenance()` only, the `app` its saved transcript's metadata records, read
+off the loop once on entry. `remove_on_slot(key, only_loop_id=...)` pins a
+removal to a loop the caller captured. `remove` and `remove_on_slot` answer whether
+the loop is gone: the live service's `False` (a maintenance quiesce holds the loop,
+which stays stored) comes back as `False`, and the maintenance view, which removes
+under the lock it holds and raises on a failed write, answers `True`. `arm_nudge` arms through
+`authorize_and_add_nudge` with `source="app:<ctx.name>"`, so the ownership checks,
+message limits, sensitive stop-sentinel refusal and audit row are the ones
+`POST /api/autonudge` applies; with AutoNudge not running it answers
+`(None, reason, 503)`.
+
+**The gateway functions are read when a method runs** (`importlib`), so a context
+built before the dashboard is ready works once it is, and a test that replaces one at
+its own module is seen.
+
+**The built-in.** Spec Builder's wheel copy declares `chatSlots`, so an adopted copy
+that reads `ctx.chat_slots` is not a widening. The installed copy feature-detects the
+attribute and falls back to its named host lookups on an older host.
+
+Writers: `apps/chat_slot_sdk.py`, `apps/context.py`, `apps/manifest_sections.py`,
+`apps/builtin_adoption_checks.py`, `apps/permissions.py`, `apps/official_catalog.py`,
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py`,
+`apps/builtins/spec_builder/app.json`, `website/src/components/appstore/trustGrants.ts`,
+`website/src/components/appstore/TrustAppModal.tsx`,
+`website/src/pages/AppDetailGrantBoxes.tsx`. Tests: `test/test_app_chat_slot_sdk.py`,
+`test/test_builtin_adoption_pins.py`, `test/test_builtin_adoption_apply.py`,
+`website/src/test/TrustAppModalChatSlots.test.tsx`.
 
 ## Windows stale-backend cleanup capacity
 

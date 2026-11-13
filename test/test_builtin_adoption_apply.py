@@ -225,6 +225,13 @@ async def test_an_approved_set_narrower_than_the_pin_is_widening(world):
                 "sessionApproval": True,
             }
         },
+        {
+            "permissions": {
+                "api": [f"/api/apps/{NAME}", f"/api/apps/{NAME}/*"],
+                "storage": True,
+                "chatSlots": True,
+            }
+        },
     ],
 )
 async def test_a_widening_manifest_is_refused_with_nothing_mutated(

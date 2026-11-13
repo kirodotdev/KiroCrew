@@ -64,6 +64,7 @@ _CONTEXT_SEAMS = {
     "auto_approve": 2,
     "app_token": 5,
     "gateway_origin": 5,
+    "chat_slots": 7,
 }
 
 #: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,
@@ -128,11 +129,11 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
 
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
     ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
-    ``agentReadOnlyDirs`` and an exact ``permissions.api`` entry at level 7), the
-    context seams any non-test ``.py`` file reaches, and the backend SDK package
-    (level 7) any of them names. A miss lets a
-    pin adopt on a host without the seam, so the scan errs wide: a false hit only
-    asks for a higher ``--min-sdk-level``.
+    ``agentReadOnlyDirs``, an exact ``permissions.api`` entry and
+    ``permissions.chatSlots`` at level 7), the context seams any non-test ``.py``
+    file reaches, and the backend SDK package (level 7) any of them names. A miss
+    lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
+    only asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -152,6 +153,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
         isinstance(entry, str) and entry.strip().startswith(EXACT_API_ENTRY_MARK) for entry in api
     ):
         uses["app.json permissions.api exact entry"] = 7
+    if permissions.get("chatSlots") is True:
+        uses["app.json permissions.chatSlots"] = 7
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):

@@ -21,6 +21,21 @@ export function WorkerAutoApproveBox({ staged }: { staged: boolean }) {
   )
 }
 
+/** `permissions.chatSlots`: the app opens and drives chat sessions of its own. */
+export function ChatSlotsBox() {
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="chat-slots">
+      <div className="flex items-start gap-2 text-text">
+        <MessagesSquare size={13} className="mt-[2px] shrink-0 text-muted" />
+        <span>{i18nT('pages.appDetailPage.chat_slots_desc')}</span>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>chatSlots</code>
+      </div>
+    </div>
+  )
+}
+
 const REACH_VERBS = ['read', 'send'] as const
 
 /** The known verbs in a `permissions.reachableByUserSessions` value. Anything else grants nothing. */

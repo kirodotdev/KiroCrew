@@ -409,6 +409,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # baseline pass and finishes the text through `redact_via_context`, so a
         # loaded companion's patterns still apply to whatever the app publishes.
         "apps/scrub_sdk.py",
+        # Scrubs, through ScrubSDK, the two texts an app writes onto its own chat
+        # slot that the dashboard pushes to every client: a queued message's
+        # `queued` row and the slot title. It owns no output -- both leave only in
+        # the dashboard's slot frames, the gateway's own push path.
+        "apps/chat_slot_sdk.py",
         # Redacts artifact names/metadata at the point they are STAGED (the
         # pushable list and the S3 meta sidecar), before any response exists.
         # It owns no output of its own — every HTTP response carrying that data

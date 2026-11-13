@@ -112,7 +112,7 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; reachableByUserSessions?: string[] }
+    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; reachableByUserSessions?: string[] }
     mcpServers?: Record<string, McpServerView>
     platform?: { requiresDesktopApp?: boolean }
   }
@@ -252,6 +252,7 @@ export type InstalledApp = {
       sessionApproval?: boolean
       memberThreads?: boolean
       workerAutoApprove?: boolean
+      chatSlots?: boolean
       reachableByUserSessions?: string[]
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
