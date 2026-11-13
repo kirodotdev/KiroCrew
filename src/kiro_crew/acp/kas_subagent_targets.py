@@ -317,7 +317,11 @@ def _project_target(
     from kiro_crew import agent as agent_mod
     from kiro_crew.acp.harness import kas as kas_harness
     from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
-    from kiro_crew.acp.kas_settings_mcp import include_mcp_json, stamp_settings_mcp
+    from kiro_crew.acp.kas_settings_mcp import (
+        declared_servers,
+        include_mcp_json,
+        stamp_settings_mcp,
+    )
     from kiro_crew.acp.session_mcp import (
         session_mcp_disabled_servers,
         session_mcp_disabled_tools,
@@ -400,12 +404,11 @@ def _project_target(
     # session's own stamp already reported an unreadable file. A switched-off
     # server is not one it declares, so a pooled stub of the file's server that no
     # agent of the batch loads is not sent (``without_excluded_stubs``).
-    declared = spec.get("mcpServers")
     [entry] = stamp_settings_mcp(
         [entry],
         name,
         settings_dir,
-        declared=[n for n in declared if n not in muted] if isinstance(declared, dict) else (),
+        declared=declared_servers(spec),
         legacy_mcp_json=legacy_mcp_json(name, agents_dir, spec) and prompt_dir == agents_dir,
         # From the spec: the projected entry never carries a ``true``.
         opted_in=include_mcp_json(spec) is True,

@@ -59,7 +59,12 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
-from kiro_crew.acp.kas_settings_mcp import excluded_whole, include_mcp_json, stamp_settings_mcp
+from kiro_crew.acp.kas_settings_mcp import (
+    declared_servers,
+    excluded_whole,
+    include_mcp_json,
+    stamp_settings_mcp,
+)
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
@@ -1320,14 +1325,11 @@ class KasHarness(MembershipHarness):
             unmatched.update(unmatched_disabled_globs(projected.get("mcpServers")))
             # The mcp.json / cli.json reads the wire envelope finishes the block
             # from, read here off the loop and beside the session's own directory.
-            declared = spec.get("mcpServers")
             custom_agents = stamp_settings_mcp(
                 custom_agents,
                 agent,
                 session_cwd or work_dir,
-                declared=(
-                    [n for n in declared if n not in muted] if isinstance(declared, dict) else ()
-                ),
+                declared=declared_servers(spec),
                 # Called for every session so the first one records the list; only
                 # a user-level spec can be on it, since a checkout's spec of the
                 # same name is not the file that was recorded.

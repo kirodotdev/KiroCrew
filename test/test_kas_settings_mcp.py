@@ -15,7 +15,11 @@ import pytest
 from kas_agents_helpers import _spec
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import mcp_cleanup
+from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_settings_mcp as settings_mcp_mod
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
+from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.kas_agents import KasAgentTranslationError, to_client_custom_agent
 from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_settings_mcp import (
@@ -30,7 +34,10 @@ from kiro_crew.acp.kas_tool_limits import (
     unmatched_globs_notice,
     with_switched_off_tools,
 )
+from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent_materialization.auto_approve import govern_spec
+from kiro_crew.config import paths as paths_mod
+from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
 
 @pytest.fixture
@@ -104,6 +111,35 @@ class TestUndeclaredFileServers:
         _write(home / "mcp.json", {"mcpServers": {"pooled": {}}})
         out = _finish(_agent(), work, [{"name": "pooled"}])
         assert out["excludedTools"] == ["@pooled"]
+
+    @pytest.mark.asyncio
+    async def test_a_server_a_config_scope_mutes_does_not_keep_its_file_entry(
+        self, home, work, tmp_path, monkeypatch
+    ):
+        """A server the dashboard mutes is not the agent's, so the mcp.json one is excluded."""
+        monkeypatch.setattr(agent_mod, "require_fork_governance", lambda agent, work_dir: None)
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(
+            session_servers_mod, "injection_server_names", lambda overlay, agent: frozenset()
+        )
+        monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: tmp_path)
+        monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", lambda: frozenset({"off"}))
+        monkeypatch.setattr(
+            kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}]
+        )
+        _write(home / "mcp.json", {"mcpServers": {"off": {"command": "o"}}})
+        servers = {"off": {"command": "o"}, "own": {"command": "x"}}
+        spec = {"name": "a", "prompt": "p", "tools": [], "includeMcpJson": False}
+        _write(tmp_path / "a.json", {**spec, "mcpServers": servers})
+        extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(work))
+        (entry,) = extras.custom_agents
+        assert finish_settings_mcp(entry).get("excludedTools") == ["@off"]
+
+    def test_a_server_a_config_scope_switches_off_is_not_declared(self, monkeypatch):
+        """The dashboard's switch-off lives in a scope file, not in the spec it mutes."""
+        monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", lambda: frozenset({"scoped"}))
+        servers = {"own": {"command": "x"}, "scoped": {"command": "s"}}
+        assert settings_mcp_mod.declared_servers({"mcpServers": servers}) == ["own"]
 
     def test_opted_in_agent_keeps_them_and_gets_their_glob_disabled_tools(self, home, work):
         _write(
