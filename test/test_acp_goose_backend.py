@@ -330,12 +330,18 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_goose_session_mcp_servers"
+            and node.func.attr == "_adapter_session_mcp_servers"
         )
     assert splices == 3, (
-        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its array must be spliced into "
-        "the initial session/new, the substitution retry, and session/load; "
+        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so the adapter's array must be "
+        "spliced into the initial session/new, the substitution retry, and session/load; "
         f"found {splices}"
+    )
+    # The adapter for goose answers with goose's own array.
+    from kiro_crew.acp.harness.goose import GooseLaunch
+
+    assert "session._goose_session_mcp_servers()" in inspect.getsource(
+        GooseLaunch.session_mcp_servers
     )
 
 

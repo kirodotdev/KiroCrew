@@ -646,7 +646,8 @@ def _verify_mimocode_routing(
     *argv* arrives ALREADY SANDBOX-WRAPPED, a security property: unwrapped, this
     third-party binary would read the credential homes the mask denies while
     resolving config and project plugins from the work dir. Records the config's
-    rewritten MCP server names on *session* for the turn-time hook matcher.
+    rewritten MCP server names in the session's read-back (``_harness_read_back``)
+    for the turn-time hook matcher.
     Blocking (spawns a short-lived child); callers run it off the loop.
     """
     setting_key, _required = acp_tool_gate.permission_setting_for(backend)
@@ -709,18 +710,19 @@ def _verify_mimocode_routing(
     config_servers, servers_issue = _mimocode_config_mcp_server_names(resolved)
     if servers_issue:
         return servers_issue, _mimocode_config_mcp_servers_remedy()
-    session._mimocode_config_mcp_servers = config_servers
+    read_back = session._harness_read_back()
+    read_back.config_mcp_servers = config_servers
     seeded_denies = _mimocode_seeded_deny_rules(config_content, setting_key)
     contexts = _mimocode_rule_contexts(resolved, setting_key)
     # Which of Crew's deny rules MiMo Code's own disabled() keeps in force in every
     # context. A rule that lost is normally not a refusal: the projection withholds
     # its server.
-    session._mimocode_denies_unenforced = _mimocode_unenforced_denies(contexts, seeded_denies)
+    read_back.denies_unenforced = _mimocode_unenforced_denies(contexts, seeded_denies)
     # ...unless the harness mounts that server from its OWN config too. Withholding the
     # array element does not reach that mount, so the switched-off tool would stay
     # callable there: refuse the session instead.
     lost = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ()) - (
-        frozenset(seeded_denies) - session._mimocode_denies_unenforced
+        frozenset(seeded_denies) - read_back.denies_unenforced
     )
     native = _mimocode_native_servers_holding(resolved, lost)
     # A server the projection could not keep narrowed at all (a tool id that collides
@@ -739,12 +741,12 @@ def _verify_mimocode_routing(
     )
     # Kept so a later re-projection on this spawn is checked against the same native
     # mounts (see refuse_native_mount_of_unhonoured).
-    session._mimocode_native_mounts = frozenset(mounts)
+    read_back.native_mounts = frozenset(mounts)
     unhonoured: frozenset[str] = getattr(session, "_session_mcp_unhonoured", frozenset())
     native = sorted(set(native) | (mounts & unhonoured))
     if native:
         return _native_mount_refusal(session, native)
-    disabled = sorted(mounts & getattr(session, "_mimocode_disabled_servers", frozenset()))
+    disabled = sorted(mounts & read_back.disabled_servers)
     if disabled:
         return _native_disabled_refusal(session, disabled)
     # The asking posture, judged in the top-level ruleset and again in every agent's:
@@ -781,7 +783,7 @@ def _mimocode_mounted_mcp_servers(session: ProcessSession) -> tuple[str, ...]:
         for element in session._session_mcp_servers()
         if isinstance(element, dict) and isinstance(element.get("name"), str)
     ]
-    native: frozenset[str] = getattr(session, "_mimocode_native_mounts", frozenset())
+    native: frozenset[str] = session._harness_read_back().native_mounts
     return tuple(dict.fromkeys([*placed, *sorted(native)]))
 
 
@@ -852,10 +854,11 @@ def settle_mimocode_denies(session: ProcessSession, config_content: str) -> froz
     """
     setting_key = acp_tool_gate.permission_setting_for(ACP_BACKEND_MIMOCODE)[0]
     seeded = frozenset(_mimocode_seeded_deny_rules(config_content or "", setting_key))
-    unenforced: frozenset[str] = getattr(session, "_mimocode_denies_unenforced", frozenset())
-    session._mimocode_denies_in_force = seeded - unenforced
+    read_back = session._harness_read_back()
+    unenforced: frozenset[str] = read_back.denies_unenforced
+    read_back.denies_in_force = seeded - unenforced
     asked = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ())
-    return asked - session._mimocode_denies_in_force
+    return asked - read_back.denies_in_force
 
 
 def refuse_native_mount_of_unhonoured(session: ProcessSession) -> None:
@@ -866,9 +869,10 @@ def refuse_native_mount_of_unhonoured(session: ProcessSession) -> None:
     switched off whole would stay callable. The native mounts are the ones the
     read-back resolved for this spawn.
     """
-    mounts: frozenset[str] = getattr(session, "_mimocode_native_mounts", frozenset())
+    read_back = session._harness_read_back()
+    mounts: frozenset[str] = read_back.native_mounts
     native = sorted(mounts & getattr(session, "_session_mcp_unhonoured", frozenset()))
-    disabled = sorted(mounts & getattr(session, "_mimocode_disabled_servers", frozenset()))
+    disabled = sorted(mounts & read_back.disabled_servers)
     if not native and not disabled:
         return
     issue, remedy = (
@@ -902,6 +906,7 @@ class MimoCodeLaunch(ProcessAdapter):
     backend = ACP_BACKEND_MIMOCODE
 
     def __init__(self) -> None:
+        super().__init__()
         # The routing seed the read-back verified, carried to the child's environment.
         self._config_content = ""
 
@@ -1065,6 +1070,10 @@ class MimoCodeLaunch(ProcessAdapter):
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
         )
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """The MiMo Code session's own ``mcpServers`` entries, warmed by the spawn."""
+        return session._mimocode_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Apply the seed the read-back verified, unconditionally.

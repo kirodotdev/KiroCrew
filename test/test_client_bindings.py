@@ -48,6 +48,7 @@ SHARED_BINDINGS_CHECKS = (
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "51d4cc79ba1f", "client_class"),
+    "_adapter_session_mcp_servers": ("function", False, "7eb96c2fda05", "client_start"),
     "_add_orphan_steers": ("function", False, "b3c41cdccc27", "client_turn_control"),
     "_advertised_commands": ("data", False, "", ""),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "client_model_selection"),
@@ -141,6 +142,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_handle_elicitation_request": ("function", True, "e64128661dfa", "client_elicitation"),
     "_handle_permission": ("function", True, "87459833bc5c", "client_permissions"),
     "_harness_mcp_server_names": ("function", False, "9d5ab4ea1828", "client_mcp_array"),
+    "_harness_read_back": ("function", False, "3097b1f67b44", "client_start"),
     "_held_steer_task": ("data", False, "", ""),
     "_held_steer_writes": ("function", False, "67a56d539800", "client_turn_control"),
     "_held_steers": ("function", False, "f7ad662c995f", "client_turn_control"),

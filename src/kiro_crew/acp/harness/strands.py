@@ -906,6 +906,7 @@ class StrandsLaunch(ProcessAdapter):
     backend = ACP_BACKEND_STRANDS
 
     def __init__(self) -> None:
+        super().__init__()
         self._nonce = ""
         self._project = ""
         self._project_pin = ""

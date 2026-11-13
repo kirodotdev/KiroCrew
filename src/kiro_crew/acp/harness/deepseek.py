@@ -651,6 +651,7 @@ class DeepseekLaunch(ProcessAdapter):
     backend = ACP_BACKEND_DEEPSEEK
 
     def __init__(self) -> None:
+        super().__init__()
         # The nonce the probe issued, carried to the session's own child.
         self._nonce = ""
 
@@ -843,6 +844,10 @@ class DeepseekLaunch(ProcessAdapter):
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
         )
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """The DeepSeek Harness session's own ``mcpServers`` entries, warmed by the spawn."""
+        return session._deepseek_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Pin the permission mode and hand the session's child the probe's nonce.
