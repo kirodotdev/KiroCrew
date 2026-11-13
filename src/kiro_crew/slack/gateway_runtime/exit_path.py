@@ -698,6 +698,20 @@ async def _shutdown_and_exit(
         logger.warning("Graceful shutdown timed out — force exiting")
     await _sign_in_drain
     await _env_stop
+    # The app backends this gateway spawned. The dashboard's cleanup hook stops
+    # them, but the web server runs that hook only after its in-flight requests
+    # drain, so a graceful shutdown that ran out of time may never have reached
+    # it, and os._exit below would leave each backend and its sandbox tree
+    # running. A sweep that already ran left nothing tracked, so this returns at
+    # once. Bounded by the sweep's own budget. Imported here, not at module
+    # scope: AUTOSDE's no-new-work-on-gateway-boot-path rule asks for an
+    # optional subsystem's import to be gated.
+    try:
+        from kiro_crew.apps.hooks_integration import stop_spawned_backends_at_exit
+
+        await stop_spawned_backends_at_exit()
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        logger.warning("stopping app backends at exit failed", exc_info=True)
 
     print("👻 Goodbye!")
     # Kill any kiro-cli processes that survived graceful shutdown.
