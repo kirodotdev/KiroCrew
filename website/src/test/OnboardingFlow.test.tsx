@@ -635,6 +635,21 @@ describe('OnboardingFlow — end of the tour', () => {
     expect(screen.queryByRole('button', { name: 'Skip' })).not.toBeInTheDocument()
   })
 
+  // The server's `kiro_sign_in_needed` (the prerequisite status the gate caches)
+  // decides the last card: "your agent is ready" only when a sign-in backs it.
+  it.each([
+    [true, /Settings → Agent Harness → Kiro Agent → Kiro sign-in/, /your agent is ready/],
+    [false, /your agent is ready/, /Settings → Agent Harness/],
+  ])('words the last card from kiro_sign_in_needed=%s', async (needed, shown, absent) => {
+    const { queryClient } = renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], { kiro_sign_in_needed: needed })
+    })
+    await advanceToLastPopover()
+    expect(screen.getByText(shown)).toBeInTheDocument()
+    expect(screen.queryByText(absent)).not.toBeInTheDocument()
+  })
+
   it('Done on the last popover finishes onboarding', async () => {
     const onComplete = vi.fn()
     const onSkipAll = vi.fn()

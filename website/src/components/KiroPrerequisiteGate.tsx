@@ -25,6 +25,7 @@ import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import KasLoginGate from './KasLoginGate'
+import FirstRunSignInHold, { useFirstRunSignInHold } from './FirstRunSignInHold'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
@@ -1294,6 +1295,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   const ltsLocked = statusQuery.data?.lts_login_required === true
   const signInOnly = statusQuery.data?.lts_sign_in_only === true
   const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready && !ltsLocked
+  const signInHold = useFirstRunSignInHold(statusQuery.data, ltsLocked || signInOnly)
   const configQuery = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: CONFIG_QUERY_KEY,
     queryFn: () => api.kirocrewConfig(),
@@ -1399,9 +1401,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // long as the gateway's two kiro-cli subprocesses take to answer.
   // Any admission after the first status answer counts, a failed read included;
   // a lock found before that answer must not leave the app mounted.
-  const app = (extra?: ReactNode) => {
+  // Every admission goes through the first-run Kiro sign-in hold, so the app keeps
+  // one tree position whether or not the hold is on. An app rendered while the
+  // agent is still `unresolved` is not an admission the hold remembers.
+  const app = (extra?: ReactNode, unresolved = false) => {
     if (!statusQuery.isPending) appShown.current = true
-    return <>{children}{extra}</>
+    if (!unresolved) signInHold.noteShown()
+    return <FirstRunSignInHold hold={signInHold}>{children}{extra}</FirstRunSignInHold>
   }
   if (statusQuery.isPending) {
     // A browser that never finished setup gets the sign-in screen as soon as a
@@ -1421,17 +1427,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // A relock of an app already in use keeps that app mounted and visible, and
   // tells the user to sign in again beside it.
   const relockStatus = ltsLocked && appShown.current ? statusQuery.data : undefined
+  // Through `app`, so the app keeps the tree position it had before the relock.
   const unlessRelocked = (screen: ReactNode) => (relockStatus
-    ? (
-      <>
-        {children}
-        <RelockNotice
-          owner={relockStatus.setup_allowed !== false}
-          command={relockStatus.lts_sign_in_command}
-          exactCommandElsewhere={relockStatus.bundled_cli === true
-            || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
-        />
-      </>
+    ? app(
+      <RelockNotice
+        owner={relockStatus.setup_allowed !== false}
+        command={relockStatus.lts_sign_in_command}
+        exactCommandElsewhere={relockStatus.bundled_cli === true
+          || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
+      />,
     )
     : <>{screen}</>)
   const prerequisite = statusQuery.data
@@ -1540,7 +1544,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // Which agent will run is still unknown: same rule as the pending status
   // above — an unresolved check never paints setup chrome.
   if (!ltsLocked && (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending))) {
-    return app()
+    return app(undefined, true)
   }
   if (otherBackendReady) {
     // Admitted to the dashboard. If the automatic marker write failed, this is

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -21,6 +21,11 @@ from kiro_crew.kiro_prerequisite import (
     legacy_idle_operation,
 )
 from kiro_crew.sel import sel
+
+if TYPE_CHECKING:
+    # Type-only: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
+    # load on the handlers' import path (see kiro_crew.acp.kas_host_auth).
+    from kiro_crew.auth.store import TokenStore
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +102,94 @@ async def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> di
         "lts_sign_in_command": command,
         "lts_sign_in_needs_start_url": not complete,
     }
+
+
+#: The last :func:`_kiro_sign_in_needed_now` answer and the inputs it was read
+#: from: ``((vault write stamp, config signature), answer)``.
+_sign_in_needed_memo: tuple[tuple[str, tuple], bool] | None = None
+
+
+def _sign_in_needed_fresh(store: TokenStore) -> bool:
+    """:func:`_kiro_sign_in_needed_now` computed, with nothing remembered.
+
+    The vault answers first, because a usable stored sign-in settles the question
+    on its own and leaves the route unresolved. :meth:`TokenStore.resolve` reports
+    a vault it cannot read or decrypt as empty, so such a vault reads as no usable
+    sign-in — True on the bundle route, where Crew's own engine has no other
+    credential to run on.
+
+    The route is the shared :func:`~kiro_crew.agent_sdk.kas_bundle.kas_bundle_route`;
+    usable is :meth:`KasToken.is_usable`, the predicate the spawn-time owner decision
+    reads. Blocking: both read files.
+    """
+    token = store.resolve()
+    if token is not None and token.is_usable():
+        return False
+    from kiro_crew.agent_sdk.kas_bundle import kas_bundle_route
+
+    return kas_bundle_route()
+
+
+def _kiro_sign_in_needed_now() -> bool:
+    """Whether the next KAS session runs Crew's own engine with no usable Kiro sign-in.
+
+    Served from ``_sign_in_needed_memo`` while the vault's
+    :meth:`TokenStore.write_stamp` (one ``stat``, nothing decrypted) and
+    :func:`~kiro_crew.config.load_memo.config_signature` (the config files' stat
+    fingerprint and the config cache's generation) are both unchanged. That is what
+    keeps the owner dashboard's 30 s status poll free: resolving the route reads
+    kiro-cli's install and login state, which warns about a lapsed vault entry and
+    audits a credential read every time it runs.
+
+    A vault write — a sign-in, a sign-out, a refresh that persisted a token — and a
+    config edit each change a key and recompute. Nothing else does, so a kiro-cli
+    install or a kiro-cli sign-in made meanwhile is seen at the next vault or config
+    change, or at the next gateway restart. A read error raises out of here and is
+    not remembered, so the next ask computes again.
+
+    Blocking: reads the vault and the config files.
+    """
+    global _sign_in_needed_memo
+    from kiro_crew.auth.bridge import default_token_store
+    from kiro_crew.config.load_memo import config_signature
+
+    store = default_token_store()
+    key = (store.write_stamp(), config_signature())
+    memo = _sign_in_needed_memo
+    if memo is not None and memo[0] == key:
+        return memo[1]
+    answer = _sign_in_needed_fresh(store)
+    _sign_in_needed_memo = (key, answer)
+    return answer
+
+
+async def _kiro_sign_in_needed() -> bool:
+    """:func:`_kiro_sign_in_needed_now` off the event loop, ``False`` on an exception.
+
+    True holds a first run behind the Kiro sign-in, so an answer no read could
+    produce at all keeps today's path instead of a sign-in screen. A vault that is
+    present but unreadable is not that case: it answers, as no usable sign-in.
+    """
+    try:
+        return await asyncio.to_thread(_kiro_sign_in_needed_now)
+    except Exception:  # noqa: BLE001 - an unreadable answer must not hold the dashboard
+        logger.debug("Could not read whether a Kiro sign-in is needed", exc_info=True)
+        return False
+
+
+async def _owner_status_response(request: web.Request, snapshot: dict[str, Any]) -> web.Response:
+    """The owner's status payload, the one shape every owner route answers with.
+
+    The dashboard caches each of these answers as the setup status, so a route
+    that left ``kiro_sign_in_needed`` out would read as no sign-in needed.
+    """
+    return web.json_response(
+        {
+            **(await _with_gate_state(request, snapshot)),
+            "setup_allowed": True,
+            "kiro_sign_in_needed": await _kiro_sign_in_needed(),
+        }
+    )
 
 
 def _caller(request: web.Request) -> str:
@@ -190,9 +283,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
             cli_too_old=service.cli_too_old,
         )
-    snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
-        return web.json_response({**snapshot, "setup_allowed": True})
+        return await _owner_status_response(request, snapshot)
+    snapshot = await _with_gate_state(request, snapshot)
 
     # Authorized non-owner dashboard users need the readiness bit so the
     # application gate does not lock them out after the owner completes setup.
@@ -226,6 +319,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # which executable the gateway host resolved.
             "bundled_cli": False,
             "setup_allowed": False,
+            # Only the owner can sign the gateway in, so a non-owner is never held
+            # on the sign-in screen.
+            "kiro_sign_in_needed": False,
             # Redacted like the rest of this block: the failure kind and probe
             # detail describe the HOST's sandbox posture (kernel knobs, errnos),
             # which is exactly the candidate/host state a non-owner must not see.
@@ -284,7 +380,7 @@ async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Respon
     if denied is not None:
         return denied
     snapshot = await _service(request).repair_agent_specs(_caller(request))
-    return web.json_response({**(await _with_gate_state(request, snapshot)), "setup_allowed": True})
+    return await _owner_status_response(request, snapshot)
 
 
 async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response:
@@ -305,4 +401,4 @@ async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response
     if denied is not None:
         return denied
     snapshot = await _service(request).update_cli(_caller(request))
-    return web.json_response({**(await _with_gate_state(request, snapshot)), "setup_allowed": True})
+    return await _owner_status_response(request, snapshot)

@@ -644,8 +644,45 @@ engine instead ([aws-control.md](aws-control.md)).
   signpost to it. The
   switch and card are a Settings tab of their own because first-run setup
   offers agents other than Kiro CLI, so a user who set up with one of those can
-  switch agents later. `KasLoginGate` itself is still not mounted at the app
-  root; the full-screen form stays available for that.
+  switch agents later.
+- **First run offers the full-screen sign-in, with a Skip.** `KiroPrerequisiteGate`
+  renders every admission through `FirstRunSignInHold`
+  (`website/src/components/FirstRunSignInHold.tsx`), which shows `KasLoginGate`
+  with `onSkip` in place of the app while the hold is on. The server decides:
+  `kiro_sign_in_needed` on `GET /api/kiro-prerequisite` is
+  `kas_bundle_route()` AND NOT a usable stored sign-in (`KasToken.is_usable`, the
+  spawn-time owner decision's predicate), read off the event loop by
+  `dashboard/handlers/kiro_prerequisite._kiro_sign_in_needed`. Every owner answer
+  the gate caches as its status (the GET, `repair-specs`, `update-cli`) carries it,
+  built by one helper (`_owner_status_response`); it is `false` for a non-owner and
+  when no read can produce an answer at all, while a vault that is present but
+  unreadable answers, as no usable sign-in. The vault answers first (a usable
+  sign-in needs no route), and the verdict is remembered while the vault's
+  `TokenStore.write_stamp` and `config_signature()` are unchanged, so the
+  dashboard's forever poll does not re-resolve the route — which warns on a lapsed
+  vault entry and audits a credential read — on every tick; a sign-in, sign-out,
+  token refresh or config edit recomputes it. Nothing else does, so a kiro-cli
+  install or sign-in made meanwhile, and a token that lapses on the clock alone,
+  are seen at the next vault or config change or at the next gateway restart. The
+  staleness that costs a first run its offer needs the route to flip to the bundle
+  side from host state with neither file touched; the other direction keeps today's
+  path, and both are let through by Skip and by the sign-in read the hold makes
+  itself. The frontend reads only that field, never the route. The hold
+  applies only to a page load whose first resolved status (one the LTS paths do not
+  answer with their own screen) reported `initial_setup_complete: false`; that is
+  latched for the load, so the gate's own marker write does not drop it, and a
+  returning user is never held, signed out or not (the chat's sign-in row and this
+  card stay their way in). It lets go, for the rest of the load, on a stored sign-in,
+  on a sign-in status that cannot be read at all (unknown, not signed out), on Skip,
+  or once the app has rendered unheld from a resolved status (a render while the
+  configured agent is still unknown does not count). A later signed-out read never
+  unmounts the app, which keeps one tree position in every pass. Skip saves nothing:
+  no config key, no browser flag. While the field is true the tour's last card
+  (`components.onboardingFlow.pop_chat_body_sign_in_first`) names Settings → Agent
+  Harness → Kiro Agent → Kiro sign-in instead of saying the agent is ready. The LTS
+  sign-in-only gateway keeps its own `KasLoginGate organisationOnly` screen, with no
+  Skip. Decision:
+  [2026-11-13](../../decisions/2026-11-13-first-run-offers-the-kiro-sign-in-with-a-skip.md).
 - An unfinished sign-in is said in plain words. The loopback wait screen opens the
   portal tab with `noopener`, so the page cannot tell a closed or blocked tab from
   a slow one; after 30 s it says the sign-in has not finished and offers Start

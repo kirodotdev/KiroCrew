@@ -85,6 +85,15 @@ export function useGatewayPlatform(): GatewayPlatform {
 }
 
 /**
+ * The server's word that no usable Kiro sign-in backs Kiro Crew's own engine
+ * (`kiro_sign_in_needed`), read from the cached status. False on an older gateway
+ * and for a non-owner; never derived from the route on this side.
+ */
+export function useKiroSignInNeeded(): boolean {
+  return usePrerequisiteStatus()?.kiro_sign_in_needed === true
+}
+
+/**
  * The shell prefixes the gateway resolved for `kirocrew config set`, or `undefined`
  * when the cached status carries none a command may be built from.
  *

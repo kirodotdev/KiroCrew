@@ -28,6 +28,13 @@ export interface KiroPrerequisiteStatus {
   bundled_cli: boolean
   setup_allowed: boolean
   /**
+   * True when the next KAS session runs Kiro Crew's own engine (the bundle route)
+   * and no usable Kiro sign-in is stored. A first run is then held behind the Kiro
+   * sign-in (`FirstRunSignInHold`), and the tour's last card names where to sign in
+   * after a Skip. Always false for a non-owner; absent on an older gateway.
+   */
+  kiro_sign_in_needed?: boolean
+  /**
    * LTS build only: the gateway's login gate is closed, so it refuses
    * every API except sign-in. Absent on an oss build. While true the gate shows
    * the Kiro sign-in screen whatever else the status or another harness says.

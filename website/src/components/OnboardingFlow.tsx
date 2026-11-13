@@ -19,6 +19,7 @@ import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
+import { useKiroSignInNeeded } from '../hooks/useGatewayPlatform'
 import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
@@ -232,6 +233,7 @@ export default function OnboardingFlow({
 }) {
   const ime = useImeGuard()
   const navigate = useNavigate()
+  const kiroSignInNeeded = useKiroSignInNeeded()
   const {
     colorTheme,
     setColorTheme,
@@ -855,7 +857,12 @@ export default function OnboardingFlow({
           <GhostWithArm />
         </div>
         <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
-        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{i18nT(POP_BODY_KEY[pop.navId])}</p>
+        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">
+          {/* "Your agent is ready" is untrue until a Kiro sign-in backs the engine. */}
+          {pop.navId === 'chat' && kiroSignInNeeded
+            ? i18nT('components.onboardingFlow.pop_chat_body_sign_in_first')
+            : i18nT(POP_BODY_KEY[pop.navId])}
+        </p>
         <div className="flex items-center mt-[18px]">
           <div className="flex items-center gap-1.5">
             {[0, 1, 2].map(i => (
