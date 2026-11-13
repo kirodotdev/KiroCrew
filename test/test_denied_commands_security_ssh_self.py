@@ -1068,3 +1068,196 @@ class TestSandboxEscapeSshSelf:
         # textual layers decide these without it).
         assert _denied_by("ssh -- localhost") == self._RULE
         assert _denied_by("ssh -v -- 127.0.0.1 id") == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "gh pr edit 1 --body 'Run `ssh lvh.me id` to check'",
+            # ``-p 22`` keeps these off the catalog row, so only the floor reads them.
+            "gh pr edit 1 --body 'Run `ssh -p 22 localhost id` to check'",
+            "gh pr edit 1 --body='Run `ssh -p 22 localhost id` to check'",
+            "gh issue create -t 'x' -b 'Run $(ssh -p 22 localhost id)'",
+            "git commit -m 'docs: quote `ssh -p 22 localhost id`'",
+            "git commit -m'docs: quote `ssh -p 22 localhost id`'",
+            "git tag v1 --message 'see `ssh -p 22 localhost id`'",
+            # Main's reading already allows a single-quoted ``$(`` here.
+            "echo 'run $(ssh -p 22 localhost id) later'",
+            # The floor does not read inline Python.
+            "python3 -c 'import os; os.system(\"ssh localhost\")'",
+        ],
+    )
+    def test_single_quoted_substitution_is_literal_text(self, cmd):
+        # A git or gh message flag stores its single-quoted value as text and runs
+        # nothing in it, so no ssh starts.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Single-quoted text that another program runs later.
+            "trap 'echo `ssh -p 22 localhost id`' EXIT",
+            "bash -c 'eval \"$1\"' _ '`ssh -p 22 localhost id`'",
+            "git -c alias.x='!echo `ssh -p 22 localhost id`' x",
+            "git -c core.sshCommand='echo `ssh -p 22 localhost id`' fetch",
+            "gh alias set x 'echo `ssh -p 22 localhost id`'",
+            # Only one bare single-quoted word qualifies as a message value.
+            "git commit -m $['`ssh -p 22 localhost id`']",
+            "git commit -m x'`ssh -p 22 localhost id`'",
+            "git commit -m '`ssh -p 22 localhost id`'y",
+            "gh pr edit 1 --body x'`ssh -p 22 localhost id`'",
+            "git commit -m $'`ssh -p 22 localhost id`'",
+            "git commit -m '`ssh -p 22 localhost id`''tail'",
+            # Not a message flag: the rule reads it like main does.
+            "echo 'run `ssh -p 22 localhost id`'",
+            "echo $'see `ssh -p 22 localhost id`'",
+            "git commit -F 'see `ssh -p 22 localhost id`'",
+            "git commit -m x 'see `ssh -p 22 localhost id`'",
+            "git commit -m 'x' && echo '`ssh -p 22 localhost id`'",
+            "/usr/bin/git commit -m 'see `ssh -p 22 localhost id`'",
+            "env git commit -m 'see `ssh -p 22 localhost id`'",
+            "gh api -f body='see `ssh -p 22 localhost id`' x",
+        ],
+    )
+    def test_single_quotes_outside_a_message_flag_get_the_quote_blind_reading(self, cmd):
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            pytest.param("git commit -m $[ -m '`ssh -p 22 %s id`' ]", id="dollar-bracket"),
+            pytest.param("git commit -m $(( -m '`ssh -p 22 %s id`' ))", id="dollar-arithmetic"),
+            pytest.param("git commit -m $( echo -m '`ssh -p 22 %s id`' )", id="dollar-command"),
+            pytest.param("git commit -m ${x:-'`ssh -p 22 %s id`'}", id="dollar-parameter"),
+            pytest.param("git commit -m $'`ssh -p 22 %s id`'", id="dollar-ansi-value"),
+            pytest.param("git commit -m '`ssh -p 22 %s id`' $'tail'", id="dollar-ansi-neighbor"),
+        ],
+    )
+    def test_dollar_message_keeps_the_quote_blind_reading(self, cmd):
+        # In arithmetic expansion, single quotes do not make backticks literal.
+        # Any dollar sign keeps the conservative reading, even in another word.
+        assert _denied_by(cmd % ("local" + "host")) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "gh pr edit 1 --body 'see `ssh localhost id` and `s* localhost`'",
+            "git commit -m 'docs: quote `ssh 127.0.0.1 id` in the guide'",
+        ],
+    )
+    def test_floor_opens_no_substitution_inside_single_quotes(self, cmd):
+        # The floor reads no command here. The catalog row still matches these
+        # literal spellings: it reads the raw text without quotes, like
+        # ``'x; ssh localhost'``, and is additive to the floor by design.
+        assert _argv_floor._reaches_self_over_ssh(cmd.lower()) is False
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "ssh localhost id",
+            "bash <<'EOF'\nssh localhost id\nEOF",
+            "sh -c 'ssh localhost id'",
+            "eval 'ssh localhost id'",
+            "ssh $(echo localhost) id",
+            "echo `ssh localhost id`",
+            # Inside double quotes bash DOES run a backtick.
+            'echo "`ssh localhost id`"',
+            'echo "$(ssh localhost id)"',
+            # Between two single-quoted spans the backtick is outside quotes.
+            "echo 'a'`ssh localhost id`'b'",
+            "echo 'a' `ssh -p 22 localhost id` 'b'",
+            # A live opener anywhere keeps the quote-blind reading for the whole
+            # text, so static substitution output spliced around the ssh (``x'y``)
+            # cannot pair into single quotes that hide it.
+            'echo $(echo "x\'y") `ssh -p 22 localhost id` $(echo "x\'y")',
+            # A substitution body starts a new quote context: the ``'`` inside it
+            # opens nothing in the outer text.
+            'echo "$(echo "\'")" `ssh localhost id`',
+            'echo `echo "\'"` `ssh localhost id`',
+            # A single-quoted ``-c`` script is read as its own command line.
+            "bash -c 'echo `ssh localhost id`'",
+            # A nested or decoded payload is read quote-blind: here bash -c runs
+            # ``echo \x27`ssh ...`\x27``, where the backtick is live.
+            "bash -c 'echo \\x27`ssh -p 22 localhost id`\\x27'",
+            "bash -c 'x=1; echo \\x27`ssh -p 22 localhost id`\\x27'",
+            # Quotes in an unquoted heredoc body are data, not shell quoting.
+            "cat <<EOF\n'`ssh -p 22 localhost id`'\nEOF",
+            "cat <<EOF | sh\n'`ssh -p 22 localhost id`'\nEOF",
+            "echo x; cat <<EOF\n'`ssh -p 22 localhost id`'\nEOF",
+            "echo x | cat <<EOF\n'`ssh -p 22 localhost id`'\nEOF",
+            "echo \"$(cat <<EOF\n'`ssh -p 22 localhost id`'\nEOF\n)\"",
+            "cat <<'LITERAL' <<LIVE\nquoted\nLITERAL\n'`ssh -p 22 localhost id`'\nLIVE",
+            "bash <<'EOF'\nssh -p 22 localhost id\nEOF",
+            # A live backtick body anywhere keeps the quote-blind reading.
+            "echo `'` ; ssh -p 22 localhost id; echo `'`",
+            # A ``'`` inside a ``#`` comment opens no quote: the comment ends at
+            # the newline, so the next line's substitution is live.
+            "echo ok # don't\necho `ssh -p 22 localhost id`\n#'",
+            # The same holds for a comment inside a substitution body.
+            "echo $(: # don't\n) `ssh -p 22 localhost id`\n#'",
+            "echo $(: # don't\necho `ssh -p 22 localhost id`\n#')",
+            # Text with a ``#``, a heredoc, a newline, ``${`` or a backslash keeps
+            # the quote-blind reading, even for a backtick inside single quotes.
+            "echo 'run `ssh -p 22 localhost id`' # note",
+            "echo x#'y `ssh -p 22 localhost id`'",
+            "cat <<EOF 'run `ssh -p 22 localhost id`'\nEOF",
+            "echo 'run\n`ssh -p 22 localhost id`'",
+            "echo '${x} `ssh -p 22 localhost id`'",
+            "echo 'a\\b `ssh -p 22 localhost id`'",
+        ],
+    )
+    def test_live_substitution_outside_single_quotes_still_denied(self, cmd):
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize("tag", ["'EOF'", '"EOF"', "\\EOF"])
+    @pytest.mark.parametrize("body", ["`ssh -p 22 localhost id`", "$(ssh -p 22 localhost id)"])
+    def test_heredoc_text_keeps_the_quote_blind_reading(self, tag, body):
+        # A heredoc on the line turns the single-quote rule off.
+        cmd = f"cat <<{tag}\n{body}\nEOF"
+        assert security._substitution_bodies(cmd, raw_source=True) == ["ssh -p 22 localhost id"]
+
+    def test_multi_line_text_keeps_the_quote_blind_reading(self):
+        cmd = "cat <<EOF\nplain text\nEOF\necho 'run `ssh -p 22 localhost id` later'"
+        assert security._substitution_bodies(cmd, raw_source=True) == ["ssh -p 22 localhost id"]
+        assert _denied_by(cmd) == self._RULE
+
+    def test_one_line_single_quoted_backtick_is_literal(self):
+        assert security._substitution_bodies("git commit -m 'run `date`'", raw_source=True) == []
+        assert security._substitution_bodies("echo 'run `date`'", raw_source=True) == ["date"]
+        # A live opener anywhere gives the quote-blind reading for the whole text.
+        cmd = "git commit -m 'run `date`' `id`"
+        assert security._substitution_bodies(cmd, raw_source=True) == (
+            security._substitution_bodies(cmd)
+        )
+        cmd = "git commit -m 'run `date`' # x"
+        assert security._substitution_bodies(cmd, raw_source=True) == ["date"]
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A live backtick body.
+            "echo `'` ; ls; echo `'`",
+            'echo `"` ; ls; echo `"`',
+            # ``${...}`` nests quotes the opener scan does not track.
+            'echo "${x:-"\'"}" $(ssh -p 22 localhost id) "${y:-"\'"}"',
+            "echo '${x} `id`'",
+            "echo 'a\\b `id`'",
+            # A quote that never closes.
+            "echo 'run `id`",
+            # A masked quoted separator (``\x04`` stands for a quoted ``#``).
+            "echo 'a\x04b `id`'",
+        ],
+    )
+    def test_unsafe_text_gets_the_quote_blind_reading(self, cmd):
+        assert security._substitution_bodies(cmd, raw_source=True) == (
+            security._substitution_bodies(cmd)
+        )
+
+    def test_nested_payload_gets_the_quote_blind_reading(self):
+        # Only the caller's own line reads single quotes as literal: the eval
+        # payload ``echo '`ssh ...`'`` is a nested frame, read quote-blind.
+        cmd = "eval \"echo '\"'`ssh -p 22 localhost id`'\"'\""
+        sources = [source for source, _ in security._shell_payload_walk(cmd)]
+        assert "ssh -p 22 localhost id" in sources
+        top_cmd = "git commit -m '`ssh -p 22 localhost id`'"
+        top = [s for s, _ in security._shell_payload_walk(top_cmd)]
+        assert "ssh -p 22 localhost id" not in top

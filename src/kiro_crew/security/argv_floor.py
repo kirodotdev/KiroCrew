@@ -301,6 +301,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _iter_shell_chars,
         _matching_close_paren,
         _nested_shell_payloads,
+        _only_single_quoted_openers,
         _program_basename,
         _push_option_matches,
         _push_token_redirection,
