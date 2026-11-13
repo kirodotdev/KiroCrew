@@ -1692,7 +1692,13 @@ expands into its per-turn rows through this endpoint, which is where a
 mid-session model switch or a single runaway turn becomes visible (an average
 hides both). The Spend tab's first screen is a summary: KPI figures for the period (credits,
 the change against the previous period, turns, per-turn cost, the priciest turn), then
-bars for credits by origin, credits by model and the top sessions. The per-session
+bars for credits by origin, credits by model and the top sessions. A window whose turns
+carry no credits but a dollar `cost` (a dollar-billed harness) is summed from `cost`
+instead: `cost_breakdown` reports `unit: "usd"`, keeps every amount under its `credits`
+key at four decimals, and the tab writes each amount as money under **Cost** labels.
+Any credit-bearing session turn inside the window keeps it in credits; the window before
+it is read in the same unit, so a credit-billed week before a harness switch reads as no
+prior spend. The per-session
 table sits under a **Full table** disclosure that starts closed and remembers its state
 in `telemetry:spend-table-open`.
 **Stamping boundary:** rows are stamped at the two write sites that can run
