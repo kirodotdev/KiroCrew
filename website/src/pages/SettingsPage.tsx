@@ -21,7 +21,6 @@ import { ChannelsPanel, CHANNEL_KEYS } from './settings/ChannelsPanel'
 import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { ShortcutsPanel } from './settings/ShortcutsPanel'
-import { AboutPanel } from './settings/AboutPanel'
 import { RELEASE_NOTES_LINK, RELEASE_PARAM } from './settings/ReleasesPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
@@ -64,6 +63,10 @@ const BrowserPanel = lazy(() =>
  */
 const SessionEnvironmentsCard = lazy(() =>
   import('./settings/SessionEnvironmentsCard').then(m => ({ default: m.SessionEnvironmentsCard })),
+)
+/** Lazy: the About tab (version, update flow, release notes) is only needed when that tab opens. */
+const AboutPanel = lazy(() =>
+  import('./settings/AboutPanel').then(m => ({ default: m.AboutPanel })),
 )
 import { SettingsCard } from '../components/settings'
 
@@ -391,7 +394,11 @@ export default function SettingsPage() {
           </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'about' && <AboutPanel />}
+        {tab === 'about' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <AboutPanel />
+          </Suspense>
+        )}
       </>}
     </SidePanelLayout>
   )
