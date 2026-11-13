@@ -523,17 +523,21 @@ function sessionBars(convos: CostConvo[], navigable: string, limit: number): Spe
     }))
 }
 
-export function SpendTab({ c }: { c: Cost }) {
+export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
   const win = useContext(PanelWindowCtx)
+  // The nested dollar card of a mixed window keeps its own remembered state, so
+  // the two cards can be grouped, sorted and opened independently. A window
+  // billed in one unit keeps the keys it always had, whatever that unit is.
+  const keySuffix = nested ? ':usd' : ''
   const [group, setGroup] = usePersistedChoice<SpendGroup>(
-    'telemetry:spend-group',
+    `telemetry:spend-group${keySuffix}`,
     SPEND_GROUPS,
     'session',
   )
   // Closed on first paint. The table answers "which row exactly", which is a
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
-  const [tableOpen, setTableOpen] = usePersistedBool('telemetry:spend-table-open', false)
+  const [tableOpen, setTableOpen] = usePersistedBool(`telemetry:spend-table-open${keySuffix}`, false)
   const bands = c.context_bands
   const unit = spendUnit(c)
   const fmtAmount = (v: number) => fmtSpend(v, unit)
@@ -546,6 +550,7 @@ export function SpendTab({ c }: { c: Cost }) {
       ? fmtNumber(c.conversation_count)
       : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`
   return (
+    <>
     <Card className="mb-4">
       <CardTitle>
         {unit === 'usd' ? i18nT('pages.telemetryPanel.cost') : i18nT('pages.telemetryPanel.credits')}
@@ -694,8 +699,8 @@ export function SpendTab({ c }: { c: Cost }) {
             {group === 'session' ? (
               <DataTable<CostConvo>
                 rows={c.conversations}
-                key="telemetry-spend-conversation"
-                tableId="telemetry-spend-conversation"
+                key={`telemetry-spend-conversation${keySuffix}`}
+                tableId={`telemetry-spend-conversation${keySuffix}`}
                 cols={convoCols(c.navigable_category, unit)}
                 rowKey={v => v.slot}
                 defaultSort="credits"
@@ -705,8 +710,8 @@ export function SpendTab({ c }: { c: Cost }) {
             ) : (
               <DataTable<CostRow>
                 rows={group === 'model' ? c.by_model : c.by_category}
-                key="telemetry-spend-share"
-                tableId="telemetry-spend-share"
+                key={`telemetry-spend-share${keySuffix}`}
+                tableId={`telemetry-spend-share${keySuffix}`}
                 cols={shareCols(
                   group === 'model'
                     ? i18nT('pages.telemetryPanel.model_col')
@@ -747,6 +752,10 @@ export function SpendTab({ c }: { c: Cost }) {
         </div>
       )}
     </Card>
+    {/* A window with both credit-billed and dollar-billed turns: the same view
+        over the dollar turns, so neither unit's spend reads as zero. */}
+    {c.usd && <SpendTab c={c.usd} nested />}
+    </>
   )
 }
 
