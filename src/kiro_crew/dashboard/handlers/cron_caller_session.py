@@ -175,7 +175,14 @@ async def _recognize_session(
         if is_subagent:
             exists, persisted_mode = False, None
         else:
-            exists, persisted_mode = await asyncio.to_thread(_probe_persisted_session, slot_name)
+            # A stateless cron run keys ``cron:<job id>:<run id>``, and its
+            # transcript is ``cron_<job id>_<run id>.jsonl`` (``_safe_key``
+            # folds every ``:`` to ``_``). Fold the inner colon the same way
+            # so the probe can find it; the probe's colon guard would refuse
+            # the unfolded name outright. Only the probe sees the folded
+            # name, so a cron key never matches a dashboard slot above.
+            probe_name = slot_name.replace(":", "_") if sk.startswith("cron:") else slot_name
+            exists, persisted_mode = await asyncio.to_thread(_probe_persisted_session, probe_name)
         if not exists:
             # Slot may have been evicted from memory (idle sweep,
             # gateway restart) while the MCP subprocess keeps its
