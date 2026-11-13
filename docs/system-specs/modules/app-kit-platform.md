@@ -924,6 +924,33 @@ manifest file, so an explicit refresh always retries, and the marker lives in
 `by-source/`, so the GC sweep reclaims it. A missing, expired or unreadable
 marker reads as absent and the listing fetches.
 
+An anonymous ssh fetch is also skipped while its ssh destination has just
+refused the sign-in. ssh refuses before it names a repository, so a `Permission
+denied (<methods>)` from one app's clone holds for every app at the same
+`user@host[:port]` (`_anonymous_ssh_destination`). Only ssh's own whole line
+counts (`_is_ssh_sign_in_refusal`), never the phrase inside git's echo of a
+repository path, which an index chooses. A URL holding a percent escape, a
+space, a control or a non-ASCII character takes no part, because git decodes
+the path before it echoes it. `_fetch_app_manifest` awaits
+its `before_remote` hook once the SSRF gate passed, so a row answered from its
+installed copy never waits. There `_resolve_manifest` lets one fetch per
+destination go first while the other rows about to sign in there wait for it
+(`_ssh_sign_in_refused`), for at most `_SSH_SIGN_IN_PROBE_WAIT` (five seconds),
+so a host that drops the connection costs its clone timeout once rather than
+twice. After a refusal the rows skip the remote and write the `.miss.json`
+marker above. The refusal is kept in process memory only, for
+`_SSH_SIGN_IN_REFUSED_TTL` (the marker's one hour), because a record in the
+agent-writable data home could be planted to hold fetches back.
+`refresh_registries` forgets it. At most `_SSH_SIGN_IN_MEMORY_MAX` (1024)
+destinations of at most `_SSH_DESTINATION_MAX_CHARS` (320) characters are held,
+across the refused, answered and in-flight probe stores together
+(`_ssh_sign_in_admits`). At the cap the settled results are forgotten. A
+destination that finds the cap full of in-flight probes, or a longer one, gets
+no row and is fetched as before. A fetch that reached the
+remote without that refusal, a repository-level denial included, marks the
+destination as answered and the rows fan out as before. Owner-designated fetches
+and https rows are never skipped.
+
 A failed registry-index fetch is remembered the same way, one level up.
 `_fetch_and_cache_external_registry` writes an empty `_registry_<stem>.failed.json`
 marker beside the index cache when the fetch fails, and removes it when a fetch

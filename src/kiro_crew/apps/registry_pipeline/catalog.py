@@ -49,7 +49,10 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _load_external_registries,
     _registry_fetch_failure,
 )
-from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
+from kiro_crew.apps.registry_pipeline.manifests import (
+    _forget_ssh_sign_in_memory,
+    _resolve_manifest,
+)
 from kiro_crew.apps.registry_pipeline.sources import (
     _edition_registry_rows,
     _effective_registries,
@@ -476,7 +479,11 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     UI can name the fix and where it applies. When *repo* is supplied but
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
+
+    A refresh also forgets every remembered ssh sign-in refusal, so the listing it
+    ends with asks each destination again instead of skipping its apps.
     """
+    _forget_ssh_sign_in_memory()
     registries = await asyncio.to_thread(_effective_registries)
     if repo:
         registries = [r for r in registries if _same_git_target(r.repo, repo)]

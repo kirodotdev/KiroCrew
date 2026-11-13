@@ -477,6 +477,26 @@ def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forget_registry_ssh_sign_ins():
+    """Forget the store listing's remembered ssh sign-in results around each test.
+
+    ``registry_pipeline.manifests`` keeps them in process memory for an hour, so a
+    refusal one test records would make a later test's ssh row skip its fetch
+    depending on which tests shared the worker. Read from ``sys.modules`` so a test
+    that never imports the registry pays nothing.
+    """
+    module = sys.modules.get("kiro_crew.apps.registry_pipeline.manifests")
+    if module is not None:
+        module._forget_ssh_sign_in_memory()
+        module._SSH_SIGN_IN_PROBES.clear()
+    yield
+    module = sys.modules.get("kiro_crew.apps.registry_pipeline.manifests")
+    if module is not None:
+        module._forget_ssh_sign_in_memory()
+        module._SSH_SIGN_IN_PROBES.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 

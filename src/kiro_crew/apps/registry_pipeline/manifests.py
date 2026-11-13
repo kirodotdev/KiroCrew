@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import (
+    _MANIFEST_NEGATIVE_CACHE_TTL,
     _read_installed_manifest_cache,
     _read_manifest_cache,
     _read_manifest_negative_cache,
@@ -38,11 +41,15 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _SSH_REFUSAL_PREFIX,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_transport_env,
+    _git_url_host,
+    _is_ssh_git_url,
     _loggable_git_transport_output,
     _looks_like_git_url,
+    _ssh_method_list_closes,
     _strip_git_target_userinfo,
 )
 from kiro_crew.apps.registry_pipeline.recovery import app_source_dir
@@ -82,6 +89,8 @@ async def _fetch_app_manifest(
     commit: str = "",
     allow_remote: bool = True,
     provenance: dict[str, str] | None = None,
+    outcome: dict[str, str] | None = None,
+    before_remote: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -121,6 +130,20 @@ async def _fetch_app_manifest(
     if the answer came from step 1. That copy is the INSTALLED tree, not what the
     branch publishes now, so a caller that caches the answer as the source's
     manifest needs to know (``_resolve_manifest``).
+
+    *outcome*: when given, ``outcome["ssh_sign_in"]`` says what the remote step
+    learned: ``"attempted"`` once the SSRF gate passed and a remote fetch began,
+    ``"refused"`` when the plain clone failed with ssh's own ``Permission denied
+    (<methods>)`` line (``_is_ssh_sign_in_refusal``), and no key when nothing
+    remote ran. Over ssh the sign-in
+    precedes any repository lookup, so a refusal is about the ssh destination and
+    the credential posture, never about this repository. The listing uses it to
+    stop asking that destination (``_resolve_manifest``).
+
+    *before_remote*: when given, awaited once the SSRF gate passed, right before
+    the remote step. A False answer skips the remote as ``allow_remote=False``
+    would, and leaves *outcome* untouched. A row answered from step 1, or refused
+    by the gate, never awaits it.
     """
 
     def _read_manifest_text(path: Path) -> str | None:
@@ -211,6 +234,10 @@ async def _fetch_app_manifest(
             _strip_git_target_userinfo(git_url),
         )
         return None
+    if before_remote is not None and not await before_remote():
+        return None
+    if outcome is not None:
+        outcome["ssh_sign_in"] = "attempted"
 
     tmp_root: str | None = None
     try:
@@ -321,11 +348,14 @@ async def _fetch_app_manifest(
             )
             _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
+                stderr_text = stderr.decode(errors="replace")
+                if outcome is not None and _is_ssh_sign_in_refusal(stderr_text):
+                    outcome["ssh_sign_in"] = "refused"
                 logger.debug(
                     "manifest clone failed for %s: %s",
                     _strip_git_target_userinfo(git_url),
                     _loggable_git_transport_output(
-                        stderr.decode(errors="replace").strip(),
+                        stderr_text.strip(),
                         credentialed=credentialed_transport,
                     ),
                 )
@@ -355,6 +385,217 @@ async def _fetch_app_manifest(
     finally:
         if tmp_root:
             await _rmtree_force_settled(tmp_root)
+
+
+#: How long the listing stops asking an ssh destination after it refused an
+#: anonymous sign-in. The same window as a row's failed-fetch marker, which every
+#: skipped row also writes, so both lapse together and the next listing asks the
+#: destination once.
+_SSH_SIGN_IN_REFUSED_TTL = _MANIFEST_NEGATIVE_CACHE_TTL
+
+#: Most ssh destinations remembered at once, across the refused, answered and
+#: probe stores together (``_ssh_sign_in_admits``). An index names its own clone
+#: URLs, so one listing several thousand ``user@host`` spellings would otherwise
+#: grow these without bound. At the cap the settled results are forgotten and
+#: asked again; a destination that finds the cap full of in-flight probes gets no
+#: row anywhere and is fetched as before.
+_SSH_SIGN_IN_MEMORY_MAX = 1024
+
+#: Longest ssh destination remembered. A host name holds at most 253 characters,
+#: which leaves room for a user name and a port; a longer spelling, which only an
+#: index row can write, is fetched as before and never remembered.
+_SSH_DESTINATION_MAX_CHARS = 320
+
+#: Longest a row waits for its destination's probe before it fetches anyway. ssh
+#: refuses a sign-in within a second or two. A host that drops the connection
+#: instead holds the probe for its whole clone timeout, and without this bound
+#: every other row would wait that long first and then pay the timeout again.
+_SSH_SIGN_IN_PROBE_WAIT = 5.0
+
+#: Process memory, never disk, of how anonymous ssh sign-ins went, keyed by ssh
+#: destination (``_anonymous_ssh_destination``):
+#:   refused   -> monotonic time ssh last answered ``Permission denied (...)``;
+#:   answered  -> a remote fetch ran without a refusal, so rows fan out;
+#:   probes    -> the one in-flight fetch the other rows on that destination await.
+#: The data home is agent-writable, so a marker there could hold fetches back;
+#: memory cannot be planted and is rebuilt by one probe after a restart.
+_SSH_SIGN_IN_REFUSED: dict[str, float] = {}
+_SSH_SIGN_IN_ANSWERED: set[str] = set()
+_SSH_SIGN_IN_PROBES: dict[str, asyncio.Future[None]] = {}
+
+#: Destinations turned away since the memory last admitted one, so a full memory
+#: is logged once, not once per row.
+_SSH_SIGN_IN_OVERFLOW: dict[str, int] = {"turned_away": 0}
+
+
+def _is_ssh_sign_in_refusal(stderr_text: str) -> bool:
+    """Whether *stderr_text* holds ssh's own sign-in refusal as a whole line.
+
+    OpenSSH writes ``<user>@<host>: Permission denied (<methods>).`` on a line of
+    its own; an old client leaves out the ``<user>@<host>: ``. The phrase found
+    anywhere is not enough, because git echoes the repository path in its own
+    errors (``fatal: '<path>' does not appear to be a git repository``) and an
+    index chooses that path: one crafted row would mark every app at its
+    destination as refused. So the line must be that optional ``user@host: ``,
+    holding no space, quote or parenthesis, then ``Permission denied (``, a method
+    list (``_ssh_method_list_closes``), and nothing after it but one ``.``. Each
+    line is read a bounded number of times.
+    """
+    for line in stderr_text.lower().splitlines():
+        line = line.strip()
+        if not line.startswith(_SSH_REFUSAL_PREFIX):
+            who, sep, line = line.partition(": ")
+            if not sep or "@" not in who or any(ch.isspace() or ch in "'\"()" for ch in who):
+                continue
+            if not line.startswith(_SSH_REFUSAL_PREFIX):
+                continue
+        methods = line[len(_SSH_REFUSAL_PREFIX) :]
+        close = methods.find(")")
+        if close > 0 and methods[close + 1 :] in ("", ".") and _ssh_method_list_closes(methods, 0):
+            return True
+    return False
+
+
+def _anonymous_ssh_destination(git_url: str) -> str:
+    """The ssh destination an anonymous fetch of *git_url* signs in to, or ``""``.
+
+    The ``user@host[:port]`` authority of an ``ssh://`` URL, or the ``user@host``
+    of an scp-style target, as written. Any other transport answers ``""``: an
+    https fetch is refused per repository (a public and a private repository share
+    a host), while ssh refuses the sign-in before a repository is named. The user
+    is part of the key, so an index row naming another user at the same host
+    affects only rows that name that user. A destination longer than
+    ``_SSH_DESTINATION_MAX_CHARS`` also answers ``""``, and so does a URL holding a
+    percent escape, a space, a control or a non-ASCII character: git decodes the
+    path and echoes it in its errors, so such a URL could print a line that reads
+    as ssh's refusal (``_is_ssh_sign_in_refusal``).
+    """
+    target = _strip_git_target_userinfo(git_url or "").strip()
+    if not _is_ssh_git_url(target) or not _git_url_host(target):
+        return ""
+    if (
+        "%" in target
+        or not target.isascii()
+        or not target.isprintable()
+        or any(ch.isspace() for ch in target)
+    ):
+        return ""
+    scheme_end = target.find("://")
+    if scheme_end >= 0:
+        destination = target[scheme_end + 3 :].split("/", 1)[0]
+    else:
+        user, at, rest = target.rpartition("@")
+        # A bracketed IPv6 literal holds colons of its own; the path follows "]:".
+        host = rest[: rest.find("]") + 1] if rest.startswith("[") else rest.split(":", 1)[0]
+        destination = f"{user}{at}{host}"
+    return destination if len(destination) <= _SSH_DESTINATION_MAX_CHARS else ""
+
+
+def _forget_ssh_sign_in_memory() -> None:
+    """Drop every remembered sign-in result (an explicit refresh, and tests)."""
+    _SSH_SIGN_IN_REFUSED.clear()
+    _SSH_SIGN_IN_ANSWERED.clear()
+    _SSH_SIGN_IN_OVERFLOW["turned_away"] = 0
+
+
+def _ssh_sign_in_admits(destination: str) -> bool:
+    """Whether *destination* may hold a row in the sign-in memory.
+
+    The one admission check for the refused, answered and probe stores, which
+    ``_SSH_SIGN_IN_MEMORY_MAX`` bounds together. A destination already held is
+    admitted. At the cap the settled results are forgotten, to be asked again.
+    A new destination is turned away only while in-flight probes alone fill the
+    cap: it gets no row in any store, and its fetch runs uncoordinated, as it did
+    before this memory. The first destination turned away is logged with the
+    probe count; the next log comes after the memory has admitted one again.
+    """
+    if (
+        destination in _SSH_SIGN_IN_REFUSED
+        or destination in _SSH_SIGN_IN_ANSWERED
+        or destination in _SSH_SIGN_IN_PROBES
+    ):
+        return True
+    held = len(_SSH_SIGN_IN_REFUSED) + len(_SSH_SIGN_IN_ANSWERED) + len(_SSH_SIGN_IN_PROBES)
+    if held >= _SSH_SIGN_IN_MEMORY_MAX:
+        _SSH_SIGN_IN_REFUSED.clear()
+        _SSH_SIGN_IN_ANSWERED.clear()
+    if len(_SSH_SIGN_IN_PROBES) < _SSH_SIGN_IN_MEMORY_MAX:
+        _SSH_SIGN_IN_OVERFLOW["turned_away"] = 0
+        return True
+    _SSH_SIGN_IN_OVERFLOW["turned_away"] += 1
+    if _SSH_SIGN_IN_OVERFLOW["turned_away"] == 1:
+        logger.warning(
+            "the store listing's ssh sign-in memory is full with %d in-flight probes; "
+            "further ssh destinations are fetched without it until a probe ends",
+            len(_SSH_SIGN_IN_PROBES),
+        )
+    return False
+
+
+async def _ssh_sign_in_refused(destination: str) -> tuple[bool, asyncio.Future[None] | None]:
+    """``(refused, probe)`` for a listing fetch at *destination*.
+
+    Awaited right before the remote step, so only a row that is about to sign in
+    waits here. ``refused`` is True while a refusal is fresh: the caller skips the
+    remote. Otherwise, when no fetch there has run yet, the caller becomes the
+    probe and gets the future it must release when its fetch ends; every other
+    caller waits for that release, up to ``_SSH_SIGN_IN_PROBE_WAIT``, and reads
+    the result. A waiter that runs out of patience fetches without the probe's
+    answer. A probe that learned nothing leaves no result, so the next waiter
+    probes in turn. A destination ``_ssh_sign_in_admits`` turns away gets
+    ``(False, None)`` and no probe.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        refused_at = _SSH_SIGN_IN_REFUSED.get(destination)
+        if refused_at is not None:
+            if 0 <= time.monotonic() - refused_at <= _SSH_SIGN_IN_REFUSED_TTL:
+                return True, None
+            _SSH_SIGN_IN_REFUSED.pop(destination, None)
+        if destination in _SSH_SIGN_IN_ANSWERED:
+            return False, None
+        pending = _SSH_SIGN_IN_PROBES.get(destination)
+        if pending is None or pending.done() or pending.get_loop() is not loop:
+            if not _ssh_sign_in_admits(destination):
+                return False, None
+            probe = loop.create_future()
+            _SSH_SIGN_IN_PROBES[destination] = probe
+            return False, probe
+        # Shielded: a waiter cancelled or timed out here must not cancel the
+        # shared future.
+        try:
+            await asyncio.wait_for(asyncio.shield(pending), _SSH_SIGN_IN_PROBE_WAIT)
+        except TimeoutError:
+            return False, None
+
+
+def _note_ssh_sign_in(destination: str, result: str | None) -> None:
+    """Record what a fetch at *destination* learned: ``refused``, ``attempted`` or nothing.
+
+    A destination ``_ssh_sign_in_admits`` turns away is not recorded.
+    """
+    if result is None or not _ssh_sign_in_admits(destination):
+        return
+    if result == "refused":
+        if destination not in _SSH_SIGN_IN_REFUSED:
+            logger.info(
+                "ssh refused the anonymous sign-in at %s; its other store listing "
+                "fetches are skipped for %d s (Refresh asks again)",
+                _git_url_host(f"ssh://{destination}/") or "an ssh host",
+                _SSH_SIGN_IN_REFUSED_TTL,
+            )
+        _SSH_SIGN_IN_REFUSED[destination] = time.monotonic()
+        _SSH_SIGN_IN_ANSWERED.discard(destination)
+    else:
+        _SSH_SIGN_IN_ANSWERED.add(destination)
+
+
+def _release_ssh_probe(destination: str, probe: asyncio.Future[None]) -> None:
+    """End *probe* so the rows waiting on *destination* read its result."""
+    if _SSH_SIGN_IN_PROBES.get(destination) is probe:
+        _SSH_SIGN_IN_PROBES.pop(destination, None)
+    if not probe.done():
+        probe.set_result(None)
 
 
 async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
@@ -407,17 +648,46 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     # fetch (the confused-deputy defense does not apply to the owner's own URL).
     owner_target = await asyncio.to_thread(_owner_designated_repo_target, entry)
     fetch_kwargs: dict[str, Any] = {"allow_remote": False} if negative_cached else {}
+
+    # An anonymous ssh fetch whose destination just refused the sign-in cannot
+    # succeed: the posture offers no key and no agent, and the sign-in does not
+    # depend on the repository. Such a row skips the remote after its local
+    # installed copy is read, and then fails as a fetch would, writing the same
+    # marker. Right before the remote step, one fetch per destination probes it
+    # while the other rows about to sign in there wait, so a cold listing pays one
+    # refusal per destination instead of one per app. A row answered from its
+    # installed copy never waits. An owner-designated fetch carries the owner's
+    # credentials and is never skipped here.
+    destination = "" if owner_target or negative_cached else _anonymous_ssh_destination(git_url)
+    probes: list[asyncio.Future[None]] = []
+
+    async def _sign_in_not_refused() -> bool:
+        refused, probe = await _ssh_sign_in_refused(destination)
+        if probe is not None:
+            probes.append(probe)
+        return not refused
+
+    if destination:
+        fetch_kwargs["before_remote"] = _sign_in_not_refused
     provenance: dict[str, str] = {}
-    manifest = await _fetch_app_manifest(
-        repo,
-        branch,
-        subdirectory,
-        app_name=name,
-        git_url=owner_target or git_url,
-        owner_designated=bool(owner_target),
-        provenance=provenance,
-        **fetch_kwargs,
-    )
+    outcome: dict[str, str] = {}
+    try:
+        manifest = await _fetch_app_manifest(
+            repo,
+            branch,
+            subdirectory,
+            app_name=name,
+            git_url=owner_target or git_url,
+            owner_designated=bool(owner_target),
+            provenance=provenance,
+            outcome=outcome,
+            **fetch_kwargs,
+        )
+    finally:
+        if destination:
+            _note_ssh_sign_in(destination, outcome.get("ssh_sign_in"))
+        for probe in probes:
+            _release_ssh_probe(destination, probe)
     if manifest:
         # The installed checkout's app.json is cached APART from this source's
         # manifest. It names the INSTALLED version, while the source cache is what
