@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayClient
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
+    SIGN_IN_CREDENTIAL,
     TOKEN_TYPE_API_KEY,
     TOKEN_TYPES,
     LeaseHostTokenSource,
@@ -128,9 +129,17 @@ class RelaySettings:
             problem = lease_url_problem(self.lease_url)
             if problem is not None:
                 raise RelaySettingsError(f"tunnel.relay_lease_url: {problem}")
-            problem = credential_reference_problem(self.lease_credential)
-            if problem is not None:
-                raise RelaySettingsError(problem)
+            if self.lease_credential == SIGN_IN_CREDENTIAL:
+                # The sign-in names its own TokenType.
+                if self.lease_token_type:
+                    raise RelaySettingsError(
+                        "tunnel.relay_lease_token_type must be empty when "
+                        f"tunnel.relay_lease_credential is {SIGN_IN_CREDENTIAL}"
+                    )
+            else:
+                problem = credential_reference_problem(self.lease_credential)
+                if problem is not None:
+                    raise RelaySettingsError(problem)
             if self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
                 # Not echoed: a credential pasted in here by mistake stays out of logs.
                 raise RelaySettingsError(
@@ -353,6 +362,8 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
     """
     if not settings.lease_url:
         return None
+    if settings.lease_credential == SIGN_IN_CREDENTIAL:
+        return _sign_in_lease_source(settings)
     return LeaseHostTokenSource(
         lease_url=settings.lease_url,
         credential=settings.lease_credential,
@@ -360,6 +371,32 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
         # An unknown type is refused by validate() when the provider starts, so the
         # composition root, which builds this before any start, never raises here.
         token_type=settings.lease_token_type if settings.lease_token_type in TOKEN_TYPES else None,
+    )
+
+
+def _sign_in_lease_source(settings: RelaySettings) -> HostTokenSource:
+    """A personal Crew's lease client, on the Crew's own Kiro sign-in.
+
+    Each call reads the sign-in (refreshed as needed), and the profile ARN that
+    read named goes on the same call. The sign-in module loads only here.
+    """
+    from kiro_crew.relay_client.lease_signin import LeaseSignIn, read_lease_sign_in
+
+    latest: dict[str, str] = {}
+
+    async def sign_in(rejected: Optional[str]) -> LeaseSignIn:
+        signed_in = await read_lease_sign_in(rejected)
+        latest["profile_arn"] = signed_in.profile_arn
+        return signed_in
+
+    return LeaseHostTokenSource(
+        lease_url=settings.lease_url,
+        credential=settings.lease_credential,
+        crew_version=_crew_version(),
+        # validate() refuses a token type beside the sign-in; the sign-in names its own.
+        token_type=None,
+        profile_arn=lambda: latest.get("profile_arn"),
+        sign_in=sign_in,
     )
 
 
