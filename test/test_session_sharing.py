@@ -1127,3 +1127,111 @@ class TestSessionSharingParentReset:
         else:
             await sm.get_subagent_runtime("taskrunner:run", start_priority=StartPriority.FOREGROUND)
         assert seen == [StartPriority.FOREGROUND]
+
+
+class TestSharedSessionCliDefaultModel:
+    """A shared sub-agent on a KAS parent starts on kiro-cli's ``chat.defaultModel``
+    for its own folder when Crew pins its agent no model."""
+
+    def _manager(self, monkeypatch, *, backend: str, agent_model: str = ""):
+        sessions = _mock_sessions(sharing_eligible=True)
+        sessions._cfg.acp_effective_model = MagicMock(return_value=agent_model)
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=_mock_ctx_builder_auto(), is_yolo=lambda: True
+        )
+        runtime = sessions.get_subagent_runtime.return_value
+        runtime.acp_backend = backend
+        runtime.create_session.return_value.set_model = AsyncMock()
+        read_dirs: list[object] = []
+
+        def _cli_default(work_dir=None):
+            read_dirs.append(work_dir)
+            return "cli-default-model"
+
+        monkeypatch.setattr("kiro_crew.acp.kas_cli_settings.kiro_cli_default_model", _cli_default)
+        return manager, sessions, runtime, read_dirs
+
+    @staticmethod
+    def _info(name: str) -> SubagentInfo:
+        return SubagentInfo(
+            id=name, task="t", parent_session_key="dashboard:slot1", cwd="/work/child"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_kas_sub_agent_inherits_its_folders_cli_default(self, monkeypatch):
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        manager, sessions, runtime, read_dirs = self._manager(monkeypatch, backend=ACP_BACKEND_KAS)
+        info = self._info("kas-cli-default")
+        provider = await manager._create_shared_session(info, "subagent:kas-cli-default", "kc")
+        handle = runtime.create_session.return_value
+        assert handle.set_model.await_args_list == [((("cli-default-model",)), {"inherit": True})]
+        assert read_dirs == ["/work/child"]
+        sessions._cfg.acp_effective_model.assert_called_once_with("kc", None)
+        assert info._shared_provider is provider
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_late_adopted_kas_sub_agent_inherits_it_too(self, monkeypatch):
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        manager, _sessions, runtime, read_dirs = self._manager(monkeypatch, backend=ACP_BACKEND_KAS)
+        late = MagicMock(session_id="late-session", memory_mode="persistent")
+        late.set_model = AsyncMock()
+        adopted: list[bool] = []
+
+        async def _timeout_then_adopt(**kwargs):
+            adopted.append(await kwargs["late_adopter"](late))
+            raise RuntimeError("session/new timed out")
+
+        runtime.create_session.side_effect = _timeout_then_adopt
+        info = self._info("kas-late")
+        with pytest.raises(RuntimeError):
+            await manager._create_shared_session(info, "subagent:kas-late", "kc")
+        assert adopted == [True]
+        assert late.set_model.await_args_list == [((("cli-default-model",)), {"inherit": True})]
+        assert read_dirs == ["/work/child"]
+        await info._late_start_provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_parent_sends_nothing(self, monkeypatch):
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+        manager, _sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KIRO
+        )
+        provider = await manager._create_shared_session(
+            self._info("kiro-parent"), "subagent:kiro-parent", "kc"
+        )
+        runtime.create_session.return_value.set_model.assert_not_awaited()
+        assert read_dirs == []
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_model_crew_pins_is_left_alone(self, monkeypatch):
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        manager, _sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
+        )
+        provider = await manager._create_shared_session(
+            self._info("kas-spec-model"), "subagent:kas-spec-model", "kc"
+        )
+        runtime.create_session.return_value.set_model.assert_not_awaited()
+        assert read_dirs == []
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_cli_default_still_starts_the_sub_agent(self, monkeypatch):
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        manager, _sessions, runtime, _read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS
+        )
+        handle = runtime.create_session.return_value
+        handle.set_model.side_effect = RuntimeError("model not served")
+        info = self._info("kas-refused")
+        provider = await manager._create_shared_session(info, "subagent:kas-refused", "kc")
+        handle.set_model.assert_awaited_once_with("cli-default-model", inherit=True)
+        assert info._shared_provider is provider
+        await provider.shutdown()
