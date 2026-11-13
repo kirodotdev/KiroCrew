@@ -208,6 +208,11 @@ class _Module:
                 fn.qual.rpartition(".")[2] for fn in self.functions if is_lenient_reader(fn)
             }
 
+    def release(self) -> None:
+        """Drop the parsed tree and keep ``readers``, the one result other modules read."""
+        self.tree = None
+        self.functions = []
+
 
 def _imports(module: _Module, modules: dict[str, _Module]) -> tuple[dict[str, str], set[str]]:
     """``(alias -> imported project module, names bound to an imported lenient reader)``."""
@@ -298,12 +303,15 @@ def rewrites_from_lenient_reads(modules: dict[str, _Module]) -> dict[str, list[i
     """``<rel path>::<function>`` -> lines of each write fed by a lenient read.
 
     Two passes: modules that can define a reader are parsed first, then only the
-    modules that both call a writer and name one of the readers found.
+    modules that both call a writer and name one of the readers found. Each tree is
+    released once it is read: about a thousand parsed modules held at once cost a
+    worker over a GiB that the allocator keeps after they are freed.
     """
     for module in modules.values():
         text = module.text
         if text is not None and _HANDLER_GATE.search(text) and _EMPTY_GATE.search(text):
             module.parse()
+            module.release()
     names = sorted({name for module in modules.values() for name in module.readers})
     if not names:
         return {}
@@ -315,6 +323,7 @@ def rewrites_from_lenient_reads(modules: dict[str, _Module]) -> dict[str, list[i
             continue
         module.parse()
         found.update(_scan_module(module, modules))
+        module.release()
     return {key: sorted(lines) for key, lines in found.items()}
 
 
@@ -375,6 +384,12 @@ def test_the_scan_still_sees_the_real_lenient_readers() -> None:
         ),
     ):
         assert reader not in modules[module].readers, f"{module}.{reader} is strict"
+
+
+def test_the_scan_keeps_no_parsed_tree() -> None:
+    """The cached scan outlives this module's tests, so it must release every tree it parsed."""
+    held = [m.rel for m in _src_scan()[0].values() if m.tree is not None or m.functions]
+    assert not held
 
 
 _LENIENT = """
