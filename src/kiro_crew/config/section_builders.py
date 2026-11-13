@@ -671,9 +671,20 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
     domain = str(section.get("relay_viewer_relay_domain") or "").strip()
     if domain.isascii():
         domain = domain.lower()
+    prefix = str(section.get("relay_viewer_oidc_scope_prefix") or "").strip()
+    if prefix:
+        from kiro_crew.auth.login.endpoints import OIDC_SCOPE_PREFIX_RE
+
+        if OIDC_SCOPE_PREFIX_RE.fullmatch(prefix) is None:
+            logger.warning(
+                "tunnel.relay_viewer_oidc_scope_prefix ignored: it must be lower-case "
+                "letters and underscores"
+            )
+            prefix = ""
     return {
         "relay_viewer_cps_url": url,
         "relay_viewer_credential": ref,
+        "relay_viewer_oidc_scope_prefix": prefix,
         "relay_viewer_relay_domain": domain,
     }
 

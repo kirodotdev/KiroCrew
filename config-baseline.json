@@ -11799,6 +11799,7 @@
         "relay_viewer_enabled": false,
         "relay_viewer_cps_url": "",
         "relay_viewer_credential": "",
+        "relay_viewer_oidc_scope_prefix": "",
         "relay_viewer_relay_domain": ""
       }
     },
@@ -11977,6 +11978,20 @@
       "tags": [],
       "label": "Relay Viewer Credential",
       "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "tunnel.relay_viewer_oidc_scope_prefix",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer OIDC Scope Prefix",
+      "help": "For testing against a non-prod control plane only, like kiro-cli's api.oidc.scopePrefix: the prefix Builder ID and IAM Identity Center sign-ins request their scopes under, in place of the public one. Empty (the default) keeps the public scopes. Lower-case letters and underscores only; any other value is ignored with a warning. Applies to the next sign-in.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
