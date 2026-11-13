@@ -17,12 +17,28 @@
 // byte-for-byte unaffected -- CI runs the analyze build and then this script.
 import path from 'path'
 import { pathToFileURL } from 'url'
-import { checkChunkBudgets, failGate, formatBytes, loadSummaryOrExit } from './lib/bundleReport.mjs'
+import { checkChunkBudgets, failGate, firstLoadBytes, formatBytes, loadSummaryOrExit } from './lib/bundleReport.mjs'
 
 const KB = 1024
 
 /** Budget for any chunk without an explicit allowlist entry below. */
 export const DEFAULT_BUDGET_BYTES = 500 * KB
+
+/**
+ * Ceiling for the first load: the raw (minified, uncompressed) bytes of the
+ * `main` entry chunk plus every chunk it reaches through static imports, which is
+ * what `dist/index.html` modulepreloads before the dashboard can render. The
+ * per-chunk budgets below cannot see this total: the first load can grow by
+ * hundreds of chunks that each stay under 500 KB.
+ *
+ * Measured 2026-11-13 with an analyze build of main @ 1c17fbd22a plus the change
+ * that keeps PublishHub and AboutPanel out of the first load: 344 chunks,
+ * 9,454,228 B (`firstLoadBytes` over dist/bundle-report.json). Main alone, before
+ * that change, measured 9,514,411 B. Ceiling = 9,454,228 B * 1.05, rounded up
+ * to whole KB. Same rule as the per-chunk entries: lower it when the first load
+ * shrinks; raising it is a regression the PR that does it must justify.
+ */
+export const FIRST_LOAD_BUDGET_BYTES = 9695 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by
@@ -382,12 +398,32 @@ export function main(argv = process.argv.slice(2)) {
     )
   }
 
-  if (breaches.length === 0) {
+  // 5 = no `main` entry chunk, so the first-load total measured nothing.
+  const firstLoad = firstLoadBytes(summary)
+  if (!firstLoad) {
+    failGate(`no 'main' entry chunk in ${reportPath} -- the first-load total measured nothing.`, 5)
+  }
+  const firstLoadOver = firstLoad.bytes > FIRST_LOAD_BUDGET_BYTES
+  const firstLoadLine =
+    `first load: ${firstLoad.chunkCount} chunks, ${formatBytes(firstLoad.bytes)} ` +
+    `(budget ${formatBytes(FIRST_LOAD_BUDGET_BYTES)})`
+
+  if (breaches.length === 0 && !firstLoadOver) {
     process.stdout.write(
       `bundle-size gate: ${checkedCount} chunks within budget ` +
-        `(default ${formatBytes(DEFAULT_BUDGET_BYTES)}, ${Object.keys(CHUNK_BUDGETS).length} allowlisted).\n`
+        `(default ${formatBytes(DEFAULT_BUDGET_BYTES)}, ${Object.keys(CHUNK_BUDGETS).length} allowlisted); ` +
+        `${firstLoadLine}.\n`
     )
     return
+  }
+
+  if (firstLoadOver) {
+    process.stderr.write(
+      `FAIL ${firstLoadLine}: over by ${formatBytes(firstLoad.bytes - FIRST_LOAD_BUDGET_BYTES)}. ` +
+        'Something new is statically imported from the entry; load it with a lazy import() ' +
+        'or justify a new FIRST_LOAD_BUDGET_BYTES in scripts/check-bundle-size.mjs.\n'
+    )
+    if (breaches.length === 0) failGate('the first load is over budget.')
   }
 
   // One actionable line per breach: a developer must be able to act on the

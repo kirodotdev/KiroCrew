@@ -4,13 +4,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { logicalChunkName, checkChunkBudgets } from '../../scripts/lib/bundleReport.mjs'
-import { CHUNK_BUDGETS, DEFAULT_BUDGET_BYTES } from '../../scripts/check-bundle-size.mjs'
+import { logicalChunkName, checkChunkBudgets, firstLoadBytes } from '../../scripts/lib/bundleReport.mjs'
+import { CHUNK_BUDGETS, DEFAULT_BUDGET_BYTES, FIRST_LOAD_BUDGET_BYTES } from '../../scripts/check-bundle-size.mjs'
 
 const KB = 1024
 
+type ChunkInput = { fileName: string; size: number; isEntry?: boolean; imports?: string[] }
+
 /** A minimal version-1 report with the given chunks, as the plugin emits it. */
-function report(chunks: Array<{ fileName: string; size: number }>) {
+function report(chunks: ChunkInput[]) {
   return {
     version: 1,
     generatedAt: 'T',
@@ -20,11 +22,14 @@ function report(chunks: Array<{ fileName: string; size: number }>) {
       chunkCount: chunks.length,
       assetCount: 0,
     },
-    chunks: chunks.map((c) => ({ ...c, moduleCount: 1, isEntry: false, isDynamicEntry: false })),
+    chunks: chunks.map((c) => ({ moduleCount: 1, isEntry: false, isDynamicEntry: false, imports: [], ...c })),
     assets: [],
     owners: [],
   }
 }
+
+/** A small `main` entry chunk, so the first-load total has something to start from. */
+const MAIN: ChunkInput = { fileName: 'assets/main-AAAAAAAA.js', size: 10 * KB, isEntry: true }
 
 describe('logicalChunkName', () => {
   it('strips the assets prefix and the content hash', () => {
@@ -105,6 +110,23 @@ describe('checkChunkBudgets', () => {
   })
 })
 
+describe('firstLoadBytes', () => {
+  it('sums the main entry and every chunk it reaches through static imports', () => {
+    const r = report([
+      { ...MAIN, imports: ['assets/a-AAAAAAAA.js'] },
+      { fileName: 'assets/a-AAAAAAAA.js', size: 20 * KB, imports: ['assets/b-BBBBBBBB.js'] },
+      { fileName: 'assets/b-BBBBBBBB.js', size: 30 * KB, imports: ['assets/a-AAAAAAAA.js'] },
+      // Only reached through a dynamic import(), so never on the first load.
+      { fileName: 'assets/lazy-CCCCCCCC.js', size: 400 * KB },
+    ])
+    expect(firstLoadBytes(r)).toEqual({ bytes: 60 * KB, chunkCount: 3 })
+  })
+
+  it('returns null when there is no main entry chunk', () => {
+    expect(firstLoadBytes(report([{ fileName: 'assets/a-AAAAAAAA.js', size: 10 * KB }]))).toBeNull()
+  })
+})
+
 describe('CHUNK_BUDGETS (the shipped allowlist)', () => {
   it('keys are logical names, never hashed file names or asset paths', () => {
     for (const name of Object.keys(CHUNK_BUDGETS)) {
@@ -155,7 +177,7 @@ describe('check-bundle-size.mjs as a process (the CI entry point)', () => {
   })
 
   it('exits non-zero on an over-budget non-allowlisted chunk, naming size, budget and overage', () => {
-    const res = run(JSON.stringify(report([{ fileName: 'assets/rogue-AAAAAAAA.js', size: 700 * KB }])))
+    const res = run(JSON.stringify(report([MAIN, { fileName: 'assets/rogue-AAAAAAAA.js', size: 700 * KB }])))
     expect(res.status).toBe(1)
     expect(res.stderr).toContain('assets/rogue-AAAAAAAA.js')
     expect(res.stderr).toContain('700.0 KB')
@@ -167,6 +189,7 @@ describe('check-bundle-size.mjs as a process (the CI entry point)', () => {
     const res = run(
       JSON.stringify(
         report([
+          MAIN,
           { fileName: 'assets/tiny-AAAAAAAA.js', size: 10 * KB },
           // Over 500 KB but under its allowlisted ceiling.
           { fileName: 'assets/PierreImpl-Cz39VSsw.js', size: 550 * KB },
@@ -175,6 +198,24 @@ describe('check-bundle-size.mjs as a process (the CI entry point)', () => {
     )
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('within budget')
+  })
+
+  it('fails when the first load is over budget even though every chunk is under 500 KB', () => {
+    const count = Math.ceil(FIRST_LOAD_BUDGET_BYTES / (480 * KB)) + 1
+    const parts = Array.from({ length: count }, (_, i) => ({
+      fileName: `assets/part${i}-AAAAAAAA.js`,
+      size: 480 * KB,
+    }))
+    const res = run(JSON.stringify(report([{ ...MAIN, imports: parts.map((p) => p.fileName) }, ...parts])))
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('FAIL first load')
+    expect(res.stdout).not.toContain('within budget')
+  })
+
+  it('refuses a report with no main entry chunk, rather than certifying a zero first load', () => {
+    const res = run(JSON.stringify(report([{ fileName: 'assets/tiny-AAAAAAAA.js', size: 10 * KB }])))
+    expect(res.status).toBe(5)
+    expect(res.stderr).toContain("no 'main' entry chunk")
   })
 
   it('fails closed on a missing report rather than passing an unmeasured build', () => {
