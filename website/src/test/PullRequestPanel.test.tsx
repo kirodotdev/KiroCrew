@@ -1365,6 +1365,35 @@ describe('PullRequestPanel actions', () => {
     expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
   })
 
+  it('clears a failed ready notice once a later auto-merge succeeds', async () => {
+    // The ready click fails, then the pull request leaves draft elsewhere and
+    // auto-merge is armed from here: the old refusal must not stay beside it.
+    let current: PullRequestSource = { ...github, draft: true }
+    mockApi.pullRequestSource.mockImplementation(() => Promise.resolve(current))
+    mockApi.markPullRequestReady.mockRejectedValue(new Error(JSON.stringify({ error: 'zz-ready-refused' })))
+    mockApi.enablePullRequestAutoMerge.mockResolvedValue({ ok: true, mergeMethod: 'squash' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url: github.url, provider: github.provider, number: github.number, repo: 'widgets' }]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+          onAddToChat={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Ready for review/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('zz-ready-refused')
+
+    current = { ...github, draft: false }
+    await act(async () => { await client.invalidateQueries() })
+    fireEvent.click(await screen.findByRole('button', { name: /Enable auto-merge/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /Confirm auto-merge/i }))
+    await waitFor(() => expect(mockApi.enablePullRequestAutoMerge).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/zz-ready-refused/)).toBeNull())
+  })
+
   it('surfaces the provider reason inline when an action fails', async () => {
     mockApi.markPullRequestReady.mockRejectedValue(
       new Error(JSON.stringify({ error: 'This pull request is already ready for review.' })),

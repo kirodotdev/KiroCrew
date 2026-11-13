@@ -20,6 +20,7 @@ import type { SteeringFile, SteeringList } from '../../types'
 import { parseErrorCode } from '../../utils/errorReport'
 
 import { i18nT } from '../../i18n/t'
+import { useLatestMutationError } from '../../utils/latestMutationError'
 /**
  * Catalog KEY for each steering scope's chip label.
  *
@@ -560,7 +561,7 @@ export default function SteeringTab() {
     },
   })
 
-  const mutError = (createFile.error || updateFile.error || deleteFile.error) as Error | null
+  const mutError = useLatestMutationError(createFile, updateFile, deleteFile) as Error | null
   const mutErrorCode = parseErrorCode((mutError as { body?: unknown } | null)?.body as string | undefined)
   // Split once, here: a field-scoped refusal renders under the input it is
   // about and is withheld from the tab-level banner, so the two never say the
@@ -584,7 +585,7 @@ export default function SteeringTab() {
   // attached to — hiding the draft the 409 exists to preserve. A conflict on a
   // create or a delete has no draft to lose, so those still refresh.
   const conflictError = isProjectConflict(mutError)
-  const savingConflict = conflictError && !!updateFile.error && editing
+  const savingConflict = conflictError && mutError === updateFile.error && editing
   useEffect(() => {
     if (!conflictError) return
     if (savingConflict) return
