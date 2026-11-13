@@ -1515,9 +1515,11 @@ class TestOneDecisionWalksEachTextOnce:
         modes: list[bool] = []
         real = walk._close_paren_walk
 
-        def spy(text: str, open_end: int, expansions: bool) -> tuple[int, bool]:
+        def spy(
+            text: str, open_end: int, expansions: bool, at: tuple[int, bool] | None = None
+        ) -> tuple[int, bool]:
             modes.append(expansions)
-            return real(text, open_end, expansions)
+            return real(text, open_end, expansions, at)
 
         monkeypatch.setattr(walk, "_close_paren_walk", spy)
         assert walk._matching_close_paren("$(echo a) b", 2) == (9, True)
@@ -1525,3 +1527,52 @@ class TestOneDecisionWalksEachTextOnce:
         modes.clear()
         assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
         assert modes == [False, True]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git add f && python3 - <<'PY'\n" + "print('a $b \"c\" `d` $(e) f')\n" * 135 + "PY",
+            "echo 2>$(e) f\n" * 300,  # a redirect cut by a substitution, every line
+        ],
+        ids=["heredoc", "redirect-cut-by-substitution"],
+    )
+    def test_one_walk_reads_each_character_a_bounded_number_of_times(self, monkeypatch, command):
+        """With a span on every line, finding each span's close by re-reading the
+        text from its start made one walk quadratic: 31 KB of this heredoc took over 10 s."""
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        steps = 0
+        real = walk._iter_shell_chars
+
+        def spy(*args, **kwargs):
+            nonlocal steps
+            for step in real(*args, **kwargs):
+                steps += 1
+                yield step
+
+        monkeypatch.setattr(walk, "_iter_shell_chars", spy)
+        assert is_denied(command) is None
+        assert steps < 10 * len(command), (steps, len(command))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "git push origin my-feature > >(X=')' git push origin main)",
+            "x $(: ${v:-)}; printf token) y",
+            "a $(: # )\nprintf token) b",
+            "$(case x in x) printf token;; esac)",
+            "echo $'a\\'b' $(x) 'q $(y)' \"$(echo \")\")\"",
+            "\\$(x) $$(y) $'$(z)' `a $(b)` <(c) >(d $(e))",
+            'echo "${a:-$(b)}" $(c ${d} "$(e)") \'$(f)\' \\\'$(g) $(h',
+            _HEREDOC,
+        ],
+    )
+    def test_a_span_resumed_at_its_open_closes_where_a_walk_from_the_start_does(self, text):
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        at = walk._quote_states(text)
+        opens = [i + 2 for i in range(len(text)) if text.startswith(("$(", "<(", ">("), i)]
+        assert opens
+        for open_end in opens:
+            resumed = walk._matching_close_paren(text, open_end, at[open_end])
+            assert resumed == walk._matching_close_paren(text, open_end), (text, open_end)

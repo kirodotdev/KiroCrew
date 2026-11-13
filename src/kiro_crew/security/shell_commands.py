@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from . import shell_normalizer as _shell
+from . import shell_normalizer_walk as _walk
 
 # One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
 # text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
@@ -398,11 +399,13 @@ def without_substitutions(command: str) -> str:
     :func:`read_commands` would cut (``bash -c 2>$(x) '<script>'``)."""
     out: list[str] = []
     pos = 0
+    quote_at: "dict[int, tuple[int, bool]] | None" = None
     while True:
-        steps = _shell._iter_shell_chars(command[pos:])
-        opens = (pos + s.offset for s in steps if s.active and s.char in "$<>")
+        steps = _shell._iter_shell_chars(command, 0, False, pos)
+        opens = (s.offset for s in steps if s.active and s.char in "$<>")
         hit = next((at for at in opens if command.startswith("(", at + 1)), None)
         if hit is None:
             return "".join(out) + command[pos:]
         out.append(command[pos:hit] + "_")
-        pos = _shell._matching_close_paren(command, hit + 2)[0]
+        quote_at = quote_at or _walk._quote_states(command)
+        pos = _shell._matching_close_paren(command, hit + 2, quote_at[hit + 2])[0]

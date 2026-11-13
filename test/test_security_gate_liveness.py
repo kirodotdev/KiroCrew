@@ -801,7 +801,12 @@ def _url_payload_command(n: int) -> str:
 #: rebuild's budget for every caller and is reused for a second on the event loop, so
 #: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
 #: at once while that listing is still in flight. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_901
+#: Raised by 27, from 35,901, to 35,928, for the paren walk resuming at a span's open:
+#: ``_quote_states`` records the quote state a walk from offset 0 holds at each step,
+#: ``_matching_close_paren`` starts there for ``_substitution_bodies`` and
+#: ``shell_commands.without_substitutions``, and ``_iter_shell_chars`` takes a start
+#: offset instead of a copied slice. Same verdicts, less work. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_928
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
