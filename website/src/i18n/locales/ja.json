@@ -15120,6 +15120,7 @@
         "mcp_deny_rule": "{{name}} で MCP ツールを1つオフにすると、同じサーバーのすべてのツールが止まります。オフにしたものだけではありません。",
         "missing_components": "このマシンにありません: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使います。開いているセッションは開始時のエージェントのままです。",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "このビルドはこのエージェントを提供しません。",
         "note_crew_command_channel": "スラッシュコマンドは {{productName}} のコマンド経路を通ります。",
         "note_crew_sandbox_stands_down": "自分専用の隔離環境を持ちます。Windows では常に、macOS では内部の隔離がオンのときに、{{productName}} 側の隔離は行いません。",

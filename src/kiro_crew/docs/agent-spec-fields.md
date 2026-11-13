@@ -181,6 +181,7 @@ underneath.
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
+| `mistral-vibe` | none | — | — | no projection of the spec — kind `broker-only` [8]; the `session/new` array itself is the channel (vibe-acp hands it to the session as `SessionOptions.mcp_servers`), so Crew's pooled broker stubs are mounted, but the spec's own servers and per-tool deny set are not; `model` and `prompt` still arrive [9] |
 | `strands` | `strands.py` | `mcpServers`, by the `--mcp-config` launch file, never the wire [10]; `model`, as the `--model` launch argument [10] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | `availableModels` — no vocabulary advertised; `autoApprove` and `permissions.defaultMode` — gate-preserving (Crew's gate module asks for every call); `prompt` — context-instead [10]; `resources` — no-reader [6]; `toolsSettings` — no channel [11] |
 
 **An empty `tools` list is a second, stronger case of the "allowlist" row.** `tools:
@@ -224,7 +225,8 @@ a permission request, so no refusal could make `tools: []` hold
 (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`, subtracted from
 `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`). A call that asks is judged like any other, so an
 agent spec relying on `tools: []` on mimocode is not enforced; the pool does not run
-on it.
+on it. `mistral-vibe` has no zero-tools capture either, so it stays out of
+`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN` and the pool does not run on it.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -304,6 +306,8 @@ missing file is not created.
    mounted on a session where none can be called. `deepseek` DOES mount stdio
    elements, so its session holds the shared gateway's pooled broker stubs — just
    not the servers its own spec declares, and not its per-tool deny set.
+   `mistral-vibe` consumes the array itself, so the same broker stubs are mounted
+   there too, with the same two gaps.
 9. "No mirror" is not "nothing from the spec". Both are in
    `agent_sdk/backends_models.py`'s `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, so the spec's
    `model` reaches them with `session/set_config_option` after `session/new` —
@@ -447,7 +451,8 @@ is the part worth knowing before you switch:
   `hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's turn loop fires
   it, and `no-channel` on `claude` and `codex`. On `mimocode` it is `withheld`: that
   fork's projection follows opencode's rules, but some of its tools never ask, so
-  Crew does not fire hooks there. Neither URI scheme is loaded natively, but a mapped
+  Crew does not fire hooks there. On `mistral-vibe` it is `no-channel`: the backend is
+  `broker-only` and no mirror translates the spec, so `hooks` never leaves Crew. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A
   `file://` steering glob is not loaded from the spec; a custom agent's new

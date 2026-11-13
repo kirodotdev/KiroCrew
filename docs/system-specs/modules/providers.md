@@ -1489,6 +1489,13 @@ are the entries of `agent.py:_MANAGED_MCP_SERVERS` (see also
 `kirocrew-work`, `kirocrew-crew-log`) are opt-in per their entry.
 User-configured servers from the agent config are merged in.
 
+Vibe's MCP projection is declared `BROKER_ONLY` in `providers/mirrors/registry.py`:
+vibe-acp consumes the `session/new` `mcpServers` array itself (it hands it to the
+session as `SessionOptions.mcp_servers`), so the array IS the channel and carries
+Crew's pooled broker stubs. What does not travel is the agent spec's own server
+list or its per-tool deny set: no mirror translates them for this harness, so a
+dashboard tool-off withholds the whole server stub rather than one tool of it.
+
 ## SessionManager (`session.py`)
 
 - Provider-agnostic via factory (one provider, `AcpProvider`, over the resolved backend)

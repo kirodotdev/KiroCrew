@@ -270,6 +270,10 @@ class TestEveryKnownBackendIsClassified:
     #: ``context_manager`` defaults to ``"auto"``, an operator's project may pass
     #: ``"off"``). Claiming harness-managed would be true for the bundled project
     #: only, so it declines and the gate's WARNING says so.
+    #: ``mistral-vibe`` left this list on its own driven capture: its ``/compact``
+    #: turn is claimed in ``ACP_BACKENDS_COMPACT`` and read in
+    #: ``ACP_BACKENDS_INLINE_COMPACTION``
+    #: (``test/fixtures/acp_frames/mistral-vibe/compact-live.jsonl``).
     UNCLASSIFIED: frozenset = frozenset({"strands"})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:

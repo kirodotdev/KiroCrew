@@ -120,6 +120,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_copilot_backend": ("property", False, "a6632a57e602", "acp"),
     "is_deepseek_backend": ("property", False, "a6632a57e602", "acp"),
     "is_goose_backend": ("property", False, "a6632a57e602", "acp"),
+    "is_mistral_vibe_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kas_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kiro_backend": ("property", False, "a6632a57e602", "acp"),
     "is_mimocode_backend": ("property", False, "a6632a57e602", "acp"),

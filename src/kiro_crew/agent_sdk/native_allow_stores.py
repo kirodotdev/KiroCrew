@@ -28,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -88,6 +89,10 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
         for name in ("mimocode.json", "mimocode.jsonc", "config.json")
     ),
     ACP_BACKEND_CODEX: (NativeAllowStore(".codex/config.toml", (("CODEX_HOME", "config.toml"),)),),
+    # config.toml: its permissions (allowed tools) decide what runs unasked.
+    ACP_BACKEND_MISTRAL_VIBE: (
+        NativeAllowStore(".vibe/config.toml", (("VIBE_HOME", "config.toml"),)),
+    ),
     # extensions: code pi loads into its own process.
     ACP_BACKEND_PI: (_pi("settings.json"), _pi("extensions")),
     # Its permission settings (allowed tools and URLs, trusted folders, its own hooks)

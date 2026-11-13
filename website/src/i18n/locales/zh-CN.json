@@ -15120,6 +15120,7 @@
         "mcp_deny_rule": "在 {{name}} 上关掉一个 MCP 工具，同一台服务器上的所有工具都会停，不只是你关掉的那个。",
         "missing_components": "本机缺少：{{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理。",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "这个构建不提供这个代理。",
         "note_crew_command_channel": "斜杠命令走 {{productName}} 自己的命令通道。",
         "note_crew_sandbox_stands_down": "它有自己的隔离环境。在 Windows 上，以及在 macOS 上开启其内部隔离时，{{productName}} 的隔离不再介入。",

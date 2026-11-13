@@ -15120,6 +15120,7 @@
         "mcp_deny_rule": "{{name}}에서 MCP 도구 하나를 끄면 끈 도구만이 아니라 같은 서버의 모든 도구가 멈춥니다.",
         "missing_components": "이 컴퓨터에 없음: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "새 세션은 이 에이전트를 사용합니다. 열려 있는 세션은 시작할 때의 에이전트를 유지합니다.",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "이 빌드는 이 에이전트를 제공하지 않습니다.",
         "note_crew_command_channel": "슬래시 명령은 {{productName}} 명령 경로를 지납니다.",
         "note_crew_sandbox_stands_down": "자체 격리 환경이 있습니다. Windows에서는, 그리고 macOS에서는 내부 격리가 켜져 있을 때 {{productName}} 격리가 물러납니다.",

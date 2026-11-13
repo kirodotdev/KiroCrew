@@ -15922,6 +15922,7 @@
         "mcp_deny_rule": "Desligar uma ferramenta MCP no {{name}} para todas as ferramentas do mesmo servidor, não só a que você desligou.",
         "missing_components": "Ausente nesta máquina: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Novas sessões usam este agente. Sessões abertas mantêm o agente com que começaram.",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "Esta build não oferece este agente.",
         "note_crew_command_channel": "Os comandos com barra passam pelo canal de comandos do {{productName}}.",
         "note_crew_sandbox_stands_down": "Tem o próprio ambiente isolado. No Windows, e no macOS quando o isolamento interno dele está ativado, o isolamento do {{productName}} recua para ele.",

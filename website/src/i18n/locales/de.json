@@ -15521,6 +15521,7 @@
         "mcp_deny_rule": "Schaltest du auf {{name}} ein MCP-Tool ab, hört jedes Tool auf demselben Server auf, nicht nur das abgeschaltete.",
         "missing_components": "Auf diesem Rechner fehlt: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Neue Sitzungen verwenden diesen Agenten. Offene Sitzungen behalten den, mit dem sie gestartet wurden.",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "Dieser Build bietet diesen Agenten nicht an.",
         "note_crew_command_channel": "Slash-Befehle laufen über den Befehlskanal von {{productName}}.",
         "note_crew_sandbox_stands_down": "Hat eine eigene Sandbox. Unter Windows, und unter macOS, wenn ihre interne Sandbox eingeschaltet ist, tritt die Sandbox von {{productName}} dafür zurück.",
