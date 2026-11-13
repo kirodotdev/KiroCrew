@@ -22388,6 +22388,7 @@
       "import_refused_text": "Este archivo contiene texto que parece una contraseña o clave, así que no se puede importar.",
       "slug_collision": "Este Bot comparte su nombre corto con \"{{name}}\", cuyo chat ya lo usa. Cambiar el nombre mantiene el nombre corto, así que elimina \"{{self}}\" y vuelve a crearlo con un nombre que tenga otro nombre corto. Conserva \"{{name}}\".",
       "thread_open_failed": "No se pudo abrir el chat de este Bot.",
+      "owner_check_failed": "No se pudo comprobar si puedes importar Bots aquí, así que «Importar desde archivo» está oculto.",
       "thread_owner_only": "Solo el propietario de este Bot puede chatear con él.",
       "thread_repair_failed": "No se pudo volver a conectar este chat. Vuelve a abrir el Bot para intentarlo de nuevo.",
       "title": "Bots",

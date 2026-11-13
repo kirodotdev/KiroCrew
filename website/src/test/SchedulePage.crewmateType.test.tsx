@@ -39,6 +39,8 @@ vi.mock('../api/client', () => ({
     agentCatalog: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
     defaultAgent: vi.fn().mockResolvedValue({ default_agent: 'kirocrew', default_template: 'kirocrew' }),
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
   },
 }))
 

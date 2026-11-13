@@ -21310,6 +21310,7 @@
       "import_refused_text": "这个文件含有像密码或密钥的文字，所以无法导入。",
       "slug_collision": "此 Bot 与“{{name}}”的简称相同，聊天已被后者占用。重命名不会改变简称。删除“{{self}}”，再用简称不同的名字重新创建。保留“{{name}}”。",
       "thread_open_failed": "无法打开此 Bot 的聊天。",
+      "owner_check_failed": "无法确认你能否在这里导入 Bot，因此已隐藏“从文件导入”。",
       "thread_owner_only": "只有这个 Bot 的所有者才能和它聊天。",
       "thread_repair_failed": "无法重新连接此聊天。重新打开该 Bot 以重试。",
       "title": "Bot",

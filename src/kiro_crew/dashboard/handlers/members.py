@@ -55,12 +55,15 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.members_access import (  # noqa: F401
         _audit_owner_read,
+        _audit_teammate_denied,
         _audit_teammate_read,
         _deny_app_caller,
         _member_name_is_addressable,
         _member_names_for_slug,
         _sel,
         _slug_is_claimed_by_any_member,
+        _teammate_admitted,
+        _teammate_reaches_bot,
     )
     from kiro_crew.dashboard.handlers.members_drawer import (  # noqa: F401
         _ACTIVITY_LIMIT,

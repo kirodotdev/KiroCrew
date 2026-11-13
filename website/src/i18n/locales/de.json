@@ -21849,6 +21849,7 @@
       "import_refused_text": "Diese Datei enthält Text, der wie ein Passwort oder Schlüssel aussieht, und kann daher nicht importiert werden.",
       "slug_collision": "Dieser Bot teilt seinen Kurznamen mit „{{name}}“, dessen Chat ihn bereits verwendet. Umbenennen behält den Kurznamen bei. Lösche daher „{{self}}“ und lege ihn unter einem Namen mit anderem Kurznamen neu an. Behalte „{{name}}“.",
       "thread_open_failed": "Der Chat dieses Bot konnte nicht geöffnet werden.",
+      "owner_check_failed": "Es ließ sich nicht prüfen, ob du hier Bots importieren darfst, daher ist „Aus Datei importieren“ ausgeblendet.",
       "thread_owner_only": "Nur der Besitzer dieses Bot kann mit ihm chatten.",
       "thread_repair_failed": "Dieser Chat konnte nicht wieder verbunden werden. Öffne den Bot erneut, um es noch einmal zu versuchen.",
       "title": "Bots",

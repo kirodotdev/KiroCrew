@@ -227,6 +227,7 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _eager_copy_mate_config,
     _mark_first_greeting_owed,
     _refresh_session_defaults,
+    _teammate_create_refusal,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agents_create,
 )
@@ -1928,10 +1929,16 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
     from the bytes served, so a replaced picture invalidates even when size
     and second-granularity mtime coincide.
     """
-    denied = await _require_owner(request, "agent.avatar_get")
-    if denied is not None:
-        return denied
-    if (name := agent_route_name(request)) is None:
+    name = agent_route_name(request)
+    # A team Crew teammate sees a person-created Bot's picture: their roster
+    # already names it, and the image is the same value.
+    from kiro_crew.dashboard.handlers.members import _teammate_admitted
+
+    if name is None or not await _teammate_admitted(request, "agent.avatar_get", name=name):
+        denied = await _require_owner(request, "agent.avatar_get")
+        if denied is not None:
+            return denied
+    if name is None:
         return invalid_agent_name_response()
     # The file is served only while the crew's config actually selects it —
     # a leftover file after an out-of-band config edit or a failed cleanup

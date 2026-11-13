@@ -8932,6 +8932,7 @@
       "add_member": "New bot",
       "slug_collision": "This bot shares its short name with “{{name}}”, whose chat already uses it. Renaming keeps the short name, so delete “{{self}}” and create it again under a name with a different short name. Keep “{{name}}”.",
       "thread_open_failed": "Could not open this bot's chat.",
+      "owner_check_failed": "Couldn't check whether you can import bots here, so Import from file is hidden.",
       "thread_owner_only": "Only this bot's owner can chat with it.",
       "thread_repair_failed": "Couldn't reconnect this chat. Reopen the bot to try again.",
       "title": "Bots",
