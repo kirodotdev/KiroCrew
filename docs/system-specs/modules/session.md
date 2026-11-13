@@ -4357,6 +4357,25 @@ poisoned-conversation canary, image-history replay), because each one ends in a
 fresh first turn that arms the debt. On kiro-cli its own `.jsonl` check answers
 instead.
 
+A refused speculative resume is remembered apart from that marker. A KAS
+`session/load` that replays no earlier turn raises `AcpResumeNotRestored`, and the
+provider records the refused id (`AcpProvider._resume_refused_sid`). When a resume
+prefetch (`speculative_resume=True`) then comes back not resumed, `get_or_create`
+keeps that id per key in memory (`SessionRegistryState.refused_resume_sids`)
+before it raises `SpeculativeResumeRefused`, and a later prefetch of the same id
+is refused before any process starts. The session map is left alone: the marker
+would make `get` refuse the id for every caller, and the next turn would then
+start without the chat's recorded scratch tree and stored folder, which only a
+resume rejoins. So the next turn still resumes the id, has its load refused once,
+and starts fresh with the conversation replayed in the same tree. Registering a
+session for the key drops the entry, and a restart forgets it, which costs one
+more refused prefetch
+(`test_eager_spawn_resume_prefetch.py::TestRefusedKasResumeIsNotRetried`). A lock
+that never cleared and every other failed load record nothing, so the next
+prefetch loads the id again
+(`test_acp_provider.py::TestLoadSessionWithRetry::test_persistent_lock_exhausts_and_falls_back`,
+`TestStartKiroRuntimeResume::test_failed_load_falls_back_to_create_session`).
+
 **The session-head record.** Every claim runs `SessionManager.note_session_head`
 (`session_parts/claims.get_or_create`), so every surface that starts or resumes a
 session takes one path. A fresh session whose agent prompt carries a session head

@@ -2404,10 +2404,12 @@ that load is in flight, the reader loop counts the `session/update` frames for
 its id that carry `_meta.kiro.replay: true`, which KAS puts on every turn it
 replays (`test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl`). A load with
 none evicts the session (`evict_session`, which keeps the stored record, so a
-wrong refusal cannot delete a real conversation) and raises, and
-the provider then takes the fresh-session path with `_history_replay_needed`, the
-same one a failed load takes. The MCP re-injection load and every other backend
-pass `False`.
+wrong refusal cannot delete a real conversation) and raises `AcpResumeNotRestored`
+(an `AcpRuntimeError` subclass), and the provider then takes the fresh-session
+path with `_history_replay_needed`, the same one a failed load takes. The MCP
+re-injection load and every other backend pass `False`. The provider also records
+the refused id (`_resume_refused_sid`); when a resume prefetch saw the refusal, the
+next prefetch of that id is refused before it starts a process ([session](session.md)).
 
 `AcpRuntime.load_session` has a second caller on KAS: applying a dashboard MCP
 config change to a LIVE session (`acp/session_provider_mcp_reinject.py`,

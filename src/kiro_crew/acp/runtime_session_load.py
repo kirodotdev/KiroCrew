@@ -65,6 +65,7 @@ from kiro_crew.acp.session_handle import (
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
@@ -579,7 +580,7 @@ async def load_session(
         # teardown verb deletes the record, and a refusal that was wrong would
         # then lose a real conversation. The caller starts a fresh session.
         await self.evict_session(resume_sid)
-        raise AcpRuntimeError(
+        raise AcpResumeNotRestored(
             f"session/load of {resume_sid} replayed no earlier turn: "
             "the stored conversation was not restored"
         )
