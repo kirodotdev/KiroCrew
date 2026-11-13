@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import json
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -23,7 +24,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     observer_spec_hooks,
     overlong_spec_hook_commands,
     post_tool_matchers_no_builtin_meets,
-    project_hook_files_present,
+    project_hook_file_names,
     provider_session_key,
     session_agent,
     spec_hook_events,
@@ -654,18 +655,19 @@ async def _surface_withheld_project_hook_files(
     files exist. The checkout is the session's OWN working directory (``client.cwd``)
     rather than ``spec_project_dir``, which answers ``None`` on KAS (KAS resolves its
     agent spec from the user level alone), so the notice would otherwise never fire.
-    Best-effort: a failed check renders nothing rather than failing the turn.
+    Best-effort: a failed check renders nothing rather than failing the turn. A
+    chat shows it once (``_project_hook_files_notice_is_new``).
     """
     cwd = getattr(client, "cwd", "")
     project_dir = cwd if isinstance(cwd, str) and cwd else None
     if not project_dir:
         return
     try:
-        present = await asyncio.to_thread(project_hook_files_present, project_dir)
+        names = await asyncio.to_thread(project_hook_file_names, project_dir)
     except Exception:  # noqa: BLE001 - a notice must never fail a turn
         logger.debug("could not check %s for project hook files", project_dir, exc_info=True)
         return
-    if present:
+    if names and _project_hook_files_notice_is_new(slot, project_dir, names):
         append_and_surface(
             state,
             slot,
@@ -674,6 +676,24 @@ async def _surface_withheld_project_hook_files(
             "msg msg-info",
             meta={"kind": SPEC_HOOKS_NOTICE_KIND},
         )
+
+
+def _project_hook_files_notice_is_new(
+    slot: "_ChatSlot", project_dir: str, names: list[str]
+) -> bool:
+    """Whether *slot*'s chat has yet to show the hook-files notice for these files.
+
+    Every new backend session of a chat (a reconnect, a reload, a restart) would
+    show it again, and nothing in the chat changes the files, so the chat shows it
+    once. It shows again only for another folder or another set of file names. The
+    mark is saved on the chat's metadata line, as ``_telemetry_notice_is_new``'s is.
+    """
+    key = json.dumps([project_dir, names])
+    mark = hashlib.sha256(key.encode()).hexdigest()[:16]
+    if slot._project_hook_files_notice_shown == mark:
+        return False
+    slot._project_hook_files_notice_shown = mark
+    return True
 
 
 async def _notice_spec_hooks_run_nowhere(
