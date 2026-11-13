@@ -1076,6 +1076,30 @@ def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
         logger.debug("crew oauth audit failed", exc_info=True)
 
 
+def _vetted_link(url: str, plan: Any) -> str:
+    """*url* as the credential gate reads it: without Crew's own registered ``client_id``.
+
+    A DCR ``client_id`` is the vendor's public name for Crew's client, read from
+    the vendor's registration answer, and a mixed-case 40-character one has the
+    shape the bare-secret scan refuses. That one pair leaves the gate's view only
+    when *plan* is Crew's registration and the link holds exactly one ``client_id``
+    equal to it. Another value, a second ``client_id``, an owner-supplied id and
+    every other parameter are scanned as they are.
+    """
+    if plan is None or not plan.registered or not plan.client.client_id:
+        return url
+    base, sep, query = url.partition("?")
+    pairs = query.split("&")
+    hits = [i for i, pair in enumerate(pairs) if pair.partition("=")[0] == "client_id"]
+    if len(hits) != 1:
+        return url
+    _, eq, value = pairs[hits[0]].partition("=")
+    if not eq or urllib.parse.unquote_plus(value) != plan.client.client_id:
+        return url
+    del pairs[hits[0]]
+    return base + sep + "&".join(pairs)
+
+
 async def start_mint_row(
     slug: str, project_dirs: Any = None, custom: Any = None, on_granted: Any = None
 ) -> str:
@@ -1140,7 +1164,7 @@ async def _start_mint_row(
             # The query-free url discovery used, never the configured one.
             mcp_url=sign_in._dcr.client.resource,
         )
-    if await asyncio.to_thread(oauth_url_contains_credential, vetted):
+    if await asyncio.to_thread(oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr)):
         await sign_in.shutdown()
         await _set_row(row, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

@@ -156,6 +156,9 @@ class Plan:
 
     client: Client
     scope: str
+    # True when ``client`` is Crew's own DCR registration (stored or just made),
+    # False for an owner-supplied ``clientId``.
+    registered: bool = False
 
 
 # --- HTTP: every call vetted and pinned --------------------------------------
@@ -480,18 +483,18 @@ async def _reuse_or_register(
                 and await asyncio.to_thread(store.commit, slug, client, revision) is None
             ):
                 raise CrewOAuthError("client_raced")
-            return Plan(client, scope)
+            return Plan(client, scope, registered=True)
         client = Client(**await _register(provider, doc, scope, redirect), **endpoints)
         if stage:
             _audit("connections_crew_oauth_register", "staged", slug)
-            return Plan(client, scope)
+            return Plan(client, scope, registered=True)
         if await asyncio.to_thread(store.commit, slug, client, revision) is None:
             raise CrewOAuthError("client_raced")
         if held is not None or revision is not None:
             # Tokens issued to the old registration cannot be used with the new one.
             await asyncio.to_thread(TokenStore().delete, slug)
         _audit("connections_crew_oauth_register", "ok", slug)
-        return Plan(client, scope)
+        return Plan(client, scope, registered=True)
 
 
 def _loopback_redirect(value: Any) -> tuple[int, str] | None:

@@ -523,3 +523,96 @@ def test_an_entry_at_an_unowned_registry_url_takes_the_owner_server_path(owner, 
     assert crew_oauth.routed_slug("my-sentry", {"url": url}, None, backend="kas") == key
     # An owned card's url still keeps the card path for the dashboard sign-in too.
     assert not crew_oauth.signs_in_custom({"url": str(get_provider("github")["mcp_url"])})
+
+
+# A DCR answer's mixed-case 40-character client_id: the shape the bare-secret scan refuses.
+DCR_ID = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d"
+OTHER_ID = "zY9xW7vU5tS3rQ1pN9mL7kJ5hG3fE1dC9bA7zY5x"
+
+
+@pytest.fixture()
+def discovered_slack(monkeypatch):
+    """slack.com's consent page approved the way a sign-in's own discovery approves it."""
+    import kiro_crew.security.exfil_oauth as exfil_oauth
+    from kiro_crew.security import record_discovered_oauth_endpoint
+
+    monkeypatch.setattr(exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda *a: None)
+    monkeypatch.setattr(exfil_oauth, "_OAUTH_DISCOVERED_ENDPOINTS", {})
+    parts = urllib.parse.urlsplit(AS_DOC["authorization_endpoint"])
+    assert record_discovered_oauth_endpoint(parts.hostname, parts.path, mcp_url=MCP)
+
+
+def _plan(client_id: str, registered: bool = True) -> crew_oauth_dcr.Plan:
+    client = crew_oauth_dcr.Client(
+        client_id=client_id,
+        client_secret=None,
+        secret_expires_at=0.0,
+        auth_method="none",
+        redirect_uri="http://127.0.0.1:48100/callback",
+        issuer=ISS,
+        resource=MCP,
+        authorize=AS_DOC["authorization_endpoint"],
+        token=TOKEN_URL,
+        revoke=None,
+        iss_param=False,
+    )
+    return crew_oauth_dcr.Plan(client, "", registered=registered)
+
+
+def _link(*pairs: tuple[str, str]) -> str:
+    fixed = "A" * 43
+    base = [("response_type", "code"), ("state", fixed), ("code_challenge", fixed)]
+    return AS_DOC["authorization_endpoint"] + "?" + urllib.parse.urlencode([*base, *pairs])
+
+
+def test_crews_registered_client_id_passes_only_on_its_own_sign_in(discovered_slack):
+    from kiro_crew.security import oauth_url_contains_credential
+
+    url = _link(("client_id", DCR_ID))
+    assert not oauth_url_contains_credential(crew_oauth._vetted_link(url, _plan(DCR_ID)))
+    # The ACP banner path reads the same link whole and still refuses it.
+    assert oauth_url_contains_credential(url)
+
+
+@pytest.mark.parametrize(
+    "pairs, registered",
+    [
+        # A value other than the one Crew registered.
+        ((("client_id", OTHER_ID),), True),
+        # A second client_id beside Crew's.
+        ((("client_id", DCR_ID), ("client_id", DCR_ID)), True),
+        # A secret-shaped value in another parameter.
+        ((("client_id", DCR_ID), ("login_hint", OTHER_ID)), True),
+        # An owner-supplied clientId is not Crew's registration.
+        ((("client_id", DCR_ID),), False),
+    ],
+    ids=["other-value", "second-client-id", "other-parameter", "owner-client-id"],
+)
+def test_everything_but_crews_own_client_id_is_still_scanned(discovered_slack, pairs, registered):
+    from kiro_crew.security import oauth_url_contains_credential
+
+    vetted = crew_oauth._vetted_link(_link(*pairs), _plan(DCR_ID, registered))
+    assert oauth_url_contains_credential(vetted)
+
+
+def test_a_custom_server_with_a_long_dcr_client_id_reaches_consent(vendor, monkeypatch):
+    from kiro_crew.connections import mint
+
+    monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
+    monkeypatch.setattr(mint, "_mints", {})
+    doc = vendor.docs[f"{ISS}/.well-known/oauth-authorization-server"]
+    doc["registration_endpoint"] = "https://slack.com/register"
+    doc["token_endpoint_auth_methods_supported"] = ["none"]
+    vendor.posts["https://slack.com/register"] = [(201, {"client_id": DCR_ID}, "")]
+    custom = {"slug": "slack", "mcp_url": MCP, "entry": {"url": MCP}}
+
+    async def _run():
+        await crew_oauth.start_mint_row(crew_oauth.custom_key("slack", MCP), (), custom)
+        row = mint._mints["slack"]
+        assert row["state"] == "waiting", row.get("reason")
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(row["oauth_url"]).query)
+        assert query["client_id"] == [DCR_ID]
+        row["watcher"].cancel()
+        await row["client"].shutdown()
+
+    asyncio.run(_run())
