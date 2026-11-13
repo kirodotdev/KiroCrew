@@ -1,5 +1,5 @@
 import { forwardRef, type ComponentProps, type ReactNode } from 'react'
-import { ListFilter, Pause, Search, X } from 'lucide-react'
+import { ListFilter, Search, X } from 'lucide-react'
 
 import { Glass } from './Glass'
 import { DropdownMenuContent, DropdownMenuLabel } from './ui/dropdown-menu'
@@ -145,53 +145,106 @@ export function FilterMenuContent({ className, ...props }: ComponentProps<typeof
  *  than the search row's `px-2` so the pills sit inside the field's edges. */
 export const FILTER_CHIP_ROW_CLS = 'px-3 pb-1 flex items-center gap-1.5 flex-wrap'
 
+/** What makes a status chip pausable: the body pauses or resumes the filter
+ *  and only the X clears it. Every field is required, so a pausable chip
+ *  cannot render without its words. */
+export interface FilterChipPause {
+  /** The filter is still set but lifted, so it is not narrowing the list right now. */
+  paused: boolean
+  onToggle: () => void
+  /** The body's accessible name ("Pause Unread filter"), read with `aria-pressed`,
+   *  and its tooltip while the filter narrows. */
+  pauseLabel: string
+  /** The body's tooltip while paused ("Resume Unread filter"). */
+  resumeLabel: string
+  /** Appended to a paused chip's label ("paused"). */
+  pausedText: string
+  /** Hover and focus hint over a narrowing chip ("pause"). */
+  pauseHint: string
+  /** Hover and focus hint over a paused chip ("resume"). */
+  resumeHint: string
+}
+
 /** One filter pill under a list's search row; the click clears what it names.
  *  Two shapes, two meanings, the same on every list:
  *  - coloured (pass `color`): ONE filter in its own colour — the click clears
  *    that filter only (the sidebar's per-filter pills);
  *  - `aggregate`: a neutral pill naming SEVERAL filters at once — the click
  *    clears all of them (the sidebar's tag filter, the roster's filter chip).
+ *  Pass `pause` to split a coloured chip in two: the body pauses or resumes
+ *  that filter and only the X clears it (the sidebar's status chips).
  *  `label` is the caller's — the sidebar appends its window and count, the
  *  roster its counts — so one recipe carries whatever a list has to say about
  *  the filter without knowing what it is. */
-export function FilterChip({ label, color, aggregate, paused, clearLabel, onClear, testId, gradient }: {
+export function FilterChip({ label, color, aggregate, clearLabel, onClear, pause, testId, gradient }: {
   label: string
   /** The filter's colour token, e.g. `var(--accent)` or `var(--warn)`; omit for an aggregate chip. */
   color?: string
   /** Neutral clear-all pill (see above). */
   aggregate?: boolean
-  /** The filter is still set but lifted, so it is not narrowing the list right
-   *  now (the sidebar's menu can pause every status filter at once). A mark on
-   *  the chip, never a second meaning for the click: the click still clears. */
-  paused?: boolean
-  /** Accessible name and tooltip: what the click does ("Clear Starred filter"). */
+  /** Accessible name and tooltip of the clear: what it does ("Clear Starred filter"). */
   clearLabel: string
   onClear: () => void
+  pause?: FilterChipPause
   testId?: string
   /** Paint the chip in the Crew Mode gradient (`styles/crew-mode.css`) instead of `color`. */
   gradient?: boolean
 }) {
+  const paused = !!pause?.paused
+  const chipCls = cn(
+    // The gradient fill would hide a dashed border, so a paused Crew Mode chip
+    // dims and draws its dash in the gradient's own text colour instead.
+    gradient && (paused ? 'crew-grad opacity-60 border border-dashed border-current' : 'crew-grad border border-transparent'),
+    'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] transition-colors',
+    aggregate && 'max-w-full bg-bg-elevated/60 border border-border text-muted hover:text-text',
+    // Same colour token paused or not, so the chip still reads as ITS filter;
+    // the dashed border says "not narrowing" without leaning on contrast alone.
+    paused && 'border-dashed',
+  )
+  const tinted = !gradient && !aggregate && !!color
+  if (pause) {
+    // The hint covers this chip's own body (inset-0), so a wrapped row never
+    // shows it over a neighbouring chip.
+    return (
+      <span className={cn(chipCls, 'max-w-full min-w-0', paused && !gradient && 'opacity-70')} style={tinted ? { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` } : undefined} data-testid={testId} data-paused={paused ? '' : undefined}>
+        <button
+          type="button"
+          className="relative flex min-w-0 cursor-pointer after:pointer-events-none after:absolute after:inset-0 after:hidden after:items-center after:justify-center after:rounded-full after:bg-bg-elevated after:text-text after:font-medium after:content-[attr(data-hint)] hover:after:flex focus-visible:after:flex"
+          onClick={pause.onToggle}
+          aria-pressed={paused}
+          aria-label={pause.pauseLabel}
+          title={paused ? pause.resumeLabel : pause.pauseLabel}
+          data-hint={paused ? pause.resumeHint : pause.pauseHint}
+          data-testid={testId ? `${testId}-toggle` : undefined}
+        >
+          <span className="truncate">
+            {label}
+            {paused && <span data-chip-state="">{` · ${pause.pausedText}`}</span>}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="inline-flex shrink-0 items-center cursor-pointer rounded-full hover:opacity-70"
+          onClick={onClear}
+          title={clearLabel}
+          aria-label={clearLabel}
+          data-testid={testId ? `${testId}-clear` : undefined}
+        >
+          <X size={12} strokeWidth={2.5} className="shrink-0" aria-hidden="true" />
+        </button>
+      </span>
+    )
+  }
   return (
     <button
       type="button"
-      className={cn(
-        // The gradient fill would hide a dashed border, so a paused Crew Mode chip
-        // dims and draws its dash in the gradient's own text colour instead.
-        gradient && (paused ? 'crew-grad opacity-60 border border-dashed border-current' : 'crew-grad border border-transparent'),
-        'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors',
-        aggregate && 'max-w-full bg-bg-elevated/60 border border-border text-muted hover:text-text',
-        // Same colour token paused or not, so the chip still reads as ITS
-        // filter; the glyph and the dashed border say "not narrowing right
-        // now" without leaning on contrast alone.
-        paused && 'border-dashed',
-      )}
-      style={gradient || aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
+      className={cn(chipCls, 'cursor-pointer')}
+      style={tinted ? { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` } : undefined}
       onClick={onClear}
       title={clearLabel}
       aria-label={clearLabel}
       data-testid={testId}
     >
-      {paused && <Pause size={11} className="shrink-0" aria-hidden="true" />}
       {aggregate ? <span className="truncate">{label}</span> : label}
       <X size={11} className="shrink-0" />
     </button>

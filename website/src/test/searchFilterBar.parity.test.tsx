@@ -96,23 +96,78 @@ describe('FilterChip contract', () => {
     expect(onClear).toHaveBeenCalledTimes(1)
   })
 
-  it('`paused` marks the chip without changing what the click does', () => {
-    // The sidebar's menu can lift every status filter at once. The chip then
-    // says so with a dashed border and a Pause glyph, and keeps its colour so it
-    // still reads as ITS filter. The click, its name and its tooltip are
-    // untouched: pausing never becomes a second meaning for the click.
+  it('`pause` splits the chip: the body pauses or resumes, only the X clears', () => {
     const onClear = vi.fn()
-    const { getByTestId } = render(
-      <FilterChip label="Starred (2)" color="var(--accent)" paused clearLabel="Clear Starred filter" onClear={onClear} testId="p" />,
+    const onToggle = vi.fn()
+    const chip = (paused: boolean) => (
+      <FilterChip
+        label="Starred (2)" color="var(--accent)"
+        pause={{
+          paused, onToggle,
+          pauseLabel: 'Pause Starred filter', resumeLabel: 'Resume Starred filter',
+          pausedText: 'paused', pauseHint: 'pause', resumeHint: 'resume',
+        }}
+        clearLabel="Clear Starred filter" onClear={onClear} testId="p"
+      />
     )
-    const chip = getByTestId('p')
-    expect(chip.className.split(/\s+/)).toContain('border-dashed')
-    expect(chip.getAttribute('style')).toContain('var(--accent)')
-    expect(chip.getAttribute('aria-label')).toBe('Clear Starred filter')
-    expect(chip.getAttribute('title')).toBe('Clear Starred filter')
-    expect(chip.textContent).toBe('Starred (2)')
-    fireEvent.click(chip)
+    const { getByTestId, rerender } = render(chip(false))
+    const toggle = getByTestId('p-toggle')
+    expect(toggle.getAttribute('aria-label')).toBe('Pause Starred filter')
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(toggle.getAttribute('title')).toBe('Pause Starred filter')
+    // The hint is drawn by a pseudo-element, so it adds no text and no width.
+    expect(toggle.textContent).toBe('Starred (2)')
+    expect(toggle.getAttribute('data-hint')).toBe('pause')
+    expect(toggle.className.split(/\s+/)).toEqual(expect.arrayContaining([
+      'after:content-[attr(data-hint)]', 'after:absolute', 'after:inset-0', 'after:hidden', 'hover:after:flex', 'focus-visible:after:flex',
+    ]))
+    expect(toggle.className).not.toMatch(/after:(bottom|top)-full/)
+    expect(toggle.querySelector('svg')).toBeNull()
+    fireEvent.click(toggle)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    expect(onClear).not.toHaveBeenCalled()
+
+    rerender(chip(true))
+    expect(getByTestId('p').className.split(/\s+/)).toEqual(expect.arrayContaining(['border-dashed', 'opacity-70']))
+    expect(getByTestId('p').getAttribute('style')).toContain('var(--accent)')
+    expect(getByTestId('p-toggle').getAttribute('aria-pressed')).toBe('true')
+    expect(getByTestId('p-toggle').getAttribute('title')).toBe('Resume Starred filter')
+    expect(getByTestId('p-toggle').getAttribute('data-hint')).toBe('resume')
+    expect(getByTestId('p-toggle').textContent).toBe('Starred (2) · paused')
+    expect(getByTestId('p').querySelectorAll('button')).toHaveLength(2)
+
+    const clear = getByTestId('p-clear')
+    expect(clear.getAttribute('aria-label')).toBe('Clear Starred filter')
+    fireEvent.click(clear)
     expect(onClear).toHaveBeenCalledTimes(1)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('a pausable chip shrinks to its row and truncates the label, never the X', () => {
+    const { getByTestId } = render(
+      <FilterChip
+        label="Recent · 1h (4)" color="var(--accent)"
+        pause={{
+          paused: true, onToggle: () => {},
+          pauseLabel: 'Pause Recent filter', resumeLabel: 'Resume Recent filter',
+          pausedText: 'paused', pauseHint: 'pause', resumeHint: 'resume',
+        }}
+        clearLabel="Clear Recent filter" onClear={() => {}} testId="p"
+      />,
+    )
+    const cls = (id: string) => getByTestId(id).className.split(/\s+/)
+    expect(cls('p')).toEqual(expect.arrayContaining(['max-w-full', 'min-w-0']))
+    expect(cls('p-toggle')).toContain('min-w-0')
+    expect(getByTestId('p-toggle').querySelector('.truncate')!.textContent).toBe('Recent · 1h (4) · paused')
+    expect(cls('p-clear')).toContain('shrink-0')
+  })
+
+  it('a clear-only chip draws no paused state', () => {
+    const { getByTestId } = render(
+      <FilterChip label="Starred (2)" color="var(--accent)" clearLabel="Clear Starred filter" onClear={() => {}} testId="c" />,
+    )
+    expect(getByTestId('c').className.split(/\s+/)).not.toContain('border-dashed')
+    expect(getByTestId('c').querySelector('svg.lucide-pause')).toBeNull()
   })
 
   it('the aggregate variant is the neutral clear-all pill: no filter colour, the sidebar tag chip\'s chrome', () => {

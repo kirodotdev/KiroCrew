@@ -162,11 +162,12 @@ describe('status chip hide state', () => {
     const chip = screen.getByTestId('hidden-filter-chip')
     expect(chip.textContent).toContain('Hiding In progress (2), Pinned (1)')
     expect(chip).toHaveAttribute('aria-label', 'Stop hiding In progress and Pinned sessions')
-    // The include chips' row keeps its base-branch button count
+    // The include chips' row keeps its base-branch chip count
     // (AUTOSDE max-two-buttons-per-row): the hide chip is not one of its children.
-    const includeChip = screen.getByRole('button', { name: 'Clear Unread filter' })
+    const includeChip = screen.getByTestId('filter-chip-unread')
     expect(includeChip.parentElement).not.toBe(chip.parentElement)
-    expect(includeChip.parentElement!.querySelectorAll('button')).toHaveLength(1)
+    expect(includeChip.parentElement!.children).toHaveLength(1)
+    expect(includeChip.querySelectorAll('button')).toHaveLength(2)
     // One click drops every hide and leaves the include chip alone.
     fireEvent.click(chip)
     await waitFor(() => expect(shown('running unread')).toBe(true))

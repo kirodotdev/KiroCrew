@@ -57,7 +57,7 @@ function inputs(rows: Slot[], over: InputOverrides = {}): SidebarRowInputs {
     filters: {
       tags: { resolved: new Set(), raw: new Set(), ...f.tags },
       search: { text: '', folderMatches: null, ...f.search },
-      status: { active: new Set(), hidden: new Set(), paused: false, recentWindowMs: 60 * MINUTE, ...f.status },
+      status: { active: new Set(), hidden: new Set(), paused: new Set(), recentWindowMs: 60 * MINUTE, ...f.status },
       folders: { hiddenSubtree: new Set(), pinnedSubtree: new Set(), active: false, ...f.folders },
       models: { passes: () => true, active: false, ...f.models },
     },
@@ -250,7 +250,7 @@ describe('every filter dimension answers the three consumers together', () => {
     // lanes (`isRowFolderHidden`) and the folder render, and only a reveal asks it.
     ['folder', { filters: { folders: { hiddenSubtree: new Set(['F2']), active: true } } },
       { filtered: ['kept', 'dropped'], narrowed: false, hides: [false, false, false, true, false, false] }],
-    ['a paused status chip', { filters: { status: { active: new Set<SessionFilterKey>(['pinned']), paused: true } } },
+    ['a paused status chip', { filters: { status: { active: new Set<SessionFilterKey>(['pinned']), paused: new Set<SessionFilterKey>(['pinned']) } } },
       { filtered: ['kept', 'dropped'], narrowed: false, hides: [false, false, false, false, false, false] }],
     // A hide answers for the row itself, and exempts no pinned row: `kept` is pinned.
     ['a status hide', { filters: { status: { hidden: new Set<SessionFilterKey>(['pinned']) } } },
@@ -332,7 +332,17 @@ describe('every filter dimension answers the three consumers together', () => {
     })).filtersNarrowing).toBe(true)
     expect(buildSidebarRows(inputs(rows, { filters: { status: { hidden: new Set(['running']) } } })).filtersNarrowing).toBe(true)
     // A paused chip set narrows nothing, so there is nothing to clear.
-    expect(buildSidebarRows(inputs(rows, { filters: { status: { active: new Set(['unread']), paused: true } } })).filtersNarrowing).toBe(false)
+    expect(buildSidebarRows(inputs(rows, { filters: { status: { active: new Set(['unread']), paused: new Set<SessionFilterKey>(['unread']) } } })).filtersNarrowing).toBe(false)
+  })
+
+  it('a paused status filter drops out of the OR while an unpaused one still narrows', () => {
+    const rows = [local('u'), local('p', { pinned: true }), local('x')]
+    const built = buildSidebarRows(inputs(rows, {
+      local: { unread: new Set(['u']), pinned: new Set(['p']) },
+      filters: { status: { active: new Set<SessionFilterKey>(['unread', 'pinned']), paused: new Set<SessionFilterKey>(['unread']) } },
+    }))
+    expect(keys(built.filteredSlots)).toEqual(['p'])
+    expect(built.filtersNarrowing).toBe(true)
   })
 
   it('keeps every row filed in a folder whose NAME the query matched', () => {
@@ -367,7 +377,7 @@ describe('the reveal registry and the narrowing flag agree with the filter pass'
   const SEARCH: Array<InputOverrides['filters']> = [{}, { search: { text: 'deploy' } }]
   const STATUS: Array<InputOverrides['filters']> = [
     {}, { status: { active: new Set<SessionFilterKey>(['running', 'unread']) } },
-    { status: { active: new Set<SessionFilterKey>(['recent']), paused: true } },
+    { status: { active: new Set<SessionFilterKey>(['recent']), paused: new Set<SessionFilterKey>(['recent']) } },
   ]
   const FOLDER: Array<InputOverrides['filters']> = [{}, { folders: { hiddenSubtree: new Set(['F1']), active: true } }]
   const grid: Array<[string, InputOverrides['filters']]> = []
@@ -515,7 +525,7 @@ describe('the status hides', () => {
   })
 
   it('keeps hiding while the include chips are paused', () => {
-    const rows = build({ status: { active: new Set<SessionFilterKey>(['pinned']), paused: true, ...hideRunning } })
+    const rows = build({ status: { active: new Set<SessionFilterKey>(['pinned']), paused: new Set<SessionFilterKey>(['pinned']), ...hideRunning } })
     expect(keys(rows.filteredSlots)).toEqual(['stop'])
   })
 
@@ -828,7 +838,7 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     ['filters.search.text', withFilter('search', 'text', 'beta')],
     ['filters.search.folderMatches', withFilter('search', 'folderMatches', new Set(['F1']))],
     ['filters.status.active', withFilter('status', 'active', new Set<SessionFilterKey>(['running']))],
-    ['filters.status.paused', withFilter('status', 'paused', true)],
+    ['filters.status.paused', withFilter('status', 'paused', new Set<SessionFilterKey>(['running']))],
     ['filters.status.hidden', withFilter('status', 'hidden', new Set<SessionFilterKey>(['unread']))],
     ['filters.status.recentWindowMs', withFilter('status', 'recentWindowMs', 10 * DAY)],
     ['filters.folders.hiddenSubtree', withFilter('folders', 'hiddenSubtree', new Set(['F1']))],

@@ -75,9 +75,10 @@ export interface SidebarRowFilters {
   /** The search box. `folderMatches` is the folders (with their subtrees) whose NAME
    *  the query matched, or null when none did. */
   search: { text: string; folderMatches: ReadonlySet<string> | null }
-  /** The status chips. A paused set keeps its chips and narrows nothing. `hidden` is
-   *  the chips whose eye button is on: their matches are dropped, paused or not. */
-  status: { active: ReadonlySet<SessionFilterKey>; hidden: ReadonlySet<SessionFilterKey>; paused: boolean; recentWindowMs: number }
+  /** The status chips. `paused` is the active ones that keep their chip but narrow
+   *  nothing. `hidden` is the chips whose eye button is on: their matches are
+   *  dropped, paused or not. */
+  status: { active: ReadonlySet<SessionFilterKey>; hidden: ReadonlySet<SessionFilterKey>; paused: ReadonlySet<SessionFilterKey>; recentWindowMs: number }
   /** The filter menu's folder hides. `active` is false while the search box holds
    *  text, so a hidden folder never becomes a search dead end. `pinnedSubtree` is
    *  the folders a folder pin covers (the pinned folders and everything under
@@ -600,9 +601,8 @@ function makeDimensions(
   clears: SidebarRowClears,
 ): FilterDimension[] {
   const { tags, models, search, status, folders: folderFilter } = filters
-  // A paused set keeps its chips but narrows nothing, so the whole status dimension
-  // goes inert while the pause is on.
-  const activeStatus = status.paused ? [] : (Object.keys(matches) as SessionFilterKey[]).filter(key => status.active.has(key))
+  // A paused filter keeps its chip but narrows nothing, so only the unpaused ones count.
+  const activeStatus = (Object.keys(matches) as SessionFilterKey[]).filter(key => status.active.has(key) && !status.paused.has(key))
   // A pinned session is one the person chose to keep in sight, and the pinned band is
   // the stable top of the list (`laneOrder`). The two property filters (tags, status
   // chips) therefore exempt it: the band stays, the narrowed rows sit under it, and the
