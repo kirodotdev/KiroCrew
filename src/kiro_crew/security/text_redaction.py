@@ -257,6 +257,29 @@ def _aws_label_cut(buf: str, key_start: int) -> tuple[int, bool]:
     return cut, inside
 
 
+def _glued_key_tail(buf: str, key_start: int) -> bool:
+    """Whether the AWS key name at *key_start* ends every batch match it sits in, and
+    the text before it still redacts as that match without it.
+
+    The batch pass probes such a name as a field of its own (``_glued_matches``):
+    with a separator after it, its value is redacted; without one, it stays part of
+    the value before it. Either way the value before it redacts alone, so the stream
+    may commit that value and hold only the name until its separator decides.
+    """
+    names = [n for n in stream_aws_anchor._KEY_LITERALS if buf.startswith(n, key_start)]
+    if not names:
+        return False
+    key_end = key_start + max(len(n) for n in names)
+    matches = _submodule("redaction")._credential_matches
+    spans = [m for m in matches(buf) if m.start() < key_start < m.end()]
+    if not spans or any(m.end() != key_end for m in spans):
+        return False
+    return all(
+        any(p.start() == m.start() and p.end() == key_start for p in matches(buf[:key_start]))
+        for m in spans
+    )
+
+
 def _token_start(buf: str, pos: int) -> int:
     while pos > 0 and not buf[pos - 1].isspace():
         pos -= 1
@@ -440,13 +463,17 @@ class StreamRedactor:
         aws_keyed_anchor = (
             stream_aws_anchor.find(self._buf, _CRED_CLASS, natural_cut) if aws_label_seen else None
         )
+        key_tail: int | None = None
         if aws_keyed_anchor is not None:
             aws_cut, key_inside = _aws_label_cut(self._buf, aws_keyed_anchor.start())
             if key_inside:
                 # A key name inside an earlier batch credential is part of that
-                # credential's value, not a label: the batch pass never reads it
-                # as one, so it anchors nothing. A real outer AWS label is the
-                # leftmost anchor `find` returns, so it is not lost.
+                # credential's value, not a label, so it anchors nothing. A real
+                # outer AWS label is the leftmost anchor `find` returns, so it is
+                # not lost. A name that ends that credential is the exception:
+                # the batch pass reads it as a field once a separator follows.
+                if _glued_key_tail(self._buf, aws_keyed_anchor.start()):
+                    key_tail = aws_keyed_anchor.start()
                 aws_keyed_anchor = None
             else:
                 if stream_aws_anchor.has_separator(aws_keyed_anchor):
@@ -653,6 +680,14 @@ class StreamRedactor:
 
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
+        if key_tail is not None and i == len(self._buf):
+            # Commit the credential before a key name that ends it, and keep the
+            # name in the AWS discard: the next chunk keeps it as a label if its
+            # separator follows, waits on a little whitespace, and otherwise drops
+            # it with the value it ended, as the batch pass reads the whole text.
+            commit, self._buf = self._buf[:key_tail], self._buf[key_tail:]
+            self._discarding, self._discard_kind, self._discarded = True, ("aws-keyed",), 0
+            return self._redact_window(commit)
         commit, self._buf = self._buf[:i], self._buf[i:]
         return self._redact_window(commit)
 

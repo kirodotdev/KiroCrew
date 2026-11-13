@@ -191,15 +191,23 @@ def test_a_bare_secret_ending_in_a_key_name_is_not_split(tail_key: str, chunk: i
     assert out == redact(text)
 
 
-def test_a_key_name_ending_a_long_value_leaves_no_label_open() -> None:
-    """A key name at the end of a credential value past the ceiling is part of that
-    value. Releasing it must not remember an open label, or the next word after a
-    colon would be dropped as if it were a value."""
-    head = "SessionToken=" + "a-" * 2300 + "AccessKeyId "
+@pytest.mark.parametrize("filler", [20, 2300], ids=["short", "past-ceiling"])
+@pytest.mark.parametrize(
+    "tail",
+    [": visible text", " : visible text", "\n= visible text", "and more text", ", more text"],
+)
+def test_a_key_name_ending_a_value_streams_as_the_batch_pass_reads_it(
+    filler: int, tail: str
+) -> None:
+    """A key name at the end of a credential value is read by the batch pass as a
+    field of its own once a separator follows, and as the end of that value when
+    none does. The stream holds the name until the next chunk decides, so both
+    outputs agree whether the value is short or past the ceiling."""
+    head = "SessionToken=" + "a-" * filler + "AccessKeyId "
     redactor = StreamRedactor()
-    out = redactor.feed(head) + redactor.feed(": visible text") + redactor.flush()
-    assert out == redact(head + ": visible text")
-    assert out.endswith(": visible text")
+    out = redactor.feed(head) + redactor.feed(tail) + redactor.flush()
+    assert out == redact(head + tail)
+    assert "a-a-a-" not in out and out.endswith(" text")
 
 
 def test_every_aws_label_rule_has_the_shape_the_stream_anchor_reads() -> None:
