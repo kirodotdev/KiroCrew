@@ -5532,6 +5532,19 @@ the app imports the host module), and keeps the dashboard client as a builtin.
 alone covers every endpoint the panel calls, that an external panel's writes go through
 the app's transport, and the request bodies.
 
+Code Review Sage's wheel copy declares `/api/source/pull-request` in its own
+`permissions.api` (owner ruling of 2026-11-13 on #26967, comment 6841699202: an app
+gets what its built-in already uses, declared in the wheel copy first so adoption is
+no widening). The built-in page reads and writes that family today: the panel's members
+above, plus the publish bar's `pending-review` and `submit-review`
+(`components/DraftReviewActions.tsx`). The one bare entry is the narrowest the matcher
+allows for them, and it also covers `status/refresh`, a read of the same cached
+statuses. The page's request carries the owner's session, and the handlers refuse an
+app token (`source_providers._authorize_owner_request`), so the app's backend token
+gains no reach. A built-in approves what its wheel copy ships at every start, so the
+app repository's copy, which declares the same list, adopts with `permission_refusal`
+None. Pinned by `test/test_code_review_sage_permission_parity.py`.
+
 Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/components/pullRequestClient.tsx`,
 `website/src/components/PullRequestPanel.tsx`, `website/src/components/CommentThreads.tsx`,
