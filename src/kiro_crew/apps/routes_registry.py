@@ -325,6 +325,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
+        string_field_error,
     )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
@@ -339,6 +340,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         return not_object
 
     name = body.get("name", "")
+    # Before the stream opens, as the non-stream route does: a non-string name
+    # otherwise reached the install as a 200 stream ending in a Python TypeError.
+    if (wrong_type := string_field_error("name", name)) is not None:
+        return wrong_type
     if not name:
         return web.json_response({"error": "app name required"}, status=400)
 

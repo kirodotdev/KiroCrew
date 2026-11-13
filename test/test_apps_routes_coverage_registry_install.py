@@ -248,6 +248,23 @@ class TestRegistryInstallStream:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [["a"], 123, {"x": 1}], ids=repr)
+    async def test_a_non_string_name_is_a_400_before_the_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: Any
+    ) -> None:
+        # The same answer as the non-stream route, and no install is attempted.
+        _setup_env(tmp_path, monkeypatch)
+
+        async def _must_not_run(*a: Any, **kw: Any) -> dict:
+            raise AssertionError("install_from_registry must not run")
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _must_not_run)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install-stream", json={"name": name})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_field_type"
+
+    @pytest.mark.asyncio
     async def test_streams_log_lines_then_done(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
