@@ -133,3 +133,34 @@ def test_windows_form_runs_under_cmd(tmp_path: Path) -> None:
     )
     line = (tmp_path / "audit.log").read_text(encoding="utf-8").rstrip("\n")
     assert RECORD.match(line), line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("synced", [True, False], ids=["synced_spec", "unsynced_posix_spec"])
+async def test_windows_hooks_page_tags_the_audit_hook_bundled(tmp_path: Path, synced: bool) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers.hooks import api_kiro_hooks
+
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    with patch.object(shell_audit_log.platform_compat, "IS_WINDOWS", True):
+        # An unsynced spec predates the swap and still holds the shipped POSIX command.
+        spec_hooks = platform_spec_hooks(_bundled_hooks()) if synced else _bundled_hooks()
+        (agents / "kirocrew.json").write_text(json.dumps({"hooks": spec_hooks}))
+        app = web.Application()
+        app.router.add_get("/api/kiro-hooks", api_kiro_hooks)
+        with (
+            patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents),
+            patch(
+                "kiro_crew.dashboard.handlers.hooks._shipped_defaults", return_value=DEFAULTS_JSON
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/kiro-hooks")
+                assert resp.status == 200
+                rows = (await resp.json())["hooks"]["postToolUse"]
+
+    audit = [r for r in rows if "audit.log" in r["command"]]
+    assert audit and all(r["source"] == "bundled" for r in audit)
