@@ -467,7 +467,8 @@ async def test_recorded_native_child_becomes_one_card_with_its_own_output() -> N
 
     child = [ev for ev in events if ev.kind == EVENT_SUBAGENT_ACTIVITY]
     assert {ev.sub_session_id for ev in child} == {"thread-0001"}
-    child_tools = [ev.title for ev in child if ev.tool_call_id]
+    # The call's opening row carries the title; its result row (no title) closes it.
+    child_tools = [ev.title for ev in child if ev.tool_call_id and ev.title]
     assert len(child_tools) == 1 and "echo probe-child-ok" in child_tools[0]
     assert "".join(ev.text for ev in child if ev.text) == "probe-child-ok"
 
@@ -867,5 +868,5 @@ async def test_child_still_open_at_turn_end_is_closed_by_the_turn() -> None:
     for roster in _rosters(events):
         _native_subagent_sync(state, slot, roster, tracker)
     assert "subagent_done" not in _ws(state)
-    _native_subagent_close_all(state, slot, tracker)
+    _native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
     assert [c["id"] for c in _ws(state)["subagent_done"]] == ["native:child-1"]

@@ -637,6 +637,8 @@ class TestSteerRequeueOnTurnDeath:
             state=state,
             client=MagicMock(),
             _native_card_output={},
+            _native_card_output_len={},
+            _native_streams_red={},
             _native_tracker={},
         )
 
