@@ -541,7 +541,13 @@ async def _allow(
         take = getattr(ask.wire, "batch_refusal", None)
         reason = take(ask) if take is not None else None
         if reason:
-            return Settled("refused", rung, "host", DENY_CAUSE_BATCH_READ_WRITE, reason)
+            # The guard's cause rides its audit labels; read through the SDK, the
+            # one way application code reaches the ACP layer.
+            from kiro_crew import agent_sdk
+
+            _outcome, labels = agent_sdk.batch_guard_refusal_outcome(reason)
+            cause = (labels or {}).get("cause") or DENY_CAUSE_BATCH_READ_WRITE
+            return Settled("refused", rung, "host", cause, reason)
     settled = Settled(outcome if sent else "floor_refused", rung, by)
     policy.audit.approved(ask, settled)
     return settled
