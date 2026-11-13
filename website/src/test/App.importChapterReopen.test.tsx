@@ -35,6 +35,7 @@ const themeState = {
   privacyAcked: true,
   privacyAckVersion: null as number | null,
   themeBootReady: false,
+  themeBootRead: true,
   themes: [],
   // Read by the Customize chapter `/onboarding` opens once the import step closes.
   allThemes: [],

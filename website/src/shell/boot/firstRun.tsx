@@ -13,6 +13,8 @@ interface FirstRunFlags {
   /** Server-only; `null` until theme boot answers (see `useTheme`). */
   privacyAckVersion?: number | null
   themeBootReady: boolean
+  /** The host's first-run state could not be read; nothing may open from this browser's flags. */
+  hostStateUnread?: boolean
   markOnboarded: () => void
 }
 
@@ -21,7 +23,7 @@ interface FirstRunFlags {
  * Customize tour. Derived from the completion flags on every
  * change, so the hand-offs below and the derive effect cannot disagree.
  */
-export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion = null, themeBootReady, markOnboarded }: FirstRunFlags) {
+export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion = null, themeBootReady, hostStateUnread = false, markOnboarded }: FirstRunFlags) {
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
   // never overlays the shell and intercepts every spec's interactions. If this flag is
@@ -115,6 +117,10 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   // Dismiss onboarding when server reports user is already onboarded
   // (handles the race: boot fetch completes after useState initializer ran).
   useEffect(() => { if (onboarded) setShowOnboarding(false) }, [onboarded])
+  // The tour's seed above reads this browser's flags before the host answers;
+  // when the host cannot be read those flags are all there is, so the seeded
+  // tour closes rather than finish first run from them.
+  useEffect(() => { if (hostStateUnread) setShowOnboarding(false) }, [hostStateUnread])
   // Seeds — and re-derives — which first-run chapter is open from the three
   // completion flags. Chapter order is Import setup → Privacy → Customize/tour,
   // so each chapter opens only once its predecessor is marked done. Runs on
