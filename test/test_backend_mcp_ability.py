@@ -670,9 +670,9 @@ def test_the_payload_is_json_native() -> None:
 
     The failure would be a 500 on the panel's own poll rather than a missing line.
     """
-    for backend in sorted(PROJECTIONS):
-        json.dumps(mcp_mod.ability_payload(backend))
-    json.dumps(mcp_mod.ability_payload(STRANGER))
+    for backend in [*sorted(PROJECTIONS), STRANGER]:
+        payload = mcp_mod.ability_payload(backend)
+        assert json.loads(json.dumps(payload)) == payload, backend
 
 
 def test_the_reason_prose_never_reaches_the_wire() -> None:

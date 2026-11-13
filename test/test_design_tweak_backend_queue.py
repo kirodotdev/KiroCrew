@@ -454,7 +454,9 @@ class TestPreviewSuppliedSourcePathsAreContained:
             {"elements": ["x", None, {}]},
             {"elements": [{"source": "notadict"}, {"source": {}}]},
         ):
+            before = json.dumps(bad)
             server._sanitize_selection_sources(bad, "/tmp")
+            assert json.dumps(bad) == before, "a shape with no source file is left as it came"
 
     def test_submit_routes_the_selection_through_the_barrier(self):
         """The sanitizer is actually WIRED into the submit path, not just present."""

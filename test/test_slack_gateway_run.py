@@ -1106,7 +1106,7 @@ class TestBgSessionDashboardBranch:
     """run() -> dashboard URL announcement and the probe-gated session warm."""
 
     @pytest.mark.asyncio
-    async def test_bg_session_prints_dashboard_url(self):
+    async def test_bg_session_prints_dashboard_url(self, capsys):
         """_start_bg_session still warms the session pool behind the probe."""
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
@@ -1177,6 +1177,7 @@ class TestBgSessionDashboardBranch:
                                                             await asyncio.sleep(0)
 
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
+        assert "url-line-1\nurl-line-2\n" in capsys.readouterr().out
 
     @pytest.mark.asyncio
     async def test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited(self):

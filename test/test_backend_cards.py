@@ -716,4 +716,5 @@ def test_the_payload_is_json_native() -> None:
     import json
 
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
-        json.dumps(cards_mod.card_payload(backend))
+        payload = cards_mod.card_payload(backend)
+        assert json.loads(json.dumps(payload)) == payload, backend

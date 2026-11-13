@@ -793,6 +793,7 @@ class TestRestart:
         ):
             cli_server._restart(5999)
         mock_spawn.assert_called_once()
+        assert "Started detached gateway (pid 4321)" in capsys.readouterr().out
 
     @contextlib.contextmanager
     def _probe_missed_gateway(self, holder_pid: int, *, kirocrew: bool):
