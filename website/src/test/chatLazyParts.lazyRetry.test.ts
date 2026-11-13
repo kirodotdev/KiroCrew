@@ -18,10 +18,6 @@ const SOURCES: Record<string, string> = {
   ...import.meta.glob<string>('../components/PreviewTabBody.tsx', { query: '?raw', import: 'default', eager: true }),
 }
 
-// Still on a plain lazy(): the phone menu's update item renders inside a Radix
-// menu, so its Try Again has to be a menu item, which lazyRetry has no layout for.
-const KNOWN_PLAIN = ['../pages/chat/page/MobileTopBar.tsx']
-
 const IMPORTS_LAZY = /import\s*(?:\w+\s*,\s*)?\{[^}]*\blazy\b[^}]*\}\s*from\s*['"]react['"]/
 const REACT_DOT_LAZY = /\bReact\.lazy\(/
 
@@ -33,6 +29,6 @@ describe('the chat page lazy parts', () => {
       .filter(([, source]) => IMPORTS_LAZY.test(source) || REACT_DOT_LAZY.test(source))
       .map(([path]) => path)
       .sort()
-    expect(plain).toEqual(KNOWN_PLAIN)
+    expect(plain).toEqual([])
   })
 })

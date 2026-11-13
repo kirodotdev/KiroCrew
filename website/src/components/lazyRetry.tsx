@@ -19,28 +19,34 @@
  *   under a message (the share dialog): the title and the two buttons, with
  *   the raw error read out to assistive tech and shown on hover. It offers no
  *   agent hand-off, because that line sits beside an unsaved draft.
+ * - `menu` is for a part rendered inside a Radix dropdown menu (the phone top
+ *   bar's update item): the passive notice, then Try Again, Reload page and the
+ *   hand-off as menu items, because a menu's roving focus reaches items, never
+ *   a button nested in one. Try Again keeps the menu open and loads the part in
+ *   place.
  *
- * `page` and `block` offer the agent hand-off unless `askAgent` is `false`. A
- * host drawn over the chat that hand-off opens (the crew window's cover) passes
- * `onHandoff` to close once the hand-off has gone ahead, so the chat is not left
- * under it.
+ * `page`, `block` and `menu` offer the agent hand-off unless `askAgent` is
+ * `false`. A host drawn over the chat that hand-off opens (the crew window's
+ * cover) passes `onHandoff` to close once the hand-off has gone ahead, so the
+ * chat is not left under it.
  */
-import { lazy, useState, Suspense, type ComponentType, type ReactNode } from 'react'
+import { lazy, useEffect, useId, useRef, useState, Suspense, type ComponentType, type ReactNode } from 'react'
 import ErrorBoundary from './ErrorBoundary'
-import ErrorNotice from './ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { Btn } from './ui'
+import { DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
 
 export interface LazyRetryOptions {
-  layout: 'page' | 'block' | 'inline'
+  layout: 'page' | 'block' | 'inline' | 'menu'
   /** The failure notice's title, read at render so a language switch re-resolves it. */
   title: () => string
   /** Attributes a caught throw to its region in the error journal. */
   scope: string
   /**
-   * `false` withholds the `page` and `block` hand-off, for a part beside a draft
-   * the hand-off would discard; the call site names that draft in a
-   * `No hand-off:` comment. On by default.
+   * `false` withholds the `page`, `block` and `menu` hand-off, for a part
+   * beside a draft the hand-off would discard; the call site names that draft
+   * in a `No hand-off:` comment. On by default.
    */
   askAgent?: boolean
 }
@@ -62,13 +68,13 @@ export interface LazyRetryHostProps {
   languageGeneration?: number
   /**
    * Runs once the failure notice's agent hand-off has gone ahead, for a host
-   * drawn over the chat that hand-off opens. The `inline` layout offers no
-   * hand-off, so it never runs there.
+   * drawn over the chat that hand-off opens. It never runs for `inline`, which
+   * offers no hand-off, or `menu`, whose hand-off closes the menu itself.
    */
   onHandoff?: () => void
 }
 
-const FRAME_CLASS: Record<LazyRetryOptions['layout'], string> = {
+const FRAME_CLASS: Record<Exclude<LazyRetryOptions['layout'], 'menu'>, string> = {
   page: 'flex h-full items-center justify-center p-8',
   block: 'mx-4 mt-2 mb-0',
   // Its own bordered group, so its two buttons never join a row's others, and
@@ -77,6 +83,9 @@ const FRAME_CLASS: Record<LazyRetryOptions['layout'], string> = {
   // no `truncate` (inlineNoticeTruncate.test.ts says why that spelling is out).
   inline: 'inline-flex min-w-0 max-w-full shrink-[1000] items-center gap-1.5 rounded-md border border-danger/40 bg-danger/10 px-1.5 py-0.5 [&_strong]:truncate',
 }
+
+// A touch-sized row, as the phone menu's other items are.
+const MENU_ITEM_CLASS = '[@media(hover:none)]:min-h-10'
 
 /**
  * `lazy(load)` typed as the component it resolves to. `lazy()`'s own type
@@ -96,14 +105,24 @@ export function lazyRetry<P extends object>(
   let shared = lazyComponent(load)
   function LazyRetry({ loading = null, keepOnFailure = null, languageGeneration, onHandoff, ...props }: P & LazyRetryHostProps) {
     const [{ Loaded, attempt }, setLoadState] = useState(() => ({ Loaded: shared, attempt: 0 }))
+    const noticeId = useId()
+    // The `menu` layout's Try Again item unmounts with the failure it belongs to.
+    // Focus moves to the menu once it has gone: moved any earlier, the menu's
+    // roving focus hands it straight back to that item.
+    const menuToFocus = useRef<HTMLElement | null>(null)
+    useEffect(() => {
+      menuToFocus.current?.focus()
+      menuToFocus.current = null
+    }, [attempt])
     const loadedProps = props as unknown as P
+    const retry = () => {
+      shared = lazyComponent(load)
+      setLoadState(current => ({ Loaded: shared, attempt: current.attempt + 1 }))
+    }
     const buttonClass = layout === 'inline' ? 'shrink-0 px-1.5 py-0 text-[11px]' : undefined
     const retryButtons = (
       <>
-        <Btn className={buttonClass} onClick={() => {
-          shared = lazyComponent(load)
-          setLoadState(current => ({ Loaded: shared, attempt: current.attempt + 1 }))
-        }}>
+        <Btn className={buttonClass} onClick={retry}>
           {i18nT('components.errorBoundary.try_again')}
         </Btn>
         <Btn className={buttonClass} onClick={() => window.location.reload()}>
@@ -119,7 +138,30 @@ export function lazyRetry<P extends object>(
         fallback={(error) => (
           <>
             {keepOnFailure}
-            {layout === 'inline' ? (
+            {layout === 'menu' ? (
+              <>
+                <ErrorNotice
+                  id={noticeId}
+                  variant="inline"
+                  className="px-2 py-1.5"
+                  title={title()}
+                  message={error.message}
+                  messageClassName="sr-only"
+                />
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={event => {
+                  // Kept open so the part loads in place.
+                  event.preventDefault()
+                  menuToFocus.current = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('[role="menu"]') ?? null
+                  retry()
+                }}>
+                  {i18nT('components.errorBoundary.try_again')}
+                </DropdownMenuItem>
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => window.location.reload()}>
+                  {i18nT('components.errorBoundary.reload_page')}
+                </DropdownMenuItem>
+                {askAgent && <ErrorNoticeMenuItem Item={DropdownMenuItem} message={error.message} describedBy={noticeId} />}
+              </>
+            ) : layout === 'inline' ? (
               <span className={FRAME_CLASS.inline} title={error.message}>
                 {/* No hand-off: the unsent composer draft beside this line (the chat's,
                     or a ChatEmbed's around a message) is unsaved. */}
