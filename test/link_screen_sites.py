@@ -30,6 +30,7 @@ DECLARED_SITES = frozenset(
         ("acp/kas_bundle.py", "sweep_stale_staging"),
         ("acp/kas_extract_repair.py", "repair"),
         ("acp/prompt_blocks.py", "build_prompt_blocks"),
+        ("acp/skill_projection_parts/alias_reclaim.py", "_remove_legacy_metadata_dir"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_alias_locks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_sidecars_in"),
         ("acp/skill_projection_parts/side_files.py", "_ensure_real_directory"),
