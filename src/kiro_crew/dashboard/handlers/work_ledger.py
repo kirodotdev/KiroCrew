@@ -262,6 +262,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
         WORK_REPORT_SCHEMA,
         ValidationError,
+        sanitize_string,
         validate_tool_args,
     )
     from kiro_crew.work_ledger import (  # noqa: F401
