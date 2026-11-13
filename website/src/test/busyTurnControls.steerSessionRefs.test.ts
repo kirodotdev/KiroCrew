@@ -19,7 +19,8 @@ const REF: SessionRef = { key: 'dashboard:other', title: 'Other chat', messages:
 const ref = <T,>(current: T) => ({ current }) as MutableRefObject<T>
 
 function setup(opts: { text: string; refs: SessionRef[] }) {
-  const mutate = vi.fn()
+  // The hook steers through `mutateAsync` so it can return the server's verdict.
+  const mutate = vi.fn(async () => ({ status: 'dispatched' }))
   const setInput = vi.fn()
   const setPendingSessions = vi.fn()
   const sessionRefDrafts = ref<Record<string, SessionRef[]>>({ [SLOT]: opts.refs })
@@ -48,7 +49,7 @@ function setup(opts: { text: string; refs: SessionRef[] }) {
     slotRunning: true,
     messages: [],
     send: vi.fn(async () => true),
-    steerMutation: { mutate },
+    steerMutation: { mutateAsync: mutate } as never,
     messageQuote: { consume: () => ({ quote: null }), recoverInto: (t: string) => t } as never,
     composerRef: ref(null),
     composerSlotRef: ref<string | null>(SLOT),
@@ -66,9 +67,10 @@ function setup(opts: { text: string; refs: SessionRef[] }) {
 }
 
 describe('steering a running turn with a dropped session', () => {
-  it('appends the session link to the steered text and clears the chip with the text', () => {
+  it('appends the session link to the steered text and clears the chip with the text', async () => {
     const h = setup({ text: 'The attached session contains useful information', refs: [REF] })
-    act(() => h.result.current.steer())
+    // steer() returns the server's verdict; let it settle inside this test.
+    await act(async () => { await h.result.current.steer() })
     expect(h.mutate).toHaveBeenCalledTimes(1)
     expect(h.mutate.mock.calls[0][0].text).toBe(`The attached session contains useful information\n\n${formatSessionRefLink(REF)}`)
     expect(h.setInput).toHaveBeenCalledWith('')
@@ -76,9 +78,9 @@ describe('steering a running turn with a dropped session', () => {
     expect(h.sessionRefDrafts.current[SLOT]).toBeUndefined()
   })
 
-  it('leaves a dropped session staged when there is no typed text to steer', () => {
+  it('leaves a dropped session staged when there is no typed text to steer', async () => {
     const h = setup({ text: '', refs: [REF] })
-    act(() => h.result.current.steer())
+    await act(async () => { await h.result.current.steer() })
     expect(h.mutate).not.toHaveBeenCalled()
     expect(h.setPendingSessions).not.toHaveBeenCalled()
     expect(h.sessionRefDrafts.current[SLOT]).toEqual([REF])

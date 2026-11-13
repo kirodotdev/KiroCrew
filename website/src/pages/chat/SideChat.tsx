@@ -1136,6 +1136,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
             typedCommandMenus={false}
             slotApprovalChrome={false}
             promptOptimizer={false}
+            promptStash={false}
             connected={connected}
           />
           {postureError ? (
