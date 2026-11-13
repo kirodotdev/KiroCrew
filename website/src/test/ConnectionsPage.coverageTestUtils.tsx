@@ -61,10 +61,11 @@ export function card(slug: string): HTMLElement {
   return el
 }
 
-/** Open every card on the page, for a test that reads buttons page-wide. */
-export function openAllCards(): void {
+/** Open the Google entry, so its product rows render shown. Only one card
+ *  opens at a time, so no helper opens them all: opening each in turn would
+ *  close the one before it. */
+export function openGoogleEntry(): void {
   open(document.getElementById(`connection-${GOOGLE_ENTRY_SLUG}`))
-  document.querySelectorAll<HTMLElement>('article[data-state]').forEach(open)
 }
 
 /** A promise whose settlement this test controls. */

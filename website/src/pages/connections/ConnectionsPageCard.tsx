@@ -118,8 +118,9 @@ interface ConnectionCardProps {
   feedbackSlots: ReadonlyArray<{ slug: string; value: Feedback }>
   highlighted: boolean
   /** Clicking the card's name opens its configuration in place: the actions
-   *  and, for a pre-registered provider, `oauthPanel`. Undefined renders the
-   *  card always open, for a product row inside the Google entry. */
+   *  and, for a pre-registered provider, `oauthPanel`. The name is a toggle
+   *  only when that shows something the closed card does not. Undefined
+   *  renders the card always open, for a product row inside the Google entry. */
   expand?: { expanded: boolean; onToggle: () => void; panelId: string }
   oauthPanel?: ReactNode
   /** Out of the current search: hidden, not unmounted, so drafts survive. */
@@ -718,7 +719,12 @@ function ConnectionCard({
   // Cancel), a broken or unproven connection (its error and Reconnect). The
   // Google entry opens for the same states.
   const forcedOpen = state === 'waiting-for-approval' || state === 'needs-attention' || state === 'not-verified'
-  const open = expand === undefined || expand.expanded || forcedOpen
+  // The name is a toggle only when opening the card shows something the closed
+  // card does not: the OAuth app part, or a connected card's Test and
+  // Disconnect. A card that signs in on its own already shows its Connect
+  // closed, and a card held open cannot close.
+  const toggleable = expand !== undefined && !forcedOpen && (oauthPanel !== undefined || state === 'connected')
+  const open = expand === undefined || forcedOpen || (toggleable && expand.expanded)
   const reduceMotion = useReducedMotion()
   return (
     <motion.article
@@ -745,7 +751,7 @@ function ConnectionCard({
           )}
         </span>
         <h3 className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
-          {expand ? (
+          {toggleable && expand ? (
             <button
               type="button"
               onClick={expand.onToggle}

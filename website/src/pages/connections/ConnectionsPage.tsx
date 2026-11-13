@@ -118,13 +118,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   const [params, setParams] = useSearchParams()
   const providerParam = params.get(CONNECTION_PROVIDER_PARAM)
   const highlightParam = params.get('highlight')
-  /** Entries (a provider slug, or the Google entry) whose OAuth app part is open. */
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  /** The one entry (a provider slug, or the Google entry) the user opened.
+   *  Opening one closes the other: an open card spans two or three grid
+   *  columns, so several open at once push the gallery around. A card held open
+   *  by its state stays open whatever this says. */
+  const [expanded, setExpanded] = useState<string | null>(null)
   const toggleExpanded = (entry: string) => setExpanded(prev => {
-    const next = new Set(prev)
-    if (next.has(entry)) next.delete(entry)
-    else next.add(entry)
-    return next
+    if (prev === entry) return null
+    return entry
   })
   // Kept for the browser tab: opening a chat unmounts this page, and the
   // search must still be there on the way back (#25962).
@@ -479,7 +480,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     if (!providerParam) return
     setSearch('')
     setHighlightedSlug(providerParam)
-    setExpanded(prev => new Set(prev).add(entryOf(providerParam)))
+    setExpanded(entryOf(providerParam))
     setParams(prev => {
       const next = new URLSearchParams(prev)
       next.delete(CONNECTION_PROVIDER_PARAM)
@@ -495,7 +496,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     if (!highlightParam?.startsWith(OAUTH_HIGHLIGHT_PREFIX)) return
     const slug = highlightParam.slice(OAUTH_HIGHLIGHT_PREFIX.length)
     setSearch('')
-    setExpanded(prev => new Set(prev).add(entryOf(slug)))
+    setExpanded(entryOf(slug))
   }, [highlightParam])
 
   // Retried when the list lands and when the gallery is turned on: on a cold
@@ -1031,7 +1032,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     // Clicking a card opens it in place. A Google product is a
                     // row of the open Google entry, so it has no toggle of its own.
                     expand={isGoogleSlug(provider.slug) ? undefined : {
-                      expanded: expanded.has(provider.slug),
+                      expanded: expanded === provider.slug,
                       onToggle: () => toggleExpanded(provider.slug),
                       panelId: oauthPanelId(provider.slug),
                     }}
@@ -1052,8 +1053,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                   // A Google consent in flight or a Google product to reconnect
                   // keeps the entry open, as such a card stays open on its own.
                   const googleStates = googleProviders.map(provider => cardModel(provider).state)
-                  const open = expanded.has(GOOGLE_ENTRY_SLUG) || googleStates.some(state =>
+                  const forcedOpen = googleStates.some(state =>
                     state === 'waiting-for-approval' || state === 'needs-attention' || state === 'not-verified')
+                  const open = expanded === GOOGLE_ENTRY_SLUG || forcedOpen
                   // One status for the closed entry: the one that needs the user
                   // first, else Connected when any product is, else the shared
                   // configuration state, else Not connected.
@@ -1091,16 +1093,20 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                       <header className="flex items-center gap-2.5">
                         <ProviderLogo slug="gmail" />
                         <h3 id="connection-google-heading" className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
-                          <button
-                            type="button"
-                            onClick={() => toggleExpanded(GOOGLE_ENTRY_SLUG)}
-                            aria-expanded={open}
-                            aria-controls={oauthPanelId(GOOGLE_ENTRY_SLUG)}
-                            className="inline-flex max-w-full items-center gap-1 border-none bg-transparent p-0 text-left font-semibold text-text-strong hover:text-accent"
-                          >
-                            <span className="min-w-0 truncate">{t('pages.connectionsPage.google_entry_name')}</span>
-                            <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
-                          </button>
+                          {/* Held open by a product's state, the name is no
+                              toggle: clicking it could not close the entry. */}
+                          {forcedOpen ? t('pages.connectionsPage.google_entry_name') : (
+                            <button
+                              type="button"
+                              onClick={() => toggleExpanded(GOOGLE_ENTRY_SLUG)}
+                              aria-expanded={open}
+                              aria-controls={oauthPanelId(GOOGLE_ENTRY_SLUG)}
+                              className="inline-flex max-w-full items-center gap-1 border-none bg-transparent p-0 text-left font-semibold text-text-strong hover:text-accent"
+                            >
+                              <span className="min-w-0 truncate">{t('pages.connectionsPage.google_entry_name')}</span>
+                              <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+                            </button>
+                          )}
                         </h3>
                         {open && googleStepTip}
                         <ConnectionStateBadge state={googleState} />
