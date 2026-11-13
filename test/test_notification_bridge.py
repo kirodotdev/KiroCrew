@@ -395,8 +395,8 @@ def test_bridge_module_never_reaches_the_bus(module):
     )
 
 
-def test_known_transports_match_the_rfc():
-    assert BRIDGE_TRANSPORTS == ("slack", "discord", "telegram", "webex", "wecom")
+def test_the_known_transports_are_pinned():
+    assert BRIDGE_TRANSPORTS == ("slack", "discord", "telegram", "webex", "wecom", "feishu")
 
 
 def _make_app(state) -> web.Application:

@@ -11,6 +11,7 @@ audited error.
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,6 +23,7 @@ from real_dashboard_state import (  # noqa: F401
 
 from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.dashboard.handlers import messaging
+from kiro_crew.notifications import bridge_approval_note as approval_note
 from kiro_crew.notifications import bridge_transport
 from kiro_crew.notifications.bridge_transport import (
     TRANSPORT_SINKS,
@@ -58,11 +60,20 @@ def _webex(owners: list[str]) -> tuple[Any, AsyncMock]:
     return WebexTransport(client, allowed_emails=owners), client.send_message
 
 
+def _feishu(owners: list[str]) -> tuple[Any, AsyncMock]:
+    from kiro_crew.feishu.transport import FeishuTransport
+
+    client = MagicMock()
+    client.send_new = AsyncMock(return_value=True)
+    return FeishuTransport(client, allowed_open_ids=owners), client.send_new
+
+
 #: transport id -> (build the real transport with these owners, one owner id).
 _TRANSPORTS: dict[str, tuple[Callable[[list[str]], tuple[Any, AsyncMock]], str]] = {
     "discord": (_discord, "424242424242424242"),
     "telegram": (_telegram, "123"),
     "webex": (_webex, "owner@example.invalid"),
+    "feishu": (_feishu, "ou_owner1"),
 }
 
 
@@ -159,6 +170,38 @@ async def test_a_routed_critical_note_lands_as_a_redacted_owner_dm(
     bridged = [d for d in sel_log.deliveries if d.get("tool_kind") == "notification_bridge"]
     assert [d["outcome"] for d in bridged] == ["completed"]
     assert bridged[0]["downstream_service"] == transport_id
+
+
+@pytest.mark.asyncio
+async def test_a_pending_approval_reaches_the_feishu_owner_once_without_a_reply_prompt(
+    tmp_path, monkeypatch, sel_log
+):
+    """Feishu is read-only: it tells the owner an approval waits; the dashboard answers it."""
+    build, owner = _TRANSPORTS["feishu"]
+    transport, send = build([owner])
+    state = _routed_state(tmp_path, monkeypatch, "feishu", transport)
+    state.notification_channel_settings.update("system.approval", deliver_to=["feishu"])
+    cfg = SimpleNamespace(dashboard=SimpleNamespace(feature_previews={approval_note.PREVIEW: True}))
+    approval_note.publish_pending_approval(
+        state,
+        cfg,
+        slot_key="dashboard:chat-1",
+        session_key="dashboard:chat-1",
+        request_id="7",
+        tool_title="execute_bash",
+        session_title="Release notes",
+        action_token="token-7",
+        approval_detail="make deploy",
+    )
+    await state.notification_bridge.drain()
+
+    send.assert_awaited_once()
+    receive_id_type, receive_id, text = send.await_args.args
+    assert (receive_id_type, receive_id) == ("open_id", owner)
+    assert "is waiting for approval in Release notes" in text
+    assert "Reply" not in text and "make deploy" not in text
+    bridged = [d for d in sel_log.deliveries if d.get("tool_kind") == "notification_bridge"]
+    assert [d["outcome"] for d in bridged] == ["completed"]
 
 
 @pytest.mark.asyncio
