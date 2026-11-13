@@ -56,6 +56,7 @@ _COMPOSED: dict[str, str] = {
     "_loop_slot_keys": "restore_drivers",
     "_may_restore_as_row": "restore_drivers",
     "_open_slot_restore_plan": "restore_drivers",
+    "_restore_queue": "restore_drivers",
     "_over_restore_budget": "restore_drivers",
     "_PERSON_ORIGINS": "restore_drivers",
     "_prefetch_open_slot_inputs": "restore_drivers",

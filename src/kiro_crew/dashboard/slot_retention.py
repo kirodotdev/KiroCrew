@@ -173,8 +173,25 @@ def note_foreground(state: "DashboardState", conn: int, slot_key: object) -> Non
         return
     if isinstance(slot_key, str) and slot_key and len(slot_key) <= _MAX_FOREGROUND_KEY:
         slots[conn] = slot_key
+        state.last_focused_slot = slot_key
+        # A tab the restore still owes moves to the front of what is left of it.
+        if (
+            getattr(state, "restoring_open_slots", False)
+            and slot_key in state.restoring_open_slot_keys
+            and slot_key not in state._slots
+        ):
+            # The latest focus is the tab the person is on, so it goes first.
+            if slot_key in state.restore_front_keys:
+                state.restore_front_keys.remove(slot_key)
+            state.restore_front_keys.insert(0, slot_key)
     else:
         slots.pop(conn, None)
+    # Emptied by a blur or a closed socket, the last answer stays: it is what the
+    # shutdown flush records.
+    if slots:
+        state.last_visible_slots = tuple(
+            dict.fromkeys(v for v in slots.values() if v != state.last_focused_slot)
+        )
 
 
 def foreground_slot_keys(state: "DashboardState") -> set[str]:

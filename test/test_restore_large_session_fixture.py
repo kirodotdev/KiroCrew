@@ -164,6 +164,38 @@ def test_an_eager_tab_parses_the_whole_transcript_once(large_home, parsed_rows):
     assert parsed_rows["full"] <= rows
 
 
+def test_the_focused_large_tab_is_built_first_of_the_whole_open_set(
+    large_home, tmp_path, monkeypatch
+):
+    """The tab focused at shutdown is the first one the restore builds, 41 tabs deep.
+
+    The large tab holds the OLDEST transcript, so recency order would build it last.
+    """
+    import asyncio
+
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "cfg"))
+    keys = [BIG_KEY.removeprefix("dashboard:")] + [f"chat-{i + 2}-small" for i in range(SMALL_TABS)]
+    chat_persistence.config_dir().mkdir(parents=True, exist_ok=True)
+    (chat_persistence.config_dir() / "open_slots.json").write_text(
+        json.dumps({"keys": list(reversed(keys)), "ts": 0.0, "focus": keys[0], "visible": []})
+    )
+    state = _make_state(tmp_path / "sessions")
+    built: list[str] = []
+    real = chat_persistence._apply_restored_open_slot
+
+    def spy(state, key, **kwargs):
+        built.append(key)
+        return real(state, key, **kwargs)
+
+    monkeypatch.setattr(restore_drivers, "_apply_restored_open_slot", spy, raising=False)
+    monkeypatch.setattr(chat_persistence, "_apply_restored_open_slot", spy)
+    restored = asyncio.run(chat_persistence.restore_open_slots_async(state))
+    assert restored == len(keys)
+    assert built[0] == keys[0]
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="target: an eager tab above the threshold reads a tail window, not every row",
