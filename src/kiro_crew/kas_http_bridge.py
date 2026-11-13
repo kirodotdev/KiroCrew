@@ -18,9 +18,12 @@ header is only ever sent to the recorded url's origin. No header value is ever
 written to stderr or into an error the engine sees.
 
 Standard library only, plus the standard-library leaf
-:mod:`kiro_crew.mcp_structured_text`: the engine starts this once per server. A
-result whose payload is only in ``structuredContent`` is relayed with that object
-added as a JSON text block, since the engine reads only ``content``.
+:mod:`kiro_crew.mcp_structured_text`, until a request fails: the engine starts
+this once per server. A failed request then imports
+:mod:`kiro_crew.asset_downloader`, which carries the platform layer, to name its
+cause in plain words (``connection refused``). A result whose payload is only in
+``structuredContent`` is relayed with that object added as a JSON text block,
+since the engine reads only ``content``.
 """
 
 from __future__ import annotations
@@ -98,6 +101,14 @@ def _opener(url: str = "") -> urllib.request.OpenerDirector:
     if parts.scheme.lower() == "http" and _normalized_host(parts.hostname) in _LOOPBACK_HOSTS:
         handlers.append(urllib.request.ProxyHandler({}))
     return urllib.request.build_opener(*handlers)
+
+
+def _network_cause(exc: BaseException) -> str:
+    """:func:`kiro_crew.asset_downloader.network_failure_cause`, imported once a request
+    failed: at module scope every server start would pay for the platform layer."""
+    from kiro_crew.asset_downloader import network_failure_cause
+
+    return network_failure_cause(exc)
 
 
 def _request_ids(msg: Any) -> list[Any]:
@@ -255,7 +266,7 @@ class Bridge:
             self._fail(ids, f"could not be reached ({type(exc).__name__})")
             return
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            reason = getattr(exc, "reason", None) or type(exc).__name__
+            reason = _network_cause(exc) or getattr(exc, "reason", None) or type(exc).__name__
             self._fail(ids, f"could not be reached ({reason})")
             return
         answered: list[Any] = []
@@ -278,7 +289,8 @@ class Bridge:
             self._fail([i for i in ids if i not in answered], f"stopped answering ({reason})")
             return
         except OSError as exc:
-            self._fail([i for i in ids if i not in answered], f"stopped answering ({exc})")
+            reason = _network_cause(exc) or str(exc)
+            self._fail([i for i in ids if i not in answered], f"stopped answering ({reason})")
             return
         missing = [i for i in ids if i not in answered]
         if missing:
