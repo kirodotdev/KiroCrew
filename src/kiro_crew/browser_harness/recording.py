@@ -101,6 +101,7 @@ _O_BINARY = getattr(os, "O_BINARY", 0)
 OP_KINDS: Mapping[str, str] = {
     "click": "click",
     "type": "type",
+    "paste": "type",
     "press_key": "key",
     "drag": "drag",
     "scroll": "scroll",
@@ -164,9 +165,9 @@ def clean_url(url: object) -> str:
 def sanitize_args(op: str, args: Mapping[str, Any] | None, *, secret: bool = False) -> dict:
     """The op's args as they may be kept: allowlisted, bounded, secrets as a length.
 
-    ``type`` keeps its text only when it is not a secret (*secret*, or the args'
-    own ``secret`` flag); a secret keeps ``chars`` and ``secret: true``. With
-    *secret*, a ``press_key`` of one character keeps no key either (a password
+    ``type`` and ``paste`` keep their text only when it is not a secret (*secret*, or
+    the args' own ``secret`` flag); a secret keeps ``chars`` and ``secret: true``.
+    With *secret*, a ``press_key`` of one character keeps no key either (a password
     spelled one key at a time). ``select_option`` values and ``wait_for`` text
     are kept bounded.
     """
@@ -201,10 +202,11 @@ def sanitize_args(op: str, args: Mapping[str, Any] | None, *, secret: bool = Fal
             out["values"] = [str(v)[:MAX_ARG_CHARS] for v in raw[:16] if v is not None]
     text = args.get("text")
     if isinstance(text, str):
-        if op == "type" and (secret or bool(args.get("secret"))):
+        typed = op in ("type", "paste")
+        if typed and (secret or bool(args.get("secret"))):
             out["chars"] = len(text)
             out["secret"] = True
-        elif op == "type":
+        elif typed:
             out["chars"] = len(text)
             out["text"] = text[:MAX_ARG_CHARS]
         else:

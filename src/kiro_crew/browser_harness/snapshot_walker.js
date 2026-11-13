@@ -762,6 +762,24 @@
       };
     },
 
+    // Paste into `ref`, or into what holds focus: `html` and `text` ride on a paste
+    // event, which the page's editor reads as it would a clipboard paste, and the
+    // clipboard itself is never written. A script's paste event inserts nothing on
+    // its own, so `handled` (the page cancelled it, as an editor that takes the paste
+    // does, and as a field that blocks pasting does too) tells the gateway whether
+    // the plain text still has to be typed.
+    paste: function (ref, html, text) {
+      var el = ref ? lookup(ref) : deepActive();
+      if (!el) return { ok: false, code: "ref_stale" };
+      // A cross-origin frame's field is reached through its frame ref, never its <iframe>.
+      if (isFrame(el)) return { ok: false, code: "focus_in_frame" };
+      var data = new DataTransfer();
+      if (html) data.setData("text/html", html);
+      data.setData("text/plain", text);
+      var event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true, composed: true });
+      return { ok: true, handled: !el.dispatchEvent(event) };
+    },
+
     selectOption: function (ref, values) {
       var el = lookup(ref);
       if (!el) return { ok: false, code: "ref_stale" };
