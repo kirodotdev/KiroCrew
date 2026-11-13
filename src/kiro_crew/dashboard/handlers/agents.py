@@ -1460,7 +1460,7 @@ async def api_models(request: web.Request) -> web.Response:
         if cached is None or not await kiro_latched_ready(request):
             blocked = await reject_if_kiro_unverified(request)
             if blocked is not None:
-                crew_relay = await api_models_kas_crew_relay(request, backend)
+                crew_relay = await api_models_kas_crew_relay(request, backend, blocked)
                 return blocked if crew_relay is None else crew_relay
         if cached is not None:
             # Serve the last good catalog straight away; a stale one is refreshed

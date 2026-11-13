@@ -4101,7 +4101,9 @@ message, and shows a failed fetch's own error text under its lead
   the route" below), and `/api/sessions/usage` takes its vault-owned path.
   On KAS's relay started on Crew's sign-in alone, `/api/models` answers the
   gate's refusal with the engine's recorded list instead
-  (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. On
+  (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. With
+  nothing recorded it answers `auto`, except that a `kiro_probe_timed_out`
+  refusal stands. On
   `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
@@ -5256,7 +5258,8 @@ calls `reject_if_kiro_unverified` and never spawns `--list-models`
 (`dashboard/handlers/models_kas_bundle.py`; the kiro-cli path below is unchanged
 for every other configuration, the relay route included, except that a relay
 started on Crew's sign-in alone answers the kiro-cli gate's refusal with the
-same recording, without a cold probe). Measured on the bundled
+same recording, without a cold probe, and keeps a timed-out gate's 503 while
+nothing is recorded). Measured on the bundled
 engine (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`), `session/new`
 carries no `models` object: the list is the `configOptions` `model` select, each
 option with `_meta.kiro.rateMultiplier` and no structured context window. The
