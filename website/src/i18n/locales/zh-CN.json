@@ -14025,6 +14025,7 @@
       "could_not_repair_images": "无法修复图片"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "先登录，再点“恢复”",
       "needsMeCard": {
         "card_label": "{{title}}：需要你处理",
         "recap": "概要",

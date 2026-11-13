@@ -14360,6 +14360,7 @@
       "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Anmelden, dann „Wieder aufnehmen“",
       "needsMeCard": {
         "card_label": "{{title}}: braucht dich",
         "recap": "Zusammenfassung",

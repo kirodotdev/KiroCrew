@@ -71,6 +71,7 @@ _TO_DICT_KEYS = (
     "needs_input",
     "interrupted",
     "interrupted_stale",
+    "interrupted_by_sign_in",
     "stop_state",
     "wait_state",
     "created",

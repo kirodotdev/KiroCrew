@@ -14695,6 +14695,7 @@
       "could_not_repair_images": "Não foi possível reparar as imagens"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Entre e depois toque em Retomar",
       "needsMeCard": {
         "card_label": "{{title}}: precisa de você",
         "recap": "Resumo",

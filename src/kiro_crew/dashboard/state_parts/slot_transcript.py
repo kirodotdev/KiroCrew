@@ -44,6 +44,7 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
     durable_row_count,
     is_interruption_stale,
     is_turn_interrupted,
+    newest_error_is_sign_in,
     parse_cls_meta,
 )
 from kiro_crew.dashboard.system_notices import is_system_notice
@@ -711,6 +712,7 @@ def to_dict(
         parse_cls_meta=parse_cls_meta,
         is_turn_interrupted=is_turn_interrupted,
         is_interruption_stale=is_interruption_stale,
+        newest_error_is_sign_in=newest_error_is_sign_in,
         is_system_notice=is_system_notice,
         latest_transcript_ts=latest_transcript_ts,
         last_message_preview=_last_message_preview,

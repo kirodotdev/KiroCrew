@@ -524,6 +524,33 @@ def is_interruption_stale(messages: list[dict], now: float) -> bool:
     return False
 
 
+#: ``chat_utils.AUTH_REQUIRED_KIND``, spelled here for the reason
+#: ``_MODEL_UNAVAILABLE_KIND`` is (``test_newest_error_is_sign_in.py`` pins the two equal).
+_AUTH_REQUIRED_KIND = "auth_required"
+
+
+def newest_error_is_sign_in(messages: list[dict]) -> bool:
+    """True when the newest error row is a sign-in error and no reply or new turn follows it.
+
+    The sidebar's twin of ``authRequiredIsNewest`` in
+    ``website/src/pages/chat/transcriptRenderers.tsx``, so an interrupted
+    session's row names the sign-in first, as the composer's hint does.
+    ``test/fixtures/sign_in_newest_rows.json`` holds both to the same answers.
+    """
+    for m in reversed(messages):
+        role = m.get("role")
+        meta = m.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        if role == "error":
+            return _AUTH_REQUIRED_KIND in (m.get("kind"), meta.get("kind"))
+        if role in ("assistant", "nudge", "subagent") or (role == "user" and not meta.get("steer")):
+            return False
+        if role == "inject" and meta.get("injectKind") in TURN_OPENING_INJECT_KINDS:
+            return False
+    return False
+
+
 def _mark_permission_resolved(
     messages: list[dict],
     request_id: str,
