@@ -151,11 +151,22 @@ SIGN_IN_CREDENTIAL = "kiro-sign-in"
 #: Error types the service refuses this Crew with, and why. An access refusal
 #: waits ``RETRY_AFTER_MAX_SECONDS``; the others stop until Remote Control restarts.
 _ACCESS_DENIED = "AccessDeniedException"
+#: An ``AccessDeniedException`` reason, with case and underscores dropped, to why.
 _ACCESS_DENIED_REASONS = {
-    "RemoteAccessDisabled": "the organization does not allow remote access",
-    "CrewAccessNotGranted": "this sign-in has no access to the Crew, or its identity is not active",
+    "remoteaccessdisabled": "remote access is turned off for this Crew's account or organization",
+    "crewaccessnotgranted": "this sign-in has no access to the Crew, or its identity is not active",
 }
-_ACCESS_DENIED_DEFAULT = "this sign-in cannot host this Crew now"
+#: Covers a refusal with no reason, such as remote Crews not being enabled for the
+#: account: the refusal's message is never read, so the text names both causes.
+_ACCESS_DENIED_DEFAULT = (
+    "this sign-in cannot host this Crew now, or remote access is turned off for this "
+    "Crew's account or organization"
+)
+#: Refusals that retry on the backoff steps like any unlisted one, with the cause named.
+_BACK_OFF_WHY = {
+    "ServiceQuotaExceededException": "the account has reached its limit of remote Crews",
+    "ThrottlingException": "the relay is limiting requests; the host will try again",
+}
 _NOT_FOUND = "ResourceNotFoundException"
 _NOT_FOUND_WHY = "the Crew's identity is disabled or deleted"
 _VALIDATION = "ValidationException"
@@ -830,10 +841,11 @@ class LeaseHostTokenSource:
                 )
                 return
             self._stop(
-                "the lease service refused the Crew's credential (HTTP 401): check "
-                "tunnel.relay_lease_credential's credential and that "
-                "tunnel.relay_lease_token_type matches it (a team Crew on a crew API key "
-                "needs API_KEY), then restart Remote Control"
+                "the lease service refused the Crew's credential (HTTP 401): check that "
+                "tunnel.relay_lease_credential's credential is current and that "
+                "tunnel.relay_lease_token_type matches its kind (a team Crew on a crew API "
+                "key needs API_KEY, a token from an outside identity provider needs "
+                "EXTERNAL_IDP, and a Kiro sign-in leaves it empty), then restart Remote Control"
             )
         kind, reason = refusal_of(payload, answered.error_type)
         named = f"{kind} {reason}" if kind and reason else (kind or f"HTTP {status}")
@@ -841,7 +853,9 @@ class LeaseHostTokenSource:
             # Access can be granted again with no change on this machine, so the
             # Crew tries again on its own, at most every 15 minutes, as the refusals
             # fixture says.
-            why = _ACCESS_DENIED_REASONS.get(reason or "", _ACCESS_DENIED_DEFAULT)
+            why = _ACCESS_DENIED_REASONS.get(
+                (reason or "").replace("_", "").lower(), _ACCESS_DENIED_DEFAULT
+            )
             self._hold(
                 arrived + RETRY_AFTER_MAX_SECONDS,
                 f"the lease service refused this Crew ({named}): {why}",
@@ -896,7 +910,10 @@ class LeaseHostTokenSource:
             self._hold(arrived + wait, f"the lease service asked the Crew to wait ({named})")
             logger.warning("the lease service refused the renewal (%s); waiting %.0fs", named, wait)
             raise _Later(self._hold_reason)
-        self._back_off(f"the lease service refused the renewal ({named})")
+        cause = _BACK_OFF_WHY.get(kind or "")
+        self._back_off(
+            f"the lease service refused the renewal ({named})" + (f": {cause}" if cause else "")
+        )
 
     async def _credential(self, rejected: Optional[str]) -> str:
         """The bearer for one call: from the sign-in reader, else the reference.
