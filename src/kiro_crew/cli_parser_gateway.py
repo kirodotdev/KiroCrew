@@ -425,6 +425,7 @@ Examples:
   kirocrew config defaults              # Stored values holding a superseded default
   kirocrew config defaults --adopt      # Take the current defaults for all of them
   kirocrew config defaults --keep session.autocompact_pct   # Affirm one as intentional
+  kirocrew config pending               # Files changed outside Kiro Crew, held for review
 
 The dashboard port comes from the port in dashboard.url; the KIROCREW_PORT
 env var overrides it.
@@ -475,3 +476,16 @@ env var overrides it.
         action="store_true",
         help="Record the stored values as intentional and stop reporting them",
     )
+    cfg_pending = cfg_sub.add_parser(
+        "pending",
+        help="Apply or discard a settings file changed outside Kiro Crew (no dashboard needed)",
+    )
+    pending_sub = cfg_pending.add_subparsers(dest="pending_action")
+    pending_sub.add_parser("list", help="Show each file held for review and what changed (default)")
+    for action, text in (
+        ("apply", "Keep the outside change"),
+        ("discard", "Put the saved version back"),
+    ):
+        resolve = pending_sub.add_parser(action, help=text)
+        resolve.add_argument("file", help="The file name, e.g. config.json")
+        resolve.add_argument("signature", help="The version `kirocrew config pending` printed")

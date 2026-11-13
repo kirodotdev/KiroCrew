@@ -2568,9 +2568,14 @@ The lock matters because the rebuild READS the keystone and WRITES the spec. Out
 it, two overlapping PUTs interleave: an enable's slower rebuild can land its spec
 *after* a later disable's, leaving a spec that mounts — and therefore spawns — the
 server the keystone now forbids. Holding `_get_config_lock()` makes read-decide-write
-atomic against every keystone writer, so whichever rebuild finishes last is the one
-that read the final state. It is a plain reacquisition: the write block has already
-exited its own, and `rebuild_agent_config` never takes this lock.
+atomic against every keystone writer in the gateway, so whichever rebuild finishes last
+is the one that read the final state. It is a plain reacquisition: the write block has
+already exited its own, and `rebuild_agent_config` never takes this lock.
+`kirocrew config pending` writes the keystone from another process and asks for a
+restart instead of rebuilding. The PUT's write (`_write_state`) refuses a pending
+keystone before it reads it, so it cannot publish a stale copy over that command's
+Apply; what remains is the window `refuse_save_if_pending` documents, an outside edit
+and its Apply both landing inside one save.
 
 App agents are rewritten in the same step, after the host rebuild and before the
 reset. An app agent that references `@kirocrew-computer` gets the entry in its

@@ -37,8 +37,9 @@ that differs from its endorsed copy keeps loading as the endorsed copy, and is r
 as pending (:func:`pending_changes`: the leaf, a signature of the on-disk bytes, and a
 plain changed-key diff with secret-bearing values withheld). The owner applies or
 discards it from Settings (``dashboard/handlers/config_pending.py``, owner-gated and
-CSRF-guarded like every Settings write, never reachable by the agent or an MCP tool);
-both go through the leaf's normal endorsing writer. Users may hand-edit; nothing
+CSRF-guarded like every Settings write, never reachable by the agent or an MCP tool), or
+without the dashboard from their own terminal (``kirocrew config pending``, refused
+inside a sandbox); both go through the leaf's normal endorsing writer. Users may hand-edit; nothing
 requires it, and nothing an in-sandbox process writes takes effect on its own. A file
 that is deleted or made unreadable is the same case: every reader serves the endorsed
 copy (:func:`reconciled_bytes`) and the leaf is pending as removed until the owner
@@ -314,12 +315,14 @@ def record(leaf: str, content: bytes, *, strict: bool = False) -> None:
         )
 
 
-#: The refusal every ordinary save of a pending file gets, CLI and dashboard alike. Plain
-#: words, no terminal step: the dashboard shows its own translation of the same sentence
-#: (keyed by :attr:`PendingEditBlocksSave.code`) with a link to the pending card.
+#: The refusal every ordinary save of a pending file gets, CLI and dashboard alike. The
+#: dashboard shows its own translation of the same sentence (keyed by
+#: :attr:`PendingEditBlocksSave.code`) with a link to the pending card; the command is for
+#: a gateway running without the dashboard.
 PENDING_SAVE_REFUSED = (
     "This settings file was changed outside Kiro Crew, so this save was not made. "
-    "Review the change in Settings > Security first (Apply or Discard), then try again."
+    "Review the change in Settings > Security first (Apply or Discard), then try again. "
+    "Without the dashboard, run `kirocrew config pending`."
 )
 
 
@@ -522,7 +525,7 @@ def _report_once(leaf: str, what: str) -> None:
         _reported.add(leaf)
         logger.warning(
             "%s on disk %s; using the gateway-endorsed copy until the change is applied "
-            "or discarded in Settings",
+            "or discarded in Settings > Security or with `kirocrew config pending`",
             leaf,
             what,
         )
