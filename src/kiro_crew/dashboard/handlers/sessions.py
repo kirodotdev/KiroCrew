@@ -56,10 +56,12 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (  # noqa: F401
         _DASHBOARD_SLOT_STEM_RE,
+        _GUARDED_TAIL_MAX_MESSAGES,
         _MACHINE_NAMESPACES,
         _SHORT_SLOT_NAME_RE,
         _AppOwnedKeys,
         _app_search,
+        _guarded_tail_wanted,
         _has_user_content,
         _is_machine_only_session,
         _is_user_listed_row,
@@ -201,6 +203,7 @@ if TYPE_CHECKING:
     from kiro_crew.channel_transcript_migration import _orphan_target_stem  # noqa: F401
     from kiro_crew.cloud.login_target import parse_whoami_output  # noqa: F401
     from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401
+    from kiro_crew.context import RECALL_ROLES  # noqa: F401
     from kiro_crew.cron import CronStoreBusy  # noqa: F401
     from kiro_crew.cron import CronStoreUnreadable  # noqa: F401
     from kiro_crew.cron import cron_owner_matches  # noqa: F401

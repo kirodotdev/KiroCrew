@@ -4175,7 +4175,15 @@ case-normalizing `is_incognito_transcript` (a peer is untrusted input, so
 `Incognito` refuses like `incognito`); that is the version-independent floor, and
 it costs nothing. And **`read` filters to
 `RECALL_ROLES`** before tail-capping, dropping the `system`/tool rows that
-`get_chat_session` also excludes. `read` additionally vets the `session_key` (no
+`get_chat_session` also excludes. The hub sends its `max_messages` to the peer with
+the read, and a peer that knows the parameter answers through
+`ConversationLog.derive_recent`, the read the local `get_chat_session` makes: the
+newest `max_messages` rows of `RECALL_ROLES` (role and content, task-brief rows left
+out, at most 200), taken from the end of the file under the same lock hold as the
+line's verdict. Its cost and its reply then follow the count and not the
+transcript's size. A peer from before the parameter ignores it and answers the
+whole transcript; the hub shapes either reply the same way, so a transcript over
+`PEER_SESSIONS_REPLY_MAX_BYTES` is refused only by such a peer. `read` additionally vets the `session_key` (no
 separator, no `..`) and percent-encodes it into the peer path so it cannot
 traverse — the same "validate then rebuild" discipline as the §6 proxy. The
 `list`/`read` proxy read is bounded by a total-time budget (`_CREW_PROXY_TIMEOUT`,

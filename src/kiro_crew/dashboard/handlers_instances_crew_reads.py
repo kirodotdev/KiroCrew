@@ -857,7 +857,10 @@ async def api_crew_sessions_read(request: web.Request) -> web.Response:
             mgr,
             iid,
             peer_path,
-            {"exclude_incognito": "1"},
+            # max_messages: a peer that knows it answers only the rows kept below,
+            # read from the end of its transcript. A peer from before it sends the
+            # whole transcript, which the shaping trims the same way.
+            {"exclude_incognito": "1", "max_messages": str(max_messages)},
             shape=partial(_shape_read_messages, max_messages=max_messages),
             confirm_header=INCOGNITO_EXCLUDED_HEADER,
             names_a_session=True,
