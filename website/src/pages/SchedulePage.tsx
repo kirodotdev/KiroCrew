@@ -271,13 +271,14 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
       {confirming && (
         <div className="flex items-center gap-3 px-3 py-1.5 mb-1.5 text-sm rounded-md bg-danger/5 border border-danger/20">
           <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
-          <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
+          {/* The stock Btn is transparent, so on the danger tint it has no edge until hovered. */}
+          <Btn danger onClick={() => { setConfirming(false); onDelete() }} className="border-border-strong bg-bg-elevated">
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
           {/* Cancel unmounts the row and itself with it, which would drop
               focus to the page: hand it back to the trigger, as the rename
               editor does, a frame later so the row has gone. */}
-          <Btn onClick={() => {
+          <Btn className="border-border-strong bg-bg-elevated" onClick={() => {
             setConfirming(false)
             requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
           }}>
@@ -1654,9 +1655,11 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
             >
               {i18nT('pages.schedulePage.secrets_approve')}
             </SendBtn>
+            {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
             <Btn
               danger
               disabled={busy}
+              className="border-border-strong bg-bg-elevated"
               onClick={() =>
                 act({
                   deny_pending: true,
