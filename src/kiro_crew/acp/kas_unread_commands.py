@@ -199,7 +199,8 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
     the KAS translation drops (the same test ``tools_settings_to_permissions``
     applies), in the spec's order, so the notice names the entry and not only the
     key. kiro-cli refuses every URL such an entry matches; on KAS it refuses
-    nothing."""
+    nothing unless :func:`fails_closed_on_uncarried_blocked` is on, when the
+    translation denies every fetch."""
     from kiro_crew.acp.kas_permissions import (
         _MAX_PATTERN_LENGTH,
         _patterns,
@@ -222,5 +223,27 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
         else:
             reason = f"longer than {_MAX_PATTERN_LENGTH} characters"
         shown = raw if raw.isprintable() else json.dumps(raw)
-        out.append(f"web_fetch.blocked: {shown} ({reason})")
+        mark = WEB_FETCH_REFUSED_MARK if fails_closed_on_uncarried_blocked() else ""
+        out.append(f"web_fetch.blocked: {shown} ({reason}){mark}")
     return list(dict.fromkeys(out))
+
+
+#: Ends each uncarried ``web_fetch.blocked`` item when
+#: :func:`fails_closed_on_uncarried_blocked` is on: the translation then denies every
+#: fetch (``tools_settings_to_permissions``), so the notice says so.
+WEB_FETCH_REFUSED_MARK = "; every web fetch is refused until this entry is fixed"
+
+
+def fails_closed_on_uncarried_blocked() -> bool:
+    """Whether ``agent.kas_fail_closed_web_fetch_blocked`` is a JSON ``true``.
+
+    Off by default, and off when the config cannot be loaded, so an entry KAS
+    cannot carry is named and refuses nothing, as before.
+    """
+    try:
+        # Call-time: the config loader pulls in the config plane this leaf stays off.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().agent.kas_fail_closed_web_fetch_blocked is True
+    except Exception:
+        return False

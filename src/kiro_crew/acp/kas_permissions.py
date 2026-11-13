@@ -76,7 +76,11 @@ from kiro_crew.acp.kas_tool_rows import (  # noqa: F401 - re-exported
     KAS_TOOL_MATCH_VOCABULARY,
     kas_tool_match_names,
 )
-from kiro_crew.acp.kas_unread_commands import placed_allowed_commands, unreadable_allowlist_entries
+from kiro_crew.acp.kas_unread_commands import (
+    fails_closed_on_uncarried_blocked,
+    placed_allowed_commands,
+    unreadable_allowlist_entries,
+)
 from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform import allowed_paths as allowed_paths_mod
 from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES, canonical_kiro_cli_tool_name
@@ -1889,18 +1893,17 @@ def tools_settings_to_permissions(
                     lost.append(f"{tool}.fallbackAction")
         elif family == "web_fetch":
             # KAS matches a host only, so a `blocked` regex is carried here as a host
-            # deny or named, and `trusted` (an allow) is named. Crew's gate grants a
-            # plain-URL `trusted` entry itself (`kas_spec_denies.web_fetch_gate`); the
-            # session notice drops it then, and a crewmate's policy check reads only
-            # this KAS side.
+            # deny, and `trusted` (an allow) is named. A `blocked` entry with no host
+            # deny is named; with `agent.kas_fail_closed_web_fetch_blocked` on, one
+            # deny over "*" takes the key's place and refuses every fetch. Crew's
+            # gate grants a plain-URL `trusted` entry itself
+            # (`kas_spec_denies.web_fetch_gate`); the session notice drops it then,
+            # and a crewmate's policy check reads only this KAS side.
             handled.add("blocked")
-            rules.extend(
-                _chunked_rules(
-                    "web_fetch",
-                    "deny",
-                    converted(f"{tool}.blocked", settings.get("blocked"), _url_glob),
-                )
-            )
+            blocked = converted(f"{tool}.blocked", settings.get("blocked"), _url_glob)
+            if f"{tool}.blocked" in lost and fails_closed_on_uncarried_blocked():
+                blocked = ["*"]
+            rules.extend(_chunked_rules("web_fetch", "deny", blocked))
         elif family == "subagent":
             # KAS's `subagent` capability matches the sub-agent's name (its consent
             # names it as the resource), and it is the shape KAS itself writes for
