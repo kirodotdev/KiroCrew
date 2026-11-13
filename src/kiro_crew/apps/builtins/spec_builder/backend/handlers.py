@@ -72,10 +72,13 @@ from .repository import (
     _slot_key,
 )
 from .repository_discovery import (
+    STALE_WORKTREE_MISSING,
     _derive_phase,
     _load_index_with_discovery,
     _prepare_spec_dir,
     _read_spec_files,
+    _stale_reason,
+    _stale_reasons,
 )
 from .repository_git import _repo_info
 from .runtime import _dispatch_turn, _ensure_worker_slot, _serialize_messages
@@ -293,6 +296,7 @@ async def _handle_list(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
     index, phases = await asyncio.to_thread(_load_index_with_discovery)
+    stale = await asyncio.to_thread(_stale_reasons, index)
     specs = []
     for name, meta in index.items():
         # A delete in flight keeps its entry so the name stays reserved (see
@@ -318,6 +322,9 @@ async def _handle_list(request: web.Request) -> web.Response:
                 # leaves "executing" in the index forever (see _effective_status).
                 "status": await _effective_status(name, meta, slot),
                 "phase": phases.get(name, "new"),
+                # Why the indexed worktree/branch no longer matches ("" when intact).
+                # Without it a spec whose worktree was removed read as a new spec.
+                "stale": stale.get(name, ""),
                 "running": bool(getattr(slot, "running", False)),
                 # Validated, not passed through: see _numeric.
                 "created_at": _numeric(meta.get("created_at")),
@@ -368,6 +375,9 @@ async def _handle_get(request: web.Request) -> web.Response:
     # here: a separate await would sit between the fresh index read below and the
     # slot scoping that consumes it.
     phase, files, spec_state, doc_meta = await asyncio.to_thread(_collect_spec_documents, spec_dir)
+    # Read before the fresh index read below, which must stay await-free up to the
+    # slot scoping. The identity check there refuses the response if the spec moved.
+    stale = await asyncio.to_thread(_stale_reason, meta)
 
     # Live context counters from the worker slot's transcript. The slot is
     # CREATED here if it does not exist yet (see _ensure_worker_slot): a spec
@@ -413,8 +423,18 @@ async def _handle_get(request: web.Request) -> web.Response:
             status=409,
         )
     turns = tool_calls = 0
-    slot = await _ensure_worker_slot(state, name, meta)
-    if slot is None and state is not None:
+    # A missing worktree has no usable working dir, so a slot cannot be SCOPED -- but the
+    # ownership refusal below must still run first: serving 200 there would hand the SPA
+    # a slot_key that belongs to another app. scope=False applies that refusal without
+    # creating or repointing a slot, so the (empty) detail is served only for a slot
+    # this app owns, letting the SPA show the real reason and offer Delete.
+    worktree_missing = stale == STALE_WORKTREE_MISSING
+    slot = await _ensure_worker_slot(state, name, meta, scope=not worktree_missing)
+    if (
+        slot is None
+        and state is not None
+        and (not worktree_missing or state.get_slot(_slot_key(name)) is not None)
+    ):
         # A foreign or unscoped slot holds this key (see _ensure_worker_slot).
         # Returning 200 anyway meant ChatEmbed mounted against that unrelated
         # session -- the user could read it, message into it and approve its tool
@@ -452,6 +472,7 @@ async def _handle_get(request: web.Request) -> web.Response:
             # as the list endpoint.
             "running": bool(getattr(slot, "running", False)) if slot is not None else False,
             "phase": phase,
+            "stale": stale,
             "files": files,
             # Per-document raw hash, which binds approval to the exact stored
             # revision even when the rendered text required redaction.
