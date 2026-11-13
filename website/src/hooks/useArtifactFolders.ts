@@ -113,10 +113,11 @@ export function useMoveArtifactToFolder(): (slug: string, folderId: string, opts
       }
       inFlight.delete(slug)
       // The last move for this slug has settled, so the server now holds the
-      // final folder: reconcile the detail, and the lists too when moves
-      // overlapped, since an older request may have landed after a newer one.
+      // final folder: reconcile the detail and the lists. The lists carry
+      // fields the server derives from the folder (`sweepable`: a filed
+      // artifact is never swept), which the optimistic patch cannot know.
       qc.invalidateQueries({ queryKey: ['artifact', slug] })
-      if (pending?.overlapped) qc.invalidateQueries({ queryKey: ['artifacts'] })
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
     },
   })
   // `mutate` is referentially stable across renders, so the returned callback is too.

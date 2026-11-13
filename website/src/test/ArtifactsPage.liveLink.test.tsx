@@ -9,6 +9,10 @@ import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import type { Artifact } from '../types'
 
 vi.mock('../api/client')
+// Both layouts draw the live link: a phone on the masonry card, a desktop on
+// the card grid and the Home rows. The suite runs once per layout.
+let mobile = true
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
 
 /**
  * A static artifact published to the public web keeps its link in the AWS
@@ -77,7 +81,10 @@ afterEach(() => {
 // says which chain ran out.
 const LISTING_CHAIN_MS = 5000
 
-describe('ArtifactsPage — live public-web link', () => {
+describe.each([['phone', true], ['desktop', false]] as const)('ArtifactsPage — live public-web link (%s)', (_layout, isMobile) => {
+  beforeEach(() => { mobile = isMobile })
+  afterEach(() => { mobile = true })
+
   it.each(['grid', 'table'])('links a deployed artifact from its %s entry until the site is gone', async (view) => {
     localStorage.setItem('mc-artifacts-view', view)
     const m = seed([mk('launch-notes', 'Launch Notes')], [{ site_id: 'launch-notes', url: LIVE_URL }])

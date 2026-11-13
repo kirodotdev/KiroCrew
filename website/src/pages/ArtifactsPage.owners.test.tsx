@@ -99,7 +99,10 @@ describe('ArtifactsPage owners', () => {
     expect(OWNERS).toEqual([
       'ArtifactsPageFolders.tsx',
       'ArtifactsPageGallery.tsx',
+      'ArtifactsPageHome.tsx',
+      'ArtifactsPageQuickCreate.tsx',
       'ArtifactsPageSections.tsx',
+      'ArtifactsPageSideNav.tsx',
       'artifactsPageModel.ts',
       'useArtifactsPageCreate.ts',
     ])

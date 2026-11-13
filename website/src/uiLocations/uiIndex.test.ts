@@ -1530,7 +1530,7 @@ describe('the committed index', () => {
     expect(at('schedule.add-job').placements[0]).toMatchObject({ route: '/schedule', parent_ids: ['page.schedule'], requires: [{ kind: 'condition', id: 'has_schedules' }] })
     expect(en[at('schedule.add-job').label_key]).toBe('Add Job')
     expect(zh[at('schedule.add-job').label_key]).toBe('添加任务')
-    // Artifacts: import hangs under the desktop caret menu.
+    // Artifacts: import hangs under the quick-create row's more-ways-to-add menu.
     expect(at('artifacts.import').placements[0]).toMatchObject({ route: '/artifacts', parent_ids: ['page.artifacts', 'artifacts.add-menu'], entry_kind: 'menu' })
     // MCP: the add buttons are on Customize → MCP Servers, Servers view.
     for (const id of ['mcp.add-custom', 'mcp.add-server']) {
