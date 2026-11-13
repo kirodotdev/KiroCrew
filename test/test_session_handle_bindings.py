@@ -146,10 +146,16 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_handle_update": ("function", False, "74878d3f1402", "session_handle_updates"),
     "_held_calls": ("function", False, "335484fda27a", "session_handle_tool_silence"),
     "_held_state": ("function", False, "4a8fa3c2de12", "session_handle_tool_silence"),
-    "_identity_unreadable_cache_for_wire": (
+    "_identity_unreadable_cache_for_permission": (
         "function",
         False,
         "931b07357dc9",
+        "session_handle_updates",
+    ),
+    "_identity_unreadable_cache_for_wire": (
+        "function",
+        False,
+        "6be7b7bf6ed0",
         "session_handle_updates",
     ),
     "_inflight_interactive": ("property", False, "55d13eb29157", "session_handle_class"),

@@ -801,7 +801,12 @@ def _url_payload_command(n: int) -> str:
 #: rebuild's budget for every caller and is reused for a second on the event loop, so
 #: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
 #: at once while that listing is still in flight. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_901
+#:
+#: Raised again, from 35,901, for provider-attested SharePoint locator validation
+#: and its fail-closed credential-redaction boundary, including the optional digest
+#: snapshot ``redact`` and ``redact_with_findings`` hand to every credential pass of
+#: the composed pass. No deny rule or threshold moved.
+_PACKAGE_LINE_BUDGET = 35_968
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

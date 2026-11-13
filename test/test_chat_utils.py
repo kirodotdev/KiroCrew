@@ -509,7 +509,8 @@ class TestRedactForDisplay:
         """The retained digest is keyed on a per-process secret, not a bare hash.
 
         The text may hold credentials, and a bare hash can be checked offline against a
-        guessed plaintext. The host set stays inside the MAC input.
+        guessed plaintext. The host set and locator registry generation stay inside the
+        MAC input.
         """
         hosts = frozenset({"docs.contoso.sharepoint.com"})
         monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
@@ -518,12 +519,12 @@ class TestRedactForDisplay:
         hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8")
         (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text)
         assert len(digest) == 32 and length == len(raw) == input_bytes
-        assert digest != hashlib.sha256(raw + b"\0" + hosts_bytes).digest()
+        generation = str(chat_utils.locator_attestations.snapshot()[0]).encode("ascii")
+        mac_input = raw + b"\0" + hosts_bytes + b"\x02" + generation
+        assert digest != hashlib.sha256(mac_input).digest()
         assert (
             digest
-            == hmac.new(
-                chat_utils._DISPLAY_REDACTION_SALT, raw + b"\0" + hosts_bytes, hashlib.sha256
-            ).digest()
+            == hmac.new(chat_utils._DISPLAY_REDACTION_SALT, mac_input, hashlib.sha256).digest()
         )
         assert isinstance(chat_utils._DISPLAY_REDACTION_SALT, bytes)
         assert len(chat_utils._DISPLAY_REDACTION_SALT) == 32

@@ -68,6 +68,7 @@ from .redaction_entropy import (  # noqa: F401
     _PLANTUML_SOURCE_CAP,
     _RUN_PIECE_RES,
     _SECRET_KEY_LEN,
+    _SHAREPOINT_LOCATOR_RE,
     _bare_secret_window_starts,
     _chat_mail_link_spans,
     _contains_bare_secret,
@@ -76,6 +77,7 @@ from .redaction_entropy import (  # noqa: F401
     _is_code_literal,
     _looks_like_secret_key,
     _plantuml_source,
+    _sharepoint_locator_digest,
     _text_contains_bare_secret,
 )
 from .redaction_patterns import _credential_matches, _might_contain_credential
@@ -104,14 +106,20 @@ def _plantuml_verdict(
 
 
 def _document_link_spans(
-    text: str, token_param_prefixes: tuple[str, ...] | None = None
+    text: str,
+    token_param_prefixes: tuple[str, ...] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> list[tuple[int, int]]:
     """Return the spans of the document links that hold no key.
 
-    The :data:`_DOCUMENT_LINK_RE` matches, then the Outlook and Slack links
-    :func:`_chat_mail_link_spans` finds by structure.
+    The attested SharePoint locators, the :data:`_DOCUMENT_LINK_RE` matches,
+    then the Outlook and Slack links :func:`_chat_mail_link_spans` finds by structure.
     """
-    spans = []
+    spans = [
+        match.span()
+        for match in _SHAREPOINT_LOCATOR_RE.finditer(text)
+        if _sharepoint_locator_digest(match) in attested_sharepoint_digests
+    ]
     budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
@@ -776,6 +784,7 @@ def redact_credentials(
     *,
     defer_token_param: bool = False,
     token_param_prefixes: tuple[str, ...] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
@@ -794,9 +803,16 @@ def redact_credentials(
     pass 4's live read. A caller that keys a cache on the set passes the set it
     keyed on, so the output is computed under exactly that set. ``None``, the
     default, is the live read.
+
+    ``attested_sharepoint_digests`` is a pure, immutable snapshot supplied by a
+    gateway boundary. The empty default keeps non-gateway and cold-load callers
+    fail closed under ordinary markerless credential redaction.
     """
     spans, warnings, _rules = _credential_redaction_plan(
-        text, defer_token_param=defer_token_param, token_param_prefixes=token_param_prefixes
+        text,
+        defer_token_param=defer_token_param,
+        token_param_prefixes=token_param_prefixes,
+        attested_sharepoint_digests=attested_sharepoint_digests,
     )
     if not spans:
         return text, warnings
@@ -915,6 +931,7 @@ def _credential_redaction_plan(
     defer_token_param: bool = False,
     judged_sri_values: Collection[str] = (),
     token_param_prefixes: tuple[str, ...] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
 
@@ -958,11 +975,10 @@ def _credential_redaction_plan(
     # Lazy: the detectors' seam imports this module's tags.
     from kiro_crew.security.redaction_structured import compat
 
+    plan_args = (text, defer_token_param, judged_sri_values, token_param_prefixes)
     if compat.use_rule_table():
-        return compat.credential_plan_via_table(
-            text, defer_token_param, judged_sri_values, token_param_prefixes
-        )
-    return _main_plan(text, defer_token_param, judged_sri_values, token_param_prefixes)
+        return compat.credential_plan_via_table(*plan_args, attested_sharepoint_digests)
+    return _main_plan(*plan_args, attested_sharepoint_digests)
 
 
 def _main_plan(
@@ -970,13 +986,21 @@ def _main_plan(
     defer_token_param: bool,
     judged_sri_values: Collection[str],
     token_param_prefixes: tuple[str, ...] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Passes 1-4 over ``text``: the plan without the structured detectors."""
     warnings: list[str] = []
     rules: dict[int, tuple[str, str]] = {}
     taken = _pattern_pass(text, warnings, rules)
     return _later_passes(
-        text, taken, warnings, rules, defer_token_param, judged_sri_values, token_param_prefixes
+        text,
+        taken,
+        warnings,
+        rules,
+        defer_token_param,
+        judged_sri_values,
+        token_param_prefixes,
+        attested_sharepoint_digests,
     )
 
 
@@ -1027,6 +1051,7 @@ def _later_passes(
     defer_token_param: bool,
     judged_sri_values: Collection[str],
     token_param_prefixes: tuple[str, ...] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Passes 2-4 after ``taken`` (pass 1's or the table's spans); the whole plan."""
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
@@ -1128,7 +1153,11 @@ def _later_passes(
         # never pays for either. The digest lookup is by exact span, so a text of
         # many digests costs one set probe per run, not one pass over them all.
         if link_spans is None:
-            link_spans = _document_link_spans(text, token_param_prefixes)
+            link_spans = _document_link_spans(
+                text,
+                token_param_prefixes=token_param_prefixes,
+                attested_sharepoint_digests=attested_sharepoint_digests,
+            )
             # Only a value a key long can be a piece pass 3 cut from a digest;
             # a shorter one would match inside unrelated digests by chance.
             judged = [v for v in judged_sri_values if len(v) >= _SECRET_KEY_LEN]

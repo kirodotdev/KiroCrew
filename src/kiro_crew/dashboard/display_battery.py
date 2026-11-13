@@ -64,6 +64,7 @@ def display_battery(
     *,
     exempt_hosts: frozenset[str] | None = None,
     token_param_prefixes: tuple[str, ...] | None = None,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> str:
     """Every display redactor, in order.
 
@@ -72,9 +73,16 @@ def display_battery(
 
     ``token_param_prefixes`` is the caller's snapshot of the pass-4 prefix set
     (see ``redact_credentials``); ``None`` is the live read.
+
+    ``attested_sharepoint_digests`` is the caller's snapshot of the attested
+    SharePoint locator digests, handed to ``redact_credentials``; empty attests none.
     """
     out, _ = redact_exfiltration_urls(text, exempt_hosts=exempt_hosts)
-    out, _ = redact_credentials(out, token_param_prefixes=token_param_prefixes)
+    out, _ = redact_credentials(
+        out,
+        token_param_prefixes=token_param_prefixes,
+        attested_sharepoint_digests=attested_sharepoint_digests,
+    )
     return out
 
 
