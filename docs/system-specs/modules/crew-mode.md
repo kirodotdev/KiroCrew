@@ -2563,14 +2563,16 @@ says what wakes it ("Wakes when a task reports back, or every 15 min", the
 loop's interval in short unit words, so a translation reads `15 分ごと`, never
 `15mごと`); line three is the facts a person acts on -- last check (or
 "Has not checked yet"), "Next in" only while the next due time is still
-ahead (a late loop promises nothing), and the open-item count from the masked
-crew-board read (`GET /api/crew-board`, omitted while unread or when the slot
-owns no ledger, a 404 that is not retried). A stopped patrol replaces last/next
-with one phrase: "You paused it" (`manual` / `user_stop`), "Hit its 7d time
-limit" (`runtime_budget`), "Hit its check limit" (`cycle_cap`), "Stopped while
-waiting for your approval" (`approval_stalled` / `approval_stall`), "Its chat
-was closed" (`session_close`), and the plain "Stopped" for every other code,
-never the raw value. A stop that is a FAILURE
+ahead (a late loop promises nothing; "Next in 13 min", the same short unit
+words the schedule rows' countdowns use, so ja reads `次回は13 分後`), and
+the open-item count from the masked crew-board read (`GET /api/crew-board`,
+omitted while unread or when the slot owns no ledger, a 404 that is not
+retried). A stopped patrol replaces last/next with one phrase: "You paused
+it" (`manual` / `user_stop`), "Hit its 7 days time limit" (`runtime_budget`,
+the limit in short unit words too), "Hit its check limit" (`cycle_cap`),
+"Stopped while waiting for your approval" (`approval_stalled` /
+`approval_stall`), "Its chat was closed" (`session_close`), and the plain
+"Stopped" for every other code, never the raw value. A stop that is a FAILURE
 (`session_start_failures`, `session_unavailable`: "It could not start a check";
 `structural_terminal`, `model_refused`, `interrupted_cycle`,
 `consecutive_failures`: "Its last check failed"; `sentinel_dropped`,

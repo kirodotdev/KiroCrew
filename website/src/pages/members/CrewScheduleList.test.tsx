@@ -1,5 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
+// `/all` for the Japanese catalog: `../../i18n` registers English only.
+import { i18next } from '../../i18n/all'
 import CrewScheduleList from './CrewScheduleList'
 import type { CronJob } from '../../types'
 
@@ -103,7 +105,7 @@ describe('CrewScheduleList rows', () => {
       job({ id: 'late', name: 'late', next_run_ts: NOW - 300 }),
     ])
     const byName = rowByName
-    expect(byName('soon')).toHaveTextContent(/Next in 1h.*30m/)
+    expect(byName('soon')).toHaveTextContent(/Next in 1 hr.*30 min/)
     expect(byName('paused')).not.toHaveTextContent(/Next in/)
     expect(byName('late')).not.toHaveTextContent(/Next in/)
   })
@@ -120,7 +122,19 @@ describe('CrewScheduleList rows', () => {
     const next = screen.getByTestId('crew-schedule-next')
     expect(next).toHaveTextContent('Up next')
     expect(next).toHaveTextContent('sooner')
-    expect(next).toHaveTextContent('Runs in 10m')
+    expect(next).toHaveTextContent('Runs in 10 min')
+  })
+
+  it('says the countdowns in unit words inside the Japanese sentences (#35442)', async () => {
+    onTestFinished(() => i18next.changeLanguage('en'))
+    await i18next.changeLanguage('ja')
+    setup([
+      job({ id: 'a', name: 'sooner', next_run_ts: NOW + 13 * 60 }),
+      job({ id: 'b', name: 'later', next_run_ts: NOW + 90 * 60 }),
+    ])
+    expect(screen.getByTestId('crew-schedule-next')).toHaveTextContent('13 分後に実行')
+    expect(rowByName('sooner')).toHaveTextContent('次回は13 分後')
+    expect(rowByName('later')).toHaveTextContent('次回は1 時間30 分後')
   })
 
   it('has no Up next card when nothing enabled is due', () => {

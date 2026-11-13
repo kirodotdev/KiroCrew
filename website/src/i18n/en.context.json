@@ -1114,7 +1114,7 @@
     "pages.membersPage.patrol_wakes": "Second line of that row: the Bot wakes when one of its tasks reports back, and otherwise at most every {{interval}} (a duration in unit words, like '15 min' or '1 hr 30 min').",
     "pages.membersPage.patrol_pause": "Verb on a button: pause the Bot's watch over its tasks. Not the noun.",
     "pages.membersPage.patrol_resume": "Verb on a button: resume a paused watch. Not the noun.",
-    "pages.membersPage.patrol_stopped_runtime": "One-phrase reason the watch stopped: it ran up to its time budget of {{limit}} (a short duration like '7d').",
+    "pages.membersPage.patrol_stopped_runtime": "One-phrase reason the watch stopped: it ran up to its time budget of {{limit}} (a duration in unit words, like '7 days').",
     "pages.membersPage.patrol_stopped_cycles": "One-phrase reason the watch stopped: it did as many checks as it was allowed.",
     "components.markdownPanel.select_any_text_or_drag_across_an_image_to_add_i": "One-time tip at the top of the file viewer, shown only when the device has a mouse or trackpad: the reader can select text, or drag a box across an image, to add comments, then send them to the chat together. On a touch-only device the text-only tip shows instead.",
     "components.commentOverlay.comment_on_the_boxed_area": "Accessible name of the text field in the comment box for a box drawn on an image in the file viewer (also opened by the keyboard 'Comment on this image' button). It parallels the text composer's 'Comment on the selected text', so the field and its 'Add comment' button never read the same; 'boxed area' is the part of the image inside the drawn box.",
