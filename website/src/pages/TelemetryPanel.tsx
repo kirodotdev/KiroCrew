@@ -849,8 +849,11 @@ export default function TelemetryPanel() {
   // no-data notice below would otherwise state a fact the request never
   // established. askAgent on: a read-only telemetry panel with nothing editable.
   if (isError && !data) {
+    // The window picker stays: the failing request may be the stored window
+    // itself, and with no control to pick another one every reload repeats it.
     return (
       <div className="py-12 px-4">
+        {windowControl}
         <ErrorNotice message={error?.message} askAgent testId="telemetry-startup-error" />
       </div>
     )
