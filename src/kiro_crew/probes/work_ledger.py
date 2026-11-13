@@ -595,7 +595,9 @@ def person_wait_fingerprint(
     stall wake must reach the conductor. A worker's ``work_report`` / ``work_brief``
     that never reached the ledger (:func:`kiro_crew.work_ledger.read_undelivered`)
     moves no report field, so its record is folded into the fingerprint: each new
-    failure releases the hold once, for the probe's undelivered wake.
+    failure releases the hold once, for the probe's undelivered wake. The
+    ``host_pressure`` record's episode and level are folded in too, so a pressure
+    level change releases the hold once for the conductor's pause or resume turn.
 
     Positive evidence only, like :func:`has_open_items`: no open item, a torn item
     file, an unreadable header or a read that raises all answer ``None``, so doubt
@@ -643,6 +645,14 @@ def person_wait_fingerprint(
             if lost is not None:
                 undelivered[item.item_id] = lost["at"]
         revision = worker_report_revision(items)
+        # A host-pressure level change is news the board cannot carry: queued work
+        # is not on the ledger, so a paused conductor must hear ``clear`` even while
+        # every item waits on a person. The episode and level join the fingerprint,
+        # so each level change releases the hold once; a refresh at the same level
+        # does not (rfc-work-ledger-resource-pressure.md §12).
+        pressure = host_pressure.read_record()
+        if pressure is not None:
+            revision = f"{revision}|pressure:{pressure['episode']}:{pressure['level']}"
         if not undelivered:
             return revision
         return f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"

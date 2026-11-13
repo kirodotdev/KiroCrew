@@ -434,7 +434,10 @@ nothing, reaches no probe gate or quiet floor, and is neither extended nor
 stopped; it re-arms at the loop's interval and sets `waiting_on_person` (with
 `waiting_on_person_at`), which `monitor_inspect`, the REST row and the
 `autonudge_state` frame carry. A worker's report changes the fingerprint and
-releases it on the next tick; the conductor's own writes do not; a manual fire clears `ledger_seen_fp` so it
+releases it on the next tick; the conductor's own writes do not; a host-pressure
+level change (the `host_pressure` record's episode and level join the
+fingerprint) releases it once per episode and level, so a paused conductor
+hears `clear`; a manual fire clears `ledger_seen_fp` so it
 is never held; a loop already held for an unanswered approval is left to that
 hold. On release the held time is added to `created_ts`, as the approval hold
 does, so it spends neither the runtime budget nor the backstop. That exemption

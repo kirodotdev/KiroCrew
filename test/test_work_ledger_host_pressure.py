@@ -417,20 +417,33 @@ def test_a_disabled_admission_gate_admits_at_critical(monkeypatch):
     assert resource_status.admission_check(cfg).admitted
 
 
-# ── 7: a board waiting only on people stays held ────────────────────────────
+# ── 7: a level change releases a board waiting only on people, once ─────────
 
 
-def test_a_pressure_record_does_not_move_the_person_wait_fingerprint():
-    """RFC §5 test 7: a board whose open items all wait on a person stays held."""
+def test_a_pressure_level_change_releases_a_person_wait_hold_once():
+    """RFC §5 test 7 as amended by §12: tight -> clear releases once, then holds."""
     item_id = _board_with_open_item()
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key="chat-w")
     wl.apply_worker_report(
         CONDUCTOR, item_id, status="blocked", summary="approval", reason="approval"
     )
-    held = person_wait_fingerprint(CONDUCTOR, worker_closed=lambda _key: False)
+
+    def fingerprint() -> str | None:
+        return person_wait_fingerprint(CONDUCTOR, worker_closed=lambda _key: False)
+
+    _write("tight", now=time.time())
+    held = fingerprint()
     assert held is not None
-    _write("critical", now=time.time())
-    assert person_wait_fingerprint(CONDUCTOR, worker_closed=lambda _key: False) == held
+    # A refresh at the same episode and level is no news: still held.
+    _write("tight", now=time.time())
+    assert fingerprint() == held
+    # tight -> clear is news: the fingerprint moves, so the hold releases.
+    _write("clear", now=time.time())
+    released = fingerprint()
+    assert released is not None and released != held
+    # The released turn records the new fingerprint; a repeat tick holds again.
+    _write("clear", now=time.time())
+    assert fingerprint() == released
 
 
 def test_the_entry_point_never_raises_when_scheduling_fails(monkeypatch):
