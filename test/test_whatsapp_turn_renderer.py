@@ -125,6 +125,13 @@ class TestBufferedEmit:
         await r.on_done()
         assert transport.sent[0][1] == "Pick one."
 
+    async def test_option_action_tag_after_options_is_stripped(self):
+        r, transport, _ = make()
+        await r.on_turn_start()
+        await r.on_text_chunk("Pick one.\n[OPTIONS: a | b]\n<!-- option-action:close=Done -->")
+        await r.on_done()
+        assert transport.sent[0][1] == "Pick one."
+
     async def test_error_turn_sends_apology(self):
         r, transport, _ = make()
         await r.on_turn_start()
@@ -620,6 +627,20 @@ class TestNothingIsLostOrLooped:
         await settle(r)
         assert transport.sent, "the visible answer should have opened a bubble"
         assert "[OPTIONS" not in transport.sent[0][1]
+
+    async def test_a_streaming_option_action_tag_never_reaches_the_live_bubble(self):
+        r, transport, client = make()
+        await r.on_turn_start()
+        await r.on_text_chunk("x" * 60 + "\n[OPTIONS: yes | no]\n<!-- option-act")
+        await settle(r)
+        assert transport.sent, "the visible answer should have opened a bubble"
+        r._last_edit_at = 0.0
+        await r.on_text_chunk("ion:close=Done -->")
+        await settle(r)
+        await r.on_done()
+        shown = [c for _j, c in transport.sent] + [t for _m, t in client.edits]
+        assert all("option-act" not in t for t in shown), shown
+        assert all("[OPTIONS" not in t for t in shown), shown
 
     async def test_a_completing_options_trailer_cannot_wedge_the_seal_count(self):
         """The fragment also makes the chunk list NON-MONOTONIC, which is worse
