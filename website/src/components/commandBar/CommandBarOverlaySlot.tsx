@@ -267,14 +267,14 @@ export function commandBarOverlaySlotRenderer({
         // failed it. "disable Command Bar" described the end state, so the row itself
         // read as the thing that would disable their search box. Naming the App Store
         // fixed that and introduced a cost: "App Store sounds like it might want me to
-        // install or buy something." The destination is neither -- it is AppDetailPage
-        // at `/apps/detail/command-bar`, this app's OWN page under Apps, carrying its
-        // Enabled switch. So the row names that section. Wording that blocks the users
-        // a row exists for is not a smaller bug than a broken link.
+        // install or buy something." The destination is neither -- it is the Command
+        // Bar's own switch in Settings, opened highlighted. So the row names that
+        // setting. Wording that blocks the users a row exists for is not a smaller bug
+        // than a broken link.
         //
         // What is NOT solvable here: the same reader did not know what "Command Bar"
-        // is. They are inside it. A row cannot teach the name of the app it lives in,
-        // and the instruction is unactionable without naming the app to turn off.
+        // is. They are inside it. A row cannot teach the name of the surface it lives
+        // in, and the instruction is unactionable without naming the setting.
         //
         // This is the one row that WRAPS. Every other row is a short label, but this
         // one is a sentence, and a sentence truncated mid-clause loses exactly the

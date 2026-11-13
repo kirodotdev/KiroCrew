@@ -70,10 +70,10 @@ export function resolveSlotOverlays(apps: readonly OverlayAppRecord[]): SlotOwne
     // Provenance, not just enable state. An overlay id only resolves to a component
     // compiled into this bundle, so a non-builtin app cannot supply its own -- but it
     // CAN name a builtin's id, and that is the reachable case: a self-managed app
-    // persists its own manifest through the register path, so declaring
-    // `command-bar` would hand it the quick-search slot and replace Cmd+K while the
-    // Command Bar app itself is disabled, defeating the opt-in this surface exists
-    // to provide. `builtin` is assigned only by register_builtin_apps() and is
+    // persists its own manifest through the register path, so declaring a
+    // builtin's overlay id would hand it the quick-search slot and replace Cmd+K
+    // while that builtin is disabled, defeating the opt-in this surface exists to
+    // provide. `builtin` is assigned only by register_builtin_apps() and is
     // refused on the self-registration path, so it is the one claim that cannot be
     // forged.
     if (app.origin !== 'builtin') {

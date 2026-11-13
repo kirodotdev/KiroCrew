@@ -1424,12 +1424,6 @@
       "group_commands": "Commandes",
       "group_settings": "Paramètres",
       "leave_scope": "Retour à toutes les commandes",
-      "manifest": {
-        "display_name": "Barre de commandes",
-        "description": "Remplace la recherche rapide (Cmd+K / Ctrl+K) par un lanceur : saisissez une commande, pas une requete. La premiere page contient les commandes d applications, les destinations et les parametres systeme et n emet aucune requete, donc la saisie ne coute rien. Les sessions et les artefacts enregistres deviennent une ligne dans laquelle on entre ; la recherche dans les connaissances, les competences et les prompts est indisponible tant que c est actif -- desactivez-le pour la retrouver.",
-        "use_case_1": "Accède aux apps, aux paramètres, aux sessions qui demandent ton attention ou à une nouvelle requête d'agent sans quitter le clavier.",
-        "configuration_1": "L'app est activée par défaut : appuie sur Cmd+K ou Ctrl+K où que tu sois, saisis une commande et utilise la section Sessions pour les conversations récentes ou correspondantes."
-      },
       "no_matches": "Aucun résultat",
       "no_sessions": "Aucune session correspondante",
       "placeholder": "Saisissez une commande…",
@@ -1439,7 +1433,7 @@
       "title": "Barre de commandes",
       "action_failed": "Impossible de terminer \"{{action}}\". Appuie sur Entrée pour réessayer.",
       "working": "En cours…",
-      "other_search_hint": "Les connaissances, compétences et prompts ne sont pas recherchables ici — ouvrez Command Bar dans Applications pour réactiver la recherche complète",
+      "other_search_hint": "Les connaissances, compétences et prompts ne sont pas recherchables ici. Ouvre les Réglages pour que le raccourci les recherche à la place",
       "cmd_toggle_theme": "Changer de thème",
       "retry": "Réessayer",
       "kind": {
@@ -20100,7 +20094,10 @@
         "remote_editor_host_save_failed": "Impossible d’enregistrer l’hôte SSH. Utilise un nom d’hôte comme dev-box ou dev.example.com, sans port ni chemin.",
         "remote_editor_host_save_error": "Impossible d’enregistrer l’hôte SSH.",
         "show_topbar_search": "Afficher la recherche dans la barre supérieure",
-        "show_topbar_search_desc": "Affiche le champ de recherche au centre de la barre supérieure. Désactivé, son espace revient aux commandes de chaque côté, et les valeurs CPU, MEM et DSK restent visibles dans les fenêtres plus étroites. Le raccourci de recherche ouvre toujours la recherche. Tant que les raccourcis sont désactivés, le champ reste affiché."
+        "show_topbar_search_desc": "Affiche le champ de recherche au centre de la barre supérieure. Désactivé, son espace revient aux commandes de chaque côté, et les valeurs CPU, MEM et DSK restent visibles dans les fenêtres plus étroites. Le raccourci de recherche ouvre toujours la recherche. Tant que les raccourcis sont désactivés, le champ reste affiché.",
+        "command_bar": "Utiliser la Command Bar",
+        "command_bar_desc": "Cmd+K ou Ctrl+K ouvre la Command Bar\u202f: saisis une commande pour aller à une application, un réglage ou une session. Désactivé, le raccourci ouvre la palette de recherche, qui cherche aussi dans les connaissances, les compétences et les prompts.",
+        "command_bar_save_failed": "Impossible d’enregistrer le réglage de la Command Bar."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

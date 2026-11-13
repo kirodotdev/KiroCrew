@@ -5651,12 +5651,6 @@
       "group_commands": "Comandos",
       "group_settings": "Configurações",
       "leave_scope": "Voltar para todos os comandos",
-      "manifest": {
-        "display_name": "Barra de comandos",
-        "description": "Substitui a busca rapida (Cmd+K / Ctrl+K) por um lancador: digite um comando, nao uma busca. A primeira pagina traz comandos de aplicativos, destinos e configuracoes do sistema e nao faz nenhuma requisicao, entao digitar nao custa nada. As sessoes e os artefatos salvos passam a ser uma linha em que voce entra; enquanto estiver ativo nao e possivel buscar em conhecimento, habilidades e prompts -- desative para recuperar.",
-        "use_case_1": "Acesse apps, configurações, sessões que precisam de atenção ou uma nova solicitação para o agente sem tirar as mãos do teclado.",
-        "configuration_1": "O app vem ativado por padrão: pressione Cmd+K ou Ctrl+K em qualquer lugar, digite um comando e use o escopo Sessions para conversas recentes ou correspondentes."
-      },
       "no_matches": "Nenhum resultado",
       "no_sessions": "Nenhuma sessão corresponde",
       "placeholder": "Digite um comando…",
@@ -5666,7 +5660,7 @@
       "title": "Barra de comandos",
       "action_failed": "Nao foi possivel concluir \"{{action}}\". Pressione Enter para tentar de novo.",
       "working": "Processando…",
-      "other_search_hint": "Conhecimento, habilidades e prompts não podem ser buscados aqui — abra o Command Bar em Aplicativos para reativar a busca completa",
+      "other_search_hint": "Conhecimento, habilidades e prompts não podem ser buscados aqui. Abra as Configurações para que o atalho os busque",
       "cmd_toggle_theme": "Alternar tema",
       "retry": "Tentar novamente",
       "kind": {
@@ -20100,7 +20094,10 @@
         "remote_editor_host_save_failed": "Não foi possível salvar o host SSH. Use um nome de host como dev-box ou dev.example.com, sem porta nem caminho.",
         "remote_editor_host_save_error": "Não foi possível salvar o host SSH.",
         "show_topbar_search": "Mostrar a busca na barra superior",
-        "show_topbar_search_desc": "Mostra a caixa de busca no meio da barra superior. Desligado, o espaço dela vai para os controles de cada lado, e as leituras de CPU, MEM e DSK continuam visíveis em janelas mais estreitas. O atalho de busca continua abrindo a busca. Enquanto os atalhos estiverem desligados, a caixa continua visível."
+        "show_topbar_search_desc": "Mostra a caixa de busca no meio da barra superior. Desligado, o espaço dela vai para os controles de cada lado, e as leituras de CPU, MEM e DSK continuam visíveis em janelas mais estreitas. O atalho de busca continua abrindo a busca. Enquanto os atalhos estiverem desligados, a caixa continua visível.",
+        "command_bar": "Usar o Command Bar",
+        "command_bar_desc": "Cmd+K ou Ctrl+K abre o Command Bar: digite um comando para ir a um aplicativo, uma configuração ou uma sessão. Desligado, o atalho abre a paleta de busca, que também busca em conhecimento, habilidades e prompts.",
+        "command_bar_save_failed": "Não foi possível salvar a configuração do Command Bar."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

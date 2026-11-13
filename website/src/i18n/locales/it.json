@@ -5651,12 +5651,6 @@
       "group_commands": "Comandi",
       "group_settings": "Impostazioni",
       "leave_scope": "Torna a tutti i comandi",
-      "manifest": {
-        "display_name": "Barra dei comandi",
-        "description": "Sostituisce la ricerca rapida (Cmd+K / Ctrl+K) con un launcher: digita un comando, non una ricerca. La prima pagina contiene comandi delle app, destinazioni e impostazioni di sistema e non invia richieste, quindi digitare non costa nulla. Le sessioni e gli artefatti salvati diventano una riga in cui si entra; mentre e attivo non si può cercare in conoscenza, competenze e prompt: disattivalo per riaverlo.",
-        "use_case_1": "Passa ad app, impostazioni, sessioni che richiedono attenzione o a una nuova richiesta per l'agente senza lasciare la tastiera.",
-        "configuration_1": "È attiva per impostazione predefinita: premi Cmd+K o Ctrl+K ovunque, digita un comando e usa l'ambito Sessions per le conversazioni recenti o corrispondenti."
-      },
       "no_matches": "Nessun risultato",
       "no_sessions": "Nessuna sessione corrispondente",
       "placeholder": "Digita un comando…",
@@ -5666,7 +5660,7 @@
       "title": "Barra dei comandi",
       "action_failed": "Non e stato possibile completare \"{{action}}\". Premi Invio per riprovare.",
       "working": "In corso…",
-      "other_search_hint": "Conoscenza, competenze e prompt non sono ricercabili qui — apri Command Bar in App per riattivare la ricerca completa",
+      "other_search_hint": "Conoscenza, competenze e prompt non sono ricercabili qui. Apri le Impostazioni per cercarli con la scorciatoia",
       "cmd_toggle_theme": "Cambia tema",
       "retry": "Riprova",
       "kind": {
@@ -20100,7 +20094,10 @@
         "remote_editor_host_save_failed": "Impossibile salvare l’host SSH. Usa un nome host come dev-box o dev.example.com, senza porta né percorso.",
         "remote_editor_host_save_error": "Impossibile salvare l’host SSH.",
         "show_topbar_search": "Mostra la ricerca nella barra superiore",
-        "show_topbar_search_desc": "Mostra il campo di ricerca al centro della barra superiore. Disattivato, il suo spazio va ai controlli ai lati, così i valori di CPU, MEM e DSK restano visibili nelle finestre più strette. La scorciatoia di ricerca apre ancora la ricerca. Finché le scorciatoie sono disattivate, il campo resta visibile."
+        "show_topbar_search_desc": "Mostra il campo di ricerca al centro della barra superiore. Disattivato, il suo spazio va ai controlli ai lati, così i valori di CPU, MEM e DSK restano visibili nelle finestre più strette. La scorciatoia di ricerca apre ancora la ricerca. Finché le scorciatoie sono disattivate, il campo resta visibile.",
+        "command_bar": "Usa la Command Bar",
+        "command_bar_desc": "Cmd+K o Ctrl+K apre la Command Bar: digita un comando per andare a un’app, un’impostazione o una sessione. Disattivata, la scorciatoia apre la palette di ricerca, che cerca anche in conoscenza, competenze e prompt.",
+        "command_bar_save_failed": "Impossibile salvare l’impostazione della Command Bar."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

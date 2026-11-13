@@ -324,7 +324,7 @@ export default function App() {
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
     gatewayStatusMsg, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
-    sortedAppGroup, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
@@ -408,7 +408,7 @@ export default function App() {
       }
       const settingsSurface = NAV_ITEMS.find(n => n.id === 'settings')!
       const capabilitiesSurface = NAV_ITEMS.find(n => n.id === 'capabilities')!
-      const searchLabel = slotOwners['quick-search']
+      const searchLabel = quickSearchLauncher
         ? i18nT('app.open_command_bar')
         : i18nT('app.search_sessions_files_and_commands')
       return (
@@ -994,6 +994,7 @@ export default function App() {
     <AppConfirmHost />
     <QuickSearchSurface
       owners={slotOwners}
+      commandBar={commandBarOn}
       open={commandPalette.open}
       onClose={commandPalette.close}
       opener={commandPalette.opener}

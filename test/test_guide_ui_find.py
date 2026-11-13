@@ -308,8 +308,8 @@ def test_a_result_without_a_planned_guide_carries_a_find_ref() -> None:
 
 
 def test_a_find_ref_names_a_control_whose_label_depends_on_state_by_its_id() -> None:
-    # The top bar's Search reads "Open command bar" while an app owns the
-    # slot; the id is what the tab matches, whatever the label reads.
+    # The top bar's Search reads "Open command bar" while the Command Bar is
+    # on; the id is what the tab matches, whatever the label reads.
     (search,) = [r for r in _results("search my sessions") if r["id"] == "shell.search"]
     assert search["find_ref"]["params"]["location_id"] == "shell.search"
     (slack,) = [r for r in _results("slack") if r["id"] == "settings.sub.channels.slack"]
@@ -1069,7 +1069,7 @@ def test_uninstalling_an_app_is_guided_through_its_library_card_named_by_pick() 
         [
             {
                 "id": "ui.show",
-                "params": {"location_id": "apps.library.tile-uninstall", "pick": "Command Bar"},
+                "params": {"location_id": "apps.library.tile-uninstall", "pick": "Papyrus"},
             }
         ]
     )

@@ -363,6 +363,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # The per-row unread dot on sidebar session cards (Settings → Display →
     # Sidebar). Default on; only a literal `false` hides it.
     "dashboard.show_unread_dot": {"type": "bool"},
+    # The quick-search shortcut opens the Command Bar launcher (Settings ->
+    # Display -> View). Default on; only a literal `false` opens the search
+    # palette instead.
+    "dashboard.command_bar_enabled": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in

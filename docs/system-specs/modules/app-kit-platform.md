@@ -2434,8 +2434,7 @@ stamp instead of running pip twice.
 ## 12. Store visibility is a manifest flag, not a code removal
 
 Built-in apps ship default-DISABLED. `manager._DEFAULT_ON_BUILTINS` is the single
-source of truth for the exemption (`projects` (the Task Runner) and `command-bar`,
-which replaces the quick-search gesture rather than adding a sidebar entry),
+source of truth for the exemption (`projects`, the Task Runner),
 read by the policy tests over both the hardcoded list and the file-based
 manifests, so a builtin cannot become default-on through one registration path
 while the other path's test still forbids it. A default-enabled builtin is
@@ -2463,7 +2462,11 @@ second question reverses deliberate opt-outs — `projects` has shipped
 the allowlist existed, so it has been enabled and visible in the sidebar on every
 existing install and a disabled record for it is a user who found it and turned it
 off. A name qualifies only when a fresh install enables it AND existing installs
-were never in a position to choose; a ratchet test pins both halves.
+were never in a position to choose; a ratchet test pins both halves. The set is
+empty today: the one app it promoted, `command-bar`, is the core setting
+`dashboard.command_bar_enabled` now, and the boot cleanup that removes its record
+reads a record still owed the promotion as on (`apps/builtin_fold.py`, see
+[command-bar](command-bar.md)).
 
 The backfill is ONE-SHOT, and the record of that is
 `InstalledApp.defaultOnBackfilled`, written in the SAME atomic record write that

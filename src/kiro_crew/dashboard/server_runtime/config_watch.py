@@ -251,6 +251,14 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
 
+    def _push_command_bar(change: ConfigChange) -> None:
+        # What the quick-search shortcut opens is read from the shared config query
+        # too (the shell, its trigger labels and the Settings toggle), so a switch
+        # set from the CLI, $EDITOR or another dashboard reaches every open one only
+        # through a refresh frame.
+        if change.touched("dashboard.command_bar_enabled"):
+            state.push_refresh("config")
+
     async def _sync_stale_wake(change: ConfigChange) -> None:
         # The `dashboard_stale_wake` preview's one cron job exists only while the
         # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
@@ -330,6 +338,11 @@ def _register_config_watch(
             name="dashboard.stale_wake",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe(
+            "dashboard.command_bar_enabled",
+            callback=_push_command_bar,
+            name="dashboard.command_bar_enabled",
+        ),
         live.subscribe(
             "dashboard.terminal.enabled",
             callback=_apply_terminal_enabled,

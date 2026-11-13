@@ -1704,6 +1704,14 @@
       "hint": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them. Off, they are solid cards."
     },
     {
+      "id": "display.use-command-bar",
+      "label": "Use Command Bar",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Adashboard.command_bar_enabled",
+      "description": "Cmd+K or Ctrl+K opens the Command Bar: type a command to jump to an app, a setting or a session. Off, the shortcut opens the search palette, which also searches knowledge, skills and prompts.",
+      "configKey": "dashboard.command_bar_enabled"
+    },
+    {
       "id": "display.zoom-level",
       "label": "Zoom Level",
       "tab": "display",

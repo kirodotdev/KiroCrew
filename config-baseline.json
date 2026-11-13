@@ -9699,6 +9699,7 @@
         "language": "",
         "recent_tint_count": 0,
         "show_unread_dot": true,
+        "command_bar_enabled": true,
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "update_nudge": {},
@@ -11197,6 +11198,20 @@
       "tags": [],
       "label": "Show Unread Dot on Session Cards",
       "help": "Show the unread dot on a sidebar session card when the agent finished and you have not read the result. Folder and aggregate unread counts are not affected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "dashboard.command_bar_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Command Bar Enabled",
+      "help": "Open the Command Bar launcher on the quick-search shortcut (Cmd+K or Ctrl+K). Off opens the search palette instead, which also searches knowledge, skills and prompts.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

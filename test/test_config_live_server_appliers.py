@@ -354,6 +354,25 @@ class TestServerAppliers:
         )
         state.push_refresh.assert_called_once_with("config")
 
+    def test_a_command_bar_switch_change_tells_every_dashboard_to_refresh(self) -> None:
+        """`kirocrew config set dashboard.command_bar_enabled` reaches open dashboards.
+
+        The shell picks what the shortcut opens from a config query that never goes
+        stale on its own, so only a refresh frame makes it re-read the switch. An
+        unrelated dashboard write pushes nothing.
+        """
+        state = SimpleNamespace(
+            workflow_service=None, channel_manager=None, push_refresh=MagicMock()
+        )
+        sub = self._register(state)["dashboard.command_bar_enabled"]
+        assert sub.prefixes == ("dashboard.command_bar_enabled",)
+        apply = sub.callback()
+        cfg = KiroCrewConfig()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.folder_sort"})))
+        state.push_refresh.assert_not_called()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.command_bar_enabled"})))
+        state.push_refresh.assert_called_once_with("config")
+
     @pytest.mark.asyncio
     async def test_a_failed_stale_wake_job_sync_reaches_the_watcher(self) -> None:
         """The stale-wake applier lets a cron store failure raise, so ConfigWatch
@@ -550,6 +569,7 @@ class TestServerAppliers:
             "dashboard.feature_previews",
             "dashboard.stale_wake",
             "apps",
+            "dashboard.command_bar_enabled",
             "dashboard.terminal.enabled",
             "crewmate.harness_fallback",
         }

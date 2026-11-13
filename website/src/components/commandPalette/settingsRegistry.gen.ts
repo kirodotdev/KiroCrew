@@ -2925,6 +2925,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.use-command-bar",
+    "label": "Use Command Bar",
+    "labelKey": "pages.settings.displayPanel.command_bar",
+    "description": "Cmd+K or Ctrl+K opens the Command Bar: type a command to jump to an app, a setting or a session. Off, the shortcut opens the search palette, which also searches knowledge, skills and prompts.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "configKey": "dashboard.command_bar_enabled"
+  },
+  {
     "id": "display.zoom-level",
     "label": "Zoom Level",
     "labelKey": "pages.settings.displayPanel.zoom_level",

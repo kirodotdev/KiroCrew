@@ -485,36 +485,35 @@ describe('command bar — artifacts view', () => {
     // to reach something one Enter away.
     mount()
     type('zzzz-matches-nothing')
-    await waitFor(() => expect(hasRow('turn full search back on')).toBe(true))
-    const hint = rowByText('turn full search back on').textContent || ''
+    await waitFor(() => expect(hasRow('Open Settings to make the shortcut search them')).toBe(true))
+    const hint = rowByText('Open Settings to make the shortcut search them').textContent || ''
     expect(hint).toContain('Knowledge, skills and prompts')
     expect(hint).not.toContain('artifact')
   })
 
-  it('names what the recovery row opens instead of what to switch off', async () => {
-    // Two readings of this row failed in sequence. Truncated at "...disable Command
-    // Bar" a test reader "would not dare click" it; front-loaded and given a second
-    // line, the surviving instruction still read as a switch that would turn off the
-    // search box they were using -- "I don't know how to get it back". Activating the
-    // row only opens `/apps/detail/command-bar`. So the clause names that, and names
-    // what it is for, and the word that described the end state is gone from the copy.
+  it('names where the row goes and what it gets the reader', async () => {
+    // The row is navigation: activating it opens the Command Bar setting, it never
+    // flips it. So it names the destination (Settings) and the outcome (the shortcut
+    // searches these instead), not a switch direction: "turn ... back on" sends
+    // readers to a switch that is already on, and "turn off Command Bar" reads as an
+    // order to give the bar up. The setting's own row says what Off does.
     mount()
     type('zzzz-matches-nothing')
-    await waitFor(() => expect(hasRow('turn full search back on')).toBe(true))
-    const row = rowByText('turn full search back on')
+    await waitFor(() => expect(hasRow('Open Settings to make the shortcut search them')).toBe(true))
+    const row = rowByText('Open Settings to make the shortcut search them')
     const hint = (row.textContent || '').trim()
     // What it is comes before what to do about it.
     expect(hint.indexOf('Knowledge')).toBe(0)
-    expect(hint.indexOf('Knowledge')).toBeLessThan(hint.indexOf('Command Bar'))
-    // The row describes opening a page, not disabling the feature in use, and not a
-    // store: a reader read "App Store" as something that would install or charge.
+    expect(hint.indexOf('Knowledge')).toBeLessThan(hint.indexOf('Settings'))
+    // The row points at the setting, not at a store: a reader read "App Store" as
+    // something that would install or charge.
     expect(hint).not.toContain('disable')
     expect(hint).not.toContain('App Store')
-    expect(hint).toContain('turn full search back on')
+    expect(hint).toContain('Open Settings to make the shortcut search them')
     // And the sentence is allowed to finish rather than being clipped to one line.
     const title = row.querySelector('span.line-clamp-2')
     expect(title).toBeTruthy()
-    expect(title?.textContent || '').toContain('turn full search back on')
+    expect(title?.textContent || '').toContain('Open Settings to make the shortcut search them')
     expect(title?.className || '').not.toContain('truncate')
   })
 

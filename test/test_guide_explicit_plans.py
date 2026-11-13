@@ -54,8 +54,8 @@ def test_pairing_a_phone_points_at_the_rail_button_and_names_its_blocker() -> No
             None,
         ),
         ("怎么扫码连接设备？", "shell.connect-phone", None),
-        ("怎么卸载 Command Bar 这个应用？", "apps.library.tile-uninstall", "Command Bar"),
-        ("How do I uninstall the Command Bar app?", "apps.library.tile-uninstall", "Command Bar"),
+        ("怎么卸载 Papyrus 这个应用？", "apps.library.tile-uninstall", "Papyrus"),
+        ("How do I uninstall the Papyrus app?", "apps.library.tile-uninstall", "Papyrus"),
     ],
 )
 def test_the_question_gets_the_planned_guide(

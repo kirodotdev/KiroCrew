@@ -1926,7 +1926,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Advertised surfaces respect previewFlag; the command-bar builtin is default-on for fresh installs and owns the quick-search slot (it swaps the palette for a command bar). Root page issues no network request; the rich seed's research-notes session provides searchable text for the sessions scope (adds ~2 steps beyond the smoke core)."
+        "notes": "Advertised surfaces respect previewFlag; the Command Bar (dashboard.command_bar_enabled, default on) serves the quick-search gesture in place of the palette. Root page issues no network request; the rich seed's research-notes session provides searchable text for the sessions scope (adds ~2 steps beyond the smoke core)."
       },
       "runnable": "smoke",
       "estimated_steps": 3,
@@ -3333,22 +3333,22 @@
         "seed": "rich",
         "members": [],
         "feature_flags": [],
-        "notes": "defaultEnabled=true; overlay replaces the quick-search surface. First page issues no network request. Sessions scope lists recent conversations (rich seed gives it content; minimal also works)."
+        "notes": "dashboard.command_bar_enabled defaults on; the Command Bar replaces the quick-search surface. First page issues no network request. Sessions scope lists recent conversations (rich seed gives it content; minimal also works)."
       },
       "runnable": "smoke",
       "estimated_steps": 3,
       "rationale": "Enabled by default, three actions, no backend dependency for the root page; a core daily navigation path.",
       "source": [
-        "src/kiro_crew/apps/builtins/command_bar/app.json",
-        "website/src/apps/command-bar/CommandBarOverlay.tsx",
-        "website/src/apps/command-bar/rootIndex.ts",
-        "website/src/apps/overlayRegistry.ts"
+        "website/src/components/QuickSearchSurface.tsx",
+        "website/src/components/commandBar/CommandBarOverlay.tsx",
+        "website/src/components/commandBar/rootIndex.ts",
+        "website/src/shell/appShell.tsx"
       ],
       "priority": "P1",
       "merged_from": [
         "app-command-bar-launch"
       ],
-      "component": "website/src/apps/command-bar/CommandBarOverlay.tsx"
+      "component": "website/src/components/commandBar/CommandBarOverlay.tsx"
     },
     {
       "id": "apps-library",

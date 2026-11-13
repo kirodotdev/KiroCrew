@@ -221,8 +221,8 @@ const failingChunk = vi.hoisted(() => {
   }
   return { state, Overlay }
 })
-vi.mock('../apps/overlayRegistry', () => ({
-  getBuiltinOverlay: () => failingChunk.Overlay,
+vi.mock('./commandBar/CommandBarOverlay', () => ({
+  default: failingChunk.Overlay,
 }))
 
 import CommandPalette from './CommandPalette'
@@ -640,7 +640,7 @@ describe('CommandPalette — keyboard & activation', () => {
     // "fold" uniquely prefixes nothing here. If a Folders provider is ever put
     // back into this host, the hint label appears and Tab adopts the scope — and
     // this assertion is the thing that says so, because the feature would then
-    // have two implementations (this one and `apps/command-bar/foldersProvider`)
+    // have two implementations (this one and `components/commandBar/foldersProvider`)
     // free to disagree about ranking and about what a reveal does.
     fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'fold' } })
     await waitFor(() => expect(H.allProvider.search).toHaveBeenCalled())
@@ -1322,7 +1322,8 @@ describe('CommandPalette — fallback for a failed overlay chunk', () => {
       const onClose = vi.fn()
       render(
         <QuickSearchSurface
-          owners={{ 'quick-search': { app: 'command-bar', overlayId: 'command-bar' } }}
+          owners={{}}
+          commandBar
           open
           onClose={onClose}
         />,
@@ -1333,7 +1334,9 @@ describe('CommandPalette — fallback for a failed overlay chunk', () => {
       fireEvent.change(catcher, { target: { value: 'alice' } })
       await act(async () => { release(); await failingChunk.state.promise })
 
-      const input = await screen.findByRole('textbox', { name: 'Search everywhere' })
+      // Waits across QuickSearchSurface's `lazy(() => import('./commandBar/CommandBarOverlay'))`
+      // settling into the thrown chunk and its fallback to this palette.
+      const input = await screen.findByRole('textbox', { name: 'Search everywhere' }, { timeout: 5000 })
       expect(input).toHaveValue('alice')
       expect(await screen.findByText('All Result')).toBeInTheDocument()
       expect(H.allProvider.search).toHaveBeenCalledWith('alice')

@@ -45,7 +45,7 @@ import { sseSlots } from '../store/dashboardSlice'
 import chatReducer, { switchSlot } from '../store/chatSlice'
 import ChatInput from '../components/ChatInput'
 import CommandPalette from '../components/CommandPalette'
-import CommandBarOverlay from '../apps/command-bar/CommandBarOverlay'
+import CommandBarOverlay from '../components/commandBar/CommandBarOverlay'
 import type { ChatSlot } from '../types'
 
 vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => false }))

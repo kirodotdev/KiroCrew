@@ -180,10 +180,11 @@ export default function CommandPalette({
   // corpus. Apps sits next to Pages because both are pure navigation targets.
   //
   // Folders are deliberately ABSENT. Reaching a session folder by name is a
-  // Command Bar feature, and it lives in that app (`apps/command-bar/`) the way
+  // Command Bar feature, and it lives there (`components/commandBar/`) the way
   // session and artifact search reach their corpora there: one row you enter,
   // then a list that narrows. Registering a second folder surface here would make
-  // the host own a copy of a feature the app already owns, and the two would drift.
+  // the palette own a copy of a feature the Command Bar already owns, and the two
+  // would drift.
   const tabs = useMemo<ResourceProvider[]>(
     () => [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
     [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],

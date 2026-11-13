@@ -1360,12 +1360,6 @@
       "group_commands": "Befehle",
       "group_settings": "Einstellungen",
       "leave_scope": "Zurück zu allen Befehlen",
-      "manifest": {
-        "display_name": "Befehlsleiste",
-        "description": "Ersetzt die Schnellsuche (Cmd+K / Ctrl+K) durch einen Starter: einen Befehl eingeben, keine Suchanfrage. Die erste Seite enthält App-Befehle, Ziele und Systemeinstellungen und stellt keine Anfrage, sodass Tippen nichts kostet. Sitzungen und gespeicherte Artefakte werden eine Zeile, die man betritt; die Suche in Wissen, Skills und Prompts ist bei aktivierter App nicht verfügbar — deaktivieren, um sie zurückzuholen.",
-        "use_case_1": "Wechsle ohne Griff zur Maus zu Apps, Einstellungen, Sitzungen mit Handlungsbedarf oder einer neuen Agentenanfrage.",
-        "configuration_1": "Die App ist standardmäßig aktiviert: Drücke überall Cmd+K oder Ctrl+K, gib einen Befehl ein und nutze den Bereich Sessions für aktuelle oder passende Unterhaltungen."
-      },
       "no_matches": "Keine Treffer",
       "no_sessions": "Keine passenden Sitzungen",
       "placeholder": "Befehl eingeben…",
@@ -1375,7 +1369,7 @@
       "title": "Befehlsleiste",
       "action_failed": "„{{action}}“ konnte nicht abgeschlossen werden. Zum erneuten Versuch Enter drücken.",
       "working": "Wird ausgeführt…",
-      "other_search_hint": "Wissen, Skills und Prompts sind hier nicht durchsuchbar — öffne Command Bar unter Apps, um die vollständige Suche wieder einzuschalten",
+      "other_search_hint": "Wissen, Skills und Prompts sind hier nicht durchsuchbar. Öffne die Einstellungen, damit das Tastenkürzel stattdessen darin sucht",
       "cmd_toggle_theme": "Theme wechseln",
       "retry": "Erneut versuchen",
       "kind": {
@@ -19599,7 +19593,10 @@
         "remote_editor_host_save_failed": "SSH-Host konnte nicht gespeichert werden. Verwende einen Hostnamen wie dev-box oder dev.example.com, ohne Port oder Pfad.",
         "remote_editor_host_save_error": "Der SSH-Host konnte nicht gespeichert werden.",
         "show_topbar_search": "Suche in der oberen Leiste anzeigen",
-        "show_topbar_search_desc": "Zeigt das Suchfeld in der Mitte der oberen Leiste. Ausgeschaltet bekommen die Bedienelemente links und rechts seinen Platz, sodass die Werte für CPU, MEM und DSK auch in schmaleren Fenstern sichtbar bleiben. Das Tastenkürzel für die Suche öffnet sie weiterhin. Solange die Tastenkürzel ausgeschaltet sind, bleibt das Suchfeld sichtbar."
+        "show_topbar_search_desc": "Zeigt das Suchfeld in der Mitte der oberen Leiste. Ausgeschaltet bekommen die Bedienelemente links und rechts seinen Platz, sodass die Werte für CPU, MEM und DSK auch in schmaleren Fenstern sichtbar bleiben. Das Tastenkürzel für die Suche öffnet sie weiterhin. Solange die Tastenkürzel ausgeschaltet sind, bleibt das Suchfeld sichtbar.",
+        "command_bar": "Befehlsleiste verwenden",
+        "command_bar_desc": "Cmd+K oder Ctrl+K öffnet die Befehlsleiste: Gib einen Befehl ein, um zu einer App, einer Einstellung oder einer Sitzung zu springen. Ausgeschaltet öffnet das Kürzel die Suchpalette, die auch Wissen, Skills und Prompts durchsucht.",
+        "command_bar_save_failed": "Die Einstellung für die Befehlsleiste konnte nicht gespeichert werden."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

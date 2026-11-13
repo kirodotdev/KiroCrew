@@ -14,6 +14,15 @@ import type { ContributedCommand } from './contributedCommands'
 import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 import { ASK_SLOT_KEY, type Scope } from './commandBarOverlayModel'
 import type { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
+import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import { settingsRoute } from '../../components/commandPalette/settingsRoute'
+
+/**
+ * Where the recovery row goes: the Command Bar's own switch in Settings, reached the
+ * way a settings row is, so the toggle is highlighted when the page opens.
+ */
+const COMMAND_BAR_SETTING = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.command_bar_enabled')
+const COMMAND_BAR_SETTING_ROUTE = COMMAND_BAR_SETTING ? settingsRoute(COMMAND_BAR_SETTING) : '/settings/display/view'
 
 /**
  * What Enter and a click do with a slot: entering a scope, running a root row,
@@ -420,7 +429,7 @@ export function useCommandBarOverlayActivation({
         }
         case 'recovery':
           // Offer the way back rather than only describing it.
-          navigate('/apps/detail/command-bar')
+          navigate(COMMAND_BAR_SETTING_ROUTE)
           onClose()
           return
         case 'retry':

@@ -995,6 +995,15 @@ class DashboardConfig:
             "are not affected.",
         ),
     )
+    command_bar_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Command Bar Enabled",
+            "Open the Command Bar launcher on the quick-search shortcut (Cmd+K or "
+            "Ctrl+K). Off opens the search palette instead, which also searches "
+            "knowledge, skills and prompts.",
+        ),
+    )
     # Literal enum rather than FOLDER_SORT_MODES: that constant lives in
     # sections_limits with the other write/load bounds, and this field spells the
     # same list. test_config_patch.py::TestFolderSortRoundTrip::

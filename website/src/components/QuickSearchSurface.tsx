@@ -1,8 +1,8 @@
-import { Component, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 import CommandPalette from './CommandPalette'
 import { OverlayPortal } from './overlayRoot'
-import { getBuiltinOverlay } from '../apps/overlayRegistry'
+import { getBuiltinOverlay, type LazyOverlay } from '../apps/overlayRegistry'
 import type { SlotOwners } from '../apps/overlaySlots'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useVisualViewport } from '../hooks/useVisualViewport'
@@ -145,12 +145,19 @@ function TypeAheadInput({
 }
 
 /**
+ * The shell's own launcher, a chunk of its own so a palette user never loads it.
+ * Same file, so the same chunk name, as when it was the Command Bar app's overlay.
+ */
+const CommandBarOverlay: LazyOverlay = lazy(() => import('./commandBar/CommandBarOverlay'))
+
+/**
  * What the quick-search gesture opens.
  *
  * The gesture itself stays in the shell; the surface behind it is a table read. While
- * an enabled app owns the `quick-search` slot its overlay serves the gesture; with no
- * owner the shell's own palette renders exactly as before, untouched. The shell never
- * names a specific app, so a second overlay-contributing app needs no change here.
+ * an enabled app owns the `quick-search` slot its overlay serves the gesture. With no
+ * owner, `commandBar` (the `dashboard.command_bar_enabled` setting) picks the
+ * Command Bar launcher; off, or before the setting has loaded, the shell's own
+ * palette renders exactly as before, untouched.
  *
  * The overlay is mounted only while open. Its chunk therefore loads on first use, and
  * -- more importantly -- a closed bar holds no live subscriptions: the scoped session
@@ -159,12 +166,15 @@ function TypeAheadInput({
  */
 export default function QuickSearchSurface({
   owners,
+  commandBar = false,
   open,
   onClose,
   opener,
   openShortcuts,
 }: {
   owners: SlotOwners
+  /** `dashboard.command_bar_enabled`; false until the setting has loaded. */
+  commandBar?: boolean
   open: boolean
   onClose: () => void
   /** The control the gesture came from; see `OverlayProps.opener`. */
@@ -172,7 +182,7 @@ export default function QuickSearchSurface({
   openShortcuts?: () => void
 }) {
   const owner = owners['quick-search']
-  const Overlay = owner ? getBuiltinOverlay(owner.overlayId) : undefined
+  const Overlay = owner ? getBuiltinOverlay(owner.overlayId) : commandBar ? CommandBarOverlay : undefined
   const [typeAhead, setTypeAhead] = useState('')
   // Type-ahead belongs to one open. Cleared on the close edge so the next open
   // starts empty, the same as the overlay's own query.

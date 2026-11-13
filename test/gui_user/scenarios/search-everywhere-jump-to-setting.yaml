@@ -1,11 +1,11 @@
 # Smoke: the one-box path from anywhere to a setting. The top bar carries a
 # wide centre trigger that opens the quick-search slot; on a fresh install the
-# Command Bar builtin owns that slot (it is enabled by default), so the trigger
+# Command Bar serves it (dashboard.command_bar_enabled is on by default), so the trigger
 # reads "Run a command" and the surface lists commands, app destinations and
 # settings without a network request (docs/system-specs/modules/command-bar.md,
 # "the first page issues no network request"). Dashboard PAGES such as Schedule
 # are deliberately NOT in that root index -- `ROOT_GROUPS` in
-# website/src/apps/command-bar/rootIndex.ts is attention / commands / apps /
+# website/src/components/commandBar/rootIndex.ts is attention / commands / apps /
 # settings -- so the target here is a settings row, which Enter navigates to.
 # (An earlier revision typed "Schedule" and expected the Schedule page; the only
 # match was the "Cron -- Scheduled job completions" notification setting, so the
