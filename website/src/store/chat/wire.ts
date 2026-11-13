@@ -207,11 +207,12 @@ export const workflowText = (value: unknown): string => (typeof value === 'strin
 
 export async function fetchSlotDetail(key: string, limit?: number) {
   // A limit takes the handler's most-recent-N slice. `undefined` is the
-  // handler's read-everything shape; `refreshSlot` and `switchSlot` no longer
-  // take it -- a window that misses the rows they hold is extended by
-  // `walkWindowBackTo`, one bounded page at a time. `warmSlotCache` and the
-  // pane hydrate still may. Omit the arg when unbounded to keep the one-arg
-  // shape.
+  // handler's read-everything shape; none of `refreshSlot`, `switchSlot` and
+  // `warmSlotCache` take it -- a window that misses the rows they hold is
+  // extended by `walkWindowBackTo`, one bounded page at a time. A bounded read
+  // echoes the slot's cursor (`api.chatSlotDetail`), so a refresh that missed
+  // nothing gets a 304 or the one re-sent last row. Omit the arg when
+  // unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   return normalizeSlotDetail(key, d, limit !== undefined)
 }
