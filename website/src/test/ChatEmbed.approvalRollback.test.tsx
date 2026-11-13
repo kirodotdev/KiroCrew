@@ -35,7 +35,7 @@ const PENDING_APPROVAL: ChatMessage[] = [
     content: '',
     cls: '',
     ts: '1',
-    meta: { approval_id: 'appr-1', tool_input: 'echo hi' },
+    meta: { approval_id: 'appr-1', mid: 'm-appr-1', tool_input: 'echo hi' },
   },
 ]
 
@@ -110,7 +110,9 @@ describe('ChatEmbed approval rollback (#5524)', () => {
     // The POST was attempted...
     expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', {
       action: 'approved',
+      origin: 'native',
       request_id: 'appr-1',
+      request_mid: 'm-appr-1',
     })
     expect(consoleError).toHaveBeenCalledWith('Approval failed:', expect.any(Error))
     // ...and failed, so the optimistic "Approved" state must be rolled back:
@@ -150,7 +152,9 @@ describe('ChatEmbed approval rollback (#5524)', () => {
 
     expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', {
       action: 'approved',
+      origin: 'native',
       request_id: 'appr-1',
+      request_mid: 'm-appr-1',
     })
     // Resolved for good: the label settles on "Approved"...
     expect(screen.getByText('Approved')).toBeInTheDocument()
@@ -165,13 +169,39 @@ describe('ChatEmbed approval rollback (#5524)', () => {
   })
 })
 
+describe('ChatEmbed approval target (#23636)', () => {
+  // A request id recurs, so the embed decides only the request its row names
+  // (the row's `mid`). A row with no `mid` names no request: nothing is sent and
+  // the row says the approval is gone, instead of deciding whichever request
+  // holds the id when the press lands.
+  it('a pending row with no mid sends no POST and shows the refusal', async () => {
+    mockGet.mockResolvedValue({
+      messages: [{ ...PENDING_APPROVAL[0], meta: { approval_id: 'appr-1', tool_input: 'echo hi' } }],
+      running: false,
+      title: '',
+    })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await mountWithPendingApproval()
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'Approve' }).click()
+    })
+    await settleUntil(() => consoleError.mock.calls.some(c => c[0] === 'Approval failed:'))
+
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(screen.getByText(/the agent is no longer waiting on it/)).toBeInTheDocument()
+    expect(screen.queryByText('Approved')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+  })
+})
+
 describe('ChatEmbed batch approval (Req 4.1-4.4)', () => {
   // Two pending approvals in one group -> CollapsibleToolGroup shows the batch
   // affordance ("Approve all 2") and routes through ChatEmbed.approveBatch,
   // which POSTs each id to the slot-scoped approve endpoint via allSettled.
   const TWO_PENDING: ChatMessage[] = [
-    { role: 'permission', content: '', cls: '', ts: '1', meta: { approval_id: 'appr-1', tool_input: 'echo one' } },
-    { role: 'permission', content: '', cls: '', ts: '2', meta: { approval_id: 'appr-2', tool_input: 'echo two' } },
+    { role: 'permission', content: '', cls: '', ts: '1', meta: { approval_id: 'appr-1', mid: 'm-appr-1', tool_input: 'echo one' } },
+    { role: 'permission', content: '', cls: '', ts: '2', meta: { approval_id: 'appr-2', mid: 'm-appr-2', tool_input: 'echo two' } },
   ]
 
   async function mountWithTwoPending() {
@@ -193,8 +223,8 @@ describe('ChatEmbed batch approval (Req 4.1-4.4)', () => {
     await settleUntil(() => mockPost.mock.calls.length >= 2)
 
     // Slot-scoped endpoint, one call per pending id (Task 4 transport).
-    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'approved', request_id: 'appr-1' })
-    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'approved', request_id: 'appr-2' })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'approved', origin: 'native', request_id: 'appr-1', request_mid: 'm-appr-1' })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'approved', origin: 'native', request_id: 'appr-2', request_mid: 'm-appr-2' })
   })
 
   it('keeps the batch resolved when at least one call succeeds (allSettled, not fail-fast)', async () => {
@@ -212,8 +242,8 @@ describe('ChatEmbed batch approval (Req 4.1-4.4)', () => {
     await settleUntil(() => mockPost.mock.calls.length >= 2)
 
     // BOTH ids were attempted despite the first rejecting (no fail-fast abort).
-    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'rejected', request_id: 'appr-1' })
-    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'rejected', request_id: 'appr-2' })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'rejected', origin: 'native', request_id: 'appr-1', request_mid: 'm-appr-1' })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'rejected', origin: 'native', request_id: 'appr-2', request_mid: 'm-appr-2' })
     consoleError.mockRestore()
   })
 })
