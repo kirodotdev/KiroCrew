@@ -42,7 +42,10 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CWD_BOUND_SESSIONS,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
+)
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -109,6 +112,23 @@ def _model_is_a_launch_argument(provider: Any) -> bool:
     """Whether *provider*'s harness reads its model at launch, so a switch relaunches it."""
     backend = getattr(getattr(provider, "client", None), "backend", None)
     return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+
+
+def _resume_would_move_the_session(provider: Any, stored_cwd: str) -> bool:
+    """Whether loading *provider*'s saved session would restore it outside its own folder.
+
+    Only for a harness in ``ACP_BACKENDS_CWD_BOUND_SESSIONS``, which serves a session
+    only in the directory it was created in. A saved session with no recorded folder
+    (its project was cleared) counts as moved: a fresh session with the conversation
+    replayed is always correct there, and a load in the wrong folder is not.
+    """
+    backend = getattr(getattr(provider, "client", None), "backend", None)
+    if not (isinstance(backend, str) and backend in ACP_BACKENDS_CWD_BOUND_SESSIONS):
+        return False
+    cwd = getattr(provider, "cwd", "")
+    if not stored_cwd or not isinstance(cwd, str) or not cwd:
+        return True
+    return os.path.normpath(stored_cwd) != os.path.normpath(cwd)
 
 
 def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bool:
@@ -1192,6 +1212,21 @@ async def _get_or_create_impl(
                 resume_sid = None
                 provider_switched = True
                 owner._session_map.clear_sid(key)
+        if (
+            resume_sid
+            and self._deps.is_acp_provider(provider)
+            and _resume_would_move_the_session(provider, owner._session_map.get_cwd(key))
+        ):
+            # The saved sid stays in the map: the fresh session replaces it once it
+            # registers, and a start that fails before then leaves the chat as it was.
+            self._deps.logger.info(
+                "Not loading %s for %s in %s: its harness serves it only in the folder "
+                "it was created in; starting fresh with the conversation replayed",
+                resume_sid,
+                key,
+                provider.cwd,
+            )
+            resume_sid = None
 
         # Whether this start asks its process to restore a saved session.
         restores_history = bool(resume_sid)

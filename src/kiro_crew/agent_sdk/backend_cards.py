@@ -692,6 +692,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "which verb restores a session, and which capability advertises it. The "
         "user reopens a chat either way"
     ),
+    "ACP_BACKENDS_CWD_BOUND_SESSIONS": (
+        "whether a chat moved to another folder restores its native session or "
+        "replays the transcript as text in a fresh one. The conversation comes back "
+        "either way"
+    ),
     "ACP_BACKENDS_FORK_AT_MESSAGE": (
         "whether an edited message's rewind forks the native session or replays "
         "the transcript as text. The edit runs either way"
