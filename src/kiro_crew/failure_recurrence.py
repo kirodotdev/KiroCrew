@@ -154,7 +154,12 @@ def find_recurring(current: Iterable[dict], previous: Iterable[dict] = ()) -> li
         if len(sessions) < 2 and len(days) < 2:
             continue
         prior = before.get(sig, 0)
-        trend: Trend = "new" if prior == 0 else "growing" if len(rows) > prior else "steady"
+        if prior == 0:
+            trend: Trend = "new"
+        elif len(rows) > prior:
+            trend = "growing"
+        else:
+            trend = "steady"
         tool_kind, tool, rule_id, error = parts
         found.append(
             Recurrence(
