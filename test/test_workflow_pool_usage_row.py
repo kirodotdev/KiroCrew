@@ -62,6 +62,10 @@ class FakeSessions:
     async def destroy(self, key):
         self.destroyed.append(key)
 
+    async def recycle_if_sandbox_tightened(self, key):
+        # The sandbox tier never tightens in these tests.
+        return False
+
 
 @pytest.fixture(autouse=True)
 def _fast_stream(_floor_monkeypatch):

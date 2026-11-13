@@ -4260,7 +4260,9 @@ message, and shows a failed fetch's own error text under its lead
   `session/prompt` with `-32603 ... dispatch failure` and prints nothing on
   stderr. That frame is classified as a transient connection failure. When such
   an error reaches `AcpSessionProvider.stream` on the kiro backend before any
-  event, the provider asks `kiro_prerequisite.kiro_signed_out_confirmed()`: the
+  event, the provider (its sign-in probe, owned by
+  `acp/session_provider_signin.py`) asks
+  `kiro_prerequisite.kiro_signed_out_confirmed()`: the
   gateway's prerequisite service (registered at dashboard start) runs `whoami`
   alone on the binary its boot probe verified, at most once per 30 s under one
   lock, and answers True only when `whoami` exited non-zero saying

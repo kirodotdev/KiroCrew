@@ -67,7 +67,8 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionEndingError,
     SpeculativeResumeRefused,
 )
-from kiro_crew.session_lifecycle import adopt_parked_queue
+from kiro_crew.session_allocation_parts.eviction import _drain_despite_cancellation
+from kiro_crew.session_lifecycle import adopt_parked_queue, allocation_identity
 from kiro_crew.start_priority import (
     START_QUEUE_COLD_START,
     START_QUEUE_LOG_MIN_MS,
@@ -180,6 +181,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    refuse_looser_tier: bool = True,
 ) -> bool:
     """Acquire with the global lock released, then validate exact identity -- and meet the key's ending fence again.
 
@@ -193,7 +195,9 @@ async def _reacquire_and_validate(
     (which invalidates the token) refuses too; the refusal releases the
     semaphore and ``get_or_create`` turns it into a wait for the lift and a
     fresh allocation. ``open_task_session`` passes no token and is refused
-    while the fence is up, as at its entry.
+    while the fence is up, as at its entry. A session spawned under a looser
+    ``agent.sandbox`` than is now configured is refused too, unless the caller
+    recycles it itself (``refuse_looser_tier=False``).
     """
     if not wait_if_busy and session.semaphore.locked():
         raise SessionBusyError(key)
@@ -211,6 +215,8 @@ async def _reacquire_and_validate(
                 self._sessions.get(key) is session
                 and not session.retire_on_identity_change
                 and self._deps.provider_effectively_alive(session.provider)
+                # After the permit is held, so a running turn finishes first.
+                and not (refuse_looser_tier and self._sandbox_tightened(session.provider))
             )
     except BaseException:
         # The held-semaphore contract was never returned to the caller
@@ -240,31 +246,6 @@ def _release_reacquired(self: SessionAllocationService, key: str, session: Any) 
     if self._sessions.get(key) is not session and self._owner.absorb_orphaned_release(key):
         return
     session.semaphore.release()
-
-
-async def _evict_stale_session(self: SessionAllocationService, key: str, session: Any) -> None:
-    """Pop only the observed stale object and close it outside the lock."""
-    dead: LLMProvider | None = None
-    async with self._lock:
-        if self._sessions.get(key) is session:
-            del self._sessions[key]
-            self.advance_ownership_generation(key)
-            dead = session.provider
-            # Same lock hold as the removal, before any await: a turn still
-            # holding this permit is recorded and its parked claimants woken,
-            # exactly as every lifecycle teardown verb does.
-            self._owner.retire_turn_permit(key, session)
-            # Same tick as the removal. Left unrecorded, the start crumb
-            # survives and the next boot calls this a crash.
-            await record_session_ended(key, end_reason=END_REASON_EVICTED)
-    if dead is not None:
-        await asyncio.to_thread(self._deps.unlink_session_queue, session)
-        try:
-            await dead.shutdown()
-        except Exception:
-            self._deps.logger.warning(
-                "Failed to shut down stale provider for %s", key, exc_info=True
-            )
 
 
 def _is_member_key(key: str) -> bool:
@@ -357,16 +338,7 @@ async def _remove_reservation_cancellation_drained(
         async with self._lock:
             self._remove_reservation_now(key, token)
 
-    cleanup = asyncio.create_task(remove())
-    cancellation: asyncio.CancelledError | None = None
-    while not cleanup.done():
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError as exc:
-            cancellation = exc
-    await cleanup
-    if cancellation is not None:
-        raise cancellation
+    await _drain_despite_cancellation(remove())
 
 
 @contextlib.asynccontextmanager
@@ -745,6 +717,17 @@ async def _get_or_create_impl(
             if adopt_parked_queue(session, key):
                 session.adopted_parked = True
             return session.provider, first_turn.is_new, first_turn.resumed
+        # A tier recycle ends a live session, so its successor keeps that session's
+        # identity, never the defaults of an agentless claim (a subagent completion).
+        identity = (
+            {
+                name: value
+                for name, value in allocation_identity(owner, key, session).items()
+                if value not in (None, "")
+            }
+            if self._sandbox_tightened(session.provider)
+            else {}
+        )
         await owner._evict_stale_session(key, session)
         # Re-enter the claim rather than cold-start in place. The session
         # this claimant waited on was replaced or retired under it -- a reset
@@ -759,14 +742,21 @@ async def _get_or_create_impl(
                 f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                 "session kept going stale between acquire and re-validate"
             )
+        claim: dict[str, Any] = {
+            "agent": agent,
+            "channel_id": channel_id,
+            "approval_policy": approval_policy,
+            "model": model,
+            "cwd": cwd,
+            "extra_env": extra_env,
+            "app_launch_agent": app_launch_agent,
+            "owning_app": owning_app,
+            **extra_factory_kwargs,
+        }
+        # The claim's own arguments win; the identity fills only what it left unset.
+        claim.update({k: v for k, v in identity.items() if claim.get(k) in (None, "")})
         return await owner.get_or_create(
             key,
-            agent=agent,
-            channel_id=channel_id,
-            approval_policy=approval_policy,
-            model=model,
-            cwd=cwd,
-            extra_env=extra_env,
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
@@ -774,10 +764,8 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             focus_resume=focus_resume,
             app_name=app_name,
-            app_launch_agent=app_launch_agent,
-            owning_app=owning_app,
             fallback_hidden_cwd=fallback_hidden_cwd,
-            **extra_factory_kwargs,
+            **claim,
         )
 
     resume_sid: str | None = None

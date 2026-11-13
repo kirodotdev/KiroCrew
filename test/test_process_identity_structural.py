@@ -65,6 +65,7 @@ REAPER_MODULES = (
     "session_allocation.py",
     "session_allocation_parts/companions.py",
     "session_allocation_parts/errors.py",
+    "session_allocation_parts/eviction.py",
     "session_allocation_parts/get_or_create.py",
 )
 

@@ -97,6 +97,9 @@ class _RecordingSessions:
     def is_retiring(self, key):
         return False
 
+    async def recycle_if_sandbox_tightened(self, key):
+        return False
+
 
 class _Decision:
     def __init__(self, permitted: bool, reason: str = "") -> None:

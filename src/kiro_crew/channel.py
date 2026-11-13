@@ -1037,6 +1037,8 @@ async def run_channel_agent(
             )
             if client is None:
                 break
+            # One claim for life: a stricter sandbox recycles it here; the check below re-acquires.
+            await sessions.recycle_if_sandbox_tightened(agent.session_key)
             if sessions.get_provider(agent.session_key) is not client:
                 # IDENTITY, not presence: a clear-context discard pops this key and shuts the
                 # cached provider down, and a later claim can re-register a DIFFERENT one under it.

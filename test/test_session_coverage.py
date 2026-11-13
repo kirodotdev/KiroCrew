@@ -295,6 +295,9 @@ class TestAdoptProvider:
 
 
 class _StreamingProvider:
+    # ``LLMProvider``'s default: no spawn tier to compare.
+    sandbox_mode = None
+
     def __init__(self, events=("a", "b"), sid="sid-9"):
         self._events = events
         self._sid = sid

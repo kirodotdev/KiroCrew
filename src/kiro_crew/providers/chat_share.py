@@ -166,6 +166,7 @@ class ChatSharePlacement:
             work_dir=self._work_dir,
             agent=self._agent,
             sandbox_mode=self._sandbox_tier,
+            spawn_sandbox_mode=self._sandbox_mode,
             extra_env=self._extra_env,
             acp_backend=p._client.backend,
             tool_search=p._tool_search_settings(),

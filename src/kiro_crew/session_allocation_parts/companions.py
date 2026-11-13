@@ -7,8 +7,11 @@ itself is opened by ``SessionAllocationService.open_task_session``, which stays 
 class because it imports from ``kiro_crew.acp``). This module also decides whether a
 subagent may share its parent's runtime (``is_session_sharing_eligible`` and the
 project-AWS-profile split), mirrors the parent's spawn posture onto a companion
-(``_collect_parent_runtime_kwargs``, ``parent_work_scratch_dir``), and lists the
-runtimes' processes (``runtime_pids``, ``_append_companion_runtime_rows``).
+(``_collect_parent_runtime_kwargs``, ``parent_work_scratch_dir``), replaces a live
+runtime spawned under a looser ``agent.sandbox`` tier than a fresh one would get
+(``sandbox_tier_tightened``, which session allocation also asks of a claimed
+session), and lists the runtimes' processes (``runtime_pids``,
+``_append_companion_runtime_rows``).
 
 Each ``self``-first function here is a ``SessionAllocationService`` member: its body is
 the method's, and the class binds it by name, so the instance and its registry state
@@ -33,11 +36,28 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
+from kiro_crew.platform.governance import _ORDINAL_SCALES
+from kiro_crew.sandbox_tiers import _SANDBOX_MODE_ALIASES, _SANDBOX_MODE_FALLBACK
 from kiro_crew.start_priority import START_QUEUE_COMPANION, StartPriority, notify_start_queue
 from kiro_crew.validation import bounded_session_id
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import SessionAllocationService, _AllocationOwner
+
+
+def sandbox_tier_tightened(spawned: str | None, current: str | None) -> bool:
+    """Whether *current* is a stricter ``agent.sandbox`` tier than *spawned*.
+
+    Ordered by the governance ``sandbox`` scale with ``auto`` read as ``standard``,
+    as ``sandbox_tiers._clamp_sandbox_mode_to_floor`` ranks them. A value off that
+    scale, such as a provider that reports no tier, reads ``False``.
+    """
+    if spawned is None or current is None:
+        return False
+    scale = _ORDINAL_SCALES["sandbox"]
+    was = _SANDBOX_MODE_ALIASES.get(spawned, spawned)
+    now = _SANDBOX_MODE_ALIASES.get(current, current)
+    return was in scale and now in scale and scale.index(now) > scale.index(was)
 
 
 def _collect_parent_runtime_kwargs(
@@ -154,12 +174,33 @@ async def get_subagent_runtime(
                 # process-spawn retry.
                 continue
             existing = self._subagent_runtimes.get(parent_session_key)
-            if existing is not None and existing.is_alive():
+            kwargs = self._owner._parent_runtime_kwargs(parent_session_key)
+            # With no tier to mirror, a stricter configured tier than the default
+            # is the one a fresh runtime spawns under.
+            configured = self._owner._cfg.agent.sandbox
+            if "sandbox_mode" not in kwargs and sandbox_tier_tightened(
+                _SANDBOX_MODE_FALLBACK, configured
+            ):
+                kwargs["sandbox_mode"] = configured
+            # A live runtime spawned looser than a fresh one would be is replaced.
+            # A subagent mid-turn on it holds its tenancy, so the kill waits for it.
+            alive = existing is not None and existing.is_alive()
+            looser = (
+                alive
+                and existing is not None
+                and sandbox_tier_tightened(existing.sandbox_mode, kwargs.get("sandbox_mode"))
+            )
+            if alive and not looser:
                 return existing
             if existing is not None:
                 try:
                     await existing.kill(
-                        reason="reaping a dead shared subagent runtime before respawn"
+                        expected=looser,
+                        reason=(
+                            "agent.sandbox is stricter than its spawn tier"
+                            if looser
+                            else "reaping a dead shared subagent runtime before respawn"
+                        ),
                     )
                 except Exception:
                     self._deps.logger.debug(
@@ -170,7 +211,6 @@ async def get_subagent_runtime(
             selected_agent = (
                 selected_agent or self._owner._get_session_agent(parent_session_key) or "kirocrew"
             )
-            kwargs = self._owner._parent_runtime_kwargs(parent_session_key)
             runtime = runtime_type(agent=selected_agent, **kwargs)
             # Bracket the spawn with identity reads so this runtime carries
             # a spawn stamp: every subagent session demuxed onto it
@@ -302,8 +342,21 @@ async def _get_or_bootstrap_run_runtime(
     async with lock:
         existing = self._subagent_runtimes.get(parent_session_key)
         if existing is not None and existing.is_alive():
-            return existing
-        if existing is not None:
+            if not sandbox_tier_tightened(existing.sandbox_mode, owner._cfg.agent.sandbox):
+                return existing
+            # Spawned under a looser tier than the factory now gives: replaced.
+            # A step mid-turn on it holds its tenancy, so the kill waits for it.
+            try:
+                await existing.kill(
+                    expected=True, reason="agent.sandbox is stricter than its spawn tier"
+                )
+            except Exception:
+                self._deps.logger.debug(
+                    "run runtime: kill of a looser-tier runtime failed for %s",
+                    parent_session_key,
+                    exc_info=True,
+                )
+        elif existing is not None:
             # A runtime marked dead on a stdin stall still has a live child
             # that may read the frames buffered in its pipe; it is killed
             # BEFORE its replacement starts, so a retried step never runs

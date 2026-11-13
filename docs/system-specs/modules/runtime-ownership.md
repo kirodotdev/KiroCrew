@@ -115,7 +115,10 @@ finds one held and returns. Four inputs a running process cannot shed (the agent
 spec generation, the account era, the governed sandbox tier and the
 SSH_AUTH_SOCK-forwarding consent) are keyed before the acquisition and re-read
 after it; a mismatch releases and retries on the fresh key, and a joiner also
-passes the fork-governance admission the founder passed inside `spawn()`. A field
+passes the fork-governance admission the founder passed inside `spawn()`. The key
+carries the raw `agent.sandbox` value the spawn starts with beside the governed
+tier, so a chat recycled for a stricter value founds its own process rather than
+rejoining one spawned at a looser raw value with the same governed tier. A field
 the key cannot OBSERVE never compares equal to the same absence elsewhere: an
 empty era read becomes a token unique to that start, so it founds its own process.
 Such a provider carries `shared_runtime=True`, which selects a third teardown arm

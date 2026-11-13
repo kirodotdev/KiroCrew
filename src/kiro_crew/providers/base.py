@@ -884,6 +884,15 @@ class LLMProvider(ABC):
         return None
 
     @property
+    def sandbox_mode(self) -> str | None:
+        """The ``agent.sandbox`` tier the process this session runs on was spawned under.
+
+        Session allocation recycles a session once the configured tier is stricter.
+        ``None`` (the H14 safe default) is never recycled for its tier.
+        """
+        return None
+
+    @property
     def manual_compact_unsupported_backend(self) -> str | None:
         """Backend id when this provider cannot serve a manual ``/compact``,
         ``None`` when the command is fine to dispatch.
