@@ -223,6 +223,57 @@ class TestServerAppliers:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["raised", "unreadable"])
+    async def test_a_background_model_rebuild_that_did_not_land_defers_for_retry(
+        self, outcome: str
+    ) -> None:
+        """ConfigWatch retries only an applier that raises. A swallowed failure, or
+        an unwritten rebuild logged as rebuilt, left the lite and heartbeat specs
+        on the previous background model until a restart."""
+        state = SimpleNamespace(workflow_service=None, channel_manager=None)
+        apply = self._register(state)["agent.role_models.background"].callback()
+
+        def _rebuild() -> tuple[Path, bool]:
+            if outcome == "raised":
+                raise OSError("spec directory is read-only")
+            return (Path("/home/x/.kiro/agents/kirocrew.json"), False)
+
+        with (
+            # Mocked so the code on main, which calls this one, touches no real spec.
+            patch("kiro_crew.agent.rebuild_agent_config", MagicMock()),
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", _rebuild),
+            pytest.raises((OSError, RuntimeError)),
+        ):
+            await apply(
+                ConfigChange(
+                    old=KiroCrewConfig(),
+                    new=KiroCrewConfig(),
+                    changed=frozenset({"agent.role_models.background"}),
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_shared_home_refusal_is_audited_by_the_rebuild_and_retried(self) -> None:
+        """A refusal goes through the rebuild, whose guard writes the denied audit
+        row, and is deferred for retry like any unwritten rebuild: the same
+        contract the agent.model applier runs under."""
+        state = SimpleNamespace(workflow_service=None, channel_manager=None)
+        apply = self._register(state)["agent.role_models.background"].callback()
+        spec = Path("/home/x/.kiro/agents/kirocrew.json")
+        change = ConfigChange(
+            old=KiroCrewConfig(),
+            new=KiroCrewConfig(),
+            changed=frozenset({"agent.role_models.background"}),
+        )
+        rebuild = MagicMock(return_value=(spec, False))
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", rebuild),
+            pytest.raises(RuntimeError, match="shared agent home"),
+        ):
+            await apply(change)
+        rebuild.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_successful_retry_notifies_that_the_saved_model_is_active(self) -> None:
         """Recovery must resolve the operator-visible failure state."""
         state = SimpleNamespace(
