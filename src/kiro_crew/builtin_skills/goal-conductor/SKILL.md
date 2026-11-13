@@ -63,7 +63,12 @@ A candidate qualifies only if **all three** hold:
    the PR number against whatever checkout the evaluator runs in, which can be
    another repository's PR, and outside a checkout it cannot be evaluated),
    `pr_merged` (a PR has merged, also via `gh`, with `repo` required: an open
-   PR reads `pending`, one closed without merging reads `fail`),
+   PR reads `pending`, one closed without merging reads `fail`). The ledger
+   stores a `pr_checks` bar that names a `repo` as `pr_merged` with
+   `ready: "pr_checks"` and says so in `acceptance_rewritten`: the worker
+   reports `done` at green, the item stays open as `awaiting_land`, and your
+   work-ledger watch wakes you when the PR merges, closes, conflicts or goes
+   red. Add `"until": "checks"` only when green is the whole job.
    `edition_check` (`{"kind": "edition_check", "check": "<name>", "ref":
    "<id>"}`: a check an installed edition provides, for work that lands
    somewhere this evaluator cannot read itself, such as an edition's own code

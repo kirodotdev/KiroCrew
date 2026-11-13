@@ -583,6 +583,24 @@ def test_an_item_write_reports_the_committed_item(monkeypatch):
     assert out == "Recorded decide. item=it_00000002 state=closed verdict=pass"
 
 
+def test_a_create_reply_says_the_bar_was_stored_as_a_landed_one(monkeypatch):
+    """The store rewrote a pr_checks bar (rfc-conductor-pr-land-tracking §3.2)."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(
+        mcp_work,
+        "_post",
+        lambda *a, **k: {
+            "ok": True,
+            "action": "create",
+            "item": {"item_id": "it_00000003", "state": "open"},
+            "acceptance_rewritten": "pr_checks->pr_merged",
+        },
+    )
+    out = mcp_work._call_tool_inner("work_ledger_record", {"action": "create", "title": "t"})
+    assert "Acceptance stored as pr_merged with ready=pr_checks" in out
+    assert '"until": "checks"' in out
+
+
 def test_a_close_reply_carries_the_routes_warning(monkeypatch):
     """A close that cut a live worker's report channel says so in the reply."""
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")

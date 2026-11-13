@@ -50,6 +50,6 @@ def test_the_server_leaves_a_claimed_pr_with_a_placeholder_bar_out_of_the_batch(
     items = wl.list_work_items(CONDUCTOR)
     (item,) = [i for i in items if i.item_id == item_id]
     assert item.status == "done" and not item.is_terminal
-    assert item.acceptance == bar
+    assert item.acceptance == wl.land_bar(bar)[0]
     assert wl.is_acceptance_concrete(item.acceptance) is False
     assert item_id not in [entry["id"] for entry in wl.accept_batch(items)["items"]]

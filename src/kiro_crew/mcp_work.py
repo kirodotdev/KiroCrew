@@ -401,7 +401,8 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "Read the ONE work item this session was dispatched for: its title, its "
                 "acceptance condition, the round it belongs to, the conductor's latest "
                 "decision, and your own last reported status. Call it before starting "
-                "work and treat title + acceptance as the definition of done. Takes no "
+                "work and treat title + acceptance as the definition of done; a "
+                "'ready_when' names the stage at which you report done. Takes no "
                 "arguments — which item you are bound to is resolved from your own "
                 "session, not supplied. It does not return the conductor's goal or any "
                 "sibling item: you have neither. Answers 'not_bound' when no item is "
@@ -1198,6 +1199,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             warning = str(resp.get("warning") or "")
             if warning:
                 line += f"\nWarning: {warning}"
+            if resp.get("acceptance_rewritten"):
+                line += (
+                    "\nAcceptance stored as pr_merged with ready=pr_checks: the worker "
+                    "is done at green, the item passes on the merge. Send "
+                    '"until": "checks" to keep green as the bar.'
+                )
             remote = resp.get("remote_decide")
             if isinstance(remote, dict):
                 # A remote item: the local decision is recorded either way, and

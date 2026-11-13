@@ -32,7 +32,16 @@ from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 SCRIPT = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "scripts" / "accept_eval.py"
 
 REPO = "owner/name"
-MERGED_ARGV = ["gh", "pr", "view", "42", "--repo", REPO, "--json", "state", "-q", ".state"]
+MERGED_ARGV = [
+    "gh",
+    "pr",
+    "view",
+    "42",
+    "--repo",
+    REPO,
+    "--json",
+    "state,mergeable,isDraft,statusCheckRollup",
+]
 
 
 class _Proc:
@@ -46,6 +55,19 @@ class _Proc:
 
 def _load():
     return load_skill_script("_accept_eval_pr_merged_under_test", SCRIPT)
+
+
+def _state(state: str, **extra) -> str:
+    """The JSON ``gh pr view --json state,mergeable,isDraft,statusCheckRollup`` prints."""
+    return json.dumps(
+        {
+            "state": state,
+            "mergeable": "MERGEABLE",
+            "isDraft": False,
+            "statusCheckRollup": [],
+            **extra,
+        }
+    )
 
 
 def _wire(mod, monkeypatch, answers):
@@ -134,7 +156,7 @@ _HOSTILE_EXTRAS = {
 
 def test_pr_merged_runs_only_its_fixed_template(monkeypatch):
     mod = _load()
-    seen = _wire(mod, monkeypatch, [_Proc(0, "MERGED\n")])
+    seen = _wire(mod, monkeypatch, [_Proc(0, _state("MERGED"))])
     verdict, _ = mod._evaluate(
         {"accept": {"kind": "pr_merged", "pr": 42, "repo": REPO, **_HOSTILE_EXTRAS}}
     )
@@ -144,9 +166,9 @@ def test_pr_merged_runs_only_its_fixed_template(monkeypatch):
 
 def test_every_argv_element_is_a_template_literal_or_a_validated_field(monkeypatch):
     mod = _load()
-    seen = _wire(mod, monkeypatch, [_Proc(0, "MERGED")])
+    seen = _wire(mod, monkeypatch, [_Proc(0, _state("MERGED"))])
     mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": REPO, **_HOSTILE_EXTRAS}})
-    literals = {"gh", "pr", "view", "--repo", "--json", "state", "-q", ".state"}
+    literals = {"gh", "pr", "view", "--repo", "--json", "state,mergeable,isDraft,statusCheckRollup"}
     validated = {"42", REPO}
     [argv] = seen
     assert argv[0] in mod._SELF_BUILT_COMMANDS
@@ -176,12 +198,13 @@ def test_the_ledger_mirror_uses_the_evaluators_own_pattern():
 @pytest.mark.parametrize(
     ("stdout", "verdict"),
     [
-        ("MERGED\n", "pass"),
-        ("merged", "pass"),
-        ("OPEN\n", "pending"),
-        ("CLOSED\n", "fail"),
+        (_state("MERGED"), "pass"),
+        (_state("merged"), "pass"),
+        (_state("OPEN"), "pending"),
+        (_state("CLOSED"), "fail"),
+        ("MERGED\n", "error"),
         ("", "error"),
-        ("SOMETHING_NEW\n", "error"),
+        (_state("SOMETHING_NEW"), "error"),
     ],
 )
 def test_pr_merged_maps_each_state_to_one_verdict(monkeypatch, stdout, verdict):
@@ -189,6 +212,54 @@ def test_pr_merged_maps_each_state_to_one_verdict(monkeypatch, stdout, verdict):
     _wire(mod, monkeypatch, [_Proc(0, stdout)])
     got, _ = mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": REPO}})
     assert got == verdict, stdout
+
+
+def _run(conclusion: str, status: str = "COMPLETED") -> dict:
+    return {"__typename": "CheckRun", "name": "x", "status": status, "conclusion": conclusion}
+
+
+@pytest.mark.parametrize(
+    ("extra", "stage"),
+    [
+        ({}, "ready"),
+        ({"statusCheckRollup": [_run("SUCCESS"), _run("SKIPPED")]}, "ready"),
+        ({"statusCheckRollup": [_run("SUCCESS"), _run("", "IN_PROGRESS")]}, "running 1/2"),
+        ({"statusCheckRollup": [_run("FAILURE"), _run("SUCCESS"), _run("", "QUEUED")]}, "red 1/3"),
+        (
+            {
+                "statusCheckRollup": [
+                    {"__typename": "StatusContext", "context": "c", "state": "ERROR"}
+                ]
+            },
+            "red 1/1",
+        ),
+        (
+            {
+                "statusCheckRollup": [
+                    {"__typename": "StatusContext", "context": "c", "state": "PENDING"}
+                ]
+            },
+            "running 0/1",
+        ),
+        ({"mergeable": "CONFLICTING", "statusCheckRollup": [_run("FAILURE")]}, "conflicting"),
+        ({"isDraft": True, "mergeable": "CONFLICTING"}, "draft"),
+    ],
+)
+def test_an_open_pr_names_its_stage_and_stays_pending(monkeypatch, extra, stage):
+    """The stage rides the evidence from the same call; it never changes the verdict."""
+    mod = _load()
+    seen = _wire(mod, monkeypatch, [_Proc(0, _state("OPEN", **extra))])
+    verdict, evidence = mod._evaluate(
+        {"accept": {"kind": "pr_merged", "pr": 42, "repo": REPO, "ready": "pr_checks"}}
+    )
+    assert verdict == "pending"
+    assert evidence.endswith(f"(stage: {stage})"), evidence
+    assert seen == [MERGED_ARGV]
+
+
+def test_both_conductor_skills_ship_the_same_evaluator():
+    ledger_copy = SCRIPT.parents[2] / "goal-ledger-conductor" / "scripts" / "accept_eval.py"
+    assert ledger_copy.read_bytes() == SCRIPT.read_bytes()
 
 
 @pytest.mark.parametrize("returncode", [1, 4, 8])

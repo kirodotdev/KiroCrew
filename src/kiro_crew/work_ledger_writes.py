@@ -60,6 +60,8 @@ from kiro_crew.work_ledger_rules import (
     _require_wake_at,
     depth_cap_hint,
     is_acceptance_concrete,
+    is_awaiting_land,
+    land_bar,
     may_conduct,
 )
 from kiro_crew.work_ledger_store import (
@@ -439,7 +441,7 @@ def _create_item(
     :func:`rebuild_from_projection` can keep a stored depth no guard admitted.
     """
     checked_title = _require_text(title, MAX_TITLE_CHARS, "title")
-    checked_acceptance = _require_acceptance(acceptance)
+    checked_acceptance, rewritten = land_bar(_require_acceptance(acceptance))
     checked_round = None if round_number is None else _require_count(round_number, "round")
     if not may_conduct(record.depth):
         raise WorkLedgerError(
@@ -476,7 +478,12 @@ def _create_item(
         except BaseException:
             _restore_text(header_path, header_before)
             raise
-        return {"conductor": live, "item": item, "event": event}
+        return {
+            "conductor": live,
+            "item": item,
+            "event": event,
+            "acceptance_rewritten": rewritten,
+        }
 
 
 def _admit_create_locked(slot_key: str) -> ConductorRecord:
@@ -508,10 +515,12 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
             field="items",
         )
     # The goal's own fan-out bound, only on a board that recorded a goal (a queue
-    # board never does). A person decides past it.
-    if live.goal_version > 0 and len(open_items) >= live.concurrency_cap:
+    # board never does). A person decides past it. An item awaiting its pull
+    # request's merge runs no worker turn, so it holds no seat.
+    working = [item for item in open_items if not is_awaiting_land(item)]
+    if live.goal_version > 0 and len(working) >= live.concurrency_cap:
         raise WorkLedgerError(
-            f"this goal holds {len(open_items)} open items and its concurrency cap "
+            f"this goal holds {len(working)} open items and its concurrency cap "
             f"is {live.concurrency_cap}. Dispatch nothing new until one lands; to "
             "run more at once, ask the user, and if they agree raise the cap with "
             "work_ledger_record action=goal concurrency_cap=<new cap> "
@@ -828,7 +837,7 @@ def read_work_brief(slot_key: str, item_id: str) -> dict[str, Any] | None:
     item = read_work_item(slot_key, item_id)
     if item is None:
         return None
-    return {
+    brief = {
         "item_id": item.item_id,
         "title": item.title,
         "acceptance": item.acceptance,
@@ -837,6 +846,12 @@ def read_work_brief(slot_key: str, item_id: str) -> dict[str, Any] | None:
         "status": item.status,
         "summary": item.summary,
     }
+    ready = item.acceptance.get("ready") if isinstance(item.acceptance, dict) else None
+    if isinstance(ready, str) and ready:
+        # A landed bar: the stage at which the WORKER is done. The item itself
+        # passes only on the merge, which the conductor's watch reads.
+        brief["ready_when"] = ready
+    return brief
 
 
 def accept_batch(items: list[WorkItem]) -> dict[str, Any]:
@@ -888,7 +903,7 @@ def apply_acceptance_update(
             code=CODE_INVALID_VALUE,
             field="acceptance",
         )
-    checked_acceptance = _require_acceptance(acceptance)
+    checked_acceptance, rewritten = land_bar(_require_acceptance(acceptance))
 
     with item_lock(slot_key, checked_id, create=False):
         item = read_work_item(slot_key, checked_id)
@@ -904,7 +919,7 @@ def apply_acceptance_update(
         event = _commit_item_locked(
             slot_key, item, "decision", "acceptance promoted by the conductor"
         )
-        return {"item": item, "event": event}
+        return {"item": item, "event": event, "acceptance_rewritten": rewritten}
 
 
 def _require_ask_options(options: Any) -> list[dict[str, str]]:

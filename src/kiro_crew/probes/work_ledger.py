@@ -76,6 +76,15 @@ _STALL_KEY = "stall"
 #: (:mod:`kiro_crew.work_ledger_undelivered`).
 _UNDELIVERED_KEY = "undelivered"
 
+#: Prefix for a wake on an item's pull request (rfc-conductor-pr-land-tracking §3.4).
+_LAND_KEY = "land"
+
+#: Rollup states an awaiting item's pull request wakes on as red.
+_RED_ROLLUP = frozenset({"FAILURE", "ERROR"})
+
+#: ``(repo, pr) -> facts``, the shape :func:`kiro_crew.probes.gh_pr.fetch_states` returns.
+PrStates = Callable[[list[tuple[str, int]]], dict[tuple[str, int], dict]]
+
 #: The one terminal item state that means the item's bar was MET. The other two
 #: (``rejected``, ``abandoned``) close an item without meeting it, so a ledger is
 #: only a success when every item ended in THIS state. Pinned against
@@ -145,6 +154,10 @@ class WorkLedgerProbe(irq.Probe):
             Defaults to :func:`_never_looping`, which never suppresses a flag.
         worker_loop_held: ``session_key -> its session holds an active loop that
             cannot fire``, which voids a ``wake_at``. Defaults to never.
+        pr_states: reads the pull requests of the open items whose bar is
+            ``pr_merged``, batched. ``probes.build`` passes ``gh_pr.fetch_states``.
+            Defaults to reading nothing, so a probe built without it never spawns
+            ``gh``; its items then raise no pull-request wake.
     """
 
     def __init__(
@@ -154,11 +167,16 @@ class WorkLedgerProbe(irq.Probe):
         worker_closed: Callable[[str], bool] | None = None,
         worker_looping: Callable[[str], bool] | None = None,
         worker_loop_held: Callable[[str], bool] | None = None,
+        pr_states: PrStates | None = None,
     ) -> None:
         self._worker_running = worker_running or _always_idle
         self._worker_closed = worker_closed or _always_open
         self._worker_looping = worker_looping or _never_looping
         self._worker_loop_held = worker_loop_held or _never_looping
+        self._pr_states = pr_states
+        #: The last tick's pull-request facts, ``(repo, pr) -> facts``. Empty when
+        #: nothing was read.
+        self.pr_facts: dict[tuple[str, int], dict] = {}
         self._conductor = ""
         #: The polling driver's identity, read off the ctx each tick. The seen set
         #: is kept per driver; see ``ledger_wake._MAX_WATCHERS_PER_ITEM``.
@@ -262,10 +280,12 @@ class WorkLedgerProbe(irq.Probe):
             return irq.Tick(epoch=epoch, observations=self._all_closed(key, items))
 
         observations: list[irq.Observation] = []
+        self._read_prs(items)
         for item in items:
             if item.is_terminal:
                 continue
             observations.extend(self._item_observations(key, item, tails.get(item.item_id, [])))
+            observations.extend(self._land_observations(key, item))
         # ``pending`` stays 0. It is what the coalescing window waits to drain, and
         # an item still being worked on never drains -- modelling work-in-progress
         # as pending would hold a ``question`` wake for the window's hard cap while
@@ -429,6 +449,71 @@ class WorkLedgerProbe(irq.Probe):
                 )
         return found
 
+    def _read_prs(self, items: list[work_ledger.WorkItem]) -> None:
+        """Read every open ``pr_merged`` item's pull request in one batched call.
+
+        After the ledger read, and only for a concrete bar, so a ``"TBD"`` pull
+        request is never asked for. A read that fails or is skipped for a rate limit
+        leaves the facts empty: an unread pull request wakes no one.
+        """
+        self.pr_facts = {}
+        if self._pr_states is None:
+            return
+        pairs = sorted({pair for item in items if (pair := _land_pair(item)) is not None})
+        if not pairs:
+            return
+        try:
+            self.pr_facts = dict(self._pr_states(pairs) or {})
+        except Exception:  # noqa: BLE001 - a PR read must never fail the ledger tick
+            logger.debug("work-ledger probe: pull-request read failed", exc_info=True)
+            self.pr_facts = {}
+
+    def _land_observations(
+        self, conductor_key: str, item: work_ledger.WorkItem
+    ) -> list[irq.Observation]:
+        """The one pull-request wake *item* is owed this tick, or nothing.
+
+        Merged and closed wake for any open item; a conflict or a red rollup only for
+        one awaiting its merge (``is_awaiting_land``), since a working worker owns its
+        pull request. Tokens are levels, so a re-read is masked by the seen set and a
+        merge that happened while the gateway was down still wakes once.
+        """
+        pair = _land_pair(item)
+        facts = self.pr_facts.get(pair) if pair is not None else None
+        if pair is None or not facts:
+            return []
+        state = facts.get("state")
+        head = str(facts.get("head") or "")[:40]
+        # Keyed on the pull request too: a bar promoted to a replacement PR keeps the
+        # item's seen set, and the replacement's own merge or close is news.
+        subject = f"{_LAND_KEY}:{pair[0]}#{pair[1]}"
+        if state == "MERGED":
+            fact, token, replaces = "merged", f"{subject}:merged", ""
+        elif state == "CLOSED":
+            fact, token, replaces = "closed", f"{subject}:closed", ""
+        elif state != "OPEN" or not work_ledger.is_awaiting_land(item):
+            return []
+        elif facts.get("mergeable") == "CONFLICTING":
+            fact, token = "conflict", f"{subject}:conflict:{head}"
+            replaces = f"{subject}:conflict:"
+        elif facts.get("rollup") in _RED_ROLLUP:
+            # shortcut: rollup state, not required checks; upgrade by reading the
+            # base branch's required contexts.
+            fact, token = "red", f"{subject}:red:{head}"
+            replaces = f"{subject}:red:"
+        else:
+            return []
+        if not self._spend(conductor_key, item.item_id, token, replaces=replaces):
+            return []
+        return [
+            irq.Observation(
+                f"{_LAND_KEY}:{item.item_id}:{token}",
+                irq.Severity.WAKE,
+                ledger_wake.land_wake_brief(item_id=item.item_id, pr=pair[1], fact=fact),
+                irq.ResetsOn.NEVER,
+            )
+        ]
+
     def _spend(self, conductor_key: str, item_id: str, token: str, *, replaces: str = "") -> bool:
         """Whether this item may wake now, charging the budget if it does.
 
@@ -465,6 +550,16 @@ class WorkLedgerProbe(irq.Probe):
             )
             return False
         return True
+
+
+def _land_pair(item: work_ledger.WorkItem) -> tuple[str, int] | None:
+    """``(repo, pr)`` for an open item whose concrete bar is ``pr_merged``, else ``None``."""
+    accept = item.acceptance
+    if item.is_terminal or not isinstance(accept, dict) or accept.get("kind") != "pr_merged":
+        return None
+    if not work_ledger.is_acceptance_concrete(accept):
+        return None
+    return (str(accept["repo"]), int(accept["pr"]))
 
 
 def has_open_items(conductor_key: str) -> bool:

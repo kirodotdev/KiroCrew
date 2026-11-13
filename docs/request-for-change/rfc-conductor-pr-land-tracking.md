@@ -1,11 +1,11 @@
 ---
 title: A PR item stays open until its pull request lands, the work-ledger probe watches it, and a forced floor wake carries live facts
-status: accepted
+status: in-progress
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
 last-audited: 2026-11-13
 audited-at: ee52eacb74
-doc-pr: null
+doc-pr: 36753
 implementation-prs: []
 tracking-issues: [36751]
 supersedes: []
@@ -14,11 +14,12 @@ superseded-by: []
 
 # RFC: Track a PR item until it lands, and give the forced floor wake facts
 
-Status: accepted. The repository owner asked for this on 2026-11-13 in the
-conductor chat and merges this document; it takes effect when it merges.
-Nothing is built and it changes no code. The code lands in the phases of §7,
-each in its own PR rebased onto the base that carries this file. Every code
-reference was read at `ee52eacb74`.
+Status: in-progress. The repository owner asked for this on 2026-11-13 in the
+conductor chat and merged this document in
+[#36753](https://github.com/kirodotdev/KiroCrew/pull/36753). Decision A (§3,
+phases 1 and 2 of §7) is built in the change that set this status; Decision B
+(§4, phase 3) is not built yet. The code references below were read at
+`ee52eacb74`.
 
 This document lands on its own because it changes a ledger write contract (a
 `pr_checks` bar is stored as a landed bar, §3.2) and what the work-ledger probe

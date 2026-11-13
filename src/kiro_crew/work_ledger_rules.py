@@ -81,11 +81,12 @@ def _require_choice(value: Any, allowed: frozenset[str], name: str, code: str) -
 
 
 def _require_acceptance(value: Any) -> dict[str, Any]:
-    """``acceptance`` is stored VERBATIM and never interpreted here.
+    """``acceptance`` is validated as a container and never interpreted here.
 
     ``accept_eval.py`` is the only thing that decides whether an item passed, so
     this store validates the container and not the contents — a shape check here
-    would be a second, drifting copy of that script's contract.
+    would be a second, drifting copy of that script's contract. The one rewrite a
+    write makes is :func:`land_bar`'s, applied by the caller.
     """
     if value is None:
         return {}
@@ -491,6 +492,59 @@ def is_pending_overdue(item: WorkItem, *, now: datetime | None = None) -> bool:
         return True
     moment = now or datetime.now().astimezone()
     return moment - started > timedelta(seconds=PENDING_BUDGET_SECS)
+
+
+#: What :func:`land_bar` reports when it stored a ``pr_checks`` bar as a landed one.
+LAND_REWRITE = "pr_checks->pr_merged"
+
+
+def land_bar(acceptance: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """*acceptance* as the ledger stores it, and what was rewritten (``None``: nothing).
+
+    A ``pr_checks`` bar that names a ``repo`` the evaluator accepts is stored as
+    ``pr_merged`` with ``ready: "pr_checks"`` (rfc-conductor-pr-land-tracking §3.2):
+    the worker's ``done`` is due at green, the item passes only on the merge. Every
+    other field is kept, a ``"TBD"`` ``pr`` included, so the promotion works as
+    before. ``"until": "checks"`` keeps green as the final bar. A bar with no usable
+    ``repo`` is kept as given and reads ``land_untracked`` (:func:`is_land_untracked`).
+    """
+    if acceptance.get("kind") != "pr_checks" or acceptance.get("until") == "checks":
+        return acceptance, None
+    repo = acceptance.get("repo")
+    if not isinstance(repo, str) or not ACCEPTANCE_GH_REPO.fullmatch(repo):
+        return acceptance, None
+    return {**acceptance, "kind": "pr_merged", "ready": "pr_checks"}, LAND_REWRITE
+
+
+def is_land_untracked(acceptance: Any) -> bool:
+    """Whether a ``pr_checks`` bar was left un-landed because it names no usable repo.
+
+    shortcut: no repo, no land watch; upgrade when the ledger records the conductor's
+    repo.
+    """
+    if not isinstance(acceptance, dict) or acceptance.get("kind") != "pr_checks":
+        return False
+    if acceptance.get("until") == "checks":
+        return False
+    repo = acceptance.get("repo")
+    return not (isinstance(repo, str) and ACCEPTANCE_GH_REPO.fullmatch(repo))
+
+
+def is_awaiting_land(item: WorkItem) -> bool:
+    """Whether *item*'s worker is done and only its pull request's merge is left.
+
+    Open, a ``pr_merged`` bar, the worker's latest report ``done``, and the latest
+    verdict ``pending``. Derived at read time like :func:`is_stale`. Such an item runs
+    no worker turn, so the goal's ``concurrency_cap`` does not count it; the store's
+    own open-item bound still does.
+    """
+    return (
+        not item.is_terminal
+        and isinstance(item.acceptance, dict)
+        and item.acceptance.get("kind") == "pr_merged"
+        and item.status == "done"
+        and item.verdict == "pending"
+    )
 
 
 def is_acceptance_concrete(acceptance: Any) -> bool:

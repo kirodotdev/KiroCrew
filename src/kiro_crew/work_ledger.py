@@ -1098,6 +1098,7 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
 )
 from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _WARNED_DEPTH_FALLBACKS,
+    LAND_REWRITE,
     _decided_after_report,
     _is_placeholder,
     _parse_iso,
@@ -1113,9 +1114,12 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     child_depth,
     depth_cap_hint,
     is_acceptance_concrete,
+    is_awaiting_land,
+    is_land_untracked,
     is_orphaned,
     is_pending_overdue,
     is_stale,
+    land_bar,
     max_depth,
     may_conduct,
     parse_stamp,

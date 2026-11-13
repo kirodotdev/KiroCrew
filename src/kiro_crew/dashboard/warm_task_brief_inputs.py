@@ -200,6 +200,8 @@ _DIGEST_EXCLUDED = frozenset(
         "orphaned",
         "unpatrolled",
         "pending_overdue",
+        "awaiting_land",
+        "land_untracked",
         "report_undelivered",
         "acceptance_concrete",
         "read_at",

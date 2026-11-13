@@ -1341,6 +1341,140 @@ def fetch_state(message: object) -> PrObservation:
     )
 
 
+#: Pull requests one ``fetch_states`` query asks for. GitHub scores a query by the
+#: nodes it may return; twenty one-node lookups stay at a cost of one point, and a
+#: board's 32-item bound then needs at most two queries.
+_STATES_PER_QUERY = 20
+
+#: Wall-clock bound for one ``fetch_states`` call, all its queries together.
+_STATES_BUDGET_SECS = 2 * _GH_TIMEOUT_SECS
+
+#: Epoch before which ``fetch_states`` makes no call: set when the window was spent
+#: or a query was refused for its rate limit, so a work-ledger tick never spends the
+#: operator's last requests. Host-wide, as the operator's ``gh`` login is.
+_states_backoff_until = 0.0
+
+#: Backoff when a rate-limit refusal names no reset.
+_STATES_BACKOFF_SECS = 300.0
+
+_STATES_FIELDS = (
+    "state mergedAt mergeable isDraft headRefOid "
+    "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }"
+)
+
+
+def _states_query(pairs: list[tuple[str, int]]) -> str:
+    """One aliased GraphQL document for *pairs*, each already validated.
+
+    The literals are safe to inline: ``repo`` matched ``ACCEPTANCE_GH_REPO``, so it holds
+    no quote or backslash, and ``pr`` is an ``int``.
+    """
+    parts = []
+    for index, (repo, pr) in enumerate(pairs):
+        owner, name = repo.split("/", 1)
+        parts.append(
+            f'p{index}: repository(owner: "{owner}", name: "{name}") '
+            f"{{ pullRequest(number: {pr}) {{ {_STATES_FIELDS} }} }}"
+        )
+    return "query { " + " ".join(parts) + " }"
+
+
+def _state_facts(node: object) -> dict | None:
+    """One pull request's facts out of its alias's node, or ``None`` when unread."""
+    if not isinstance(node, dict):
+        return None
+    pull = node.get("pullRequest")
+    if not isinstance(pull, dict):
+        return None
+    rollup = ""
+    commits = pull.get("commits")
+    nodes = commits.get("nodes") if isinstance(commits, dict) else None
+    if isinstance(nodes, list) and nodes and isinstance(nodes[-1], dict):
+        commit = nodes[-1].get("commit")
+        status = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+        if isinstance(status, dict):
+            rollup = str(status.get("state") or "").upper()
+    return {
+        "state": str(pull.get("state") or "").upper(),
+        "merged_at": str(pull.get("mergedAt") or ""),
+        "mergeable": str(pull.get("mergeable") or "").upper(),
+        "draft": pull.get("isDraft") is True,
+        "head": str(pull.get("headRefOid") or ""),
+        "rollup": rollup,
+    }
+
+
+def fetch_states(
+    pairs: list[tuple[str, int]], *, transport: _Transport | None = None
+) -> dict[tuple[str, int], dict]:
+    """State, mergeability, head and check rollup for many pull requests, batched.
+
+    For the work-ledger probe (rfc-conductor-pr-land-tracking §3.4): one GraphQL
+    query per :data:`_STATES_PER_QUERY` pull requests, through the same transport
+    (budget, retry, rate-limit headers, SEL audit) a single-PR watch uses. A pair
+    whose ``repo`` is not ``owner/name`` or whose ``pr`` is not an int in
+    ``1..MAX_PR`` is never sent: a number past GraphQL's 32-bit ``Int`` would make
+    GitHub reject the whole document. A pull request the answer does not carry is absent from the result,
+    which the caller reads as "unread"; this never raises.
+
+    While :data:`_states_backoff_until` is ahead, nothing is called and the result
+    is empty. It is set when a response leaves the window at or below
+    :data:`_RATE_LIMIT_FLOOR`, or when a query is refused for its rate limit.
+    """
+    global _states_backoff_until
+    # Deferred, through the facade: this module is on the gateway boot path and the
+    # ledger is not (see ``probes.build``). Only the work-ledger probe calls this.
+    from kiro_crew import work_ledger
+
+    valid = sorted(
+        {
+            (repo, pr)
+            for repo, pr in pairs
+            if isinstance(repo, str)
+            and work_ledger.ACCEPTANCE_GH_REPO.fullmatch(repo)
+            and isinstance(pr, int)
+            and not isinstance(pr, bool)
+            and 0 < pr <= work_ledger.MAX_PR
+        }
+    )
+    if not valid or time.time() < _states_backoff_until:
+        return {}
+    channel = transport or _Transport(_PINNABLE_HOST, budget_secs=_STATES_BUDGET_SECS)
+    found: dict[tuple[str, int], dict] = {}
+    for start in range(0, len(valid), _STATES_PER_QUERY):
+        chunk = valid[start : start + _STATES_PER_QUERY]
+        response = channel.call(
+            ["api", "graphql", "--include", "-f", f"query={_states_query(chunk)}"]
+        )
+        remaining = channel.rate_limit_remaining
+        if remaining is not None and remaining <= _RATE_LIMIT_FLOOR:
+            _states_backoff_until = channel.rate_limit_reset or (time.time() + _STATES_BACKOFF_SECS)
+        if not response.ok and (
+            classify_provider_error_text(response.stderr) is ProviderErrorKind.RATE_LIMITED
+        ):
+            _states_backoff_until = max(
+                _states_backoff_until,
+                channel.rate_limit_reset or (time.time() + _STATES_BACKOFF_SECS),
+            )
+            break
+        # A pull request GitHub cannot resolve (a deleted repo, lost access, a bad
+        # number) makes ``gh`` exit non-zero with ``data.pN: null`` beside
+        # ``errors``; the other aliases in the same answer are still read, and the
+        # next batch still runs, so one bad item cannot blind the board.
+        try:
+            data = json.loads(response.stdout or "")
+        except (json.JSONDecodeError, RecursionError):
+            continue
+        aliases = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(aliases, dict):
+            continue
+        for index, pair in enumerate(chunk):
+            facts = _state_facts(aliases.get(f"p{index}"))
+            if facts is not None and facts["state"]:
+                found[pair] = facts
+    return found
+
+
 class PrWatchProbe(Probe):
     """Fetches one pull request each tick and keeps the observation on itself.
 

@@ -349,6 +349,10 @@ def _row_with_flags(
 
     ``pending_overdue`` marks an item whose acceptance has read ``pending`` past the
     budget, so the conductor stops polling it and asks the user.
+
+    ``awaiting_land`` marks an item whose worker is done and whose pull request has
+    only its merge left; ``land_untracked`` a ``pr_checks`` bar with no repo, which
+    no watch can follow to the merge (rfc-conductor-pr-land-tracking §3.2-3.3).
     """
     row = item.to_dict()
     row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
@@ -371,6 +375,8 @@ def _row_with_flags(
     row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
     row["unpatrolled"] = item.state == "open" and not patrolled
     row["pending_overdue"] = work_ledger.is_pending_overdue(item)
+    row["awaiting_land"] = work_ledger.is_awaiting_land(item)
+    row["land_untracked"] = work_ledger.is_land_untracked(item.acceptance)
     row["report_undelivered"] = report_undelivered
     return row
 
@@ -435,6 +441,8 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "acceptance_concrete",
     "unpatrolled",
     "pending_overdue",
+    "awaiting_land",
+    "land_untracked",
     "report_undelivered",
 )
 

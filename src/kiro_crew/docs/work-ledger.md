@@ -295,6 +295,19 @@ shell for an older spec. The verdicts are:
   the first time it keeps waiting, which starts a fresh 24 hours, and says so;
   the second time it drops the item and reports it. A `human_approval` bar is
   never overdue: it waits for your answer.
+
+  A `pr_checks` bar that names a `repo` is stored as `pr_merged` with
+  `ready: "pr_checks"`, and the record reply says so in `acceptance_rewritten`
+  (add `"until": "checks"` to keep green as the bar). The worker's brief then
+  carries `ready_when: "pr_checks"`, so it reports `done` at green; the item
+  reads `pending` with the pull request's stage (`ready`, `running`, `red`,
+  `conflicting`, `draft`) in the evidence, and `awaiting_land` while the worker
+  is done and only the merge is left. Such an item does not count toward the
+  goal's concurrency cap. The work-ledger watch reads each open `pr_merged`
+  item's pull request on its tick, in one batched GitHub call, and wakes the
+  conductor once when it merges or closes, and, for an item awaiting land, when
+  it conflicts or its checks go red. A `pr_checks` bar with no `repo` reads
+  `land_untracked`: nothing can follow it to the merge.
 - `refused` — the evaluator will not answer the condition as written, and no
   amount of waiting changes that. A **draft** pull request whose checks have not
   finished lands here, because a draft is the author's own "not ready" and a

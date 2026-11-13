@@ -621,7 +621,7 @@ def _claimed_pr_reaches_a_bar(batch: dict, claimed: int) -> bool:
 
 def test_accept_batch_is_built_from_acceptance_and_never_from_a_claimed_pr():
     """The bar in the batch is the stored one, whatever number the worker claims."""
-    bar = {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}
+    bar = {"kind": "pr_merged", "pr": 123, "repo": "owner/name"}
     item_id = _new_item(acceptance=dict(bar))
     wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", pr=999)
     batch = wl.accept_batch(wl.list_work_items(CONDUCTOR))
@@ -650,7 +650,7 @@ def test_a_minted_id_that_spells_the_claimed_pr_is_not_a_leak():
     # a constant would spin if this id were ever already on disk.
     forced = [f"it_{token}"]
     real_mint = wl.mint_item_id
-    bar = {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}
+    bar = {"kind": "pr_merged", "pr": 123, "repo": "owner/name"}
     with mock.patch.object(
         wl, "mint_item_id", side_effect=lambda: forced.pop() if forced else real_mint()
     ):

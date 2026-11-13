@@ -226,6 +226,8 @@ _MAIN_ROW_KEYS = {
     "acceptance_concrete",
     "unpatrolled",
     "pending_overdue",
+    "awaiting_land",
+    "land_untracked",
     "report_undelivered",
     "events",
 }

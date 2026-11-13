@@ -92,6 +92,7 @@ def build(
         # Deferred import: constructing a work-ledger probe is the first moment the
         # ledger subsystem is actually needed. Importing it at module scope would put
         # it on every gateway boot (see the note on ``WORK_LEDGER`` above).
+        from kiro_crew.probes.gh_pr import fetch_states
         from kiro_crew.probes.work_ledger import WorkLedgerProbe
 
         return WorkLedgerProbe(
@@ -99,5 +100,6 @@ def build(
             worker_closed=worker_closed,
             worker_looping=worker_looping,
             worker_loop_held=worker_loop_held,
+            pr_states=fetch_states,
         )
     return None

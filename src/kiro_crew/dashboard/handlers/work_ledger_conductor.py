@@ -471,6 +471,10 @@ async def _record_conductor_write(
         payload: dict[str, Any] = {"ok": True, "action": action}
         if item is not None:
             payload["item"] = item.to_dict()
+        if result.get("acceptance_rewritten"):
+            # The ledger stored a different bar than the one sent
+            # (``work_ledger.land_bar``); say so, so the conductor is not surprised.
+            payload["acceptance_rewritten"] = result["acceptance_rewritten"]
         if action == "bind":
             # A dispatched worker must have a patrol reading its reports. After the
             # bind committed, arm the default one when this conductor has no

@@ -689,6 +689,16 @@ def undelivered_wake_brief(*, item_id: str, tool: str) -> str:
     return f"[work-ledger wake] item={item_id} reason=report_undelivered tool={tool}"
 
 
+def land_wake_brief(*, item_id: str, pr: int, fact: str) -> str:
+    """Text for a wake on an item's pull request: ``merged``, ``closed``, ``conflict``
+    or ``red`` (rfc-conductor-pr-land-tracking §3.4).
+
+    Structural only, for the reason :func:`wake_brief` gives: an id, a number and a
+    word from that fixed set, never text the pull request's author chose.
+    """
+    return f"[work-ledger wake] item={item_id} reason=pr_{fact} pr={pr}"
+
+
 #: Chars the briefs may contribute to a delivered wake. ``irq`` already bounds the
 #: list it joins (``irq._MAX_LIST`` entries, then a "(+n more)" tail) and every brief
 #: this module builds is one short line, so a body past this is a kernel or probe
@@ -713,7 +723,8 @@ MAX_WAKE_BRIEF_CHARS = 4_000
 #: verdict, so pointing a ``done`` at a read would cost the conductor a model round
 #: trip for a document it then hands straight back.
 WAKE_READ_POINTER = (
-    "[work-ledger] for status=done call accept_eval(item_id=<id>): it reads the "
+    "[work-ledger] for status=done or reason=pr_merged / pr_closed call "
+    "accept_eval(item_id=<id>): it reads the "
     "item's bar itself and returns the worker's report beside the verdict, so no "
     "read is needed first. "
     "Otherwise read the ledger before acting: work_ledger_read(item_id=<id>) "

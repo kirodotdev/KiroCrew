@@ -243,16 +243,64 @@ def _pr_is_draft(pr, repo=None):
     return proc.stdout.strip().lower() == "true"
 
 
+#: Check-run conclusions and status-context states an open pull request's stage
+#: reads as red. The other settled values (success, neutral, skipped, cancelled,
+#: stale) are not red.
+_RED_CHECKS = {"FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+
+#: Status-context states that have not settled yet.
+_UNSETTLED_STATES = {"PENDING", "EXPECTED"}
+
+
+def _open_pr_stage(data):
+    """Where an open pull request stands, as one short phrase for the evidence.
+
+    ``draft``, ``conflicting``, ``red <failed>/<total>``, ``running <settled>/<total>``
+    or ``ready``. Read from the same ``gh pr view`` answer as the state, so it costs
+    no call of its own. Never a verdict: an open pull request stays ``pending``.
+    """
+    if data.get("isDraft") is True:
+        return "draft"
+    if str(data.get("mergeable") or "").upper() == "CONFLICTING":
+        return "conflicting"
+    rows = data.get("statusCheckRollup")
+    rows = rows if isinstance(rows, list) else []
+    total = failed = unsettled = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        total += 1
+        if row.get("__typename") == "StatusContext":
+            # A commit status: one ``state`` field.
+            state = str(row.get("state") or "").upper()
+            if state in _RED_CHECKS:
+                failed += 1
+            elif state in _UNSETTLED_STATES or not state:
+                unsettled += 1
+            continue
+        if str(row.get("status") or "").upper() != "COMPLETED":
+            unsettled += 1
+        elif str(row.get("conclusion") or "").upper() in _RED_CHECKS:
+            failed += 1
+    if failed:
+        return f"red {failed}/{total}"
+    if unsettled:
+        return f"running {total - unsettled}/{total}"
+    return "ready"
+
+
 def _pr_merged(accept):
     """Has this GitHub pull request merged? ``MERGED`` passes.
 
-    ``OPEN`` is ``pending``, because it can still merge; ``CLOSED`` fails,
-    because a closed pull request that did not merge carries no merged code. A
-    ``gh`` that cannot answer (no such PR, no auth) is an ``error``, never a
-    ``fail``: it says nothing about the work.
+    ``OPEN`` is ``pending``, because it can still merge, and its evidence names the
+    stage it is at (:func:`_open_pr_stage`); ``CLOSED`` fails, because a closed pull
+    request that did not merge carries no merged code. A ``gh`` that cannot answer
+    (no such PR, no auth) is an ``error``, never a ``fail``: it says nothing about
+    the work.
 
     ``repo`` is required, unlike ``pr_checks``: without it ``gh`` resolves the
-    number against whatever checkout the evaluator runs in.
+    number against whatever checkout the evaluator runs in. A ``ready`` field
+    (the worker's stage, rfc-conductor-pr-land-tracking) is not read here.
     """
     pr = accept.get("pr")
     # bool is an int subclass; a non-positive number would reach gh as a flag.
@@ -261,18 +309,34 @@ def _pr_merged(accept):
     repo = accept.get("repo")
     if not isinstance(repo, str) or not _GH_REPO.fullmatch(repo):
         return ("error", "pr_merged spec needs a repo of the form owner/name")
-    argv = ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "-q", ".state"]
+    argv = [
+        "gh",
+        "pr",
+        "view",
+        str(pr),
+        "--repo",
+        repo,
+        "--json",
+        "state,mergeable,isDraft,statusCheckRollup",
+    ]
     problem, proc = _exec(argv)
     if proc is None:
         return problem or ("error", "could not run")
     output = _tail(proc.stdout + "\n" + proc.stderr)
     if proc.returncode != 0:
         return ("error", f"could not read PR #{pr} in {repo}: exit {proc.returncode}: {output}")
-    state = proc.stdout.strip().upper()
+    try:
+        data = json.loads(proc.stdout or "")
+    except (ValueError, RecursionError):
+        data = None
+    if not isinstance(data, dict):
+        return ("error", f"PR #{pr} in {repo} gave an answer that is not JSON: {output}")
+    state = str(data.get("state") or "").upper()
     if state == "MERGED":
         return ("pass", f"PR #{pr} in {repo} is merged")
     if state == "OPEN":
-        return ("pending", f"PR #{pr} in {repo} is open and not merged yet")
+        stage = _open_pr_stage(data)
+        return ("pending", f"PR #{pr} in {repo} is open and not merged yet (stage: {stage})")
     if state == "CLOSED":
         return ("fail", f"PR #{pr} in {repo} was closed without merging")
     return ("error", f"PR #{pr} in {repo} reported an unknown state: {output}")

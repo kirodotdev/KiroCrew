@@ -48,7 +48,13 @@ def _done_item(state, tmp_path, acceptance: dict[str, Any] | None = None) -> tup
         {
             "action": "create",
             "title": "Fix it",
-            "acceptance": acceptance or {"kind": "pr_checks", "pr": 41, "repo": "owner/name"},
+            "acceptance": acceptance
+            or {
+                "kind": "pr_checks",
+                "pr": 41,
+                "repo": "owner/name",
+                "until": "checks",
+            },
         },
     )
     assert status == 200, body

@@ -192,7 +192,8 @@ A qualifying return writes a hidden durable fingerprint claim. The claim also
 stores a ledger digest: a hash of the whole conductor record, every work item
 record and the session ledger, as stored, minus only fields a read derives from
 the clock or other fields (stale, orphaned, unpatrolled, pending_overdue,
-report_undelivered, acceptance_concrete, read_at). Any write changes it, a new
+awaiting_land, land_untracked, report_undelivered, acceptance_concrete,
+read_at). Any write changes it, a new
 stored field counts by default, and time passing alone does not. With no earlier
 claim, or when the previous claim's brief failed or was dropped, there is no
 digest to match. The

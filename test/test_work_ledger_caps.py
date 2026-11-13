@@ -647,7 +647,7 @@ def test_a_record_lands_at_the_size_the_ceiling_measured(monkeypatch):
 
 
 def test_acceptance_is_stored_verbatim_and_never_interpreted():
-    payload = {"kind": "pr_checks", "pr": 123, "repo": "owner/name", "extra": [1, {"a": None}]}
+    payload = {"kind": "pr_merged", "pr": 123, "repo": "owner/name", "extra": [1, {"a": None}]}
     item_id = _new_item(acceptance=payload)
     item = wl.read_work_item(CONDUCTOR, item_id)
     assert item is not None and item.acceptance == payload
