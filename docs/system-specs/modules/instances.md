@@ -600,7 +600,11 @@ its port for the life of the process. So the instances startup hook in
 `_register_instances_hooks` (`dashboard/server_runtime/instances_lifecycle.py`)
 registers `shutdown()` with the pre-exec seam
 (`pre_exec_stops.register_pre_exec_stop`) when it creates the manager, and its
-cleanup hook unregisters it. The restart calls `run_pre_exec_stops()` once,
+cleanup hook unregisters it once its own `shutdown()` has returned, so a hook
+the graceful shutdown's bound cancels mid-teardown leaves it for the gateway's
+exit path, which runs the seam before its `os._exit`. `shutdown()` drops each
+tunnel from the manager only after that tunnel's `stop()` returns, so the exit
+path's run reaches a tunnel the cut left mid-stop. The restart calls `run_pre_exec_stops()` once,
 after the sessions close and the MCP broker stops. The seam runs every
 registered stop concurrently under one 10 s bound and never raises, because the
 sessions are already closed and a wedged child must not strand the restart. The

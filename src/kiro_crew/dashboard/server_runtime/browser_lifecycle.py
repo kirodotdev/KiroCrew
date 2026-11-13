@@ -27,8 +27,10 @@ def _register_browser_harness_lifecycle(app: web.Application, state: DashboardSt
     Chromium, the Harness daemon and the helper worker -- plus the relay's sockets.
     A graceful shutdown closes the agent's tabs and stops all of them through the
     ``on_cleanup`` hook. An in-place restart's exec skips every ``on_cleanup`` hook
-    while keeping the pid, so the same stop is registered with
-    :mod:`kiro_crew.pre_exec_stops` too; the cleanup hook unregisters it.
+    while keeping the pid, and a graceful shutdown that runs out of time never
+    reaches or finishes the hook, so the same stop is registered with
+    :mod:`kiro_crew.pre_exec_stops` too, which both the restart and the gateway's
+    exit path run. The cleanup hook unregisters it once its own stop has returned.
 
     Startup runs the same stop once, in the background: a previous life of this
     gateway that died without reaching cleanup left a daemon answering on the IPC
@@ -74,14 +76,18 @@ def _register_browser_harness_lifecycle(app: web.Application, state: DashboardSt
         task.add_done_callback(state._background_tasks.discard)
 
     async def _harness_shutdown(app_: web.Application) -> None:
-        unregister = getattr(state, "_browser_harness_unregister", None)
-        if unregister is not None:
-            unregister()
         try:
             await handlers.stop_browser_harness_install(app_["state"])
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.debug("browser harness install stop failed during shutdown", exc_info=True)
         await _stop_supervisor()
+        # Only once the stop has returned: a graceful shutdown that runs out of
+        # time cancels this hook mid-stop, and the gateway's exit path then runs
+        # the stop again through the pre-exec seam, which it can do only while
+        # the stop is still registered there.
+        unregister = getattr(state, "_browser_harness_unregister", None)
+        if unregister is not None:
+            unregister()
 
     app.on_startup.append(_harness_startup)
     app.on_cleanup.append(_harness_shutdown)

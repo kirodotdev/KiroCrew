@@ -201,14 +201,17 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         revive_task.add_done_callback(state._background_tasks.discard)
 
     async def _instances_shutdown(app_: web.Application) -> None:
-        if unregister_pre_exec_stop is not None:
-            unregister_pre_exec_stop()
         manager = getattr(state, "instances_manager", None)
         if manager is not None:
             try:
                 await manager.shutdown()
             except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
                 logger.warning("Instance tunnel shutdown failed", exc_info=True)
+        # After the teardown, not before: a graceful shutdown that runs out of
+        # time cancels this hook mid-teardown, and the gateway's exit path then
+        # runs it again through the pre-exec seam while it is still registered.
+        if unregister_pre_exec_stop is not None:
+            unregister_pre_exec_stop()
 
     async def _crew_log_drain(app_: web.Application) -> None:
         """Write out the session's log buffered appends before the process goes.
