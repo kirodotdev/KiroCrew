@@ -4560,6 +4560,29 @@ jobs:
         working-directory: website
         run: node scripts/capture-transcript-row-style.mjs --serve "$RUNNER_TEMP/transcript-row-style"
 
+      # Samples host pressure every 5 s so a gateway ended by its own loop-stall
+      # watchdog can be told apart from a runner that stopped scheduling it.
+      # /proc/pressure and /proc/stat are host-wide inside the container; a gap
+      # in this log's own timestamps means the sampler was frozen too.
+      - name: Start the host pressure sampler
+        run: |
+          (
+            set +e
+            cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+            while :; do
+              echo "=== $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+              for f in /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory \
+                /proc/loadavg "$cg/cpu.stat" "$cg/memory.events"; do
+                echo "--- $f"
+                cat "$f" || echo "read failed: $f"
+              done
+              echo "--- /proc/stat"
+              grep '^cpu ' /proc/stat || echo "read failed: /proc/stat"
+              sleep 5
+            done
+          ) </dev/null >"$RUNNER_TEMP/e2e-host-pressure.log" 2>&1 &
+          echo "$!" >"$RUNNER_TEMP/e2e-host-pressure.pid"
+
       - name: Run E2E and dedicated memory UI evidence in parallel
         # Smoke and UI both read the staged production bundle and share only the
         # read-only dependency/browser installs, with separate homes, ports and
@@ -4586,6 +4609,14 @@ jobs:
           # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
           KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
+
+      - name: Stop the host pressure sampler
+        if: ${{ always() }}
+        run: |
+          pid_file="$RUNNER_TEMP/e2e-host-pressure.pid"
+          if [ -f "$pid_file" ]; then
+            kill "$(cat "$pid_file")" 2>/dev/null || echo "host pressure sampler already gone"
+          fi
 
       - name: Upload read-aloud recovery evidence
         if: ${{ always() }}
@@ -4631,6 +4662,15 @@ jobs:
           path: |
             website/test-results/
             website/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload host pressure samples
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-host-pressure
+          path: ${{ runner.temp }}/e2e-host-pressure.log
           if-no-files-found: ignore
           retention-days: 7
 

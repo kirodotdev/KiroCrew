@@ -346,13 +346,22 @@ never builds the link itself. `standup` is not the default page, so a tab still
 showing the live page fails. The spec guards against a person being asked to approve
 a page they could not open.
 
-When the job fails, a final `if: failure()` step uploads
+When the job fails, an `if: failure()` step uploads
 `website/test-results/` and `website/playwright-report/` as the
 `e2e-playwright-failures` artifact (7-day retention). `test-results/` holds one
 directory per failed attempt: `error-context.md` (the ARIA snapshot of the page
 at the failing assertion — the thing that says whether a locator matched the
 wrong row or no row), the `on-first-retry` trace, and any screenshot. The html
 report next to it is the one `--reporter=html` writes.
+
+A failed job also uploads `e2e-host-pressure` (7-day retention): a log a
+background step writes every 5 s while the suite runs, with a UTC timestamp,
+`/proc/pressure/{cpu,io,memory}`, the `cpu ` line of `/proc/stat` (steal),
+`/proc/loadavg`, and the job cgroup's `cpu.stat` and `memory.events`. It exists
+to tell a runner that stopped scheduling the gateway from a stall inside it when
+the loop-stall watchdog ends the gateway with -14 (#22314). Inside the container
+`/proc/pressure` and `/proc/stat` are host-wide, and a gap in the log's own
+timestamps means the sampler was frozen too.
 
 The job's log alone is not enough to triage a spec failure: it names
 `error-context.md` and prints nothing from it. #8526 (a ghost transcript from the
