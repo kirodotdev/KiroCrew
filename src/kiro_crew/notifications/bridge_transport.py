@@ -37,7 +37,7 @@ from kiro_crew.notifications.bridge_approval_note import (
 )
 
 #: The bridge transports this sink serves; ``DashboardState`` registers one each.
-TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex")
+TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex", "feishu")
 
 #: The transports whose owner may answer a bridged approval by replying ``approve``
 #: or ``deny`` to it (RFC bridge actions, B4d, B4g). Each needs an inbound reader that
