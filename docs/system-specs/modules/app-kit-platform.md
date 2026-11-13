@@ -3367,6 +3367,13 @@ keeps the saved copy's rows, less the catalog-only `git` rows only a fresh fetch
 can make installable. Only with no fresh document does the memory make
 `load_official_catalog` answer from the seed without a fetch.
 
+When either listing's inventory fetch (`list_registry`, or
+`_catalog_installable_rows` under `list_catalog_apps`) raises `CatalogUnavailable`
+(offline, backing off, or a document this build cannot use), it logs through
+`official_catalog.log_unavailable`: one WARNING line naming the cause, the stack at
+DEBUG. That is an expected answer and it recurs on every listing. Any other
+exception on that step keeps its traceback at WARNING: it is a bug, not an outage.
+
 That degradation raises no error. Once the saved document expires, a failed
 fetch leaves the seed listing, still answered 200 and flagged only by
 `catalogUnavailable: true`, which the store's listing notice shows on load. To
