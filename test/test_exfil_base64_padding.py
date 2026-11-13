@@ -90,12 +90,12 @@ def test_payload_in_parameter_name_is_redacted() -> None:
     assert _redacted(_url("Ab3x" * 10 + "=1"))
 
 
-def test_split_payload_behaviour_is_unchanged_by_the_separator() -> None:
-    """Sub-40 chunks never formed a run across ``&``, so ``=`` adds no channel.
+def test_split_payload_is_judged_whichever_separator_splits_it() -> None:
+    """Sub-40 chunks form no run in the query text, across ``&`` or ``=``.
 
-    This documents behaviour that predates the change: the old class also saw no
-    run in the ``&``-split form. The ``=``-split form is now equivalent to it,
-    and the aggregate length signal bounds either one.
+    The values are also judged joined (``test_exfil_joined_query_values.py``), and
+    ``=`` inside a value separates pieces there like ``&`` does, so neither split
+    hides the 40-char run, while ``=`` still never joins a name to its value.
     """
     half = "Ab3x" * 5  # 20 chars
     amp_split = f"a={half}&b={half}"
@@ -103,8 +103,8 @@ def test_split_payload_behaviour_is_unchanged_by_the_separator() -> None:
     assert not _OLD_B64_RE.search(amp_split)
     assert not _EXFIL_PATTERNS.search(amp_split)
     assert not _EXFIL_PATTERNS.search(eq_split)
-    assert not _redacted(_url(amp_split))
-    assert not _redacted(_url(eq_split))
+    assert _redacted(_url(amp_split))
+    assert _redacted(_url(eq_split))
 
     long_split = "=".join(["Ab3x" * 7 + "Ab"] * 7)  # 7 x 30 chars
     assert not _EXFIL_PATTERNS.search(long_split)

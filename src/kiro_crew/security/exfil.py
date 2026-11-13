@@ -40,7 +40,12 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
-from .exfil_git_object import _GIT_OBJECT_NAME_RE, _exfil_blob_hit  # noqa: F401
+from .exfil_git_object import (  # noqa: F401
+    _GIT_OBJECT_NAME_RE,
+    _exfil_blob_hit,
+    _joined_values_blob_hit,
+    _joined_values_credential_hit,
+)
 from .exfil_oauth import (  # noqa: F401
     _OAUTH_EXTENSION_HOST_RE,
     _OAUTH_QUERY_PARAMS,
@@ -176,13 +181,8 @@ def _exfil_exempt_hosts() -> frozenset[str]:
 # wide enough for a 40-char alphanumeric secret, and ``_EXFIL_PATTERNS`` needs a
 # 40+ char run to fire. ``slack_manifest.ALIAS_MAX`` (32) now makes such a run
 # impossible AND the surviving span is still scanned, so an ``AKIA…`` id or an
-# ``xox…`` token short enough to fit is caught on the alias alone.
-#
-# Residual, stated rather than implied: an alias of up to ALIAS_MAX chars that
-# resembles no known credential is exempt from the base64/length heuristics. That
-# opens no NEW capability — any URL at any host may already carry a query under
-# _EXFIL_QUERY_MIN_LEN (200) chars without tripping either heuristic, so this
-# span is strictly narrower than what is available without the carve-out.
+# ``xox…`` token short enough to fit is caught on the alias alone. Residual: an
+# alias resembling no known credential passes, being shorter than one 40-char run.
 #
 # Every unconditional check runs BEFORE this point and is unaffected:
 # hard-credential markers, canonical provider tokens, the multi-pass decode (and
@@ -311,12 +311,12 @@ def _exfil_url_warning(
         trace("exfil_hard_credential")
         return f"Suspicious URL with credential in path/query: {domain}"
 
-    # Fixed credential signatures ANYWHERE in the full authority/path/query are
-    # unconditional. This uses canonical provider-token patterns (GitHub,
-    # Stripe, etc.) in addition to the older AWS/SSH/Slack hard floor, but NOT
+    # Fixed credential signatures ANYWHERE in the full authority/path/query, and
+    # in the query values joined (a credential cut into short params), are
+    # unconditional. Canonical provider tokens plus the AWS/SSH/Slack floor, NOT
     # the bare-secret entropy classifier that false-positives on OAuth state.
     full_payload = f"{domain}{port}{path_and_query}"
-    if _contains_fixed_credential(full_payload):
+    if _contains_fixed_credential(full_payload) or _joined_values_credential_hit(query):
         trace("exfil_fixed_credential")
         return f"Suspicious URL with credential in path/query: {domain}"
 
@@ -440,7 +440,8 @@ def _exfil_url_warning(
                 f"Suspicious URL with long query params ({len(heuristic_query)} chars): "
                 f"{domain}{path_and_query[:60]}..."
             )
-        if _exfil_blob_hit(heuristic_query) or _exfil_blob_hit(unquote_plus(heuristic_query)):
+        blob = _exfil_blob_hit(heuristic_query) or _exfil_blob_hit(unquote_plus(heuristic_query))
+        if blob or _joined_values_blob_hit(heuristic_query):
             trace("exfil_query_pattern")
             return f"Suspicious URL with credential-like query data: {domain}"
     return None
@@ -1900,7 +1901,7 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
 # owner names ``display_safety`` reads here.
 # Owners never import this module. New work goes to the owner of its responsibility:
 #   ``exfil_url_rules`` -- the URL and query patterns and the presigned-URL validator
-#   ``exfil_git_object`` -- the git object name carve-out from the base64-blob test
+#   ``exfil_git_object`` -- the base64-blob test: git object carve-out, joined values
 #   ``exfil_scan_span`` -- which span of a URL match is judged and replaced
 #   ``exfil_oauth`` -- the OAuth endpoint set, its audit events and the shape diagnostics
 #   ``exfil_bash`` -- the data-egress and reverse-shell command gate

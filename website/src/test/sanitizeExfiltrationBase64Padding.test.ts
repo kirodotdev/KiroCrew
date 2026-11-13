@@ -61,10 +61,10 @@ describe('sanitizeExfiltrationUrls: `=` is base64 padding, not a joiner', () => 
     expect(isRedacted(url('Ab3x'.repeat(10) + '=1'))).toBe(true)
   })
 
-  it('treats an `=` split like the `&` split that already passed, bounded by length', () => {
+  it('judges an `=` split like an `&` split: the values are joined', () => {
     const half = 'Ab3x'.repeat(5)
-    expect(isRedacted(url(`a=${half}&b=${half}`))).toBe(false)
-    expect(isRedacted(url(`a=${half}=${half}`))).toBe(false)
+    expect(isRedacted(url(`a=${half}&b=${half}`))).toBe(true)
+    expect(isRedacted(url(`a=${half}=${half}`))).toBe(true)
     const longSplit = Array(7).fill('Ab3x'.repeat(7) + 'Ab').join('=')
     expect(isRedacted(url('a=' + longSplit))).toBe(true)
   })
