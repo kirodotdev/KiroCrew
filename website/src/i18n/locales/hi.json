@@ -21254,6 +21254,7 @@
         "client_secret_placeholder": "client secret पेस्ट करो",
         "share_google": "{{products}} पर भी सेव करो",
         "share_google_help": "यहाँ सेव करने पर उन्हें भी इसी client ID और secret से सेट कर दिया जाता है। एक Google ऐप सभी के लिए काफ़ी है।",
+        "share_google_needs_secret": "secret भी डालो। हर Google प्रोडक्ट को वही client ID और secret मिलता है।",
         "share_google_partial": "{{provider}} पर सेव हो गया। फिर से कोशिश करने के लिए Save दबाओ।",
         "share_google_partial_title": "{{products}} पर सेव नहीं हुआ",
         "set_by_environment": "एनवायरनमेंट वेरिएबल {{name}} से सेट किया गया है, जो यहाँ सहेजे गए किसी भी मान को ओवरराइड करता है।",
