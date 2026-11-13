@@ -631,6 +631,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # starts no child. The inputs are an operator-typed file name and version.
         "cli_config_pending.py::_resolve",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving ``CronHistoryStore``'s async readers
+        # from the loop-less, read-only ``kirocrew cron history``; the matched calls
+        # start no child. The inputs are an operator-typed job id and run id.
+        "cli_cron_history.py::cron_history",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
         # login`` / ``kas logout`` verbs. No child process is created: the
