@@ -179,12 +179,26 @@ def memory_prepared() -> bool:
 
 # Startup publishes the memory task late and there is no event for that assignment.
 _TASK_PUBLICATION_POLL_SECONDS = 0.1
+# An unbounded turn wait re-reads the fence this often: the supervisor records a
+# wedged pass as a failure while its worker thread (and so the task) never returns.
+_FENCE_RECHECK_SECONDS = 1.0
+# Past the supervisor's own deadline: it only runs once boot reaches it, so the
+# turn carries its own finite limit and never waits forever.
+_UNBOUNDED_WAIT_MARGIN_SECONDS = 60.0
 
 
 async def wait_for_memory_preparation(
     task: asyncio.Future | Callable[[], asyncio.Future | None] | None,
+    *,
+    bounded: bool = True,
 ) -> None:
     """Give one turn a short grace period without cancelling shared recovery.
+
+    With ``bounded=False`` (a chat turn the user is watching) there is no grace
+    limit: the turn waits for the shared task, and ends on success, a recorded
+    failure or stop (``require_memory_prepared`` raises), or its own finite limit
+    of ``MEMORY_PREPARATION_DEADLINE_SECONDS`` plus a margin. The caller's own
+    cancellation (Stop) ends only this wait.
 
     *task* may be a zero-argument callable returning the published task. The
     gateway publishes the task only after it restores sessions, so a turn that
@@ -192,10 +206,15 @@ async def wait_for_memory_preparation(
     grace budget.
     """
     with _lock:
-        if _active is not None and (_active.error or _active.stopped):
+        if _failed_or_stopped():
             require_memory_prepared()
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + MEMORY_ADMISSION_WAIT_SECONDS
+    budget = (
+        MEMORY_ADMISSION_WAIT_SECONDS
+        if bounded
+        else MEMORY_PREPARATION_DEADLINE_SECONDS + _UNBOUNDED_WAIT_MARGIN_SECONDS
+    )
+    deadline = loop.time() + budget
     if callable(task):
         publish = task
         task = publish()
@@ -211,8 +230,16 @@ async def wait_for_memory_preparation(
         try:
             # Clamp: adding the budget to a large clock value and subtracting it back
             # can round a hair above the total (seen on Windows).
-            left = min(max(deadline - loop.time(), 0.0), MEMORY_ADMISSION_WAIT_SECONDS)
-            await asyncio.wait_for(asyncio.shield(task), timeout=left)
+            left = min(max(deadline - loop.time(), 0.0), budget)
+            if bounded:
+                await asyncio.wait_for(asyncio.shield(task), timeout=left)
+            else:
+                while not task.done():
+                    if loop.time() >= deadline:
+                        raise asyncio.TimeoutError
+                    await asyncio.wait({task}, timeout=_FENCE_RECHECK_SECONDS)
+                    if _failed_or_stopped():
+                        break
         except asyncio.TimeoutError as exc:
             raise MemoryStartupUnavailable(
                 "Memory preparation is still running. Retry shortly, or inspect memory "
@@ -221,6 +248,12 @@ async def wait_for_memory_preparation(
     # A completed worker may have recorded a structural failure rather than
     # opened memory. Store-specific failures are checked by the selected store.
     require_memory_prepared()
+
+
+def _failed_or_stopped() -> bool:
+    """Whether this process's memory startup recorded a failure or was stopped."""
+    with _lock:
+        return _active is not None and bool(_active.error or _active.stopped)
 
 
 def memory_startup_preparing() -> bool:
