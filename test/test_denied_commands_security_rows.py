@@ -1099,7 +1099,7 @@ class TestRmFloorReadsNestedShellPayloads:
         assert shell_commands.redirect_free_views(command) == ['bash -c "$(sh -c >x ls)"']
 
     def test_the_regex_rows_keep_their_verdicts(self):
-        for command in ("rm -rf /tmp/x", "rm -rf ~/.cache/foo"):
+        for command in ("rm -rf /srv/x", "rm -rf ~/.cache/foo"):
             assert is_denied(command) is not None, command
 
     @pytest.mark.parametrize("wrapper", ["bash -c 2>/dev/null {}", "sh -c >/tmp/o {}"])
