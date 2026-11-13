@@ -99,6 +99,8 @@ import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
 import { guideTarget } from './uiLocations/targetRegistry'
 import { useAppShell } from './shell/appShell'
 import { ShellHeader } from './shell/topbar/shellHeader'
+import { hiddenChromeProps } from './shell/focus/focusChrome'
+import { RelayReconnectingView } from './shell/RelayReconnectingView'
 import { ShellNavRail } from './shell/nav/navRail'
 import { NavItem, NavBadge } from './shell/nav/navRow'
 import { DockMatesTiles, useDockMates } from './shell/nav/matesDock'
@@ -322,7 +324,7 @@ export default function App() {
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
-    gatewayStatusMsg, focusModeExitMsg, focusChromeInert,
+    gatewayStatusAnnounce, relayCrewWindow, relayRetrying, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
@@ -745,7 +747,7 @@ export default function App() {
               matters (the gateway dropping mid focus mode). Only while the
               header is actually aria-hidden (focusChromeInert). */}
           {!topChromeShown && focusChromeInert && (
-            <span role="status" className="sr-only" data-testid="focus-gateway-status">{gatewayStatusMsg}</span>
+            <span role="status" className="sr-only" data-testid="focus-gateway-status">{gatewayStatusAnnounce}</span>
           )}
         </>
       )}
@@ -830,11 +832,14 @@ export default function App() {
           : { gridArea: 'content' }}
       >
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
+        {relayCrewWindow && <RelayReconnectingView active={relayRetrying} />}
         {/* `outline-hidden`: main is a programmatic focus target (the skip
             link, and focus mode's hand-off when the chrome hides), not a
             control, so it opts out of the global :focus-visible ring the way
-            the tabIndex={-1} page headings do. */}
-        <main id="main-content" tabIndex={-1} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+            the tabIndex={-1} page headings do. Inert while the reconnecting
+            view covers it, so focus and keystrokes cannot reach a composer
+            the user cannot see. */}
+        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(relayRetrying)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands
@@ -946,7 +951,13 @@ export default function App() {
         {/* App-wide docked terminal panel — renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders
             below the flex wrapper as a full-width strip regardless of position. */}
-        {terminalEnabled && !terminalPoppedOut && <BottomTerminalPanel />}
+        {terminalEnabled && !terminalPoppedOut && (
+          // Inert under the reconnecting view like <main>. A maximized panel
+          // (z-[51]) paints above that view's z-40, so it is left alone.
+          <div className="contents" {...hiddenChromeProps(relayRetrying && !terminalFullscreen)}>
+            <BottomTerminalPanel />
+          </div>
+        )}
         </div>{/* /flex-row or flex-col wrapper */}
         {terminalEnabled && terminalPoppedOut && <TerminalDetachedBar />}
 

@@ -16,7 +16,7 @@
  * the generic "Gateway offline" that points a screen-reader user at
  * reconnection when pasting a token is the fix (issue #9692).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
@@ -307,6 +307,67 @@ describe('App before the first socket opens — connecting, not offline (#34947)
     act(() => { store.dispatch(sseDisconnected()) })
     expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
     expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
+    await shellSettled(queryClient)
+  })
+})
+
+describe('App in a relay Crew window — a calm reconnecting view while it retries', () => {
+  const RELAY_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow'
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+    vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(RELAY_UA)
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('shows the centre view and a warn connecting dot, with no danger styling, while retrying', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    const view = screen.getByTestId('relay-reconnecting')
+    // Mounted before the drop, so its polite region announces it.
+    expect(view).toHaveAttribute('role', 'status')
+    expect(view).toHaveAttribute('aria-live', 'polite')
+    expect(view).toHaveTextContent('')
+    act(() => { store.dispatch(sseConnected()) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(view).toHaveTextContent(en.app.relay_crew_reconnecting)
+    expect(view).toHaveTextContent(en.app.relay_crew_dropped)
+    expect(view).toHaveTextContent('reconnecting on its own')
+    // The covered content is out of the focus order, so keystrokes cannot reach a hidden composer.
+    const main = document.getElementById('main-content')
+    expect(main).toHaveAttribute('inert')
+    expect(main).toHaveClass('isolate')
+    const spinner = view.querySelector('svg')
+    expect(spinner?.classList.contains('animate-spin')).toBe(true)
+    expect(spinner?.classList.contains('motion-reduce:animate-none')).toBe(true)
+    // The top bar: no red capsule, no error notice, a spinning warn glyph and the quiet word.
+    expect(connDot().closest('.tb-capsule')).not.toHaveClass('glass-danger')
+    expect(connDot().querySelector('svg')?.getAttribute('data-conn-state')).toBe('reconnecting')
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    expect(screen.getByTestId('topbar-reconnecting')).toHaveTextContent(en.app.relay_crew_connecting)
+    // One live region speaks the state: the capsule's stays quiet.
+    expect(statusText(connDot())).toBe('')
+    // Reconnected: the view empties and the capsule speaks again.
+    act(() => { store.dispatch(sseConnected()) })
+    expect(view).toHaveTextContent('')
+    expect(main).not.toHaveAttribute('inert')
+    expect(main).not.toHaveClass('isolate')
+    expect(screen.queryByTestId('topbar-reconnecting')).toBeNull()
+    expect(statusText(connDot())).toBe(en.app.gateway_connected)
+    await shellSettled(queryClient)
+  })
+
+  it.each([
+    ['refused', en.app.relay_access_refused],
+    ['session_ended', en.app.relay_session_ended],
+  ] as const)('keeps the danger styling for a real failure (%s)', async (cause, text) => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected(cause)) })
+    expect(screen.getByTestId('relay-reconnecting')).toHaveTextContent('')
+    expect(connDot().closest('.tb-capsule')).toHaveClass('glass-danger')
+    expect(connDot().querySelector('svg')?.getAttribute('data-conn-state')).toBe('offline')
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(text)
+    expect(screen.queryByTestId('topbar-reconnecting')).toBeNull()
+    expect(statusText(connDot())).toBe(text)
     await shellSettled(queryClient)
   })
 })
